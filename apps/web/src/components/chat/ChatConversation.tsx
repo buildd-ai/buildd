@@ -81,7 +81,8 @@ export default function ChatConversation(props: ChatConversationProps) {
   const [tier, setTier] = useState(initialTier);
   const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(props.pinnedTier ?? null);
   const [costKey, setCostKey] = useState(0);
-  const [workspaceId, setWorkspaceId] = useState(props.workspaceId ?? workspaces[0]?.id ?? null);
+  // Null = all workspaces: each turn is routed to the one the message is about.
+  const [workspaceId, setWorkspaceId] = useState<string | null>(props.workspaceId ?? null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -151,6 +152,16 @@ export default function ChatConversation(props: ChatConversationProps) {
     }
     prevStatus.current = status;
   }, [status, title, refetch]);
+
+  const onWorkspaceChange = useCallback((next: string | null) => {
+    const before = workspaceId;
+    setWorkspaceId(next);
+    if (!conversationId) return; // sent with the create request
+    void fetch(`/api/chat/${conversationId}`, {
+      method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: next }),
+    }).then(r => { if (!r.ok) setWorkspaceId(before); }).catch(() => setWorkspaceId(before));
+  }, [conversationId, workspaceId]);
 
   const onTierChange = useCallback((next: ChatTierName | null) => {
     const before = pinnedTier;
@@ -222,9 +233,9 @@ export default function ChatConversation(props: ChatConversationProps) {
         onTierChange={onTierChange}
         costRefreshKey={costKey}
         // An existing conversation's scope was set when it was created.
-        workspaces={conversationId ? workspaces.filter(w => w.id === workspaceId) : workspaces}
+        workspaces={workspaces}
         workspaceId={workspaceId}
-        onWorkspaceChange={setWorkspaceId}
+        onWorkspaceChange={onWorkspaceChange}
         viewerName={viewerName}
         aside={aside}
         emptyState={emptyState}

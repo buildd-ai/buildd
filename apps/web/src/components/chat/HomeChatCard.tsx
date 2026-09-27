@@ -24,13 +24,13 @@ export default function HomeChatCard({
   agentName?: string;
   /** Operators: fewer recent chats, so the fleet stays on the first screen. */
   compact?: boolean;
-  /** Home's workspace filter, when it names one of these workspaces. */
+  /** The app-wide workspace selection (?workspace=), when it names one of these. Else all workspaces. */
   initialWorkspaceId?: string | null;
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState('');
   const [workspaceId, setWorkspaceId] = useState<string | null>(
-    (initialWorkspaceId && workspaces.some(w => w.id === initialWorkspaceId) ? initialWorkspaceId : null) ?? workspaces[0]?.id ?? null,
+    initialWorkspaceId && workspaces.some(w => w.id === initialWorkspaceId) ? initialWorkspaceId : null,
   );
   const [busy, setBusy] = useState(false);
   const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(null);

@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { useRouter } from 'next/navigation';
-import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import LocalTime from './LocalTime';
 import { TaskCard } from '@/components/TaskCard';
 import { GroupSection } from '@/components/GroupSection';
@@ -602,11 +601,6 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               </span>
             )}
           </div>
-          {!missionFilter && workspaces && (
-            <span className="hidden md:block">
-              <WorkspaceFilter workspaces={workspaces} selectedId={selectedWorkspaceId ?? null} />
-            </span>
-          )}
         </div>
 
         {/* Mobile filter UI: single scrollable chip row + optional search */}

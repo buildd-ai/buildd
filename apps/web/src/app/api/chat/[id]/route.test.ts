@@ -11,6 +11,7 @@ const apiOpts: any[] = [];
 const turnCalls: any[] = [];
 const titles: Array<[string, string, string]> = [];
 const tiers: Array<[string, string | null]> = [];
+const pins: Array<[string, string | null]> = [];
 mock.module('@/lib/chat/permissions-store', () => ({
   loadAllowedToolGroups: async (teamId: string, userId: string) => new Set(teamId === 't-1' && userId === 'u-1' ? ['tasks'] : []),
 }));
@@ -19,7 +20,9 @@ mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
   loadTeamChatSettings: async () => ({ chatEnabled: true, timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null }),
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
-  workspaceForConversation: async () => null,
+  workspaceForConversation: async (id: string | null, teamId: string) => (teamId === 't-1' && (id === 'ws-ok' || id === 'ws-sensitive') ? { id, name: id } : null),
+  isSensitiveWorkspace: async (id: string) => id === 'ws-sensitive',
+  loadRoutableWorkspaces: async () => [{ id: 'ws-ok', name: 'ok' }, { id: 'ws-two', name: 'two' }],
   linkMissionToConversation: async () => {},
   linkedMissionFor: async () => null,
 }));
@@ -32,6 +35,7 @@ mock.module('@/lib/chat/store', () => ({
   pingConversation: async () => {},
   setConversationArchived: async () => {},
   setConversationTier: async (id: string, tier: string | null) => { tiers.push([id, tier]); },
+  setConversationWorkspace: async (id: string, ws: string | null) => { pins.push([id, ws]); },
   setConversationTitle: async (id: string, t: string, src: string) => { titles.push([id, t, src]); return t.trim() || null; },
   toConversationDTO: (c: any) => ({ id: c.id }),
   toMessageDTO: (m: any) => m,
@@ -56,7 +60,7 @@ const req = (method: string, body?: unknown) => new NextRequest('http://localhos
   method, headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
 });
 
-beforeEach(() => { turnCalls.length = 0; titles.length = 0; apiOpts.length = 0; tiers.length = 0; });
+beforeEach(() => { turnCalls.length = 0; titles.length = 0; apiOpts.length = 0; tiers.length = 0; pins.length = 0; });
 
 describe('/api/chat/[id]', () => {
   it('404s a conversation that is not the caller\'s, for every method', async () => {
@@ -151,5 +155,34 @@ describe('/api/chat/[id]: tier pin and tool permissions', () => {
   it('a turn carries the caller\'s own allowed tool groups for the conversation team', async () => {
     await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
     expect([...turnCalls[0].deps.allowedToolGroups]).toEqual(['tasks']);
+  });
+});
+
+describe('/api/chat/[id]: workspace scope', () => {
+  it('PATCH { workspaceId } pins one of the team\'s workspaces; null means all', async () => {
+    expect((await PATCH(req('PATCH', { workspaceId: 'ws-ok' }), ctx('c-1'))).status).toBe(200);
+    expect((await PATCH(req('PATCH', { workspaceId: null }), ctx('c-1'))).status).toBe(200);
+    expect(pins).toEqual([['c-1', 'ws-ok'], ['c-1', null]]);
+  });
+
+  it('refuses a workspace outside the team, or a sensitive one', async () => {
+    expect((await PATCH(req('PATCH', { workspaceId: 'ws-other-team' }), ctx('c-1'))).status).toBe(404);
+    expect((await PATCH(req('PATCH', { workspaceId: 'ws-sensitive' }), ctx('c-1'))).status).toBe(403);
+    expect(pins).toEqual([]);
+  });
+
+  it('an unpinned turn is offered the in-reach workspaces to route between', async () => {
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
+    expect(turnCalls[0].workspace).toBeNull();
+    expect(turnCalls[0].workspaces.map((w: any) => w.id)).toEqual(['ws-ok', 'ws-two']);
+    const scoped = turnCalls[0].deps.scopeFor('ws-ok');
+    expect(scoped.actionContext.workspaceId).toBe('ws-ok');
+    // Out of reach: no default, whatever was asked.
+    expect(turnCalls[0].deps.scopeFor('ws-two').actionContext.workspaceId).toBeUndefined();
+  });
+
+  it('a pinned turn is not routed', async () => {
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-ok'));
+    expect(turnCalls[0].workspaces).toEqual([]);
   });
 });

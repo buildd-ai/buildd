@@ -4,7 +4,7 @@
  * row, and which object the docked pane follows.
  */
 import {
-  chatToolIsRead, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, objectsOf, refKey, toolNameOf,
+  chatToolIsRead, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, messageMeta, objectsOf, refKey, toolNameOf,
   type BuilddObjectRef, type ChatEventData, type ChatMessage, type ChatPart, type ChatToolPart,
 } from './chat-contract';
 
@@ -274,4 +274,19 @@ export function provisionalTitle(messages: readonly ChatMessage[]): string {
   const text = first?.parts.find(isTextPart)?.text?.replace(/\s+/g, ' ').trim() ?? '';
   if (!text) return 'New chat';
   return text.length > 60 ? `${text.slice(0, 59)}…` : text;
+}
+
+/**
+ * The workspace the latest assistant turn was routed to, for the composer's
+ * `→ name` chip. Null when it was pinned, unscoped, or the turn predates this
+ * page load (the scope is streamed, not stored). Pure.
+ */
+export function routedScope(messages: readonly ChatMessage[]): { id: string; name: string } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant') continue;
+    const scope = messageMeta(m).scope;
+    return scope && scope.source === 'routed' ? { id: scope.id, name: scope.name } : null;
+  }
+  return null;
 }

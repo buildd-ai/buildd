@@ -54,6 +54,22 @@ describe('renderChatContextBlock', () => {
     expect(block.toLowerCase()).toContain('no default workspace');
   });
 
+  it('all workspaces: lists them and says to name one or ask', () => {
+    const block = renderChatContextBlock({
+      ...base, workspace: null,
+      workspaces: [{ id: 'ws-1', name: 'billing-web' }, { id: 'ws-2', name: 'docs-site' }],
+    });
+    expect(block).toContain('billing-web (id ws-1)');
+    expect(block).toContain('docs-site (id ws-2)');
+    expect(block.toLowerCase()).toContain('ask which one');
+  });
+
+  it('a routed workspace says it was picked from the message, not pinned', () => {
+    const block = renderChatContextBlock({ ...base, workspace: { id: 'ws-1', name: 'billing-web', source: 'routed' } });
+    expect(block).toContain('billing-web (id ws-1)');
+    expect(block.toLowerCase()).toContain('picked from the message');
+  });
+
   it('names the object the chat was opened from, by id, and how to read it', () => {
     const M = '11111111-1111-4111-8111-111111111111';
     const block = renderChatContextBlock({ ...base, entry: { about: { kind: 'mission', id: M } } });

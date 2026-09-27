@@ -68,7 +68,7 @@ describe('MobilePageHeader', () => {
 });
 
 
-  it('keeps WorkspaceFilter label hidden on mobile to prevent breadcrumb crowding at 320pt', () => {
+  it('keeps WorkspaceSwitcher label hidden on mobile to prevent breadcrumb crowding at 320pt', () => {
     pathname = '/app/missions'; // a page that reads ?workspace=
     const html = render({
       teams: TEAMS,
@@ -87,7 +87,7 @@ describe('MobilePageHeader', () => {
     pathname = '/app/settings/connectors';
   });
 
-  it('omits the WorkspaceFilter on pages that ignore ?workspace=', () => {
+  it('omits the WorkspaceSwitcher on pages that ignore ?workspace=', () => {
     const html = render({ teams: TEAMS, currentTeamId: 't1', workspaces: [{ id: 'ws-1', name: 'Example' }] });
     expect(html).not.toContain('Filter by workspace');
     pathname = '/app/missions';

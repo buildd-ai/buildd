@@ -74,6 +74,64 @@ const TIER_FOR: Record<'simple' | 'standard' | 'complex', ChatTier> = {
 
 /** An area answer is only used to *add* a tool group, so it's gated lower. */
 export const AREA_MIN_CONFIDENCE = 0.7;
+/**
+ * A workspace pick becomes the turn's default scope for tool calls, so it's
+ * gated high. Below it the turn has no default: the agent asks which one, or
+ * the tool call names it, and reach still bounds what any call can touch.
+ */
+export const WORKSPACE_MIN_CONFIDENCE = 0.85;
+/** A choice takes at most 255 labels (decision-client MAX_CHOICE_OPTIONS). */
+const MAX_WORKSPACE_LABELS = 255;
+
+/** A workspace the turn may be routed to, with what it's about (repo, projects). */
+export interface RoutableWorkspace { id: string; name: string; hint?: string | null }
+
+/**
+ * What a workspace is about, for the workspace question: its repo's name and
+ * its projects. `repo` is a URL (never interpolated whole); only the last path
+ * segment is used. Pure; null when there's nothing to say.
+ */
+export function workspaceHint(ws: { repo?: string | null; projects?: ReadonlyArray<{ name: string; description?: string | null }> | null }): string | null {
+  const parts: string[] = [];
+  const repoName = ws.repo?.trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).pop();
+  if (repoName) parts.push(`repo ${repoName}`);
+  const projects = (ws.projects ?? []).map(p => (p.description ? `${p.name} (${p.description})` : p.name)).filter(Boolean);
+  if (projects.length) parts.push(`projects: ${projects.join('; ')}`);
+  const hint = parts.join(' · ').slice(0, 240);
+  return hint || null;
+}
+
+/**
+ * The workspace question, over the conversation's in-reach workspaces. Labels
+ * are the names (the model reads them); a name shared by two workspaces gets
+ * its short id so each label maps back to exactly one. Null when there's
+ * nothing to choose between. No catch-all label: "none of these" is low
+ * confidence, which the gate handles.
+ */
+export function workspaceQuestion(workspaces: readonly RoutableWorkspace[]): { question: ChoiceQuestion<string>; idFor: Map<string, string> } | null {
+  const list = workspaces.slice(0, MAX_WORKSPACE_LABELS);
+  if (list.length < 2) return null;
+  const count = new Map<string, number>();
+  for (const w of list) count.set(w.name, (count.get(w.name) ?? 0) + 1);
+  const idFor = new Map<string, string>();
+  const criteria: Record<string, string> = {};
+  for (const w of list) {
+    const label = (count.get(w.name) ?? 0) > 1 ? `${w.name} (${w.id.slice(0, 8)})` : w.name;
+    idFor.set(label, w.id);
+    criteria[label] = w.hint ? `${w.name}: ${w.hint}` : w.name;
+  }
+  return {
+    idFor,
+    question: {
+      type: 'choice',
+      instructions: {
+        question: 'Which workspace is the latest user message in `turn.message` about?',
+        rule: 'Pick the workspace the user names or clearly means (its repo, product or project). Follow the definitions.',
+      },
+      criteria,
+    },
+  };
+}
 
 export interface TurnRoute {
   tier: ChatTier;
@@ -84,18 +142,27 @@ export interface TurnRoute {
   source: 'decision' | 'fallback';
   /** What the routing decision call cost, when it answered. Metered with the turn. */
   usage?: DecisionUsage;
+  /** The workspace routing picked for an unpinned conversation, when confident. */
+  workspaceId?: string;
 }
 
-type Decide = (p: Parameters<typeof decisionCall<typeof CHAT_ROUTING_QUESTIONS>>[0])
-  => Promise<DecisionResult<typeof CHAT_ROUTING_QUESTIONS>>;
+type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string> };
+type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
+  => Promise<DecisionResult<RoutingQuestions>>;
 
 export async function routeTurn(
-  input: { teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string },
+  input: {
+    teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string;
+    /** Unpinned conversations: the in-reach workspaces to pick the turn's scope from. */
+    workspaces?: readonly RoutableWorkspace[];
+  },
   deps: { decide?: Decide } = {},
 ): Promise<TurnRoute> {
   const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
-  const decide = deps.decide ?? decisionCall<typeof CHAT_ROUTING_QUESTIONS>;
-  let res: DecisionResult<typeof CHAT_ROUTING_QUESTIONS>;
+  const decide = deps.decide ?? decisionCall<RoutingQuestions>;
+  const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
+  const questions: RoutingQuestions = ws ? { ...CHAT_ROUTING_QUESTIONS, workspace: ws.question } : CHAT_ROUTING_QUESTIONS;
+  let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
       capability: 'chat',
@@ -103,7 +170,7 @@ export async function routeTurn(
       workspaceId: input.workspaceId,
       userId: input.userId,
       state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
-      questions: CHAT_ROUTING_QUESTIONS,
+      questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
     });
   } catch {
@@ -115,6 +182,9 @@ export async function routeTurn(
   const intentGate = gateChoice(res.answers.intent, INTENT_MIN_CONFIDENCE);
   const areaGate = gateChoice(res.answers.area, AREA_MIN_CONFIDENCE);
   const area = areaGate.apply && areaGate.label !== 'general' ? areaGate.label : undefined;
+  const wsAnswer = (res.answers as { workspace?: Parameters<typeof gateChoice>[0] }).workspace;
+  const wsGate = ws && wsAnswer ? gateChoice(wsAnswer, WORKSPACE_MIN_CONFIDENCE) : null;
+  const workspaceId = wsGate?.apply ? ws!.idFor.get(wsGate.label) : undefined;
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
     // Withhold the write tools only on a confident "not acting"; low
@@ -123,5 +193,6 @@ export async function routeTurn(
     ...(area ? { area } : {}),
     source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
     ...(res.usage ? { usage: res.usage } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
   };
 }

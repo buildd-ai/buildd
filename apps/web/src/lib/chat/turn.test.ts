@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown> }) {
+function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any }) {
   const apiCalls: string[] = [];
   const resolveCalls: any[] = [];
   const poolRecords: Array<{ draw: any; messageId: string }> = [];
@@ -110,9 +110,10 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     actionContext: { workspaceId: 'ws-1', teamId: 'team-1', getWorkspaceId: async () => 'ws-1', getLevel: async () => 'admin' } as any,
     decide,
     linkMission: async (id: string) => { linked.push(id); },
+    ...(opts.scopeFor ? { scopeFor: opts.scopeFor } : {}),
   };
   const turn = async (message: any, extra: Record<string, unknown> = {}) => {
-    const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: { id: 'ws-1', name: 'billing-web' }, user: opts.user ?? user, body: { message, ...extra } as any, deps });
+    const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: opts.workspace === undefined ? { id: 'ws-1', name: 'billing-web' } : opts.workspace, workspaces: opts.workspaces, user: opts.user ?? user, body: { message, ...extra } as any, deps });
     const text = res.body ? await res.text() : '';
     await new Promise(r => setTimeout(r, 20)); // let onEnd persistence settle
     return { res, text };
@@ -597,5 +598,60 @@ describe('a conversation pinned to a tier', () => {
     const { turn, tiersAsked } = harness({ model, route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }) });
     await turn(userMsg('hi'));
     expect(tiersAsked[0]).toBe('budget');
+  });
+});
+
+describe('workspace scope: all workspaces by default, routed per turn', () => {
+  const both = [{ id: 'ws-1', name: 'billing-web' }, { id: 'ws-2', name: 'docs-site' }];
+
+  it('unpinned: routing is offered the workspaces; a confident pick scopes the turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const scoped: string[] = [];
+    const { turn, tiersAsked, resolveCalls } = harness({
+      model, workspace: null, workspaces: both,
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-2' }; },
+      scopeFor: (id: string) => { scoped.push(id); return { actionContext: { workspaceId: id, teamId: 'team-1', getWorkspaceId: async () => id, getLevel: async () => 'admin' } }; },
+    } as any);
+    const { text } = await turn(userMsg('what changed in the docs site this week?'));
+    expect(asked[0].workspaces.map((w: any) => w.id)).toEqual(['ws-1', 'ws-2']);
+    expect(scoped).toEqual(['ws-2']);
+    expect(resolveCalls[0].workspaceId).toBe('ws-2');
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('Workspace for this turn: docs-site (id ws-2)');
+    // The composer reads the routed scope from the message metadata.
+    expect(text).toContain('"source":"routed"');
+    expect(tiersAsked).toHaveLength(1);
+  });
+
+  it('unpinned, no confident pick: no default, every workspace listed', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, workspace: null, workspaces: both });
+    await turn(userMsg('hi'));
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('all workspaces in reach');
+    expect(prompt).toContain('docs-site (id ws-2)');
+  });
+
+  it('pinned: routing is not asked to pick a workspace, and a routed id is ignored', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const { turn } = harness({
+      model, workspaces: both,
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-2' }; },
+    } as any);
+    await turn(userMsg('hi'));
+    expect(asked[0].workspaces).toBeUndefined();
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('Default workspace: billing-web (id ws-1)');
+  });
+
+  it('a routed id outside the list is ignored', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      route: async () => ({ tier: 'standard', allowWrites: true, source: 'decision', workspaceId: 'ws-elsewhere' }),
+    } as any);
+    await turn(userMsg('hi'));
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('all workspaces in reach');
   });
 });

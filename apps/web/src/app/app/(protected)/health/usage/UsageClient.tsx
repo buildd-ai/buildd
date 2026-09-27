@@ -2,7 +2,6 @@
 
 import { useTransition } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { MetricStat, Stat } from '@/components/StatTile';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
 import { scanCaveat } from '@/lib/model-presentation';
@@ -24,7 +23,6 @@ import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
 
 interface Props {
   view: UsageDrilldownView;
-  teamWorkspaces: { id: string; name: string }[];
   wsFilter: string | null;
 }
 
@@ -36,7 +34,7 @@ interface Props {
  * which counts worker SESSIONS; it says so at the stat rather than being quietly
  * relabelled to agree with the header.
  */
-export function UsageClient({ view, teamWorkspaces, wsFilter }: Props) {
+export function UsageClient({ view, wsFilter }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -64,9 +62,6 @@ export function UsageClient({ view, teamWorkspaces, wsFilter }: Props) {
           </div>
           <div className="flex items-center gap-2 ml-auto">
             <DrilldownWindowPicker window={window} />
-            <span className="hidden md:block">
-              <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
-            </span>
           </div>
         </div>
 

@@ -488,6 +488,8 @@ export interface UpdateConversationRequest {
   archived?: boolean;
   /** Pin to a tier, or null to route per turn again. */
   tier?: ChatTierName | null;
+  /** Pin to a workspace, or null for all workspaces (routed per turn). */
+  workspaceId?: string | null;
 }
 
 // ── Tiers and cost ────────────────────────────────────────────────────────────
@@ -565,6 +567,16 @@ export interface ChatTurnRequest {
    * reach checks still decide what the model can read.
    */
   entry?: ChatTurnEntry;
+}
+
+/**
+ * Metadata on each streamed assistant message: the tier the turn ran on and
+ * the workspace it was scoped to (`routed` = picked from the message for an
+ * unpinned conversation). Not stored; a reload shows the pin or "All".
+ */
+export interface ChatTurnMetadata {
+  tier: string;
+  scope: { id: string; name: string; source: 'pinned' | 'routed' } | null;
 }
 
 export interface ChatTurnEntry {

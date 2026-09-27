@@ -29,6 +29,7 @@ import {
   type ChatApprovalPreview,
   type ChatMessagePart,
   type ChatTurnEntry,
+  type ChatTurnMetadata,
   type ChatTurnRequest,
   type ChatUnavailableReason,
   type ChatUsage,
@@ -36,7 +37,7 @@ import {
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
-import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
+import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
 import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
 import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
@@ -89,6 +90,11 @@ export interface TurnDeps {
   actionContext: ActionContext;
   /** Team memory for recall/learn (see ChatToolDeps.memory). */
   memory?: ChatToolDeps['memory'];
+  /**
+   * The action context and memory for a workspace routing picked this turn
+   * (an unpinned conversation). Absent ⇒ `actionContext` / `memory` as given.
+   */
+  scopeFor?: (workspaceId: string) => { actionContext: ActionContext; memory?: ChatToolDeps['memory'] };
   decide?: DecideFn;
   /** Link a filed mission to this conversation (missions.conversation_id). */
   linkMission: (missionId: string) => Promise<void>;
@@ -152,7 +158,13 @@ function userText(message: ChatTurnRequest['message']): string | null {
 
 export async function runChatTurn(args: {
   conversation: ConversationRow;
+  /** The conversation's pinned workspace, when it's in reach. Null = all workspaces. */
   workspace: { id: string; name: string } | null;
+  /**
+   * Unpinned: the in-reach workspaces. Routing may pick one per turn from the
+   * message (routing.ts, confidence-gated); otherwise the turn has no default.
+   */
+  workspaces?: readonly RoutableWorkspace[];
   user: TurnUser;
   body: ChatTurnRequest;
   deps: TurnDeps;
@@ -186,8 +198,12 @@ export async function runChatTurn(args: {
       ...(verdict.scope ? { scope: verdict.scope } : {}),
     });
   }
+  const routable = args.workspace ? undefined : args.workspaces;
   const routePromise = text
-    ? (deps.route ?? routeTurn)({ teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, message: text })
+    ? (deps.route ?? routeTurn)({
+      teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
+      ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
+    })
     : null;
 
   const history = toUiHistory(stored);
@@ -212,7 +228,21 @@ export async function runChatTurn(args: {
     continuing = { ...last, parts: r.parts };
     await updateMessage(last.id, conv.id, { parts: r.parts });
     route = { tier: (last.tier as ChatTier) || FALLBACK_TIER, allowWrites: true, source: 'fallback' };
+    // Keep the scope the card was built in, so the rebuilt card matches it.
+    const cardWs = [...approvedPreviews.values()].map(p => p.target.workspaceId).find(id => !!id);
+    if (cardWs) route = { ...route, workspaceId: cardWs };
   }
+
+  // The turn's scope: the pin, else the workspace routing picked (only one in reach).
+  const routedWs = !args.workspace && route.workspaceId
+    ? (args.workspaces ?? []).find(w => w.id === route.workspaceId) ?? null
+    : null;
+  const scopeWs: { id: string; name: string; source: 'pinned' | 'routed' } | null = args.workspace
+    ? { id: args.workspace.id, name: args.workspace.name, source: 'pinned' }
+    : routedWs ? { id: routedWs.id, name: routedWs.name, source: 'routed' } : null;
+  const scoped = routedWs && deps.scopeFor ? deps.scopeFor(routedWs.id) : null;
+  const actionContext = scoped?.actionContext ?? deps.actionContext;
+  const memory = scoped?.memory ?? deps.memory;
 
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
   // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
@@ -224,9 +254,10 @@ export async function runChatTurn(args: {
     previous: prevAssistant ? { id: prevAssistant.id, tier: prevAssistant.tier ?? null, createdAt: new Date(prevAssistant.createdAt) } : null,
     now,
   };
-  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, pool });
+  const modelWs = scopeWs?.id ?? null;
+  let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   if (!model.ok && route.tier !== FALLBACK_TIER) {
-    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: conv.workspaceId, userId: user.id, pool });
+    model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
   const resolved = model;
@@ -255,7 +286,7 @@ export async function runChatTurn(args: {
   const docked = await loadDocked(read, entry?.about ?? null, linkedMissionId);
   const previewEnv = {
     read,
-    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: args.workspace?.id ?? null },
+    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: scopeWs?.id ?? null },
   };
   const preview = (tool: string, input: Record<string, unknown>) => {
     const s = opSpec(tool, input);
@@ -266,7 +297,7 @@ export async function runChatTurn(args: {
   // Writes that run without a card this turn (the person's "Allow"; see below).
   const allowedToolCallIds = new Set<string>();
   const tools: ToolSet = buildChatTools({
-    ctx: deps.actionContext,
+    ctx: actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
     canAdmin,
@@ -275,7 +306,7 @@ export async function runChatTurn(args: {
     approvedPreviews,
     preview,
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
-    memory: deps.memory,
+    memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
@@ -326,7 +357,8 @@ export async function runChatTurn(args: {
     now,
     timeZone: user.timeZone,
     conversationId: conv.id,
-    workspace: args.workspace,
+    workspace: scopeWs,
+    ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
     user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
@@ -347,11 +379,14 @@ export async function runChatTurn(args: {
     toolApproval,
   });
 
+  const turnMetadata: ChatTurnMetadata = { tier: resolved.tier, scope: scopeWs };
   const stream = toUIMessageStream({
     stream: result.stream,
     tools,
     originalMessages: uiMessages,
     generateMessageId: () => randomUUID(),
+    // The composer shows the turn's tier and scope ("→ billing-web") from this.
+    messageMetadata: ({ part }) => (part.type === 'start' ? turnMetadata : undefined),
     onEnd: async ({ responseMessage, isContinuation, isAborted }) => {
       try {
         const parts = [...(responseMessage.parts as ChatMessagePart[])];

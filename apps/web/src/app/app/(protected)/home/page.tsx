@@ -11,7 +11,6 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
-import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
@@ -1873,11 +1872,6 @@ export default async function HomePage({
               <i aria-hidden="true" className="inline-block h-2 w-2 bg-accent" />
               {clock}
             </span>
-            {teamWorkspaces.length > 0 && (
-              <span className="hidden md:block">
-                <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter ?? null} />
-              </span>
-            )}
             <NewWorkLink
               kind="mission"
               workspaceId={wsFilter ?? null}

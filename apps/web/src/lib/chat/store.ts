@@ -179,6 +179,11 @@ export async function setConversationTitle(id: string, raw: string, source: 'aut
   return rows.length > 0 ? title : null;
 }
 
+/** Pin the conversation to a workspace, or null for all workspaces (routed per turn). */
+export async function setConversationWorkspace(id: string, workspaceId: string | null): Promise<void> {
+  await db.update(conversations).set({ workspaceId }).where(eq(conversations.id, id));
+}
+
 /** Pin the conversation to a tier, or null to route per turn. */
 export async function setConversationTier(id: string, tier: ChatTierName | null): Promise<void> {
   await db.update(conversations).set({ tier }).where(eq(conversations.id, id));
