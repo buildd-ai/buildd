@@ -16,6 +16,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ChatConversation from './ChatConversation';
+import SteerConversation from './SteerConversation';
 import type { ChatAgent } from './ChatFeed';
 import type { BuilddObjectRef } from './chat-contract';
 import type { ComposerWorkspace } from './ChatComposer';
@@ -31,7 +32,7 @@ import { CanvasContext, type ChatCanvasApi } from './canvas-context';
 
 export { useChatCanvas } from './canvas-context';
 
-const scopeKey = (s: CanvasScope) => (s.about ? `${s.about.kind}:${s.about.id}` : s.workspaceId ? `ws:${s.workspaceId}` : 'none');
+const scopeKey = (s: CanvasScope) => (s.steer ? `steer:${s.steer.taskId}` : s.about ? `${s.about.kind}:${s.about.id}` : s.workspaceId ? `ws:${s.workspaceId}` : 'none');
 
 function aboutRef(about: ChatAbout): BuilddObjectRef {
   return { kind: about.kind, id: about.id, workspaceId: null, fallbackText: about.kind === 'mission' ? 'This mission' : 'This task' };
@@ -50,7 +51,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const router = useRouter();
   const [isOpen, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null });
+  const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null, steer: null });
   const scopeRef = useRef<CanvasScope>(scope);
   const [session, setSession] = useState(0);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -59,9 +60,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const [presentation, setPresentation] = useState<'peek' | 'takeover'>('peek');
   const enabled = available && !!teamId;
 
-  const open = useCallback((over?: Partial<CanvasScope>) => {
-    if (!enabled) return;
-    const next: CanvasScope = over ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null } : canvasScopeFromPath(pathname);
+  const openScope = useCallback((next: CanvasScope) => {
     if (scopeKey(scopeRef.current) !== scopeKey(next)) {
       setConversationId(null);
       setSession(n => n + 1);
@@ -71,7 +70,21 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     setPresentation(canvasPresentation(window.innerWidth));
     setMounted(true);
     setOpen(true);
-  }, [enabled, pathname]);
+  }, []);
+
+  const open = useCallback((over?: Partial<CanvasScope>) => {
+    if (!enabled) return;
+    const next: CanvasScope = over
+      ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null, steer: over.steer ?? null }
+      : canvasScopeFromPath(pathname);
+    openScope(next);
+  }, [enabled, pathname, openScope]);
+
+  const openSteer = useCallback((taskId: string) => {
+    if (!enabled) return;
+    openScope({ about: null, workspaceId: null, steer: { taskId } });
+  }, [enabled, openScope]);
+
   const close = useCallback(() => setOpen(false), []);
 
   // The agent's name and colour, once, on first open.
@@ -124,7 +137,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     return () => { unlock(); window.clearTimeout(t); };
   }, [isOpen, shell]);
 
-  const api = useMemo<ChatCanvasApi>(() => ({ open, close, isOpen }), [open, close, isOpen]);
+  const api = useMemo<ChatCanvasApi>(() => ({ open, openSteer, close, isOpen }), [open, openSteer, close, isOpen]);
 
   const onOpenObject = useCallback((ref: BuilddObjectRef) => {
     const href = popOutHref(ref);
@@ -156,7 +169,9 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
         aria-label="Chat"
         className="canvas-rise absolute inset-0 flex flex-col overflow-hidden bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)] md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:pt-0 md:shadow-[var(--canvas-lift)]"
       >
-        {shell ? (
+        {scope.steer ? (
+          <SteerConversation key={scope.steer.taskId} taskId={scope.steer.taskId} onClose={close} />
+        ) : shell ? (
           <ChatConversation
             key={`${session}:${conversationId ?? 'new'}`}
             conversationId={conversationId}

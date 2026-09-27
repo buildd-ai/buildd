@@ -22,6 +22,7 @@
  * opens the task sheet.
  */
 import type { ReactNode } from 'react';
+import SteerButton from '@/components/chat/SteerButton';
 import { BOARD_LANDED, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import {
   AnswerButtons, CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
@@ -289,6 +290,7 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
 function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
+  const live = t.status === 'running' || t.status === 'fixing';
   const head = (
     <div className={`flex min-w-0 gap-2 ${compact ? 'items-start' : 'items-center'}`}>
       <RoleGlyph task={t} />
@@ -304,6 +306,7 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
       {t.attempt > 1 && (
         <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>
       )}
+      {live && <SteerButton taskId={t.id} />}
       {!queued && <RunnerAvatar runner={t.runner} />}
     </div>
   );
@@ -341,7 +344,6 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
       </div>
     );
   } else {
-    const live = t.status === 'running' || t.status === 'fixing';
     const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
     // A live tile says what it is doing (the current action, else the elapsed
     // strip) and for how long — or nothing: no empty second line under the title.

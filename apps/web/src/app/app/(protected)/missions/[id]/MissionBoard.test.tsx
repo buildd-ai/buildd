@@ -14,6 +14,7 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
 const { toVisualShots } = await import('@/lib/mission-visual-review');
+const { CanvasContext } = await import('@/components/chat/canvas-context');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
   renderToStaticMarkup(<MissionBoard model={boardFixture(moment)} missionId="mission-1" {...extra} />);
@@ -280,5 +281,27 @@ describe('MissionBoard — complete, open for weeks', () => {
     expect(ticks).toBeGreaterThan(1);
     expect(ticks).toBeLessThanOrEqual(12);
     expect(conc).toMatch(/>\d+d</);
+  });
+});
+
+describe('MissionBoard — Steer', () => {
+  it('a running tile offers Steer when the chat canvas is available', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={{ open: () => {}, openSteer: () => {}, close: () => {}, isOpen: false }}>
+        <MissionBoard model={boardFixture('running')} missionId="mission-1" />
+      </CanvasContext.Provider>,
+    );
+    // 'running' has two live (running) tiles per tileStatuses above.
+    expect(count(html, 'data-testid="steer-trigger"')).toBe(2);
+  });
+
+  it('offers nothing to steer without the chat canvas (no provider, or chat unavailable)', () => {
+    expect(render('running')).not.toContain('steer-trigger');
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={null}>
+        <MissionBoard model={boardFixture('running')} missionId="mission-1" />
+      </CanvasContext.Provider>,
+    );
+    expect(html).not.toContain('steer-trigger');
   });
 });

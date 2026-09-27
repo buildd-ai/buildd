@@ -16,6 +16,7 @@
 import Link from 'next/link';
 import type { CSSProperties } from 'react';
 import type { FleetRunner, FleetSlot, FleetSnapshot } from '@buildd/shared';
+import SteerButton from '@/components/chat/SteerButton';
 import { SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from '@/components/fleet/slot-lanes-layout';
 import { fleetDisplayRows, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
@@ -112,6 +113,8 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
     <div className="flex min-w-0 flex-1 items-center gap-2.5">
       <RoleSquare name={w.roleName ?? w.roleSlug} color={w.roleColor} />
       {href ? <Link href={href} className="block min-w-0 flex-1 hover:underline">{body}</Link> : <div className="min-w-0 flex-1">{body}</div>}
+      {/* Waiting on you already has its own answer path; steering it is the question hero's job, not this one. */}
+      {w.taskId && !w.question && <SteerButton taskId={w.taskId} />}
     </div>
   );
 }

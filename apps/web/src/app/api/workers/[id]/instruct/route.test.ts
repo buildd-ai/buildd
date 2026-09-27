@@ -393,6 +393,36 @@ describe('POST /api/workers/[id]/instruct', () => {
       expect(capturedSet.pendingInstructions).toBe('Check the auth module');
     });
 
+    // The Steer canvas measures "read at turn N" against the worker's turn
+    // count *at send time* (messageDeliveryStatus in worker-instructions.ts) —
+    // it has to be captured here, not derived later from a history entry that
+    // never carried it.
+    it('records the worker\'s current turn count as turnAtSend', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: WORKER_ID }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: WORKER_ID,
+        status: 'running',
+        workspace: { teamId: 'team-1', dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+        turns: 7,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Check the auth module' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.instructionHistory[0].turnAtSend).toBe(7);
+    });
+
     // An urgent message goes out over Pusher, which is fire-and-forget: nothing
     // reports whether a runner was listening. Recording it as delivered at send
     // time meant the UI and get_task_messages asserted a delivery that may never
