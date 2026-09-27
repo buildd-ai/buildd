@@ -45,6 +45,16 @@ describe('normalizeCatalog', () => {
     expect(byId('gpt-5-3-codex')).toBeUndefined();
   });
 
+  test('keeps the raw permaslug the rankings dataset names models by', () => {
+    const raw = { data: [
+      { id: 'anthropic/claude-sonnet-4.5', canonical_slug: 'anthropic/claude-4.5-sonnet-20250929', supported_parameters: ['tools'], pricing: { prompt: '0.000003', completion: '0.000015' } },
+      { id: 'qwen/qwen3-coder', supported_parameters: ['tools'], pricing: { prompt: '0.0000002', completion: '0.0000008' } },
+    ] };
+    const [sonnet, qwen] = normalizeCatalog(raw);
+    expect(sonnet.permaslug).toBe('anthropic/claude-4.5-sonnet-20250929');
+    expect(qwen.permaslug).toBe('qwen/qwen3-coder');
+  });
+
   test('drops :batch variants — a different endpoint, not a routable model', () => {
     expect(entries.some((e) => e.openRouterId.includes(':batch'))).toBe(false);
   });
