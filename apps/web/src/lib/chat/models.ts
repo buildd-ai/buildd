@@ -100,7 +100,7 @@ async function withChatPool(
   deps: ResolveDeps,
 ): Promise<ResolvedChatModel> {
   try {
-    const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+    const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId, 'chat');
     const draw = await deps.drawChatPoolArm!({
       teamId: opts.teamId, workspaceId: opts.workspaceId, tier: opts.tier,
       conversationId: pool.conversationId, drawKey: pool.drawKey, previous: pool.previous,
@@ -139,7 +139,7 @@ async function resolveIncumbentChatModel(
   opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string },
   deps: ResolveDeps,
 ): Promise<ResolvedChatModel> {
-  const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+  const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId, 'chat');
   const provider = entry.provider as string;
   if (!isInferenceKeyProvider(provider)) return { ok: false, reason: 'unsupported_provider', provider, tier: opts.tier };
   const scope = { teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId };

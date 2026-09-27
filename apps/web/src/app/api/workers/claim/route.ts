@@ -45,6 +45,7 @@ import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, taskNotHeld } from './held-gate';
+import { diagnoseExplicitTaskExclusion, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -146,6 +147,50 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
 
+  // Workspaces this account can claim from. Memoized: the claim query needs it,
+  // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
+  // from the no_slots exit before the query is built.
+  let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
+  const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
+    claimableWorkspaceIdsMemo ??= (async () => {
+      // Get workspaces this account can claim from
+      // 1. Open workspaces of the account's own team ("open" = open within the team)
+      // 2. Any workspace where the account has an explicit canClaim link
+      const openWorkspaces = await db.query.workspaces.findMany({
+        where: and(
+          eq(workspaces.accessMode, 'open'),
+          eq(workspaces.teamId, account.teamId),
+          workspaceId ? eq(workspaces.id, workspaceId) : undefined
+        ),
+      });
+
+      // Get cached account→workspace permissions (avoids DB hit on every claim)
+      const allPermissions = await getAccountWorkspacePermissions(account.id);
+      const claimablePermissions = allPermissions
+        .filter((p) => p.canClaim)
+        .filter((p) => !workspaceId || p.workspaceId === workspaceId);
+
+      // Resolve which linked workspaces still exist. An explicit canClaim link
+      // grants access whatever the workspace's accessMode — it is how an account
+      // outside the owning team is given access to an open workspace.
+      const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
+      let restrictedIds: string[] = [];
+      if (restrictedWsIds.length > 0) {
+        const restrictedWorkspaces = await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, restrictedWsIds),
+          columns: { id: true },
+        });
+        restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
+      }
+
+      // Combine: open workspace IDs + restricted workspaces with permission
+      const openIds = openWorkspaces.map((ws) => ws.id);
+
+      return [...new Set([...openIds, ...restrictedIds])];
+    })();
+    return claimableWorkspaceIdsMemo;
+  };
+
   /**
    * Every zero-worker 200 goes through here.
    *
@@ -174,19 +219,21 @@ export async function POST(req: NextRequest) {
     // visible on no dashboard, was a claim-query predicate excluding the task
     // outright). Best-effort and non-blocking — a failed stamp must never
     // affect the claim response.
+    //
+    // Scoped to the caller's claimable workspaces (the claim query's own list),
+    // so a claim naming a task elsewhere writes nothing.
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
-      const stampedAt = new Date().toISOString();
-      db.update(tasks)
-        .set({
-          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
-            lastClaimAttemptAt: stampedAt,
-            lastClaimAttemptReason: payload.diagnostics.reason,
-            ...(payload.diagnostics.deferrals ? { lastClaimAttemptDeferrals: payload.diagnostics.deferrals } : {}),
-          })}::jsonb`,
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, taskId))
-        .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${taskId}:`, err));
+      const stampTaskId = taskId;
+      const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      resolveClaimableWorkspaceIds()
+        .then((ids) => stampLastClaimAttempt({
+          taskId: stampTaskId,
+          workspaceIds: ids,
+          reason: payload.diagnostics.reason,
+          ...(deferrals ? { deferrals } : {}),
+          now: new Date(),
+        }))
+        .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
     return NextResponse.json({
@@ -331,40 +378,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Get workspaces this account can claim from
-  // 1. Open workspaces of the account's own team ("open" = open within the team)
-  // 2. Any workspace where the account has an explicit canClaim link
-  const openWorkspaces = await db.query.workspaces.findMany({
-    where: and(
-      eq(workspaces.accessMode, 'open'),
-      eq(workspaces.teamId, account.teamId),
-      workspaceId ? eq(workspaces.id, workspaceId) : undefined
-    ),
-  });
-
-  // Get cached account→workspace permissions (avoids DB hit on every claim)
-  const allPermissions = await getAccountWorkspacePermissions(account.id);
-  const claimablePermissions = allPermissions
-    .filter((p) => p.canClaim)
-    .filter((p) => !workspaceId || p.workspaceId === workspaceId);
-
-  // Resolve which linked workspaces still exist. An explicit canClaim link
-  // grants access whatever the workspace's accessMode — it is how an account
-  // outside the owning team is given access to an open workspace.
-  const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
-  let restrictedIds: string[] = [];
-  if (restrictedWsIds.length > 0) {
-    const restrictedWorkspaces = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, restrictedWsIds),
-      columns: { id: true },
-    });
-    restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
-  }
-
-  // Combine: open workspace IDs + restricted workspaces with permission
-  const openIds = openWorkspaces.map((ws) => ws.id);
-
-  const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
+  const workspaceIds = await resolveClaimableWorkspaceIds();
   if (workspaceIds.length === 0) {
     return emptyClaim({
       diagnostics: { reason: 'no_workspaces' } satisfies ClaimDiagnostics,
@@ -399,28 +413,34 @@ export async function POST(req: NextRequest) {
     claimableConditions.push(eq(tasks.id, taskId));
   }
 
+  // Named handles on the WHERE-clause gates, so an explicit-taskId claim that
+  // comes back empty can re-evaluate these exact predicates for that one task
+  // and say which one excluded it (./explicit-task-exclusion). Only populated
+  // for gates that are pushed below; each value is the predicate as pushed.
+  const explicitTaskGates: ExplicitTaskGates = {};
+
   if (account.type !== 'user') {
-    claimableConditions.push(
-      or(eq(tasks.runnerPreference, 'any'), eq(tasks.runnerPreference, account.type))
-    );
+    explicitTaskGates.runnerPreference = or(eq(tasks.runnerPreference, 'any'), eq(tasks.runnerPreference, account.type))!;
+    claimableConditions.push(explicitTaskGates.runnerPreference);
   }
 
   // Exclude tasks that already have an active worker (prevents duplicate claims
   // when stale cleanup resets a task to pending while another worker is still active)
-  claimableConditions.push(
-    sql`NOT EXISTS (
+  explicitTaskGates.activeWorker = sql`NOT EXISTS (
       SELECT 1 FROM ${workers} w
       WHERE w.task_id = ${tasks.id}
       AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
-    )`
-  );
+    )`;
+  claimableConditions.push(explicitTaskGates.activeWorker);
 
   // Exclude tasks whose mission is held. A held mission gates ALL its tasks
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
-  claimableConditions.push(missionNotHeld());
+  explicitTaskGates.missionHeld = missionNotHeld();
+  claimableConditions.push(explicitTaskGates.missionHeld);
   // A single task held by a person (PATCH { held: true }) waits for resume.
-  claimableConditions.push(taskNotHeld());
+  explicitTaskGates.taskHeld = taskNotHeld();
+  claimableConditions.push(explicitTaskGates.taskHeld);
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the
@@ -431,7 +451,8 @@ export async function POST(req: NextRequest) {
   // subject anchor are unaffected (backwards compat).
   // context.bypassSubjectGate=true (written by /start with forceOverride)
   // bypasses this gate for a single force-started task.
-  claimableConditions.push(subjectLivenessCondition());
+  explicitTaskGates.subject = subjectLivenessCondition();
+  claimableConditions.push(explicitTaskGates.subject);
 
   // Exclude tasks whose dependencies haven't been satisfied yet.
   // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
@@ -441,8 +462,7 @@ export async function POST(req: NextRequest) {
   // pending / in_progress deps still block. See dependenciesSatisfied().
   // Exception: bypassDepsGate=true in task context lets a human override the gate
   // (set by /api/tasks/[id]/start when forceOverride=true).
-  claimableConditions.push(
-    or(
+  explicitTaskGates.deps = or(
       // No dependencies
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
@@ -450,8 +470,8 @@ export async function POST(req: NextRequest) {
       sql`${tasks.context}->>'bypassDepsGate' = 'true'`,
       // Every dependency must be satisfied (completed+merged, or cancelled)
       dependenciesSatisfied()
-    )
-  );
+    )!;
+  claimableConditions.push(explicitTaskGates.deps);
 
   // Cap parallel workers per repo-backed workspace. Each task runs in its own git
   // worktree+branch, so parallel work is safe on disk; the cap bounds merge-conflict
@@ -471,8 +491,7 @@ export async function POST(req: NextRequest) {
   // precisely when the workspace is at cap — i.e. every time the button is
   // actually used — so the in-loop check below never saw the task at all.
   // Same accepted value forms on both sides via lib/bypass-flags.ts.
-  claimableConditions.push(
-    or(
+  explicitTaskGates.workspaceCap = or(
       bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
       sql`(
       SELECT COUNT(*) FROM ${workers} w2
@@ -493,8 +512,8 @@ export async function POST(req: NextRequest) {
         0
       )
     )`,
-    ),
-  );
+    )!;
+  claimableConditions.push(explicitTaskGates.workspaceCap);
 
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
@@ -505,20 +524,21 @@ export async function POST(req: NextRequest) {
   // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
   // only check missed them entirely and left the burn-loop gap that caused the
   // 2026-06-25 session-limit storm.
-  claimableConditions.push(
-    sql`NOT EXISTS (
+  explicitTaskGates.runnerCooldown = sql`NOT EXISTS (
       SELECT 1 FROM ${workers} w_cd
       WHERE w_cd.task_id = ${tasks.id}
       AND w_cd.runner = ${runner}
       AND w_cd.status IN ('error', 'failed')
       AND w_cd.updated_at > ${cooldownCutoff}
-    )`
-  );
+    )`;
+  claimableConditions.push(explicitTaskGates.runnerCooldown);
 
   // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
   // (visual-auditor) need an explicit availableSkills match; every other role
   // keeps the legacy rule, where an empty list claims anything.
-  claimableConditions.push(...roleSlugGate(availableSkills));
+  const roleConditions = roleSlugGate(availableSkills);
+  if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
+  claimableConditions.push(...roleConditions);
 
   // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
   // cannot exhaust the window and starve valid tasks behind it.
@@ -534,10 +554,16 @@ export async function POST(req: NextRequest) {
   });
 
   if (claimableTasks.length === 0) {
+    // An explicit taskId the query filtered out would otherwise read exactly
+    // like an empty queue. Name the gate (friction task 81962c2f).
+    const taskExclusion = taskId
+      ? await diagnoseExplicitTaskExclusion({ taskId, workspaceIds, gates: explicitTaskGates, now })
+      : null;
     return emptyClaim({
       diagnostics: {
         reason: 'no_pending_tasks',
         availableSlots,
+        ...(taskExclusion ? { taskExclusion } : {}),
       } satisfies ClaimDiagnostics,
     });
   }
@@ -1594,6 +1620,7 @@ export async function POST(req: NextRequest) {
           derivedTier,
           taskTeamId,
           task.workspaceId,
+          'agent',
           body.environment?.claudeCliVersion,
         );
         resolvedModel = entry.model;
@@ -1601,7 +1628,7 @@ export async function POST(req: NextRequest) {
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
-            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId),
+            resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId, 'agent'),
             clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
           });
           if (treatment) {
