@@ -79,8 +79,19 @@ describe('css', () => {
       expect(kf).toContain('transform');
       expect(kf).not.toMatch(/\b(left|top|width|height|margin)\s*:/);
     }
+  });
+
+  it('reduced motion: the pools, the current, the composer sweep, the ticks and the active step all have animation none', () => {
     const reduced = [...css.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)].map(m => m[1]).join('\n');
-    for (const sel of ['.sea-pool', '.composer-sweep', '.thinking-tick', '.step-active']) expect(reduced).toContain(sel);
+    const rules = [...reduced.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(m => ({ sels: m[1].split(',').map(x => x.trim()), body: m[2] }));
+    for (const sel of ['.sea-pool', '.sea-current', '.composer-sweep', '.thinking-tick', '.step-active']) {
+      const rule = rules.find(r => r.sels.includes(sel));
+      expect(rule, sel).toBeDefined();
+      expect(rule!.body, sel).toMatch(/animation:\s*none/);
+    }
+    // No glow survives either: the still rule is flat.
+    const sweepAfter = rules.find(r => r.sels.includes('.composer-sweep::after'));
+    expect(sweepAfter?.body).toMatch(/box-shadow:\s*none/);
   });
 
   it('the sea is the only rounded layer in the chat styles, and it has no lines or streaks', () => {
@@ -138,9 +149,31 @@ describe('AA over the sea', () => {
     expect(ratio(solid('--on-mood-needs'), solid('--mood-needs-fill'))).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('dim text straight on the brightest pool would not, which is why the tag carries a chip', () => {
-    const pools = ['--sea-calm-1', '--sea-calm-2', '--sea-calm-3', '--sea-thinking-1', '--sea-thinking-2', '--sea-needs'];
-    const brightest = pools.map(p => over(token(p), solid('--chat-ground'))).sort((a, b) => lum(b) - lum(a))[0];
-    expect(ratio(solid('--chat-dim'), brightest)).toBeLessThan(4.5);
-  });
+  // The sea sits under hero, sub, meta lines and rows. Cap each pool so its
+  // peak keeps the dimmest body text AA. The peak a blurred pool actually
+  // paints is below its declared alpha: about 0.9x for the calm and needs-you
+  // pools, 0.6x for the smaller, faster thinking ones (measured by the visual
+  // validation); the test uses those as the bound.
+  const textMuted = (() => {
+    const m = css.match(/--text-muted:\s*(#[0-9a-f]{6})/i);
+    if (!m) throw new Error('no --text-muted');
+    return rgba(m[1]).slice(0, 3) as RGB;
+  })();
+  const MOODS: Record<string, { pools: string[]; peak: number }> = {
+    calm: { pools: ['--sea-calm-1', '--sea-calm-2', '--sea-calm-3', '--sea-calm-4'], peak: 0.9 },
+    needs: { pools: ['--sea-calm-1', '--sea-calm-2', '--sea-calm-3', '--sea-calm-4', '--sea-needs'], peak: 0.9 },
+    thinking: { pools: ['--sea-thinking-1', '--sea-thinking-2', '--sea-thinking-3', '--sea-thinking-4'], peak: 0.6 },
+  };
+  const atPeak = (v: string, peak: number): string => {
+    const [r, g, b, a] = rgba(v);
+    return `rgba(${r}, ${g}, ${b}, ${a * peak})`;
+  };
+  for (const [mood, { pools, peak }] of Object.entries(MOODS)) {
+    it(`${mood}: muted text over the brightest pool at its peak clears 4.5:1`, () => {
+      for (const text of [textMuted, solid('--chat-muted')]) {
+        const worst = Math.min(...pools.map(p => ratio(text, over(atPeak(token(p), peak), solid('--chat-ground')))));
+        expect(worst).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  }
 });

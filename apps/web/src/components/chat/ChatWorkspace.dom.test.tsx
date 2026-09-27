@@ -128,6 +128,18 @@ describe('thinking', () => {
   });
 });
 
+describe('needs-input banner on the phone canvas', () => {
+  it('the needs-you empty canvas holds the banner off on a phone; calm and a thread do not', async () => {
+    const { phoneBannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
+    await render({ pulse: { needsYou: [{ title: 'Round per line' }], live: 0 } });
+    expect(phoneBannerHiddenSnapshot()).toBe(true);
+    await render({ pulse: { needsYou: [], live: 0 } });
+    expect(phoneBannerHiddenSnapshot()).toBe(false);
+    await render({ pulse: { needsYou: [{ title: 'Round per line' }], live: 0 }, messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    expect(phoneBannerHiddenSnapshot()).toBe(false);
+  });
+});
+
 describe('contrast over the sea (AA)', () => {
   const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
 

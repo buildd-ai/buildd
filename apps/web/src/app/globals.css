@@ -663,13 +663,15 @@ textarea[data-composer-input]:focus-visible { outline: none; }
   --mood-thinking-text: #dfe8ff;
   --mood-thinking-label: #9ec0ff;
   --mood-landed: #86c9a1;
-  --sea-calm-1: rgba(70, 122, 124, 0.55);
-  --sea-calm-2: rgba(44, 78, 100, 0.6);
-  --sea-calm-3: rgba(98, 130, 114, 0.35);
+  /* Pools are capped so the dimmest body text (--text-muted) keeps AA over
+   * each one's peak (sea.test.ts, "AA over the sea"). */
+  --sea-calm-1: rgba(70, 122, 124, 0.24);
+  --sea-calm-2: rgba(44, 78, 100, 0.41);
+  --sea-calm-3: rgba(98, 130, 114, 0.21);
   --sea-calm-4: rgba(28, 46, 60, 0.7);
-  --sea-needs: rgba(224, 149, 90, 0.38);
-  --sea-thinking-1: rgba(126, 166, 255, 0.45);
-  --sea-thinking-2: rgba(180, 156, 255, 0.4);
+  --sea-needs: rgba(224, 149, 90, 0.15);
+  --sea-thinking-1: rgba(126, 166, 255, 0.23);
+  --sea-thinking-2: rgba(180, 156, 255, 0.22);
   --sea-thinking-3: rgba(64, 112, 114, 0.4);
   --sea-thinking-4: rgba(30, 40, 82, 0.7);
 }

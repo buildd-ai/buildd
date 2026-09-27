@@ -28,6 +28,7 @@ import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-mode
 import { ObjectPane } from './objects/registry';
 import PinnedObject from './objects/PinnedObject';
 import SeaLayer from './SeaLayer';
+import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
 import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
@@ -343,6 +344,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const hero = messages.length === 0
     ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
     : null;
+  // The needs-you hero already says what waits on the viewer: on a phone the
+  // global banner above the page would repeat it in a third accent colour.
+  useHideNeedsInputBannerOnPhone(!overlay && hero?.mood === 'needs');
   const emptyCanvas = hero && (
     <div data-testid="canvas-empty" data-mood={hero.mood ?? undefined} className={`mb-8 mt-2 md:mt-10 ${historyOpen ? 'max-md:hidden' : ''}`}>
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
