@@ -6,6 +6,7 @@ import { QueryBuilder } from 'drizzle-orm/pg-core';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
+import { accountReachesWorkspace } from './workspace-reach';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -70,7 +71,7 @@ export const verifyWorkspaceAccess = cache(async (
 /**
  * Verify an API key account has access to a workspace.
  *
- * Two ways in:
+ * Applies the shared rule in `workspace-reach.ts`:
  *   1. the workspace is `accessMode: 'open'` AND the account belongs to the
  *      workspace's own team — "open" means open within the owning team; or
  *   2. an explicit accountWorkspaces link (with the requested permission).
@@ -93,15 +94,17 @@ export const verifyAccountWorkspaceAccess = cache(async (
 
   if (!workspace) return false;
 
+  // The shared rule (lib/workspace-reach.ts): an open workspace of the
+  // account's own team, or an explicit link with the permission. Only an open
+  // workspace needs the account's team, so the account row is read only then.
   if (workspace.accessMode === 'open') {
     const account = await db.query.accounts.findFirst({
       where: eq(accounts.id, accountId),
       columns: { teamId: true },
     });
-    if (account && account.teamId === workspace.teamId) return true;
+    if (account && accountReachesWorkspace(account, workspace, null, permission)) return true;
   }
 
-  // Check explicit link
   const link = await db.query.accountWorkspaces.findFirst({
     where: and(
       eq(accountWorkspaces.accountId, accountId),
@@ -109,12 +112,8 @@ export const verifyAccountWorkspaceAccess = cache(async (
     ),
   });
 
-  if (!link) return false;
-
-  if (permission === 'canClaim' && !link.canClaim) return false;
-  if (permission === 'canCreate' && !link.canCreate) return false;
-
-  return true;
+  // No team passed: arm 2 was settled above, so only the link can decide here.
+  return accountReachesWorkspace({ teamId: '' }, { teamId: workspace.teamId, accessMode: null }, link, permission);
 });
 
 const ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);

@@ -70,6 +70,11 @@ mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: async () => [WS],
   verifyAccountWorkspaceAccess: async () => true,
 }));
+// Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts.
+mock.module('@/lib/workspace-access', () => ({
+  listReachableWorkspaceIds: async () => [WS],
+  resolveWorkspaceAccess: async () => ({ ok: true, workspace: { id: WS } }),
+}));
 mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: async () => ({ id: WS }),
   autoResolveAccountWorkspace: async () => ({ workspaceId: WS }),

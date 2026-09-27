@@ -107,7 +107,7 @@ interface NotificationConnector {
 ```
 
 - **Pushover and webhook** are extracted from `sendPushover` / `sendWebhook` in `lib/notify.ts`, so `notifyTeam` and the new router share them. `notifyTeam` behaviour does not change.
-- **Credentials live in `secrets`.** No new credential table. Team channels keep today's team-wide rows. A **personal** channel is a `secrets` row with `userId` set, reusing the personal-row rule the inference keys already use (served only to its owner, excluded from team lists). That means allowing `userId` on purposes `pushover` and `notify_webhook`, which today is `inference_key` only.
+- **Credentials live in `secrets`.** No new credential table. Team channels keep today's team-wide rows. A **personal** channel is a `secrets` row with `userId` set, reusing the personal-row rule the inference keys already use (served only to its owner, excluded from team lists). Each personal channel gets its own purpose rather than reusing the team's: `pushover_personal` (shipped in P1), and later `notify_webhook_personal`. A separate purpose keeps every team read of `pushover` unambiguous and means a personal alert cannot resolve to the team row by construction. See decision 1.
 - **Email** needs a platform sender (none exists). It carries no per-team secret; the address is the account email. P4.
 - **Slack DM** rides the personal Slack identity from `connectors-and-orgs.md` when that ships. It is a use of a connector, not a new credential.
 - **Web push** stores the browser subscription as a personal `secrets` row (`purpose: 'web_push'`), one per device.
@@ -159,7 +159,7 @@ Workers use layer 1 on `update_progress`, which already returns `pendingMessages
 
 Every automatic path states its bound.
 
-- **Per person, external channels:** 12 per hour, 3 of them urgent. Over the cap, rows go `inbox_only` and one summary push says "N more held". Resets hourly.
+- **Per person, external channels:** 12 per rolling hour, 3 of them at high priority (an urgent row past the third goes out at normal priority). Over the cap, rows stay `pending` (the inbox shows them) and are retried every 20 minutes, so they go out once the hour has room; one summary push per clock hour says "N more held". The count is read from the ledger (distinct `delivered_at` among `route = 'pushover'` rows), so it needs no Redis; the held notice does, and is skipped without it.
 - **Per subscription:** after 20 deliveries in an hour a standing subscription auto-pauses and tells its owner once. Coalescing runs first, so only distinct events count.
 - **Per agent:** `notify_user` is 3 per task, urgency `normal` only unless the task's role sets a new `canNotifyUrgent` flag. Beyond that the call returns an error the agent can see, not a silent drop.
 - **Creation:** 25 active subscriptions per person, 5 per task, 100 per team standing. Filters are capped at 8 clauses.
@@ -216,7 +216,7 @@ notification_deliveries          -- the ledger, also the inbox
 Reused, extended:
 
 - `notification_preferences`: nullable `user_id`, unique on `(team_id, user_id)`, `channel_order`, `quiet_hours`, `urgent_bypasses_quiet`.
-- `secrets`: allow `user_id` on `pushover` and `notify_webhook`; add purpose `web_push`. No new table.
+- `secrets`: new personal purposes `pushover_personal` (P1) and `notify_webhook_personal`, plus `web_push`, all in `PERSONAL_SECRET_PURPOSES`. The team `pushover` and `notify_webhook` purposes stay team-only. No new table.
 - `workspace_skills`: `can_notify_urgent boolean default false` (role flag).
 - Presence lives in Redis, not Postgres.
 
@@ -227,7 +227,7 @@ Defaults are no-ops: no subscription rows means `publishEvent` matches nothing a
 **P1: watch a task or PR from chat.**
 - `subscriptions` + `notification_deliveries`, `publishEvent` wired at the task-completion/failure/needs-input and PR merged/CI-failed emit sites.
 - Chat `watch` (one-shot only), `unwatch`, `list_watches`; delivery always as a conversation event.
-- Presence beat plus personal Pushover (`secrets.userId` on `pushover`, one field in Settings → Notifications) when away. No Jev, no standing watches, no quiet hours.
+- Presence beat plus personal Pushover (a `pushover_personal` secret, one field in Settings → Notifications) when away. No Jev, no standing watches, no quiet hours.
 
 **P2: agents and MCP.** `watch` / `inbox` / `notify_user` MCP actions, next-call inbox, 45s long-poll, owner-gone fallback, per-agent caps.
 
@@ -248,7 +248,7 @@ Defaults are no-ops: no subscription rows means `publishEvent` matches nothing a
 
 Status: accepted. These were the six open questions; the owner accepted each recommendation as written in review of this PR.
 
-1. **Personal channel secrets.** `secrets.userId` extends beyond `inference_key` to `pushover` and `notify_webhook`. A person's own key is where their away-alerts go. A person subscription never falls back to the team key, because a team key usually pages a group.
+1. **Personal channel secrets.** `secrets.userId` extends beyond `inference_key` to new personal purposes: `pushover_personal` now, `notify_webhook_personal` when that channel ships. (Amended during P1: the review accepted `userId` on the existing `pushover` purpose, but a separate purpose is safer. Team reads of `pushover` cannot pick up a person's row, and the away path's key query names only the personal purpose.) A person's own key is where their away-alerts go. A person subscription never falls back to the team key, because a team key usually pages a group. Over the per-person cap, rows are held in the inbox and retried, with one "N more held" push per hour (see Limits).
 2. **Presence store.** Redis with a short TTL (75s, refreshed every 30s by a visible tab). A missing key, or no Redis, reads as away. Postgres would pay a Neon wake for a 75s fact (`docs/design/cron-wake-windows.md`).
 3. **Approval for watches.** A one-shot watch skips the card when the person's "Allow" covers it: it notifies only the caller and ends by itself. Standing watches and any webhook target always ask (`alwaysAsk`).
 4. **Workers reaching a person.** A worker may notify only its task's own human, at normal urgency, at most 3 times per task. Urgent needs the role flag `canNotifyUrgent`.

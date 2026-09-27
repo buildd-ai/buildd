@@ -20,6 +20,9 @@ const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as strin
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockInitiativesFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
+// accountWorkspaces lookups made by the real workspace-access resolver.
+const mockAccountWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockAccountWorkspacesFindFirst = mock(() => Promise.resolve(undefined as any));
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'organizer-task-1' } }));
 let insertedMissionValues: any = null;
 let insertedScheduleValues: any = null;
@@ -100,6 +103,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findMany: mockMissionsFindMany },
       initiatives: { findFirst: mockInitiativesFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      accountWorkspaces: { findMany: mockAccountWorkspacesFindMany, findFirst: mockAccountWorkspacesFindFirst },
     },
     insert: (table: any) => {
       if (table === 'missions') return mockMissionsInsert();
@@ -113,6 +117,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
+  or: (...args: any[]) => ({ args, type: 'or' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
@@ -120,7 +125,8 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   missions: 'missions',
   initiatives: { id: 'id', teamId: 'teamId' },
-  workspaces: { id: 'id', teamId: 'teamId' },
+  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode', repo: 'repo', name: 'name' },
+  accountWorkspaces: { accountId: 'accountId', workspaceId: 'workspaceId', canClaim: 'canClaim', canCreate: 'canCreate' },
   taskSchedules: 'taskSchedules',
 }));
 
@@ -1066,5 +1072,90 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+});
+
+// Evaluates the mocked drizzle predicates against fixture rows (`and` is a
+// bare array in this file's drizzle mock), so the scope the resolver asks the
+// db for is what decides the outcome.
+function matches(p: any, row: Record<string, unknown>): boolean {
+  if (p === undefined || p === null) return true;
+  if (Array.isArray(p)) return p.every((a) => matches(a, row));
+  if (p.type === 'eq') return row[p.field] === p.value;
+  if (p.type === 'inArray') return p.values.includes(row[p.field]);
+  if (p.type === 'or') return p.args.some((a: any) => matches(a, row));
+  throw new Error(`unhandled predicate ${p.type}`);
+}
+
+describe('POST /api/missions — workspace reach (shared rule)', () => {
+  const WS_OWN_OPEN = '10000000-0000-4000-8000-000000000001';
+  const WS_LINKED = '10000000-0000-4000-8000-000000000002';
+  const WS_FOREIGN_OPEN = '10000000-0000-4000-8000-000000000003';
+  const WS_MISSING = '10000000-0000-4000-8000-000000000009';
+  const FIXTURE = [
+    { id: WS_OWN_OPEN, teamId: 'team-a', accessMode: 'open', gitConfig: null },
+    { id: WS_LINKED, teamId: 'team-b', accessMode: 'restricted', gitConfig: null },
+    { id: WS_FOREIGN_OPEN, teamId: 'team-b', accessMode: 'open', gitConfig: null },
+  ];
+  const LINKS = [{ accountId: 'acct-a', workspaceId: WS_LINKED, canClaim: true, canCreate: true }];
+
+  beforeEach(() => {
+    insertedMissionValues = null;
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockReturnValue(null as any);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-a', name: 'runner', level: 'admin', teamId: 'team-a' } as any);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockImplementation((async (opts: any) => FIXTURE.find((r) => matches(opts?.where, r))) as any);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockImplementation((async (opts: any) => LINKS.filter((r) => matches(opts?.where, r))) as any);
+    mockAccountWorkspacesFindFirst.mockReset();
+    mockAccountWorkspacesFindFirst.mockImplementation((async (opts: any) => LINKS.find((r) => matches(opts?.where, r))) as any);
+    mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/x-00000000', created: true } as any);
+    mockResolveFeedActor.mockResolvedValue({ kind: 'system', id: null, label: 'system' } as any);
+    mockMissionsInsert.mockImplementation(() => ({
+      values: mock((vals: any) => {
+        insertedMissionValues = vals;
+        return { returning: mock(() => [{ id: 'obj-1', ...vals }]) };
+      }),
+    }));
+    mockSchedulesInsert.mockImplementation(() => ({
+      values: mock((vals: any) => ({ returning: mock(() => [{ id: 'sched-1', ...vals }]) })),
+    }));
+  });
+
+  const create = (workspaceId: string) => POST(new NextRequest('http://localhost/api/missions', {
+    method: 'POST',
+    headers: { authorization: 'Bearer bld_test' },
+    body: JSON.stringify({ title: 'Reach', workspaceId }),
+  }));
+
+  it("accepts the account's own team's open workspace", async () => {
+    const res = await create(WS_OWN_OPEN);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.workspaceId).toBe(WS_OWN_OPEN);
+    expect(insertedMissionValues.teamId).toBe('team-a');
+  });
+
+  it('accepts a workspace the account is explicitly linked to (canCreate), in another team', async () => {
+    const res = await create(WS_LINKED);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.workspaceId).toBe(WS_LINKED);
+    expect(insertedMissionValues.teamId).toBe('team-b');
+  });
+
+  it("refuses another team's open workspace with 403 \"No access to workspace\"", async () => {
+    const res = await create(WS_FOREIGN_OPEN);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('No access to workspace');
+    expect(insertedMissionValues).toBeNull();
+  });
+
+  it('answers 404 "No workspace found" when nothing by that id exists', async () => {
+    const res = await create(WS_MISSING);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('No workspace found');
+    expect(insertedMissionValues).toBeNull();
   });
 });

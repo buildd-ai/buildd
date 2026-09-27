@@ -18,6 +18,7 @@ const UNIT_TEST_ROOTS = [
   'apps/runner/src/',
   'apps/responder/src/',
   'packages/core/',
+  'packages/ai-kit/',
   'scripts/',
 ] as const;
 

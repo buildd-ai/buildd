@@ -152,7 +152,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         embedder,
         // Admin knowledge ops (memory_delete, consolidate_knowledge) act on the
         // default workspace's team store, and only while it's in reach.
-        getMemoryClient: async () => (def ? getMemoryStoreForTeam(def, conv.teamId) : null),
+        // A caller naming a workspace gets that one's store, and only if in reach.
+        getMemoryClient: async (requested?: string) => {
+          const target = requested ?? def;
+          return target && reach.workspaceIds.has(target) ? getMemoryStoreForTeam(target, conv.teamId) : null;
+        },
         // Level gates are token-scoped; the routes enforce the user's real
         // authorization, the chat allowlist bounds the actions, and `reach`
         // bounds the workspaces (this team's, never a sensitive one).
