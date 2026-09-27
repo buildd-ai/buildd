@@ -100,3 +100,47 @@ describe('css', () => {
     }
   });
 });
+
+describe('AA over the sea', () => {
+  const css = read('app/globals.css');
+  const start = css.indexOf('--chat-ground: #141312');
+  const dark = css.slice(start, css.indexOf('[data-theme="light"]', start));
+  type RGB = [number, number, number];
+  const token = (name: string): string => {
+    const m = dark.match(new RegExp(`${name}:\\s*([^;]+);`));
+    if (!m) throw new Error(`no ${name}`);
+    return m[1].trim();
+  };
+  const rgba = (v: string): [number, number, number, number] => {
+    if (v.startsWith('#')) return [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16), 1];
+    const n = (v.match(/[\d.]+/g) ?? []).map(Number);
+    return [n[0], n[1], n[2], n[3] ?? 1];
+  };
+  const solid = (name: string): RGB => rgba(token(name)).slice(0, 3) as RGB;
+  const over = (top: string, under: RGB): RGB => {
+    const [r, g, b, a] = rgba(top);
+    return [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a)];
+  };
+  const lum = ([r, g, b]: RGB) => {
+    const f = (c: number) => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const ratio = (a: RGB, b: RGB) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  it('the intent tag, muted on its own ground chip, clears 4.5:1', () => {
+    expect(ratio(solid('--chat-muted'), solid('--chat-ground'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('the send arrow on its solid copper block clears 4.5:1', () => {
+    expect(ratio(solid('--on-mood-needs'), solid('--mood-needs-fill'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('dim text straight on the brightest pool would not, which is why the tag carries a chip', () => {
+    const pools = ['--sea-calm-1', '--sea-calm-2', '--sea-calm-3', '--sea-thinking-1', '--sea-thinking-2', '--sea-needs'];
+    const brightest = pools.map(p => over(token(p), solid('--chat-ground'))).sort((a, b) => lum(b) - lum(a))[0];
+    expect(ratio(solid('--chat-dim'), brightest)).toBeLessThan(4.5);
+  });
+});

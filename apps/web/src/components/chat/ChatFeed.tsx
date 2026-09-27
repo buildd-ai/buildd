@@ -68,14 +68,18 @@ function Segment({ seg }: { seg: FeedSegment }) {
   }
 }
 
-/** The tiny tag under a message: where the reply went. Tapping it opens the composer's scope. */
+/**
+ * The tiny tag under a message: where the reply went. Tapping it opens the
+ * composer's scope. It carries its own ground chip: small text straight on the
+ * sea's brightest pool would drop below AA.
+ */
 function IntentTag({ label }: { label: string }) {
   return (
     <button
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 px-1 font-mono text-[10px] tracking-[.08em] text-[var(--chat-dim)] hover:text-[var(--chat-text)]"
+      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
     >
       {label}
     </button>
