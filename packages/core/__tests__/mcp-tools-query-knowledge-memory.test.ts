@@ -10,6 +10,7 @@ import type { KnowledgeStore, QueryResult } from '../knowledge-store/types';
 
 const WS_ID  = 'aaaa0000-0000-0000-0000-000000000000';
 const TEAM_ID = 'bbbb0000-0000-0000-0000-000000000000';
+const PROJECT = 'acme/widgets';
 const WORKER_ID = 'worker-001';
 
 const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -42,6 +43,7 @@ function memCtx(store: KnowledgeStore, api?: any) {
   return {
     workspaceId: WS_ID,
     teamId: TEAM_ID,
+    project: PROJECT,
     workerId: WORKER_ID,
     knowledgeStore: store,
     embedder: null as any,
@@ -49,7 +51,7 @@ function memCtx(store: KnowledgeStore, api?: any) {
   };
 }
 
-const nullMemClient = {} as any;
+const nullMemClient = { batch: async (ids: string[]) => ({ memories: ids.map(id => ({ id, project: PROJECT })) }) } as any;
 
 describe('query_knowledge memory — freshness metadata', () => {
   it('includes [savedAt: N days ago · superseded: false] when createdAt present', async () => {

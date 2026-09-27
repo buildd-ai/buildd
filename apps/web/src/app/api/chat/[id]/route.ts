@@ -28,6 +28,7 @@ import { checkChatLimits } from '@/lib/chat/limits';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
+import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 
@@ -140,7 +141,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         if (!target || !reach.workspaceIds.has(target)) return null;
         const store = await getMemoryStoreForTeam(target, conv.teamId);
         if (!store) return null;
-        return { store, ctx: { workspaceId: target, teamId: conv.teamId, knowledgeStore, embedder, isSensitive: false } };
+        // The target's own project key; memory reads and writes are pinned to it.
+        const project = (await resolveMemoryProjectKey(target)) ?? undefined;
+        return { store, ctx: { workspaceId: target, teamId: conv.teamId, project, knowledgeStore, embedder, isSensitive: false } };
       },
       actionContext: {
         workspaceId: def ?? undefined,
@@ -155,7 +158,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         // A caller naming a workspace gets that one's store, and only if in reach.
         getMemoryClient: async (requested?: string) => {
           const target = requested ?? def;
-          return target && reach.workspaceIds.has(target) ? getMemoryStoreForTeam(target, conv.teamId) : null;
+          if (!target || !reach.workspaceIds.has(target)) return null;
+          // claim_task's memory section: closed when the key is shared with a sensitive workspace.
+          if (!(await resolveMemoryProjectKey(target))) return null;
+          return getMemoryStoreForTeam(target, conv.teamId);
         },
         // Level gates are token-scoped; the routes enforce the user's real
         // authorization, the chat allowlist bounds the actions, and `reach`
