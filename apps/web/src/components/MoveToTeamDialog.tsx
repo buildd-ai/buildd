@@ -30,7 +30,7 @@ type Check =
 const PANEL =
   'card w-full max-w-[calc(100vw-2rem)] sm:max-w-md mx-4 max-h-[85vh] overflow-y-auto outline-none';
 
-const GITHUB_BLOCKED = 'Blocked: the GitHub App installation is missing or suspended.';
+const GITHUB_BLOCKED = 'Blocked: GitHub App missing or suspended.';
 
 /** What the user loses, per kind, as [entity, singular, plural]. Order is display order. */
 const LOSSES: Array<[string, string, string]> = [

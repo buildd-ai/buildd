@@ -193,7 +193,7 @@ describe('MoveToTeamDialog', () => {
     await render();
     await pick('team-b');
     const reason = document.querySelector('[data-testid="move-blocked"]');
-    expect(reason?.textContent).toBe('Blocked: the GitHub App installation is missing or suspended.');
+    expect(reason?.textContent).toBe('Blocked: GitHub App missing or suspended.');
     expect(button('Move').disabled).toBe(true);
   });
 

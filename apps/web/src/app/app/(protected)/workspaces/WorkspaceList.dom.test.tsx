@@ -119,4 +119,16 @@ describe('WorkspaceList move-to-team', () => {
     await act(async () => { link.click(); });
     expect(openInTeam).toHaveBeenCalledWith('team-b', '/app/workspaces/ws-1');
   });
+
+  it('keeps the toast when the move empties the list', async () => {
+    const only: Props = { ...props, workspaces: [props.workspaces[0]] };
+    await act(async () => root.render(<WorkspaceList {...only} />));
+    const open = [...rowOf('Example Workspace').querySelectorAll('button')].find(b => b.textContent?.trim() === 'Move to team…')!;
+    await act(async () => { open.click(); });
+    await act(async () => { buttonByText('Move')!.click(); });
+    // router.refresh(): the moved workspace left the active team.
+    await act(async () => root.render(<WorkspaceList {...only} workspaces={[]} />));
+    expect(container.textContent).toContain('No workspaces yet');
+    expect(document.querySelector('[data-testid="move-toast"]')?.textContent).toContain('Moved Example Workspace to Team B');
+  });
 });

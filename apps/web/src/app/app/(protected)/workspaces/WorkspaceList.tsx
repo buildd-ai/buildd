@@ -65,8 +65,10 @@ export default function WorkspaceList({
         return groups[a].teamName.localeCompare(groups[b].teamName);
     });
 
+    // The toast outlives the row: moving the last workspace out empties the list.
     if (workspaces.length === 0) {
         return (
+            <>
             <div className="border border-dashed border-border-default rounded-[10px] p-8">
                 <div className="flex flex-col items-center text-center max-w-sm mx-auto">
                     <div className="w-12 h-12 rounded-[10px] bg-surface-3 flex items-center justify-center mb-4">
@@ -88,6 +90,8 @@ export default function WorkspaceList({
                     </Link>
                 </div>
             </div>
+            {move.ui}
+            </>
         );
     }
 
