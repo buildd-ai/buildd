@@ -66,7 +66,9 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
       hover={<TierDetail info={info} cost={cost} />}
       trigger={(
         <>
-          <span className="max-w-[14ch] truncate">{tierChipLabel({ pinned, last })}</span>
+          {/* A phone shows the tier alone; the routed-to tier joins it from sm up. */}
+          <span className="whitespace-nowrap">{pinned ?? 'auto'}</span>
+          {!pinned && last && <span className="hidden whitespace-nowrap text-text-secondary sm:inline">{`· ${last}`}</span>}
           {spent && <span data-testid="composer-tier-cost" className="text-text-muted">{spent}</span>}
           <span aria-hidden="true" className="text-text-muted">▾</span>
         </>
@@ -74,7 +76,7 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
     >
       {(close) => (
         <div>
-          <div className="border-b border-border-default px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">Tier</div>
+          <div className="hidden border-b border-border-default px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted sm:block">Tier</div>
           <ul role="listbox" aria-label="Tier" className="py-1">
             {([null, 'budget', 'standard', 'premium'] as const).map(t => {
               const selected = t === pinned;

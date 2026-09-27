@@ -93,14 +93,14 @@ export default function ToolsMenu({ teamId }: { teamId: string }) {
       testId="composer-tools"
       trigger={(
         <>
-          <span aria-hidden="true" className="text-[15px] leading-none">⋯</span>
+          <span aria-hidden="true" className="text-[18px] leading-none">⋯</span>
           {allowed > 0 && <span data-testid="composer-tools-allowed" className="font-mono text-[11px] text-accent-text">{allowed}</span>}
         </>
       )}
     >
       {() => (
         <div>
-          <div className="border-b border-border-default px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">Tools</div>
+          <div className="hidden border-b border-border-default px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted sm:block">Tools</div>
           {rows ? <ToolRows rows={rows} onChange={change} busy={busy} /> : <div className="px-3 py-3 font-mono text-[12px] text-text-muted">…</div>}
           {error && <p role="alert" className="border-t border-border-default px-3 py-2 font-mono text-[12px] text-status-error">Not saved</p>}
         </div>
