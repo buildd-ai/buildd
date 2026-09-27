@@ -1493,6 +1493,134 @@ describe('buildDeltaReviewerContext — merge-commit delta bounding', () => {
     // unbounded, same as before this fix.
     expect(prompt).toContain('packages/core/release-strategy.ts');
   });
+
+  // A pulls/files response of exactly 100 (GitHub's real per-page cap for
+  // this endpoint, regardless of the per_page value requested) may be a
+  // truncated page, not the whole PR — trusting it as a filename bound could
+  // silently drop a real file the second page would have named. Skip the
+  // bound rather than risk that.
+  it('does not trust a possibly-truncated pulls/files page as a bound', async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      filename: `apps/web/src/generated/page-${i}.ts`,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      patch: null,
+    }));
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return Promise.resolve({
+          files: [{ filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null }],
+        });
+      }
+      if (path.includes('/files')) {
+        return Promise.resolve(fullPage);
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    // release-strategy.ts isn't in the (possibly-truncated) page, but it must
+    // survive anyway — the bound was skipped, not trusted.
+    expect(prompt).toContain('packages/core/release-strategy.ts');
+  });
+});
+
+describe('buildDeltaReviewerContext — base-anchored delta bounding (PR #2910)', () => {
+  // Regression for PR #2910: the delta's reviewed HEAD was itself a merge
+  // commit whose first parent was ALSO the merge-base with current dev, so
+  // `compare/oldHead...newHead` pulled in unrelated base-history files —
+  // and, unlike PR #2439's repro, the PR's OWN `pulls/{n}/files` response
+  // carried the same divergent-history caveat, so filtering against it was
+  // not enough. Bounding against `baseRef` at both ends of the delta sides
+  // steps the problem instead of relying on either endpoint's own diff.
+  const PRIOR_VERDICT = {
+    headSha: 'old-head',
+    verdict: 'request-changes' as const,
+    confidence: 0.7,
+    summary: 'Needs a fix.',
+    feedback: 'Address the gap.',
+    escalationReason: null,
+  };
+
+  const BASE = {
+    originalTaskId: 'original-2910',
+    originalTask: { title: 'feat(usage-stats): groupBy=creationSource', description: null, pathManifest: null },
+    prNumber: 2910,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/2910',
+    headSha: 'new-head',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    priorVerdict: PRIOR_VERDICT,
+    baseRef: 'dev',
+    // No deltaFiles — forces the real compare fetch path.
+  };
+
+  it('bounds the delta against baseRef, dropping base-history churn without ever consulting pulls/files', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.endsWith('/compare/old-head...new-head')) {
+        // The raw priorHead...head compare, bloated with unrelated dev-history
+        // files (exactly the shape a degenerate merge-base produces).
+        return Promise.resolve({
+          files: [
+            { filename: 'apps/web/src/lib/usage-stats.ts', status: 'modified', additions: 5, deletions: 1, patch: null },
+            { filename: 'apps/web/src/lib/unrelated-feature.ts', status: 'modified', additions: 40, deletions: 5, patch: null },
+            { filename: 'packages/core/drizzle/0200_unrelated.sql', status: 'added', additions: 200, deletions: 0, patch: null },
+          ],
+        });
+      }
+      if (path.endsWith('/compare/dev...old-head')) {
+        return Promise.resolve({
+          files: [{ filename: 'apps/web/src/lib/usage-stats.ts', status: 'modified', sha: 'blob-v1' }],
+        });
+      }
+      if (path.endsWith('/compare/dev...new-head')) {
+        return Promise.resolve({
+          files: [{ filename: 'apps/web/src/lib/usage-stats.ts', status: 'modified', sha: 'blob-v2' }],
+        });
+      }
+      if (path.includes('/pulls/') && path.includes('/files')) {
+        return Promise.reject(new Error('pulls/files must not be consulted when baseRef is available'));
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    expect(prompt).toContain('apps/web/src/lib/usage-stats.ts');
+    expect(prompt).not.toContain('unrelated-feature.ts');
+    expect(prompt).not.toContain('0200_unrelated.sql');
+  });
+
+  it('skips the base-anchored bound (fails open) when a snapshot may be truncated', async () => {
+    const manyFiles = Array.from({ length: 300 }, (_, i) => ({ filename: `dev/churn-${i}.ts`, status: 'modified', sha: `s${i}` }));
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.endsWith('/compare/old-head...new-head')) {
+        return Promise.resolve({
+          files: [
+            { filename: 'apps/web/src/lib/usage-stats.ts', status: 'modified', additions: 5, deletions: 1, patch: null },
+            { filename: 'apps/web/src/lib/unrelated-feature.ts', status: 'modified', additions: 40, deletions: 5, patch: null },
+          ],
+        });
+      }
+      if (path.endsWith('/compare/dev...old-head')) {
+        return Promise.resolve({ files: manyFiles });
+      }
+      if (path.endsWith('/compare/dev...new-head')) {
+        return Promise.resolve({ files: [{ filename: 'apps/web/src/lib/usage-stats.ts', status: 'modified', sha: 'blob-v2' }] });
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    // The prior-review snapshot looks truncated (>= GitHub's compare cap), so
+    // the bound is skipped entirely rather than trusted half-blind — the
+    // unrelated file survives, same fail-open behaviour as any other bounding
+    // failure in this function.
+    expect(prompt).toContain('unrelated-feature.ts');
+  });
 });
 
 describe('createReviewerTask — delta re-review', () => {
