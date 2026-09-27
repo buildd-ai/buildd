@@ -74,8 +74,13 @@ retention problem. Go through the jobs API:
 ```bash
 gh api "/repos/buildd-ai/buildd/actions/runs/$id/jobs" \
   -q '.jobs[]|select(.conclusion=="failure")|.id'
-gh api "/repos/buildd-ai/buildd/actions/jobs/$jid/logs" | sed 's/^[0-9T:.\-]*Z //'
+gh api --allow-escape-sequences "/repos/buildd-ai/buildd/actions/jobs/$jid/logs" | sed 's/^[0-9T:.\-]*Z //'
 ```
+
+The job-log body routinely contains raw terminal escape sequences (colored
+test output, progress bars). `gh` refuses to print those to a terminal by
+default and errors instead of returning the log — pass `--allow-escape-sequences`
+up front rather than re-running after the first attempt comes back empty.
 
 Failing *step* names are the cheap first cut — get them from the same jobs call
 (`.steps[]|select(.conclusion=="failure")|.name`) before pulling any log.
