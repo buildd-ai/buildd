@@ -106,7 +106,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-20
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
-  A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, task tier, role pin, then kind×complexity baseline under budget gates and the role floor — recorded on tasks.predicted_model.
+  A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29

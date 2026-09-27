@@ -3,9 +3,9 @@ title: Model Routing and Tiers
 status: active
 owner: max
 last_verified: 2026-09-27
-summary: A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, task tier, role pin, then kind×complexity baseline under budget gates and the role floor — recorded on tasks.predicted_model.
+summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
-surfaces: [packages/core/model-router.ts, packages/core/role-model-routing.ts, packages/core/model-tier-registry.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/model-aliases.ts]
+surfaces: [packages/core/model-router.ts, packages/core/role-model-routing.ts, packages/core/model-tier-registry.ts, apps/web/src/app/api/workers/claim/route.ts]
 related: [provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
 verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
 keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
