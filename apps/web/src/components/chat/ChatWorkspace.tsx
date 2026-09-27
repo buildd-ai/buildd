@@ -28,7 +28,9 @@ import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-mode
 import { ObjectPane } from './objects/registry';
 import PinnedObject from './objects/PinnedObject';
 import SeaLayer from './SeaLayer';
-import { useHideNeedsInputBannerOnPhone } from '@/lib/needs-input-hidden';
+import { useHideNeedsInputBannerOnPhone, useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
+import ChatDock from './ChatDock';
+import { dockChoice, needsDockRef, NEEDS_DOCK_CLOSED_KEY } from './dock-model';
 import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
@@ -62,7 +64,11 @@ export interface ChatWorkspaceProps {
   workspaceId: string | null;
   onWorkspaceChange(id: string | null): void;
   viewerName: string | null;
-  /** Shown beside the chat when no object is docked (member / operator context). */
+  /**
+   * The conversation list the desktop right panel shows under HISTORY
+   * (docs/design/chat-v3-desktop.md, decision 4). The old 400px context aside
+   * is gone: the panel docks a real object instead.
+   */
   aside?: ReactNode;
   /** A ref to open on arrival (the respond deep link's question). */
   focusRef?: BuilddObjectRef | null;
@@ -114,6 +120,20 @@ export interface ChatWorkspaceProps {
 
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 768px)').matches;
 
+/** Whether the viewport is at least `px` wide, kept live. False on the server. */
+function useMinWidth(px: number): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const mq = typeof window !== 'undefined' ? window.matchMedia?.(`(min-width: ${px}px)`) : null;
+    if (!mq) return;
+    setOn(mq.matches);
+    const onChange = () => setOn(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [px]);
+  return on;
+}
+
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
@@ -128,6 +148,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     overlay ? { ...s, closed: true } : focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
+  // The desktop right panel's HISTORY (?view=history deep-links it open).
+  const [historyDock, setHistoryDock] = useState(historyOpen && !overlay);
+  // A client navigation to ?view=history keeps this mounted: open it then too.
+  useEffect(() => { if (historyOpen && !overlay) setHistoryDock(true); }, [historyOpen, overlay]);
+  // A needs-you dock closed this session: the task it was showing.
+  const [needsClosedId, setNeedsClosedId] = useState<string | null>(null);
+  useEffect(() => {
+    try { setNeedsClosedId(window.sessionStorage.getItem(NEEDS_DOCK_CLOSED_KEY)); } catch { /* private mode */ }
+  }, []);
+  const wide = useMinWidth(1280);
   const [draft, setDraft] = useState('');
   // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
   const [now] = useState(() => new Date());
@@ -157,9 +187,23 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   const openObject = useCallback((ref: BuilddObjectRef) => {
     if (onOpenObject) onOpenObject(ref);
-    else if (isDesktop()) dispatch({ type: 'open', ref });
+    else if (isDesktop()) { setHistoryDock(false); dispatch({ type: 'open', ref }); }
     else setSheet(ref);
   }, [onOpenObject]);
+
+  // The right panel (lg+): history, the object, or the task that needs you.
+  const needsRef = overlay ? null : needsDockRef(pulse?.needsYou);
+  const dock = overlay ? null : dockChoice({ historyOpen: historyDock, focus, needsRef, needsClosedId });
+  // The panel already shows the blocker (1280+): the global banner would repeat it.
+  useHideNeedsInputWhileOpen(dock?.mode === 'needs' && wide ? dock.ref?.id : null);
+  const closeDock = () => {
+    if (!dock) return;
+    if (dock.mode === 'history') setHistoryDock(false);
+    else if (dock.mode === 'needs' && dock.ref) {
+      setNeedsClosedId(dock.ref.id);
+      try { window.sessionStorage.setItem(NEEDS_DOCK_CLOSED_KEY, dock.ref.id); } catch { /* private mode */ }
+    } else dispatch({ type: 'close' });
+  };
 
   const actions: ChatActions = useMemo(() => ({
     ...DEFAULT_CHAT_ACTIONS,
@@ -206,7 +250,6 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
-  const narrow = docked || overlay;
   const busy = status === 'submitted' || status === 'streaming';
   const lastIsUser = messages[messages.length - 1]?.role === 'user';
   // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
@@ -308,10 +351,22 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           <Link
             href={historyOpen ? newChatHref : '/app/chat?view=history'}
             data-testid="chat-history-link"
-            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden lg:inline-flex"
+            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden lg:hidden"
           >
             {historyOpen ? 'New →' : 'History →'}
           </Link>
+        )}
+        {/* Desktop: HISTORY opens the list in the right panel; the column stays centred. */}
+        {phoneCrumbs && (
+          <button
+            type="button"
+            data-testid="chat-history-toggle"
+            aria-pressed={dock?.mode === 'history'}
+            onClick={() => setHistoryDock(o => !o)}
+            className="-mr-2 hidden min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] aria-pressed:text-[var(--chat-text)] lg:inline-flex"
+          >
+            History →
+          </button>
         )}
         <Link
           href={newChatHref}
@@ -350,13 +405,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   useHideNeedsInputBannerOnPhone(!overlay && hero?.mood === 'needs');
   // The plain new chat on a phone: hero at the top, PICKED FOR YOU anchored
   // just above the composer. Scoped chats and the history view keep flowing.
-  const anchored = !!hero && plainCanvas && !overlay && !historyOpen;
+  // Desktop keeps the anchored canvas under ?view=history: the list is in the panel.
+  const anchoredPhone = !!hero && plainCanvas && !overlay && !historyOpen;
+  const anchoredDesk = !!hero && plainCanvas && !overlay;
+  const anchored = anchoredPhone || anchoredDesk;
   const emptyCanvas = hero && (
     <div
       data-testid="canvas-empty"
       data-mood={hero.mood ?? undefined}
-      data-layout={anchored ? 'anchored' : undefined}
-      className={`mb-8 mt-2 md:mt-10 ${anchored ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col lg:mb-0 lg:mt-20 lg:flex lg:flex-1 lg:flex-col' : ''} ${historyOpen ? 'max-md:hidden lg:hidden' : ''}`}
+      data-layout={anchoredPhone ? 'anchored' : undefined}
+      className={`mb-8 mt-2 md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex lg:flex-1 lg:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
     >
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
@@ -370,9 +428,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       )}
       {/* Phone: open sea between the hero and the picked rows, which sit
           right above the composer (the v3 frames). */}
-      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className="max-md:min-h-7 max-md:flex-1 lg:min-h-7 lg:flex-1" />}
+      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className={`${anchoredPhone ? 'max-md:min-h-7 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:min-h-7 lg:flex-1' : ''}`} />}
       {suggestions.length > 0 && (
-        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? 'md:mt-7 lg:mt-0' : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
+        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? `${anchoredPhone ? '' : 'max-md:mt-7'} md:mt-7 ${anchoredDesk ? 'lg:mt-0' : ''}` : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
           <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
             <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
             {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
@@ -408,13 +466,17 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-canvas={variant}
       data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] lg:bg-[var(--chat-ground)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] lg:bg-[var(--chat-ground)] ${docked ? 'md:w-[540px] md:shrink-0 lg:w-auto lg:flex-1 lg:shrink' : 'flex-1'}`}
     >
       {/* The sea: soft pools behind the phone canvas, coloured by mood. The
           summoned overlay is an opaque sheet and draws none. */}
       {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden lg:block" />}
       {header}
       {strip}
+      {/* 1024 to 1279: the blocker rides in the pinned strip; 1280+ it is docked. */}
+      {!pin && dock?.mode === 'needs' && dock.ref && (
+        <PinnedObject key={refKey(dock.ref)} objRef={dock.ref} className="hidden lg:block xl:hidden" openLabel="Open beside ▸" onOpen={() => openObject(dock.ref!)} />
+      )}
       {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
       {/* The top edge fades: a line cut off under the header reads as a fade,
           not as stray glyphs. py-6 keeps the first message clear of it. */}
@@ -424,7 +486,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         data-testid="chat-scroller"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
-        <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col lg:flex lg:min-h-full lg:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8 lg:max-w-[720px] lg:px-0'}`}>
+        <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchoredPhone && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${anchoredDesk && !missionEmpty ? 'lg:flex lg:min-h-full lg:flex-col' : ''} ${overlay ? 'md:px-6' : docked ? 'md:px-6 lg:max-w-[720px] lg:px-0' : 'max-w-[820px] md:px-8 lg:max-w-[720px] lg:px-0'}`}>
           {missionEmpty && missionSheet ? (
             <div data-testid="mission-sheet-empty" className="mb-6">
               <MissionContextCard objRef={missionSheet} />
@@ -432,15 +494,15 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             </div>
           ) : emptyCanvas}
           {messages.length === 0 && emptyState && (
-            <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block lg:hidden'}>{emptyState}</div>
+            <div data-testid="chat-empty-state" className={historyOpen ? 'lg:hidden' : 'hidden md:block lg:hidden'}>{emptyState}</div>
           )}
           <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
       {/* Phone: the composer is a full-bleed slab down to the safe area. */}
-      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${narrow ? 'md:px-6' : 'md:px-8 lg:pb-7'}`}>
-        <div data-testid="chat-composer-column" className={narrow ? '' : 'mx-auto max-w-[820px] lg:max-w-[720px]'}>
+      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${overlay ? 'md:px-6' : docked ? 'md:px-6 lg:px-8 lg:pb-7' : 'md:px-8 lg:pb-7'}`}>
+        <div data-testid="chat-composer-column" className={overlay ? '' : docked ? 'lg:mx-auto lg:max-w-[720px]' : 'mx-auto max-w-[820px] lg:max-w-[720px]'}>
           <ChatComposer
             ref={composer}
             value={draft}
@@ -461,7 +523,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             pinnedTier={pinnedTier}
             onTierChange={onTierChange}
             costRefreshKey={costRefreshKey}
-            compact={narrow}
+            compact={overlay}
             scopeLock={missionSheet ? <MissionScopeCell objRef={missionSheet} /> : undefined}
           />
           {formFallbackHref && messages.length === 0 && (
@@ -482,7 +544,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   const popOut = focus ? popOutHref(focus) : null;
   const paneEl = focus && (
-    <section data-testid="chat-pane" data-side={pane.side} data-ref={refKey(focus)} className="hidden min-h-0 min-w-0 flex-1 flex-col bg-surface-1 md:flex">
+    <section data-testid="chat-pane" data-side={pane.side} data-ref={refKey(focus)} className="hidden min-h-0 min-w-0 flex-1 flex-col bg-surface-1 md:flex lg:hidden">
       <div className="flex min-h-14 items-center gap-2.5 border-b border-border-default bg-surface-2 px-4 py-2">
         <span aria-hidden="true" className="h-2.5 w-2.5 bg-[var(--status-info)]" />
         <span className="min-w-0 truncate font-mono text-[12px] text-text-secondary">
@@ -509,18 +571,23 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       <div
         data-testid="chat-workspace"
         data-docked={docked ? 'true' : 'false'}
-        className={`flex h-full min-h-0 ${docked && pane.side === 'right' ? 'flex-row-reverse' : 'flex-row'}`}
+        data-dock={dock?.mode}
+        className={`flex h-full min-h-0 ${docked && pane.side === 'right' ? 'flex-row-reverse' : 'flex-row'} lg:flex-row`}
       >
+        {/* The tablet band (768 to 1023) keeps the side-by-side pane. */}
         {paneEl}
-        {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block" />}
+        {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block lg:hidden" />}
         {column}
-        {/* The side slot. The empty canvas has none: PICKED FOR YOU says what
-            the aside did, and the column centres in the whole stage. A 420px
-            dock will take this slot; the column stays centred in what is left. */}
-        {!docked && !overlay && aside && messages.length > 0 && (
-          <aside data-testid="chat-aside" className="hidden w-[400px] min-w-0 shrink-0 overflow-y-auto overflow-x-hidden border-l border-border-default bg-surface-2 px-6 py-5 xl:block">
-            {aside}
-          </aside>
+        {/* lg+: one solid 420px panel on the right; the column stays centred in what is left. */}
+        {dock && (
+          <ChatDock
+            mode={dock.mode}
+            objRef={dock.ref}
+            onClose={closeDock}
+            history={aside}
+            onSend={send}
+            onOpen={ref => { setHistoryDock(false); dispatch({ type: 'open', ref }); }}
+          />
         )}
       </div>
       <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet ? objectSheetTitle(sheet) : ''} height="tall" testId="chat-object-sheet">
