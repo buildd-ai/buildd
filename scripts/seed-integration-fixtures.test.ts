@@ -12,7 +12,7 @@ const ADMIN_API_KEY = 'bld_test_admin_key_0987654321';
 function fakeDb() {
   const teams: Array<{ id: string; slug: string }> = [];
   const accounts: Array<{ id: string; api_key: string }> = [];
-  const workspaces: Array<{ id: string }> = [];
+  const workspaces: Array<{ id: string; team_id: string; name: string }> = [];
   const links: Array<{ account_id: string; workspace_id: string }> = [];
   let nextId = 1;
   const newId = () => `id-${nextId++}`;
@@ -20,7 +20,7 @@ function fakeDb() {
   const sql: SqlClient = async (strings, ...values) => {
     const text = strings.join('?');
 
-    if (text.includes('SELECT id FROM accounts WHERE api_key IN')) {
+    if (text.includes('SELECT id, api_key FROM accounts WHERE api_key IN')) {
       const [a, b] = values as string[];
       return accounts.filter((row) => row.api_key === a || row.api_key === b);
     }
@@ -44,20 +44,26 @@ function fakeDb() {
       }
       return inserted;
     }
-    if (text.includes('SELECT id, api_key FROM accounts WHERE api_key IN')) {
-      const [a, b] = values as string[];
-      return accounts.filter((row) => row.api_key === a || row.api_key === b);
+    if (text.includes('SELECT id FROM workspaces WHERE team_id')) {
+      const [teamId] = values as string[];
+      return workspaces.filter((w) => w.team_id === teamId && w.name === 'integration-test-workspace');
     }
     if (text.includes('INSERT INTO workspaces')) {
-      const row = { id: newId() };
+      const [teamId] = values as string[];
+      const row = { id: newId(), team_id: teamId, name: 'integration-test-workspace' };
       workspaces.push(row);
       return [{ id: row.id }];
     }
     if (text.includes('INSERT INTO account_workspaces')) {
       // Values appear in template order: (apiAccountId, workspaceId), (adminAccountId, workspaceId).
       const [apiAccountId, workspaceId, adminAccountId] = values as string[];
-      links.push({ account_id: apiAccountId, workspace_id: workspaceId });
-      links.push({ account_id: adminAccountId, workspace_id: workspaceId });
+      for (const link of [
+        { account_id: apiAccountId, workspace_id: workspaceId },
+        { account_id: adminAccountId, workspace_id: workspaceId },
+      ]) {
+        if (links.some((l) => l.account_id === link.account_id && l.workspace_id === link.workspace_id)) continue; // ON CONFLICT DO NOTHING
+        links.push(link);
+      }
       return [];
     }
     throw new Error(`fakeDb: unhandled query: ${text}`);
@@ -123,13 +129,13 @@ describe('seedFixtures', () => {
 
     const sql: SqlClient = async (strings, ...values) => {
       const text = strings.join('?');
-      if (text.includes('SELECT id FROM accounts WHERE api_key IN')) {
+      if (text.includes('SELECT id, api_key FROM accounts WHERE api_key IN')) {
         existenceCheckCalls += 1;
         return existenceCheckCalls === 1 ? [] : accounts;
       }
       if (text.includes('INSERT INTO teams')) return [{ id: 'team-1' }];
       if (text.includes('INSERT INTO accounts')) return []; // ON CONFLICT DO NOTHING on both rows
-      if (text.includes('SELECT id, api_key FROM accounts WHERE api_key IN')) return accounts;
+      if (text.includes('SELECT id FROM workspaces WHERE team_id')) return [];
       if (text.includes('INSERT INTO workspaces')) return [{ id: 'workspace-1' }];
       if (text.includes('INSERT INTO account_workspaces')) return [];
       throw new Error(`unhandled query: ${text}`);
@@ -138,5 +144,38 @@ describe('seedFixtures', () => {
     const result = await seedFixtures(sql, API_KEY, ADMIN_API_KEY);
 
     expect(result).toEqual({ seeded: true });
+  });
+
+  test('repairs a partial cleanup where only one fixture account survived', async () => {
+    // Regression for the missions-smoke 401: if the admin account is ever
+    // deleted (manual cleanup, broken cascade) while the regular account
+    // survives, an "any key exists" check would skip seeding forever and the
+    // admin key would 401 on every future CI run. Each account must be
+    // checked and repaired independently.
+    const db = fakeDb();
+    db.accounts.push({ id: 'surviving-api-account', api_key: hashApiKey(API_KEY) });
+
+    const result = await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY);
+
+    expect(result).toEqual({ seeded: true });
+    expect(db.accounts).toHaveLength(2);
+    expect(db.accounts.some((a) => a.api_key === hashApiKey(ADMIN_API_KEY))).toBe(true);
+    expect(db.workspaces).toHaveLength(1);
+    expect(db.links).toHaveLength(2);
+  });
+
+  test('reuses the existing fixture workspace instead of creating a duplicate when repairing an account', async () => {
+    const db = fakeDb();
+    db.teams.push({ id: 'team-1', slug: 'integration-test-team' });
+    db.accounts.push({ id: 'surviving-api-account', api_key: hashApiKey(API_KEY) });
+    db.workspaces.push({ id: 'workspace-1', team_id: 'team-1', name: 'integration-test-workspace' });
+    db.links.push({ account_id: 'surviving-api-account', workspace_id: 'workspace-1' });
+
+    const result = await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY);
+
+    expect(result).toEqual({ seeded: true });
+    expect(db.workspaces).toHaveLength(1);
+    expect(db.links).toHaveLength(2);
+    expect(db.links.some((l) => l.account_id === 'surviving-api-account')).toBe(true);
   });
 });
