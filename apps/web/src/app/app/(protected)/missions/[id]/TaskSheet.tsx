@@ -32,6 +32,7 @@ import type { PulseSegment } from '@/lib/mission-pulse';
 import { missionTaskHref, taskPageHref, type MissionOrigin } from '@/lib/mission-task-href';
 import TaskPanelBody, { TaskPanelSkeleton, useTaskSummary, type TaskPanelData } from './TaskPanel';
 import type { TaskSheetNav } from './task-sheet-nav';
+import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 /** md breakpoint: at and above it the sheet docks instead of sliding up. */
 export const TASK_SHEET_DOCK_QUERY = '(min-width: 768px)';
@@ -151,7 +152,8 @@ function SheetContent({ taskId, mission, nav, summary, onChanged, onStep }: Task
 
 /** Presentational: the task in the shared side sheet (docked at md+, a bottom sheet below). */
 export function TaskSheetView(props: TaskSheetViewProps) {
-  const title = props.summary.data?.title ?? 'Task';
+  // The sentence the task page heads with, not the raw "feat(scope): …" title.
+  const title = props.summary.data ? taskHeading(props.summary.data, null).heading : 'Task';
   return (
     <SideSheet
       open
