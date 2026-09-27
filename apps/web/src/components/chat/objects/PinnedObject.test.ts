@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { pinnedObjectTitle } from './PinnedObject';
+import { missionCountsLine } from './MissionObject';
 import type { BuilddObjectRef } from '../chat-contract';
 import type { MissionObjectView, TaskObjectView } from './object-views';
 
@@ -31,5 +32,19 @@ describe('pinnedObjectTitle', () => {
   it('before the object loads, falls back to the ref (never a raw, unlabeled title)', () => {
     expect(pinnedObjectTitle(taskRef, null)).toBe('This task');
     expect(pinnedObjectTitle(missionRef, null)).toBe('This mission');
+  });
+});
+
+describe('missionCountsLine', () => {
+  const board = (over: Record<string, unknown> = {}) =>
+    ({ tasks: {}, phases: [], planning: null, needsYou: [], landed: { done: 0, total: 0 }, ...over }) as unknown as MissionObjectView['board'];
+
+  it('before any tasks exist it never reads "0 of 0"', () => {
+    expect(missionCountsLine(board())).toBe('no tasks yet');
+    expect(missionCountsLine(board({ planning: { roleName: 'Organizer' } }))).toBe('planning');
+  });
+
+  it('counts landed work once there are tasks', () => {
+    expect(missionCountsLine(board({ landed: { done: 1, total: 3 } }))).toBe('1 of 3 landed');
   });
 });

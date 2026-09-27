@@ -14,12 +14,6 @@ steps:
     viewports: [desktop, phone]
     waitFor: interactive-switch
     fullPage: true
-  - id: ai-advanced
-    goto: /app/settings/ai
-    viewports: [desktop, phone]
-    waitFor: feature-advanced
-    click: "[data-testid=feature-advanced] summary"
-    fullPage: true
   - id: providers
     goto: /app/settings/providers
     viewports: [desktop, phone]

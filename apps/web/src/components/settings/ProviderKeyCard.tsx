@@ -31,11 +31,13 @@ export interface ProviderKeyCardProps {
   onTest: () => Promise<{ ok: boolean; error: string | null }>;
   /** Marks the provider to pick first (OpenRouter). */
   recommended?: boolean;
+  /** Replaces the add button when there is no key (Connect OpenRouter); pasting stays a quiet option. */
+  addAction?: React.ReactNode;
   now?: Date;
 }
 
 export function ProviderKeyCard({
-  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, recommended = false, now,
+  info, status, mode, ownKeyCount = null, canEdit: canEditScope, loading = false, onSave, onRemove, onTest, recommended = false, addAction, now,
 }: ProviderKeyCardProps) {
   // A key that serves chat from elsewhere (runner API key, decision key) is
   // shown but managed where it was set. Adding one here still works: it
@@ -120,7 +122,9 @@ export function ProviderKeyCard({
       <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
         <Row label={scopeLabel}>
           {configured
-            ? <span className="font-mono text-text-primary">{status?.masked ?? 'set'} <span className="text-text-muted">· {formatCheckedAgo(status?.lastVerifiedAt, now)}</span></span>
+            // "checked" only when a Test ran: the badge already says "not tested"
+            // otherwise, and a working key in use has no check time to show.
+            ? <span className="font-mono text-text-primary">{status?.masked ?? 'set'}{status?.lastVerifiedAt && <span className="text-text-muted"> · {formatCheckedAgo(status.lastVerifiedAt, now)}</span>}</span>
             : <span className="text-text-muted">none</span>}
         </Row>
         {mode === 'team' && ownKeyCount != null && (
@@ -191,6 +195,13 @@ export function ProviderKeyCard({
                     Remove
                   </button>
                 )}
+              </>
+            ) : addAction ? (
+              <>
+                {addAction}
+                <button className="btn btn-quiet" onClick={() => { setEditing(true); setMsg(null); }} disabled={loading}>
+                  Paste a key
+                </button>
               </>
             ) : (
               <button className="btn" onClick={() => { setEditing(true); setMsg(null); }} disabled={loading}>

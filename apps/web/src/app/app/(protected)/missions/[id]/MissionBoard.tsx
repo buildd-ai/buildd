@@ -104,15 +104,17 @@ export default function MissionBoard({ model: serverModel, completionText, notic
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
-              <div className={`flex gap-2.5 border-b-2 border-border-strong pb-2 ${compact ? 'items-start' : 'items-center'}`}>
+              <div className="flex items-center gap-2.5 border-b-2 border-border-strong pb-2">
                 <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>
+                {/* One line: a wrapped header pushes its underline below its neighbours'. */}
                 <SectionLabel
                   data-testid="board-phase-label"
-                  className={`min-w-0 !text-text-primary ${compact ? 'flex-1 [overflow-wrap:anywhere]' : 'truncate'}`}
+                  title={p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                  className={`min-w-0 truncate !text-text-primary ${compact ? 'flex-1' : ''}`}
                 >
                   {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
                 </SectionLabel>
-                <span aria-hidden="true" className={`ml-auto flex shrink-0 gap-0.5 ${compact ? 'mt-[3px]' : ''}`}>
+                <span aria-hidden="true" className="ml-auto flex shrink-0 gap-0.5">
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
@@ -159,8 +161,16 @@ export function Band({ model, compact, missionId }: { model: MissionBoardModel; 
           phase captions and every criterion); Fleet and Needs you pair up. */}
       <div data-testid="landed-band" className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
-        <Big n={model.landed.done} small={`of ${model.landed.total}`} />
-        <LandedMeter model={model} variant="band" compact={compact} />
+        {model.landed.total > 0 ? (
+          <>
+            <Big n={model.landed.done} small={`of ${model.landed.total}`} />
+            <LandedMeter model={model} variant="band" compact={compact} />
+          </>
+        ) : (
+          <span data-testid="landed-empty" className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
+            No tasks yet
+          </span>
+        )}
       </div>
       <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`} />
       <div data-testid="fleet-band" className={`${cell} md:border-r`}>
@@ -201,7 +211,8 @@ export function GoalCell({ model, compact, missionId, className }: { model: Miss
   const heading = unevaluated ? 'Goal' : `Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`;
   return (
     <div data-testid="goal-band" data-evaluated={unevaluated ? 'false' : undefined} className={className}>
-      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="hover:underline">
+      {/* flex, not inline: an inline link's line box sat the label lower than the other cells'. */}
+      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="flex self-start hover:underline">
         <SectionLabel>{heading}</SectionLabel>
       </a>
       {unevaluated && (

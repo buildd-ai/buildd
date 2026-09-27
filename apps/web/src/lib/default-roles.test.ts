@@ -1,9 +1,70 @@
 import { describe, it, expect } from 'bun:test';
-import { DEFAULT_ROLES } from './default-roles';
+import { DEFAULT_ROLES, defaultRoleMetadata } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
   const bySlug = Object.fromEntries(DEFAULT_ROLES.map(r => [r.slug, r]));
+
+  // docs/design/role-routing.md §2: whenToUse/notFor ARE the routing prompt.
+  // A role with no text is never a candidate, so every seeded role must say
+  // either what it is for or, explicitly, that it is not routable.
+  describe('routing text (role-routing.md §2)', () => {
+    const EXCLUDED = ['reviewer', VISUAL_AUDITOR_ROLE_SLUG];
+
+    it('every role has routing text or an explicit exclusion', () => {
+      for (const role of DEFAULT_ROLES) {
+        expect(role.routing).toBeDefined();
+      }
+    });
+
+    it('excludes pipeline-only roles explicitly, and only those', () => {
+      const disabled = DEFAULT_ROLES.filter(r => 'disabled' in r.routing).map(r => r.slug).sort();
+      expect(disabled).toEqual([...EXCLUDED].sort());
+    });
+
+    it('stays within the §2 limits: whenToUse 20–300 chars, notFor ≤ 200', () => {
+      for (const role of DEFAULT_ROLES) {
+        if ('disabled' in role.routing) continue;
+        const { whenToUse, notFor } = role.routing;
+        expect(whenToUse.length).toBeGreaterThanOrEqual(20);
+        expect(whenToUse.length).toBeLessThanOrEqual(300);
+        if (notFor !== undefined) expect(notFor.length).toBeLessThanOrEqual(200);
+      }
+    });
+
+    it('notFor names at least one neighbouring routable role', () => {
+      const routable = DEFAULT_ROLES.filter(r => !('disabled' in r.routing)).map(r => r.slug);
+      for (const role of DEFAULT_ROLES) {
+        if ('disabled' in role.routing) continue;
+        const notFor = role.routing.notFor ?? '';
+        const named = routable.filter(s => s !== role.slug && notFor.includes(`(${s})`));
+        expect(named.length).toBeGreaterThan(0);
+      }
+    });
+
+    // Rendered as "<whenToUse> Not for: <notFor>." — a trailing period in
+    // notFor would render as "..".
+    it('notFor carries no trailing period', () => {
+      for (const role of DEFAULT_ROLES) {
+        if ('disabled' in role.routing) continue;
+        expect(role.routing.notFor ?? '').not.toMatch(/\.\s*$/);
+      }
+    });
+
+    it('seeds the text into metadata.routing with an updatedAt stamp', () => {
+      const now = new Date('2026-01-01T00:00:00.000Z');
+      expect(defaultRoleMetadata(bySlug.builder, now)).toEqual({
+        routing: {
+          whenToUse: (bySlug.builder.routing as { whenToUse: string }).whenToUse,
+          notFor: (bySlug.builder.routing as { notFor?: string }).notFor,
+          updatedAt: now.toISOString(),
+        },
+      });
+      expect(defaultRoleMetadata(bySlug.reviewer, now)).toEqual({
+        routing: { disabled: true, updatedAt: now.toISOString() },
+      });
+    });
+  });
 
   it('seeds the full eight-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([

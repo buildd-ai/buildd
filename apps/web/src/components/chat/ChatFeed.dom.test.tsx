@@ -63,12 +63,24 @@ const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
 
 describe('approval card', () => {
+  it('once filed, the row names it in words and nothing around it says it is unfiled', async () => {
+    await render(fixtures.chatFixture('confirmed').messages as Msgs);
+    const row = qa('[data-testid="tool-call-row"][data-tool="manage_missions"]').find(r => r.textContent?.includes('approved by Maya'))!;
+    expect(row).toBeDefined();
+    expect(row.textContent).toContain('New mission');
+    expect(row.textContent).not.toContain('manage_missions');
+    expect(container.textContent).not.toContain('until you confirm');
+  });
+
   it('Confirm echoes the approval id back, once; the buttons then lock', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
     const card = q('[data-testid="approval-card"]');
     expect(card?.dataset.state).toBe('awaiting');
-    expect(card?.textContent).toContain('manage_missions · create');
-    expect(card?.textContent).toContain('not filed');
+    // What it is in words; the tool it runs through stays out of the card.
+    expect(card?.textContent).toContain('New mission');
+    expect(card?.textContent).not.toContain('manage_missions');
+    expect(card?.textContent).not.toContain('not filed');
+    expect(card?.textContent).not.toContain('files through');
     await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
     await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
     expect(calls).toEqual([['approval-1', true]]);
