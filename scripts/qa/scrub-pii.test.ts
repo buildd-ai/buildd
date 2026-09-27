@@ -122,6 +122,12 @@ const SAFE: Record<string, string[]> = {
   tier_pool_arms: ['model', 'stats'],
   tier_pool_changes: ['before', 'after', 'evidence', 'actor_system'],
   tenant_budgets: ['tenant_id'],
+  // Model plans and usage receipts for sibling apps hold no content by design
+  // (docs/design/shared-ai-kit.md §2): tiers, providers, model ids, a reason
+  // code, and `kind`, an attribution label the API pattern-checks to
+  // [A-Za-z0-9_.:-]{1,64} (lib/ai/plan.ts), so it cannot carry prose.
+  ai_plans: ['requested_tier', 'tier', 'kind', 'provider', 'model', 'reason'],
+  ai_usage: ['tier', 'surface', 'kind', 'provider', 'model', 'plan_source'],
   model_tier_registry: ['model'],
   change_intents: ['head_sha'],
   dark_check_alerts: ['check_name'],
