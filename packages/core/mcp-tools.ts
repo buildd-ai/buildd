@@ -47,6 +47,15 @@ import type {
  */
 const GET_PR_BODY_PREVIEW_CHARS = 2000;
 
+/**
+ * `hint` values from the worker completion route (apps/web/src/app/api/workers/[id]/route.ts)
+ * that name a real MCP action to call next, as opposed to a gate-identifying
+ * slug like `handoff_required` or `organizer_did_not_report` that has no
+ * corresponding tool. Only these get the "Please use `<hint>`" retry
+ * instruction in complete_task's 400 handling below.
+ */
+const RETRY_HINT_ACTIONS = new Set(['create_pr', 'create_artifact']);
+
 const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
 };
@@ -457,8 +466,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID) } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override — OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies, a future startAt, mission pacing/concurrency and the workspace cap still apply (force-start from the dashboard to override those). When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
-    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
+    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, monotonically merged server-side (a lower number than already recorded is ignored) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same monotonic merge as update_progress, the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
@@ -1686,6 +1695,7 @@ export async function handleBuilddAction(
         if (typeof params.kind === 'string') progressBody.kind = params.kind;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
         if (typeof params.outputTokens === 'number') progressBody.outputTokens = params.outputTokens;
+        if (typeof params.costUsd === 'number') progressBody.costUsd = params.costUsd;
         if (params.lastCommitSha) progressBody.lastCommitSha = params.lastCommitSha;
         if (typeof params.commitCount === 'number') progressBody.commitCount = params.commitCount;
         if (typeof params.filesChanged === 'number') progressBody.filesChanged = params.filesChanged;
@@ -1779,6 +1789,13 @@ export async function handleBuilddAction(
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
             ...(params.discardEdits ? { discardEdits: params.discardEdits } : {}),
+            // Self-reported usage: the only way an interactive MCP session (no
+            // runner watching the process to measure tokens/cost) can attribute
+            // its own consumption. Same fields update_progress accepts, applied
+            // through the same monotonic raise() on the server.
+            ...(typeof params.inputTokens === 'number' ? { inputTokens: params.inputTokens } : {}),
+            ...(typeof params.outputTokens === 'number' ? { outputTokens: params.outputTokens } : {}),
+            ...(typeof params.costUsd === 'number' ? { costUsd: params.costUsd } : {}),
           }),
         });
       } catch (err: unknown) {
@@ -1793,7 +1810,17 @@ export async function handleBuilddAction(
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
               if (parsed.hint) {
-                return errorResult(`**Cannot complete task:** ${parsed.error}\n\nPlease use \`${parsed.hint}\` before calling complete_task again.`);
+                // `hint` is a gate slug, not always a callable action — only
+                // some values (create_pr, create_artifact) name a real tool to
+                // retry with. For the rest, `parsed.error` already spells out
+                // the actual fix (e.g. the structuredOutput field to set), so
+                // don't invent a "use `<hint>`" instruction pointing at a tool
+                // that doesn't exist.
+                const hintNames = String(parsed.hint).split(' or ').map(h => h.trim());
+                const retryLine = hintNames.every(h => RETRY_HINT_ACTIONS.has(h))
+                  ? `Please use \`${parsed.hint}\` before calling complete_task again.`
+                  : 'Address this, then call complete_task again.';
+                return errorResult(`**Cannot complete task:** ${parsed.error}\n\n${retryLine}`);
               }
             }
           } catch { /* fall through to generic error */ }
