@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
 import ModelTiersClient from './ModelTiersClient';
+import ChatTierPolicySection from './ChatTierPolicySection';
 import LegacyAnchorRedirect from '../_components/LegacyAnchorRedirect';
 
 export const dynamic = 'force-dynamic';
@@ -32,7 +33,10 @@ export default async function ModelTiersPage() {
         {/* #provider-keys moved to Settings → Model providers. */}
         <LegacyAnchorRedirect />
         {teamId ? (
-          <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
+          <>
+            <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
+            <ChatTierPolicySection teamId={teamId} isAdmin={isAdmin} />
+          </>
         ) : (
           <p className="text-sm text-text-secondary">Join or create a team to set up model tiers.</p>
         )}

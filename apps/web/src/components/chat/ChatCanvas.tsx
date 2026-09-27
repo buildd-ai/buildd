@@ -13,6 +13,7 @@
  * one is in the chat list).
  */
 import { usePathname, useRouter } from 'next/navigation';
+import type { ChatTierName } from '@buildd/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ChatConversation from './ChatConversation';
 import type { ChatAgent } from './ChatFeed';
@@ -53,6 +54,8 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const scopeRef = useRef<CanvasScope>(scope);
   const [session, setSession] = useState(0);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // What the new conversation was created with: its pin and workspace once it has an id.
+  const [created, setCreated] = useState<{ tier: ChatTierName | null; workspaceId: string | null } | null>(null);
   const [shell, setShell] = useState<Shell | null>(null);
   const [shellError, setShellError] = useState(false);
   const [presentation, setPresentation] = useState<'peek' | 'takeover'>('peek');
@@ -63,6 +66,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     const next: CanvasScope = over ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null } : canvasScopeFromPath(pathname);
     if (scopeKey(scopeRef.current) !== scopeKey(next)) {
       setConversationId(null);
+      setCreated(null);
       setSession(n => n + 1);
     }
     scopeRef.current = next;
@@ -72,6 +76,10 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     setOpen(true);
   }, [enabled, pathname]);
   const close = useCallback(() => setOpen(false), []);
+  const onConversationCreated = useCallback((id: string, c: { tier: ChatTierName | null; workspaceId: string | null }) => {
+    setCreated(c);
+    setConversationId(id);
+  }, []);
 
   // The agent's name and colour, once, on first open.
   useEffect(() => {
@@ -182,14 +190,15 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
                 title={null}
                 titleSource="auto"
                 tier={null}
+                pinnedTier={created?.tier ?? null}
                 agent={shell.agent}
                 workspaces={workspaces}
-                workspaceId={scope.workspaceId}
+                workspaceId={created ? created.workspaceId : scope.workspaceId}
                 viewerName={viewerName}
                 canManageTeamKeys={shell.canManageTeamKeys}
                 focusRef={scope.about ? aboutRef(scope.about) : null}
                 entry={entry}
-                onConversationCreated={setConversationId}
+                onConversationCreated={onConversationCreated}
                 canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
               />
             ) : (

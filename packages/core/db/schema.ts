@@ -93,6 +93,13 @@ export const teams = pgTable('teams', {
   // follow-up release, after the build that stopped reading it is live
   // (schema-change skill).
   chatDisabled: boolean('chat_disabled').notNull().default(false),
+  // The chat tier a new conversation's composer caps at ('budget' | 'standard' |
+  // 'premium'). NULL = auto: no cap. Only read when chatCapNewSessionTier is on
+  // (apps/web/src/lib/chat/composer-prefs.ts resolveInitialTier).
+  chatDefaultTier: text('chat_default_tier'),
+  // Admin policy: a new conversation starts at min(person's last tier, the
+  // default tier above) — reset down to it, never up. Off = the person's last tier.
+  chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -108,6 +115,11 @@ export const teamMembers = pgTable('team_members', {
   // for THIS person only, and only when nothing a tool read is in the model's
   // context (apps/web/src/lib/chat/permissions.ts). Empty = ask for every write.
   chatAllowedToolGroups: text('chat_allowed_tool_groups').array().notNull().default(sql`'{}'::text[]`),
+  // The composer choices this person last made in this team (Home card,
+  // /app/chat, the canvas): { workspaceId?, tier? }. A present key with a null
+  // value is a choice (all workspaces / auto); an absent key was never chosen.
+  // Seeds every new conversation (apps/web/src/lib/chat/composer-prefs.ts).
+  chatComposerPrefs: jsonb('chat_composer_prefs').$type<{ workspaceId?: string | null; tier?: string | null }>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),

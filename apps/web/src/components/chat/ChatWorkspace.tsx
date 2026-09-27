@@ -53,6 +53,9 @@ export interface ChatWorkspaceProps {
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
   onWorkspaceChange(id: string | null): void;
+  /** The composer's draft, when the caller holds it (a new chat's shared composer). Else kept here. */
+  draft?: string;
+  onDraftChange?(value: string): void;
   viewerName: string | null;
   /** Shown beside the chat when no object is docked (member / operator context). */
   aside?: ReactNode;
@@ -112,7 +115,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     overlay ? { ...s, closed: true } : focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
-  const [draft, setDraft] = useState('');
+  const [ownDraft, setOwnDraft] = useState('');
+  const draft = props.draft ?? ownDraft;
+  const setDraft = props.onDraftChange ?? setOwnDraft;
   const composer = useRef<ChatComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
