@@ -23,7 +23,7 @@ mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: 'test-',
 }));
 
-const { default: MissionSettings, quickAddTaskBody } = await import('./MissionSettings');
+const { default: MissionSettings, quickAddTaskBody, quickAddRoleOptions } = await import('./MissionSettings');
 
 function render(overrides: Partial<Parameters<typeof MissionSettings>[0]> = {}) {
   return renderToStaticMarkup(
@@ -135,12 +135,18 @@ describe('quick-add role picker', () => {
     { slug: 'writer', name: 'Writer', color: '#111' },
   ];
 
-  it('offers the workspace roles with "Any role" as the selected default', () => {
+  it('renders the picker showing "Any role" by default', () => {
     const html = render({ displayState: 'active', roles: ROLES });
-    const select = html.match(/<select\b[^>]*data-testid="quick-task-role"[^>]*>[\s\S]*?<\/select>/)![0];
-    expect(select).toMatch(/<option value="" selected="">Any role<\/option>/);
-    expect(select).toContain('<option value="builder">Builder</option>');
-    expect(select).toContain('<option value="writer">Writer</option>');
+    const trigger = html.match(/<button\b[^>]*data-testid="quick-task-role"[^>]*>[\s\S]*?<\/button>/)![0];
+    expect(trigger).toContain('Any role');
+  });
+
+  it('offers "Any role" first, then each workspace role', () => {
+    expect(quickAddRoleOptions(ROLES)).toEqual([
+      { value: '', label: 'Any role' },
+      { value: 'builder', label: 'Builder' },
+      { value: 'writer', label: 'Writer' },
+    ]);
   });
 
   it('renders no picker when the workspace has no roles', () => {

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Spinner from '@/components/Spinner';
+import { Select } from '@/components/ui/Select';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -35,6 +36,11 @@ export function quickAddTaskBody(input: {
 }): { title: string; workspaceId: string; missionId: string; roleSlug?: string } {
   const { title, workspaceId, missionId, roleSlug } = input;
   return roleSlug ? { title, workspaceId, missionId, roleSlug } : { title, workspaceId, missionId };
+}
+
+/** The quick-add picker's options: "Any role" first, then the workspace's roles. */
+export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
+  return [{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))];
 }
 
 interface MissionSettingsProps {
@@ -568,18 +574,14 @@ export default function MissionSettings({
                 className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
               {roles.length > 0 && (
-                <select
+                <Select
                   aria-label="Role"
-                  data-testid="quick-task-role"
+                  testId="quick-task-role"
                   value={taskRoleSlug}
-                  onChange={(e) => setTaskRoleSlug(e.target.value)}
-                  className="px-2 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary focus:outline-none focus:border-accent/40 transition-colors"
-                >
-                  <option value="">Any role</option>
-                  {roles.map(r => (
-                    <option key={r.slug} value={r.slug}>{r.name}</option>
-                  ))}
-                </select>
+                  onChange={setTaskRoleSlug}
+                  options={quickAddRoleOptions(roles)}
+                  className="w-36 shrink-0"
+                />
               )}
               <button
                 type="submit"
