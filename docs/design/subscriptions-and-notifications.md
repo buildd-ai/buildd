@@ -1,6 +1,6 @@
 # Subscriptions and notifications
 
-**Status:** Proposed
+**Status:** Accepted
 **Related:** `apps/web/src/lib/notify.ts`, `apps/web/src/lib/notify-rules.ts`, `apps/web/src/lib/pushover.ts`, `apps/web/src/lib/mission-notifications.ts`, `apps/web/src/lib/task-callback.ts`, `apps/web/src/lib/pr-review-request.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/pusher.ts`, `apps/web/src/lib/redis.ts`, `apps/web/src/lib/chat/registry.ts`, `apps/web/src/lib/chat/tools.ts`, `apps/web/src/lib/chat/mission-events.ts`, `apps/web/src/lib/chat/store.ts`, `apps/web/src/app/api/mcp/route.ts`, `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/webhooks/ingest/route.ts`, `apps/web/src/app/api/teams/[id]/notifications/route.ts`, `apps/web/src/app/app/(protected)/settings/NotificationsSection.tsx`, `packages/core/db/schema.ts` (`secrets`, `notificationPreferences`, `watchedProjects`, `watcherEvents`, `conversations`, `conversationMessages`), `packages/core/decision-client.ts`, `packages/shared/src/chat.ts`, `docs/credentials-architecture.md`, `docs/design/agent-chat.md`, `docs/design/decision-calls.md`, `docs/design/connectors-and-orgs.md`
 
 ---
@@ -244,11 +244,17 @@ Defaults are no-ops: no subscription rows means `publishEvent` matches nothing a
 - Slack or Discord as a chat front end (`chat-integrations.md`, `agent-chat.md` P3).
 - Letting an agent watch on a person's behalf without that person's card.
 
+## Decisions
+
+Status: accepted. These were the six open questions; the owner accepted each recommendation as written in review of this PR.
+
+1. **Personal channel secrets.** `secrets.userId` extends beyond `inference_key` to `pushover` and `notify_webhook`. A person's own key is where their away-alerts go. A person subscription never falls back to the team key, because a team key usually pages a group.
+2. **Presence store.** Redis with a short TTL (75s, refreshed every 30s by a visible tab). A missing key, or no Redis, reads as away. Postgres would pay a Neon wake for a 75s fact (`docs/design/cron-wake-windows.md`).
+3. **Approval for watches.** A one-shot watch skips the card when the person's "Allow" covers it: it notifies only the caller and ends by itself. Standing watches and any webhook target always ask (`alwaysAsk`).
+4. **Workers reaching a person.** A worker may notify only its task's own human, at normal urgency, at most 3 times per task. Urgent needs the role flag `canNotifyUrgent`.
+5. **Jev's scope.** Jev gates only standing watches and agent pings (`agent.notify`), never one-shot watches. Shadow first; the gated apply is a separate PR after the offline benchmark.
+6. **Email sender.** A platform-owned sender in P4, digest-style, with no per-team secret.
+
 ## Open questions
 
-1. **Personal channel secrets.** Extend `secrets.userId` beyond `inference_key` to `pushover` / `notify_webhook`, or keep channels team-only? Lean: extend. The personal-row rules already exist and are tested; a team key paging a group for "tell me" is the wrong default.
-2. **Presence store.** Redis TTL key vs a Postgres row. Lean: Redis. It is a 75s fact, written every 30s per open tab; Postgres would pay a Neon wake for it (`docs/design/cron-wake-windows.md`). Missing Redis reads as away.
-3. **Does "Allow" skip the card for a one-shot watch?** Lean: yes. It notifies only the caller and ends by itself, which is closer to a reversible write than to unattended work. Standing watches and any webhook target always ask.
-4. **Can a worker reach a phone at all?** Lean: yes, but only the task's own human, normal urgency, 3 per task, with urgent gated by a role flag. Otherwise `task.needs_input` already covers the urgent case.
-5. **Jev's scope.** Gate only standing watches and `agent.notify`, or also one-shot watches? Lean: never one-shot. The person stated the intent precisely; Jev's value is in broad watches where most events are noise.
-6. **Email sender.** Platform-owned sender vs team-provided SMTP. Lean: platform-owned in P4, digest-style, no per-team secret. Team SMTP is a support burden with little gain over webhook out.
+None open. All six were decided above.
