@@ -69,7 +69,7 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
       limit: 4,
     }).catch(() => []),
     db
-      .select({ workerId: workers.id, taskId: tasks.id, title: tasks.title, missionTitle: missions.title })
+      .select({ workerId: workers.id, taskId: tasks.id, title: tasks.title, label: tasks.label, waitingFor: workers.waitingFor, missionTitle: missions.title })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .leftJoin(missions, eq(missions.id, tasks.missionId))
@@ -88,6 +88,8 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
     needsYou: waiting.map(w => ({
       id: w.workerId,
       title: w.title,
+      label: w.label ?? null,
+      waitingType: w.waitingFor?.type ?? null,
       href: `/app/tasks/${w.taskId}/respond`,
       meta: w.missionTitle ?? null,
     })),

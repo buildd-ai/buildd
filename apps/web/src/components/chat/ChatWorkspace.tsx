@@ -347,8 +347,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // The needs-you hero already says what waits on the viewer: on a phone the
   // global banner above the page would repeat it in a third accent colour.
   useHideNeedsInputBannerOnPhone(!overlay && hero?.mood === 'needs');
+  // The plain new chat on a phone: hero at the top, PICKED FOR YOU anchored
+  // just above the composer. Scoped chats and the history view keep flowing.
+  const anchored = !!hero && plainCanvas && !overlay && !historyOpen;
   const emptyCanvas = hero && (
-    <div data-testid="canvas-empty" data-mood={hero.mood ?? undefined} className={`mb-8 mt-2 md:mt-10 ${historyOpen ? 'max-md:hidden' : ''}`}>
+    <div
+      data-testid="canvas-empty"
+      data-mood={hero.mood ?? undefined}
+      data-layout={anchored ? 'anchored' : undefined}
+      className={`mb-8 mt-2 md:mt-10 ${anchored ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+    >
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
         {hero.overline}
@@ -359,8 +367,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       {hero.sub && (
         <p suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)]">{hero.sub}</p>
       )}
+      {/* Phone: open sea between the hero and the picked rows, which sit
+          right above the composer (the v3 frames). */}
+      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className="max-md:min-h-7 max-md:flex-1" />}
       {suggestions.length > 0 && (
-        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className="mt-7 border border-[var(--chat-rule)] bg-[var(--chat-panel)]">
+        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? 'md:mt-7' : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
           <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
             <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
             {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
@@ -405,7 +416,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       {strip}
       {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
+        <div ref={content} className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
           {missionEmpty && missionSheet ? (
             <div data-testid="mission-sheet-empty" className="mb-6">
               <MissionContextCard objRef={missionSheet} />

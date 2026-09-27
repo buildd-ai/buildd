@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { canvasGreeting, canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, pulseNeedsYou, type CanvasPulse } from './canvas-empty';
+import { canvasGreeting, canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, needsYouAction, pickedStatus, pulseNeedsYou, type CanvasPulse } from './canvas-empty';
 
 const CALM: CanvasPulse = { needsYou: [], live: 0 };
 const CALM_BUSY: CanvasPulse = { needsYou: [], live: 3 };
@@ -102,7 +102,7 @@ describe('canvasSuggestions: a plain new chat (PICKED FOR YOU)', () => {
   it('needs you: row 1 is the thing waiting, copper, and sends in one tap', () => {
     const [first, second] = canvasSuggestions(PLAIN, ONE);
     expect(first).toEqual({
-      label: 'What does “Round per line, or only the total?” need from me?',
+      label: 'Answer the round line question',
       text: 'What does "Round per line, or only the total?" need from me?',
       send: true,
       tone: 'needs',
@@ -176,10 +176,10 @@ describe('pulseNeedsYou', () => {
       { title: 'feat(checkout): add retries to the shipping label webhook' },
       { title: '[builder · after CI #1] fix(billing): round currency per line' },
       { title: 'Round per line, or only the total?' },
-    ])).toEqual([
-      { title: 'Add retries to the shipping label webhook' },
-      { title: 'Round currency per line' },
-      { title: 'Round per line, or only the total?' },
+    ]).map(n => n.title)).toEqual([
+      'Add retries to the shipping label webhook',
+      'Round currency per line',
+      'Round per line, or only the total?',
     ]);
   });
 
@@ -189,5 +189,44 @@ describe('pulseNeedsYou', () => {
     expect(hero.sub).not.toMatch(/feat\(|\):/);
     expect(hero.sub).toContain('Add retries to the shipping label webhook');
     expect(canvasSuggestions({ intent: null, about: null }, pulse)[0].label).not.toMatch(/feat\(|\):/);
+  });
+});
+
+describe('needsYouAction: row 1 as a short action', () => {
+  it('a pending question: answer it, named by the short task label', () => {
+    expect(needsYouAction({ title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe currency', waitingType: 'question' }))
+      .toBe('Answer the Stripe currency question');
+  });
+
+  it('failed tests: fix the failing change', () => {
+    expect(needsYouAction({ title: 'fix(labels): label retries', label: 'label', state: 'tests_failed' })).toBe('Fix the failing label change');
+  });
+
+  it('a permission or a confirmation asks for a go-ahead', () => {
+    expect(needsYouAction({ title: 'chore: drop old table', label: 'old table', waitingType: 'permission' })).toBe('Approve the old table step');
+    expect(needsYouAction({ title: 'chore: drop old table', label: 'old table', waitingType: 'confirmation' })).toBe('Confirm the old table change');
+  });
+
+  it('anything else waiting reads as a question', () => {
+    expect(needsYouAction({ title: 'Pick a currency' })).toBe('Answer the pick currency question');
+  });
+
+  it('caps the length by dropping whole words: never an ellipsis, never a cut word', () => {
+    const a = needsYouAction({ title: 'x', label: 'shipping label webhook retries on busy evening days', waitingType: 'question' });
+    expect(a.length).toBeLessThanOrEqual(36);
+    expect(a).not.toContain('…');
+    expect(a).toMatch(/^Answer the (\w+ )+question$/);
+    expect('shipping label webhook retries on busy evening days').toContain(a.replace(/^Answer the | question$/g, ''));
+  });
+
+  it('pulseNeedsYou carries the action, from the loader state', () => {
+    const [n] = pulseNeedsYou([{ title: 'feat(checkout): pay in currency', label: 'currency', waitingType: 'question' }]);
+    expect(n).toEqual({ title: 'Pay in currency', action: 'Answer the currency question' });
+  });
+
+  it('the sub line keeps the full task name', () => {
+    const pulse = { needsYou: pulseNeedsYou([{ title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe currency', waitingType: 'question' }]), live: 0 };
+    expect(canvasHero({ pulse, name: null, now: NOW, timeZone: 'UTC' }).sub).toContain('Pay in the presentment currency via Stripe');
+    expect(canvasSuggestions(PLAIN, pulse)[0].label).toBe('Answer the Stripe currency question');
   });
 });
