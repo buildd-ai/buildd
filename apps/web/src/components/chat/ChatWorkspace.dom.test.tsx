@@ -80,18 +80,46 @@ describe('scan line', () => {
 });
 
 describe('empty canvas', () => {
-  it('greets by name and sends a suggested question in one tap', async () => {
+  const labels = () => qa('[data-testid="canvas-suggestion-label"]').map(c => c.textContent);
+  const placeholder = () => (q('#chat-composer-input') as HTMLTextAreaElement).placeholder;
+
+  it('without a pulse: greets by name, claims no mood, and offers no needs-you prompt', async () => {
     await render();
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Hi Maya, what are we working on?');
-    const chips = qa('[data-testid="canvas-suggestion"]');
-    expect(chips.map(c => c.textContent)).toContain('What needs me?');
-    await act(async () => { chips[0].click(); });
-    expect(sent).toEqual(['What needs me right now?']);
+    expect(q('[data-testid="canvas-mood-dot"]')).toBeNull();
+    expect(labels()).toEqual(["What's running right now?", 'Start something new']);
+    await act(async () => { qa('[data-testid="canvas-suggestion"]')[0].click(); });
+    expect(sent).toEqual(["What's running right now?"]);
+  });
+
+  it('calm: all quiet, exactly two picked rows, nothing copper, the top row is the placeholder', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('calm');
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('All quiet.');
+    expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('nothing blocked');
+    expect(qa('[data-testid="canvas-suggestion"]')).toHaveLength(2);
+    expect(qa('[data-testid="canvas-suggestion"][data-tone="needs"]')).toHaveLength(0);
+    expect(placeholder()).toBe('Start something new…');
+    expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('calm');
+  });
+
+  it('needs you: names it, row 1 is copper, the composer rule turns copper', async () => {
+    await render({ pulse: { needsYou: [{ title: 'Pick a currency' }], live: 1 } });
+    expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
+    expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
+    const rows = qa('[data-testid="canvas-suggestion"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].dataset.tone).toBe('needs');
+    expect(placeholder()).toBe('What does “Pick a currency” need from me?');
+    expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('needs');
+    await act(async () => { rows[0].click(); });
+    expect(sent).toEqual(['What does "Pick a currency" need from me?']);
   });
 
   it('a starter fills the box instead of sending', async () => {
-    await render();
-    const starter = qa('[data-testid="canvas-suggestion"]').find(c => c.textContent === 'Start something new')!;
+    await render({ pulse: { needsYou: [], live: 0 } });
+    const starter = qa('[data-testid="canvas-suggestion"]').find(c => c.textContent?.includes('Start something new'))!;
     await act(async () => { starter.click(); });
     expect(sent).toEqual([]);
     expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe('I want to build ');

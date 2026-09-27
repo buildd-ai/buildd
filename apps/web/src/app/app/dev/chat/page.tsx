@@ -3,6 +3,7 @@
 /**
  * Agent chat states in isolation, from fictional fixtures — no database, no
  * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty`
+ * (`&mood=calm|needs` for the empty canvas's mood)
  * and `&aside=member|operator`, `&setup=no_key&admin=1`,
  * `&hints=1` (keyboard hints on), `&pane=closed`, `&about=mission` (opened from
  * "Ask about this mission": the mission pinned in the canvas).
@@ -10,6 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ChatWorkspace from '@/components/chat/ChatWorkspace';
+import type { CanvasPulse } from '@/components/chat/canvas-empty';
 import ChatContextPanel from '@/components/chat/ChatContextPanel';
 import ChatSetupCard, { type ChatSetupReason } from '@/components/chat/ChatSetupCard';
 import { ObjectStoreProvider } from '@/components/chat/objects/ObjectStoreProvider';
@@ -48,6 +50,11 @@ export default function DevChatPage() {
   const aside = params?.get('aside');
   const setup = params?.get('setup') as ChatSetupReason | null;
   const admin = params?.get('admin') === '1';
+  // The empty canvas's mood: `?mood=calm|needs` (none = the summoned canvas, no pulse).
+  const moodParam = params?.get('mood');
+  const pulse: CanvasPulse | null = moodParam === 'needs'
+    ? { needsYou: [{ title: 'Round per line, or only the total?' }], live: 2 }
+    : moodParam === 'calm' ? { needsYou: [], live: 0 } : null;
 
   const fixture = useMemo(() => chatFixture(state), [state]);
   const [messages, setMessages] = useState<ChatMessage[]>(fixture.messages);
@@ -118,6 +125,7 @@ export default function DevChatPage() {
           focusRef={state === 'question' ? questionRef : params.get('about') === 'mission' ? missionRef : null}
           focusOpensSheet={params.get('about') !== 'mission'}
           initialPaneClosed={params.get('pane') === 'closed'}
+          pulse={pulse}
         />
       </ObjectStoreProvider>
     </div>

@@ -68,8 +68,8 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
         <>
           {/* Same label everywhere — phone and desktop both read "Auto · Standard". */}
           <span className="whitespace-nowrap">{tierChipLabel({ pinned, last })}</span>
-          {spent && <span data-testid="composer-tier-cost" className="text-text-muted">{spent}</span>}
-          <span aria-hidden="true" className="text-text-muted">▾</span>
+          {spent && <span data-testid="composer-tier-cost" className="hidden text-[var(--chat-dim)] md:inline">{spent}</span>}
+          <span aria-hidden="true" className="text-[var(--chat-dim)]">▾</span>
         </>
       )}
     >

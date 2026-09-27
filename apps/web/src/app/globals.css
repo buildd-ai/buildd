@@ -639,6 +639,80 @@ textarea[data-bare-input] {
     animation: canvas-scan 1.8s cubic-bezier(.6, 0, .4, 1) infinite alternate;
   }
 }
+/* ── Chat v3 foreground (docs/design/chat-canvas.md, "Mobile canvas"). The
+ * foreground is square: no radius, 1px rules, offset shadows. Colour carries
+ * meaning only: calm (teal), needs you (copper), thinking (blue/violet),
+ * landed (green). Components read these roles, never the hex. */
+:root, [data-theme="dark"] {
+  --chat-ground: #141312;
+  --chat-bar: #171513;
+  --chat-surface: #1f1c19;
+  --chat-raised: #2a2622;
+  --chat-rule: #37322c;
+  --chat-rule-strong: #8a8378;
+  --chat-text: #efe8dc;
+  --chat-muted: #a89f92;
+  --chat-dim: #8b8276;
+  --chat-panel: rgba(20, 19, 18, 0.78);
+  --mood-calm: #8fb9b3;
+  --mood-needs: #e0955a;
+  --mood-needs-fill: #c9783b;
+  --on-mood-needs: #171513;
+  --mood-thinking: #7ea6ff;
+  --mood-thinking-alt: #b49cff;
+  --mood-landed: #86c9a1;
+  --sea-calm-1: rgba(70, 122, 124, 0.55);
+  --sea-calm-2: rgba(44, 78, 100, 0.6);
+  --sea-calm-3: rgba(98, 130, 114, 0.35);
+  --sea-calm-4: rgba(28, 46, 60, 0.7);
+  --sea-needs: rgba(224, 149, 90, 0.38);
+  --sea-thinking-1: rgba(126, 166, 255, 0.45);
+  --sea-thinking-2: rgba(180, 156, 255, 0.4);
+  --sea-thinking-3: rgba(64, 112, 114, 0.4);
+  --sea-thinking-4: rgba(30, 40, 82, 0.7);
+}
+/* Day: the same roles on linen, each dark enough for AA on --chat-ground. */
+[data-theme="light"] {
+  --chat-ground: #f4efe8;
+  --chat-bar: #efe9e1;
+  --chat-surface: #fbf8f3;
+  --chat-raised: #e9e2d8;
+  --chat-rule: #d3cabe;
+  --chat-rule-strong: #5f574e;
+  --chat-text: #1f1b17;
+  --chat-muted: #514a42;
+  --chat-dim: #625a51;
+  --chat-panel: rgba(251, 248, 243, 0.86);
+  --mood-calm: #2f6f68;
+  --mood-needs: #9c4f14;
+  --mood-needs-fill: #c9783b;
+  --on-mood-needs: #171513;
+  --mood-thinking: #3a5fc4;
+  --mood-thinking-alt: #6a4fc0;
+  --mood-landed: #2f7d52;
+  --sea-calm-1: rgba(70, 122, 124, 0.22);
+  --sea-calm-2: rgba(44, 78, 100, 0.18);
+  --sea-calm-3: rgba(98, 130, 114, 0.18);
+  --sea-calm-4: rgba(28, 46, 60, 0.12);
+  --sea-needs: rgba(224, 149, 90, 0.24);
+  --sea-thinking-1: rgba(126, 166, 255, 0.24);
+  --sea-thinking-2: rgba(180, 156, 255, 0.22);
+  --sea-thinking-3: rgba(64, 112, 114, 0.18);
+  --sea-thinking-4: rgba(30, 40, 82, 0.12);
+}
+@layer components {
+  /* Anything said by Buildd or the person: hero, rows, placeholders. */
+  .font-voice { font-family: var(--font-newsreader), ui-serif, Georgia, serif; }
+  /* The 8px mood square: breathes in opacity, never glows. */
+  .mood-dot { animation: mood-dot 2.4s ease-in-out infinite; }
+}
+@keyframes mood-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mood-dot { animation: none; }
+}
 @keyframes canvas-rise {
   from { transform: translateY(14px); opacity: 0; }
   to { transform: none; opacity: 1; }
