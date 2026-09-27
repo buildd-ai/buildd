@@ -889,6 +889,16 @@ export const missions = pgTable('missions', {
   //
   // Default false: nothing about any existing mission changes until this is true.
   integrationBranchEnabled: boolean('integration_branch_enabled').default(false).notNull(),
+  // ATTEMPT clock for sweepMissionIntegrationPrs (lib/pr-reconcile.ts), mirroring
+  // workers.prLastCheckedAt. Advanced on every candidate this sweep looks at,
+  // regardless of outcome — including a failed open attempt. The sweep's
+  // candidate query gates on THIS column, not `updatedAt`: `updatedAt` is bumped
+  // by any unrelated write (e.g. a task completing, via maybeRetriggerMission's
+  // debounce), so a mission that keeps genuinely failing to open its PR never
+  // ages out of the window as long as something else keeps touching it — and,
+  // symmetrically, a mission nothing else ever touches again ages out forever
+  // with no re-entry. Null = never attempted.
+  prSweepLastCheckedAt: timestamp('pr_sweep_last_checked_at', { withTimezone: true }),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.

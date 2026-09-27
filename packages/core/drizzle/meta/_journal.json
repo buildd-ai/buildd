@@ -1380,6 +1380,13 @@
       "when": 1790536395876,
       "tag": "0199_awesome_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1790546355585,
+      "tag": "0200_conscious_hex",
+      "breakpoints": true
     }
   ]
 }
