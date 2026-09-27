@@ -90,15 +90,33 @@ describe('TierPoolsSection', () => {
     rows[2] = saved;
   });
 
-  it('adds a model from the picker on the agent route', async () => {
+  it('adds models from the shared picker on the agent route, in the order picked', async () => {
     await mount();
-    await click(host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-toggle"]'));
-    // The base model is already in the tier, so it is not offered.
-    expect(host.querySelector('[data-testid="pool-add"]')!.textContent).not.toContain('claude-haiku-4-5');
-    const add = [...host.querySelectorAll('[data-testid="pool-add"] button')].find(b => b.textContent === 'Add');
-    await click(add);
+    const toggle = host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-toggle"]');
+    expect(toggle!.getAttribute('role')).toBe('combobox');
+    await click(toggle);
+    const panel = document.querySelector('[data-testid="model-picker-panel"]')!;
+    // Agent pools are served by runner credentials only.
+    const groups = [...panel.querySelectorAll('[role="listbox"] > [role="group"]')].map(g => g.getAttribute('data-route'));
+    expect(groups).toEqual(['runner:claude', 'runner:codex']);
+    // The base model is already in the pool: checked and locked, not offered again.
+    const base = panel.querySelector('[data-key="runner:claude::claude-haiku-4-5"]')!;
+    expect(base.getAttribute('aria-selected')).toBe('true');
+    expect(base.getAttribute('aria-disabled')).toBe('true');
+    await click(document.querySelector('[data-testid="model-picker-band-all"]'));
+    await click(panel.querySelector('[data-key="runner:claude::claude-opus-5"]'));
+    await click(document.querySelector('[data-testid="model-picker-confirm"]'));
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
     const post = requests.find(r => r.method === 'POST')!;
     expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5' });
+  });
+
+  it('chat pools pick from API-key routes', async () => {
+    await mount();
+    await click(host.querySelector('[data-testid="pool-row-chat-standard"] [data-testid="pool-add-toggle"]'));
+    const groups = [...document.querySelectorAll('[data-testid="model-picker-panel"] [role="listbox"] > [role="group"]')].map(g => g.getAttribute('data-route'));
+    expect(groups).toEqual(['anthropic', 'openai', 'openrouter']);
+    expect(document.querySelector('select, datalist')).toBeNull();
   });
 
   it('applies typed shares as a split with the version it loaded', async () => {

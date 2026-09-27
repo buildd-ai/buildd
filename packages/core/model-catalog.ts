@@ -40,6 +40,13 @@ export interface CatalogEntry extends TokenPrice {
   contextLength: number;
   /** Release time, unix seconds. The only ordering signal we trust. */
   created: number;
+  /**
+   * OpenRouter's vendor prefix (`google`, `qwen`, `meta-llama`). Optional
+   * because persisted catalog rows predate it; read it through `vendorOf`.
+   */
+  vendor?: string;
+  /** OpenRouter's `expiration_date`, unix seconds, when the model is scheduled to go away. */
+  expiresAt?: number | null;
 }
 
 /**
@@ -104,6 +111,7 @@ interface RawModel {
   architecture?: { output_modalities?: unknown };
   pricing?: Record<string, unknown>;
   supported_parameters?: unknown;
+  expiration_date?: unknown;
 }
 
 /** OpenRouter quotes USD per token as a string; we work in USD per 1M tokens. */
@@ -175,6 +183,8 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
       displayName: typeof item.name === 'string' ? item.name : id,
       contextLength,
       created,
+      vendor: orId.slice(0, orId.indexOf('/')),
+      expiresAt: parseExpiry(item.expiration_date),
       input,
       output,
       // Cache rates are optional in the feed. The vendor ratios (~0.1x read,
@@ -186,6 +196,85 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
   }
 
   return out;
+}
+
+function parseExpiry(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw > 1e12 ? Math.floor(raw / 1000) : raw;
+  if (typeof raw !== 'string' || !raw) return null;
+  const ms = Date.parse(raw.length === 10 ? `${raw}T00:00:00Z` : raw);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+// ── Picker metadata ─────────────────────────────────────────────────────────
+//
+// Pure helpers the model picker uses to group, badge and hide catalog rows.
+// None of them feed tier resolution: `pickTierModel` above stays the policy.
+
+/**
+ * The vendor behind a model id: OpenRouter's prefix when there is one,
+ * otherwise inferred from a bare native id. `other` when we cannot tell.
+ */
+export function vendorOf(id: string): string {
+  const slash = id.indexOf('/');
+  if (slash > 0) return id.slice(0, slash).toLowerCase();
+  const bare = id.toLowerCase();
+  if (bare.startsWith('claude')) return 'anthropic';
+  if (/^(gpt|o\d|chatgpt|codex)/.test(bare)) return 'openai';
+  if (bare.startsWith('gemini') || bare.startsWith('gemma')) return 'google';
+  if (bare.startsWith('deepseek')) return 'deepseek';
+  if (bare.startsWith('qwen')) return 'qwen';
+  if (bare.startsWith('grok')) return 'x-ai';
+  if (bare.startsWith('llama')) return 'meta-llama';
+  if (/^(mistral|ministral|devstral|codestral|magistral)/.test(bare)) return 'mistralai';
+  return 'other';
+}
+
+/** A date suffix: `-20251001`, `-2024-08-06`, `-08-2024`, or a 4-digit `-0528` / `-2512`. */
+const DATE_SUFFIX = /-(\d{8}|\d{4}-\d{2}-\d{2}|\d{2}-\d{4}|\d{4})$/;
+const PREVIEW_TOKEN = /(^|[-_.:/])(preview|exp|experimental|beta|alpha)([-_.:]|$)/i;
+const DROP_TOKEN = /^(preview|exp|experimental|beta|alpha|latest)$/;
+
+/** Strip one dated snapshot suffix: `claude-haiku-4-5-20251001` -> `claude-haiku-4-5`. */
+export function snapshotBase(id: string): string {
+  return id.replace(DATE_SUFFIX, '');
+}
+
+export interface ModelVariantFlags {
+  /** `-preview`, `-exp`, `-beta`, `-alpha`, or an OpenRouter meta-router. */
+  preview: boolean;
+  /** Ends in a release date. Usually a pinned copy of an undated id. */
+  snapshot: boolean;
+  /** Scheduled for removal (OpenRouter `expiration_date`). */
+  deprecated: boolean;
+}
+
+export function modelVariantFlags(
+  id: string,
+  opts: { expiresAt?: number | null; now?: number } = {},
+): ModelVariantFlags {
+  const lower = id.toLowerCase();
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  return {
+    preview: PREVIEW_TOKEN.test(lower) || lower.startsWith('openrouter/'),
+    snapshot: DATE_SUFFIX.test(lower),
+    deprecated: typeof opts.expiresAt === 'number' && opts.expiresAt > 0 && opts.expiresAt - now < 120 * 86_400,
+  };
+}
+
+/**
+ * A model's family, `vendor:name-without-versions`: `claude-sonnet-4-5` and
+ * `claude-sonnet-5` are both `anthropic:claude-sonnet`, so the picker can say
+ * which one is newest. Size tokens (`70b`) and variant words (`mini`, `pro`)
+ * stay, since they name a different product.
+ */
+export function modelFamily(id: string): string {
+  const vendor = vendorOf(id);
+  const slug = id.slice(id.indexOf('/') + 1).toLowerCase().replace(DATE_SUFFIX, '');
+  const tokens = slug
+    .split('-')
+    .filter((t) => t && !/^\d+(\.\d+)*$/.test(t) && !DROP_TOKEN.test(t))
+    .map((t) => t.replace(/^([a-z]+)\d[\d.]*$/, '$1'));
+  return `${vendor}:${tokens.join('-')}`;
 }
 
 /** Strip a dated snapshot suffix: `claude-sonnet-5-20260630` -> `claude-sonnet-5`. */

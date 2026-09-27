@@ -9,9 +9,10 @@
  * state, so there are no explanatory paragraphs.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { TIER_PRICE_BANDS } from '@buildd/core/model-catalog';
 import { MAX_POOL_ARMS, routesFor, type ArmRoute, type ArmStats, type PoolSurface } from '@buildd/core/tier-pool';
 import type { CatalogModel } from '@/lib/tier-mapping';
+import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
+import { ARM_ROUTE_SPECS, withKeyStatus, type PickerValue } from '@/lib/model-picker';
 import {
   ROUTE_LABEL,
   costLabel,
@@ -27,6 +28,8 @@ interface Props {
   teamId: string;
   isAdmin: boolean;
   models: readonly CatalogModel[];
+  /** Which API keys the team (or caller) has, for the picker's route headings. */
+  keys?: Partial<Record<'anthropic' | 'openai' | 'openrouter', boolean>> | null;
   /** Bumped by the base-model editor so the base arm re-reads the registry. */
   refreshKey?: number;
 }
@@ -38,7 +41,7 @@ async function send(url: string, init: RequestInit): Promise<{ ok: boolean; erro
   return res.ok ? { ok: true, body } : { ok: false, error: body?.error ?? `HTTP ${res.status}` };
 }
 
-export default function TierPoolsSection({ teamId, isAdmin, models, refreshKey = 0 }: Props) {
+export default function TierPoolsSection({ teamId, isAdmin, models, keys = null, refreshKey = 0 }: Props) {
   const [rows, setRows] = useState<TierPoolRowView[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -56,17 +59,19 @@ export default function TierPoolsSection({ teamId, isAdmin, models, refreshKey =
   return (
     <div className="space-y-8" data-testid="tier-pools">
       {err && <div className="notice notice-err">{err}</div>}
-      <PoolTable title="Agent runs" note="runner credentials" unit="runs" surface="agent" rows={rows} teamId={teamId} isAdmin={isAdmin} models={models} onChanged={load} />
-      <PoolTable title="Chat and quick calls" note="API keys" unit="turns" surface="chat" rows={rows} teamId={teamId} isAdmin={isAdmin} models={models} onChanged={load} />
+      <PoolTable title="Agent runs" note="runner credentials" unit="runs" surface="agent" rows={rows} teamId={teamId} isAdmin={isAdmin} models={models} keys={keys} onChanged={load} />
+      <PoolTable title="Chat and quick calls" note="API keys" unit="turns" surface="chat" rows={rows} teamId={teamId} isAdmin={isAdmin} models={models} keys={keys} onChanged={load} />
       <Legend />
     </div>
   );
 }
 
-function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, onChanged }: {
+type Keys = Props['keys'];
+
+function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, keys, onChanged }: {
   title: string; note: string; unit: string; surface: PoolSurface;
   rows: TierPoolRowView[] | null; teamId: string; isAdmin: boolean; models: readonly CatalogModel[];
-  onChanged: () => Promise<void>;
+  keys: Keys; onChanged: () => Promise<void>;
 }) {
   const mine = rows?.filter(r => r.surface === surface) ?? [];
   return (
@@ -80,7 +85,7 @@ function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, 
         </div>
         {!rows && <div className="px-3 py-4 text-xs text-text-muted">Loading…</div>}
         {mine.map(r => (
-          <PoolRow key={`${r.surface}:${r.tier}`} row={r} teamId={teamId} isAdmin={isAdmin} models={models} onChanged={onChanged} />
+          <PoolRow key={`${r.surface}:${r.tier}`} row={r} teamId={teamId} isAdmin={isAdmin} models={models} keys={keys} onChanged={onChanged} />
         ))}
       </div>
     </section>
@@ -158,10 +163,26 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
   );
 }
 
-function PoolRow({ row, teamId, isAdmin, models, onChanged }: {
-  row: TierPoolRowView; teamId: string; isAdmin: boolean; models: readonly CatalogModel[]; onChanged: () => Promise<void>;
+function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
+  row: TierPoolRowView; teamId: string; isAdmin: boolean; models: readonly CatalogModel[]; keys: Keys; onChanged: () => Promise<void>;
 }) {
-  const [panel, setPanel] = useState<'add' | 'details' | null>(null);
+  const [panel, setPanel] = useState<'details' | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState<string | null>(null);
+  const routes = useMemo(() => withKeyStatus(routesFor(row.surface).map((r) => ARM_ROUTE_SPECS[r]), keys ?? null), [row.surface, keys]);
+  const locked = useMemo<PickerValue[]>(() => row.arms.map((a) => ({ route: a.route, model: a.model })), [row.arms]);
+
+  // Each new arm is its own audited change, added in the order the admin ranked them.
+  async function addArms(picked: PickerValue[]) {
+    setAdding(true); setAddErr(null);
+    for (const p of picked) {
+      const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route: p.route, model: p.model }) });
+      if (!r.ok) { setAddErr(`${p.model}: ${r.error ?? 'Could not add'}`); break; }
+    }
+    setAdding(false);
+    setPanel('details');
+    await onChanged();
+  }
   const canAdd = isAdmin && !row.locked && row.arms.length < MAX_POOL_ARMS;
   return (
     <div className="border-b border-border-default last:border-b-0 px-3 py-3" data-testid={`pool-row-${row.surface}-${row.tier}`} data-mode={row.mode}>
@@ -176,9 +197,22 @@ function PoolRow({ row, teamId, isAdmin, models, onChanged }: {
         </div>
         <div className="flex md:flex-col items-end gap-2 font-mono text-[12.5px]">
           {canAdd && (
-            <button type="button" className="font-semibold text-accent-text hover:underline" onClick={() => setPanel(p => (p === 'add' ? null : 'add'))} data-testid="pool-add-toggle">
-              + Add model
-            </button>
+            <CatalogModelPicker
+              mode="multi"
+              aria-label={`Add models to ${row.tier}, ${row.surface === 'agent' ? 'agent runs' : 'chat'}`}
+              tier={row.tier}
+              routes={routes}
+              models={models}
+              locked={locked}
+              value={[]}
+              max={MAX_POOL_ARMS}
+              currentLabel="in pool"
+              onChange={addArms}
+              disabled={adding}
+              testId="pool-add-toggle"
+              triggerClassName="font-mono font-semibold text-accent-text hover:underline disabled:opacity-60"
+              triggerLabel={adding ? 'Adding…' : '+ Add model'}
+            />
           )}
           {row.poolId && (
             <button type="button" className="text-text-primary hover:underline" onClick={() => setPanel(p => (p === 'details' ? null : 'details'))} data-testid="pool-details-toggle">
@@ -187,84 +221,8 @@ function PoolRow({ row, teamId, isAdmin, models, onChanged }: {
           )}
         </div>
       </div>
-      {panel === 'add' && <AddModel row={row} teamId={teamId} models={models} onDone={async () => { setPanel('details'); await onChanged(); }} />}
+      {addErr && <p role="alert" className="mt-2 text-xs text-status-error">{addErr}</p>}
       {panel === 'details' && row.poolId && <Details row={row} teamId={teamId} isAdmin={isAdmin} onChanged={onChanged} />}
-    </div>
-  );
-}
-
-// ── Add model ───────────────────────────────────────────────────────────────
-
-interface PickRow { value: string; price?: string; band: 'in band' | 'above band' | 'below band' | null }
-
-function pickRows(route: ArmRoute, row: TierPoolRowView, models: readonly CatalogModel[], q: string): PickRow[] {
-  const band = TIER_PRICE_BANDS[row.tier];
-  const out: PickRow[] = [];
-  // Models already in the tier on this route are not offered again.
-  const seen = new Set<string>(row.arms.filter(a => a.route === route).map(a => a.model));
-  const needle = q.trim().toLowerCase();
-  for (const m of models) {
-    const value = route === 'openrouter' ? m.openRouterId
-      : (route === 'anthropic' || route === 'runner:claude') ? (m.provider === 'anthropic' ? m.id : undefined)
-      : (m.provider === 'openai' ? m.id : undefined);
-    if (!value || seen.has(value)) continue;
-    if (needle && !value.toLowerCase().includes(needle)) continue;
-    seen.add(value);
-    const inp = m.inputPrice;
-    out.push({
-      value,
-      price: inp !== undefined && m.outputPrice !== undefined ? `$${inp.toFixed(2)} / $${m.outputPrice.toFixed(2)}` : undefined,
-      band: inp === undefined ? null : inp < band.minInput ? 'below band' : inp > band.maxInput ? 'above band' : 'in band',
-    });
-  }
-  // In-band first; the band is a default, not a wall.
-  return out.sort((a, b) => (a.band === 'in band' ? 0 : 1) - (b.band === 'in band' ? 0 : 1)).slice(0, 40);
-}
-
-function AddModel({ row, teamId, models, onDone }: { row: TierPoolRowView; teamId: string; models: readonly CatalogModel[]; onDone: () => Promise<void> }) {
-  const routes = routesFor(row.surface);
-  const [route, setRoute] = useState<ArmRoute>(routes[0]);
-  const [q, setQ] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const list = useMemo(() => pickRows(route, row, models, q), [route, row, models, q]);
-
-  async function add(model: string) {
-    setBusy(true); setErr(null);
-    const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route, model }) });
-    setBusy(false);
-    if (!r.ok) { setErr(r.error ?? 'Could not add'); return; }
-    await onDone();
-  }
-
-  return (
-    <div className="mt-3 border-2 border-border-strong bg-surface-1 p-3" data-testid="pool-add">
-      <div className="flex flex-wrap items-center gap-2">
-        {routes.map(r => (
-          <button key={r} type="button" onClick={() => setRoute(r)} aria-pressed={route === r}
-            className={`border px-2 py-1 font-mono text-[11px] uppercase tracking-[1px] ${route === r ? 'border-border-strong bg-surface-3 text-text-primary' : 'border-border-default text-text-muted'}`}>
-            {ROUTE_LABEL[r]}
-          </button>
-        ))}
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder={route === 'openrouter' ? 'vendor/model' : 'Search or type a model id'}
-          aria-label="Search models" spellCheck={false}
-          className="h-8 min-w-0 flex-1 border border-border-default bg-surface-1 px-2 font-mono text-xs outline-none focus:border-primary" />
-        {q.trim() && !list.some(l => l.value === q.trim()) && (
-          <button type="button" className="btn btn-primary h-8" disabled={busy} onClick={() => add(q.trim())}>Add “{q.trim()}”</button>
-        )}
-      </div>
-      <ul className="mt-2 max-h-56 overflow-y-auto divide-y divide-border-default">
-        {list.map(l => (
-          <li key={l.value} className="flex items-center gap-3 py-1.5 font-mono text-[12px]">
-            <span className="min-w-0 flex-1 truncate text-text-primary">{l.value}</span>
-            {l.price && <span className="text-text-muted tabular-nums">{l.price}</span>}
-            {l.band && <span className={`text-[11px] md:text-[10.5px] uppercase tracking-[1px] ${l.band === 'in band' ? 'text-status-success' : 'text-text-muted'}`}>{l.band}</span>}
-            <button type="button" className="font-semibold text-accent-text hover:underline disabled:opacity-60" disabled={busy} onClick={() => add(l.value)}>Add</button>
-          </li>
-        ))}
-        {list.length === 0 && <li className="py-2 font-mono text-[12px] text-text-muted">No catalog match. Type the full id and add it.</li>}
-      </ul>
-      {err && <p role="alert" className="mt-2 text-xs text-status-error">{err}</p>}
     </div>
   );
 }

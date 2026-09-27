@@ -27,7 +27,7 @@ import { resolveActiveTeamId } from '@/lib/team-access';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
 import { resolveAllTiers, TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-registry';
 import { auditTierModels } from '@buildd/core/model-tier-liveness';
-import { fetchOpenRouterCatalog, type CatalogEntry } from '@buildd/core/model-catalog';
+import { fetchOpenRouterCatalog, vendorOf, type CatalogEntry } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 
 interface AnthropicModel {
@@ -50,6 +50,11 @@ export interface ModelEntry {
   /** USD per 1M tokens, from the public catalog. */
   inputPrice?: number;
   outputPrice?: number;
+  /** Picker metadata, from the public catalog: vendor prefix, context window, release and expiry (unix s). */
+  vendor?: string;
+  contextLength?: number;
+  created?: number;
+  expiresAt?: number | null;
 }
 
 interface CachedCatalog {
@@ -204,6 +209,10 @@ export async function GET(req: NextRequest) {
     openRouterId: e.openRouterId,
     inputPrice: e.input,
     outputPrice: e.output,
+    vendor: e.vendor ?? vendorOf(e.openRouterId),
+    contextLength: e.contextLength || undefined,
+    created: e.created || undefined,
+    expiresAt: e.expiresAt ?? null,
   }));
 
   // Tier entries first — they are the models this team actually uses, and one of
@@ -226,6 +235,10 @@ export async function GET(req: NextRequest) {
       existing.openRouterId ??= m.openRouterId;
       existing.inputPrice ??= m.inputPrice;
       existing.outputPrice ??= m.outputPrice;
+      existing.vendor ??= m.vendor;
+      existing.contextLength ??= m.contextLength;
+      existing.created ??= m.created;
+      existing.expiresAt ??= m.expiresAt;
       continue;
     }
     const copy = { ...m };
