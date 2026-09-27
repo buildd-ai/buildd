@@ -179,3 +179,42 @@ describe('PATCH /api/teams/[id] — key policy and chat switch', () => {
     expect(capturedUpdates).toHaveLength(0);
   });
 });
+
+describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
+  it('stores overrides, dropping unknown features and "default"', async () => {
+    const res = await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner', visual_qa: 'default', chat: 'runner' } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ inferenceFeatureModes: { criteria_grading: 'runner' } });
+  });
+
+  it('clears every override with null or an all-default map', async () => {
+    await PATCH(patchReq({ inferenceFeatureModes: null }), ctx);
+    await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'default' } }), ctx);
+    expect(capturedUpdates.map((u) => u.inferenceFeatureModes)).toEqual([null, null]);
+  });
+
+  it('rejects a non-object', async () => {
+    const res = await PATCH(patchReq({ inferenceFeatureModes: ['runner'] }), ctx);
+    expect(res.status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('ignores the retired allowlist field instead of writing it', async () => {
+    const res = await PATCH(patchReq({ enabledInferenceCapabilities: ['chat'] }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).not.toHaveProperty('enabledInferenceCapabilities');
+  });
+
+  it('a member cannot change them', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    expect((await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner' } }), ctx)).status).toBe(403);
+  });
+
+  it('GET returns them', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true });
+    principal = null;
+  });
+});

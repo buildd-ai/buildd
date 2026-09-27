@@ -19,6 +19,7 @@
 
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import type { InferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { zonedIsoWithOffset } from './context-block';
 
 /** Turns per user per window. Approvals and resumes count too. */
@@ -45,6 +46,11 @@ export type LimitVerdict =
 export interface ChatBudgetSettings {
   dailyBudgetUsd: number | null;
   userDailyBudgetUsd: number | null;
+  /**
+   * Whose key pays. Under `own` each person pays with their own key, so there
+   * is no team cap and no default per-person cap; an admin may still set one.
+   */
+  keyPolicy?: InferenceKeyPolicy | null;
 }
 
 export interface ChatBudgets {
@@ -57,6 +63,13 @@ export interface ChatBudgets {
 const validUsd = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 
 export function resolveChatBudgets(s: ChatBudgetSettings): ChatBudgets {
+  if (s.keyPolicy === 'own') {
+    return {
+      teamUsd: Number.POSITIVE_INFINITY,
+      userUsd: validUsd(s.userDailyBudgetUsd) ? s.userDailyBudgetUsd : Number.POSITIVE_INFINITY,
+      teamIsDefault: false,
+    };
+  }
   const teamIsDefault = !validUsd(s.dailyBudgetUsd);
   const teamUsd = teamIsDefault ? DEFAULT_CHAT_DAILY_BUDGET_USD : s.dailyBudgetUsd!;
   const userUsd = validUsd(s.userDailyBudgetUsd)
@@ -107,7 +120,7 @@ export function evaluateBudget(input: {
       message: `You've used your daily chat limit of ${usd(b.userUsd)} (the team budget is ${usd(b.teamUsd)}). ${resets} A team owner or admin can raise the per-person limit. The mission form still works.`,
     };
   }
-  const warn = (spent: number, cap: number) => cap > 0 && spent >= cap * BUDGET_WARN_FRACTION;
+  const warn = (spent: number, cap: number) => cap > 0 && Number.isFinite(cap) && spent >= cap * BUDGET_WARN_FRACTION;
   return { ok: true, budgetWarning: warn(input.teamSpentUsd, b.teamUsd) || warn(input.userSpentUsd, b.userUsd) };
 }
 

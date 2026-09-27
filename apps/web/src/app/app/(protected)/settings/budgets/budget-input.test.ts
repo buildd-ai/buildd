@@ -14,6 +14,12 @@ describe('parseBudgetInput', () => {
     expect(parseBudgetInput('0')).toEqual({ ok: true, value: 0 });
   });
 
+  it('accepts the placeholder form, $20/day', () => {
+    expect(parseBudgetInput('$20/day')).toEqual({ ok: true, value: 20 });
+    expect(parseBudgetInput('15 / day')).toEqual({ ok: true, value: 15 });
+    expect(parseBudgetInput('/day').ok).toBe(false);
+  });
+
   it('rejects negatives, words and values over the API ceiling', () => {
     expect(parseBudgetInput('-1').ok).toBe(false);
     expect(parseBudgetInput('lots').ok).toBe(false);

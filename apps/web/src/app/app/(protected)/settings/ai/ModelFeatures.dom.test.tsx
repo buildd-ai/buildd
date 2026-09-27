@@ -1,9 +1,11 @@
 /**
- * ModelFeatures (Settings → AI), mounted in happy-dom with a stubbed fetch.
+ * ModelFeatures (Settings → AI features), mounted in happy-dom with a stubbed
+ * fetch. Fixtures are illustrative.
  *
- * Regression: the result message read the pre-toggle closure state, so turning
- * a capability ON reported "back on the agent path" and turning it OFF reported
- * "now uses an inference call". Fixtures are illustrative.
+ * - Interactive has one control: the admin's kill switch (no "enable" step).
+ * - Built-in decision calls are not listed.
+ * - Server-side features show where they run, defaulted by the billing model;
+ *   overrides sit behind "Advanced".
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/settings/ai', width: 1280, height: 800 });
@@ -22,20 +24,20 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelFeatures } = await import('./ModelFeatures');
 
-let enabled: string[] = [];
-const patches: unknown[] = [];
+let team: Record<string, unknown> = {};
+const patches: Record<string, unknown>[] = [];
 
 beforeEach(() => {
-  enabled = [];
+  team = { chatDisabled: false, inferenceFeatureModes: null };
   patches.length = 0;
   globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'PATCH') {
       const body = JSON.parse(String(init.body));
       patches.push(body);
-      enabled = body.enabledInferenceCapabilities;
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      team = { ...team, ...body };
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
-    return new Response(JSON.stringify({ team: { enabledInferenceCapabilities: enabled } }), { status: 200 });
+    return new Response(JSON.stringify({ team }), { status: 200 });
   }) as unknown as typeof fetch;
 });
 
@@ -47,50 +49,66 @@ afterEach(() => {
   host.remove();
 });
 
-async function mount() {
+async function mount(props: { canManage?: boolean; hasTeamKey?: boolean } = {}) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelFeatures teamId="team-demo" canManage />); });
+  await act(async () => {
+    root.render(<ModelFeatures teamId="team-demo" canManage={props.canManage ?? true} hasTeamKey={props.hasTeamKey ?? true} />);
+  });
 }
 
-function rowButton(id: string): HTMLButtonElement {
-  return host.querySelector(`[data-testid="capability-${id}"] button`) as HTMLButtonElement;
-}
+const q = (sel: string) => host.querySelector(sel) as HTMLElement | null;
 
 describe('ModelFeatures', () => {
-  it('says the feature is on after turning it ON', async () => {
+  it('shows interactive on, with a kill switch and no enable step', async () => {
     await mount();
-    await act(async () => { rowButton('criteria_grading').click(); });
-
-    expect(patches).toEqual([{ enabledInferenceCapabilities: ['criteria_grading'] }]);
-    expect(host.textContent).toContain('Goal criteria grading is on.');
-    expect(rowButton('criteria_grading').textContent).toBe('Grade with an agent run');
+    const sw = q('[data-testid="interactive-switch"] [role="switch"]')!;
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    expect(host.textContent).not.toMatch(/turn (on|off) chat|enable/i);
+    await act(async () => { sw.click(); });
+    expect(patches).toEqual([{ chatDisabled: true }]);
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    expect(q('[data-testid="interactive-switch"]')!.textContent).toContain('Off for the team');
   });
 
-  it('says an agent run takes over after turning it OFF', async () => {
-    enabled = ['criteria_grading'];
+  it('does not list the built-in decision calls, or features with no call site', async () => {
     await mount();
-    await act(async () => { rowButton('criteria_grading').click(); });
-
-    expect(patches).toEqual([{ enabledInferenceCapabilities: [] }]);
-    expect(host.textContent).toContain('An agent run does it instead');
-    expect(host.textContent).not.toContain('Goal criteria grading is on.');
+    expect(q('[data-testid="feature-task_classification"]')).toBeNull();
+    expect(q('[data-testid="feature-task_category_shadow"]')).toBeNull();
+    expect(q('[data-testid="feature-visual_qa"]')).toBeNull();
+    expect(q('[data-testid="feature-mission_summary"]')).toBeNull();
+    expect(q('[data-testid="feature-criteria_grading"]')).not.toBeNull();
   });
 
-  it('states the tradeoff once, not on every row', async () => {
-    await mount();
-    const text = host.textContent ?? '';
-    expect(text.match(/only run when on/g)?.length).toBe(1);
-    expect(text).not.toContain('No agent fallback');
+  it('defaults goal grading to server-side with a team key, and to the runner without one', async () => {
+    await mount({ hasTeamKey: true });
+    expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Server-side');
+    expect(host.textContent).toContain('Default: server-side (team key)');
+    act(() => root.unmount());
+    host.remove();
+    await mount({ hasTeamKey: false });
+    expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Runner');
   });
 
-  it('shows members the state without buttons', async () => {
-    host = document.createElement('div');
-    document.body.append(host);
-    root = createRoot(host);
-    await act(async () => { root.render(<ModelFeatures teamId="team-demo" canManage={false} />); });
-    expect(host.querySelectorAll('[data-testid^="capability-"] button').length).toBe(0);
+  it('keeps overrides behind Advanced and saves one', async () => {
+    await mount();
+    const details = q('[data-testid="feature-advanced"]') as HTMLDetailsElement;
+    expect(details.tagName).toBe('DETAILS');
+    expect(details.open).toBe(false);
+    const runner = q('[data-testid="override-criteria_grading"] [role="radio"][data-value="runner"]')!;
+    await act(async () => { runner.click(); });
+    expect(patches).toEqual([{ inferenceFeatureModes: { criteria_grading: 'runner' } }]);
+    expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Runner · override');
+    const def = q('[data-testid="override-criteria_grading"] [role="radio"][data-value="default"]')!;
+    await act(async () => { def.click(); });
+    expect(patches[1]).toEqual({ inferenceFeatureModes: null });
+  });
+
+  it('shows members the state without controls', async () => {
+    await mount({ canManage: false });
+    expect(host.querySelectorAll('[role="switch"]:not([disabled])').length).toBe(0);
+    expect(q('[data-testid="feature-advanced"]')).toBeNull();
     expect(host.textContent).toContain('Only a team owner or admin');
   });
 });

@@ -56,6 +56,7 @@ const {
   maskKeyLast4,
   verifyProviderKey,
   envKeysAllowed,
+  hasTeamInferenceKey,
 } = await import('../inference-keys');
 
 function row(over: Record<string, unknown> = {}) {
@@ -233,9 +234,18 @@ describe('team key policy', () => {
     expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1', keyPolicy: 'own' })).toBe('mine');
   });
 
-  it("the policy only binds a person's call: team work with no user still uses the team key", async () => {
+  it("'own' binds team work too: with no person there is no own key, so the call takes its runner path", async () => {
     secretRows = [TEAM()];
-    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', keyPolicy: 'own' })).toBe('team');
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', keyPolicy: 'own' })).toBeNull();
+    teamRow = { inferenceKeyPolicy: 'own' };
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1' })).toBeNull();
+  });
+
+  it("'team' and 'team_or_own' leave team work on the team key", async () => {
+    secretRows = [TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', keyPolicy: 'team' })).toBe('team');
+    teamRow = { inferenceKeyPolicy: 'team_or_own' };
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1' })).toBe('team');
   });
 
   it('reads the policy from the team when the caller does not pass one', async () => {
@@ -245,6 +255,28 @@ describe('team key policy', () => {
     teamRow = { inferenceKeyPolicy: 'team' };
     secretRows = [MINE(), TEAM()];
     expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBe('team');
+  });
+});
+
+describe('hasTeamInferenceKey (the billing model)', () => {
+  it('is true when team work resolves a key for any provider', async () => {
+    secretRows = [row({ label: 'anthropic' })];
+    expect(await hasTeamInferenceKey('t-1')).toBe(true);
+  });
+
+  it('ignores personal keys: a person\'s key never pays for team work', async () => {
+    secretRows = [row({ userId: 'u-1' })];
+    expect(await hasTeamInferenceKey('t-1')).toBe(false);
+  });
+
+  it("is false under 'own', even with a team key stored", async () => {
+    teamRow = { inferenceKeyPolicy: 'own' };
+    secretRows = [row()];
+    expect(await hasTeamInferenceKey('t-1')).toBe(false);
+  });
+
+  it('is false with no key (subscription only)', async () => {
+    expect(await hasTeamInferenceKey('t-1')).toBe(false);
   });
 });
 

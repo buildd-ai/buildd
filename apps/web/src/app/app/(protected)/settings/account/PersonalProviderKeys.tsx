@@ -9,7 +9,7 @@ import { chatKeyLine, ownKeyProviders } from './chat-key-line';
 import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButton';
 
 /**
- * Account → Chat. One row: what your chat runs on. Team setup lives in
+ * Account → Interactive AI. One row: what it runs on for you. Team setup lives in
  * Connections → Model providers; this only shows the outcome of the team's key
  * policy, plus your own key when the policy allows or requires one.
  */
@@ -23,7 +23,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
       setView(await listProviderKeys(teamId));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load your chat key');
+      setError(e instanceof Error ? e.message : 'Could not load your key');
     }
   }, [teamId]);
 
@@ -56,10 +56,10 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
 
   return (
     <section id="provider-keys" className="scroll-mt-20" aria-labelledby="chat-key-h">
-      <h2 id="chat-key-h" className="section-label mb-3">Chat</h2>
+      <h2 id="chat-key-h" className="section-label mb-3">Interactive AI</h2>
       {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
       <div className="card flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3 min-h-12" data-testid="chat-key-row">
-        <span className="text-xs text-text-muted">Chat uses</span>
+        <span className="text-xs text-text-muted">Uses</span>
         <span className="flex items-center gap-3 text-sm text-text-primary">
           <span data-testid="chat-key-line">{line?.text ?? 'Loading…'}</span>
           {line?.action && (
@@ -91,7 +91,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
             <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Use my own key instead
           </summary>
           {hasOwn && (
-            <p className="text-xs text-text-secondary mt-2">Your key pays for your chats only. Remove it to go back to the team key.</p>
+            <p className="text-xs text-text-secondary mt-2">Pays for your use only. Remove it to go back to the team key.</p>
           )}
           <div className="mt-2.5 space-y-2.5">{cards(offered)}</div>
         </details>

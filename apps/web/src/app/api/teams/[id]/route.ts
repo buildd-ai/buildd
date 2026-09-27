@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { normalizeInferenceCapabilities } from '@buildd/core/inference-policy';
+import { normalizeFeatureModes } from '@buildd/core/inference-policy';
 import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
@@ -70,7 +70,7 @@ export async function GET(
 
     // Explicit column list. This response shape is a contract with unknown
     // callers, so rather than trimming it to the two fields the dashboard reads
-    // (enabledBackends / enabledInferenceCapabilities) it enumerates every column
+    // (enabledBackends / inferenceFeatureModes) it enumerates every column
     // explicitly. That decouples the route from schema.ts, so dropping a column
     // cannot break it mid-deploy — db:migrate runs before next build, so the old
     // code serves against the new schema for the length of the build.
@@ -88,7 +88,7 @@ export async function GET(
         monthlyCostMonth: true,
         budgetAlertsSent: true,
         enabledBackends: true,
-        enabledInferenceCapabilities: true,
+        inferenceFeatureModes: true,
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
@@ -145,7 +145,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDisabled } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDisabled } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -168,19 +168,19 @@ export async function PATCH(
       }
       updates.enabledBackends = [...new Set(enabledBackends as string[])];
     }
-    if (enabledInferenceCapabilities !== undefined) {
-      // Which actions may spend a metered inference call. Unlike enabledBackends,
-      // the empty set is legal and meaningful: it is "hold the key but never use
-      // it", which is the whole point of separating the two decisions. Unknown
-      // names are dropped rather than rejected so a client from a newer deploy
-      // cannot enable spend on a capability this build does not implement.
-      if (enabledInferenceCapabilities !== null && !Array.isArray(enabledInferenceCapabilities)) {
+    if (inferenceFeatureModes !== undefined) {
+      // Per-feature overrides for server-side features ({ feature: 'server' |
+      // 'runner' }). An absent feature, or 'default', follows the billing model.
+      // Unknown features are dropped so a newer client cannot write a mode this
+      // build does not implement. The retired enabledInferenceCapabilities
+      // allowlist is ignored, not written.
+      if (inferenceFeatureModes !== null && (typeof inferenceFeatureModes !== 'object' || Array.isArray(inferenceFeatureModes))) {
         return NextResponse.json(
-          { error: 'enabledInferenceCapabilities must be an array of capability names, or null' },
+          { error: "inferenceFeatureModes must be an object of feature → 'server' | 'runner' | 'default', or null" },
           { status: 400 },
         );
       }
-      updates.enabledInferenceCapabilities = normalizeInferenceCapabilities(enabledInferenceCapabilities);
+      updates.inferenceFeatureModes = normalizeFeatureModes(inferenceFeatureModes);
     }
     if (timezone !== undefined) {
       // The team's canonical working zone — used wherever a shared artifact needs a

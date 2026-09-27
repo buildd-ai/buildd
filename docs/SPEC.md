@@ -270,7 +270,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 |---|---|---|
 | Runs | in the web app, seconds | on the team's runner, minutes to hours |
 | Shape | one call or a short streaming turn; no repo, no shell | Claude Code (Agent SDK) or Codex harness, worktree + tools |
-| Used for | chat (and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
+| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
 | Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | `oauth_token` / `claude_credential` (Claude subscription), `anthropic_api_key`, `codex_credential` (ChatGPT/Codex auth.json) or runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter` |
 | Billing | metered per token | seat/session window (virtual cost) or per token |
 | Code | `inference-client.ts` (`inferenceCall`), `decision-client.ts`, `apps/web/src/lib/chat/` | `apps/runner/src/backends/` |
@@ -280,22 +280,31 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   account row (no-account callers) → provider env var (only outside production, or
   `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` for self-hosting). OAuth rows are never read.
   Runners never use these keys.
-- **Key policy** — `teams.inferenceKeyPolicy` (default `team`) binds calls made for a
-  person (chat): `team` = team key for everyone, personal keys ignored; `team_or_own`
-  = a person's own key wins, team key covers the rest; `own` = own key only, no
-  fallback. Work with no person (grading, visual QA, cron) ignores it. Personal keys
-  are managed via `/api/inference-keys` (any member) and never served to anyone else.
-- **Spend is opt-in per capability** — `teams.enabledInferenceCapabilities`
-  (`packages/core/inference-policy.ts`): `criteria_grading` (fallback `agent`),
-  `visual_qa`, `task_classification`, `mission_summary`, `task_category_shadow`
-  (fallback `none` — off means the feature is off). Default empty: storing a key
-  spends nothing. Only `criteria_grading` and `task_category_shadow` have a caller
-  today; `visual_qa`, `task_classification` and `mission_summary` are declared
-  (and toggleable) with no call site. buildd's own CI visual QA judges on an OAuth
-  seat via `claude-code-action`, not through this capability. **Chat** is the exception: on whenever a key resolves, switched off
-  by `teams.chatDisabled`; capped by `teams.chatDailyBudgetUsd` (default $20/day,
-  never uncapped) and a per-person share (`chatUserDailyBudgetUsd`, default half).
-  Chat never falls back to a runner or seat; with no key the mission form stays.
+- **Key policy** — `teams.inferenceKeyPolicy` (default `team`; Settings → Model
+  providers → "Whose key": "Team key" / "Each person's own key") binds every
+  server-side call: `team` = team key for everyone, personal keys ignored;
+  `team_or_own` = a person's own key wins, team key covers the rest; `own` = own
+  key only, no fallback, so work with no person (grading, cron) finds no key and
+  takes its runner path. Personal keys are managed via `/api/inference-keys` (any
+  member) and never served to anyone else.
+- **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
+  - *Interactive* (chat and its per-turn routing): on whenever a key resolves;
+    the only control is the admin kill switch `teams.chatDisabled`. Never falls
+    back to a runner or seat; with no key the mission form stays.
+  - *Built-in* decision calls (`task_category_shadow`, `task_classification`):
+    no toggle; they run whenever a key resolves.
+  - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
+    declared with no call site and not shown in Settings): default by billing
+    model — a team key resolves → server-side, else the runner — with per-feature
+    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
+    CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.
+  - The old opt-in allowlist `teams.enabledInferenceCapabilities` is deprecated
+    (nothing reads it).
+- **Budgets** — interactive spend is capped by `teams.chatDailyBudgetUsd` (default
+  $20/day, never uncapped) and a per-person cap (`chatUserDailyBudgetUsd`, default
+  half); under `own` there is no team cap and the per-person cap defaults to none.
+  Settings → Budgets shows each person's spend split into Interactive and Agent runs
+  (agent runs attributed to the mission's creator), per person for admins.
 - **Providers per path** — chat: `anthropic | openai | openrouter`. `inferenceCall`:
   `anthropic | openrouter` (`openai` returns `unsupported_provider`). Decision calls:
   OpenRouter.

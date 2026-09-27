@@ -34,7 +34,7 @@ export default async function AccountSettingsPage() {
         </div>
       </section>
 
-      {/* What your chat runs on; your own key only when the team's policy allows it. */}
+      {/* What interactive AI runs on for you; your own key only when the team's policy allows it. */}
       <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />
 
       <section aria-labelledby="teams-h">

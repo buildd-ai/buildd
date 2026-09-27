@@ -43,6 +43,18 @@ describe('resolveChatBudgets', () => {
     expect(resolveChatBudgets({ dailyBudgetUsd: 40, userDailyBudgetUsd: 100 }).userUsd).toBe(40);
   });
 
+  it("under 'each person's own key' there is no team cap and no default per-person cap", () => {
+    // Each person pays with their own key, so the team has nothing to protect.
+    const b = resolveChatBudgets({ dailyBudgetUsd: 40, userDailyBudgetUsd: null, keyPolicy: 'own' });
+    expect(b.teamUsd).toBe(Number.POSITIVE_INFINITY);
+    expect(b.userUsd).toBe(Number.POSITIVE_INFINITY);
+    expect(resolveChatBudgets({ dailyBudgetUsd: null, userDailyBudgetUsd: 3, keyPolicy: 'own' }).userUsd).toBe(3);
+    const v = evaluateBudget({ now, timeZone: 'UTC', teamSpentUsd: 1e6, userSpentUsd: 2, budgets: resolveChatBudgets({ dailyBudgetUsd: null, userDailyBudgetUsd: null, keyPolicy: 'own' }) });
+    expect(v).toEqual({ ok: true, budgetWarning: false });
+    const capped = evaluateBudget({ now, timeZone: 'UTC', teamSpentUsd: 0, userSpentUsd: 3, budgets: resolveChatBudgets({ dailyBudgetUsd: null, userDailyBudgetUsd: 3, keyPolicy: 'own' }) });
+    expect(capped.ok).toBe(false);
+  });
+
   it('a raised team budget is honoured; an invalid one falls back to the default', () => {
     expect(resolveChatBudgets({ dailyBudgetUsd: 250, userDailyBudgetUsd: null })).toMatchObject({ teamUsd: 250, teamIsDefault: false });
     expect(resolveChatBudgets({ dailyBudgetUsd: -1, userDailyBudgetUsd: null }).teamUsd).toBe(DEFAULT_CHAT_DAILY_BUDGET_USD);

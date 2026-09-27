@@ -42,7 +42,7 @@ import { eq } from 'drizzle-orm';
 import { resolveInferenceKey, INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inference-keys';
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
-import { isInferenceEnabled, type InferenceCapability } from './inference-policy';
+import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -118,7 +118,7 @@ export function describeInferenceError(error: InferenceError): string {
 export { resolveInferenceKey } from './inference-keys';
 
 /**
- * Read the team's inference allowlist.
+ * Read the team's inference policy (`inference-policy.ts`).
  *
  * Fails closed: if the lookup errors we treat inference as disabled rather than
  * spending money on the strength of a failed query.
@@ -127,9 +127,9 @@ async function teamAllowsCapability(teamId: string, capability: InferenceCapabil
   try {
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { enabledInferenceCapabilities: true },
+      columns: { chatDisabled: true, inferenceFeatureModes: true },
     });
-    return isInferenceEnabled(capability, team?.enabledInferenceCapabilities ?? null);
+    return isInferenceAllowed(capability, team ? { chatDisabled: team.chatDisabled, featureModes: team.inferenceFeatureModes } : null);
   } catch (e) {
     console.warn(`[inference] capability lookup failed for team ${teamId}:`, e);
     return false;
@@ -315,7 +315,7 @@ function isRetryable(error: InferenceError): boolean {
 
 export interface InferenceCallParams<T> {
   /**
-   * Which call site this is. Checked against the team's allowlist before any
+   * Which call site this is. Checked against the team's inference policy before any
    * spend — the check lives here rather than at each call site so a new caller
    * cannot forget it.
    */

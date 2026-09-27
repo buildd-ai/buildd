@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 let tierEntry: any = { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' };
 let secretRows: any[] = [];
-let teamRow: any = { enabledInferenceCapabilities: ['criteria_grading'] };
+let teamRow: any = { chatDisabled: false, inferenceFeatureModes: null };
 
 const mockResolveTierEntry = mock(() => Promise.resolve(tierEntry));
 
@@ -27,7 +27,7 @@ mock.module('../db', () => ({
 }));
 
 mock.module('../db/schema', () => ({
-  teams: { id: 'id', enabledInferenceCapabilities: 'enabled_inference_capabilities' },
+  teams: { id: 'id', chatDisabled: 'chat_disabled', inferenceFeatureModes: 'inference_feature_modes' },
   secrets: {
     id: 'id', teamId: 'team_id', purpose: 'purpose', label: 'label',
     encryptedValue: 'encrypted_value', workspaceId: 'workspace_id',
@@ -117,7 +117,7 @@ function baseParams(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   tierEntry = { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' };
   secretRows = [secretRow()];
-  teamRow = { enabledInferenceCapabilities: ['criteria_grading'] };
+  teamRow = { chatDisabled: false, inferenceFeatureModes: null };
   mockResolveTierEntry.mockClear();
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
@@ -536,8 +536,8 @@ describe('inferenceCall — maxTokens', () => {
 // ── Capability policy ─────────────────────────────────────────────────────────
 
 describe('inferenceCall — capability policy', () => {
-  it('refuses before spending when the capability is not enabled', async () => {
-    teamRow = { enabledInferenceCapabilities: ['visual_qa'] };
+  it('refuses before spending when an admin sent the feature to the runner', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: { criteria_grading: 'runner' } };
     const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
 
     const res = await inferenceCall(baseParams({ fetcher }));
@@ -551,12 +551,11 @@ describe('inferenceCall — capability policy', () => {
     expect(mockResolveTierEntry).not.toHaveBeenCalled();
   });
 
-  it('refuses when the team has enabled nothing', async () => {
-    teamRow = { enabledInferenceCapabilities: null };
-    const res = await inferenceCall(baseParams({ fetcher: mock(() => Promise.resolve(anthropicReply('{}'))) as any }));
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.error.kind).toBe('capability_disabled');
+  it('runs server-side by default: a team that never touched a setting and holds a key spends it', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: null };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[3]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher }));
+    expect(res.ok).toBe(true);
   });
 
   it('refuses when the team row is missing', async () => {
@@ -567,8 +566,8 @@ describe('inferenceCall — capability policy', () => {
     expect(res.error.kind).toBe('capability_disabled');
   });
 
-  it('proceeds when the capability is enabled', async () => {
-    teamRow = { enabledInferenceCapabilities: ['criteria_grading', 'visual_qa'] };
+  it('an override for another feature leaves this one alone', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: { visual_qa: 'runner' } };
     const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[3]}'))) as any;
 
     const res = await inferenceCall(baseParams({ fetcher }));
@@ -578,16 +577,14 @@ describe('inferenceCall — capability policy', () => {
     expect(res.data).toEqual({ verdicts: [3] });
   });
 
-  it('checks the capability before the key, so a disabled call site never reports a missing key', async () => {
-    teamRow = { enabledInferenceCapabilities: [] };
+  it('checks the policy before the key, so a feature sent to the runner never reports a missing key', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: { criteria_grading: 'runner' } };
     secretRows = [];
 
     const res = await inferenceCall(baseParams({ fetcher: mock(() => Promise.resolve(anthropicReply('{}'))) as any }));
 
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    // 'add a key' would be the wrong instruction for a team that has switched
-    // this capability off on purpose.
     expect(res.error.kind).toBe('capability_disabled');
   });
 

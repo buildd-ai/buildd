@@ -33,7 +33,7 @@ interface ModelsResponse {
 /** What the code routes to a tier by default, as a short row tag. */
 const TIER_TAG: Partial<Record<Tier, string>> = {
   'premium-plus': 'opt-in',
-  standard: 'chat default',
+  standard: 'interactive default',
 };
 
 /**
@@ -80,7 +80,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
     <div>
       <h1 className="hidden md:block text-xl font-semibold text-text-primary mb-1.5">Model tiers</h1>
       <p className="text-sm text-text-secondary">
-        Agent runs and chat ask for a tier. Pick the model behind each one.{' '}
+        Agent runs and interactive AI ask for a tier. Pick the model behind each one.{' '}
         <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
       </p>
 

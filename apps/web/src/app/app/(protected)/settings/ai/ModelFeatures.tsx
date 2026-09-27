@@ -1,45 +1,47 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
 import {
   INFERENCE_CAPABILITIES,
-  ALL_INFERENCE_CAPABILITIES,
-  type InferenceCapability,
+  LIVE_SERVER_FEATURES,
+  normalizeFeatureModes,
+  resolveFeatureMode,
+  type FeatureModes,
+  type ServerFeature,
 } from '@buildd/core/inference-policy';
-import { capabilityToggleCopy, FEATURE_TRADEOFF } from './feature-copy';
+import Switch from '@/components/ui/Switch';
+import { defaultLine, featureState, interactiveState, OVERRIDE_OPTIONS, type OverrideValue } from './feature-copy';
 
 /**
- * Settings → AI: chat on or off, and which features call a model directly.
+ * Settings → AI features.
  *
- * Holding a provider key and spending it are separate decisions, so this is a
- * per-feature allowlist (`teams.enabledInferenceCapabilities`) that starts
- * empty. The tradeoff is the same for every row, so the page states it once.
+ * Interactive runs whenever a key resolves; its only control is the admin's
+ * kill switch (`teams.chatDisabled`). Built-in decision calls have no control
+ * and are not listed. Server-side features run where the billing model says
+ * (team key → server-side, else the runner); overrides sit behind Advanced.
  */
-export default function ModelFeatures({ teamId, canManage, keysHref = '/app/settings/providers' }: {
+export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
   teamId: string;
   canManage: boolean;
-  /** Where "add a key" goes. */
-  keysHref?: string;
+  /** A pay-per-token key the team's own work can spend (the billing model). */
+  hasTeamKey: boolean;
 }) {
-  const [enabled, setEnabled] = useState<InferenceCapability[]>([]);
+  const [modes, setModes] = useState<FeatureModes | null>(null);
   const [chatDisabled, setChatDisabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!teamId) return;
     try {
       const res = await fetch(`/api/teams/${teamId}`);
       if (res.ok) {
         const data = await res.json();
-        const list = data.team?.enabledInferenceCapabilities as string[] | null | undefined;
-        setEnabled(ALL_INFERENCE_CAPABILITIES.filter((c) => (list ?? []).includes(c)));
+        setModes(normalizeFeatureModes(data.team?.inferenceFeatureModes));
         setChatDisabled(data.team?.chatDisabled === true);
       }
     } catch {
-      /* non-fatal */
+      /* non-fatal: the page shows defaults */
     } finally {
       setLoaded(true);
     }
@@ -47,120 +49,119 @@ export default function ModelFeatures({ teamId, canManage, keysHref = '/app/sett
 
   useEffect(() => { void load(); }, [load]);
 
-  const isOn = (c: InferenceCapability) => enabled.includes(c);
-
-  async function toggle(c: InferenceCapability) {
-    const wasOn = isOn(c);
-    const next = wasOn ? enabled.filter((x) => x !== c) : [...enabled, c];
-    const ordered = ALL_INFERENCE_CAPABILITIES.filter((x) => next.includes(x));
-    const prev = enabled;
-    setEnabled(ordered); // optimistic
+  async function patch(body: Record<string, unknown>, rollback: () => void) {
     setBusy(true);
-    setMsg(null);
+    setErr(null);
     try {
       const res = await fetch(`/api/teams/${teamId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabledInferenceCapabilities: ordered }),
+        body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
-      // `wasOn` is the state BEFORE the click: true means it was just turned off.
-      const copy = capabilityToggleCopy(INFERENCE_CAPABILITIES[c], wasOn);
-      setMsg({ type: 'success', text: wasOn ? copy.turnedOff : copy.turnedOn });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Could not save');
     } catch (e) {
-      setEnabled(prev); // rollback
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
+      rollback();
+      setErr(e instanceof Error ? e.message : 'Could not save');
     } finally {
       setBusy(false);
     }
   }
 
-  // Chat is on whenever a key resolves; this is only the admin's off switch.
-  async function toggleChat() {
-    const next = !chatDisabled;
-    setChatDisabled(next);
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await fetch(`/api/teams/${teamId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatDisabled: next }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
-      setMsg({ type: 'success', text: next ? 'Chat is off for the team.' : 'Chat is on for everyone with a key.' });
-    } catch (e) {
-      setChatDisabled(!next);
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
-    } finally {
-      setBusy(false);
-    }
+  function setInteractive(on: boolean) {
+    const prev = chatDisabled;
+    setChatDisabled(!on);
+    void patch({ chatDisabled: !on }, () => setChatDisabled(prev));
   }
 
-  const features = ALL_INFERENCE_CAPABILITIES.filter((c) => c !== 'chat');
-
-  const row = (c: InferenceCapability) => {
-    const d = INFERENCE_CAPABILITIES[c];
-    const on = isOn(c);
-    const copy = capabilityToggleCopy(d, on);
-    return (
-      <div key={c} className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 px-4 py-3" data-testid={`capability-${c}`}>
-        <span className="flex flex-col gap-1 min-w-0">
-          <span className="flex flex-wrap items-center gap-2 text-sm text-text-primary">
-            <span aria-hidden className={`w-2 h-2 shrink-0 ${on ? 'bg-status-success' : 'bg-text-muted'}`} />
-            {d.label}
-            <span className="text-xs text-text-muted">{copy.meta}</span>
-          </span>
-          <span className="text-xs text-text-secondary">{d.description}</span>
-          {copy.needsKeyHint && (
-            <span className="text-xs text-text-secondary">
-              Chat needs a provider key. <Link href={keysHref} className="underline text-text-primary hover:text-accent-text">Add one</Link>
-            </span>
-          )}
-        </span>
-        {canManage && (
-          <button
-            onClick={() => toggle(c)}
-            disabled={busy || !loaded}
-            className={`btn shrink-0 self-start ${on ? '' : 'btn-accent'}`}
-          >
-            {copy.button}
-          </button>
-        )}
-      </div>
-    );
-  };
+  function setOverride(feature: ServerFeature, value: OverrideValue) {
+    const prev = modes;
+    const next = normalizeFeatureModes({ ...(modes ?? {}), [feature]: value });
+    setModes(next);
+    void patch({ inferenceFeatureModes: next }, () => setModes(prev));
+  }
 
   return (
     <div className="space-y-8">
-      <section aria-labelledby="ai-chat-h">
-        <h2 id="ai-chat-h" className="section-label mb-3">Chat</h2>
-        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3" data-testid="chat-switch">
-          <span className="flex items-center gap-2 text-sm text-text-primary">
+      <section aria-labelledby="ai-interactive-h">
+        <h2 id="ai-interactive-h" className="section-label mb-3">Interactive</h2>
+        <div className="card flex items-center justify-between gap-3 px-4 py-3 min-h-14" data-testid="interactive-switch">
+          <span className="flex items-center gap-2 text-sm text-text-primary min-w-0">
             <span aria-hidden className={`w-2 h-2 shrink-0 ${chatDisabled ? 'bg-text-muted' : 'bg-status-success'}`} />
-            {chatDisabled ? 'Off for the team' : 'On for everyone with a key'}
-            <Link href={keysHref} className="text-xs text-text-secondary underline hover:text-text-primary">Keys</Link>
+            <span id="ai-interactive-label">Interactive AI</span>
+            <span className="text-xs text-text-muted">{interactiveState(chatDisabled)}</span>
           </span>
           {canManage && (
-            <button onClick={toggleChat} disabled={busy || !loaded} className="btn btn-quiet self-start sm:self-auto">
-              {chatDisabled ? 'Turn chat on' : 'Turn chat off'}
-            </button>
+            <Switch labelledBy="ai-interactive-label" checked={!chatDisabled} onChange={setInteractive} disabled={busy || !loaded} />
           )}
         </div>
       </section>
 
-      <section aria-labelledby="ai-features-h" id="inference-spending" className="scroll-mt-20">
-        <h2 id="ai-features-h" className="section-label mb-3">Features that call a model</h2>
-        <p className="text-xs text-text-secondary mb-3 max-w-prose">{FEATURE_TRADEOFF}</p>
-        <div className="card divide-y divide-border-default">{features.map(row)}</div>
+      <section aria-labelledby="ai-server-h">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
+          <h2 id="ai-server-h" className="section-label">Server-side features</h2>
+          <span className="text-xs text-text-muted" data-testid="feature-default">{defaultLine(hasTeamKey)}</span>
+        </div>
+        <div className="card divide-y divide-border-default">
+          {LIVE_SERVER_FEATURES.map((f) => {
+            const d = INFERENCE_CAPABILITIES[f];
+            const r = resolveFeatureMode(f, modes, hasTeamKey);
+            return (
+              <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-3 px-4 py-3" data-testid={`feature-${f}`}>
+                <span className="min-w-0">
+                  <span className="block text-sm text-text-primary">{d.label}</span>
+                  <span className="block text-xs text-text-secondary">{d.description}</span>
+                </span>
+                <span className={`shrink-0 text-xs ${r.needsKey ? 'text-status-warning' : r.mode === 'server' ? 'text-text-primary' : 'text-text-secondary'}`}>
+                  {featureState(r)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {canManage && (
+          <details className="mt-3 group" data-testid="feature-advanced">
+            <summary className="cursor-pointer select-none list-none text-xs text-text-secondary hover:text-text-primary min-h-11 md:min-h-0 flex items-center gap-1">
+              <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span>
+              Advanced
+            </summary>
+            <div className="card divide-y divide-border-default mt-2">
+              {LIVE_SERVER_FEATURES.map((f) => {
+                const current: OverrideValue = modes?.[f] ?? 'default';
+                return (
+                  <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 px-4 py-3" data-testid={`override-${f}`}>
+                    <span id={`override-${f}-label`} className="text-sm text-text-primary">{INFERENCE_CAPABILITIES[f].label}</span>
+                    <div role="radiogroup" aria-labelledby={`override-${f}-label`} className="flex sm:inline-flex border border-border-default shrink-0">
+                      {OVERRIDE_OPTIONS.map((o, i) => {
+                        const on = current === o.value;
+                        return (
+                          <button
+                            key={o.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={on}
+                            data-value={o.value}
+                            disabled={busy || !loaded}
+                            onClick={() => { if (!on) setOverride(f, o.value); }}
+                            className={`flex-1 sm:flex-none h-11 md:h-8 px-3 text-xs transition-colors disabled:opacity-50 ${i > 0 ? 'border-l border-border-default' : ''} ${
+                              on ? 'bg-surface-3 text-text-primary font-medium' : 'bg-surface-1 text-text-secondary hover:text-text-primary'
+                            }`}
+                          >
+                            {o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
       </section>
 
-      {!canManage && (
-        <p className="text-xs text-text-muted">Only a team owner or admin can change these.</p>
-      )}
-      {msg && (
-        <p role="status" className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</p>
-      )}
+      {!canManage && <p className="text-xs text-text-muted">Only a team owner or admin can change these.</p>}
+      {err && <p role="alert" className="text-sm text-status-error">{err}</p>}
     </div>
   );
 }

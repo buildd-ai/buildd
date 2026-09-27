@@ -5,7 +5,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamsWithDetails, type UserTeam } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 
 export interface SettingsWorkspace {
@@ -27,7 +27,7 @@ export interface SettingsContext {
 
 /**
  * What every settings section needs: the signed-in user, their teams, the
- * active team (the `buildd-team` cookie, else the first team) and the
+ * active team (resolveActiveTeamId: the `buildd-team` cookie, else the shell's default) and the
  * workspaces they can see. Each read degrades to empty on failure so one bad
  * query blanks a section, not the page. Cached per request.
  */
@@ -43,10 +43,11 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
     getUserWorkspaceIds(user.id).catch(() => [] as string[]),
   ]);
 
+  // The same resolver the shell, Home and chat use (cookie, else
+  // pickDefaultTeam), so a settings section can never act on a different team
+  // than the header shows. `teams[0]` used to stand in for the default here.
   const teamCookie = (await cookies()).get('buildd-team')?.value;
-  const currentTeamId = teamCookie && teams.some((t) => t.id === teamCookie)
-    ? teamCookie
-    : teams[0]?.id ?? null;
+  const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
   const isTeamAdmin = !!currentTeam && (
     currentTeam.role === 'owner' || currentTeam.role === 'admin' || currentTeam.slug === `personal-${user.id}`

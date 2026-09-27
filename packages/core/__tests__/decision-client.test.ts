@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
  */
 
 let secretRows: any[] = [];
-let teamRow: any = { enabledInferenceCapabilities: ['task_category_shadow'] };
+let teamRow: any = { chatDisabled: false, inferenceFeatureModes: null };
 let secretsThrows = false;
 
 mock.module('../db', () => ({
@@ -25,7 +25,7 @@ mock.module('../db', () => ({
 }));
 
 mock.module('../db/schema', () => ({
-  teams: { id: 'id', enabledInferenceCapabilities: 'enabled_inference_capabilities' },
+  teams: { id: 'id', chatDisabled: 'chat_disabled', inferenceFeatureModes: 'inference_feature_modes' },
   secrets: {
     id: 'id', teamId: 'team_id', accountId: 'account_id', purpose: 'purpose', label: 'label',
     encryptedValue: 'encrypted_value', workspaceId: 'workspace_id',
@@ -120,7 +120,7 @@ const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
 beforeEach(() => {
   secretRows = [secretRow()];
-  teamRow = { enabledInferenceCapabilities: ['task_category_shadow'] };
+  teamRow = { chatDisabled: false, inferenceFeatureModes: null };
   secretsThrows = false;
   delete process.env.OPENROUTER_API_KEY;
 });
@@ -218,8 +218,24 @@ describe('decisionCall answers', () => {
 // ── gating before spend ──────────────────────────────────────────────────────
 
 describe('decisionCall gating', () => {
-  it('does nothing when the capability is not enabled for the team (default)', async () => {
-    teamRow = { enabledInferenceCapabilities: null };
+  it('runs a built-in decision call on a team that never touched a setting', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: null };
+    const fetcher = mock(async () => jsonResponse(OK_BODY));
+    const res = await decisionCall(params({ fetcher }));
+    expect(res.ok).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing for a chat routing call when an admin switched chat off', async () => {
+    teamRow = { chatDisabled: true, inferenceFeatureModes: null };
+    const fetcher = mock(async () => jsonResponse(OK_BODY));
+    const res = await decisionCall(params({ fetcher, capability: 'chat' }));
+    expect(!res.ok && res.error).toEqual({ kind: 'capability_disabled', capability: 'chat' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the team row is missing', async () => {
+    teamRow = undefined;
     const fetcher = mock(async () => jsonResponse(OK_BODY));
     const res = await decisionCall(params({ fetcher }));
     expect(!res.ok && res.error).toEqual({ kind: 'capability_disabled', capability: 'task_category_shadow' });
@@ -245,7 +261,7 @@ describe('decisionCall gating', () => {
   });
 
   it('skips the allowlist and lookup when an explicit apiKey is passed (offline eval)', async () => {
-    teamRow = { enabledInferenceCapabilities: null };
+    teamRow = { chatDisabled: true, inferenceFeatureModes: null };
     secretRows = [];
     let auth = '';
     const res = await decisionCall(params({
