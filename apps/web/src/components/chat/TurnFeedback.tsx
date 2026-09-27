@@ -181,7 +181,7 @@ export default function TurnFeedback({ messageId }: { messageId: string }) {
 
       {open && desktop && (
         <div ref={popRef} role="dialog" aria-label="What went wrong?" data-testid="turn-feedback-sheet"
-          className="absolute left-0 top-9 z-30 w-72 border-2 border-border-strong bg-surface-1 p-4 shadow-[4px_4px_0_0_var(--color-border-strong,#222)]">
+          className="absolute left-0 bottom-10 z-30 w-72 border-2 border-border-strong bg-surface-1 p-4 shadow-[4px_4px_0_0_var(--color-border-strong,#222)]">
           <h3 className="mb-3 font-mono text-[14px] font-bold text-text-primary">What went wrong?</h3>
           <ReasonList selected={picked} onSelect={setPicked} />
           {actions}
