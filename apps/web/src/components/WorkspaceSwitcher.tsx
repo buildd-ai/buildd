@@ -47,11 +47,15 @@ export function scopeChipLabel(
   workspaces: readonly { id: string; name: string }[],
   selectedId: string | null,
   routed: { id: string; name: string } | null,
-): { glyph: '@' | '→'; name: string } {
+): { glyph: '@' | '→'; name: string; short: string } {
   const pinned = selectedId ? workspaces.find(w => w.id === selectedId) : null;
-  if (pinned) return { glyph: '@', name: displayWorkspaceName(pinned.name) };
-  if (routed) return { glyph: '→', name: displayWorkspaceName(routed.name) };
-  return { glyph: '@', name: 'All workspaces' };
+  const one = pinned ?? routed;
+  if (one) {
+    const name = displayWorkspaceName(one.name);
+    return { glyph: pinned ? '@' : '→', name, short: name };
+  }
+  // A phone's scope cell is narrow: `@ all ▾` (mobile chat v3).
+  return { glyph: '@', name: 'All workspaces', short: 'all' };
 }
 
 const MOBILE_BREAKPOINT = 640;
@@ -343,7 +347,14 @@ export function WorkspaceSwitcher({
       className="flex h-full min-h-11 w-full min-w-0 items-center gap-1.5 px-3 font-mono text-[12.5px] font-medium text-[var(--chat-muted)] hover:bg-[var(--chat-raised)] hover:text-[var(--chat-text)] aria-expanded:bg-[var(--chat-raised)] aria-expanded:text-[var(--chat-text)]"
     >
       <span aria-hidden="true" className={chipLabel.glyph === '→' ? 'text-accent-text' : 'text-text-muted'}>{chipLabel.glyph}</span>
-      <span className="min-w-0 truncate">{chipLabel.name}</span>
+      {chipLabel.short === chipLabel.name ? (
+        <span className="min-w-0 truncate">{chipLabel.name}</span>
+      ) : (
+        <>
+          <span data-testid="scope-chip-short" className="min-w-0 truncate md:hidden">{chipLabel.short}</span>
+          <span data-testid="scope-chip-name" className="min-w-0 truncate max-md:hidden">{chipLabel.name}</span>
+        </>
+      )}
       <span aria-hidden="true" className="shrink-0 text-[var(--chat-dim)]">▾</span>
     </button>
   ) : (

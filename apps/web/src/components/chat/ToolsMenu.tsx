@@ -50,6 +50,23 @@ export function ToolRows({ rows, onChange, busy }: {
   );
 }
 
+/** How many tool groups run without asking, or null until the rows load. Pure. */
+export function allowedCount(rows: readonly ChatToolPermissionRow[] | null): number | null {
+  return rows ? rows.filter(r => r.mode === 'allow').length : null;
+}
+
+/** The tools cell: `··· 2`, the count of groups on Allow (shown once known, zero included). */
+export function ToolsTrigger({ count }: { count: number | null }) {
+  return (
+    <>
+      <span aria-hidden="true" className="font-mono text-[13px] leading-none tracking-[.08em]">···</span>
+      {count !== null && (
+        <span data-testid="composer-tools-count" className={`font-mono text-[12px] ${count > 0 ? 'text-accent-text' : 'text-[var(--chat-dim)]'}`}>{count}</span>
+      )}
+    </>
+  );
+}
+
 export default function ToolsMenu({ teamId }: { teamId: string }) {
   const [rows, setRows] = useState<ChatToolPermissionRow[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -84,19 +101,12 @@ export default function ToolsMenu({ teamId }: { teamId: string }) {
     }
   };
 
-  const allowed = rows?.filter(r => r.mode === 'allow').length ?? 0;
-
   return (
     <ComposerMenu
       label="Tools"
       title="Tools"
       testId="composer-tools"
-      trigger={(
-        <>
-          <span aria-hidden="true" className="text-[18px] leading-none">⋯</span>
-          {allowed > 0 && <span data-testid="composer-tools-allowed" className="font-mono text-[11px] text-accent-text">{allowed}</span>}
-        </>
-      )}
+      trigger={<ToolsTrigger count={allowedCount(rows)} />}
     >
       {() => (
         <div>

@@ -62,8 +62,10 @@ export interface ChatWorkspaceProps {
   focusRef?: BuilddObjectRef | null;
   /** Where "+ New chat" goes. */
   newChatHref?: string;
-  /** The conversation list, shown above the feed on the empty state. */
+  /** The conversation list, shown above the feed on the empty state (desktop; a phone reaches it via History). */
   emptyState?: ReactNode;
+  /** A phone's history view (/app/chat?view=history): the list in place of the empty canvas. */
+  historyOpen?: boolean;
   /** Start with the pane closed: chat full width, objects as inline cards. */
   initialPaneClosed?: boolean;
   /** The composer's placeholder when nothing is docked ("Describe the outcome you want…"). */
@@ -110,7 +112,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
-    newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
+    newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null, pulse = null,
     variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel,
   } = props;
@@ -204,11 +206,21 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   // The crumbs: who you're talking to, where, and about what.
   const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
+  // A phone (mobile chat v3): `CHAT / new` left, `HISTORY →` right, in place
+  // of the back arrow. Desktop keeps the agent / workspace / title crumbs.
+  const phoneCrumbs = !overlay && !crumbs;
+  const isNew = !title && messages.length === 0;
   const header = (
     <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] px-4 py-2.5 md:px-6">
-      {!overlay && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
+      {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
+        {phoneCrumbs && (
+          <>
+            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)] md:hidden">Chat</span>
+            <span aria-hidden="true" className="text-[var(--chat-muted)] md:hidden">/</span>
+          </>
+        )}
         <span className="hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex">
           <AgentAvatar agent={agent} size="xs" />
           <span className="font-semibold text-text-primary">{agent.name}</span>
@@ -220,7 +232,14 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           </>
         )}
         <span aria-hidden="true" className="hidden text-text-muted md:inline">/</span>
-        <h1 data-testid="chat-title" className="min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px]">{shownTitle}</h1>
+        {phoneCrumbs && (historyOpen || isNew) ? (
+          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)] md:font-semibold md:text-text-primary">
+            <span data-testid="chat-title-mobile" className="md:hidden">{historyOpen ? 'history' : 'new'}</span>
+            <span className="hidden md:inline">{shownTitle}</span>
+          </h1>
+        ) : (
+          <h1 data-testid="chat-title" className={`min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px] ${phoneCrumbs ? 'max-md:text-[13px] max-md:font-normal max-md:text-[var(--chat-muted)]' : ''}`}>{shownTitle}</h1>
+        )}
       </nav>
       )}
       {overlay ? (
@@ -246,6 +265,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           </button>
         </>
       ) : (
+        <>
+        {phoneCrumbs && (
+          <Link
+            href={historyOpen ? newChatHref : '/app/chat?view=history'}
+            data-testid="chat-history-link"
+            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden"
+          >
+            {historyOpen ? 'New →' : 'History →'}
+          </Link>
+        )}
         <Link
           href={newChatHref}
           data-testid="chat-new"
@@ -253,6 +282,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         >
           + New chat
         </Link>
+        </>
       )}
     </header>
   );
@@ -278,7 +308,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
     : null;
   const emptyCanvas = hero && (
-    <div data-testid="canvas-empty" data-mood={hero.mood ?? undefined} className="mb-8 mt-2 md:mt-10">
+    <div data-testid="canvas-empty" data-mood={hero.mood ?? undefined} className={`mb-8 mt-2 md:mt-10 ${historyOpen ? 'max-md:hidden' : ''}`}>
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
         {hero.overline}
@@ -334,7 +364,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
           {emptyCanvas}
-          {messages.length === 0 && emptyState}
+          {messages.length === 0 && emptyState && (
+            <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block'}>{emptyState}</div>
+          )}
           <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
@@ -365,7 +397,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             compact={narrow}
           />
           {formFallbackHref && messages.length === 0 && (
-            <div className="flex justify-end px-3 md:mt-2 md:px-0">
+            <div className="hidden justify-end md:mt-2 md:flex">
               <Link
                 href={formFallbackHref}
                 data-testid="chat-form-fallback"

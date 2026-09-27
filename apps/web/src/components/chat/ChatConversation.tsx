@@ -54,6 +54,8 @@ export interface ChatConversationProps {
   canManageTeamKeys: boolean;
   aside?: ReactNode;
   emptyState?: ReactNode;
+  /** A phone's history view (/app/chat?view=history). */
+  historyOpen?: boolean;
   focusRef?: BuilddObjectRef | null;
   /** How the chat was opened (+ Mission, New task, Ask about…). Sent with every turn. */
   entry?: ChatEntry;
@@ -83,7 +85,7 @@ export function dtoToMessage(m: GetConversationResponse['messages'][number], vie
 export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
-    canManageTeamKeys, aside, emptyState, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null, pulse = null,
+    canManageTeamKeys, aside, emptyState, historyOpen = false, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null, pulse = null,
     onConversationCreated, canvas,
   } = props;
   const router = useRouter();
@@ -251,6 +253,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         viewerName={viewerName}
         aside={aside}
         emptyState={emptyState}
+        historyOpen={historyOpen}
         focusRef={focusRef}
         focusOpensSheet={!entry.about}
         composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}

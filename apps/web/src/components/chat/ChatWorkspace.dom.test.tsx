@@ -126,6 +126,80 @@ describe('empty canvas', () => {
   });
 });
 
+// happy-dom applies no media queries, so the phone-only rules are asserted as
+// the breakpoint classes that carry them (md = 768px, desktop unchanged).
+describe('phone chrome (v3 frames)', () => {
+  const header = () => q('[data-testid="chat-header"]')!;
+
+  it('a new chat: `CHAT / new` left, `HISTORY →` right, no back arrow on a phone', async () => {
+    await render();
+    const section = q('[data-testid="chat-mobile-section"]')!;
+    expect(section.textContent).toBe('Chat');
+    expect(section.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    expect(section.className).toMatch(/uppercase/);
+    expect(q('[data-testid="chat-title-mobile"]')?.textContent).toBe('new');
+    expect(q('[data-testid="chat-title-mobile"]')?.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    const history = q('[data-testid="chat-history-link"]') as HTMLAnchorElement;
+    expect(history.getAttribute('href')).toBe('/app/chat?view=history');
+    expect(history.textContent).toBe('History →');
+    expect(history.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    expect(header().querySelector('a[aria-label="All chats"]')).toBeNull();
+    // Desktop keeps its title and + New chat.
+    expect(q('[data-testid="chat-title"]')?.textContent).toContain('New chat');
+    expect(q('[data-testid="chat-new"]')).not.toBeNull();
+  });
+
+  it('an open conversation keeps its title after `CHAT /`', async () => {
+    await render({ title: 'Multi-currency invoices', messages: fixtures.chatFixture('streaming').messages });
+    expect(q('[data-testid="chat-title-mobile"]')).toBeNull();
+    expect(q('[data-testid="chat-title"]')?.textContent).toBe('Multi-currency invoices');
+    expect(q('[data-testid="chat-history-link"]')).not.toBeNull();
+  });
+
+  it('the history view: `CHAT / history`, `NEW →`, the list shown on a phone and the hero hidden', async () => {
+    await render({ historyOpen: true, emptyState: <nav data-testid="conversation-list" /> });
+    expect(q('[data-testid="chat-title-mobile"]')?.textContent).toBe('history');
+    const link = q('[data-testid="chat-history-link"]') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/app/chat');
+    expect(link.textContent).toBe('New →');
+    expect(q('[data-testid="chat-empty-state"]')?.className ?? '').not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(q('[data-testid="canvas-empty"]')?.className).toMatch(/max-md:hidden/);
+  });
+
+  it('the new-chat canvas hides "Pick up where you left off" on a phone, keeps it on desktop', async () => {
+    await render({ emptyState: <nav data-testid="conversation-list" /> });
+    const wrap = q('[data-testid="chat-empty-state"]')!;
+    expect(wrap.className).toMatch(/(^|\s)hidden(\s|$)/);
+    expect(wrap.className).toMatch(/md:block/);
+    expect(wrap.querySelector('[data-testid="conversation-list"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-empty"]')?.className).not.toMatch(/max-md:hidden/);
+  });
+
+  it('the form fallback is desktop only', async () => {
+    await render({ formFallbackHref: '/app/missions/new' });
+    const fallback = q('[data-testid="chat-form-fallback"]')!;
+    expect(fallback.parentElement!.className).toMatch(/(^|\s)hidden(\s|$)/);
+    expect(fallback.parentElement!.className).toMatch(/md:flex/);
+  });
+
+  it('the scope cell reads `@ all ▾` on a phone when every workspace is in scope', async () => {
+    await render({ workspaceId: null });
+    const chip = q('[data-testid="composer-scope-chip"]')!;
+    const short = chip.querySelector('[data-testid="scope-chip-short"]')!;
+    expect(short.textContent).toBe('all');
+    expect(short.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    const long = chip.querySelector('[data-testid="scope-chip-name"]')!;
+    expect(long.textContent).toBe('All workspaces');
+    expect(long.className).toMatch(/max-md:hidden/);
+  });
+
+  it('the overlay keeps its own header', async () => {
+    await render({ variant: 'overlay', onClose() {} });
+    expect(q('[data-testid="chat-history-link"]')).toBeNull();
+    expect(q('[data-testid="chat-mobile-section"]')).toBeNull();
+  });
+});
+
 describe('pinned object', () => {
   it('the mission the chat is about pins as a compact board', async () => {
     await render({ focusRef: fixtures.missionRef, focusOpensSheet: false, initialPaneClosed: true });
