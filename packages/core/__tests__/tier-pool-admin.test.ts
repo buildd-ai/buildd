@@ -75,8 +75,26 @@ describe('removeChallenger', () => {
     const { sql } = render(executed[0]);
     expect(sql).toContain("role = 'challenger'");
     expect(sql).toContain("SET status = 'removed'");
-    expect(sql).toMatch(/AND allocation_version = \$\d+ AND EXISTS \(SELECT 1 FROM a\)/);
     expect(sql).toContain("'arm_removed'");
+  });
+
+  it('decides on the pool version before any arm row changes', async () => {
+    // The pool row lock orders concurrent admin writes. The arm may flip only
+    // after this statement's own version compare-and-set succeeded, so a stale
+    // remove can never leave a removed arm still holding a share, unlogged.
+    executeRows = [{ allocation_version: 7 }];
+    await admin.removeChallenger({ teamId: 'team-1', poolId: 'pool-1', armId: 'arm-2', expectedVersion: 6, allocation: { a: 1 }, actorUserId: 'user-1' });
+    const { sql } = render(executed[0]);
+    const poolUpdate = sql.indexOf('UPDATE tier_pools');
+    const armUpdate = sql.indexOf('UPDATE tier_pool_arms');
+    expect(poolUpdate).toBeGreaterThan(-1);
+    expect(armUpdate).toBeGreaterThan(poolUpdate);
+    const armStmt = sql.slice(armUpdate, sql.indexOf('RETURNING', armUpdate));
+    expect(armStmt).toContain('EXISTS (SELECT 1 FROM u)');
+    expect(armStmt).not.toContain('allocation_version');
+    const poolStmt = sql.slice(poolUpdate, sql.indexOf('RETURNING', poolUpdate));
+    expect(poolStmt).toMatch(/allocation_version = \$\d+/);
+    expect(poolStmt).toContain("role = 'challenger'");
   });
 });
 

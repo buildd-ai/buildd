@@ -89,8 +89,13 @@ describe('pickArm', () => {
   it('records the share in effect as the propensity', () => {
     expect(pickArm(alloc, order, 0.75)).toEqual({ armId: C1, propensity: 0.2 });
   });
-  it('skips arms with no share and lands on the last arm under rounding', () => {
+  it('skips arms with no share and lands on the first arm under rounding', () => {
     expect(pickArm({ [INC]: 0.9999, [C1]: 0 }, [INC, C1], 0.99995)!.armId).toBe(INC);
+  });
+  it('never hands a share with no live arm to a challenger', () => {
+    // A share left on an arm that is no longer in armOrder (removed) must
+    // not spill onto the last challenger past its cap: it falls to the base.
+    expect(pickArm({ [INC]: 0.6, [C1]: 0.2, [C2]: 0.2 }, [INC, C2], 0.9)!.armId).toBe(INC);
   });
   it('is null with nothing allocated', () => {
     expect(pickArm({}, order, 0.3)).toBeNull();
