@@ -1,4 +1,5 @@
 import ChatConversation from '@/components/chat/ChatConversation';
+import ChatPresenceBeat from '@/components/chat/ChatPresenceBeat';
 import { formHref, parseChatEntry } from '@/lib/chat/entry-points';
 import { canvasPulse, ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
 
@@ -35,6 +36,8 @@ export default async function ChatPage({
       ? <p data-testid="conversation-list-empty" className="px-1 font-voice text-[17px] italic text-[var(--chat-muted)] md:hidden">No chats yet. Start one below.</p>
       : null;
   return (
+    <>
+    <ChatPresenceBeat conversationId={null} />
     <ChatConversation
       conversationId={null}
       teamId={data.teamId}
@@ -56,5 +59,6 @@ export default async function ChatPage({
       entry={{ ...entry, about: about ? entry.about : null }}
       formFallbackHref={about ? null : formHref(entry.intent ?? 'mission', workspaceId)}
     />
+    </>
   );
 }

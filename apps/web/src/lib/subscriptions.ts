@@ -260,7 +260,17 @@ export async function recordEvent(event: NotifyEvent, deps: Deps = {}): Promise<
   const now = (deps.now ?? (() => new Date()))();
   try {
     const r = await exec(recordEventSql(event, now));
-    return { recorded: (r.rows ?? []).length };
+    const rows = (r.rows ?? []) as Array<{ id: string }>;
+    // Wake the away-delivery cron for these rows (Redis only; never throws).
+    // Imported lazily so emit sites do not load it, and a test that stubs
+    // './redis' partially cannot break this module's import.
+    if (rows.length > 0) {
+      try {
+        const { markAwayDue } = await import('./notify-away-queue');
+        await markAwayDue(rows, event.urgency ?? 'normal', now);
+      } catch { /* best effort */ }
+    }
+    return { recorded: rows.length };
   } catch (err) {
     console.error(`[subscriptions] recordEvent ${event.type} failed:`, err);
     return { recorded: 0, error: true };
