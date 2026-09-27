@@ -69,7 +69,7 @@ Full token tables in `references/tokens.md`; canonical values in `globals.css`. 
 | `--accent-text` / `--accent-deep` | `#f59b4e` / `#f7a261` | Accent text on dark |
 | `--border` | `rgba(255,245,230,0.14)` | Hairlines |
 | `--border-strong` | `rgba(255,245,230,0.55)` | Card outlines |
-| `--card-shadow` | `5px 5px 0 0 rgba(255,245,230,0.5)` | Hard offset shadow |
+| `--card-shadow` | `5px 5px 0 0 rgba(0,0,0,0.55)` | Hard offset shadow, darker than the page |
 | Status | `#5ec495` / `#e0b35a` / `#d4736a` / `#7aacca` | success / warning / error / info |
 
 ### Day — Warm Paper

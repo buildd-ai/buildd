@@ -33,4 +33,23 @@ describe('Switch', () => {
     const html = renderToStaticMarkup(<Switch checked onChange={() => {}} label="x" disabled />);
     expect(html).toContain('disabled=""');
   });
+
+  it('draws one knob: no offset shadow that reads as a second square', () => {
+    for (const checked of [true, false]) {
+      const html = renderToStaticMarkup(<Switch checked={checked} onChange={() => {}} label="x" />);
+      const knob = html.match(/<span aria-hidden="true" class="([^"]*)"/)![1];
+      expect(knob.split(/\s+/)).not.toContain('shadow');
+      expect(knob).not.toMatch(/(^|\s)shadow(-|$)/);
+    }
+  });
+
+  it('on and off differ in knob position and fill, not just the track', () => {
+    const knob = (checked: boolean) =>
+      renderToStaticMarkup(<Switch checked={checked} onChange={() => {}} label="x" />).match(/<span aria-hidden="true" class="([^"]*)"/)![1];
+    const on = knob(true);
+    const off = knob(false);
+    expect(on).not.toBe(off);
+    const fill = (c: string) => c.split(/\s+/).find((t) => t.startsWith('bg-'));
+    expect(fill(on)).not.toBe(fill(off));
+  });
 });

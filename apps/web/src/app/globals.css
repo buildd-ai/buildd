@@ -23,7 +23,9 @@
   --card-finding: #252220;
   --card-rightnow: #1f1d1a;
   --card-border: rgba(255, 245, 230, 0.06);
-  --card-shadow: 5px 5px 0 0 rgba(255, 245, 230, 0.5);
+  /* Darker than the page, so the offset reads as depth. A light offset sat
+     beside the pale card outline and looked like a second border. */
+  --card-shadow: 5px 5px 0 0 rgba(0, 0, 0, 0.55);
 
   --text-primary: #ede8e2;
   --text-secondary: #a89f96;
@@ -147,6 +149,38 @@ body {
 input[type="checkbox"],
 input[type="radio"] {
   accent-color: var(--accent);
+}
+
+/* Square custom radio and checkbox (opt in with the class plus appearance-none).
+   Native radios render as circles next to square checkboxes; these match the
+   card language: a 2px ink box, the accent fill when checked. A radio shows an
+   inset square, a checkbox an ink tick. */
+.control-radio,
+.control-check {
+  appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid var(--border-strong);
+  border-radius: 0;
+  background: var(--surface-1);
+  cursor: pointer;
+}
+.control-radio:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--card);
+}
+.control-check:checked {
+  border-color: var(--accent);
+  background: var(--accent) center / 12px 12px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%231a1512' stroke-width='2'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5'/%3E%3C/svg%3E");
+}
+.control-radio:disabled,
+.control-check:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Brutalist form controls — one 2px ink border everywhere, matching .card.

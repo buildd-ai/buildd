@@ -8,7 +8,7 @@ import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { useSearchParams } from 'next/navigation';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
-import { KEY_UNLOCKS, chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
+import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
 
 export interface ChatAvailabilityProp {
   available: boolean;
@@ -60,22 +60,11 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
         </div>
       )}
 
-      <p className="text-xs text-text-secondary max-w-prose" data-testid="key-unlocks">
-        {KEY_UNLOCKS}{' '}
-        <Link href="/app/settings/models" className="underline hover:text-text-primary">Model tiers</Link> pick the model.
-      </p>
-
       <section aria-labelledby="providers-h">
         <h2 id="providers-h" className="section-label mb-3">Team keys</h2>
         {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
         {flow && (
           <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`mb-3 text-sm ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
-        )}
-        {canManage && openRouterUnset && (
-          <div className="card mb-2.5 flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3" data-testid="connect-openrouter-row">
-            <span className="flex-1 text-xs text-text-secondary">Sign in to OpenRouter and it makes a key for the team. Nothing to paste.</span>
-            <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/settings/providers" />
-          </div>
         )}
         <div className="space-y-2.5">
           {CHAT_PROVIDER_INFO.map((info) => {
@@ -89,6 +78,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
                 mode="team"
                 canEdit={canManage}
                 recommended={info.id === 'openrouter'}
+                addAction={info.id === 'openrouter' && openRouterUnset
+                  ? <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/settings/providers" />
+                  : undefined}
                 loading={view === null && !error}
                 onSave={async (value) => { const k = await setProviderKey(teamId, info.id, 'team', value); await load(); return k; }}
                 onRemove={async () => { await removeProviderKey(teamId, info.id, 'team'); await load(); }}
@@ -155,7 +147,7 @@ function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
       <input
         type="radio"
         name="key-policy"
-        className="mt-1 accent-[var(--accent)]"
+        className="control-radio appearance-none mt-0.5"
         checked={choice.mode === mode}
         disabled={busy}
         onChange={() => save({ mode, allowOwn: mode === 'team' ? choice.allowOwn : false })}
@@ -177,7 +169,7 @@ function KeyPolicyControl({ teamId, policy, canManage, onChanged }: {
             <label className="flex items-center gap-2 px-4 pb-3 pl-11 text-xs text-text-secondary cursor-pointer">
               <input
                 type="checkbox"
-                className="accent-[var(--accent)]"
+                className="control-check appearance-none"
                 checked={choice.allowOwn}
                 disabled={busy}
                 onChange={(e) => save({ mode: 'team', allowOwn: e.target.checked })}
