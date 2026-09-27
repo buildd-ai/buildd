@@ -14,6 +14,7 @@ const ns = (id: string, corpus: string) => `${id}:${corpus}`;
 
 const WS_ID   = 'bbbb0000-0000-0000-0000-000000000000';
 const TEAM_ID  = 'cccc0000-0000-0000-0000-000000000000';
+const PROJECT = 'acme/widgets';
 
 function makeQueryRecorder(returnEmpty = false): KnowledgeStore & { queriedNamespaces: string[] } {
   const queriedNamespaces: string[] = [];
@@ -45,13 +46,14 @@ function memCtx(store: KnowledgeStore) {
   return {
     workspaceId: WS_ID,
     teamId: TEAM_ID,
+    project: PROJECT,
     knowledgeStore: store,
     embedder: null as any,
   };
 }
 
 // Minimal no-op MemoryClient (query_knowledge does not call the memory service)
-const nullMemClient = {} as any;
+const nullMemClient = { batch: async (ids: string[]) => ({ memories: ids.map(id => ({ id, project: PROJECT })) }) } as any;
 
 describe('query_knowledge code/docs → per-workspace namespace', () => {
   it('code corpus targets the workspace namespace, not a global namespace', async () => {

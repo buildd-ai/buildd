@@ -12,7 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { workspaceProjectKey } from './project-scope';
+import { normalizeProject, workspaceProjectKey } from './project-scope';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -431,7 +431,7 @@ export const learnToolDefinition = {
       },
       scope: {
         type: "string" as const,
-        description: "Project/monorepo scope for this memory.",
+        description: "Omit. Memories are always filed under the calling workspace's project; naming any other project is refused.",
       },
       supersedes: {
         type: "array" as const,
@@ -532,8 +532,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
 
 export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    context: '{ project? } — get markdown-formatted memory context for agent injection',
-    search: '{ query?, type?, files? (array), project?, limit?, offset? }',
+    context: '{ project? } — get markdown-formatted memory context for agent injection. Memory is scoped to the calling workspace; naming another project is refused.',
+    search: '{ query?, type?, files? (array), project? (must be the calling workspace\'s own), limit?, offset? }',
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
@@ -5548,6 +5548,51 @@ type MemoryActionCtx = {
   isSensitive?: boolean;
 };
 
+// ── Memory project scoping ───────────────────────────────────────────────────
+//
+// Invariant: memory surfaced to an agent comes only from the requesting
+// workspace, never from a sensitive one. The store and the `{teamId}:memory`
+// namespace are team-wide; the only thing separating one workspace's memories
+// from another's is the project key, and `ctx.project` is that key as the
+// server resolved it for this connection. Callers never choose it: a project
+// named in params is refused, and no key means no memory.
+
+const NO_MEMORY_SCOPE = 'no memory scope for this workspace';
+
+/** The caller's own project key, or an error when the caller named another one or has none. */
+function ownMemoryProject(ctx: MemoryActionCtx, requested?: unknown): { project: string } | { error: string } {
+  const own = normalizeProject(ctx.project);
+  if (!own) return { error: NO_MEMORY_SCOPE };
+  if (typeof requested === 'string' && requested.trim() !== '' && normalizeProject(requested) !== own) {
+    return { error: `project "${requested}" is not this workspace's — memory is scoped to the calling workspace` };
+  }
+  return { project: own };
+}
+
+/** Whether a stored memory belongs to the caller's workspace. */
+function isOwnMemory(m: { project?: string | null }, ctx: MemoryActionCtx): boolean {
+  const own = normalizeProject(ctx.project);
+  return !!own && normalizeProject(m.project) === own;
+}
+
+/**
+ * Narrow `{teamId}:memory` hits to the caller's project. Chunk metadata is not
+ * trusted for this (older chunks carry no project); the memories table is.
+ * A hit with no backing memory row is dropped.
+ */
+async function ownMemoryHits(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  hits: QueryResult[],
+): Promise<QueryResult[]> {
+  const own = normalizeProject(ctx.project);
+  if (!own || !mc || hits.length === 0) return [];
+  const memoryIdOf = (r: QueryResult) => (typeof r.metadata?.memoryId === 'string' ? r.metadata.memoryId : r.id);
+  const { memories } = await mc.batch(hits.map(memoryIdOf));
+  const allowed = new Set(memories.filter(m => normalizeProject(m.project) === own).map(m => m.id));
+  return hits.filter(r => allowed.has(memoryIdOf(r)));
+}
+
 /**
  * Extracts implementation anchors from spec chunks for two-hop code retrieval.
  * Captures file paths, route paths, camelCase symbols, and PascalCase types —
@@ -5686,7 +5731,8 @@ function formatCorpusFailures(failures: CorpusFailure[]): string {
  */
 async function fanOutCorpora(
   ks: KnowledgeStore,
-  ctx: { isSensitive?: boolean; workspaceId?: string; teamId?: string },
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
@@ -5694,12 +5740,22 @@ async function fanOutCorpora(
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
       if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      if (c === 'memory' && !normalizeProject(ctx.project)) {
+        failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
+        return [];
+      }
       const ns = knowledgeNamespace(ctx, c);
       if (!ns) {
         failures.push({ corpus: c, reason: (c === 'memory' || c === 'initiative') ? 'teamId required' : 'workspaceId required' });
         return [];
       }
       try {
+        // The memory namespace is team-wide: over-fetch, then keep the caller's project.
+        if (c === 'memory') {
+          const raw = await ks.query(ns, { ...opts, topK: Math.min(opts.topK * 5, 100) });
+          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
+          return own.slice(0, opts.topK);
+        }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
@@ -5728,6 +5784,8 @@ export async function handleRecallAction(
   if (params.id) {
     const data = await memoryClient.get(params.id as string);
     const m = data.memory;
+    // Same message as a miss, so a foreign id is not confirmed to exist.
+    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,
@@ -5773,7 +5831,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5807,6 +5865,9 @@ export async function handleRecallAction(
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
   }
+  if (scope === 'memory' && !normalizeProject(ctx.project)) {
+    return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
+  }
 
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
@@ -5825,10 +5886,16 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+  const raw = await ks.query(ns, {
+    text: query,
+    mode,
+    topK: scope === 'memory' ? Math.min(fetchTopK * 5, 100) : fetchTopK,
+  });
 
   // Exclude superseded entries by default, apply type/files filters, then the caller limit.
   let results = raw.filter(r => r.isCurrent !== false);
+  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
   if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
   results = results.slice(0, limit);
 
@@ -5868,6 +5935,10 @@ export async function handleLearnAction(
   if (ctx.isSensitive) {
     return errorResult('workspace is sensitive — memory writes disabled');
   }
+  // Written under the caller's own project key only — a memory filed under
+  // another workspace's key would surface there.
+  const learnScope = ownMemoryProject(ctx, params.scope);
+  if ('error' in learnScope) return errorResult(learnScope.error);
 
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
@@ -5908,7 +5979,7 @@ export async function handleLearnAction(
     type: params.type as string,
     title: params.title as string,
     content: params.content as string,
-    project: (params.scope as string) || ctx.project || undefined,
+    project: learnScope.project,
     tags: params.tags as string[] | undefined,
     files: params.files as string[] | undefined,
     source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
@@ -5926,7 +5997,7 @@ export async function handleLearnAction(
       lexicalText,
       sourceType: 'memory',
       sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
+      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
       ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
     }]).catch(() => undefined);
     if (upsertRes) learnSuperseded = upsertRes.superseded;
@@ -5999,17 +6070,20 @@ export async function handleMemoryAction(
   switch (action) {
     case 'context': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
-      const project = (params.project as string) || ctx.project;
-      const data = await mc.getContext(project);
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
+      const data = await mc.getContext(scoped.project);
       return text(data.markdown || '(No memories yet)');
     }
 
     case 'search': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
       const data = await mc.search({
         query: params.query as string | undefined,
         type: params.type as string | undefined,
-        project: (params.project as string) || ctx.project,
+        project: scoped.project,
         files: params.files as string[] | undefined,
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
@@ -6054,6 +6128,9 @@ export async function handleMemoryAction(
         throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
       }
 
+      const saveScope = ownMemoryProject(ctx, params.project);
+      if ('error' in saveScope) return errorResult(saveScope.error);
+
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
@@ -6061,7 +6138,7 @@ export async function handleMemoryAction(
         type: params.type as string,
         title: params.title as string,
         content: params.content as string,
-        project: (params.project as string) || ctx.project || undefined,
+        project: saveScope.project,
         tags: params.tags as string[] | undefined,
         files: params.files as string[] | undefined,
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
@@ -6112,6 +6189,7 @@ export async function handleMemoryAction(
       if (!params.id) throw new Error('id is required');
       const data = await mc.get(params.id as string);
       const m = data.memory;
+      if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
       const meta = [
         `Type: ${m.type}`,
         m.project && `Project: ${m.project}`,
@@ -6140,6 +6218,12 @@ export async function handleMemoryAction(
 
       const updateSupersedes = parseSupersedesParam(params.supersedes);
       if (updateSupersedes.error) throw new Error(updateSupersedes.error);
+
+      // Only the caller's own memories, and never moved to another project key.
+      const updateScope = ownMemoryProject(ctx, params.project);
+      if ('error' in updateScope) return errorResult(updateScope.error);
+      const existing = await mc.get(params.id as string);
+      if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
       const data = await mc.update(params.id as string, updateFields);
 
@@ -6209,7 +6293,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6261,6 +6345,9 @@ export async function handleMemoryAction(
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
       }
+      if (corpus === 'memory' && !normalizeProject(ctx.project)) {
+        throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);
+      }
 
       const ns = knowledgeNamespace(ctx, corpus);
 
@@ -6273,11 +6360,15 @@ export async function handleMemoryAction(
       // Reranker passed here too: without it this fallback ranked by age decay
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
-      const results = await ks.query(ns, {
+      // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+      const queried = await ks.query(ns, {
         text: params.query as string,
         mode,
-        topK,
+        topK: corpus === 'memory' ? Math.min(topK * 5, 100) : topK,
       });
+      const results = corpus === 'memory'
+        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
+        : queried;
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

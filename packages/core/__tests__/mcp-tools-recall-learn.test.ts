@@ -17,6 +17,8 @@ import type { KnowledgeStore, QueryResult } from '../knowledge-store/types';
 const WS_ID   = 'aaaa0000-0000-0000-0000-000000000000';
 const TEAM_ID  = 'bbbb0000-0000-0000-0000-000000000001';
 const WORKER_ID = 'worker-recall-001';
+/** The calling workspace's memory project key; fixtures' memories live under it. */
+const PROJECT = 'acme/widgets';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,7 +66,7 @@ function makeMemClient(options: {
         content: 'Content of directly fetched memory',
         files: ['src/foo.ts'],
         tags: ['test'],
-        project: null,
+        project: PROJECT,
         source: 'mcp-agent',
       },
     }),
@@ -81,7 +83,8 @@ function makeMemClient(options: {
       },
     }),
     search: async () => ({ results: [], total: 0, limit: 10, offset: 0 }),
-    batch: async () => ({ memories: [] }),
+    // Every requested id resolves to a memory in the caller's project.
+    batch: async (ids: string[]) => ({ memories: ids.map(id => ({ id, project: PROJECT })) }),
   };
 }
 
@@ -90,6 +93,7 @@ function recallCtx(store: KnowledgeStore) {
     workspaceId: WS_ID,
     teamId: TEAM_ID,
     workerId: WORKER_ID,
+    project: PROJECT,
     knowledgeStore: store,
     embedder: null as any,
   };
@@ -170,7 +174,7 @@ describe('recall — scope routing', () => {
   it('returns error when scope=memory but teamId is missing', async () => {
     const store = makeStore([]);
     const mem = makeMemClient();
-    const ctxNoTeam = { workspaceId: WS_ID, knowledgeStore: store, embedder: null as any };
+    const ctxNoTeam = { workspaceId: WS_ID, project: PROJECT, knowledgeStore: store, embedder: null as any };
     const res = await handleRecallAction(mem as any, { query: 'test', scope: 'memory' }, ctxNoTeam);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('teamId');
@@ -199,7 +203,7 @@ describe('recall — id direct-fetch bypass', () => {
         content: 'Always run bun db:generate before committing schema changes.',
         files: ['packages/core/db/schema.ts'],
         tags: ['db', 'migration'],
-        project: null,
+        project: PROJECT,
         source: 'worker-123',
       },
     });
@@ -826,7 +830,7 @@ describe('recall — per-corpus failure tracking (multi-scope)', () => {
       [`${WS_ID}:task`]: [{ content: 'task hit', isCurrent: true }],
     });
     const mem = makeMemClient();
-    const ctxNoTeam = { workspaceId: WS_ID, knowledgeStore: store, embedder: null as any };
+    const ctxNoTeam = { workspaceId: WS_ID, project: PROJECT, knowledgeStore: store, embedder: null as any };
     const res = await handleRecallAction(mem as any, { query: 'test', scope: ['memory', 'task'] }, ctxNoTeam);
     expect(res.isError).toBeFalsy();
     const out = res.content[0].text;

@@ -11,6 +11,7 @@ import type { KnowledgeStore, QueryResult } from '../knowledge-store/types';
 
 const WS_ID = 'aaaa0000-0000-0000-0000-000000000000';
 const TEAM_ID = 'bbbb0000-0000-0000-0000-000000000000';
+const PROJECT = 'acme/widgets';
 
 function makeStore(
   nsMap: Record<string, Partial<QueryResult>[] | Error>,
@@ -42,10 +43,10 @@ function makeStore(
 }
 
 function ctx(store: KnowledgeStore) {
-  return { workspaceId: WS_ID, teamId: TEAM_ID, knowledgeStore: store, embedder: null as any };
+  return { workspaceId: WS_ID, teamId: TEAM_ID, project: PROJECT, knowledgeStore: store, embedder: null as any };
 }
 
-const nullMemClient = {} as any;
+const nullMemClient = { batch: async (ids: string[]) => ({ memories: ids.map(id => ({ id, project: PROJECT })) }) } as any;
 
 describe('query_knowledge — corpus validation', () => {
   it('rejects an unknown corpus in the array form', async () => {
