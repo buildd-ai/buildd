@@ -1,10 +1,7 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { Select } from '@/components/ui/Select';
-import { useConfirm } from '@/components/useConfirm';
+import { useMoveToTeam, type MoveTeam } from '@/components/MoveToTeamDialog';
 
 export interface WorkspaceWithRunners {
     id: string;
@@ -14,19 +11,13 @@ export interface WorkspaceWithRunners {
     createdAt: Date;
     teamId: string | null;
     teamName: string | null;
+    /** Admin on this workspace's team and at least one other (see moveTargets). */
+    canMove: boolean;
     runners: {
         action: boolean;
         service: boolean;
         user: boolean;
     };
-}
-
-export interface UserTeam {
-    id: string;
-    name: string;
-    slug: string;
-    role: string;
-    memberCount: number;
 }
 
 function CheckIcon({ className }: { className?: string }) {
@@ -47,50 +38,13 @@ function XIcon({ className }: { className?: string }) {
 
 export default function WorkspaceList({
     workspaces,
-    teams,
+    moveTeams,
 }: {
     workspaces: WorkspaceWithRunners[];
-    teams: UserTeam[];
+    /** Teams the user administers: the destinations a move can pick from. */
+    moveTeams: MoveTeam[];
 }) {
-    const router = useRouter();
-    const { confirm, confirmDialog } = useConfirm();
-    const [movingWorkspaceId, setMovingWorkspaceId] = useState<string | null>(null);
-    const [moveError, setMoveError] = useState<{ workspaceId: string; message: string } | null>(null);
-
-    const handleMoveWorkspace = async (workspaceId: string, newTeamId: string) => {
-        setMovingWorkspaceId(workspaceId);
-        setMoveError(null);
-        try {
-            const res = await fetch(`/api/workspaces/${workspaceId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ teamId: newTeamId }),
-            });
-            if (!res.ok) {
-                throw new Error('Failed to move workspace');
-            }
-            router.refresh();
-        } catch (e) {
-            console.error(e);
-            setMoveError({ workspaceId, message: 'Couldn\'t move the workspace. You may not have permission.' });
-        } finally {
-            setMovingWorkspaceId(null);
-        }
-    };
-
-    // Moving a workspace changes who can see it and which team's credentials,
-    // roles and connectors it runs with — never do it on a bare select change.
-    const requestMove = async (workspace: WorkspaceWithRunners, newTeamId: string) => {
-        const target = teams.find(t => t.id === newTeamId);
-        const targetName = target?.name ?? 'another team';
-        const ok = await confirm({
-            title: `Move workspace to ${targetName}?`,
-            message: `"${workspace.name}" will leave ${workspace.teamName ?? 'its current team'}. Members of ${targetName} get access, and its tasks run with ${targetName}'s credentials, roles and connectors.\n\nTo preview what moves first, use Move to team… on the workspace's config page.`,
-            confirmLabel: 'Move workspace',
-            variant: 'warning',
-        });
-        if (ok) await handleMoveWorkspace(workspace.id, newTeamId);
-    };
+    const move = useMoveToTeam();
 
     // Group workspaces by team
     const groups = workspaces.reduce((acc, ws) => {
@@ -111,8 +65,10 @@ export default function WorkspaceList({
         return groups[a].teamName.localeCompare(groups[b].teamName);
     });
 
+    // The toast outlives the row: moving the last workspace out empties the list.
     if (workspaces.length === 0) {
         return (
+            <>
             <div className="border border-dashed border-border-default rounded-[10px] p-8">
                 <div className="flex flex-col items-center text-center max-w-sm mx-auto">
                     <div className="w-12 h-12 rounded-[10px] bg-surface-3 flex items-center justify-center mb-4">
@@ -134,6 +90,8 @@ export default function WorkspaceList({
                     </Link>
                 </div>
             </div>
+            {move.ui}
+            </>
         );
     }
 
@@ -148,6 +106,7 @@ export default function WorkspaceList({
                             {group.workspaces.map((workspace) => (
                                 <div
                                     key={workspace.id}
+                                    data-testid="workspace-list-row"
                                     className="p-4 hover:bg-surface-3 transition-colors flex flex-col md:flex-row md:justify-between md:items-start gap-4"
                                 >
                                     <Link href={`/app/workspaces/${workspace.id}`} className="flex-1 block group">
@@ -175,33 +134,15 @@ export default function WorkspaceList({
                                             </div>
                                         </div>
 
-                                        {teams.length > 1 && (
-                                            <div className="flex w-full md:justify-end items-center gap-2 text-xs">
-                                                <span className="text-text-muted whitespace-nowrap">Move to:</span>
-                                                <Select
-                                                    value={workspace.teamId || ''}
-                                                    disabled={movingWorkspaceId === workspace.id}
-                                                    onChange={(v) => {
-                                                        if (v && v !== workspace.teamId) {
-                                                            void requestMove(workspace, v);
-                                                        }
-                                                    }}
-                                                    options={[
-                                                        ...(!workspace.teamId ? [{ value: '', label: 'Select Team…' }] : []),
-                                                        ...teams.map((t) => ({
-                                                            value: t.id,
-                                                            label: `${t.name} ${t.slug.startsWith('personal') ? '(Personal)' : ''}`,
-                                                        })),
-                                                    ]}
-                                                    size="sm"
-                                                    className="w-full md:w-auto"
-                                                />
-                                            </div>
-                                        )}
-                                        {moveError?.workspaceId === workspace.id && (
-                                            <p role="alert" className="text-xs text-status-error md:text-right">
-                                                {moveError.message}
-                                            </p>
+                                        {workspace.canMove && workspace.teamId && (
+                                            <button
+                                                type="button"
+                                                aria-haspopup="dialog"
+                                                onClick={() => move.start({ id: workspace.id, name: workspace.name, teamId: workspace.teamId! }, moveTeams)}
+                                                className="btn min-h-11 md:min-h-0 self-start md:self-end"
+                                            >
+                                                Move to team&hellip;
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -210,7 +151,7 @@ export default function WorkspaceList({
                     </div>
                 );
             })}
-            {confirmDialog}
+            {move.ui}
         </div>
     );
 }

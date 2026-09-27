@@ -1,7 +1,9 @@
 /**
- * "Move to:" on the workspace list used to PATCH the workspace's team the
- * instant the select changed — one mis-tap moved a workspace to another team.
- * It must ask first, and only call the API once confirmed.
+ * /app/workspaces moves a workspace through the same dialog as Settings →
+ * Workspaces: "Move to team…" opens it, picking a team runs the precheck, and
+ * Move runs /migrate/execute. The old "Move to:" select (a bare PATCH of
+ * teamId behind a confirm) is gone. After a move a toast links to the
+ * workspace in its new team.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals and
  * module mocks stay here.
@@ -18,6 +20,8 @@ mock.module('next/navigation', () => ({
   useRouter: () => ({ refresh, push: () => {}, replace: () => {} }),
   usePathname: () => '/app/workspaces',
 }));
+const openInTeam = mock((_teamId: string, _href: string) => {});
+mock.module('@/lib/switch-team', () => ({ openInTeam, switchTeam: () => {} }));
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
@@ -25,23 +29,14 @@ const { default: WorkspaceList } = await import('./WorkspaceList');
 type Props = Parameters<typeof WorkspaceList>[0];
 
 // Illustrative fixtures only.
+const ws = (id: string, name: string, canMove: boolean) => ({
+  id, name, repo: null, localPath: null, createdAt: new Date('2026-01-01T00:00:00Z'),
+  teamId: 'team-a', teamName: 'Team A', canMove,
+  runners: { action: false, service: false, user: false },
+});
 const props: Props = {
-  workspaces: [
-    {
-      id: 'ws-1',
-      name: 'Example Workspace',
-      repo: null,
-      localPath: null,
-      createdAt: new Date('2026-01-01T00:00:00Z'),
-      teamId: 'team-a',
-      teamName: 'Team A',
-      runners: { action: false, service: false, user: false },
-    },
-  ],
-  teams: [
-    { id: 'team-a', name: 'Team A', slug: 'team-a', role: 'owner', memberCount: 1 },
-    { id: 'team-b', name: 'Team B', slug: 'team-b', role: 'owner', memberCount: 2 },
-  ],
+  workspaces: [ws('ws-1', 'Example Workspace', true), ws('ws-2', 'Read Only Workspace', false)],
+  moveTeams: [{ id: 'team-a', name: 'Team A' }, { id: 'team-b', name: 'Team B' }],
 };
 
 let container: HTMLElement;
@@ -49,8 +44,25 @@ let root: ReturnType<typeof createRoot>;
 let fetchMock: ReturnType<typeof mock>;
 const realFetch = globalThis.fetch;
 
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
 beforeEach(() => {
-  fetchMock = mock(async () => new Response('{}', { status: 200 }));
+  fetchMock = mock(async (url: string) => {
+    if (url.endsWith('/migrate/precheck')) {
+      return json({
+        report: {
+          sourceTeamName: 'Team A', destinationTeamName: 'Team B',
+          precheck: { status: 'PASS', githubApp: { ok: true } },
+          groups: [], requiredAcks: [],
+        },
+        dryRunToken: 'tok',
+      });
+    }
+    if (url.endsWith('/migrate/execute')) return json({ outcomes: [] });
+    return json({}, 404);
+  });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -62,55 +74,61 @@ afterEach(() => {
   container.remove();
   globalThis.fetch = realFetch;
   refresh.mockClear();
+  openInTeam.mockClear();
 });
-
-const click = (el: Element | null | undefined) =>
-  act(async () => {
-    if (!el) throw new Error('element not found');
-    (el as HTMLElement).click();
-  });
 
 function buttonByText(text: string): HTMLButtonElement | undefined {
   return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text);
 }
 
-async function pickTeamB() {
-  await act(async () => root.render(<WorkspaceList {...props} />));
-  // Open the Select, then pick the other team.
-  await click(document.querySelector('button[aria-haspopup="listbox"]'));
-  const option = [...document.querySelectorAll('[role="option"]')].find(o => o.textContent?.includes('Team B'));
-  await click(option);
+function rowOf(name: string): HTMLElement {
+  const row = [...container.querySelectorAll('[data-testid="workspace-list-row"]')]
+    .find(r => r.textContent?.includes(name));
+  expect(row).toBeDefined();
+  return row as HTMLElement;
 }
 
 describe('WorkspaceList move-to-team', () => {
-  it('changing the select does not call the API before confirming', async () => {
-    await pickTeamB();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain('Move workspace to Team B?');
-  });
-
-  it('re-picking the current team neither prompts nor calls the API', async () => {
+  it('has no "Move to:" select; offers Move to team… only where the user can move', async () => {
     await act(async () => root.render(<WorkspaceList {...props} />));
-    await click(document.querySelector('button[aria-haspopup="listbox"]'));
-    const same = [...document.querySelectorAll('[role="option"]')].find(o => o.textContent?.includes('Team A'));
-    await click(same);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain('Move workspace to');
+    expect(container.textContent).not.toContain('Move to:');
+    expect(container.querySelector('[aria-haspopup="listbox"]')).toBeNull();
+    const move = (name: string) => [...rowOf(name).querySelectorAll('button')].find(b => b.textContent?.trim() === 'Move to team…');
+    expect(move('Example Workspace')).toBeDefined();
+    expect(move('Read Only Workspace')).toBeUndefined();
   });
 
-  it('cancelling leaves the workspace where it is', async () => {
-    await pickTeamB();
-    await click(buttonByText('Cancel'));
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('moves through the checked flow and links to the workspace in its new team', async () => {
+    await act(async () => root.render(<WorkspaceList {...props} />));
+    const open = [...rowOf('Example Workspace').querySelectorAll('button')].find(b => b.textContent?.trim() === 'Move to team…')!;
+    await act(async () => { open.click(); });
+
+    // One destination: the check ran as the dialog opened.
+    const urls = () => fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls()).toEqual(['/api/workspaces/ws-1/migrate/precheck']);
+
+    await act(async () => { buttonByText('Move')!.click(); });
+    expect(urls()).toEqual(['/api/workspaces/ws-1/migrate/precheck', '/api/workspaces/ws-1/migrate/execute']);
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const toast = document.querySelector('[data-testid="move-toast"]') as HTMLElement;
+    expect(toast.textContent).toContain('Moved Example Workspace to Team B');
+    const link = toast.querySelector('a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/app/workspaces/ws-1');
+    await act(async () => { link.click(); });
+    expect(openInTeam).toHaveBeenCalledWith('team-b', '/app/workspaces/ws-1');
   });
 
-  it('confirming PATCHes the new team', async () => {
-    await pickTeamB();
-    await click(buttonByText('Move workspace'));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/workspaces/ws-1');
-    expect(init.method).toBe('PATCH');
-    expect(JSON.parse(String(init.body))).toEqual({ teamId: 'team-b' });
+  it('keeps the toast when the move empties the list', async () => {
+    const only: Props = { ...props, workspaces: [props.workspaces[0]] };
+    await act(async () => root.render(<WorkspaceList {...only} />));
+    const open = [...rowOf('Example Workspace').querySelectorAll('button')].find(b => b.textContent?.trim() === 'Move to team…')!;
+    await act(async () => { open.click(); });
+    await act(async () => { buttonByText('Move')!.click(); });
+    // router.refresh(): the moved workspace left the active team.
+    await act(async () => root.render(<WorkspaceList {...only} workspaces={[]} />));
+    expect(container.textContent).toContain('No workspaces yet');
+    expect(document.querySelector('[data-testid="move-toast"]')?.textContent).toContain('Moved Example Workspace to Team B');
   });
 });

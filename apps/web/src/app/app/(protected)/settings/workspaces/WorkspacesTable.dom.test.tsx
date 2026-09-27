@@ -131,4 +131,41 @@ describe('WorkspacesTable', () => {
     await act(async () => { move!.click(); });
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('example-app');
   });
+
+  it('moves from the row menu with the check run for you, then links to the workspace in its new team', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/migrate/precheck')) {
+        return new Response(JSON.stringify({
+          report: {
+            sourceTeamName: 'Team A', destinationTeamName: 'Team B',
+            precheck: { status: 'PASS', githubApp: { ok: true } },
+            groups: [{
+              entity: 'Connectors', disposition: 'NEEDS_RE_AUTH', count: 1,
+              items: [{ key: 'connector:c1', label: 'x', disposition: 'NEEDS_RE_AUTH' }],
+            }],
+            requiredAcks: ['connector:c1'],
+          },
+          dryRunToken: 'tok',
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ outcomes: [] }), { status: 200 });
+    });
+    render();
+    const trigger = rows()[0].querySelector('[data-testid="workspace-row-menu"]') as HTMLButtonElement;
+    await act(async () => { trigger.click(); });
+    const open = [...rows()[0].querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move to team…')!;
+    await act(async () => { open.click(); });
+
+    expect(document.querySelector('[data-testid="move-consequences"]')?.textContent).toBe('1 connector needs reconnecting');
+    const move = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Move')!;
+    await act(async () => { move.click(); });
+
+    expect(fetchMock.mock.calls.map(([u]) => String(u))).toEqual([
+      '/api/workspaces/ws-1/migrate/precheck',
+      '/api/workspaces/ws-1/migrate/execute',
+    ]);
+    const toast = document.querySelector('[data-testid="move-toast"]');
+    expect(toast?.textContent).toContain('Moved example-app to Team B');
+    expect(toast?.querySelector('a')?.getAttribute('href')).toBe('/app/workspaces/ws-1');
+  });
 });
