@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'bun:test';
-import { isDependencyBotAuthor, isDependencyBotPrContext } from './dependency-bot-pr';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import {
+  DEPENDENCY_BOT_LOGINS,
+  isDependencyBotAuthor,
+  isDependencyBotPrContext,
+  workerNotDependencyBotPr,
+} from './dependency-bot-pr';
+
+const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 describe('isDependencyBotAuthor', () => {
   it.each(['renovate[bot]', 'dependabot[bot]', 'Renovate[bot]'])('is true for %s', (login) => {
@@ -40,5 +48,20 @@ describe('isDependencyBotPrContext', () => {
     expect(isDependencyBotPrContext({ adoptedPr: { author: 'maintainer', authorType: 'User' } })).toBe(false);
     expect(isDependencyBotPrContext({ iteration: 1 })).toBe(false);
     expect(isDependencyBotPrContext(null)).toBe(false);
+  });
+});
+
+// Rendered through PgDialect, not asserted against a mocked `db`: a mocked db
+// cannot see what the predicate actually scopes to.
+describe('workerNotDependencyBotPr', () => {
+  it("excludes a worker whose task adopted a dependency-bot PR, matched on the stored login", () => {
+    const q = new PgDialect().sqlToQuery(workerNotDependencyBotPr());
+    const text = norm(q.sql);
+    expect(text).toMatch(/^not exists \(select 1 from "tasks" "bot_pr_task" where/i);
+    // Correlated to the outer worker's task...
+    expect(text).toContain('"bot_pr_task"."id" = "workers"."task_id"');
+    // ...and keyed on the adoption stamp's author, case-insensitively.
+    expect(text).toContain(`lower("bot_pr_task"."context"->'adoptedPr'->>'author') in ($1, $2)`);
+    expect(q.params).toEqual([...DEPENDENCY_BOT_LOGINS]);
   });
 });
