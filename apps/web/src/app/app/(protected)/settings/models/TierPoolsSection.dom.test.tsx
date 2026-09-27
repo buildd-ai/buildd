@@ -50,7 +50,10 @@ async function mount(isAdmin = true) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  const models = [{ id: 'claude-opus-5', displayName: 'Opus', provider: 'anthropic', inputPrice: 5, outputPrice: 25 }];
+  const models = [
+    { id: 'claude-opus-5', displayName: 'Opus', provider: 'anthropic', inputPrice: 5, outputPrice: 25 },
+    { id: 'claude-haiku-4-5', displayName: 'Haiku', provider: 'anthropic', inputPrice: 1, outputPrice: 5 },
+  ];
   await act(async () => { root.render(<TierPoolsSection teamId="team-demo" isAdmin={isAdmin} models={models} />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 }
@@ -90,6 +93,8 @@ describe('TierPoolsSection', () => {
   it('adds a model from the picker on the agent route', async () => {
     await mount();
     await click(host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-toggle"]'));
+    // The base model is already in the tier, so it is not offered.
+    expect(host.querySelector('[data-testid="pool-add"]')!.textContent).not.toContain('claude-haiku-4-5');
     const add = [...host.querySelectorAll('[data-testid="pool-add"] button')].find(b => b.textContent === 'Add');
     await click(add);
     const post = requests.find(r => r.method === 'POST')!;

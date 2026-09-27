@@ -135,7 +135,7 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
   const win = winLabel(arm.stats, minGraded);
   const cost = costLabel(arm.stats);
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_150px_60px_130px_80px] items-center gap-x-3 gap-y-1 py-1.5 border-b border-dashed border-border-default last:border-b-0"
+    <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_150px_60px_130px_80px] items-center gap-x-3 gap-y-1 py-1.5 border-b border-dashed border-border-default last:border-b-0"
       data-testid="pool-arm" data-role={arm.role} data-route={arm.route}>
       <span className="flex min-w-0 items-center gap-2">
         <RouteChip route={arm.route} />
@@ -143,14 +143,15 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
         {arm.role === 'incumbent' && <span className="font-mono text-[11px] text-text-muted">base</span>}
         {arm.status === 'paused' && <span className="font-mono text-[11px] text-status-warning">paused</span>}
       </span>
-      <span data-testid="pool-share"><TrafficBar share={arm.share} base={arm.role === 'incumbent'} /></span>
+      <span className="hidden md:block" data-testid="pool-share"><TrafficBar share={arm.share} base={arm.role === 'incumbent'} /></span>
       <span className={`hidden md:block text-right font-mono text-[12.5px] tabular-nums ${win.learning ? 'text-text-muted' : 'text-text-primary'}`} data-testid="pool-win">{win.text}</span>
       <span className="hidden md:block"><MistakeBar stats={arm.stats} /></span>
       <span className="hidden md:block text-right font-mono text-[12.5px] tabular-nums text-text-primary" data-testid="pool-cost">
         {cost}{cost !== '–' && isVirtualCost(arm.route) && <span className="block text-[10.5px] text-text-muted">virtual</span>}
       </span>
       {/* Phone: win and cost under the model. */}
-      <span className="md:hidden col-span-2 flex gap-3 font-mono text-[11.5px] text-text-muted">
+      <span className="md:hidden flex items-center gap-3 font-mono text-[11.5px] text-text-muted">
+        <TrafficBar share={arm.share} base={arm.role === 'incumbent'} />
         <span>win {win.text}</span><span>{cost}{cost !== '–' && isVirtualCost(arm.route) ? ' virtual' : ''}</span>
       </span>
     </div>
@@ -196,10 +197,11 @@ function PoolRow({ row, teamId, isAdmin, models, onChanged }: {
 
 interface PickRow { value: string; price?: string; band: 'in band' | 'above band' | 'below band' | null }
 
-function pickRows(route: ArmRoute, tier: TierPoolRowView['tier'], models: readonly CatalogModel[], q: string): PickRow[] {
-  const band = TIER_PRICE_BANDS[tier];
+function pickRows(route: ArmRoute, row: TierPoolRowView, models: readonly CatalogModel[], q: string): PickRow[] {
+  const band = TIER_PRICE_BANDS[row.tier];
   const out: PickRow[] = [];
-  const seen = new Set<string>();
+  // Models already in the tier on this route are not offered again.
+  const seen = new Set<string>(row.arms.filter(a => a.route === route).map(a => a.model));
   const needle = q.trim().toLowerCase();
   for (const m of models) {
     const value = route === 'openrouter' ? m.openRouterId
@@ -225,7 +227,7 @@ function AddModel({ row, teamId, models, onDone }: { row: TierPoolRowView; teamI
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const list = useMemo(() => pickRows(route, row.tier, models, q), [route, row.tier, models, q]);
+  const list = useMemo(() => pickRows(route, row, models, q), [route, row, models, q]);
 
   async function add(model: string) {
     setBusy(true); setErr(null);
