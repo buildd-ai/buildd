@@ -205,6 +205,12 @@ export interface ChatToolDeps {
   canAdmin?: boolean;
   /** Tool calls this request won an approval for; nothing else may write. */
   authorizedToolCallIds: ReadonlySet<string>;
+  /**
+   * Writes this turn let run without a card under the person's "Allow" for the
+   * group (permissions.ts canSkipCard, decided in turn.ts). They still go
+   * through the same server-built preview: target resolution and reach.
+   */
+  allowedToolCallIds?: ReadonlySet<string>;
   /** The server-built card each authorized call was approved against (approvals.ts). */
   approvedPreviews?: ReadonlyMap<string, ChatApprovalPreview>;
   /** Builds the card for a write from current state (previews.ts), bound to this turn's reach and dock. */
@@ -273,8 +279,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
           callInput = { ...input, taskId: r.id };
         }
         let target: ChatApprovalPreview['target'] | null = null;
+        const allowed = deps.allowedToolCallIds?.has(toolCallId) === true;
         if (isWrite && needsApproval(action, input)) {
-          if (!deps.allowWrites || !deps.authorizedToolCallIds.has(toolCallId)) {
+          if (!deps.allowWrites || (!deps.authorizedToolCallIds.has(toolCallId) && !allowed)) {
             // Never a write here. The SDK only executes an approved call, so an
             // unapproved one reaching execute means no card was shown: the
             // target was unclear (a question for the user) or it's refused.
@@ -282,10 +289,17 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
             if (p && !p.ok) return { data: `Needs clarification: ${p.question}`, objects: [], summary: 'needs clarification' };
             return errorResult('this write was not approved');
           }
-          // You approve what you saw: rebuild the card from current state and
-          // require the same target and before-state as the approved one.
           const approved = deps.approvedPreviews?.get(toolCallId);
-          if (deps.preview && (approved || !(action === 'manage_missions' && op === 'create'))) {
+          if (allowed && !deps.authorizedToolCallIds.has(toolCallId)) {
+            // No card, same checks: the preview resolves the target inside reach.
+            if (!deps.preview) return errorResult('this write was not approved');
+            const now = await deps.preview(action, input).catch(e => ({ ok: false as const, question: String(e) }));
+            if (!now.ok) return { data: `Needs clarification: ${now.question}`, objects: [], summary: 'needs clarification' };
+            callInput = now.input;
+            target = now.preview.target;
+          } else if (deps.preview && (approved || !(action === 'manage_missions' && op === 'create'))) {
+            // You approve what you saw: rebuild the card from current state and
+            // require the same target and before-state as the approved one.
             const now = await deps.preview(action, input).catch(e => ({ ok: false as const, question: String(e) }));
             if (!now.ok) return errorResult(`nothing changed: ${now.question}`);
             if (!approved || !previewMatches(approved, now.preview)) {
@@ -313,6 +327,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
           data: text.length > MAX_TOOL_TEXT ? `${text.slice(0, MAX_TOOL_TEXT)}\n…[truncated]` : text,
           objects,
           summary: failed ? text.split('\n')[0].slice(0, 120) : summarize(op, objects, text),
+          ...(allowed && isWrite ? { allowed: true } : {}),
         };
         if (action === 'manage_missions' && op === 'create' && !failed) {
           const mission = objects.find(o2 => o2.kind === 'mission');

@@ -1331,6 +1331,13 @@
       "when": 1790481243729,
       "tag": "0190_broad_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1790482790092,
+      "tag": "0191_keen_iron_fist",
+      "breakpoints": true
     }
   ]
 }

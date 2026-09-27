@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { CreateConversationRequest, ListConversationsResponse } from '@buildd/shared';
+import { isChatTierName, type CreateConversationRequest, type ListConversationsResponse } from '@buildd/shared';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { createConversation, listConversations, toConversationDTO } from '@/lib/chat/store';
 import { isSensitiveWorkspace, loadTeamChatSettings, requireChatCaller, resolveChatTeam } from '@/lib/chat/session';
 
 /**
  * GET  /api/chat?cursor=&limit=  → ListConversationsResponse (the caller's own, in teams they still belong to, newest first)
- * POST /api/chat { teamId?, workspaceId? } → { conversation }
+ * POST /api/chat { teamId?, workspaceId?, tier? } → { conversation }
  *
  * Session only. Creating a conversation needs the team's `chat` capability on;
  * listing works regardless so history stays readable after chat is turned off.
@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'capability_disabled', message: 'Chat is not enabled for this team.' }, { status: 403 });
   }
 
-  const conversation = await createConversation({ teamId, workspaceId, userId: r.caller.user.id });
+  const tier = isChatTierName(body.tier) ? body.tier : null;
+  const conversation = await createConversation({ teamId, workspaceId, userId: r.caller.user.id, tier });
   return NextResponse.json({ conversation: toConversationDTO(conversation) }, { status: 201 });
 }

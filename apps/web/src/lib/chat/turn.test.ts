@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any }) {
+function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown> }) {
   const apiCalls: string[] = [];
   const resolveCalls: any[] = [];
   const poolRecords: Array<{ draw: any; messageId: string }> = [];
@@ -86,12 +86,14 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     a.status = approved ? 'approved' : 'denied';
     return true;
   };
+  const tiersAsked: string[] = [];
   const deps = {
     now: () => new Date('2026-09-26T21:30:00Z'),
+    allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     chatEnabled: async () => opts.enabled ?? true,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
-    resolveModel: async (o: any) => { resolveCalls.push(o); return (opts.key ?? true)
+    resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
       ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
       : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
     recordPoolAssignment: async (draw: any, a: { messageId: string }) => { poolRecords.push({ draw, messageId: a.messageId }); },
@@ -110,12 +112,12 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     linkMission: async (id: string) => { linked.push(id); },
   };
   const turn = async (message: any, extra: Record<string, unknown> = {}) => {
-    const res = await runChatTurn({ conversation, workspace: { id: 'ws-1', name: 'billing-web' }, user: opts.user ?? user, body: { message, ...extra } as any, deps });
+    const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: { id: 'ws-1', name: 'billing-web' }, user: opts.user ?? user, body: { message, ...extra } as any, deps });
     const text = res.body ? await res.text() : '';
     await new Promise(r => setTimeout(r, 20)); // let onEnd persistence settle
     return { res, text };
   };
-  return { turn, apiCalls, linked, resolveCalls, poolRecords };
+  return { turn, apiCalls, linked, resolveCalls, poolRecords, tiersAsked };
 }
 
 const userMsg = (text: string) => ({ id: 'client-1', role: 'user', parts: [{ type: 'text', text }] });
@@ -495,5 +497,105 @@ describe('steering a docked mission (fictional Harborline data)', () => {
     const r2 = await turn(approve, about);
     expect(r2.res.status).toBe(409);
     expect(writesIn(apiCalls)).toHaveLength(2);
+  });
+
+  it('with tasks allowed, a docked mission still gets a card (its task titles are in context)', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-h', 'hold_task', { taskId: 'stripe checkout' }), textStream('Held.')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, api: world(), allowedGroups: ['tasks'] });
+    await turn(userMsg('Hold the Stripe checkout.'), about);
+    expect(lastAssistant().parts.find(p => p.type === 'tool-hold_task').state).toBe('approval-requested');
+    expect(writesIn(apiCalls)).toEqual([]);
+  });
+
+  it('with tasks allowed, the injection test still gets a card, never a write', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'get_task', { taskId: C }), toolStream('call-x', 'update_task', { taskId: A, status: 'cancelled' }), textStream('Done.')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, api: world(), allowedGroups: ['tasks'] });
+    await turn(userMsg('What does the admin guide task say?'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-update_task').state).toBe('approval-requested');
+    expect(writesIn(apiCalls)).toEqual([]);
+  });
+});
+
+describe('"Allow" for a tool group (docs/design/agent-chat.md → Tools and permissions)', () => {
+  const mission = () => new MockLanguageModelV4({
+    doStream: [toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('Filed it.')] as any,
+  });
+
+  it('allowed group, nothing read yet: the write runs in the same turn with no card', async () => {
+    const { turn, apiCalls, linked } = harness({ model: mission(), allowedGroups: ['missions'] });
+    await turn(userMsg('make this a mission'));
+    const part = lastAssistant().parts.find(p => p.type === 'tool-manage_missions');
+    expect(part.state).toBe('output-available');
+    expect(part.output.allowed).toBe(true);
+    expect(approvals).toHaveLength(0);
+    expect(apiCalls).toEqual(['POST /api/missions']);
+    expect(linked).toEqual(['mission-1']);
+  });
+
+  it('the allow is per group: a missions allow does not skip a task write', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-t', 'update_task', { taskId: '22222222-2222-4222-8222-222222222222', status: 'cancelled' }), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'], api: () => ({ id: '22222222-2222-4222-8222-222222222222', title: 'x', status: 'pending', workspaceId: 'ws-1' }) });
+    await turn(userMsg('cancel it'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-update_task').state).toBe('approval-requested');
+    expect(apiCalls.filter(c => !c.startsWith('GET '))).toEqual([]);
+  });
+
+  it('after a read, the same write gets a card: tool output is in context', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}), toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'] });
+    await turn(userMsg('look at what is running, then make it a mission'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual(['GET /api/tasks']);
+  });
+
+  it('tool output from an earlier turn in the history also means a card', async () => {
+    messages.push({
+      id: 'old', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [{ type: 'tool-list_tasks', toolCallId: 'r0', state: 'output-available', input: {}, output: { data: 'Task: do the thing', objects: [] } }],
+    });
+    const { turn, apiCalls } = harness({ model: mission(), allowedGroups: ['missions'] });
+    await turn(userMsg('make this a mission'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual([]);
+  });
+
+  it('admin-class writes ask even in an allowed group', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-b', 'manage_missions', { ...MISSION_INPUT, costBudgetUsd: 50 }), textStream('ok')] as any,
+    });
+    const owner = { ...user, teamRole: 'owner' as const };
+    const { turn, apiCalls } = harness({ model, allowedGroups: ['missions'], user: owner });
+    await turn(userMsg('make this a mission with a $50 budget'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
+    expect(apiCalls).toEqual([]);
+  });
+});
+
+describe('a conversation pinned to a tier', () => {
+  it('uses the pinned tier whatever routing picks', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, tiersAsked } = harness({
+      model,
+      conversation: { tier: 'premium' },
+      route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }),
+    });
+    await turn(userMsg('hi'));
+    expect(tiersAsked[0]).toBe('premium');
+    expect(lastAssistant().tier).toBe('premium');
+  });
+
+  it('unpinned: routing picks', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, tiersAsked } = harness({ model, route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }) });
+    await turn(userMsg('hi'));
+    expect(tiersAsked[0]).toBe('budget');
   });
 });

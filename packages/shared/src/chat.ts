@@ -207,6 +207,8 @@ export interface ChatToolResult<T = unknown> {
    * object count.
    */
   summary?: string;
+  /** A write that ran without a card under the person's "Allow" for its tool group. */
+  allowed?: boolean;
 }
 
 /**
@@ -381,6 +383,8 @@ export interface ConversationDTO {
   title: string;
   titleSource: ConversationTitleSource;
   agentRoleSlug: string;
+  /** The tier this conversation is pinned to; null = routed per turn. */
+  tier: ChatTierName | null;
   lastMessageAt: string;
   archivedAt: string | null;
   createdAt: string;
@@ -458,6 +462,8 @@ export interface ConversationApprovalDTO {
 export interface CreateConversationRequest {
   teamId?: string;
   workspaceId?: string | null;
+  /** Pin the new conversation to a tier (the composer's tier switch before the first send). */
+  tier?: ChatTierName | null;
 }
 export interface CreateConversationResponse {
   conversation: ConversationDTO;
@@ -480,6 +486,63 @@ export interface GetConversationResponse {
 export interface UpdateConversationRequest {
   title?: string;
   archived?: boolean;
+  /** Pin to a tier, or null to route per turn again. */
+  tier?: ChatTierName | null;
+}
+
+// ── Tiers and cost ────────────────────────────────────────────────────────────
+
+export const CHAT_TIER_NAMES = ['budget', 'standard', 'premium'] as const;
+export type ChatTierName = (typeof CHAT_TIER_NAMES)[number];
+
+export function isChatTierName(value: unknown): value is ChatTierName {
+  return typeof value === 'string' && (CHAT_TIER_NAMES as readonly string[]).includes(value);
+}
+
+export interface ChatTierInfo {
+  tier: ChatTierName;
+  /** The model the tier maps to now (the incumbent, when the tier is pooled). */
+  model: string;
+  /** Every model the tier may serve; one entry unless the tier is pooled. */
+  models: string[];
+  /** Expected USD per 1k tokens, averaged over `models`. */
+  inputPer1kUsd: number;
+  outputPer1kUsd: number;
+}
+
+/** `GET /api/chat/tiers?teamId=&conversationId=` */
+export interface GetChatTiersResponse {
+  tiers: ChatTierInfo[];
+  /** The conversation's pin (null = routed per turn), when a conversation was named. */
+  pinned: ChatTierName | null;
+  /** What this conversation has cost so far (turns plus routing calls), USD. */
+  conversationCostUsd: number | null;
+}
+
+// ── Tool permissions ──────────────────────────────────────────────────────────
+
+/**
+ * One row of the composer's tools menu. `ask` / `allow` rows can be switched;
+ * `locked` rows can't: admin always asks, a read-only group has no writes, and
+ * `never` is not in chat at all.
+ */
+export interface ChatToolPermissionRow {
+  key: string;
+  label: string;
+  mode: 'ask' | 'allow' | 'read' | 'never';
+  locked: boolean;
+}
+
+/** `GET /api/chat/permissions?teamId=` */
+export interface GetChatPermissionsResponse {
+  rows: ChatToolPermissionRow[];
+}
+
+/** `PATCH /api/chat/permissions` */
+export interface UpdateChatPermissionRequest {
+  teamId?: string;
+  group: string;
+  mode: 'ask' | 'allow';
 }
 
 /**
@@ -558,7 +621,7 @@ export function conversationChannelName(conversationId: string): string {
   return `conversation-${conversationId}`;
 }
 
-export type ConversationUpdatedReason = 'message' | 'title' | 'approval' | 'event' | 'archived';
+export type ConversationUpdatedReason = 'message' | 'title' | 'approval' | 'event' | 'archived' | 'tier' | 'scope';
 
 export interface ConversationUpdatedPayload {
   conversationId: string;
