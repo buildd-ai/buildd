@@ -1067,11 +1067,6 @@ export async function PATCH(
         .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
         .catch(() => {});
     }
-    // Subscriptions ledger: "tell me when this task needs input". The key is
-    // per question, so the runner re-sending the same waitingFor writes one row.
-    if (worker.taskId) {
-      await recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
-    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
@@ -3607,8 +3602,8 @@ export async function PATCH(
                 .then(m => m.postTaskCompletedEvent({ taskId }))
                 .catch(() => {});
             }
-            // Subscriptions ledger. Never throws. Title omitted for sensitive workspaces.
-            await recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
+            // Subscriptions ledger. Fire-and-forget; never throws. Title omitted for sensitive workspaces.
+            void recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
               taskId,
               workerId: id,
               title: isSensitive ? null : taskRecord.title,
@@ -3715,6 +3710,14 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // Subscriptions ledger: "tell me when this task needs input". Only after the
+  // worker write landed, so a conflicted PATCH records nothing. The key is per
+  // question, so the runner re-sending the same waitingFor writes one row.
+  // Fire-and-forget: recordEvent catches its own errors and adds no latency.
+  if (waitingFor?.type === 'question' && worker.taskId) {
+    void recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
   }
 
   // One terminal record per worker, on every path that lands here: a real

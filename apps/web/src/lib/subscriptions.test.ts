@@ -132,19 +132,36 @@ describe('scoping: a subscription only matches subjects its owner can see', () =
   it('a PR event only reaches a subscription whose workspace points at that repo', () => {
     expect(pr).toContain('w."id" = s."workspace_id"');
     expect(pr).toContain('w."team_id" = s."team_id"');
-    // Both repo identities: the free-text column normalised, and the github_repos FK.
-    expect(pr).toContain('lower(regexp_replace(regexp_replace(coalesce(w."repo"');
+    // Repo identity comes only from the github_repos FK (follows renames).
     expect(pr).toContain('from "github_repos" gr where gr."id" = w."github_repo_id" and lower(gr."full_name") =');
     expect(render(recordEventSql(prMergedEvent({ repoFullName: 'Acme/Widgets', prNumber: 42 }), now)).params)
       .toContain('acme/widgets');
+  });
+
+  it('a workspace whose only link to the repo is the free-text repo column gets nothing', () => {
+    // The column is not an identity: it is free text, often a URL, and does
+    // not follow renames. Neither create nor event matching may read it.
+    const create = text(createSubscriptionSql({
+      owner: { userId: USER },
+      subject: { kind: 'pr', workspaceId: WS, repoFullName: 'acme/widgets', prNumber: 42 },
+      eventTypes: ['pr.merged'],
+      createdVia: 'chat',
+    }, now));
+    for (const q of [pr, create]) {
+      expect(q).not.toContain('w."repo"');
+      expect(q).not.toContain('regexp_replace');
+      expect(q).toContain('gr."id" = w."github_repo_id"');
+    }
   });
 
   it('a person owner must still be a member of the subject\'s team at event time', () => {
     expect(task).toContain('s."owner_user_id" is not null and exists (select 1 from "team_members" tm where tm."team_id" = w."team_id" and tm."user_id" = s."owner_user_id")');
   });
 
-  it('an agent (task) owner must run in the same team', () => {
-    expect(task).toContain('s."owner_task_id" is not null and exists (select 1 from "tasks" ot join "workspaces" ow on ow."id" = ot."workspace_id" where ot."id" = s."owner_task_id" and ow."team_id" = w."team_id")');
+  it('an agent (task) owner must run in the same team, and gets the restricted-workspace rule accounts get', () => {
+    expect(task).toContain('s."owner_task_id" is not null and exists (select 1 from "tasks" ot join "workspaces" ow on ow."id" = ot."workspace_id" where ot."id" = s."owner_task_id" and ow."team_id" = w."team_id"');
+    // Its own workspace, an open one, or one its claiming account is linked to.
+    expect(task).toContain('ow."id" = w."id" or w."access_mode" = \'open\' or exists (select 1 from "account_workspaces" taw where taw."account_id" = ot."claimed_by" and taw."workspace_id" = w."id")');
   });
 
   it('an account (MCP session) owner needs the team, and an explicit link to a restricted workspace', () => {
@@ -228,13 +245,35 @@ describe('scoping: a subscription only matches subjects its owner can see', () =
 // ── One-shot ────────────────────────────────────────────────────────────────
 
 describe('one-shot: a watch ends after its first delivery', () => {
-  it('marking a row delivered ends its one-shot subscription in the same statement', () => {
-    const q = text(markDeliveredSql({ userId: USER }, 'del-1', { route: 'conversation' }, now));
-    expect(q).toContain('update "notification_deliveries" set "status" = \'delivered\'');
-    expect(q).toContain('"status" = \'pending\'');
-    expect(q).toContain('update "subscriptions" s set "ended_at" =');
-    expect(q).toContain('"end_reason" = \'delivered\'');
-    expect(q).toContain('s."lifetime" = \'one_shot\' and s."ended_at" is null');
+  const mark = text(markDeliveredSql({ userId: USER }, 'del-1', { route: 'conversation' }, now));
+
+  it('takes the one-shot subscription first, then marks the row only if it won the claim', () => {
+    const claim = mark.indexOf('claimed as ( update "subscriptions" s set "ended_at" =');
+    const marked = mark.indexOf('marked as ( update "notification_deliveries" d set "status" = \'delivered\'');
+    expect(claim).toBeGreaterThan(-1);
+    expect(marked).toBeGreaterThan(claim);
+    expect(mark).toContain('"end_reason" = \'delivered\'');
+    expect(mark).toContain('s."lifetime" = \'one_shot\' and s."ended_at" is null');
+    // A standing watch has nothing to claim; a one-shot needs the claim.
+    expect(mark).toContain('(target."lifetime" = \'standing\' or exists (select 1 from claimed))');
+    expect(mark).toContain('d."status" = \'pending\'');
+  });
+
+  it('concurrency: of two markDelivered calls on one one-shot, only the one that ends the watch marks', () => {
+    // Postgres re-checks an UPDATE's WHERE on the row it waited for, so the
+    // second claim on the same subscription sees ended_at set and returns no
+    // row; its delivery update is gated on that claim and writes nothing.
+    // (Also run for real against Postgres: see the PR body.)
+    for (const del of ['del-1', 'del-2']) {
+      const q = text(markDeliveredSql({ userId: USER }, del, { route: 'conversation' }, now));
+      expect(q).toContain('s."ended_at" is null');
+      expect(q).toContain('exists (select 1 from claimed)');
+    }
+  });
+
+  it('the winner folds the watch\'s other pending rows into coalesced', () => {
+    expect(mark).toContain('siblings as ( update "notification_deliveries" d set "status" = \'coalesced\'');
+    expect(mark).toContain('from claimed where d."subscription_id" = claimed."id" and d."status" = \'pending\' and d."id" <>');
   });
 
   it('an ended subscription matches no new events', () => {
@@ -250,12 +289,12 @@ describe('one-shot: a watch ends after its first delivery', () => {
       .toEqual({ marked: false, subscriptionEnded: false });
   });
 
-  it('a cancelled watch has no undelivered rows', () => {
+  it('an ended watch (delivered one-shot or cancelled) has no undelivered rows', () => {
     const { calls, exec } = recorder([]);
     return listUndelivered({ userId: USER }, { exec }).then(() => {
       const q = text(calls[0]);
       expect(q).toContain('d."status" = \'pending\'');
-      expect(q).toContain('s."end_reason" is distinct from \'cancelled\'');
+      expect(q).toContain('s."ended_at" is null');
     });
   });
 });

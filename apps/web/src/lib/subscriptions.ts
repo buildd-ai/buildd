@@ -23,10 +23,13 @@
  *     ON CONFLICT DO NOTHING. Two emitters that see the same fact build the same
  *     key, so they write one row. No db.transaction (neon-http).
  *   - Scoping: a subscription matches only if its owner can see the subject's
- *     workspace *at event time* (same team; an account also needs an explicit
- *     link to a restricted workspace). Create applies the same rule.
- *   - One-shot: marking its first row delivered ends the subscription in the
- *     same statement; an ended subscription matches nothing.
+ *     workspace *at event time* (same team; an account or agent task also
+ *     needs an explicit link to a restricted workspace). A PR's repo identity
+ *     is the github_repos FK only. Create applies the same rule.
+ *   - One-shot: delivery claims the subscription first (ends it), then marks
+ *     the row; sibling pending rows are coalesced. Exactly one delivery wins
+ *     under concurrency. An ended subscription matches nothing and lists no
+ *     undelivered rows.
  *   - Expiry: an expired subscription matches nothing. Rows recorded before
  *     expiry stay deliverable.
  */
@@ -34,7 +37,6 @@
 import { createHash } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { normalizedRepoSql } from '@/lib/repo-scope';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -196,7 +198,8 @@ function ownerMatch(owner: SubscriptionOwner, alias = 's'): SQL {
 function ownerSeesWorkspace(o: { userId: SQL; taskId: SQL; accountId: SQL }): SQL {
   return sql`(
     (${o.userId} is not null and exists (select 1 from "team_members" tm where tm."team_id" = w."team_id" and tm."user_id" = ${o.userId}))
-    or (${o.taskId} is not null and exists (select 1 from "tasks" ot join "workspaces" ow on ow."id" = ot."workspace_id" where ot."id" = ${o.taskId} and ow."team_id" = w."team_id"))
+    or (${o.taskId} is not null and exists (select 1 from "tasks" ot join "workspaces" ow on ow."id" = ot."workspace_id" where ot."id" = ${o.taskId} and ow."team_id" = w."team_id"
+      and (ow."id" = w."id" or w."access_mode" = 'open' or exists (select 1 from "account_workspaces" taw where taw."account_id" = ot."claimed_by" and taw."workspace_id" = w."id"))))
     or (${o.accountId} is not null and exists (select 1 from "accounts" oa where oa."id" = ${o.accountId} and oa."team_id" = w."team_id" and (w."access_mode" = 'open' or exists (select 1 from "account_workspaces" aw where aw."account_id" = oa."id" and aw."workspace_id" = w."id"))))
   )`;
 }
@@ -207,10 +210,14 @@ const SUB_OWNER_COLS = {
   accountId: sql`s."owner_account_id"`,
 };
 
-/** Workspace `w` points at this repo, by either identity. */
+/**
+ * Workspace `w` is linked to this repo through the github_repos FK. The
+ * free-text `workspaces.repo` column is deliberately not consulted: it is not
+ * an identity (often a URL, and it does not follow renames).
+ */
 function workspacePointsAtRepo(repoFullName: string): SQL {
   const repo = repoFullName.toLowerCase();
-  return sql`(${normalizedRepoSql(sql`w."repo"`)} = ${repo} or exists (select 1 from "github_repos" gr where gr."id" = w."github_repo_id" and lower(gr."full_name") = ${repo}))`;
+  return sql`exists (select 1 from "github_repos" gr where gr."id" = w."github_repo_id" and lower(gr."full_name") = ${repo})`;
 }
 
 // ── recordEvent ──────────────────────────────────────────────────────────────
@@ -366,7 +373,7 @@ export async function listSubscriptions(owner: SubscriptionOwner, deps: Deps = {
 
 // ── Delivery side ────────────────────────────────────────────────────────────
 
-/** Pending ledger rows for this owner, oldest first. Rows of a cancelled watch are excluded. */
+/** Pending ledger rows for this owner, oldest first. Rows of an ended watch (delivered one-shot, cancelled) are excluded. */
 export async function listUndelivered(owner: SubscriptionOwner, opts: { limit?: number } & Deps = {}): Promise<UndeliveredRow[]> {
   const exec = opts.exec ?? dbExec;
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
@@ -378,7 +385,7 @@ export async function listUndelivered(owner: SubscriptionOwner, opts: { limit?: 
     join "subscriptions" s on s."id" = d."subscription_id"
     where ${ownerMatch(owner)}
       and d."status" = 'pending'
-      and s."end_reason" is distinct from 'cancelled'
+      and s."ended_at" is null
     order by d."created_at" asc
     limit ${limit}
   `);
@@ -387,27 +394,46 @@ export async function listUndelivered(owner: SubscriptionOwner, opts: { limit?: 
 
 export function markDeliveredSql(owner: SubscriptionOwner, deliveryId: string, opts: { route: string }, now: Date): SQL {
   const at = now.toISOString();
+  // One statement, ordered by data dependency:
+  //   target   the pending row, if it is this owner's and its watch is live
+  //   claimed  a one-shot watch is taken FIRST (ended_at IS NULL -> now). Of two
+  //            concurrent calls, the second waits on the row lock, re-checks
+  //            ended_at, and claims nothing
+  //   marked   the row is delivered only for a standing watch or a won claim
+  //   siblings the winner folds the watch's other pending rows into coalesced
   return sql`
-    with d as (
-      update "notification_deliveries" set "status" = 'delivered', "delivered_at" = ${at}::timestamptz,
-        "route" = ${opts.route}, "attempts" = "attempts" + 1
-      where "id" = ${deliveryId}::uuid and "status" = 'pending'
-        and "subscription_id" in (select s."id" from "subscriptions" s where ${ownerMatch(owner)})
-      returning "subscription_id"
-    ), ended as (
+    with target as (
+      select d."id", d."subscription_id", s."lifetime"
+      from "notification_deliveries" d
+      join "subscriptions" s on s."id" = d."subscription_id"
+      where d."id" = ${deliveryId}::uuid and d."status" = 'pending' and s."ended_at" is null and ${ownerMatch(owner)}
+    ), claimed as (
       update "subscriptions" s set "ended_at" = ${at}::timestamptz, "end_reason" = 'delivered', "updated_at" = ${at}::timestamptz
-      from d
-      where s."id" = d."subscription_id" and s."lifetime" = 'one_shot' and s."ended_at" is null
+      from target
+      where s."id" = target."subscription_id" and s."lifetime" = 'one_shot' and s."ended_at" is null
       returning s."id"
+    ), marked as (
+      update "notification_deliveries" d set "status" = 'delivered', "delivered_at" = ${at}::timestamptz,
+        "route" = ${opts.route}, "attempts" = d."attempts" + 1
+      from target
+      where d."id" = target."id" and d."status" = 'pending'
+        and (target."lifetime" = 'standing' or exists (select 1 from claimed))
+      returning d."id"
+    ), siblings as (
+      update "notification_deliveries" d set "status" = 'coalesced'
+      from claimed where d."subscription_id" = claimed."id" and d."status" = 'pending' and d."id" <> ${deliveryId}::uuid
+      returning d."id"
     )
-    select (select count(*) from d)::int as "marked", (select count(*) from ended)::int as "ended"
+    select (select count(*) from marked)::int as "marked", (select count(*) from claimed)::int as "ended"
   `;
 }
 
 /**
  * Close one pending row as delivered via `route` ('conversation', 'pushover', ...).
- * Atomic with ending a one-shot watch. `marked: false` means someone else
- * already delivered it (or it is not this owner's): do not send.
+ * For a one-shot watch the watch is claimed first, atomically, so exactly one
+ * caller wins; its other pending rows become `coalesced`. `marked: false`
+ * means someone else already delivered it (or it is not this owner's, or the
+ * watch has ended): do not send.
  */
 export async function markDelivered(
   owner: SubscriptionOwner, deliveryId: string, opts: { route: string }, deps: Deps = {},
