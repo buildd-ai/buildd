@@ -26,6 +26,7 @@ import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
 import type { SecretsProvider } from '@buildd/core/secrets';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -135,11 +136,7 @@ export async function resolveMcpConnectorsForTask(
   const connectorSecretMap = new Map<string, { id: string; tokenExpiresAt: Date | null }>();
   if (authConnectorIds.length > 0) {
     const connectorSecretRows = await db.query.secrets.findMany({
-      where: and(
-        inArray(secrets.teamId, ownerTeamIds),
-        eq(secrets.purpose, 'mcp_connector_credential'),
-        inArray(secrets.label, authConnectorIds),
-      ),
+      where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectorIds }),
       columns: { id: true, label: true, tokenExpiresAt: true },
     });
     for (const s of connectorSecretRows) {
@@ -160,11 +157,7 @@ export async function resolveMcpConnectorsForTask(
   const envSecretMap = new Map<string, string>();
   if (envLabels.length > 0) {
     const envSecretRows = await db.query.secrets.findMany({
-      where: and(
-        inArray(secrets.teamId, ownerTeamIds),
-        eq(secrets.purpose, 'mcp_credential'),
-        inArray(secrets.label, envLabels),
-      ),
+      where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels }),
       columns: { id: true, label: true, teamId: true },
     });
     await Promise.all(envSecretRows.map(async (s) => {

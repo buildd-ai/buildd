@@ -347,3 +347,43 @@ describe('team model keys need a team admin', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// Connector and MCP credential lookups read team rows only (user_id IS NULL).
+// A userId-scoped row of those purposes would be invisible to them at best and,
+// before that filter, mountable as the team's credential — so this route never
+// creates one. Personal keys have their own route (/api/inference-keys).
+describe('POST /api/secrets never creates a personal row', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+  });
+
+  for (const purpose of ['mcp_credential', 'role_env_secret', 'anthropic_api_key', 'oauth_token', 'custom', 'decision_key']) {
+    it(`refuses a userId-scoped ${purpose}`, async () => {
+      const value = purpose === 'anthropic_api_key' ? 'sk-ant-api-x' : purpose === 'oauth_token' ? 'sk-ant-oat-x' : 'v';
+      const res = await POST(createPostRequest({ value, purpose, label: 'GITHUB_TOKEN', userId: 'user-1' }));
+      expect(res.status).toBe(400);
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+  }
+
+  it('points a personal inference key at /api/inference-keys instead of storing it here', async () => {
+    const res = await POST(createPostRequest({ value: 'sk-or-v1-x', purpose: 'inference_key', label: 'openrouter', userId: 'user-1' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('/api/inference-keys');
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('never forwards a userId to the provider for a team row', async () => {
+    const res = await POST(createPostRequest({ value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));
+    expect(res.status).toBe(200);
+    const meta = (mockSecretsReplaceScoped.mock.calls[0] as any[])[1];
+    expect(meta.userId ?? null).toBeNull();
+  });
+});

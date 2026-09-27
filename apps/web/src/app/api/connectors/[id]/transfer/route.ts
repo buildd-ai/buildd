@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -125,11 +126,7 @@ export async function POST(
     //    rows must follow the owner.
     await db.update(secrets)
       .set({ teamId: targetTeamId, updatedAt: new Date() })
-      .where(and(
-        eq(secrets.teamId, connector.teamId),
-        eq(secrets.purpose, 'mcp_connector_credential'),
-        inArray(secrets.label, [id, `${id}:refresh`]),
-      ));
+      .where(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: [id, `${id}:refresh`] }));
 
     // 2b. stdio connectors reference `mcp_credential` env secrets by label via
     //     envMapping. Those are keyed on the owner team at claim time (§3), so a
@@ -144,19 +141,11 @@ export async function POST(
       if (labels.length > 0) {
         const [oldRows, newRows] = await Promise.all([
           db.query.secrets.findMany({
-            where: and(
-              eq(secrets.teamId, connector.teamId),
-              eq(secrets.purpose, 'mcp_credential'),
-              inArray(secrets.label, labels),
-            ),
+            where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_credential', label: labels }),
             columns: { label: true, encryptedValue: true, tokenExpiresAt: true },
           }),
           db.query.secrets.findMany({
-            where: and(
-              eq(secrets.teamId, targetTeamId),
-              eq(secrets.purpose, 'mcp_credential'),
-              inArray(secrets.label, labels),
-            ),
+            where: teamCredentialWhere({ teamId: targetTeamId, purpose: 'mcp_credential', label: labels }),
             columns: { label: true },
           }),
         ]);

@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -53,11 +54,7 @@ export async function GET(
   }
 
   const secret = await db.query.secrets.findFirst({
-    where: and(
-      eq(secrets.teamId, connector.teamId),
-      eq(secrets.purpose, 'mcp_connector_credential'),
-      eq(secrets.label, id),
-    ),
+    where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
     columns: { tokenExpiresAt: true },
   });
 

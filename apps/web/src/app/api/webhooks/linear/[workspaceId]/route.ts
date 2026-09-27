@@ -9,6 +9,7 @@ import {
   handleLinearIssueEvent,
   WEBHOOK_MAX_SKEW_MS,
 } from '@/lib/linear-webhook';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /**
  * Inbound Linear webhook (work-tracker spec §3, Phase 3a).
@@ -33,10 +34,9 @@ async function defaultGetWorkspace(database: Db, id: string) {
 
 async function defaultGetSigningSecret(database: Db, workspaceId: string): Promise<string | null> {
   const row = await database.query.secrets.findFirst({
-    where: and(
+    where: teamCredentialWhere(
+      { purpose: 'webhook_token', label: 'linear' },
       eq(secrets.workspaceId, workspaceId),
-      eq(secrets.purpose, 'webhook_token'),
-      eq(secrets.label, 'linear'),
     ),
     columns: { encryptedValue: true },
   });
