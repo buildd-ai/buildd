@@ -9,9 +9,9 @@ import { chatKeyLine, ownKeyProviders } from './chat-key-line';
 import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButton';
 
 /**
- * Account → Interactive AI. One row: what it runs on for you. Team setup lives in
- * Connections → Model providers; this only shows the outcome of the team's key
- * policy, plus your own key when the policy allows or requires one.
+ * Account → chat key. One line that links to Model providers: what chat uses
+ * for you. Team setup lives there; this only shows the outcome of the team's
+ * key policy, plus your own key when the policy allows or requires one.
  */
 export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: string | null; isAdmin: boolean }) {
   const [view, setView] = useState<ProviderKeysView | null>(null);
@@ -55,18 +55,19 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
   });
 
   return (
-    <section id="provider-keys" className="scroll-mt-20" aria-labelledby="chat-key-h">
-      <h2 id="chat-key-h" className="section-label mb-3">Interactive AI</h2>
+    <section id="provider-keys" className="scroll-mt-20" aria-label="Chat key">
       {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
-      <div className="card flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3 min-h-12" data-testid="chat-key-row">
-        <span className="text-xs text-text-muted">Uses</span>
-        <span className="flex items-center gap-3 text-sm text-text-primary">
-          <span data-testid="chat-key-line">{line?.text ?? 'Loading…'}</span>
-          {line?.action && (
-            <Link href={line.action.href} className="text-accent-text underline hover:no-underline">{line.action.label}</Link>
-          )}
+      <Link
+        href="/app/settings/providers"
+        className="card card-interactive flex items-center justify-between gap-4 px-4 py-3 min-h-12 text-sm"
+        data-testid="chat-key-row"
+      >
+        <span className="min-w-0">
+          <span className="text-text-muted">{summary?.kind === 'team' || summary?.kind === 'own' ? 'Chat uses ' : 'Chat: '}</span>
+          <span className="text-text-primary" data-testid="chat-key-line">{line?.text ?? 'Loading…'}</span>
         </span>
-      </div>
+        <span aria-hidden className="shrink-0 text-text-muted">→</span>
+      </Link>
 
       {/* Everyone brings their own key and you have none: one button, the
           paste field behind a quiet disclosure. */}

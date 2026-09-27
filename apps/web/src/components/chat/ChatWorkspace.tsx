@@ -415,7 +415,14 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       {header}
       {strip}
       {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {/* The top edge fades: a line cut off under the header reads as a fade,
+          not as stray glyphs. py-6 keeps the first message clear of it. */}
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        data-testid="chat-scroller"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
+      >
         <div ref={content} className={`mx-auto px-4 py-6 ${anchored && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
           {missionEmpty && missionSheet ? (
             <div data-testid="mission-sheet-empty" className="mb-6">

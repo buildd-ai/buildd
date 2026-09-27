@@ -5,6 +5,7 @@ import { eq, and, or, inArray, sql } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
+import { isUuid } from './uuid';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -32,6 +33,11 @@ export const verifyWorkspaceAccess = cache(async (
   workspaceId: string,
   requiredRole?: TeamRole
 ): Promise<{ teamId: string; role: TeamRole } | null> => {
+  // A non-UUID can never name a workspace; querying with one throws 22P02 (a
+  // 500) that every one of this function's ~70 callers would otherwise have
+  // to guard against individually.
+  if (!isUuid(workspaceId)) return null;
+
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true, accessMode: true },
@@ -76,6 +82,9 @@ export const verifyAccountWorkspaceAccess = cache(async (
   workspaceId: string,
   permission?: 'canClaim' | 'canCreate'
 ): Promise<boolean> => {
+  // A non-UUID can never name a workspace; querying with one throws 22P02 (a 500).
+  if (!isUuid(workspaceId)) return false;
+
   // Check workspace access mode first
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),

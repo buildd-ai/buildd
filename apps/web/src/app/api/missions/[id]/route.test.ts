@@ -7,7 +7,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindFirst = mock(() => ({
-  id: 'obj-1',
+  id: '11111111-1111-4111-8111-111111111111',
   teamId: 'team-1',
   title: 'Existing Mission',
   workspaceId: 'ws-1',
@@ -21,7 +21,7 @@ const mockMissionsUpdate = mock(() => ({
     updatedSetData = data;
     return {
       where: mock(() => ({
-        returning: mock(() => [{ id: 'obj-1', ...data }]),
+        returning: mock(() => [{ id: '11111111-1111-4111-8111-111111111111', ...data }]),
       })),
     };
   }),
@@ -65,7 +65,7 @@ mock.module('@/lib/criteria-escalation', () => ({
 }));
 
 const mockEnsureMissionIntegrationBranch = mock(() =>
-  Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-obj-1', created: true })
+  Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true })
 );
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
@@ -181,13 +181,13 @@ describe('PATCH /api/missions/[id]', () => {
     mockResolveCriteriaEscalation.mockClear();
     escalateCriteriaFailureCalls = [];
     mockEscalateCriteriaFailure.mockClear();
-    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -202,7 +202,7 @@ describe('PATCH /api/missions/[id]', () => {
         updatedSetData = { ...updatedSetData, ...data };
         return {
           where: mock(() => ({
-            returning: mock(() => [{ id: 'obj-1', ...data }]),
+            returning: mock(() => [{ id: '11111111-1111-4111-8111-111111111111', ...data }]),
           })),
         };
       }),
@@ -215,10 +215,18 @@ describe('PATCH /api/missions/[id]', () => {
     }));
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    const req = new NextRequest('http://localhost/api/missions/a1b2c3d4', { method: 'PATCH' });
+    const res = await PATCH(req, { params: makeParams('a1b2c3d4') });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('stores heartbeat config in schedule template context', async () => {
     // Mission with existing schedule
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Health Check',
       workspaceId: 'ws-1',
@@ -230,7 +238,7 @@ describe('PATCH /api/missions/[id]', () => {
       taskTemplate: { context: {} },
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         isHeartbeat: true,
@@ -238,7 +246,7 @@ describe('PATCH /api/missions/[id]', () => {
       }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedScheduleData).not.toBeNull();
@@ -249,7 +257,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('stores active hours in schedule template context', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Monitor',
       workspaceId: 'ws-1',
@@ -261,7 +269,7 @@ describe('PATCH /api/missions/[id]', () => {
       taskTemplate: { context: {} },
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         activeHoursStart: 8,
@@ -270,7 +278,7 @@ describe('PATCH /api/missions/[id]', () => {
       }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const ctx = updatedScheduleData.taskTemplate.context;
@@ -280,7 +288,7 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('creates new schedule when adding cron to mission', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         cronExpression: '0 9 * * *',
@@ -288,7 +296,7 @@ describe('PATCH /api/missions/[id]', () => {
       }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(insertedScheduleValues).not.toBeNull();
@@ -302,7 +310,7 @@ describe('PATCH /api/missions/[id]', () => {
   // even for a schedule stored in another zone, silently shifting every run.
   it('recomputes nextRunAt in the schedule own stored zone when startAt is cleared', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Nightly',
       workspaceId: 'ws-1',
@@ -314,12 +322,12 @@ describe('PATCH /api/missions/[id]', () => {
       timezone: 'Asia/Tokyo',
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ startAt: null }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const recompute = computeNextRunAtCalls.find((c) => c.expr === '0 3 * * *');
@@ -330,7 +338,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('falls back to UTC when the schedule stores no zone', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Nightly',
       workspaceId: 'ws-1',
@@ -339,12 +347,12 @@ describe('PATCH /api/missions/[id]', () => {
     });
     mockScheduleFindFirst.mockReturnValue({ cronExpression: '0 3 * * *', timezone: null });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ startAt: null }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const recompute = computeNextRunAtCalls.find((c) => c.expr === '0 3 * * *');
@@ -352,36 +360,36 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ activeHoursStart: 24 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('activeHoursStart');
   });
 
   it('rejects activeHoursEnd outside 0-23', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ activeHoursEnd: -5 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('activeHoursEnd');
   });
 
   it('updates workspaceId', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ workspaceId: 'ws-new' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData).not.toBeNull();
@@ -389,12 +397,12 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('clears workspaceId with null', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ workspaceId: null }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData).not.toBeNull();
@@ -402,24 +410,24 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('updates status to completed', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData.status).toBe('completed');
   });
 
   it('Rule P-1: an explicit completion computes and stores the flight-strip cache', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData.flightStripCache).toMatchObject({ bars: expect.any(Array), foldedBars: expect.any(Number) });
@@ -430,106 +438,106 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('does not compute a flight-strip cache when the mission was already completed', async () => {
     mockMissionsFindFirst.mockImplementationOnce(() => ({
-      id: 'obj-1', teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'completed',
+      id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'completed',
     }) as any);
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ priority: 5 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData.flightStripCache).toBeUndefined();
   });
 
   it('updates status to archived', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(updatedSetData.status).toBe('archived');
   });
 
   it('updates maxConcurrentTasks', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: 5 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.maxConcurrentTasks).toBe(5);
   });
 
   it('clears maxConcurrentTasks with null', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: null }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.maxConcurrentTasks).toBeNull();
   });
 
   it('rejects maxConcurrentTasks < 1', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: 0 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
   it('rejects non-integer maxConcurrentTasks', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: 1.5 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
   it('rejects maxConcurrentTasks > 20', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: 21 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('maxConcurrentTasks');
   });
 
   it('accepts maxConcurrentTasks = 20 (ceiling)', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentTasks: 20 }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
   });
 
   it('rejects invalid status', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'invalid' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('Invalid status');
@@ -537,7 +545,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('auto-deletes schedule when mission is completed', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -545,12 +553,12 @@ describe('PATCH /api/missions/[id]', () => {
       priority: 0,
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.status).toBe('completed');
     expect(updatedSetData.scheduleId).toBeNull();
@@ -559,7 +567,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('auto-deletes schedule when mission is archived', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -567,12 +575,12 @@ describe('PATCH /api/missions/[id]', () => {
       priority: 0,
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.status).toBe('archived');
     expect(updatedSetData.scheduleId).toBeNull();
@@ -582,7 +590,7 @@ describe('PATCH /api/missions/[id]', () => {
   it('removes heartbeat flag from schedule context when isHeartbeat=false', async () => {
     // Regression: disabling heartbeat should remove the flag so MCP get no longer reports "Heartbeat: enabled"
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Monitor',
       workspaceId: 'ws-1',
@@ -594,12 +602,12 @@ describe('PATCH /api/missions/[id]', () => {
       taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check stuff' } },
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ isHeartbeat: false }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedScheduleData).not.toBeNull();
     // heartbeat flag must be absent from the updated context
@@ -608,7 +616,7 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('disables (not deletes) schedule when mission is paused', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -616,12 +624,12 @@ describe('PATCH /api/missions/[id]', () => {
       priority: 0,
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'paused' }),
     });
 
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.status).toBe('paused');
     expect(updatedSetData.scheduleId).toBeUndefined();
@@ -630,33 +638,33 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('rejects PATCH goalCriteria item without type field', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         goalCriteria: [{ description: 'All PRs merged' }],
       }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/goalCriteria\[0\]/);
   });
 
   it('rejects PATCH goalCriteria item with invalid type string', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         goalCriteria: [{ type: 'wrong_type' }],
       }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/goalCriteria\[0\]/);
   });
 
   it('accepts PATCH goalCriteria with valid types', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         goalCriteria: [
@@ -665,7 +673,7 @@ describe('PATCH /api/missions/[id]', () => {
         ],
       }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.goalCriteria).toEqual([
       { type: 'all_prs_merged' },
@@ -674,7 +682,7 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('rejects a PATCH goalCriteria array with no mechanical criterion, naming the accepted types', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         goalCriteria: [{
@@ -684,7 +692,7 @@ describe('PATCH /api/missions/[id]', () => {
         }],
       }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mechanical criterion/);
@@ -698,7 +706,7 @@ describe('PATCH /api/missions/[id]', () => {
       notMechanizableReason: 'Feature completeness is a human judgement call here.',
     };
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -706,76 +714,76 @@ describe('PATCH /api/missions/[id]', () => {
       priority: 0,
       goalCriteria: [description, { type: 'all_prs_merged' }],
     });
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [description] }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mechanical criterion/);
   });
 
   it('rejects a PATCH that adds a prose criterion with no stated reason', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
         goalCriteria: [{ type: 'description', description: 'Ship the feature' }],
       }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/notMechanizableReason/);
   });
 
   it('accepts null goalCriteria to clear criteria', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: null }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.goalCriteria).toBeNull();
   });
 
   it('accepts a valid mergePolicy', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 500 } } }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.mergePolicy).toEqual({ tier: 'auto-threshold', threshold: { maxLines: 500 } });
   });
 
   it('accepts null mergePolicy to clear policy', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ mergePolicy: null }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.mergePolicy).toBeNull();
   });
 
   it('rejects mergePolicy with unknown keys (returns 400)', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ mergePolicy: { tier: 'human', unknownField: 'bad' } }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mergePolicy/);
   });
 
   it('rejects mergePolicy with invalid tier (returns 400)', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ mergePolicy: { tier: 'not-a-tier' } }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mergePolicy/);
@@ -786,11 +794,11 @@ describe('PATCH /api/missions/[id]', () => {
       [{ tier: 'agent-review', agentReview: { reviewerRole: 'r', escalateToPaths: ['infra/'] } }, 'mergePolicy.agentReview.escalateToPaths'],
       [{ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } }, 'mergePolicy.threshold.denyPaths'],
     ] as const) {
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ mergePolicy }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.field).toBe(field);
@@ -800,11 +808,11 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('accepts agent-review mergePolicy with required fields', async () => {
     const policy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ mergePolicy: policy }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.mergePolicy).toEqual(policy);
   });
@@ -813,11 +821,11 @@ describe('PATCH /api/missions/[id]', () => {
   it('links an initiative in the same caller team', async () => {
     // Initiative lives in team-1, same team as caller — should succeed.
     mockInitiativesFindFirst.mockReturnValue({ id: 'init-1', teamId: 'team-1' });
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ initiativeId: 'init-1' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBe('init-1');
   });
@@ -826,7 +834,7 @@ describe('PATCH /api/missions/[id]', () => {
     // Mission is in ws-1 (team-1); initiative is also in team-1 but advisory workspaceId ws-other.
     // Caller belongs to team-1. Should succeed regardless of workspace mismatch.
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'sibling-app mission',
       workspaceId: 'ws-sibling-app',
@@ -834,11 +842,11 @@ describe('PATCH /api/missions/[id]', () => {
       priority: 0,
     });
     mockInitiativesFindFirst.mockReturnValue({ id: 'init-buildd', teamId: 'team-1' });
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ initiativeId: 'init-buildd' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBe('init-buildd');
   });
@@ -846,11 +854,11 @@ describe('PATCH /api/missions/[id]', () => {
   it('rejects an initiative not in any caller team', async () => {
     // Initiative belongs to team-2; caller only has access to team-1.
     mockInitiativesFindFirst.mockReturnValue({ id: 'init-other', teamId: 'team-2' });
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ initiativeId: 'init-other' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toContain('initiative not found or not accessible');
@@ -858,33 +866,33 @@ describe('PATCH /api/missions/[id]', () => {
 
   it('rejects a non-existent initiativeId', async () => {
     mockInitiativesFindFirst.mockReturnValue(null);
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ initiativeId: 'init-ghost' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toContain('initiative not found or not accessible');
   });
 
   it('clears initiativeId with null', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ initiativeId: null }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBeNull();
   });
 
   describe('branchStrategy', () => {
     it('rejects an invalid branchStrategy value', async () => {
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ branchStrategy: 'trunk' }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('branchStrategy');
@@ -892,33 +900,33 @@ describe('PATCH /api/missions/[id]', () => {
     });
 
     it('branchStrategy=mission-branch sets integrationBranchEnabled and ensures the branch (opt-in transition)', async () => {
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ branchStrategy: 'mission-branch' }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(200);
       expect(updatedSetData.integrationBranchEnabled).toBe(true);
-      expect(mockEnsureMissionIntegrationBranch).toHaveBeenCalledWith('obj-1');
+      expect(mockEnsureMissionIntegrationBranch).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
     });
 
     it('branchStrategy=direct sets integrationBranchEnabled to false and never calls ensure', async () => {
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ branchStrategy: 'direct' }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(200);
       expect(updatedSetData.integrationBranchEnabled).toBe(false);
       expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
     });
 
     it('branchStrategy takes precedence over a raw integrationBranchEnabled in the same request', async () => {
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ branchStrategy: 'direct', integrationBranchEnabled: true }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(200);
       expect(updatedSetData.integrationBranchEnabled).toBe(false);
       expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
@@ -926,11 +934,11 @@ describe('PATCH /api/missions/[id]', () => {
 
     it('posts a feed note (never a silent success) when the remote ref cannot be created', async () => {
       mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: false, reason: 'api_error', detail: 'boom' } as any);
-      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
         method: 'PATCH',
         body: JSON.stringify({ branchStrategy: 'mission-branch' }),
       });
-      const res = await PATCH(req, { params: makeParams('obj-1') });
+      const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
       expect(res.status).toBe(200);
       expect(updatedSetData.integrationBranchEnabled).toBe(true);
       const branchNote = insertedNotes.find(n => n.title === 'Integration branch could not be created');
@@ -957,12 +965,12 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     mockResolveCriteriaEscalation.mockClear();
     escalateCriteriaFailureCalls = [];
     mockEscalateCriteriaFailure.mockClear();
-    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -979,7 +987,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
         updatedSetData = { ...updatedSetData, ...data };
         return {
           where: mock(() => ({
-            returning: mock(() => [{ id: 'obj-1', ...data }]),
+            returning: mock(() => [{ id: '11111111-1111-4111-8111-111111111111', ...data }]),
           })),
         };
       }),
@@ -988,7 +996,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('names both states and the actor when reopening a completed mission', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -997,11 +1005,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       priority: 0,
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'active' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const note = insertedNotes.find((n) => n.title === 'Mission reopened');
@@ -1012,11 +1020,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
   });
 
   it('names a status change that is not a reopen distinctly', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'paused' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(insertedNotes.some((n) => n.title === 'Mission reopened')).toBe(false);
@@ -1027,7 +1035,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('escalates (stamp + notify) exactly once when a never-escalated mission is force-completed with a failing verdict', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1040,15 +1048,15 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       // mission, e.g. it was force-completed before the N-cycle budget ran out.
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(escalateCriteriaFailureCalls).toHaveLength(1);
-    expect(escalateCriteriaFailureCalls[0].missionId).toBe('obj-1');
+    expect(escalateCriteriaFailureCalls[0].missionId).toBe('11111111-1111-4111-8111-111111111111');
     expect(escalateCriteriaFailureCalls[0].note.title).toBe('Goal criteria gate overridden');
     expect(escalateCriteriaFailureCalls[0].note.body).toContain('set to completed');
     expect(escalateCriteriaFailureCalls[0].note.body).toContain('fail');
@@ -1061,7 +1069,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('escalates when archived directly while criteria are unverified — skipping "completed" must not skip the audit', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1072,11 +1080,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       goalCriteriaState: { overall: 'UNVERIFIED', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(escalateCriteriaFailureCalls).toHaveLength(1);
@@ -1086,7 +1094,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('records a plain override note (no re-escalation) when completing an already-escalated mission', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1098,11 +1106,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
@@ -1115,7 +1123,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('does not re-audit archiving a mission that already completed cleanly', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1126,11 +1134,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(insertedNotes.some((n) => n.title === 'Goal criteria gate overridden')).toBe(false);
@@ -1139,7 +1147,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('resolves the criteria escalation when a previously escalated mission is completed', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1150,20 +1158,20 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
-    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'mission_completed' });
+    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', reason: 'mission_completed' });
   });
 
   it('resolves the criteria escalation when a previously escalated mission is archived', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1174,20 +1182,20 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
-    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'mission_completed' });
+    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', reason: 'mission_completed' });
   });
 
   it('resolves the criteria escalation with reason "waived" when a previously escalated mission is completed while criteria are still failing', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1199,68 +1207,68 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
-    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'waived' });
+    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', reason: 'waived' });
   });
 
   it('does not resolve a criteria escalation on completion when the mission was never escalated', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 
   it('does not resolve a criteria escalation on a status change that is not a close', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'paused' }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 
   it('resolves the criteria escalation when goalCriteria is edited', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
-    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'criteria_edited' });
+    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', reason: 'criteria_edited' });
   });
 
   it('does not resolve a criteria escalation on a PATCH that touches neither status nor goalCriteria', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ priority: 5 }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 
   it('names each added goal criterion', async () => {
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const note = insertedNotes.find((n) => n.title === 'Goal criterion added: No open tasks');
@@ -1269,7 +1277,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
   it('names a removed goal criterion', async () => {
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1279,11 +1287,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
     });
 
-    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [] }),
     });
-    const res = await PATCH(req, { params: makeParams('obj-1') });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
 
     const note = insertedNotes.find((n) => n.title === 'Goal criterion removed: No open tasks');
@@ -1291,11 +1299,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
   });
 
   it('collapses repeated config edits from the same actor into one feed entry', async () => {
-    const first = new NextRequest('http://localhost/api/missions/obj-1', {
+    const first = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ priority: 5 }),
     });
-    await PATCH(first, { params: makeParams('obj-1') });
+    await PATCH(first, { params: makeParams('11111111-1111-4111-8111-111111111111') });
 
     expect(insertedNotes.length).toBe(1);
     expect(insertedNotes[0].title).toBe('Mission configuration updated');
@@ -1304,25 +1312,25 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     // Simulate the collapse window: the note just inserted is "recent".
     recentCollapseNote = insertedNotes[0];
 
-    const second = new NextRequest('http://localhost/api/missions/obj-1', {
+    const second = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ pacingMode: 'paced' }),
     });
-    await PATCH(second, { params: makeParams('obj-1') });
+    await PATCH(second, { params: makeParams('11111111-1111-4111-8111-111111111111') });
 
     // No second row inserted — the existing one was updated in place.
     expect(insertedNotes.length).toBe(1);
   });
 
   it('does not collapse status changes — each gets its own row even from the same actor', async () => {
-    const first = new NextRequest('http://localhost/api/missions/obj-1', {
+    const first = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'paused' }),
     });
-    await PATCH(first, { params: makeParams('obj-1') });
+    await PATCH(first, { params: makeParams('11111111-1111-4111-8111-111111111111') });
 
     mockMissionsFindFirst.mockReturnValue({
-      id: 'obj-1',
+      id: '11111111-1111-4111-8111-111111111111',
       teamId: 'team-1',
       title: 'Existing Mission',
       workspaceId: 'ws-1',
@@ -1330,11 +1338,11 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       status: 'paused',
       priority: 0,
     });
-    const second = new NextRequest('http://localhost/api/missions/obj-1', {
+    const second = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'active' }),
     });
-    await PATCH(second, { params: makeParams('obj-1') });
+    await PATCH(second, { params: makeParams('11111111-1111-4111-8111-111111111111') });
 
     expect(insertedNotes.filter((n) => n.title === 'Mission status changed').length).toBe(2);
   });

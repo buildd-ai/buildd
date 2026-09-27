@@ -157,7 +157,7 @@ describe('/api/model-tiers workspace scoping', () => {
     const res = await GET(getRequest(VICTIM_WORKSPACE_ID));
 
     expect(res.status).toBe(200);
-    expect(mockResolveAllTiers).toHaveBeenCalledWith(VICTIM_TEAM_ID, VICTIM_WORKSPACE_ID);
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(VICTIM_TEAM_ID, VICTIM_WORKSPACE_ID, null);
   });
 
   // ── POST ───────────────────────────────────────────────────────────────────
@@ -298,13 +298,13 @@ describe('/api/model-tiers team scope', () => {
   it('GET without a teamId reads the ACTIVE team, not whichever team sorts first', async () => {
     const res = await GET(teamGet());
     expect(res.status).toBe(200);
-    expect(mockResolveAllTiers).toHaveBeenCalledWith(OTHER_TEAM, null);
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(OTHER_TEAM, null, null);
   });
 
   it('GET with a teamId reads that team for a member', async () => {
     const res = await GET(teamGet(CALLER_TEAM_ID));
     expect(res.status).toBe(200);
-    expect(mockResolveAllTiers).toHaveBeenCalledWith(CALLER_TEAM_ID, null);
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(CALLER_TEAM_ID, null, null);
   });
 
   it('GET refuses a teamId the caller does not belong to', async () => {
@@ -349,5 +349,66 @@ describe('/api/model-tiers team scope', () => {
     expect((await del()).status).toBe(200);
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockInvalidateTierCache).toHaveBeenCalledWith(CALLER_TEAM_ID, null);
+  });
+});
+
+describe('/api/model-tiers surface', () => {
+  beforeEach(() => {
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockGetUserTeamIds, mockGetUserTeamRole,
+      mockResolveActiveTeamId, mockRegistryFindFirst, mockResolveAllTiers]) m.mockReset();
+    mockInsert.mockClear();
+    mockInsertValues.mockClear();
+    mockUpdate.mockClear();
+    mockDelete.mockClear();
+    mockInvalidateTierCache.mockClear();
+
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue([CALLER_TEAM_ID]);
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    mockRegistryFindFirst.mockResolvedValue(null);
+  });
+
+  it('GET returns each surface\'s resolution under bySurface', async () => {
+    mockResolveAllTiers.mockImplementation(((_t: string, _w: string | null, surface: string | null) =>
+      Promise.resolve({
+        standard: surface === 'agent'
+          ? { provider: 'anthropic', model: 'agent-model', source: 'team', surface: 'agent' }
+          : { provider: 'anthropic', model: 'shared-model', source: 'team' },
+      })) as any);
+
+    const res = await GET(teamGet(CALLER_TEAM_ID));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.standard.model).toBe('shared-model');
+    expect(body.standard.bySurface.agent).toMatchObject({ model: 'agent-model', surface: 'agent' });
+    expect(body.standard.bySurface.chat.model).toBe('shared-model');
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(CALLER_TEAM_ID, null, 'agent');
+    expect(mockResolveAllTiers).toHaveBeenCalledWith(CALLER_TEAM_ID, null, 'chat');
+  });
+
+  it('POST writes a surface row when surface is given', async () => {
+    const res = await POST(postRequest({ tier: 'standard', provider: 'anthropic', model: 'm', surface: 'chat', teamId: CALLER_TEAM_ID }));
+    expect(res.status).toBe(200);
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ tier: 'standard', surface: 'chat' }));
+  });
+
+  it('POST without surface writes the shared row', async () => {
+    const res = await POST(postRequest({ tier: 'standard', provider: 'anthropic', model: 'm', teamId: CALLER_TEAM_ID }));
+    expect(res.status).toBe(200);
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ surface: null }));
+  });
+
+  it('POST rejects an unknown surface and writes nothing', async () => {
+    const res = await POST(postRequest({ tier: 'standard', provider: 'anthropic', model: 'm', surface: 'both', teamId: CALLER_TEAM_ID }));
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('DELETE rejects an unknown surface and deletes nothing', async () => {
+    const qs = new URLSearchParams({ tier: 'standard', surface: 'web', teamId: CALLER_TEAM_ID });
+    const res = await DELETE(new NextRequest(`http://localhost/api/model-tiers?${qs}`, { method: 'DELETE' }));
+    expect(res.status).toBe(400);
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

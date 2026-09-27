@@ -7,7 +7,7 @@ import SettingsSubNav from './_components/SettingsSubNav';
  */
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="md:flex md:items-start min-h-full">
+    <div className="md:flex min-h-full">
       <SettingsSubNav />
       <div className="flex-1 min-w-0">{children}</div>
     </div>

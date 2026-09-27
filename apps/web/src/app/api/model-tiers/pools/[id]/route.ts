@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateAllocation, type PoolArmRef } from '@buildd/core/tier-pool';
 import { listPoolChanges, loadPool, writeAllocation } from '@buildd/core/tier-pool-admin';
-import { invalidateTierPoolCache } from '@buildd/core/tier-pool-source';
+import { enterExploreAllocation } from '@buildd/core/tier-explore';
+import { loadPoolEvidence } from '@buildd/core/tier-pool-daily-source';
+import { invalidateTierPoolCache, orderArms } from '@buildd/core/tier-pool-source';
 import { tierPoolAccess } from '@/lib/tier-pool-access';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -22,7 +24,10 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
 /**
  * PATCH /api/model-tiers/pools/[id] — set traffic shares, or pin/unpin.
- * Body: { teamId, expectedVersion, allocation?: {armId: share}, mode?: 'pinned' | 'split' }.
+ * Body: { teamId, expectedVersion, allocation?: {armId: share}, mode?: 'pinned' | 'split' | 'explore' }.
+ * Choosing explore hands the shares to buildd's daily step (tier-weights §3):
+ * the current shares are projected onto each arm's stage bounds, and an
+ * explore pool takes no typed allocation.
  * Compare-and-set on the allocation version: a stale screen gets 409, never
  * a silent overwrite. Every accepted change writes an audit row.
  */
@@ -35,8 +40,8 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const expectedVersion = body.expectedVersion;
   if (!Number.isInteger(expectedVersion)) return NextResponse.json({ error: 'expectedVersion is required' }, { status: 400 });
   const mode = body.mode;
-  if (mode !== undefined && mode !== 'pinned' && mode !== 'split') {
-    return NextResponse.json({ error: 'mode must be pinned or split' }, { status: 400 });
+  if (mode !== undefined && mode !== 'pinned' && mode !== 'split' && mode !== 'explore') {
+    return NextResponse.json({ error: 'mode must be pinned, split or explore' }, { status: 400 });
   }
   if (mode === undefined && body.allocation === undefined) {
     return NextResponse.json({ error: 'allocation or mode is required' }, { status: 400 });
@@ -47,8 +52,27 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     if (!loaded) return NextResponse.json({ error: 'Pool not found' }, { status: 404 });
     const { pool, arms } = loaded;
 
+    const nextMode = mode ?? pool.mode;
+    if (body.allocation !== undefined && nextMode === 'explore') {
+      return NextResponse.json({ error: 'buildd sets the shares in explore' }, { status: 400 });
+    }
+
     let allocation = pool.allocation;
-    if (body.allocation !== undefined) {
+    if (mode === 'explore' && pool.mode !== 'explore') {
+      const live = orderArms(arms.filter(a => a.status === 'active').map(a => ({ ...a, addedAt: new Date(a.addedAt) })));
+      const now = new Date();
+      const evidence = await loadPoolEvidence({ id: pool.id, surface: pool.surface, arms: live }, now);
+      allocation = enterExploreAllocation({
+        surface: pool.surface,
+        current: pool.allocation,
+        gradingHealthy: true,
+        arms: live.map(a => ({
+          id: a.id, role: a.role,
+          ageDays: Math.floor((now.getTime() - a.addedAt.getTime()) / 86_400_000),
+          evidence: evidence.get(a.id)!,
+        })),
+      });
+    } else if (body.allocation !== undefined) {
       const check = validateAllocation(body.allocation, arms as PoolArmRef[], {
         incumbentFloor: pool.incumbentFloor, explorationCap: pool.explorationCap,
       });

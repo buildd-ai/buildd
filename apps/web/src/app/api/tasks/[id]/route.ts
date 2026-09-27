@@ -531,6 +531,9 @@ export async function DELETE(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const deleteIdError = validateTaskId(id);
+  if (deleteIdError) return deleteIdError;
+
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),

@@ -130,18 +130,7 @@ metadata.routing = { whenToUse: string; notFor?: string; updatedAt: string }
 
 **Field-level overrides.** Roles are team-level with per-workspace override rows (#1004, `docs/design/roles-scoping.md`; `schema.ts:2307-2310`). `routing` follows the same rule as the other fields: the workspace override's `metadata.routing` if present, else the team default's. An override can therefore describe a role differently for one repo, or opt it out with `routing: { disabled: true }`.
 
-**Seeded defaults.** `DefaultRole` (`default-roles.ts:28`) gains `whenToUse` / `notFor`, and `seedDefaultRolesForTeam` (`:689`) writes them into `metadata.routing`. Seeding is `onConflictDoNothing`, so **existing teams never pick up a change to `default-roles.ts`**. The team's knowledge base records the same trap for heartbeat instructions keyed on role content. Existing rows need a one-off, idempotent backfill script: set `metadata.routing` only where `source = 'system'`, the slug is a default, and `metadata.routing` is absent. It must never overwrite a row that already has routing text, and it has to be run deliberately, not on deploy. Proposed seeded text (reviewed with §6(b) data before apply):
-
-| Role | `whenToUse` | `notFor` |
-|---|---|---|
-| `builder` | Changes code, config or tests in the repo and ends in a pull request: features, bug fixes, refactors, migrations, CI changes. | Investigating or comparing options without changing code; reviewing someone else's PR; prose-only docs. |
-| `researcher` | Investigates an open question and reports findings or a recommendation, without changing the repo: comparisons, feasibility, audits of how something works. | Changing code; diagnosing and fixing a specific bug; reviewing an existing PR. |
-| `writer` | Writes or edits prose: docs, design docs, specs, READMEs, release notes, changelogs. | Code changes described in a doc's title; research whose output is a recommendation. |
-| `analyst` | Pulls and interprets data, metrics or usage numbers and reports what they show. | Building the dashboard or pipeline itself; open-ended research without data. |
-| `organizer` | Plans, splits, sequences or reconciles other tasks and missions; decides what should happen next. | Doing any of the planned work itself. |
-| *(no text)* `reviewer` | *Excluded.* Reviewer tasks are created by `createReviewerTask` with the role already set, and the role is read-only (`allowedTools: ['mcp__buildd__buildd']`, `default-roles.ts:467`). There is no role-less work it should win. | |
-| *(no text)* `spec-validator` | *Excluded.* Created by its own pipeline with the role set. | |
-| *(no text)* `visual-auditor` | *Excluded.* An explicit slug (§3), and created by the surface-audit pipeline. | |
+**Seeded defaults.** `DefaultRole` (`default-roles.ts:28`) gains `whenToUse` / `notFor`, and `seedDefaultRolesForTeam` (`:689`) writes them into `metadata.routing`. Seeding is `onConflictDoNothing`, so **existing teams never pick up a change to `default-roles.ts`**. The team's knowledge base records the same trap for heartbeat instructions keyed on role content. Existing rows need a one-off, idempotent backfill script: set `metadata.routing` only where `source = 'system'`, the slug is a default, and `metadata.routing` is absent. It must never overwrite a row that already has routing text, and it has to be run deliberately, not on deploy. The seeded text is the `routing` field on each `DEFAULT_ROLES` entry. The live team's text, including the reasons each excluded role is excluded and why `spec-validator` is routable after all, is in `docs/design/role-routing-text.md`. `reviewer` and `visual-auditor` are seeded with `routing: { disabled: true }`, not simply left without text, so the exclusion is deliberate and survives someone adding text later.
 
 **A role with no `whenToUse` is excluded from the candidate set.** It is not guessed from `description`. `description` is written for the Team page ("Core engineering — features, bug fixes, refactoring, releases") and is not contrastive. Using it would reintroduce the overlapping-label problem `decision-calls.md` Point 7 rule 3 warns about. **Opting in is writing the sentence.** A workspace-defined specialist becomes reachable the moment someone describes it, and a role nobody describes stays exactly as reachable as today.
 
@@ -232,6 +221,8 @@ When the apply step (§6(c)) writes a role, it also writes `context.routingReaso
 
 Today a role pinned to an exact model id outranks an explicit `tasks.tier` (`claim/route.ts:1554`, `:1585`). The spec (`docs/specs/model-routing-and-tiers.md`, "Claim-time model resolution") records this as the intended order. It contradicts "an explicit caller value must always win", and it matters more once more tasks carry roles. Proposed order: `context.model` → `tasks.tier` → role exact id → matrix + role floor. This is a model-routing change with its own spec update and its own builder task, and it must land before §6(c).
 
+**Landed** (with §4.1's inferred-role guard, §4.2's preview and §3.1's `roleFloorMap` scoping): `packages/core/role-model-routing.ts` holds the shared precedence; the spec section above now records the new order.
+
 #### 4.4 Audit: role `model` values that conflict with the tier registry
 
 Registry today (`manage_model_tiers list`): all four tiers resolve to catalog or team rows. No workspace overrides.
@@ -243,7 +234,7 @@ Registry today (`manage_model_tiers list`): all four tiers resolve to catalog or
 | Existing rows, this team | several | `sonnet` | Same as above: seeded before tier vocabulary. |
 | Existing rows, this team | one team-level custom role | an exact `claude-…` id | **Bypasses the registry** and, until §4.3, outranks an explicit `tasks.tier`. A registry change never reaches it. |
 | Existing rows, this team | `visual-auditor` override | `standard` | Tier vocabulary. No conflict. |
-| Any row | — | `premium-plus` | None today. If set, it silently becomes `premium` (`claim/route.ts:1548` → `mapRouterAlias`). Document it or fix it in §4.3's task. |
+| Any row | — | `premium-plus` | None today. It used to silently become `premium` (`claim/route.ts:1548` → `mapRouterAlias`). **Fixed** in §4.3's task: a `premium-plus` role floor now resolves to the `premium-plus` tier (`roleTierOverride`). |
 
 The per-row detail for this team is in the task's analysis artifact, not here (this repo is public). Recommendation, as its own task and not a precondition for the shadow: migrate seeded `sonnet`/`opus` to `standard`/`premium` (no behaviour change, since they map 1:1), and reconsider whether seeded Builder should floor at `premium` at all. That is a cost decision, so it is Open decision 6.
 

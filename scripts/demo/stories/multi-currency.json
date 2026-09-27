@@ -2378,7 +2378,7 @@
               },
               {
                 "type": "text",
-                "text": "Here's a draft. I won't file it until you confirm."
+                "text": "Here's a draft."
               },
               {
                 "type": "tool-manage_missions",

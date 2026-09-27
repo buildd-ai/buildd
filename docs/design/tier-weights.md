@@ -2,6 +2,7 @@
 
 **Status:** Proposed
 **Amends:** `docs/design/tier-model-pools.md` (§3 traffic modes and bounds, §3 auto-challenger, §6 auto-shift bounds, §8 data model, §9 admin screen). Where the two disagree, this doc wins.
+**Amended by:** `docs/design/model-quality-signals.md` adds Artificial Analysis as a quality prior (§4c step 2b), a succession veto (§4b), and a price fallback plus a `med → low` quality rule for the suggested weight (§2).
 **Related:** `packages/core/tier-pool.ts`, `packages/core/tier-pool-admin.ts`, `packages/core/tier-pool-source.ts`, `packages/core/model-catalog.ts`, `packages/core/model-catalog-cache.ts`, `packages/core/model-prices.ts`, `packages/core/model-capability-requirements.ts`, `packages/core/experiment-randomizer.ts`, `packages/core/db/schema.ts` (`tierPools`, `tierPoolArms`, `tierPoolChanges`, `systemCache`), `apps/web/src/app/api/model-tiers/pools/route.ts`, `apps/web/src/app/api/model-tiers/pools/[id]/route.ts`, `apps/web/src/lib/tier-pools-view.ts`, `apps/web/src/app/app/(protected)/settings/models/TierPoolsSection.tsx`, `cron-manifest.json`, `docs/design/model-tiers.md`, `docs/design/decision-calls.md`
 
 ---

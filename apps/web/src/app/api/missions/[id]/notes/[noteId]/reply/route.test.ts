@@ -43,10 +43,10 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST } from './route';
 
-const params = Promise.resolve({ id: 'mission-1', noteId: 'note-1' });
+const params = Promise.resolve({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', noteId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' });
 
 function createRequest(body: any): NextRequest {
-  return new NextRequest('http://localhost:3000/api/missions/mission-1/notes/note-1/reply', {
+  return new NextRequest('http://localhost:3000/api/missions/dddddddd-dddd-4ddd-8ddd-dddddddddddd/notes/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/reply', {
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
@@ -60,22 +60,36 @@ describe('POST /api/missions/[id]/notes/[noteId]/reply', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
-    mockNotesFindFirst.mockResolvedValue({ id: 'note-1', missionId: 'mission-1', taskId: null, type: 'question' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', teamId: 'team-1', workspaceId: null });
+    mockNotesFindFirst.mockResolvedValue({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', missionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', taskId: null, type: 'question' });
+  });
+
+  it('404s a non-UUID mission id without querying the db', async () => {
+    const res = await POST(createRequest({ title: 'Ship it' }), { params: Promise.resolve({ id: 'a1b2c3d4', noteId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('404s a non-UUID note id without querying the db', async () => {
+    const res = await POST(createRequest({ title: 'Ship it' }), { params: Promise.resolve({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', noteId: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
   });
 
   it('announces the reply on the mission channel', async () => {
     const res = await POST(createRequest({ title: 'Ship it' }), { params });
     expect(res.status).toBe(201);
-    expect(mockTriggerEvent.mock.calls.map((c: any[]) => c[0])).toEqual(['mission-mission-1']);
+    expect(mockTriggerEvent.mock.calls.map((c: any[]) => c[0])).toEqual(['mission-dddddddd-dddd-4ddd-8ddd-dddddddddddd']);
   });
 
   // S6: a task page open on the question's task listens on the task channel only.
   it('also announces it on the task channel when the question is pinned to a task', async () => {
-    mockNotesFindFirst.mockResolvedValue({ id: 'note-1', missionId: 'mission-1', taskId: 'task-7', type: 'question' });
+    mockNotesFindFirst.mockResolvedValue({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', missionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', taskId: 'task-7', type: 'question' });
 
     await POST(createRequest({ title: 'Ship it' }), { params });
 
-    expect(mockTriggerEvent.mock.calls.map((c: any[]) => c[0])).toEqual(['mission-mission-1', 'task-task-7']);
+    expect(mockTriggerEvent.mock.calls.map((c: any[]) => c[0])).toEqual(['mission-dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'task-task-7']);
   });
 });

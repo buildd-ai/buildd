@@ -12,7 +12,7 @@
  *   bun test apps/web/tests/integration/worker-state-machine.test.ts
  */
 
-import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, sleep, findFixtureWorkspace } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
@@ -25,10 +25,8 @@ describe('Worker State Machine', () => {
   let workerId: string;
 
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
-    console.log(`  Using workspace: ${workspaces[0].name} (${workspaceId})`);
+    workspaceId = await findFixtureWorkspace(api);
+    console.log(`  Using workspace: ${workspaceId}`);
 
     // Create a test task and claim it
     const task = await api('/api/tasks', {

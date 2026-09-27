@@ -29,7 +29,7 @@ mock.module('@/lib/team-access', () => ({
 
 // Track update calls (rejection persistence)
 const mockUpdateSetCalls: any[] = [];
-const mockUpdateReturning = mock(() => [{ id: 'plan-task-1' }] as any[]);
+const mockUpdateReturning = mock(() => [{ id: '44444444-4444-4444-8444-444444444444' }] as any[]);
 // Ledger writes are tracked separately from the planning-task rejection write.
 const mockDiscrepancyUpdateSets: any[] = [];
 let mockDiscrepancyUpdateReturning: any[] = [];
@@ -84,7 +84,7 @@ function createMockRequest(options: {
 } = {}): NextRequest {
   const { method = 'POST', headers = {}, body } = options;
 
-  const url = 'http://localhost:3000/api/tasks/plan-task-1/reject-plan';
+  const url = 'http://localhost:3000/api/tasks/44444444-4444-4444-8444-444444444444/reject-plan';
   const init: RequestInit = {
     method,
     headers: new Headers(headers),
@@ -114,7 +114,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockInsertReturning.mockReturnValue([{ id: 'new-plan-task-1' }]);
     mockUpdateSetCalls.length = 0;
     mockUpdateReturning.mockReset();
-    mockUpdateReturning.mockReturnValue([{ id: 'plan-task-1' }]);
+    mockUpdateReturning.mockReturnValue([{ id: '44444444-4444-4444-8444-444444444444' }]);
     mockDiscrepancyUpdateSets.length = 0;
     mockDiscrepancyUpdateReturning = [];
 
@@ -127,11 +127,23 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockGetCurrentUser.mockResolvedValue(null);
 
     const request = createMockRequest({ body: { feedback: 'needs more detail' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 404 for a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+
+    const request = createMockRequest({ body: { feedback: 'needs more detail' } });
+    const response = await callHandler(POST, request, 'a1b2c3d4');
+
+    expect(response.status).toBe(404);
+    const data = await response.json();
+    expect(data.error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 404 when task not found', async () => {
@@ -139,7 +151,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockTasksFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest({ body: { feedback: 'needs more detail' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -149,7 +161,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('returns 400 when task is not planning mode', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'execution',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -157,7 +169,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'needs more detail' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -167,7 +179,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('returns 400 when feedback is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -175,7 +187,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: {} });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -185,7 +197,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('creates revised planning task with feedback in context', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -198,7 +210,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'Add error handling steps' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -216,13 +228,13 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(inserted.priority).toBe(2);
     expect(inserted.context.existingKey).toBe('existingValue');
     expect(inserted.context.planFeedback).toBe('Add error handling steps');
-    expect(inserted.context.previousPlanTaskId).toBe('plan-task-1');
+    expect(inserted.context.previousPlanTaskId).toBe('44444444-4444-4444-8444-444444444444');
   });
 
   it('preserves missionId on revised planning task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -236,7 +248,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'Try again' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     expect(mockInsertValues).toHaveLength(1);
@@ -246,7 +258,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('preserves null missionId when task has no mission', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -260,7 +272,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'Try again' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     expect(mockInsertValues).toHaveLength(1);
@@ -273,7 +285,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('persists the rejection on the planning task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -287,7 +299,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'Missing rollback step' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
 
@@ -304,7 +316,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('returns 409 when the plan was already rejected', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -318,7 +330,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     });
 
     const request = createMockRequest({ body: { feedback: 'again' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(409);
     const data = await response.json();
@@ -330,7 +342,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   it('returns 409 when a concurrent rejection won the optimistic lock', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -346,7 +358,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockUpdateReturning.mockReturnValue([]);
 
     const request = createMockRequest({ body: { feedback: 'race' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(409);
     expect(mockInsertValues).toHaveLength(0);
@@ -358,7 +370,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
   // which would re-dispatch a worker against a document that is already fixed.
 
   const DOC_FIX_TASK = {
-    id: 'plan-task-1',
+    id: '44444444-4444-4444-8444-444444444444',
     mode: 'planning',
     status: 'completed',
     workspaceId: 'ws-1',
@@ -385,7 +397,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockDiscrepancyUpdateReturning = [{ id: 'd-1' }, { id: 'd-2' }];
 
     const request = createMockRequest({ body: { feedback: 'Out of scope for now — revisit after the broker lands.' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -404,7 +416,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockTasksFindFirst.mockResolvedValue(DOC_FIX_TASK);
 
     const request = createMockRequest({ body: { feedback: 'No thanks' } });
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     expect((await response.json()).taskId).toBeNull();
@@ -416,7 +428,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockTasksFindFirst.mockResolvedValue(DOC_FIX_TASK);
 
     const request = createMockRequest({ body: { feedback: 'No thanks' } });
-    await callHandler(POST, request, 'plan-task-1');
+    await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(mockUpdateSetCalls).toHaveLength(1);
     expect(mockUpdateSetCalls[0].context.planRejection.feedback).toBe('No thanks');

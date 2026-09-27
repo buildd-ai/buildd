@@ -65,7 +65,7 @@ steps:
     # edge matches where the chat's own scroll-to-bottom leaves it.
     scrollTo: approval-confirm
     scrollAlign: end
-    caption: "Ask first. \"Make it a mission\" — nothing is filed until you confirm."
+    caption: "Ask first. \"Make it a mission\" drafts it; you confirm on the card."
     # Live take: the confirm lands (t=0) and the mission docks in the pane, planning.
     record: { ms: 9000, advanceTo: "0:12", ticks: 3 }
 

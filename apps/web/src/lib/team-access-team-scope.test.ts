@@ -41,17 +41,22 @@ beforeEach(() => {
   mockTeamsFindFirst.mockResolvedValue(null);
 });
 
+// team-access's uuid guard rejects a non-UUID workspaceId before it ever
+// reaches these mocks, so every workspaceId below must be UUID-shaped — the
+// mocks don't filter by value, so the exact id doesn't otherwise matter.
+const WS_ID = '11111111-1111-4111-8111-111111111111';
+
 describe('verifyWorkspaceAccess — open workspaces', () => {
   it('denies a signed-in user who is not a member of the owning team', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-a', accessMode: 'open' });
     mockTeamMembersFindFirst.mockResolvedValue(null);
-    expect(await verifyWorkspaceAccess('user-other', 'ws-open-1')).toBeNull();
+    expect(await verifyWorkspaceAccess('user-other', WS_ID)).toBeNull();
   });
 
   it('allows a member of the owning team', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-a', accessMode: 'open' });
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
-    expect(await verifyWorkspaceAccess('user-member', 'ws-open-2')).toEqual({ teamId: 'team-a', role: 'member' });
+    expect(await verifyWorkspaceAccess('user-member', WS_ID)).toEqual({ teamId: 'team-a', role: 'member' });
   });
 });
 
@@ -59,21 +64,21 @@ describe('verifyAccountWorkspaceAccess — open workspaces', () => {
   it('allows an account from the owning team without an explicit link', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-a', accessMode: 'open' });
     mockAccountsFindFirst.mockResolvedValue({ teamId: 'team-a' });
-    expect(await verifyAccountWorkspaceAccess('acct-same', 'ws-open-a1')).toBe(true);
+    expect(await verifyAccountWorkspaceAccess('acct-same', WS_ID)).toBe(true);
   });
 
   it('denies an account from another team that has no explicit link', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-a', accessMode: 'open' });
     mockAccountsFindFirst.mockResolvedValue({ teamId: 'team-b' });
     mockAccountWorkspacesFindFirst.mockResolvedValue(null);
-    expect(await verifyAccountWorkspaceAccess('acct-other', 'ws-open-a2')).toBe(false);
+    expect(await verifyAccountWorkspaceAccess('acct-other', WS_ID)).toBe(false);
   });
 
   it('still honours an explicit accountWorkspaces link for another team', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-a', accessMode: 'open' });
     mockAccountsFindFirst.mockResolvedValue({ teamId: 'team-b' });
     mockAccountWorkspacesFindFirst.mockResolvedValue({ canClaim: true, canCreate: true });
-    expect(await verifyAccountWorkspaceAccess('acct-linked', 'ws-open-a3', 'canClaim')).toBe(true);
+    expect(await verifyAccountWorkspaceAccess('acct-linked', WS_ID, 'canClaim')).toBe(true);
   });
 });
 

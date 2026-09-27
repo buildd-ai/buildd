@@ -230,7 +230,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
       return {
         title: 'Multi-currency invoices', status: 'ready',
         messages: [...explore(), agent('m4', 3, [
-          { type: 'text', text: 'Here’s a draft. I won’t file it until you confirm.' },
+          { type: 'text', text: 'Here’s a draft.' },
           call('manage_missions', MISSION_DRAFT, undefined, denied
             ? { state: 'output-denied', approval: { id: 'approval-1', approved: false, reason: 'Discarded by the user' } }
             : { state: 'approval-requested', approval: { id: 'approval-1' } }),
@@ -241,7 +241,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
       return {
         title: 'Multi-currency invoices', status: 'ready',
         messages: [...explore(), agent('m4', 4, [
-          { type: 'text', text: 'Here’s a draft. I won’t file it until you confirm.' },
+          { type: 'text', text: 'Here’s a draft.' },
           call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-1', approved: true } }),
           { type: 'text', text: 'Filed. buildd is planning it now; the card fills in as agents pick up tasks.' },
         ], 2400)],
