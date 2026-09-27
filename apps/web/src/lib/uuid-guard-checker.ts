@@ -37,7 +37,11 @@ export function uuidGuardViolations(rawSrc: string, paramName: string = 'id'): s
     }
   }
 
-  const destructure = new RegExp(`const \\{ ${paramName} \\} = await params\\b`);
+  // A nested route (e.g. .../[id]/notes/[noteId]/reply) destructures both
+  // segments in one statement — `const { id, noteId } = await params` — so the
+  // target name must be matched as a bare, unrenamed entry anywhere in the
+  // braces, not only as the sole entry.
+  const destructure = new RegExp(`const \\{\\s*(?:\\w+\\s*,\\s*)*${paramName}\\s*(?:,\\s*\\w+\\s*)*\\} = await params\\b`);
   const guardRe = new RegExp(`if \\(!isUuid\\(${paramName}\\)\\)`);
   const queryRe = new RegExp(`db\\.(query|select|update|insert|delete|execute)\\b|eq\\(\\w+\\.\\w+, ${paramName}\\)`);
 

@@ -80,7 +80,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { POST, GET } from './route';
 
-const mockParams = Promise.resolve({ id: 'mission-1' });
+const mockParams = Promise.resolve({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
 
 function createRequest(options: {
   method?: string;
@@ -92,7 +92,7 @@ function createRequest(options: {
   if (body) headers['content-type'] = 'application/json';
   const init: RequestInit = { method, headers: new Headers(headers) };
   if (body) init.body = JSON.stringify(body);
-  return new NextRequest('http://localhost:3000/api/missions/mission-1/artifacts', init);
+  return new NextRequest('http://localhost:3000/api/missions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/artifacts', init);
 }
 
 describe('POST /api/missions/[id]/artifacts', () => {
@@ -132,6 +132,19 @@ describe('POST /api/missions/[id]/artifacts', () => {
     expect(res.status).toBe(401);
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+    const req = createRequest({
+      method: 'POST',
+      body: { type: 'summary', title: 'Test' },
+      headers: { authorization: 'Bearer bld_test' },
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when mission not found', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -147,7 +160,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
 
   it('returns 404 when mission belongs to different team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-other', workspaceId: 'ws-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-other', workspaceId: 'ws-1' });
 
     const req = createRequest({
       method: 'POST',
@@ -160,7 +173,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
 
   it('creates artifact on mission without worker', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: 'ws-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: 'ws-1' });
 
     const req = createRequest({
       method: 'POST',
@@ -174,7 +187,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
     expect(data.artifact.title).toBe('iOS MVP Plan');
     expect(insertedArtifactValues).not.toBeNull();
     expect(insertedArtifactValues.workerId).toBeNull();
-    expect(insertedArtifactValues.missionId).toBe('mission-1');
+    expect(insertedArtifactValues.missionId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(insertedArtifactValues.workspaceId).toBe('ws-1');
   });
 
@@ -184,7 +197,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
     'accepts shared-vocabulary type %s',
     async (type) => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: 'ws-1' });
+      mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: 'ws-1' });
 
       const req = createRequest({
         method: 'POST',
@@ -198,7 +211,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
 
   it('rejects invalid artifact type', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: null });
 
     const req = createRequest({
       method: 'POST',
@@ -211,7 +224,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
 
   it('requires title', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: null });
 
     const req = createRequest({
       method: 'POST',
@@ -224,7 +237,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
 
   it('requires url for link type', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: null });
 
     const req = createRequest({
       method: 'POST',
@@ -238,7 +251,7 @@ describe('POST /api/missions/[id]/artifacts', () => {
   it('works with session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: null });
 
     const req = createRequest({
       method: 'POST',
@@ -271,6 +284,15 @@ describe('GET /api/missions/[id]/artifacts', () => {
     expect(res.status).toBe(401);
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+    const req = createRequest({ headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when mission not found', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -282,7 +304,7 @@ describe('GET /api/missions/[id]/artifacts', () => {
 
   it('lists artifacts for a mission', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1' });
     mockArtifactsFindMany.mockResolvedValue([
       { id: 'art-1', type: 'summary', title: 'Plan' },
     ]);

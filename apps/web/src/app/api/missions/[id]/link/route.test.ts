@@ -49,13 +49,13 @@ mock.module('@buildd/core/db', () => ({
 
 import { POST } from './route';
 
-const PARAMS = Promise.resolve({ id: 'mission-1' });
-const MISSION = { id: 'mission-1', teamId: 'team-1', workspaceId: 'ws-1' };
+const PARAMS = Promise.resolve({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+const MISSION = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', teamId: 'team-1', workspaceId: 'ws-1' };
 const LINEAR_CONFIG = { provider: 'linear' as const, connectorId: 'conn-1' };
 const PROJECT_URL = 'https://linear.app/acme/project/mobile-app-9f8e7d6c';
 
 function makeReq(body?: any, headers: Record<string, string> = {}) {
-  return new NextRequest('http://localhost:3000/api/missions/mission-1/link', {
+  return new NextRequest('http://localhost:3000/api/missions/cccccccc-cccc-4ccc-8ccc-cccccccccccc/link', {
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json', ...headers }),
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -87,6 +87,14 @@ describe('POST /api/missions/[id]/link', () => {
     mockGetCurrentUser.mockResolvedValue(null);
     const res = await POST(makeReq({ url: PROJECT_URL }), { params: PARAMS });
     expect(res.status).toBe(401);
+  });
+
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makeReq({ url: PROJECT_URL }), { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the mission is not found / not accessible', async () => {
@@ -124,7 +132,7 @@ describe('POST /api/missions/[id]/link', () => {
       teamId: 'team-1',
       provider: 'linear',
       builddEntityType: 'mission',
-      builddEntityId: 'mission-1',
+      builddEntityId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       externalId: 'mobile-app-9f8e7d6c',
       externalUrl: PROJECT_URL,
     });
