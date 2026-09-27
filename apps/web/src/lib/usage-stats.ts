@@ -24,7 +24,7 @@ const OTHER_TOOL_KEY = '__other__';
 /** Bucket label for non-MCP (built-in) tools in the per-server rollup. */
 export const BUILT_IN_SERVER = 'built-in';
 
-/** Group key for tasks with no `roleSlug`. */
+/** Group key for tasks with no `roleSlug` (also reused for a missing `creationSource`). */
 export const UNASSIGNED_ROLE = '(unassigned)';
 
 export interface UsageWorkerRow {
@@ -45,6 +45,8 @@ export interface UsageWorkerRow {
   /** Task status, used for the per-group success rate. Null when the task is gone. */
   taskStatus: string | null;
   roleSlug: string | null;
+  /** `tasks.creation_source` — where the task was filed from (dashboard, api, mcp, github, ...). */
+  creationSource?: string | null;
   /**
    * `tasks.predicted_model` — the model the router assigned at claim time, and
    * the "assigned" side of the divergence rate. Polymorphic on purpose: a full
@@ -259,7 +261,7 @@ export interface ScanBounds {
   completeSince: string;
 }
 
-export type GroupDimension = 'role' | 'workspace' | 'none' | 'executor';
+export type GroupDimension = 'role' | 'workspace' | 'creationSource' | 'none' | 'executor';
 
 /**
  * Who ran a worker, for `groupBy: 'executor'`. `workers.runner` is `'mcp'` when
@@ -743,34 +745,39 @@ export function describeScan(
 }
 
 /**
- * Role attribution, separated from cost attribution (Rule R3-2).
+ * Attribution by a task's own dimension, separated from cost attribution
+ * (Rule R3-2).
  *
  * `aggregateByTask` folds an attempt's workers into the PARENT's bucket, which
  * is correct for cost — "tokens per task" must be the cost of getting the task
- * done, retries included. But the bucket also inherits the parent's `roleSlug`,
- * so a reviewer worker was labelled with whatever role its parent carried and a
- * `reviewer` group was never formed at all, across a window in which nearly
- * every merged PR took a review round.
+ * done, retries included. But the bucket also inherits the parent's role and
+ * creation site, so e.g. a reviewer worker was labelled with whatever role its
+ * parent carried and a `reviewer` group was never formed at all, across a
+ * window in which nearly every merged PR took a review round.
  *
- * So the role histogram groups each WORKER ROW by its own task's role, then
- * aggregates by task within that group. One parent bucket can now contribute to
- * two role groups — its own, and `reviewer` for the review pass it contains —
- * because cost per task and work per role are different questions and stop
- * sharing one grouping key. The top-level totals and per-task figures still come
- * from `aggregateByTask(rows)` and are untouched.
+ * So both the role and creationSource histograms group each WORKER ROW by its
+ * own task's value for that dimension, then aggregate by task within that
+ * group. One parent bucket can now contribute to two groups — its own, and
+ * e.g. `reviewer` for the review pass it contains — because cost per task and
+ * work per dimension are different questions and stop sharing one grouping
+ * key. The top-level totals and per-task figures still come from
+ * `aggregateByTask(rows)` and are untouched.
  */
-export function aggregateByRole(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
-  const byRole = new Map<string, UsageWorkerRow[]>();
+function aggregateByOwnTaskField(
+  rows: UsageWorkerRow[],
+  keyOf: (row: UsageWorkerRow) => string,
+): Map<string, TaskAgg[]> {
+  const byKey = new Map<string, UsageWorkerRow[]>();
   for (const row of rows) {
-    const key = row.roleSlug ?? UNASSIGNED_ROLE;
-    const bucket = byRole.get(key);
+    const key = keyOf(row);
+    const bucket = byKey.get(key);
     if (bucket) bucket.push(row);
-    else byRole.set(key, [row]);
+    else byKey.set(key, [row]);
   }
 
   const out = new Map<string, TaskAgg[]>();
-  for (const [role, roleRows] of byRole) {
-    out.set(role, aggregateByTask(roleRows));
+  for (const [key, keyRows] of byKey) {
+    out.set(key, aggregateByTask(keyRows));
   }
   return out;
 }
@@ -794,6 +801,15 @@ export function aggregateByExecutor(rows: UsageWorkerRow[]): Map<string, TaskAgg
   return out;
 }
 
+export function aggregateByRole(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
+  return aggregateByOwnTaskField(rows, row => row.roleSlug ?? UNASSIGNED_ROLE);
+}
+
+/** Same fold-by-own-task-attribution as `aggregateByRole`, keyed on `creationSource` instead. */
+export function aggregateByCreationSource(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
+  return aggregateByOwnTaskField(rows, row => row.creationSource ?? UNASSIGNED_ROLE);
+}
+
 function buildGroups(
   tasks: TaskAgg[],
   groupBy: GroupDimension,
@@ -805,7 +821,9 @@ function buildGroups(
     ? aggregateByRole(rows)
     : groupBy === 'executor'
       ? aggregateByExecutor(rows)
-      : new Map<string, TaskAgg[]>();
+      : groupBy === 'creationSource'
+        ? aggregateByCreationSource(rows)
+        : new Map<string, TaskAgg[]>();
 
   if (groupBy === 'workspace') {
     for (const task of tasks) {
