@@ -8,10 +8,12 @@
  *   - A test workspace
  *   - Links between accounts and workspaces
  *
- * Idempotent: safe to run multiple times, and safe against a partially
+ * Idempotent: safe to run multiple times, safe against a partially
  * cleaned-up prior run (e.g. the team row deleted without its accounts) —
  * checked against the accounts.api_key unique constraint directly rather
- * than proxying through the team's existence.
+ * than proxying through the team's existence — and safe against a partial
+ * prior seed that created only one of the two accounts (repairs the missing
+ * one under the existing team/workspace instead of skipping forever).
  *
  * Usage:
  *   DATABASE_URL="…" bun run scripts/seed-integration-fixtures.ts
@@ -37,88 +39,130 @@ export async function seedFixtures(sql: SqlClient, apiKey: string, adminApiKey: 
   const apiKeyPrefix = extractApiKeyPrefix(apiKey);
   const adminKeyPrefix = extractApiKeyPrefix(adminApiKey);
 
-  // 1. Check if fixtures already exist (idempotency). Checked against the
-  // accounts themselves, not the team — accounts.api_key is the unique
-  // constraint an interrupted or partially-cleaned-up prior run actually
-  // collides on, and a team row can go missing (manual cleanup, no cascade)
-  // while the account it pointed at survives.
+  // 1. Check which of the two accounts already exist (idempotency). Checked
+  // against the accounts themselves, not the team — accounts.api_key is the
+  // unique constraint an interrupted or partially-cleaned-up prior run
+  // actually collides on, and a team row can go missing (manual cleanup, no
+  // cascade) while the account it pointed at survives.
+  //
+  // Checked per-key rather than "any match => fully seeded": a prior run
+  // that created the worker account but failed (or was killed) before the
+  // admin account insert leaves a permanent partial state. Short-circuiting
+  // on "at least one exists" would skip seeding forever and the admin key
+  // would 401 on every subsequent run — this is what actually happened.
   const existing = await sql`
-    SELECT id FROM accounts WHERE api_key IN (${hashedApiKey}, ${hashedAdminKey})
-  ` as Array<{ id: string }>;
+    SELECT id, api_key FROM accounts WHERE api_key IN (${hashedApiKey}, ${hashedAdminKey})
+  ` as Array<{ id: string; api_key: string }>;
 
-  if (existing.length > 0) {
+  let apiAccountId = existing.find((r) => r.api_key === hashedApiKey)?.id;
+  let adminAccountId = existing.find((r) => r.api_key === hashedAdminKey)?.id;
+
+  if (apiAccountId && adminAccountId) {
     console.log('Integration test fixtures already seeded, skipping...');
     return { seeded: false };
   }
 
   console.log('Seeding integration test fixtures...');
 
-  // 2. Create test team (or reuse it if it already exists without matching accounts)
-  const teamResult = await sql`
-    INSERT INTO teams (name, slug, created_at, updated_at)
-    VALUES ('integration-test-team', 'integration-test-team', NOW(), NOW())
-    ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
-    RETURNING id
-  ` as Array<{ id: string }>;
-
-  const teamId = teamResult[0].id;
-  console.log(`Created team: ${teamId}`);
-
-  // 3. Create test accounts (one for regular API key, one for admin).
-  // ON CONFLICT guards a race with a concurrent run between the check above
-  // and this insert; re-select the rows it created if we lost that race.
-  const accountResult = await sql`
-    INSERT INTO accounts (
-      type, level, name, api_key, api_key_prefix, auth_type,
-      max_concurrent_workers, total_tasks, team_id, created_at
-    ) VALUES
-      ('service', 'worker', 'integration-test-api', ${hashedApiKey}, ${apiKeyPrefix}, 'api', 3, 0, ${teamId}, NOW()),
-      ('service', 'admin', 'integration-test-admin', ${hashedAdminKey}, ${adminKeyPrefix}, 'api', 50, 0, ${teamId}, NOW())
-    ON CONFLICT (api_key) DO NOTHING
-    RETURNING id, api_key
-  ` as Array<{ id: string; api_key: string }>;
-
-  let apiAccountId: string;
-  let adminAccountId: string;
-  if (accountResult.length === 2) {
-    [apiAccountId, adminAccountId] = [accountResult[0].id, accountResult[1].id];
+  // 2. Resolve the team. Reuse the team of whichever account already exists
+  // so a partial-state repair doesn't fork a second team; otherwise create
+  // (or reuse) the fixture team by slug.
+  let teamId: string;
+  if (apiAccountId || adminAccountId) {
+    const anchorId = (apiAccountId ?? adminAccountId)!;
+    const teamRows = await sql`
+      SELECT team_id FROM accounts WHERE id = ${anchorId}
+    ` as Array<{ team_id: string }>;
+    teamId = teamRows[0].team_id;
   } else {
-    const rows = await sql`
-      SELECT id, api_key FROM accounts WHERE api_key IN (${hashedApiKey}, ${hashedAdminKey})
-    ` as Array<{ id: string; api_key: string }>;
-    apiAccountId = rows.find((r) => r.api_key === hashedApiKey)!.id;
-    adminAccountId = rows.find((r) => r.api_key === hashedAdminKey)!.id;
+    const teamResult = await sql`
+      INSERT INTO teams (name, slug, created_at, updated_at)
+      VALUES ('integration-test-team', 'integration-test-team', NOW(), NOW())
+      ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+      RETURNING id
+    ` as Array<{ id: string }>;
+    teamId = teamResult[0].id;
   }
-  console.log(`Created API account: ${apiAccountId}`);
-  console.log(`Created admin account: ${adminAccountId}`);
+  console.log(`Using team: ${teamId}`);
 
-  // 4. Create test workspace
-  const workspaceResult = await sql`
-    INSERT INTO workspaces (
-      name, access_mode, data_class, max_concurrent_tasks,
-      config_status, team_id, created_at, updated_at
-    ) VALUES (
-      'integration-test-workspace',
-      'restricted',
-      'standard',
-      3,
-      'unconfigured',
-      ${teamId},
-      NOW(),
-      NOW()
-    )
-    RETURNING id
+  // 3. Create whichever accounts are missing. ON CONFLICT guards a race with
+  // a concurrent run between the check above and this insert; re-select the
+  // row it created if we lost that race.
+  if (!apiAccountId) {
+    const rows = await sql`
+      INSERT INTO accounts (
+        type, level, name, api_key, api_key_prefix, auth_type,
+        max_concurrent_workers, total_tasks, team_id, created_at
+      ) VALUES
+        ('service', 'worker', 'integration-test-api', ${hashedApiKey}, ${apiKeyPrefix}, 'api', 3, 0, ${teamId}, NOW())
+      ON CONFLICT (api_key) DO NOTHING
+      RETURNING id
+    ` as Array<{ id: string }>;
+    apiAccountId = rows[0]?.id ?? (
+      (await sql`SELECT id FROM accounts WHERE api_key = ${hashedApiKey}` as Array<{ id: string }>)[0].id
+    );
+    console.log(`Created API account: ${apiAccountId}`);
+  }
+
+  if (!adminAccountId) {
+    const rows = await sql`
+      INSERT INTO accounts (
+        type, level, name, api_key, api_key_prefix, auth_type,
+        max_concurrent_workers, total_tasks, team_id, created_at
+      ) VALUES
+        ('service', 'admin', 'integration-test-admin', ${hashedAdminKey}, ${adminKeyPrefix}, 'api', 50, 0, ${teamId}, NOW())
+      ON CONFLICT (api_key) DO NOTHING
+      RETURNING id
+    ` as Array<{ id: string }>;
+    adminAccountId = rows[0]?.id ?? (
+      (await sql`SELECT id FROM accounts WHERE api_key = ${hashedAdminKey}` as Array<{ id: string }>)[0].id
+    );
+    console.log(`Created admin account: ${adminAccountId}`);
+  }
+
+  // 4. Create the test workspace, or reuse it if a partial-state repair
+  // already has one under this team.
+  const existingWorkspace = await sql`
+    SELECT id FROM workspaces WHERE team_id = ${teamId} AND name = 'integration-test-workspace'
   ` as Array<{ id: string }>;
 
-  const workspaceId = workspaceResult[0].id;
-  console.log(`Created workspace: ${workspaceId}`);
+  let workspaceId: string;
+  if (existingWorkspace.length > 0) {
+    workspaceId = existingWorkspace[0].id;
+    console.log(`Using existing workspace: ${workspaceId}`);
+  } else {
+    const workspaceResult = await sql`
+      INSERT INTO workspaces (
+        name, access_mode, data_class, max_concurrent_tasks,
+        config_status, team_id, created_at, updated_at
+      ) VALUES (
+        'integration-test-workspace',
+        'restricted',
+        'standard',
+        3,
+        'unconfigured',
+        ${teamId},
+        NOW(),
+        NOW()
+      )
+      RETURNING id
+    ` as Array<{ id: string }>;
+    workspaceId = workspaceResult[0].id;
+    console.log(`Created workspace: ${workspaceId}`);
+  }
 
-  // 5. Link accounts to workspace via accountWorkspaces
+  // 5. Link accounts to workspace via accountWorkspaces (idempotent: the
+  // primary key is (account_id, workspace_id), so a repair run that only
+  // needed to create one account still links safely).
   await sql`
     INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create)
-    VALUES
-      (${apiAccountId}, ${workspaceId}, true, false),
-      (${adminAccountId}, ${workspaceId}, true, true)
+    VALUES (${apiAccountId}, ${workspaceId}, true, false)
+    ON CONFLICT (account_id, workspace_id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create)
+    VALUES (${adminAccountId}, ${workspaceId}, true, true)
+    ON CONFLICT (account_id, workspace_id) DO NOTHING
   `;
   console.log('Linked accounts to workspace');
 
