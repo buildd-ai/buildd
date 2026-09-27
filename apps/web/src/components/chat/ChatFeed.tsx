@@ -43,12 +43,13 @@ function Segment({ seg }: { seg: FeedSegment }) {
   switch (seg.kind) {
     case 'text':
       return (
-        <div data-testid="feed-text" className="font-convo text-[15.5px] leading-[1.65] text-text-primary lg:max-w-[640px]">
+        // Buildd speaks in the voice face, finished or thinking (docs/design/chat-v3-desktop.md, thinking frame).
+        <div data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)] lg:max-w-[640px]">
           {/* While streaming, a solid block caret trails the last paragraph (inline, not a new line). */}
           <MarkdownContent
             content={seg.text}
             images="link"
-            className={`!text-[15.5px] !leading-[1.65] !text-text-primary [&_code]:!bg-[var(--convo-me)] ${seg.streaming ? 'stream-caret' : ''}`}
+            className={`!text-[17px] !leading-[1.45] !text-[var(--chat-text)] [&_code]:!bg-[var(--convo-me)] ${seg.streaming ? 'stream-caret' : ''}`}
           />
         </div>
       );
