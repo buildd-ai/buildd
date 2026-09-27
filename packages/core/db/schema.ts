@@ -3065,6 +3065,66 @@ export const notificationPreferencesRelations = relations(notificationPreference
   team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
+// ── Subscriptions and the delivery ledger (docs/design/subscriptions-and-notifications.md) ──
+//
+// A subscription is "who wants to hear about what". Exactly one owner column is
+// set: a person (owner_user_id), a waiting worker (owner_task_id) or an MCP
+// session (owner_account_id). Never hard-deleted: ending a watch stamps
+// ended_at, so its ledger rows (cascade on delete) survive as the record.
+// Written and read through apps/web/src/lib/subscriptions.ts only.
+export const subscriptions = pgTable('subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // The subject's workspace. Scoping is re-checked against it on every event.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  ownerAccountId: uuid('owner_account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  // Origin conversation: where a chat-created watch reports back.
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
+  subjectKind: text('subject_kind').notNull().$type<'task' | 'pr'>(),
+  // Match key: the task id, or `owner/repo#N` lowercased for a PR.
+  subjectKey: text('subject_key').notNull(),
+  subjectRef: jsonb('subject_ref').notNull().$type<Record<string, unknown>>(),
+  eventTypes: text('event_types').array().notNull(),
+  lifetime: text('lifetime').default('one_shot').notNull().$type<'one_shot' | 'standing'>(),
+  createdVia: text('created_via').notNull().$type<'chat' | 'mcp' | 'worker' | 'settings'>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason').$type<'delivered' | 'cancelled'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  exactlyOneOwner: check('subscriptions_exactly_one_owner', sql`num_nonnulls(${t.ownerUserId}, ${t.ownerTaskId}, ${t.ownerAccountId}) = 1`),
+  subjectIdx: index('subscriptions_subject_idx').on(t.subjectKind, t.subjectKey).where(sql`${t.endedAt} IS NULL`),
+  ownerUserIdx: index('subscriptions_owner_user_idx').on(t.ownerUserId).where(sql`${t.ownerUserId} IS NOT NULL`),
+  ownerTaskIdx: index('subscriptions_owner_task_idx').on(t.ownerTaskId).where(sql`${t.ownerTaskId} IS NOT NULL`),
+  ownerAccountIdx: index('subscriptions_owner_account_idx').on(t.ownerAccountId).where(sql`${t.ownerAccountId} IS NOT NULL`),
+}));
+
+// The delivery ledger, and the inbox. One row per (subscription, event): the
+// unique index is the dedupe, so two emitters that see the same fact (webhook
+// and reconcile sweep) write one row. Every channel reads from here.
+export const notificationDeliveries = pgTable('notification_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  subscriptionId: uuid('subscription_id').references(() => subscriptions.id, { onDelete: 'cascade' }).notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  eventType: text('event_type').notNull(),
+  // Refs and short text only; no prose from a sensitive workspace.
+  payload: jsonb('payload').notNull().$type<Record<string, unknown>>(),
+  urgency: text('urgency').default('normal').notNull().$type<'low' | 'normal' | 'urgent'>(),
+  route: text('route'),
+  status: text('status').default('pending').notNull()
+    .$type<'pending' | 'delivered' | 'read' | 'coalesced' | 'held' | 'dropped' | 'failed'>(),
+  attempts: integer('attempts').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  readAt: timestamp('read_at', { withTimezone: true }),
+}, (t) => ({
+  subscriptionDedupeIdx: uniqueIndex('notification_deliveries_subscription_dedupe_idx').on(t.subscriptionId, t.dedupeKey),
+  pendingIdx: index('notification_deliveries_pending_idx').on(t.subscriptionId, t.createdAt).where(sql`${t.status} = 'pending'`),
+}));
+
 // User feedback on AI-generated content (thumbs up/down + dismiss)
 export const userFeedback = pgTable('user_feedback', {
   id: uuid('id').primaryKey().defaultRandom(),

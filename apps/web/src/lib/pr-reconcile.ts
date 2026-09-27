@@ -37,6 +37,7 @@
  * never rendered.
  */
 
+import { recordEvent, prMergedEvent } from '@/lib/subscriptions';
 import { db } from '@buildd/core/db';
 import { missions, workers, workspaces } from '@buildd/core/db/schema';
 import { and, isNull, isNotNull, eq, gt, or, notInArray, sql } from 'drizzle-orm';
@@ -106,6 +107,8 @@ export async function refreshWorkerMergeStateIfStale(
         prNumber: worker.prNumber,
         mergedAt: new Date(pr.merged_at),
       });
+      // Same dedupe key as the webhook: a merge it already reported writes nothing.
+      await recordEvent(prMergedEvent({ repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl }));
       return true;
     }
     return false;
@@ -440,6 +443,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             updatedAt: new Date(),
           }, { verified: true });
           result.stamped++;
+          // Same dedupe key as the webhook: a merge it already reported writes nothing.
+          await recordEvent(prMergedEvent({ repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl }));
           // The merge belongs to the PR: stamp any other row carrying it (a
           // retry attempt that adopted the PR number) and nudge their tasks'
           // dependents too. See lib/pr-merge-stamp.

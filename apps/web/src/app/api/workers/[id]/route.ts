@@ -15,6 +15,7 @@ import { notify } from '@/lib/pushover';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
+import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -3601,6 +3602,13 @@ export async function PATCH(
                 .then(m => m.postTaskCompletedEvent({ taskId }))
                 .catch(() => {});
             }
+            // Subscriptions ledger. Fire-and-forget; never throws. Title omitted for sensitive workspaces.
+            void recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
+              taskId,
+              workerId: id,
+              title: isSensitive ? null : taskRecord.title,
+              workspaceId: worker.workspaceId,
+            }));
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
@@ -3702,6 +3710,14 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // Subscriptions ledger: "tell me when this task needs input". Only after the
+  // worker write landed, so a conflicted PATCH records nothing. The key is per
+  // question, so the runner re-sending the same waitingFor writes one row.
+  // Fire-and-forget: recordEvent catches its own errors and adds no latency.
+  if (waitingFor?.type === 'question' && worker.taskId) {
+    void recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
   }
 
   // One terminal record per worker, on every path that lands here: a real
