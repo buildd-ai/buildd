@@ -19,6 +19,9 @@ export interface ChatPageContext {
 
 const LIVE = ['running', 'starting', 'waiting_input'];
 
+/** At most this many needs-you rows load; a full list means "at least this many". */
+export const NEEDS_YOU_LIMIT = 5;
+
 const DEFAULT_AGENT: ChatAgent = { name: 'buildd', color: null };
 
 /** The Organizer role as the chat's agent: team-level, or on one of these workspaces. Displays as buildd. */
@@ -66,13 +69,13 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
       limit: 4,
     }).catch(() => []),
     db
-      .select({ workerId: workers.id, taskId: tasks.id, title: tasks.title, missionTitle: missions.title })
+      .select({ workerId: workers.id, taskId: tasks.id, title: tasks.title, label: tasks.label, waitingFor: workers.waitingFor, missionTitle: missions.title })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .leftJoin(missions, eq(missions.id, tasks.missionId))
       .where(and(inArray(workers.workspaceId, wsIds), eq(workers.status, 'waiting_input')))
       .orderBy(desc(workers.updatedAt))
-      .limit(5)
+      .limit(NEEDS_YOU_LIMIT)
       .catch(() => []),
     db.select({ id: workers.id }).from(workers)
       .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.status, LIVE)))
@@ -85,6 +88,8 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
     needsYou: waiting.map(w => ({
       id: w.workerId,
       title: w.title,
+      label: w.label ?? null,
+      waitingType: w.waitingFor?.type ?? null,
       href: `/app/tasks/${w.taskId}/respond`,
       meta: w.missionTitle ?? null,
     })),

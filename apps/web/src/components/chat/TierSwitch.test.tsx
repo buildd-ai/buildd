@@ -5,24 +5,38 @@ import TierSwitch from './TierSwitch';
 /**
  * The trigger chip's label used to differ by viewport: "auto · standard" on
  * desktop (the routed-to tier only showed from `sm:` up) but just "auto" on a
- * phone, and the menu mixed "Auto" with lowercase tier names. One format,
- * sentence case, on every viewport (composer-format.test.ts covers the pure
+ * phone, and the menu mixed "Auto" with lowercase tier names. One format on
+ * every viewport, lowercase in the cell (v3 frame), sentence case in the menu (composer-format.test.ts covers the pure
  * label logic; this covers the chip actually using it, unconditionally).
  */
-describe('TierSwitch — one label format on every viewport', () => {
-  it('pinned tier: sentence case, no responsive class hiding part of it', () => {
+const cell = (html: string) => html.match(/data-testid="composer-tier-label"[^>]*>([^<]*)</)?.[1];
+
+describe('TierSwitch: one label format on every viewport', () => {
+  it('the cell reads lowercase like the v3 frame (`auto ▾`); the accessible name keeps sentence case', () => {
+    const html = renderToStaticMarkup(
+      <TierSwitch teamId="t1" conversationId={null} pinned={null} last={null} onChange={() => {}} />,
+    );
+    expect(cell(html)).toBe('auto');
+    expect(html).toContain('aria-label="Tier: Auto"');
+    const routed = renderToStaticMarkup(
+      <TierSwitch teamId="t1" conversationId={null} pinned={null} last="standard" onChange={() => {}} />,
+    );
+    expect(cell(routed)).toBe('auto · standard');
+  });
+
+  it('pinned tier: no responsive class hiding part of it', () => {
     const html = renderToStaticMarkup(
       <TierSwitch teamId="t1" conversationId={null} pinned="premium" last="budget" onChange={() => {}} />,
     );
-    expect(html).toContain('Premium');
+    expect(cell(html)).toBe('premium');
     expect(html).not.toContain('sm:inline');
   });
 
-  it('auto, routed to a tier: "Auto · Standard" is not gated behind a breakpoint', () => {
+  it('auto, routed to a tier: the routed tier is not gated behind a breakpoint', () => {
     const html = renderToStaticMarkup(
       <TierSwitch teamId="t1" conversationId={null} pinned={null} last="standard" onChange={() => {}} />,
     );
-    expect(html).toContain('Auto · Standard');
+    expect(cell(html)).toBe('auto · standard');
     expect(html).not.toContain('sm:inline');
   });
 
@@ -30,7 +44,6 @@ describe('TierSwitch — one label format on every viewport', () => {
     const html = renderToStaticMarkup(
       <TierSwitch teamId="t1" conversationId={null} pinned={null} last={null} onChange={() => {}} />,
     );
-    expect(html).toContain('Auto');
-    expect(html).not.toContain('Auto · ');
+    expect(cell(html)).toBe('auto');
   });
 });

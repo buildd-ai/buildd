@@ -82,7 +82,9 @@ describe('Ask button', () => {
     expect(overlay?.dataset.presentation).toBe('peek');
     expect(fetched[0]).toBe('/api/chat/canvas?teamId=team-1');
     expect(q('[data-testid="chat-column"]')?.dataset.canvas).toBe('overlay');
-    expect(q('[data-testid="canvas-pinned"]')?.dataset.kind).toBe('mission');
+    // The mission sheet: the context card stands in for the pinned strip until the first message.
+    expect(q('[data-testid="mission-context-card"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
     // The Ask button steps aside while the canvas is up.
     expect(q('[data-testid="canvas-ask"]')).toBeNull();
   });
@@ -137,6 +139,36 @@ describe('presentation', () => {
     await act(async () => { api!.open(); });
     await settle();
     expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.presentation).toBe('takeover');
+  });
+
+  it('over a mission: an opaque sheet from 84px, a square grabber, a scrim, above the bottom nav', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    const overlay = q('[data-testid="chat-canvas-overlay"]')!;
+    expect(overlay.dataset.sheet).toBe('mission');
+    // Above the bottom nav (z-20) and every page sheet (z-50).
+    expect(overlay.className).toContain('z-[55]');
+    const dialog = q('[data-testid="canvas-dialog"]')!;
+    expect(dialog.className).toContain('top-[84px]');
+    expect(dialog.className).toContain('bottom-0');
+    expect(dialog.className).toContain('bg-[var(--chat-bar)]');
+    expect(dialog.className).toContain('border-t-2');
+    expect(dialog.getAttribute('aria-label')).toBe('Ask about this mission');
+    expect(q('[data-testid="canvas-grabber"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-dim"]')!.className).toContain('bg-[var(--chat-scrim)]');
+  });
+
+  it('about no mission: the plain takeover, no grabber', async () => {
+    pathname = '/app/tasks';
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.sheet).toBeUndefined();
+    expect(q('[data-testid="canvas-grabber"]')).toBeNull();
+    expect(q('[data-testid="canvas-dialog"]')!.className).toContain('inset-0');
   });
 });
 

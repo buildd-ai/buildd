@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { reconcileMissionPrState } from '@/lib/pr-state-reconcile';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * POST /api/missions/[id]/reconcile
@@ -19,6 +20,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
