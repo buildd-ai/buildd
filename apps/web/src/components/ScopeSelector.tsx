@@ -1,5 +1,7 @@
 'use client';
 
+import { Select } from '@/components/ui/Select';
+
 /**
  * Shared "who can use this?" scope control — one vocabulary across every credential/
  * connector/role surface (This team / One workspace / All my teams). See
@@ -49,15 +51,14 @@ export function ScopeSelector({
         <span className="text-xs text-text-muted">Applies to every team you manage ({allTeamsCount})</span>
       )}
       {scope === 'workspace' && (
-        <select
+        <Select
+          aria-label="Workspace"
+          size="sm"
           value={workspaceId}
-          onChange={(e) => onWorkspaceChange(e.target.value)}
-          className="h-11 md:h-8 px-2 bg-surface text-base md:text-sm"
-        >
-          {workspaces.map((ws) => (
-            <option key={ws.id} value={ws.id}>{ws.name}</option>
-          ))}
-        </select>
+          onChange={onWorkspaceChange}
+          options={workspaces.map((ws) => ({ value: ws.id, label: ws.name }))}
+          className="w-full sm:w-56"
+        />
       )}
     </div>
   );

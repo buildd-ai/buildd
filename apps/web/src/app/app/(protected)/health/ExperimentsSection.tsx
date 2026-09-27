@@ -16,6 +16,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ExperimentReadout, ReadoutVerdict } from '@buildd/core/experiment-readout';
 import { shouldShowExperiments, type HealthExperimentItem, type HealthExperiments } from '@/lib/health-experiments-shared';
+import { Select } from '@/components/ui/Select';
 
 function pct(v: number | null | undefined, digits = 0): string {
   if (v == null || !Number.isFinite(v)) return '—';
@@ -277,10 +278,17 @@ function CreateExperimentForm() {
         </label>
         <label className="block text-xs text-text-secondary">
           Visibility
-          <select value={visibility} onChange={ev => setVisibility(ev.target.value as 'admins' | 'team')} className={`${input} mt-1`}>
-            <option value="admins">Admins only</option>
-            <option value="team">Whole team</option>
-          </select>
+          <Select
+            aria-label="Visibility"
+            size="sm"
+            className="mt-1"
+            value={visibility}
+            onChange={v => setVisibility(v as 'admins' | 'team')}
+            options={[
+              { value: 'admins', label: 'Admins only' },
+              { value: 'team', label: 'Whole team' },
+            ]}
+          />
         </label>
       </div>
       {error && <p className="text-xs text-status-error" role="alert">{error}</p>}

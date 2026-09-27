@@ -91,7 +91,8 @@ describe('ModelTiersClient', () => {
   it('gives members the table without controls', async () => {
     await mount(false);
     const row = host.querySelector('[data-testid="tier-row-standard"]')!;
-    expect((row.querySelector('select') as HTMLSelectElement).disabled).toBe(true);
+    expect((row.querySelector('[role="combobox"][aria-label="Provider for standard"]') as HTMLButtonElement).disabled).toBe(true);
+    expect((row.querySelector('input[role="combobox"]') as HTMLInputElement).disabled).toBe(true);
     expect(Array.from(row.querySelectorAll('button')).some((b) => b.textContent === 'Switch')).toBe(false);
   });
 });

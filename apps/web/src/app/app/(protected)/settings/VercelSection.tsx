@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import SettingsSection from './SettingsSection';
 import { useConfirm } from '@/components/useConfirm';
+import { Select } from '@/components/ui/Select';
 
 interface Team {
   id: string;
@@ -141,15 +142,12 @@ export default function VercelSection({ teams }: Props) {
         {teams.length > 1 && (
           <label className="block">
             <span className="field-label">Team</span>
-            <select
+            <Select
+              aria-label="Team"
               value={selectedTeamId}
-              onChange={(e) => setSelectedTeamId(e.target.value)}
-              className="w-full h-10 px-3 bg-surface text-sm"
-            >
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
+              onChange={setSelectedTeamId}
+              options={teams.map((t) => ({ value: t.id, label: t.name }))}
+            />
           </label>
         )}
 

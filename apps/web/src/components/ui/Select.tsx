@@ -1,326 +1,245 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
-import { useClickOutside } from '@/hooks/useClickOutside';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
+import { AnchoredPopover } from './AnchoredPopover';
+import { ListboxOptions, optionDomId, type SelectOption } from './ListboxOptions';
+import { edgeIndex, fuzzyFilter, isTypeaheadKey, moveHighlight, typeaheadIndex } from './listbox';
 
-export interface SelectOption {
-  value: string;
-  label: string;
-}
+export type { SelectOption } from './ListboxOptions';
 
-interface SelectProps {
-  value: string;
-  onChange: (value: string) => void;
-  options: readonly SelectOption[];
+interface SelectProps<V extends string = string> {
+  value: V | '';
+  onChange: (value: V) => void;
+  options: readonly SelectOption<V>[];
   placeholder?: string;
   disabled?: boolean;
+  /** Search box above the list. Default: on when there are more than 10 options. */
   searchable?: boolean;
+  /** Wrapper classes (width, flex). The trigger fills the wrapper. */
   className?: string;
   size?: 'sm' | 'md';
   id?: string;
+  /** Posts the value with a surrounding <form>. */
   name?: string;
+  'aria-label'?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+  /** data-testid on the trigger. */
+  testId?: string;
+  /** Phone sheet heading. Defaults to the aria-label, then the placeholder. */
+  sheetTitle?: string;
+  /** Replaces the trigger's classes entirely (a chip, a bare inline control). */
+  triggerClassName?: string;
+  /** Custom trigger content for the selected option. */
+  renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
+  /** Minimum popover width in px (a narrow trigger with long options). */
+  menuMinWidth?: number;
+  align?: 'start' | 'end';
 }
 
-const MOBILE_BREAKPOINT = 640;
+const TYPEAHEAD_RESET_MS = 600;
 
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-  return isMobile;
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={`w-3 h-3 shrink-0 text-text-muted transition-transform duration-100 ${open ? 'rotate-180' : ''}`}
+      viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true"
+    >
+      <path strokeLinecap="square" strokeLinejoin="miter" d="M2.5 4.5L6 8l3.5-3.5" />
+    </svg>
+  );
 }
 
-export function Select({
-  value,
-  onChange,
-  options,
-  placeholder = 'Select…',
-  disabled = false,
-  searchable = false,
-  className = '',
-  size = 'md',
-  id,
-  name,
-}: SelectProps) {
+export function triggerClasses(size: 'sm' | 'md', open: boolean, disabled: boolean): string {
+  return [
+    'w-full min-w-0 flex items-center justify-between gap-2 text-left font-mono border bg-surface-1 text-text-primary transition-colors',
+    size === 'sm' ? 'min-h-11 md:min-h-8 px-2 text-base md:text-xs' : 'min-h-11 md:min-h-9 px-3 text-base md:text-[13px]',
+    open ? 'border-primary' : 'border-border-default',
+    disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:border-border-strong',
+    'focus-visible:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary-ring',
+  ].join(' ');
+}
+
+/**
+ * The brand select: a button that opens a listbox (WAI-ARIA "select-only
+ * combobox"). Square, 1px ink border, hard-offset popover, IBM Plex Mono.
+ *
+ * Keyboard: ↓/↑/Enter/Space open; ↓/↑ move, Home/End jump, PageUp/PageDown
+ * step ten; typing jumps to a matching label (repeat a letter to cycle);
+ * Enter/Space choose; Escape closes and keeps the old value. Focus stays on the
+ * trigger (or the search box) and aria-activedescendant names the row.
+ * Below `md` it opens as a bottom sheet with 48px rows.
+ */
+export function Select<V extends string = string>({
+  value, onChange, options, placeholder = 'Select…', disabled = false, searchable, className = '',
+  size = 'md', id, name, 'aria-label': ariaLabel, 'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy, testId, sheetTitle, triggerClassName, renderValue,
+  menuMinWidth, align,
+}: SelectProps<V>) {
   const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const [highlightedIndex, setHighlightedIndex] = useState(-1);
-  const [dropUp, setDropUp] = useState(false);
+  const [query, setQuery] = useState('');
+  const [active, setActive] = useState(-1);
   const isMobile = useIsMobile();
-  const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  const typed = useRef({ buffer: '', at: 0 });
+  const listId = `${useId()}-listbox`;
 
-  const close = useCallback(() => {
+  const withSearch = searchable ?? options.length > 10;
+  const visible = useMemo(
+    () => (withSearch && query ? fuzzyFilter(options, query, (o) => `${o.label} ${o.description ?? ''} ${o.keywords ?? ''} ${o.group ?? ''}`) : options),
+    [options, query, withSearch],
+  );
+  const selected = options.find((o) => o.value === value);
+
+  const openList = useCallback((at?: 'first' | 'last') => {
+    if (disabled) return;
+    setQuery('');
+    const sel = options.findIndex((o) => o.value === value && !o.disabled);
+    setActive(at ? edgeIndex(options, at) : sel >= 0 ? sel : edgeIndex(options, 'first'));
+    setOpen(true);
+  }, [disabled, options, value]);
+
+  const close = useCallback((refocus = true) => {
     setOpen(false);
-    setSearch('');
-    setHighlightedIndex(-1);
+    setQuery('');
+    typed.current.buffer = '';
+    if (refocus) triggerRef.current?.focus({ preventScroll: true });
   }, []);
 
-  useClickOutside(ref, close);
-
-  const selectedOption = options.find(o => o.value === value);
-
-  const filtered = searchable && search
-    ? options.filter(o => (o.label ?? '').toLowerCase().includes(search.toLowerCase()))
-    : options;
-
-  // Desktop: measure available space and decide drop direction
-  useLayoutEffect(() => {
-    if (open && !isMobile && triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      setDropUp(spaceBelow < 240 && spaceAbove > spaceBelow);
-    }
-  }, [open, isMobile]);
-
-  // Pre-highlight selected item and scroll into view on open
-  useEffect(() => {
-    if (open) {
-      const selectedIdx = filtered.findIndex(o => o.value === value);
-      setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
-
-      if (searchable) {
-        setTimeout(() => searchRef.current?.focus(), 0);
-      }
-
-      // Scroll selected item into view
-      if (selectedIdx >= 0) {
-        setTimeout(() => {
-          if (listRef.current) {
-            const items = listRef.current.querySelectorAll('[role="option"]');
-            items[selectedIdx]?.scrollIntoView({ block: 'nearest' });
-          }
-        }, 0);
-      }
-    }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Lock body scroll on mobile when open
-  useEffect(() => {
-    if (open && isMobile) {
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = ''; };
-    }
-  }, [open, isMobile]);
-
-  // Scroll highlighted item into view on keyboard nav
-  useEffect(() => {
-    if (highlightedIndex >= 0 && listRef.current) {
-      const items = listRef.current.querySelectorAll('[role="option"]');
-      items[highlightedIndex]?.scrollIntoView({ block: 'nearest' });
-    }
-  }, [highlightedIndex]);
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (disabled) return;
-
-    switch (e.key) {
-      case 'Enter':
-      case ' ':
-        e.preventDefault();
-        if (!open) {
-          setOpen(true);
-        } else if (highlightedIndex >= 0 && highlightedIndex < filtered.length) {
-          onChange(filtered[highlightedIndex].value);
-          close();
-        }
-        break;
-      case 'ArrowDown':
-        e.preventDefault();
-        if (!open) {
-          setOpen(true);
-        } else {
-          setHighlightedIndex(i => (i + 1) % filtered.length);
-        }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        if (open) {
-          setHighlightedIndex(i => (i - 1 + filtered.length) % filtered.length);
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        close();
-        break;
-      case 'Tab':
-        close();
-        break;
-    }
-  }
-
-  function handleSearchKeyDown(e: React.KeyboardEvent) {
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setHighlightedIndex(i => (i + 1) % filtered.length);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setHighlightedIndex(i => (i - 1 + filtered.length) % filtered.length);
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (highlightedIndex >= 0 && highlightedIndex < filtered.length) {
-          onChange(filtered[highlightedIndex].value);
-          close();
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        close();
-        break;
-    }
-  }
-
-  const sizeClasses = size === 'sm'
-    ? 'text-xs px-2 py-1'
-    : 'px-3 py-2';
-
-  function selectOption(optionValue: string) {
-    onChange(optionValue);
+  const pick = useCallback((index: number) => {
+    const o = visible[index];
+    if (!o || o.disabled) return;
+    if (o.value !== value) onChange(o.value);
     close();
+  }, [visible, value, onChange, close]);
+
+  useEffect(() => {
+    if (open && withSearch && !isMobile) searchRef.current?.focus({ preventScroll: true });
+  }, [open, withSearch, isMobile]);
+
+  function typeahead(key: string) {
+    const now = Date.now();
+    const t = typed.current;
+    t.buffer = now - t.at > TYPEAHEAD_RESET_MS ? key : t.buffer + key;
+    t.at = now;
+    const from = open ? active : options.findIndex((o) => o.value === value);
+    const hit = typeaheadIndex(open ? visible : options, from, t.buffer);
+    if (hit < 0) return;
+    if (!open) {
+      setQuery('');
+      setOpen(true);
+    }
+    setActive(hit);
   }
 
-  const searchInput = searchable && (
-    <div className={isMobile ? 'p-3 border-b border-border-default' : 'p-2 border-b border-border-default'}>
-      <input
-        ref={searchRef}
-        type="text"
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          setHighlightedIndex(0);
-        }}
-        onKeyDown={!isMobile ? handleSearchKeyDown : undefined}
-        placeholder="Search…"
-        className={`w-full bg-transparent text-text-primary placeholder-text-muted focus:outline-none ${
-          isMobile ? 'px-1 py-1 text-base' : 'px-2 py-1 text-sm'
-        }`}
-      />
-    </div>
-  );
+  function onKey(e: KeyboardEvent<HTMLElement>, fromSearch = false) {
+    if (disabled) return;
+    if (!open) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openList();
+      } else if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        openList(e.key === 'Home' ? 'first' : 'last');
+      } else if (isTypeaheadKey(e)) {
+        e.preventDefault();
+        typeahead(e.key);
+      }
+      return;
+    }
+    switch (e.key) {
+      case 'ArrowDown': e.preventDefault(); setActive((i) => moveHighlight(visible, i, 1)); break;
+      case 'ArrowUp': e.preventDefault(); setActive((i) => moveHighlight(visible, i, -1)); break;
+      case 'PageDown': e.preventDefault(); setActive((i) => moveHighlight(visible, i, 10, false)); break;
+      case 'PageUp': e.preventDefault(); setActive((i) => moveHighlight(visible, i, -10, false)); break;
+      case 'Home': if (!fromSearch) { e.preventDefault(); setActive(edgeIndex(visible, 'first')); } break;
+      case 'End': if (!fromSearch) { e.preventDefault(); setActive(edgeIndex(visible, 'last')); } break;
+      case 'Enter': e.preventDefault(); pick(active); break;
+      case ' ':
+        if (!fromSearch) { e.preventDefault(); pick(active); }
+        break;
+      case 'Escape': e.preventDefault(); e.stopPropagation(); close(); break;
+      case 'Tab': close(false); break;
+      default:
+        if (!fromSearch && isTypeaheadKey(e)) { e.preventDefault(); typeahead(e.key); }
+    }
+  }
 
-  const optionsList = (
-    <div
-      ref={listRef}
-      role="listbox"
-      className={isMobile ? 'overflow-y-auto py-1 flex-1' : 'max-h-60 overflow-y-auto py-1'}
-    >
-      {filtered.length === 0 ? (
-        <div className="px-3 py-2 text-sm text-text-muted">No matches</div>
-      ) : (
-        filtered.map((option, i) => (
-          <button
-            key={option.value}
-            type="button"
-            role="option"
-            aria-selected={option.value === value}
-            onClick={() => selectOption(option.value)}
-            onMouseEnter={!isMobile ? () => setHighlightedIndex(i) : undefined}
-            className={`w-full text-left flex items-center justify-between transition-colors ${
-              isMobile
-                ? 'px-4 py-3 text-base'
-                : `px-3 ${size === 'sm' ? 'py-1 text-xs' : 'py-2 text-sm'}`
-            } ${
-              highlightedIndex === i && !isMobile ? 'bg-surface-3' : ''
-            } ${
-              option.value === value
-                ? 'text-text-primary font-medium'
-                : 'text-text-secondary'
-            } ${
-              isMobile ? 'active:bg-surface-3' : ''
-            }`}
-          >
-            <span className="truncate">{option.label}</span>
-            {option.value === value && (
-              <svg className="w-4 h-4 shrink-0 ml-2 text-primary" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-              </svg>
-            )}
-          </button>
-        ))
-      )}
-    </div>
-  );
+  const title = sheetTitle ?? ariaLabel ?? placeholder;
+  const activeId = open && active >= 0 && visible[active] ? optionDomId(listId, active) : undefined;
 
   return (
-    <div ref={ref} className={`relative ${className}`}>
+    <div className={`relative min-w-0 ${className}`}>
       {name && <input type="hidden" name={name} value={value} />}
       <button
         ref={triggerRef}
         type="button"
         id={id}
         role="combobox"
-        aria-expanded={open}
         aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={!withSearch && !isMobile ? activeId : undefined}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
+        data-testid={testId}
+        data-value={value}
         disabled={disabled}
-        onClick={() => !disabled && setOpen(!open)}
-        onKeyDown={handleKeyDown}
-        className={`w-full flex items-center justify-between gap-2 border rounded-md bg-surface-1 text-left transition-colors ${sizeClasses} ${
-          disabled
-            ? 'opacity-50 cursor-not-allowed border-border-default'
-            : 'hover:bg-surface-2 cursor-pointer'
-        } ${
-          open
-            ? 'border-primary ring-2 ring-primary-ring'
-            : 'border-border-default'
-        } focus:ring-2 focus:ring-primary-ring focus:border-primary focus:outline-none`}
+        onClick={() => (open ? close() : openList())}
+        onKeyDown={(e) => onKey(e)}
+        className={triggerClassName ?? triggerClasses(size, open, disabled)}
       >
-        <span className={selectedOption ? 'text-text-primary truncate' : 'text-text-muted truncate'}>
-          {selectedOption?.label || placeholder}
-        </span>
-        <svg
-          className={`w-3.5 h-3.5 shrink-0 text-text-secondary transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        {renderValue ? renderValue(selected) : (
+          <span className={`min-w-0 flex-1 truncate ${selected ? '' : 'text-text-muted'}`}>{selected?.label ?? placeholder}</span>
+        )}
+        <Chevron open={open} />
       </button>
 
-      {/* Mobile: bottom sheet */}
-      {open && isMobile && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50"
-          onClick={close}
-        >
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-surface-2 rounded-t-2xl max-h-[70vh] flex flex-col animate-slide-up"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Drag handle */}
-            <div className="flex justify-center pt-3 pb-1">
-              <div className="w-10 h-1 rounded-full bg-surface-4" />
-            </div>
-            {searchInput}
-            {optionsList}
-            {/* Safe area padding for bottom-notch phones */}
-            <div className="pb-[env(safe-area-inset-bottom)]" />
+      <AnchoredPopover
+        open={open}
+        onClose={() => close(!isMobile)}
+        anchorRef={triggerRef}
+        sheet={isMobile}
+        title={title}
+        minWidth={menuMinWidth}
+        align={align}
+      >
+        {withSearch && (
+          <div className={`shrink-0 border-b border-border-default ${isMobile ? 'p-3' : 'p-1.5'}`}>
+            <input
+              ref={searchRef}
+              type="text"
+              role="searchbox"
+              aria-label={`Search ${title}`}
+              aria-controls={listId}
+              aria-activedescendant={activeId}
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+              onKeyDown={(e) => onKey(e, true)}
+              placeholder="Search…"
+              spellCheck={false}
+              autoComplete="off"
+              className={`w-full bg-surface-1 border border-border-default px-2 font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary ${isMobile ? 'h-11 text-base' : 'h-8 text-xs'}`}
+            />
           </div>
-        </div>
-      )}
-
-      {/* Desktop: dropdown */}
-      {open && !isMobile && (
-        <div
-          className={`absolute z-50 min-w-full bg-surface-2 border border-border-default rounded-md shadow-lg animate-dropdown-in origin-top ${
-            dropUp ? 'bottom-full mb-1' : 'top-full mt-1'
-          }`}
-        >
-          {searchInput}
-          {optionsList}
-        </div>
-      )}
+        )}
+        <ListboxOptions
+          id={listId}
+          options={visible}
+          activeIndex={active}
+          isSelected={(v) => v === value}
+          onPick={pick}
+          onHover={setActive}
+          roomy={isMobile}
+          dense={size === 'sm'}
+          label={ariaLabel ?? title}
+          focusable={isMobile}
+          onKeyDown={isMobile ? (e) => onKey(e) : undefined}
+        />
+      </AnchoredPopover>
     </div>
   );
 }

@@ -28,7 +28,9 @@ describe('NewMissionForm — criterion row on a narrow phone', () => {
   for (const type of ['command', 'artifact_exists', 'description'] as const) {
     it(`every ${type} field can shrink and is 16px below md`, () => {
       const html = row(type);
-      const fields = [...tags(html, 'input'), ...tags(html, 'select'), ...tags(html, 'textarea')];
+      const pickers = tags(html, 'button').filter(b => b.includes('role="combobox"'));
+      expect(pickers.length).toBe(1); // the criterion type
+      const fields = [...tags(html, 'input'), ...pickers, ...tags(html, 'textarea')];
       expect(fields.length).toBeGreaterThan(1);
       for (const f of fields) {
         const c = classes(f);

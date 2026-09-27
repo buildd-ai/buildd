@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { CHAT_PROVIDER_INFO, checkKeyShape, type ChatProvider } from '@/lib/provider-keys-client';
 import { setProviderKey } from '@/lib/provider-keys-api';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
+import { Select } from '@/components/ui/Select';
 
 /** localStorage key for "Not now", per team. Resumable: the card folds, it never vanishes until done. */
 export function onboardingFoldKey(teamId: string): string {
@@ -112,14 +113,13 @@ export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
         <li className="px-5 py-4 space-y-2">
           <span className="block text-sm font-semibold text-text-primary">Paste a key</span>
           <div className="flex flex-col sm:flex-row gap-2">
-            <select
+            <Select
               aria-label="Provider"
               value={provider}
-              onChange={(e) => { setProvider(e.target.value as ChatProvider); setMsg(null); }}
-              className="h-10 px-2 bg-surface-1 border border-border-default text-sm sm:w-40"
-            >
-              {CHAT_PROVIDER_INFO.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
+              onChange={(v) => { setProvider(v as ChatProvider); setMsg(null); }}
+              options={CHAT_PROVIDER_INFO.map((p) => ({ value: p.id, label: p.label }))}
+              className="sm:w-40 shrink-0"
+            />
             <input
               type="password"
               aria-label={`${info.label} API key`}

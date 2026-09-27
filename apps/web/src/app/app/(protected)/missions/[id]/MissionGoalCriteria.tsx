@@ -6,6 +6,7 @@ import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionT
 import { validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { criterionLabel } from '@/lib/goal-criterion-label';
 import Switch from '@/components/ui/Switch';
+import { Select } from '@/components/ui/Select';
 
 interface Props {
   missionId: string;
@@ -120,17 +121,20 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
     <form onSubmit={handleSubmit} className="border border-border-default rounded-sm p-3 space-y-3 bg-surface-2">
       <div className="flex items-center gap-2">
         <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
-        <select
+        <Select
+          aria-label="Criterion type"
           value={type}
-          onChange={e => setType(e.target.value as GoalCriterionType)}
-          className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
-        >
-          <option value="command">Command passes (script)</option>
-          <option value="all_prs_merged">All PRs merged</option>
-          <option value="no_open_tasks">No open tasks</option>
-          <option value="artifact_exists">Artifact exists</option>
-          <option value="description">Description (LLM-graded, last resort)</option>
-        </select>
+          onChange={v => setType(v as GoalCriterionType)}
+          size="sm"
+          className="flex-1"
+          options={[
+            { value: 'command', label: 'Command passes', description: 'A script exits 0' },
+            { value: 'all_prs_merged', label: 'All PRs merged' },
+            { value: 'no_open_tasks', label: 'No open tasks' },
+            { value: 'artifact_exists', label: 'Artifact exists' },
+            { value: 'description', label: 'Description', description: 'LLM-graded, last resort' },
+          ]}
+        />
       </div>
 
       {type === 'description' && (
@@ -211,18 +215,22 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
           </div>
           <div className="flex items-center gap-2">
             <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Op</label>
-            <select
+            <Select
+              aria-label="Comparison"
               value={metricOp}
-              onChange={e => setMetricOp(e.target.value as typeof metricOp)}
-              className="bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
-            >
-              <option value="gte">≥</option>
-              <option value="gt">&gt;</option>
-              <option value="lte">≤</option>
-              <option value="lt">&lt;</option>
-              <option value="eq">=</option>
-              <option value="neq">≠</option>
-            </select>
+              onChange={v => setMetricOp(v as typeof metricOp)}
+              size="sm"
+              className="w-20 shrink-0"
+              menuMinWidth={176}
+              options={[
+                { value: 'gte', label: '≥', description: 'at least' },
+                { value: 'gt', label: '>', description: 'more than' },
+                { value: 'lte', label: '≤', description: 'at most' },
+                { value: 'lt', label: '<', description: 'less than' },
+                { value: 'eq', label: '=', description: 'equal to' },
+                { value: 'neq', label: '≠', description: 'not equal to' },
+              ]}
+            />
             <input
               value={metricThreshold}
               onChange={e => setMetricThreshold(e.target.value)}

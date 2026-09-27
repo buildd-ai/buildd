@@ -17,6 +17,8 @@ import {
 } from '@/lib/tier-mapping';
 import Link from 'next/link';
 import TierPoolsSection from './TierPoolsSection';
+import { Select } from '@/components/ui/Select';
+import { Combobox } from '@/components/ui/Combobox';
 
 interface Props {
   teamId: string;
@@ -143,7 +145,6 @@ function TierRow({
   const state = tierSourceState(entry?.source);
   const options = useMemo(() => modelOptionsFor(provider, models, entry?.model), [provider, models, entry]);
   const dirty = !!entry && (provider !== providerForModel(entry.provider) || model.trim() !== entry.model);
-  const listId = `tier-models-${tier}`;
 
   async function pin(p: TierProvider, m: string) {
     setBusy(true);
@@ -178,7 +179,6 @@ function TierRow({
     }
   }
 
-  const controlCls = 'h-9 w-full px-2 bg-surface-1 border border-border-default focus:border-primary outline-none text-xs disabled:opacity-70';
 
   return (
     <div className="border-b border-border-default last:border-b-0 px-3 py-2.5" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
@@ -208,33 +208,28 @@ function TierRow({
           </button>
         </div>
 
-        <select
+        <Select
           aria-label={`Provider for ${tier}`}
           value={provider}
           disabled={!isAdmin || busy || !entry}
-          onChange={(e) => { setProvider(e.target.value as TierProvider); setModel(''); }}
-          className={controlCls}
-        >
-          {TIER_PROVIDER_OPTIONS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-        </select>
+          onChange={(v) => { setProvider(v as TierProvider); setModel(''); }}
+          options={TIER_PROVIDER_OPTIONS.map((p) => ({ value: p.id, label: p.label }))}
+          menuMinWidth={180}
+        />
 
         <div className="flex items-center gap-2 min-w-0">
-          <input
+          <Combobox
             aria-label={`Model for ${tier}`}
-            list={listId}
             value={entry ? model : ''}
             placeholder={entry ? (provider === 'openrouter' ? 'vendor/model' : 'model id') : 'loading…'}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={setModel}
             disabled={!isAdmin || busy || !entry}
-            spellCheck={false}
-            autoComplete="off"
-            className={`${controlCls} font-mono min-w-0`}
+            allowCustom
+            showValue
+            options={options.map((o) => ({ value: o.value, label: o.label, meta: o.price }))}
+            menuMinWidth={360}
+            className="flex-1"
           />
-          <datalist id={listId}>
-            {options.map((o) => (
-              <option key={o.value} value={o.value}>{o.price ? `${o.label}  ${o.price}` : o.label}</option>
-            ))}
-          </datalist>
           {isAdmin && dirty && (
             <button className="btn btn-primary shrink-0" disabled={busy || !model.trim()} onClick={() => pin(provider, model)}>
               {busy ? 'Saving…' : 'Apply'}

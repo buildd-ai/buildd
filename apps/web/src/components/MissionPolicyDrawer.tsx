@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { MergePolicy, MergePolicyTier } from '@buildd/shared';
+import { Select } from '@/components/ui/Select';
 
 interface Role {
   slug: string;
@@ -156,16 +157,14 @@ export default function MissionPolicyDrawer({
               <div>
                 <label className="text-xs font-medium text-text-secondary">Reviewer role</label>
                 {roles.length > 0 ? (
-                  <select
+                  <Select
+                    aria-label="Reviewer role"
+                    className="mt-1"
                     value={reviewerRole}
-                    onChange={e => setReviewerRole(e.target.value)}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-                  >
-                    <option value="">Select a role</option>
-                    {roles.map(r => (
-                      <option key={r.slug} value={r.slug}>{r.name}</option>
-                    ))}
-                  </select>
+                    onChange={setReviewerRole}
+                    placeholder="Select a role"
+                    options={roles.map(r => ({ value: r.slug, label: r.name }))}
+                  />
                 ) : (
                   <p className="mt-1 text-xs text-text-muted">No roles found in this workspace.</p>
                 )}
