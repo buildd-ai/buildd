@@ -3612,6 +3612,10 @@ describe('POST /api/github/webhook', () => {
         headSha: NEW_SHA,
         reviewerRole: 'reviewer',
         originalTaskId: 'task-1',
+        // baseRef must reach buildDeltaReviewerContext, or it falls back to
+        // the weaker pulls/files bound, which misattributes base-history
+        // churn (like an already-merged migration) to this PR — see PR #2907.
+        baseRef: 'dev',
         priorVerdict: { headSha: OLD_SHA, verdict: 'request-changes' },
       });
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
