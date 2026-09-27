@@ -50,23 +50,31 @@ copy with `<KeyHintsOnly>`. Answer and approve options are ordinary buttons.
 
 ### Summoning (step 2)
 
-An "Ask" button floats on every protected page. With hints on, it also shows the
-shortcut. The canvas opens over the page with a flat dim. It never uses blur,
-and halftone is off by default because it shimmers on some displays. The canvas
-takes the page's object as its scope through the same `entry.about` contract.
+On desktop an "Ask" button floats at the bottom right of every page except chat
+itself. ⌘K / Ctrl+K toggles the canvas anywhere, and `c` opens it when the page
+has no composer. With hints on, the button also shows the shortcut. "Ask about
+this mission/task" opens the canvas too, instead of leaving for `/app/chat`.
+The canvas opens over the page with a flat dim (`--canvas-dim`). There is no
+blur, and no halftone because it shimmers on some displays. The canvas takes
+the page's object as its scope through the same `entry.about` contract
+(`canvasScopeFromPath` in `lib/chat/canvas-scope.ts`). A new conversation stays
+in the canvas, and opening an object from it navigates the page behind.
 
-- **Phone (below 768px): takes over.** A full-screen sheet. The page behind is
-  gone, Back or the handle closes it.
-- **Desktop: peeks.** A panel anchored to the right, about 560px wide, over a dim
-  that still shows the page. Clicking the dim or pressing Esc closes it. "Open
-  full chat" continues in `/app/chat/<id>`.
+- **Phone (below 768px): takes over.** The canvas fills the screen, bottom nav
+  included, and ✕ closes it. There is no floating button: the Chat tab and each
+  object's own Ask cover it, and a button would sit on the content.
+- **Desktop: peeks.** A panel anchored right, up to 600px wide, over a dim that
+  still shows the page. The dim, Esc or ✕ close it. "Open full chat" continues
+  in `/app/chat/<id>`. Reopening on the same page continues the conversation;
+  asking about something else starts a new one.
 
 ### Steering (step 3)
 
 The same canvas rescoped to a running agent: crumbs read `Builder @ runner /
 task`, and a presence strip under them shows `you ─ buildd ─ runner`, the link
 latency, the turn and the current action. Messages go through the existing
-steer path (`POST /api/workers/[id]/instruct`, what `send_agent_message` uses) and land at the agent's next tool boundary.
+steer path (`POST /api/workers/[id]/instruct`, the route behind the task page's
+steer box) and land at the agent's next tool boundary.
 It opens from task cards and task rows.
 
 ## Open questions
