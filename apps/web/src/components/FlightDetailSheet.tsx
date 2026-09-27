@@ -471,12 +471,12 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
           <StatTile value={formatFlightDuration(stats.agentTimeMs)} label="agent time" />
           <StatTile value={formatFlightDuration(stats.idleElidedMs)} label="idle, not drawn" />
           <StatTile
-            value={stats.buildCheckLoops === null ? '—' : `${stats.buildCheckLoops} loop${stats.buildCheckLoops === 1 ? '' : 's'}`}
+            value={stats.buildCheckLoops === null ? '' : `${stats.buildCheckLoops} loop${stats.buildCheckLoops === 1 ? '' : 's'}`}
             label="build ↔ check"
             accent
           />
           <StatTile
-            value={stats.humanPct === null ? '—' : `${Math.round(stats.humanPct)}%`}
+            value={stats.humanPct === null ? '' : `${Math.round(stats.humanPct)}%`}
             label="human-steered"
           />
         </div>

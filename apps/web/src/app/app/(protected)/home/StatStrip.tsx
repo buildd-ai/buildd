@@ -55,7 +55,7 @@ export function StatStrip(p: StatStripProps) {
         <span className="truncate">{p.needsYouDetail ?? 'nothing waiting'}</span>
       </Stat>
       <Stat testId="stat-merged-today" label="Merged today" value={p.mergedToday}>
-        <span className="truncate">{p.mergedDetail ?? '—'}</span>
+        <span className="truncate">{p.mergedDetail ?? 'nothing merged'}</span>
       </Stat>
       {ci ? (
         <Stat testId="stat-prs-in-ci" label="PRs in CI" value={p.prsInCi.length}>

@@ -289,7 +289,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
           `A doc fix${item.docFixFollowUpTaskId ? ' and one automatic follow-up' : ''} merged. The re-run` +
           `${item.lastCheckedHoursAgo != null ? ` ${item.lastCheckedHoursAgo}h ago` : ''} still finds ${claimsWord} ` +
           `passing while the doc declares ${item.declaredStatus ? `'${item.declaredStatus}'` : 'no recognised status'}. ` +
-          'Promote the status, correct the assertion, or add skip_until — or accept it.',
+          'Promote the status, correct the assertion, add skip_until, or accept it.',
         link: 'See the doc fix',
       };
       break;

@@ -77,7 +77,7 @@ function ChainNode({
             </span>
           </>
         ) : (
-          <span className="text-[11px] text-text-muted">—</span>
+          <span className="text-[11px] text-text-muted">unassigned</span>
         )}
       </div>
 

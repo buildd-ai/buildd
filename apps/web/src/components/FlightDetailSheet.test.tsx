@@ -47,14 +47,14 @@ describe('FlightDetailSheet', () => {
     expect(html).toContain('aria-modal="true"');
   });
 
-  it('renders an em dash, not 0%, for human% when there were no steering touches to take a share of', () => {
+  it('renders nothing, not 0%, for human% when there were no steering touches to take a share of', () => {
     const html = renderToStaticMarkup(
       <FlightDetailSheet open={true} onClose={() => {}} data={BASE_DATA} missionId="m1" missionTitle="Ship the thing" />,
     );
-    expect(html).toContain('>—</span><span class="text-[11px] md:text-[10px] text-text-muted">human-steered</span>');
+    expect(html).toContain('></span><span class="text-[11px] md:text-[10px] text-text-muted">human-steered</span>');
   });
 
-  it('renders an em dash, not 0 loops, for build/check loop count on a mission with no trustworthy lane data', () => {
+  it('renders nothing, not 0 loops, for build/check loop count on a mission with no trustworthy lane data', () => {
     const html = renderToStaticMarkup(
       <FlightDetailSheet
         open={true}
@@ -64,7 +64,7 @@ describe('FlightDetailSheet', () => {
         missionTitle="Ship the thing"
       />,
     );
-    expect(html).toContain('>—</span><span class="text-[11px] md:text-[10px] text-text-muted">build ↔ check</span>');
+    expect(html).toContain('></span><span class="text-[11px] md:text-[10px] text-text-muted">build ↔ check</span>');
   });
 
   it('shows a real loop count and human% once lane and steering data exist', () => {

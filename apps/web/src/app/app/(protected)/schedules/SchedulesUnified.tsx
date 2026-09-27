@@ -262,7 +262,7 @@ function ScheduleRow({
                 {timeUntil(item.nextRunAt)}
               </div>
             ) : item.isEnabled ? (
-              <div className="text-xs text-text-muted">—</div>
+              <div className="text-xs text-text-muted">not scheduled</div>
             ) : (
               <div className="text-xs text-text-muted">paused</div>
             )}

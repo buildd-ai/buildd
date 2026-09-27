@@ -19,7 +19,7 @@ import { shouldShowExperiments, type HealthExperimentItem, type HealthExperiment
 import { Select } from '@/components/ui/Select';
 
 function pct(v: number | null | undefined, digits = 0): string {
-  if (v == null || !Number.isFinite(v)) return '—';
+  if (v == null || !Number.isFinite(v)) return '';
   return `${(v * 100).toFixed(digits)}%`;
 }
 
@@ -29,7 +29,7 @@ function signedPct(v: number): string {
 }
 
 function dateOnly(iso: string | null): string {
-  return iso ? iso.slice(0, 10) : '—';
+  return iso ? iso.slice(0, 10) : '';
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -80,7 +80,7 @@ function Readout({ readout }: { readout: ExperimentReadout }) {
                 <td className="py-1 pr-3">{a.n}<span className="text-text-muted">/{a.assigned}</span></td>
                 <td className="py-1 pr-3">{pct(a.cleanRate, 1)}</td>
                 <td className="py-1 pr-3 text-text-muted whitespace-nowrap">
-                  {a.n > 0 ? `${pct(a.cleanInterval.lower)}–${pct(a.cleanInterval.upper)}` : '—'}
+                  {a.n > 0 ? `${pct(a.cleanInterval.lower)}–${pct(a.cleanInterval.upper)}` : ''}
                 </td>
                 <td className="py-1">{pct(a.servedRate)}</td>
               </tr>
@@ -90,7 +90,7 @@ function Readout({ readout }: { readout: ExperimentReadout }) {
       </div>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-xs text-text-secondary" data-testid="experiment-difference">
-          Difference: {d ? `${signedPct(d.difference)} pts (95% ${signedPct(d.lower)} to ${signedPct(d.upper)})` : '—'}
+          Difference: {d ? `${signedPct(d.difference)} pts (95% ${signedPct(d.lower)} to ${signedPct(d.upper)})` : ''}
         </span>
         <span
           data-testid="experiment-verdict"

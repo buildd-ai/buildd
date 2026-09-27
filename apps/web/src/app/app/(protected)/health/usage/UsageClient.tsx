@@ -335,7 +335,7 @@ function IndexAdoptionView({ view }: { view: UsageDrilldownView }) {
             className={`hidden sm:inline text-lg tabular-nums shrink-0 ${line.available ? 'text-text-primary' : 'text-text-muted'}`}
             title={line.unavailableReason ?? undefined}
           >
-            {line.rate === null ? '—' : `${Math.round(line.rate * 100)}%`}
+            {line.rate === null ? '' : `${Math.round(line.rate * 100)}%`}
           </span>
         </div>
 

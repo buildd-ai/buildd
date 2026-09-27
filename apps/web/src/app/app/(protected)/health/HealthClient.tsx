@@ -104,7 +104,7 @@ function formatDuration(ms: number): string {
 // header comment on the `now` prop below for why a render-time clock read
 // here is an SSR/hydration hazard.
 function timeUntil(iso: string | null, now: number): string {
-  if (!iso) return '—';
+  if (!iso) return 'unknown';
   const seconds = Math.floor((new Date(iso).getTime() - now) / 1000);
   if (seconds <= 0) return 'due';
   const m = Math.floor(seconds / 60);
@@ -1123,14 +1123,14 @@ export function HealthClient({
 
 /** Compact token counts — per-task input runs into the millions. */
 function fmtTokens(n: number): string {
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return `${Math.round(n)}`;
 }
 
 function fmtCost(n: number): string {
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '';
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
 }
 
@@ -1418,7 +1418,7 @@ const CBM_STATE: Record<
 };
 
 function pct(v: number | null): string {
-  return v === null ? '—' : `${Math.round(v * 100)}%`;
+  return v === null ? '' : `${Math.round(v * 100)}%`;
 }
 
 /**
@@ -1468,12 +1468,12 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-3 border-t border-border-default">
           <Stat
             label="Graph calls / session"
-            value={cbm.avgGraphCallsOnActive === null ? '—' : cbm.avgGraphCallsOnActive.toFixed(1)}
+            value={cbm.avgGraphCallsOnActive === null ? '' : cbm.avgGraphCallsOnActive.toFixed(1)}
             sub="on CBM sessions"
           />
           <Stat
             label="File reads / session"
-            value={cbm.avgFileAccessOnActive === null ? '—' : Math.round(cbm.avgFileAccessOnActive).toString()}
+            value={cbm.avgFileAccessOnActive === null ? '' : Math.round(cbm.avgFileAccessOnActive).toString()}
             sub="Read + Grep + Glob"
           />
           <Stat
@@ -1483,7 +1483,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
           />
           <Stat
             label="Index failures"
-            value={cbm.indexAttempted === 0 ? '—' : pct(cbm.indexFailureRate)}
+            value={cbm.indexAttempted === 0 ? '' : pct(cbm.indexFailureRate)}
             sub={`${cbm.indexFailed}/${cbm.indexAttempted} builds`}
           />
         </div>

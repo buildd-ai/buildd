@@ -62,7 +62,7 @@ function relativeTime(iso: string): string {
 }
 
 function DeployStateBadge({ state }: { state: string | null | undefined }) {
-  if (!state) return <span className="text-text-muted text-xs">—</span>;
+  if (!state) return <span className="text-text-muted text-xs">unknown</span>;
   const colorMap: Record<string, string> = {
     READY: 'bg-status-success/15 text-status-success',
     BUILDING: 'bg-amber-500/15 text-amber-600 animate-pulse',
@@ -79,7 +79,7 @@ function DeployStateBadge({ state }: { state: string | null | undefined }) {
 }
 
 function StatusBadge({ status }: { status: string | null | undefined }) {
-  if (!status) return <span className="text-text-muted text-xs">—</span>;
+  if (!status) return <span className="text-text-muted text-xs">unknown</span>;
   const colorMap: Record<string, string> = {
     completed: 'bg-status-success/15 text-status-success',
     failed: 'bg-status-error/15 text-status-error',
@@ -487,7 +487,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                             </Link>
                           </td>
                           <td className="hidden sm:table-cell px-3 py-2 font-mono text-text-secondary">
-                            {r.sha ? r.sha.slice(0, 7) : '—'}
+                            {r.sha ? r.sha.slice(0, 7) : ''}
                           </td>
                           <td className="px-3 py-2">
                             {r.deployState ? (
