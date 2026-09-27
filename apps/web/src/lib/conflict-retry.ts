@@ -28,6 +28,8 @@ import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
+import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -308,6 +310,8 @@ export interface DispatchConflictRetryResult {
    * but there is no task: the push re-runs CI and the merge retries on green.
    */
   branchUpdated?: boolean;
+  /** The PR belongs to a dependency bot — nothing was pushed or filed. */
+  dependencyBot?: boolean;
 }
 
 /**
@@ -356,6 +360,38 @@ export async function dispatchConflictRetry(
     return { dispatched: false, inFlightTaskId: liveRetry.id };
   }
 
+  // Fetch the original task — before the behind-only update, whose target
+  // branch it may rule out (below).
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true },
+  });
+  if (!task) {
+    console.warn(`[conflict-retry] task ${taskId} not found — skipping dispatch`);
+    return { dispatched: false };
+  }
+
+  // A dependency-bot PR's branch belongs to the bot: both the update-branch
+  // below and a conflict agent would commit to it, and Renovate/Dependabot
+  // stop rebasing a branch someone else has touched. Their own rebase is the
+  // fix for "behind" and "conflicting" alike.
+  if (isDependencyBotPrContext(task.context)) {
+    const reason = dependencyBotPushRefusal(prNumber);
+    console.log(`[conflict-retry] ${reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+      surface: 'conflict-retry',
+      outcome: 'rejected',
+      reason,
+      workspaceId,
+      taskId,
+      workerId,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, behindOnly: params.behindOnly ?? false, stage: 'conflict_retry' },
+    });
+    return { dispatched: false, dependencyBot: true };
+  }
+
   // Behind but not conflicting: GitHub can merge the base in server-side —
   // no agent needed. A PR approved before this push keeps its approval when
   // the diff is unchanged (approval-carry-forward.ts), so this converges
@@ -373,16 +409,6 @@ export async function dispatchConflictRetry(
       return { dispatched: true, branchUpdated: true };
     }
     console.warn(`[conflict-retry] update-branch failed for PR #${prNumber}, dispatching an agent: ${update.reason}`);
-  }
-
-  // Fetch the original task
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
-    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true },
-  });
-  if (!task) {
-    console.warn(`[conflict-retry] task ${taskId} not found — skipping dispatch`);
-    return { dispatched: false };
   }
 
   // Fetch the worker for branch info and recorded diff stats

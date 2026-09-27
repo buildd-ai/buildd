@@ -58,6 +58,13 @@ mock.module('@/lib/task-dispatch', () => ({
 const mockUpdateBehindPrBranch = mock(async (_p: any) => ({ updated: true }) as { updated: boolean; reason?: string });
 mock.module('@/lib/pr-branch-update', () => ({ updateBehindPrBranch: mockUpdateBehindPrBranch }));
 
+const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
+const mockFireGateEvent = mock((_input: any) => 'gate-event-1');
+mock.module('@/lib/gate-ledger', () => ({
+  GATE_SLUGS: REAL_GATE_SLUGS,
+  fireGateEvent: mockFireGateEvent,
+}));
+
 import {
   classifyMergeFailure,
   isAutoResolveMergeConflictsEnabled,
@@ -435,6 +442,31 @@ describe('dispatchConflictRetry', () => {
     });
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  // Renovate/Dependabot stop rebasing a branch someone else committed to —
+  // GitHub's update-branch run on our behalf counts. The approve → auto-merge
+  // → "behind base" path is what pushed to a Renovate branch in production.
+  it.each([[true], [false]])('never pushes to a dependency-bot PR branch (behindOnly=%s)', async (behindOnly) => {
+    mockUpdateBehindPrBranch.mockClear();
+    mockFireGateEvent.mockClear();
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      context: { adoptedPr: { prNumber: 99, author: 'renovate[bot]', authorType: 'Bot' } },
+    });
+
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly });
+
+    expect(result).toEqual({ dispatched: false, dependencyBot: true });
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockFireGateEvent.mock.calls[0][0]).toMatchObject({
+      gate: 'dependency_bot_pr',
+      outcome: 'rejected',
+      detail: { prNumber: 99, stage: 'conflict_retry' },
+    });
   });
 
   it('never uses the branch-update shortcut for a real conflict', async () => {

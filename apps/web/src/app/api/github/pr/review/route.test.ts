@@ -48,6 +48,10 @@ mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPr
 const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
 
+const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
+const mockFireGateEvent = mock((_input: any) => 'gate-event-1');
+mock.module('@/lib/gate-ledger', () => ({ GATE_SLUGS: REAL_GATE_SLUGS, fireGateEvent: mockFireGateEvent }));
+
 mock.module('@/lib/pr-review-request', () => ({
   findReviewTaskForPr: mockFindReviewTaskForPr,
   findPrOwningWorker: mockFindPrOwningWorker,
@@ -199,6 +203,7 @@ beforeEach(() => {
   });
   mockReadPrReviewStatus.mockReset();
   mockReadPrReviewStatus.mockReturnValue({ state: 'queued', terminal: false });
+  mockFireGateEvent.mockClear();
 });
 
 describe('POST /api/github/pr/review — auth and validation', () => {
@@ -315,6 +320,47 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(json.taskId).toBe('task-1');
     expect(insertCalls.filter((c) => c.table === 'tasks_table')).toHaveLength(0);
     expect(insertCalls.filter((c) => c.table === 'workers_table')).toHaveLength(0);
+  });
+
+  // Automatic adoption skips Renovate/Dependabot PRs; an explicit request is
+  // still honoured — reviewed like any PR — but the adoption row records whose
+  // branch it is, which is what every push path checks (conflict retry,
+  // update-branch, CI fix, review follow-up) before touching it.
+  it('explicit review of a renovate[bot] PR adopts and reviews it, stamps the bot, and records the bypass', async () => {
+    const botPr = {
+      ...OPEN_PR,
+      title: 'chore(deps): update dependency postcss to v8.5.28',
+      head: { ref: 'renovate/postcss-8.x-lockfile', sha: 'sha-42' },
+      user: { login: 'renovate[bot]', type: 'Bot' },
+    };
+    mockGithubApi.mockImplementation((_i: number, path: string) =>
+      Promise.resolve(typeof path === 'string' && path.includes('/files') ? [] : botPr));
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).adopted).toBe(true);
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+
+    const taskInsert = insertCalls.find((c) => c.table === 'tasks_table')!;
+    const { isDependencyBotPrContext } = await import('@/lib/dependency-bot-pr');
+    expect(isDependencyBotPrContext(taskInsert.values.context)).toBe(true);
+
+    // Nothing but reads went to GitHub — no push, no update-branch.
+    const writes = mockGithubApi.mock.calls.filter(([, , init]: any[]) => init?.method && init.method !== 'GET');
+    expect(writes).toEqual([]);
+
+    expect(mockFireGateEvent.mock.calls[0][0]).toMatchObject({
+      gate: 'dependency_bot_pr',
+      outcome: 'bypassed',
+      detail: { prNumber: 42, author: 'renovate[bot]' },
+    });
+  });
+
+  it('records no bypass for a human-authored PR', async () => {
+    await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 
   it('dispatches the reviewer task and announces it on the PR', async () => {

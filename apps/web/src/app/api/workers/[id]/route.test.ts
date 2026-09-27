@@ -8290,6 +8290,31 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
     });
 
+    it('request-changes on an explicitly-reviewed dependency-bot PR files no builder — nothing may push to the bot branch', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // The retry path's original-task read is the one selecting the attempt
+      // identity columns; every other read gets the reviewer task as before.
+      const reviewerTaskImpl = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts_?: any) =>
+        opts_?.columns?.missionPhaseIndex
+          ? Promise.resolve({
+              id: 'original-task-1',
+              title: 'PR #42: chore(deps): update dependency postcss',
+              description: null,
+              missionId: null,
+              pathManifest: null,
+              context: { adoptedPr: { prNumber: 42, author: 'renovate[bot]', authorType: 'Bot' } },
+            })
+          : reviewerTaskImpl(opts_),
+      );
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
+    });
+
     it('request-changes: on a mission-branch PR, baseBranch is the PR\'s recorded base, not workerBranch', async () => {
       // Regression: baseBranch used to be set to workerBranch — the SAME value as
       // resumeBranch. If workerBranch is later gone from the remote (e.g. the PR

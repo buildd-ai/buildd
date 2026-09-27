@@ -9,16 +9,16 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
-import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategoryShadow } from '@/lib/task-category-decision';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
-import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
+import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
+import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspace-access';
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
@@ -102,27 +102,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Get workspace IDs based on auth type
-    let workspaceIds: string[] = [];
-
-    if (apiAccount) {
-      // For API key auth, get:
-      // 1. Workspaces explicitly linked to the account
-      // 2. Open workspaces (accessMode = 'open')
-      const [permissions, openWorkspaces] = await Promise.all([
-        getAccountWorkspacePermissions(apiAccount.id),
-        db.query.workspaces.findMany({
-          where: eq(workspaces.accessMode, 'open'),
-          columns: { id: true },
-        }),
-      ]);
-      const linkedIds = permissions.map(p => p.workspaceId);
-      const openIds = openWorkspaces.map(w => w.id);
-      workspaceIds = [...new Set([...linkedIds, ...openIds])];
-    } else {
-      // For session auth, get user's workspaces via team membership
-      workspaceIds = await getUserWorkspaceIds(user!.id);
-    }
+    // Same reach rule as workspace listing and task/mission creation
+    // (lib/workspace-access.ts): an account sees its own team's open
+    // workspaces plus its explicit links; a user sees their teams' workspaces.
+    let workspaceIds: string[] = await listReachableWorkspaceIds(
+      apiAccount ? { account: apiAccount } : { userId: user!.id },
+    );
 
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
@@ -506,19 +491,23 @@ export async function POST(req: NextRequest) {
     let workspaceId: string | undefined;
 
     if (rawWorkspaceId) {
-      // Resolve by UUID, repo name, or workspace name — only among the
-      // workspaces the caller can reach (its teams, plus explicit links).
-      const resolved = await resolveWorkspace(
-        rawWorkspaceId,
+      // Resolve by UUID, repo name, or workspace name, and decide reach with
+      // the shared rule (lib/workspace-access.ts) — the one workspace listing
+      // and mission creation use. "Exists but not reachable" is a 403 that
+      // says so, not a misleading "not found".
+      const access = await resolveWorkspaceAccess(
+        String(rawWorkspaceId),
         apiAccount ? { account: apiAccount } : { userId: user!.id },
+        'canCreate',
       );
-      if (!resolved) {
+      if (!access.ok) {
         return NextResponse.json(
-          { error: `No workspace found matching "${rawWorkspaceId}"` },
-          { status: 400 }
+          { error: access.error },
+          // Not-found keeps its historical 400 on this route.
+          { status: access.reason === 'no_access' ? 403 : 400 },
         );
       }
-      workspaceId = resolved.id;
+      workspaceId = access.workspace.id;
     } else if (apiAccount) {
       // Auto-resolve: if account linked to exactly one workspace, use it
       const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);

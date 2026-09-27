@@ -23,7 +23,7 @@ import {
 } from '@/lib/review-feedback';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
+import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -77,6 +77,7 @@ import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-statu
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 
 export async function POST(req: NextRequest) {
@@ -1183,6 +1184,12 @@ async function handlePullRequestEvent(event: {
           `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
           + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
         );
+        // Console-only was the silence the comment above already names: a
+        // no-op for every reason but the two that can recur forever with no
+        // self-correction (see `noteMissionPrOpenFailure`).
+        noteMissionPrOpenFailure(worker.task.missionId, opened).catch(e =>
+          console.error(`[webhook] mission PR failure note failed for ${worker.task!.missionId}:`, e),
+        );
       }
     }
   }
@@ -1573,6 +1580,24 @@ async function handleCheckSuiteFailure(
           continue;
         }
 
+        // Renovate/Dependabot own their branch and stop rebasing it the moment
+        // anyone else commits — a CI fix from buildd would hijack the PR.
+        if (isDependencyBotAuthor(prData.user)) {
+          console.log(
+            `[webhook] Skipping adoption of dependency-bot PR #${pr.number} on ${repository.full_name} (author: ${prData.user?.login})`,
+          );
+          fireGateEvent({
+            gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+            surface: 'webhook:check_suite',
+            outcome: 'rejected',
+            reason: 'CI failed on a dependency-bot PR — not adopted, the bot owns the branch',
+            workspaceId: adoptingWorkspace.id,
+            callerOrigin: 'system',
+            detail: { prNumber: pr.number, repo: repository.full_name, author: prData.user?.login ?? null, stage: 'adoption' },
+          });
+          continue;
+        }
+
         const { ownerWorker } = await resolveOrAdoptPrOwner({
           workspaceId: adoptingWorkspace.id,
           installationId,
@@ -1591,6 +1616,24 @@ async function handleCheckSuiteFailure(
         }
       }
       const task = worker.task;
+
+      // Already adopted (an explicit request_pr_review) — reviewing a bot PR is
+      // fine, pushing a CI fix to its branch is not.
+      if (isDependencyBotPrContext(task.context)) {
+        console.log(`[webhook] No CI-fix for dependency-bot PR #${pr.number} on ${repository.full_name}`);
+        fireGateEvent({
+          gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+          surface: 'webhook:check_suite',
+          outcome: 'rejected',
+          reason: dependencyBotPushRefusal(pr.number),
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          workerId: worker.id,
+          callerOrigin: 'system',
+          detail: { prNumber: pr.number, repo: repository.full_name, stage: 'ci_fix' },
+        });
+        continue;
+      }
 
       // Terminal tasks (completed/failed/cancelled) must not spawn retry children —
       // the PR is orphaned from the agent's perspective. Surface CI failures to the

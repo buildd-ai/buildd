@@ -16,6 +16,9 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
+// Link lookup made by the real workspace-access resolver (not mocked here).
+const mockAccountWorkspacesFindFirst = mock(() => Promise.resolve({ canClaim: true, canCreate: true } as any));
+const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockTasksFindMany = mock(() => [] as any[]);
@@ -102,6 +105,7 @@ mock.module('@/lib/account-workspace-cache', () => ({
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
+  getUserTeamIds: mockGetUserTeamIds,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
@@ -149,7 +153,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
-      accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
+      accountWorkspaces: { findMany: mockAccountWorkspacesFindMany, findFirst: mockAccountWorkspacesFindFirst },
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
@@ -179,8 +183,8 @@ mock.module('drizzle-orm', () => ({
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
-  accountWorkspaces: { accountId: 'accountId' },
-  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
+  accountWorkspaces: { accountId: 'accountId', workspaceId: 'workspaceId' },
+  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode', repo: 'repo' },
   tasks: {
     id: 'id',
     workspaceId: 'workspaceId',
@@ -441,8 +445,13 @@ describe('POST /api/tasks', () => {
 
     // Default: API key auth has workspace access
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-    // Default: resolveWorkspace returns workspace with matching id
-    mockResolveWorkspace.mockImplementation(async (raw: string) => ({ id: raw }));
+    // Default: resolveWorkspace returns workspace with matching id, owned by
+    // the session user's team; API accounts reach it through a canCreate link.
+    mockResolveWorkspace.mockImplementation(async (raw: string) => ({ id: raw, teamId: 'team-1', accessMode: 'restricted' }));
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockAccountWorkspacesFindFirst.mockReset();
+    mockAccountWorkspacesFindFirst.mockResolvedValue({ canClaim: true, canCreate: true });
 
     // Default mock for resolveCreatorContext
     mockResolveCreatorContext.mockResolvedValue({
@@ -522,6 +531,70 @@ describe('POST /api/tasks', () => {
     await POST(request);
 
     expect(mockResolveWorkspace).toHaveBeenCalledWith('some-project', { userId: 'user-123' });
+  });
+
+  describe('workspace reach (shared rule with listing and mission create)', () => {
+    const WS = '20000000-0000-4000-8000-000000000001';
+    const account = { id: 'acct-a', name: 'runner', apiKey: 'bld_xxx', teamId: 'team-a' };
+
+    function arrangeInsert() {
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => ({ returning: mock(() => [{ id: 'task-r', ...values }]) })),
+      });
+    }
+
+    async function createWith(ws: Record<string, unknown> | null, opts: { inScope: boolean; link?: any }) {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue(account);
+      // resolveWorkspace only sees the account's team + links; a foreign
+      // workspace is invisible to it but still exists in the table.
+      mockResolveWorkspace.mockResolvedValue(opts.inScope ? ws : null);
+      mockWorkspacesFindFirst.mockResolvedValue(ws);
+      mockAccountWorkspacesFindFirst.mockResolvedValue(opts.link);
+      arrangeInsert();
+      return POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: WS, title: 'Reach' },
+      }));
+    }
+
+    it("creates in the account's own team's open workspace", async () => {
+      const res = await createWith({ id: WS, teamId: 'team-a', accessMode: 'open' }, { inScope: true, link: undefined });
+      expect(res.status).toBe(200);
+    });
+
+    it('creates in a workspace the account is explicitly linked to (canCreate), in another team', async () => {
+      const res = await createWith(
+        { id: WS, teamId: 'team-b', accessMode: 'restricted' },
+        { inScope: true, link: { canClaim: false, canCreate: true } },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("refuses another team's open workspace with 403 \"No access to workspace\"", async () => {
+      const res = await createWith({ id: WS, teamId: 'team-b', accessMode: 'open' }, { inScope: false, link: undefined });
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('No access to workspace');
+      expect(data.error).not.toContain('No workspace found');
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a link that lacks canCreate', async () => {
+      const res = await createWith(
+        { id: WS, teamId: 'team-b', accessMode: 'restricted' },
+        { inScope: true, link: { canClaim: true, canCreate: false } },
+      );
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('No access to workspace');
+    });
+
+    it('still says "No workspace found" when nothing by that id exists', async () => {
+      const res = await createWith(null, { inScope: false });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('No workspace found matching');
+    });
   });
 
   it('creates task with API key auth', async () => {
