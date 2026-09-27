@@ -8,7 +8,6 @@
  * from the pulse; nothing is invented, and a needs-you prompt is never offered
  * when nothing needs you.
  */
-import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 export interface CanvasSuggestion {
@@ -43,27 +42,85 @@ export interface NeedsYouSource {
   state?: 'tests_failed' | null;
 }
 
-/** Row 1 stays a few words: whole words only, never an ellipsis. */
-const ACTION_MAX = 36;
+/** The subject stays a few words: whole words only, never an ellipsis. */
+const SUBJECT_MAX_CHARS = 24;
+const SUBJECT_MAX_WORDS = 3;
+
+/** Words that carry no subject: articles, prepositions, conjunctions, pronouns, auxiliaries. */
+const FUNCTION_WORDS: ReadonlySet<string> = new Set([
+  'a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'via', 'with', 'without', 'per', 'or', 'and', 'nor', 'only',
+  'by', 'at', 'from', 'into', 'onto', 'over', 'under', 'as', 'about', 'after', 'before', 'between', 'through',
+  'it', 'its', 'this', 'that', 'these', 'those', 'our', 'your', 'their', 'my', 'we', 'you', 'they', 'i',
+  'when', 'while', 'if', 'than', 'then', 'so', 'but', 'not', 'no', 'all', 'any', 'each', 'every', 'both',
+  'which', 'what', 'who', 'how', 'why', 'where', 'is', 'are', 'was', 'were', 'be', 'been', 'can', 'should',
+  'would', 'could', 'will', 'do', 'does', 'did', 'just', 'also', 'more', 'less', 'some',
+  // Verbs that describe the trouble rather than name the thing.
+  'fails', 'fail', 'failing', 'failed', 'breaks', 'broken', 'keeps', 'gets', 'needs', 'stuck',
+]);
+
+/** Imperatives a task title usually leads with ("Add …", "Pay in …"): dropped when first. */
+const LEADING_VERBS: ReadonlySet<string> = new Set([
+  'add', 'fix', 'pay', 'make', 'update', 'remove', 'drop', 'round', 'use', 'allow', 'show', 'move', 'build',
+  'create', 'refactor', 'handle', 'retry', 'improve', 'let', 'bill', 'send', 'pick', 'approve', 'rename',
+  'replace', 'delete', 'enable', 'disable', 'implement', 'migrate', 'bump', 'split', 'merge', 'wire',
+  'document', 'test', 'keep', 'stop', 'start', 'set', 'get', 'cache', 'speed', 'clean', 'extract',
+  'introduce', 'render', 'sync', 'validate', 'check', 'ensure', 'prevent', 'support', 'store', 'snapshot',
+  'convert', 'format', 'charge', 'refund', 'invoice', 'ship', 'track', 'log', 'expose', 'hide', 'port',
+]);
+
+const bare = (w: string) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+const isAcronym = (w: string) => w.length >= 2 && /^[\p{Lu}\p{N}]+$/u.test(w) && /\p{L}/u.test(w);
+
+/**
+ * The few words row 1 names a task by: the head noun phrase (the longest run
+ * of content words between function words) led by any proper noun or acronym
+ * from elsewhere in the text, trimmed from the front so the head noun stays.
+ * A stored label is trusted to be short; a subject derived from the title
+ * needs two content words, else null (the caller says something generic but
+ * correct instead of something wrong).
+ */
+export function actionSubject(t: { title: string; label?: string | null }): string | null {
+  const stored = !!t.label?.trim();
+  const text = stored ? t.label!.trim() : taskHeading({ title: t.title, label: null }, null).heading;
+  const tokens = text.split(/\s+/).map(bare).filter(w => /\p{L}/u.test(w));
+  const dropped = tokens.length > 0 && LEADING_VERBS.has(tokens[0].toLowerCase());
+  if (dropped) tokens.shift();
+
+  // A capital means a name, except a title's sentence-case first word.
+  const sentenceFirst = !stored && !dropped ? 0 : -1;
+  const names: string[] = [];
+  const runs: string[][] = [[]];
+  tokens.forEach((w, i) => {
+    if (FUNCTION_WORDS.has(w.toLowerCase())) { runs.push([]); return; }
+    if (isAcronym(w) || (/^\p{Lu}/u.test(w) && i !== sentenceFirst)) { if (!names.includes(w)) names.push(w); return; }
+    runs[runs.length - 1].push(w.toLowerCase());
+  });
+  const head = runs.reduce((best, r) => (r.length > best.length ? r : best), [] as string[]);
+  const words = [...names.slice(0, 1), ...head];
+  const len = () => words.join(' ').length;
+  // Trim from the front of the noun phrase (after any name), keeping the head noun last.
+  while (words.length > 1 && (words.length > SUBJECT_MAX_WORDS || len() > SUBJECT_MAX_CHARS)) {
+    const at = names.length > 0 && words.length > 2 ? 1 : 0;
+    words.splice(at, 1);
+  }
+  if (words.length === 0) return null;
+  if (!stored && words.length < 2) return null;
+  return words.join(' ');
+}
 
 /**
  * Picked row 1 on the needs-you canvas: a short action naming what to do,
  * derived only from state ("Answer the Stripe currency question", "Fix the
- * failing label change"). The subject is the task's short label
- * (taskDisplayLabel), trimmed a whole word at a time to fit; the full task
- * name stays in the italic sub line.
+ * failing label change"). When no readable subject comes out of the task,
+ * the action stays generic but correct ("Answer the waiting question"). The
+ * full task name stays in the italic sub line.
  */
 export function needsYouAction(t: NeedsYouSource): string {
-  const [pre, post] = t.state === 'tests_failed'
-    ? ['Fix the failing', 'change']
-    : t.waitingType === 'permission'
-      ? ['Approve the', 'step']
-      : t.waitingType === 'confirmation'
-        ? ['Confirm the', 'change']
-        : ['Answer the', 'question'];
-  const words = taskDisplayLabel({ title: t.title, label: t.label ?? null }).label.split(/\s+/).filter(Boolean);
-  while (words.length > 1 && `${pre} ${words.join(' ')} ${post}`.length > ACTION_MAX) words.pop();
-  return words.length ? `${pre} ${words.join(' ')} ${post}` : `${pre} ${post}`;
+  const subject = actionSubject(t);
+  if (t.state === 'tests_failed') return subject ? `Fix the failing ${subject} change` : 'Fix the failing change';
+  if (t.waitingType === 'permission') return `Approve the ${subject ?? 'waiting'} step`;
+  if (t.waitingType === 'confirmation') return `Confirm the ${subject ?? 'waiting'} change`;
+  return `Answer the ${subject ?? 'waiting'} question`;
 }
 
 /**

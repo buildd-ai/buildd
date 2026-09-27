@@ -275,7 +275,7 @@ describe('empty canvas', () => {
     const rows = qa('[data-testid="canvas-suggestion"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].dataset.tone).toBe('needs');
-    expect(placeholder()).toBe('Answer the pick currency question');
+    expect(placeholder()).toBe('Answer the waiting question');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('needs');
     await act(async () => { rows[0].click(); });
     expect(sent).toEqual(['What does "Pick a currency" need from me?']);
