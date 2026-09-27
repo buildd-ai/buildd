@@ -14,12 +14,15 @@ import type { NewExperimentValues } from './experiments';
 
 export type ExperimentRow = typeof experiments.$inferSelect;
 
+// Tier pools (kind 'tier_pool') own an experiments row only for its salt and
+// assignment FK. They are managed on Settings → Model tiers, with their own
+// audit log, so the generic experiment surface neither lists nor edits them.
 export function teamExperimentsScope(teamId: string) {
-  return eq(experiments.teamId, teamId);
+  return and(eq(experiments.teamId, teamId), ne(experiments.kind, 'tier_pool'));
 }
 
 export function teamExperimentScope(teamId: string, id: string) {
-  return and(eq(experiments.id, id), eq(experiments.teamId, teamId));
+  return and(eq(experiments.id, id), eq(experiments.teamId, teamId), ne(experiments.kind, 'tier_pool'));
 }
 
 /** Another running experiment of the same kind on the same team. */

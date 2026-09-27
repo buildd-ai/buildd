@@ -16,6 +16,7 @@ import {
   type TierSuggestion,
 } from '@/lib/tier-mapping';
 import Link from 'next/link';
+import TierPoolsSection from './TierPoolsSection';
 
 interface Props {
   teamId: string;
@@ -45,12 +46,14 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   const [tiers, setTiers] = useState<Record<Tier, TierEntry> | null>(null);
   const [catalog, setCatalog] = useState<ModelsResponse>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [tiersVersion, setTiersVersion] = useState(0);
 
   const loadTiers = useCallback(async () => {
     try {
       const res = await fetch(`/api/model-tiers?teamId=${teamId}`, { cache: 'no-store' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
       setTiers(await res.json());
+      setTiersVersion(v => v + 1);
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Could not load tiers');
@@ -81,7 +84,14 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
       </p>
 
-      <div className="mt-6 max-w-4xl">
+      <div className="mt-6">
+        <TierPoolsSection teamId={teamId} isAdmin={isAdmin} models={catalog.models ?? []} refreshKey={tiersVersion} />
+      </div>
+
+      <div className="mt-10 max-w-4xl">
+        <h2 className="mb-2 flex items-baseline gap-2 font-mono text-[15px] font-bold text-text-primary">
+          Base models <span className="text-[12px] font-normal text-text-muted">the registry row each tier serves by default</span>
+        </h2>
         <section aria-label="Tiers">
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
           <div className="card" data-testid="tier-table">

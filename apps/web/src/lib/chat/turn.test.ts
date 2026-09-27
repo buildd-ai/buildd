@@ -75,8 +75,10 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user }) {
+function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any }) {
   const apiCalls: string[] = [];
+  const resolveCalls: any[] = [];
+  const poolRecords: Array<{ draw: any; messageId: string }> = [];
   const linked: string[] = [];
   const decide = async ({ approvalId, inputHash, approved }: any) => {
     const a = approvals.find(x => x.approvalId === approvalId);
@@ -89,9 +91,10 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     chatEnabled: async () => opts.enabled ?? true,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
-    resolveModel: async (o: any) => (opts.key ?? true)
-      ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const }
-      : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier },
+    resolveModel: async (o: any) => { resolveCalls.push(o); return (opts.key ?? true)
+      ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
+      : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
+    recordPoolAssignment: async (draw: any, a: { messageId: string }) => { poolRecords.push({ draw, messageId: a.messageId }); },
     makeApi: (onCall: any) => async (endpoint: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       apiCalls.push(`${method} ${endpoint.split('?')[0]}`);
@@ -112,7 +115,7 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
     await new Promise(r => setTimeout(r, 20)); // let onEnd persistence settle
     return { res, text };
   };
-  return { turn, apiCalls, linked };
+  return { turn, apiCalls, linked, resolveCalls, poolRecords };
 }
 
 const userMsg = (text: string) => ({ id: 'client-1', role: 'user', parts: [{ type: 'text', text }] });
@@ -176,6 +179,30 @@ describe('a read-only question', () => {
     expect(prompt).toContain('2026-09-27T10:30:00+13:00');
     expect(prompt).toContain('Pacific/Auckland');
     expect(prompt).toContain('conv-1');
+  });
+});
+
+describe('tier pools (docs/design/tier-model-pools.md)', () => {
+  it('passes the chain context and records the saved turn\'s assignment by message id', async () => {
+    const model = new MockLanguageModelV4({ doStream: [textStream('one'), textStream('two')] as any });
+    const draw = { arm: { id: 'arm-2' } };
+    const { turn, resolveCalls, poolRecords } = harness({ model, pool: draw });
+    await turn(userMsg('first'));
+    expect(resolveCalls[0].pool).toMatchObject({ conversationId: 'conv-1', drawKey: 'conv-1#0', previous: null });
+    const first = lastAssistant();
+    expect(poolRecords).toEqual([{ draw, messageId: first.id }]);
+    expect(typeof first.usage.latencyMs).toBe('number');
+
+    await turn(userMsg('second'));
+    // The next turn carries the previous assistant turn so the chain can keep its arm.
+    expect(resolveCalls[1].pool).toMatchObject({ drawKey: 'conv-1#2', previous: { id: first.id, tier: 'standard' } });
+  });
+
+  it('records nothing when the pool did not enrol the turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn, poolRecords } = harness({ model });
+    await turn(userMsg('hello'));
+    expect(poolRecords).toEqual([]);
   });
 });
 

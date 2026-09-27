@@ -403,6 +403,8 @@ export interface ChatUsage {
   outputTokens: number;
   /** Null when the provider didn't report a cost and no price is known. */
   costUsd: number | null;
+  /** Assistant turns: request start to stream end, in ms. Absent on older rows. */
+  latencyMs?: number;
 }
 
 export interface ConversationMessageDTO {

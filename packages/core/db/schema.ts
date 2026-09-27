@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar, date
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, real, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check, varchar, date, unique
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -2362,7 +2362,10 @@ export const experiments = pgTable('experiments', {
   title: text('title').notNull(),
   hypothesis: text('hypothesis'),
   status: text('status').notNull().default('draft').$type<'draft' | 'running' | 'paused' | 'concluded'>(),
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access'>(),
+  // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
+  // pool draws share this table's salt and assignment rows. See
+  // docs/design/tier-model-pools.md.
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
@@ -2399,12 +2402,24 @@ export const experiments = pgTable('experiments', {
 export const experimentAssignments = pgTable('experiment_assignments', {
   id: uuid('id').primaryKey().defaultRandom(),
   experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'cascade' }).notNull(),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // NULL only on a chat-turn assignment (tier pools), which sets message_id
+  // instead; the CHECK below requires one of the two.
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // Chat-turn assignments (kind 'tier_pool', surface 'chat'). One row per
+  // served assistant turn; a turn chain reuses its first turn's arm.
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }),
+  messageId: uuid('message_id').references(() => conversationMessages.id, { onDelete: 'cascade' }),
   // The randomisation unit: the mission when the task has one (tasks cluster
-  // in missions, so the cluster is randomised), else the task itself.
-  unitType: text('unit_type').notNull().$type<'mission' | 'task'>(),
+  // in missions, so the cluster is randomised), else the task itself; for a
+  // chat turn, the conversation.
+  unitType: text('unit_type').notNull().$type<'mission' | 'task' | 'conversation'>(),
   unitId: uuid('unit_id').notNull(),
-  arm: text('arm').notNull().$type<'control' | 'treatment'>(),
+  // 'control' | 'treatment' for the two-arm kinds; the tier_pool_arms id for
+  // kind 'tier_pool' (also in arm_id, which carries the FK).
+  arm: text('arm').notNull().$type<'control' | 'treatment' | (string & {})>(),
+  armId: uuid('arm_id').references(() => tierPoolArms.id, { onDelete: 'set null' }),
+  // tier_pools.allocation_version in effect at the draw.
+  allocationVersion: integer('allocation_version'),
   // Recorded at assignment, never reconstructed from the fraction later.
   propensity: real('propensity').notNull(),
   policyVersion: integer('policy_version').notNull(),
@@ -2419,6 +2434,16 @@ export const experimentAssignments = pgTable('experiment_assignments', {
   assignedAt: timestamp('assigned_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   experimentTaskIdx: uniqueIndex('experiment_assignments_experiment_task_idx').on(t.experimentId, t.taskId),
+  // NULLs are distinct, so the task index above leaves chat rows alone; this
+  // one makes a replayed turn write one row.
+  experimentMessageIdx: uniqueIndex('experiment_assignments_experiment_message_idx')
+    .on(t.experimentId, t.messageId)
+    .where(sql`${t.messageId} IS NOT NULL`),
+  armIdx: index('experiment_assignments_arm_idx').on(t.armId),
+  taskOrMessage: check(
+    'experiment_assignments_task_or_message',
+    sql`${t.taskId} IS NOT NULL OR ${t.messageId} IS NOT NULL`,
+  ),
   // Readout scan: every row for an experiment/version, split by arm.
   experimentVersionArmIdx: index('experiment_assignments_experiment_version_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
   taskIdx: index('experiment_assignments_task_idx').on(t.taskId),
@@ -2561,7 +2586,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   surface: text('surface').default('web').notNull().$type<'web' | 'slack' | 'discord' | 'teams'>(),
   tier: text('tier'),
   model: text('model'),
-  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null }>(),
+  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null; latencyMs?: number }>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
@@ -3025,10 +3050,13 @@ export const userFeedback = pgTable('user_feedback', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  entityType: text('entity_type').notNull().$type<'note' | 'artifact' | 'summary' | 'orchestration' | 'heartbeat'>(),
+  entityType: text('entity_type').notNull().$type<'note' | 'artifact' | 'summary' | 'orchestration' | 'heartbeat' | 'conversation_message'>(),
   entityId: text('entity_id').notNull(),
   signal: text('signal').notNull().$type<'up' | 'down' | 'dismiss'>(),
   comment: text('comment'),
+  // Thumbs-down reason on a chat turn: one of CHAT_FEEDBACK_REASONS in
+  // packages/core/tier-pool.ts. A label, never free text.
+  reason: text('reason').$type<'wrong_answer' | 'wrong_action' | 'made_up' | 'ignored_me' | 'too_slow'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   userEntityIdx: uniqueIndex('user_feedback_user_entity_idx').on(t.userId, t.entityType, t.entityId),
@@ -3385,6 +3413,85 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
 export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one }) => ({
   team: one(teams, { fields: [modelTierRegistry.teamId], references: [teams.id] }),
   workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
+}));
+
+// ── Tier model pools (docs/design/tier-model-pools.md) ──────────────────────
+//
+// A tier is served by a pool of one to four arms per surface. With no row here
+// a tier resolves exactly as before (model_tier_registry). Pools are created
+// lazily when an admin adds the first challenger. Traffic moves only in
+// versioned allocations, and every change is a tier_pool_changes row.
+export const tierPools = pgTable('tier_pools', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // NULL = team pool. P1 creates team pools only.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  tier: text('tier').notNull().$type<'premium' | 'standard' | 'budget'>(),
+  surface: text('surface').notNull().$type<'agent' | 'chat'>(),
+  mode: text('mode').notNull().default('pinned').$type<'pinned' | 'split' | 'explore'>(),
+  // kind 'tier_pool'; its id and policy_version salt the draw.
+  experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'set null' }),
+  // Current applied allocation: { [tier_pool_arms.id]: share }.
+  allocation: jsonb('allocation').$type<Record<string, number>>().notNull().default({}),
+  // Bumped by every allocation write; writes are compare-and-set on it.
+  allocationVersion: integer('allocation_version').notNull().default(1),
+  incumbentFloor: real('incumbent_floor').notNull().default(0.6),
+  explorationCap: real('exploration_cap').notNull().default(0.3),
+  challengerMin: real('challenger_min').notNull().default(0.05),
+  maxStep: real('max_step').notNull().default(0.1),
+  costWeight: real('cost_weight').notNull().default(0.1),
+  latencyWeight: real('latency_weight').notNull().default(0.05),
+  challengerDailyCap: decimal('challenger_daily_cap', { precision: 10, scale: 2 }),
+  autoChallenger: boolean('auto_challenger').notNull().default(false),
+  autoShift: boolean('auto_shift').notNull().default(false),
+  frozenAt: timestamp('frozen_at', { withTimezone: true }),
+  frozenBy: uuid('frozen_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // NULLS NOT DISTINCT: two concurrent "add the first challenger" calls must
+  // land on one team pool, and a team pool has workspace_id NULL.
+  scopeUnique: unique('tier_pools_scope_unique').on(t.teamId, t.workspaceId, t.tier, t.surface).nullsNotDistinct(),
+  teamIdx: index('tier_pools_team_idx').on(t.teamId),
+}));
+
+export const tierPoolArms = pgTable('tier_pool_arms', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'cascade' }).notNull(),
+  route: text('route').notNull().$type<'anthropic' | 'openai' | 'openrouter' | 'runner:claude' | 'runner:codex'>(),
+  model: text('model').notNull(),
+  role: text('role').notNull().$type<'incumbent' | 'challenger'>(),
+  status: text('status').notNull().default('active').$type<'active' | 'paused' | 'removed'>(),
+  source: text('source').notNull().default('admin').$type<'admin' | 'auto_challenger' | 'registry'>(),
+  // Numbers only (P2 bandit state). No text column exists on this table.
+  stats: jsonb('stats').$type<Record<string, unknown>>().notNull().default({}),
+  addedBy: uuid('added_by').references(() => users.id, { onDelete: 'set null' }),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+}, (t) => ({
+  poolIdx: index('tier_pool_arms_pool_idx').on(t.poolId),
+  // The same (route, model) is one arm; removed arms may be re-added.
+  liveArmUnique: uniqueIndex('tier_pool_arms_live_unique')
+    .on(t.poolId, t.route, t.model)
+    .where(sql`${t.status} <> 'removed'`),
+  oneIncumbent: uniqueIndex('tier_pool_arms_one_incumbent')
+    .on(t.poolId)
+    .where(sql`${t.role} = 'incumbent' AND ${t.status} <> 'removed'`),
+}));
+
+// Append-only audit log: every traffic change, arm change and mode change.
+export const tierPoolChanges = pgTable('tier_pool_changes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'allocation' | 'arm_added' | 'arm_removed' | 'mode' | 'freeze' | 'unfreeze' | 'suggestion' | 'suggestion_dismissed' | 'promotion'>(),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  actorSystem: text('actor_system'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  poolCreatedIdx: index('tier_pool_changes_pool_created_idx').on(t.poolId, t.createdAt),
 }));
 
 // Workspace migration ledger — one row per (runId, phase). Tracks the destructive

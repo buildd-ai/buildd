@@ -26,6 +26,7 @@ import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/li
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
 import ChatWorkspace from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
+import { TurnFeedbackProvider } from './TurnFeedback';
 import type { ComposerWorkspace } from './ChatComposer';
 import ChatSetupCard from './ChatSetupCard';
 import { chatErrorLine, parseChatUnavailable } from './chat-errors';
@@ -175,8 +176,14 @@ export default function ChatConversation(props: ChatConversationProps) {
   const setupReason = unavailable && (unavailable.error === 'no_key' || unavailable.error === 'capability_disabled') ? unavailable.error : null;
   const errorLine = createError ?? (error && !setupReason ? chatErrorLine(error) : null);
 
+  // Saved assistant turns can be rated; the one still streaming cannot yet.
+  const lastMsg = messages.at(-1);
+  const pendingId = status === 'streaming' && lastMsg?.role === 'assistant' ? lastMsg.id : null;
+  const assistantIds = messages.filter(m => m.role === 'assistant' && m.id !== pendingId).map(m => m.id);
+
   return (
     <ObjectStoreProvider>
+      <TurnFeedbackProvider messageIds={assistantIds} pendingId={pendingId}>
       <ChatWorkspace
         messages={messages as ChatMessage[]}
         status={creating ? 'submitted' : status}
@@ -203,6 +210,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
         formFallbackHref={formFallbackHref}
       />
+      </TurnFeedbackProvider>
     </ObjectStoreProvider>
   );
 }

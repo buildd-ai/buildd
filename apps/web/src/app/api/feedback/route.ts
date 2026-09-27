@@ -4,8 +4,12 @@ import { userFeedback } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { rateableTurnTeam } from '@/lib/chat/turn-feedback';
+import { isChatFeedbackReason, type ChatFeedbackReason } from '@buildd/core/tier-pool';
 
-const VALID_ENTITY_TYPES = ['note', 'artifact', 'summary', 'orchestration', 'heartbeat'] as const;
+// 'conversation_message' = thumbs on an assistant chat turn
+// (docs/design/tier-model-pools.md). It carries a reason label, never a comment.
+const VALID_ENTITY_TYPES = ['note', 'artifact', 'summary', 'orchestration', 'heartbeat', 'conversation_message'] as const;
 const VALID_SIGNALS = ['up', 'down', 'dismiss'] as const;
 
 // POST /api/feedback — submit or update feedback on AI content
@@ -35,9 +39,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const teamIds = await getUserTeamIds(user.id);
-    if (teamIds.length === 0) {
-      return NextResponse.json({ error: 'No team found' }, { status: 403 });
+    const isTurn = entityType === 'conversation_message';
+    let teamId: string;
+    let reason: ChatFeedbackReason | null = null;
+    let note: string | null = comment || null;
+    if (isTurn) {
+      // Only the owner of the conversation can rate its assistant turns, and
+      // the vote belongs to the conversation's team.
+      if (signal === 'dismiss') {
+        return NextResponse.json({ error: 'A chat turn takes up or down' }, { status: 400 });
+      }
+      if (body.reason != null && (signal !== 'down' || !isChatFeedbackReason(body.reason))) {
+        return NextResponse.json({ error: 'reason must be one of the thumbs-down reasons, on a down vote' }, { status: 400 });
+      }
+      const turnTeam = await rateableTurnTeam(entityId, user.id);
+      if (!turnTeam) return NextResponse.json({ error: 'Message not found' }, { status: 404 });
+      teamId = turnTeam;
+      reason = body.reason ?? null;
+      note = null; // Labels and numbers only: chat thumbs never store text.
+    } else {
+      const teamIds = await getUserTeamIds(user.id);
+      if (teamIds.length === 0) {
+        return NextResponse.json({ error: 'No team found' }, { status: 403 });
+      }
+      teamId = teamIds[0];
     }
 
     // Upsert: if user already gave feedback on this entity, update it
@@ -50,14 +75,15 @@ export async function POST(req: NextRequest) {
     });
 
     if (existing) {
-      // If same signal, remove the feedback (toggle off)
-      if (existing.signal === signal) {
+      // Same signal again removes it (toggle off). A down vote that now names
+      // a reason updates the reason instead: that is the reason sheet's tap.
+      const addsReason = isTurn && reason !== null && reason !== existing.reason;
+      if (existing.signal === signal && !addsReason) {
         await db.delete(userFeedback).where(eq(userFeedback.id, existing.id));
         return NextResponse.json({ removed: true, entityType, entityId });
       }
-      // Otherwise update to new signal
       const [updated] = await db.update(userFeedback)
-        .set({ signal, comment: comment || null })
+        .set({ signal, comment: note, ...(isTurn ? { reason } : {}) })
         .where(eq(userFeedback.id, existing.id))
         .returning();
       return NextResponse.json(updated);
@@ -65,11 +91,12 @@ export async function POST(req: NextRequest) {
 
     const [entry] = await db.insert(userFeedback).values({
       userId: user.id,
-      teamId: teamIds[0],
+      teamId,
       entityType,
       entityId,
       signal,
-      comment: comment || null,
+      comment: note,
+      ...(isTurn ? { reason } : {}),
     }).returning();
 
     return NextResponse.json(entry, { status: 201 });
@@ -111,11 +138,13 @@ export async function GET(req: NextRequest) {
 
     // Return as a map for easy client-side lookup
     const feedbackMap: Record<string, string> = {};
+    const reasons: Record<string, string> = {};
     for (const r of filtered) {
       feedbackMap[r.entityId] = r.signal;
+      if (r.reason) reasons[r.entityId] = r.reason;
     }
 
-    return NextResponse.json({ feedback: feedbackMap });
+    return NextResponse.json({ feedback: feedbackMap, ...(entityType === 'conversation_message' ? { reasons } : {}) });
   } catch (error) {
     console.error('Feedback fetch error:', error);
     return NextResponse.json({ error: 'Failed to fetch feedback' }, { status: 500 });
