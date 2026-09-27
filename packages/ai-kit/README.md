@@ -67,10 +67,12 @@ await models.flush(); // before a serverless function returns (e.g. in waitUntil
 - **Budget.** `deny` throws `PlanDeniedError`; `downgrade` returns the cheaper
   model as buildd sent it (`plan.tier` ≠ `plan.requestedTier`).
 - **Receipts.** `recordUsage` never throws. It rebuilds each record from the
-  server's allowlist (plan id, model, provider, tier, planSource, tokens, cost,
-  latency, outcome, feedback), so nothing else you pass can reach buildd, and
+  server's allowlist (plan id, model, provider, tier, kind, planSource, tokens,
+  cost, latency, outcome, feedback), so nothing else you pass can reach buildd, and
   refuses locally what buildd would reject. Batches of ≤100, one retry on a
   network error / timeout / 5xx / 429, then dropped and counted in `stats()`.
+  Optional `kind` (`chat` | `inference` | `decision`) lets buildd report spend
+  by kind; a `decision` receipt needs no tier.
 - **Storage.** `PlanStore` is `{ get(key), set(key, value) }`, sync or async.
   A failing store is treated as a miss. Default: in memory.
 - `onError` receives every absorbed failure, for logs.
@@ -159,7 +161,9 @@ const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: to
   labelled rows out of git.
 - **Receipts**: `onUsage` gets a metadata-only `DecisionReceipt` per call
   (model, tokens, cost, latency, outcome). Send it on with
-  `onUsage: r => models.recordUsage(toModelsUsage(r))`.
+  `onUsage: r => models.recordUsage(toModelsUsage(r))`. It is sent as
+  `kind: 'decision'` with no tier, so buildd reports decision spend on its
+  own instead of as budget-tier chat.
 
 Writing labels: define each one contrastively, avoid a catch-all label
 ("other"), keep state small, and leave arithmetic and dates to code.

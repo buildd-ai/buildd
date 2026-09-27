@@ -12,13 +12,15 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createModelsClient, KIT_PROVIDERS, KIT_TIERS, MAX_USAGE_RECORDS, PLAN_SOURCES, PLAN_SURFACES,
-  toWireReceipt, USAGE_RECORD_KEYS, type ResolvedPlan, type UsageReceipt,
+  toWireReceipt, USAGE_KINDS, USAGE_RECORD_KEYS, type ResolvedPlan, type UsageReceipt,
 } from './index';
+import { toDecisionReceipt, toModelsUsage } from '../decide/index';
 
 type Validation = { ok: boolean; error?: string; value?: unknown };
 interface ServerUsage {
   validateUsageBody(body: unknown): Validation;
   USAGE_PLAN_SOURCES: readonly string[];
+  USAGE_KINDS: readonly string[];
   MAX_USAGE_RECORDS: number;
 }
 interface ServerPlan {
@@ -37,7 +39,7 @@ const plan: ResolvedPlan = {
   limits: { maxTurns: null }, price: null, budget: null, expiresAt: '2026-09-27T12:00:00.000Z',
 };
 const full: UsageReceipt = {
-  plan, tokens: { input: 1200, output: 300, cacheRead: 10, cacheWrite: 5 }, costUsd: 0.0031, latencyMs: 850, outcome: 'ok', feedback: 'down',
+  plan, kind: 'chat', tokens: { input: 1200, output: 300, cacheRead: 10, cacheWrite: 5 }, costUsd: 0.0031, latencyMs: 850, outcome: 'ok', feedback: 'down',
 };
 
 describe.skipIf(!available)('contract with buildd /api/ai/usage', () => {
@@ -45,6 +47,7 @@ describe.skipIf(!available)('contract with buildd /api/ai/usage', () => {
     const s = await load<ServerUsage>('usage.ts');
     const p = await load<ServerPlan>('plan.ts');
     expect<string[]>([...PLAN_SOURCES]).toEqual([...s.USAGE_PLAN_SOURCES]);
+    expect<string[]>([...USAGE_KINDS]).toEqual([...s.USAGE_KINDS]);
     expect(MAX_USAGE_RECORDS).toBe(s.MAX_USAGE_RECORDS);
     expect<string[]>([...KIT_PROVIDERS]).toEqual([...p.PLAN_PROVIDERS]);
     expect<string[]>([...PLAN_SURFACES]).toEqual([...p.PLAN_SURFACES]);
@@ -57,6 +60,9 @@ describe.skipIf(!available)('contract with buildd /api/ai/usage', () => {
       { ...full, plan: { ...plan, planSource: 'registry' } },
       { ...full, plan: { ...plan, planId: null, planSource: 'fallback' } },
       { plan, tokens: { input: 0, output: 0 }, latencyMs: 0, outcome: 'aborted' },
+      { ...full, kind: 'inference' },
+      // A Jev decision: no plan and no tier.
+      { plan: { planId: null, planSource: 'fallback', model: 'typesafe/jev-1.13', provider: 'openrouter' }, kind: 'decision', tokens: { input: 400, output: 20 }, latencyMs: 700, outcome: 'ok' },
     ];
     const records = variants.map((r) => {
       const w = toWireReceipt(r);
@@ -74,11 +80,14 @@ describe.skipIf(!available)('contract with buildd /api/ai/usage', () => {
       { ...full, plan: { ...plan, model: 'two words' } },
       { ...full, costUsd: -1 },
       { ...full, latencyMs: 25 * 60 * 60 * 1000 },
+      // Only a decision may omit its tier without a plan.
+      { ...full, kind: 'chat', plan: { ...plan, planId: null, planSource: 'fallback', tier: undefined as never } },
+      { ...full, kind: 'chat_turn' as never },
     ];
     for (const r of bad) {
       expect(toWireReceipt(r).ok).toBe(false);
       // Hand-build what a naive client would send, to prove the server refuses it too.
-      const naive = { planId: r.plan.planId, model: r.plan.model, provider: r.plan.provider, tier: r.plan.tier, planSource: r.plan.planSource, tokens: { input: 1, output: 1 }, costUsd: r.costUsd, latencyMs: r.latencyMs, outcome: r.outcome };
+      const naive = { planId: r.plan.planId, model: r.plan.model, provider: r.plan.provider, tier: r.plan.tier, kind: r.kind, planSource: r.plan.planSource, tokens: { input: 1, output: 1 }, costUsd: r.costUsd, latencyMs: r.latencyMs, outcome: r.outcome };
       expect(s.validateUsageBody(naive)).toMatchObject({ ok: false });
     }
   });
@@ -91,6 +100,27 @@ describe.skipIf(!available)('contract with buildd /api/ai/usage', () => {
     expect(s.validateUsageBody(w.record)).toMatchObject({ ok: true });
     // And the server really is strict about the rest.
     expect(s.validateUsageBody({ ...w.record, subject: 'u1' })).toMatchObject({ ok: false });
+  });
+});
+
+describe.skipIf(!available)('contract: /decide receipts through /models to buildd', () => {
+  it('a decision receipt reaches buildd as kind decision, with no tier', async () => {
+    const s = await load<ServerUsage>('usage.ts');
+    const receipt = toDecisionReceipt(
+      { ok: true, model: 'typesafe/jev-1.13-20260917', usage: { inputTokens: 400, outputTokens: 20, costUsd: 0.0002 }, latencyMs: 700.4, attempts: 1 } as never,
+      { model: 'typesafe/jev-1.13', decisionId: 'x.y' },
+    );
+    const w = toWireReceipt(toModelsUsage(receipt));
+    if (!w.ok) throw new Error(w.error);
+    expect(w.record).toMatchObject({ planId: null, kind: 'decision', planSource: 'fallback', provider: 'openrouter' });
+    expect(w.record).not.toHaveProperty('tier');
+    const v = s.validateUsageBody(w.record);
+    expect(v).toMatchObject({ ok: true });
+    expect((v.value as Array<{ kind: string; tier: unknown }>)[0]).toMatchObject({ kind: 'decision', tier: null });
+    // A failed decision's receipt is accepted too.
+    const failed = toWireReceipt(toModelsUsage(toDecisionReceipt({ ok: false, latencyMs: 5000, attempts: 2 } as never, { model: 'typesafe/jev-1.13' })));
+    if (!failed.ok) throw new Error(failed.error);
+    expect(s.validateUsageBody(failed.record)).toMatchObject({ ok: true });
   });
 });
 

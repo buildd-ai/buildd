@@ -98,11 +98,26 @@ export interface ResolvedPlan {
 // ── /api/ai/usage ───────────────────────────────────────────────────────────
 
 export type UsageOutcome = 'ok' | 'error' | 'aborted';
+
+/**
+ * What kind of call a receipt is for, so buildd can report spend by kind:
+ * `chat` / `inference` are the plan surfaces, `decision` is a Jev call
+ * (`/decide`), which has no tier.
+ */
+export const USAGE_KINDS = ['chat', 'inference', 'decision'] as const;
+export type UsageKind = (typeof USAGE_KINDS)[number];
 export type UsageFeedback = 'up' | 'down';
 
 /** What an app hands to `recordUsage`. Only these fields are ever read. */
 export interface UsageReceipt {
-  plan: Pick<ResolvedPlan, 'planId' | 'planSource' | 'model' | 'provider' | 'tier'>;
+  /**
+   * A `ResolvedPlan` fits as is. `tier` is required unless `kind` is
+   * `'decision'` (Jev is outside the tier system); a receipt without one is
+   * refused locally and counted as `invalid`.
+   */
+  plan: Pick<ResolvedPlan, 'planId' | 'planSource' | 'model' | 'provider'> & { tier?: KitTier };
+  /** What the call was for, so buildd reports spend by kind. */
+  kind?: UsageKind;
   tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
   /** The provider-reported cost, if any. buildd otherwise estimates it from list price. */
   costUsd?: number | null;
@@ -116,7 +131,8 @@ export interface WireUsageRecord {
   planId: string | null;
   model: string;
   provider: KitProvider;
-  tier: KitTier;
+  tier?: KitTier;
+  kind?: UsageKind;
   planSource: PlanSource;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
   costUsd?: number;

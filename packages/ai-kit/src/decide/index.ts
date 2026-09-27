@@ -17,9 +17,10 @@
  *
  * The caller passes its OpenRouter key; the kit never reads env vars.
  *
- * One file on purpose: the kit is consumed from source by Next (Turbopack),
- * which does not map `./x.js` specifiers to `.ts`, while the published build
- * (NodeNext) requires extensions. A single module needs neither.
+ * Splitting this file is fine: relative imports in the kit are extensionless
+ * (`./x`) and `scripts/build.ts` rewrites them to `.js` for the published ESM.
+ * Do not write `./x.js` here; Next (Turbopack) consuming the source cannot
+ * resolve it (`scripts/build.test.ts` enforces this).
  */
 
 import {
@@ -356,8 +357,10 @@ export interface ModelsUsageInput {
     planSource: 'registry' | 'pool' | 'catalog' | 'default' | 'cached' | 'fallback';
     model: string;
     provider: 'openrouter';
-    tier: ModelsTier;
+    /** Only when the app asked for one; Jev has no tier. */
+    tier?: ModelsTier;
   };
+  kind: 'decision';
   tokens: { input: number; output: number };
   costUsd: number | null;
   latencyMs: number;
@@ -368,10 +371,10 @@ export interface ModelsUsageInput {
  * A decision receipt as `/models`' `recordUsage` input:
  * `models.recordUsage(toModelsUsage(receipt))`.
  *
- * Jev is not a tier and has no buildd plan, so the receipt says `planId: null`
- * and `planSource: 'fallback'` (buildd issued no plan) and names a tier for
- * attribution only: `budget` by default, since a decision call costs a
- * fraction of a cent.
+ * Sent as `kind: 'decision'`, so buildd reports decision spend on its own
+ * rather than as budget-tier chat. Jev is not a tier and has no buildd plan,
+ * so the receipt says `planId: null` and `planSource: 'fallback'` (buildd
+ * issued no plan) and carries no tier unless `opts.tier` names one.
  */
 export function toModelsUsage(
   receipt: DecisionReceipt,
@@ -383,8 +386,9 @@ export function toModelsUsage(
       planSource: opts.planId ? 'default' : 'fallback',
       model: receipt.model,
       provider: 'openrouter',
-      tier: opts.tier ?? 'budget',
+      ...(opts.tier ? { tier: opts.tier } : {}),
     },
+    kind: 'decision',
     tokens: { input: receipt.usage.inputTokens, output: receipt.usage.outputTokens },
     costUsd: receipt.usage.costUsd,
     latencyMs: Math.max(0, Math.round(receipt.latencyMs)),

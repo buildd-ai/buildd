@@ -22,6 +22,14 @@ bumps; new optional data parts are minor.
   `summarizeDecisionEval`; metadata-only `DecisionReceipt`s and
   `toModelsUsage` for `/models`' `recordUsage`. buildd's
   `decisionCall` now uses this transport and these types.
+- `/models` receipts take an optional `kind` (`chat` | `inference` |
+  `decision`, `USAGE_KINDS`), and a `decision` receipt may omit `plan.tier`.
+  `/decide`'s `toModelsUsage` now sends `kind: 'decision'` with no tier
+  (was `tier: 'budget'`), so buildd reports decision spend apart from chat.
+- Relative imports in the source are extensionless and the build rewrites
+  them to `.js`, so the kit is consumable from source by Next/Turbopack with
+  no consumer config, and `dist/` stays valid Node ESM. No change to the
+  published entry points.
 - Breaking for `/decide` type users: the P0 placeholder `DecisionDefinition`
   is replaced by `DecisionConfig` / `Decision`.
 
