@@ -156,16 +156,14 @@ export function CriterionRow({
       data-testid="criterion-row"
     >
       <div className="flex items-start gap-2">
-        <select
-          value={draft.type}
-          onChange={e => set({ type: e.target.value as SelectableCriterionType })}
-          className={FIELD_CLS}
+        <Select
           aria-label="Criterion type"
-        >
-          {CRITERION_TYPE_OPTIONS.map(o => (
-            <option key={o.type} value={o.type}>{o.label}</option>
-          ))}
-        </select>
+          value={draft.type}
+          onChange={v => set({ type: v as SelectableCriterionType })}
+          options={CRITERION_TYPE_OPTIONS.map(o => ({ value: o.type, label: o.label }))}
+          size="sm"
+          className="flex-1 w-full"
+        />
         <button
           type="button"
           onClick={onRemove}

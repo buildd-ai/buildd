@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Select } from '@/components/ui/Select';
 
 interface Props {
   teamId: string;
@@ -90,10 +91,15 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
         <div className="flex flex-col gap-4 sm:flex-row">
           <label className="flex flex-1 flex-col gap-1.5">
             <span className="text-xs font-medium text-text-secondary">Status</span>
-            <select value={status} onChange={(e) => setStatus(e.target.value as 'planned' | 'active')} className="input">
-              <option value="active">Active</option>
-              <option value="planned">Planned</option>
-            </select>
+            <Select
+              aria-label="Status"
+              value={status}
+              onChange={(v) => setStatus(v as 'planned' | 'active')}
+              options={[
+                { value: 'active', label: 'Active' },
+                { value: 'planned', label: 'Planned' },
+              ]}
+            />
           </label>
           <label className="flex flex-1 flex-col gap-1.5">
             <span className="text-xs font-medium text-text-secondary">Target date <span className="text-text-muted">(optional)</span></span>
@@ -104,12 +110,16 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
         {workspaces.length > 0 && (
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-text-secondary">Workspace <span className="text-text-muted">(optional: leave empty to span repos)</span></span>
-            <select value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} className="input">
-              <option value="">Team-wide (no workspace)</option>
-              {workspaces.map((w) => (
-                <option key={w.id} value={w.id}>{w.name}</option>
-              ))}
-            </select>
+            <Select
+              aria-label="Workspace"
+              value={workspaceId}
+              onChange={setWorkspaceId}
+              placeholder="Team-wide (no workspace)"
+              options={[
+                { value: '', label: 'Team-wide (no workspace)' },
+                ...workspaces.map((w) => ({ value: w.id, label: w.name })),
+              ]}
+            />
           </label>
         )}
 

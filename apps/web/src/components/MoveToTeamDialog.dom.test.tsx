@@ -107,10 +107,15 @@ function button(label: string): HTMLButtonElement {
   return b as HTMLButtonElement;
 }
 
-function select(): HTMLSelectElement {
-  const s = document.querySelector('select');
+function picker(): HTMLButtonElement {
+  const s = document.querySelector('[role="combobox"][aria-label="Destination team"]');
   expect(s).not.toBeNull();
-  return s as HTMLSelectElement;
+  return s as HTMLButtonElement;
+}
+
+async function openOptions(): Promise<HTMLElement[]> {
+  if (picker().getAttribute('aria-expanded') !== 'true') await act(async () => { picker().click(); });
+  return [...document.querySelectorAll('[role="option"]')] as HTMLElement[];
 }
 
 async function click(b: HTMLButtonElement) {
@@ -118,11 +123,8 @@ async function click(b: HTMLButtonElement) {
 }
 
 async function pick(teamId: string) {
-  await act(async () => {
-    const s = select();
-    s.value = teamId;
-    s.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  const opt = (await openOptions()).find((o) => o.getAttribute('data-value') === teamId)!;
+  await act(async () => { opt.click(); });
 }
 
 function calls(suffix: string) {
@@ -130,9 +132,9 @@ function calls(suffix: string) {
 }
 
 describe('MoveToTeamDialog', () => {
-  it('offers only the other teams as destinations', () => {
+  it('offers only the other teams as destinations', async () => {
     render();
-    const values = [...select().options].map((o) => o.value);
+    const values = (await openOptions()).map((o) => o.getAttribute('data-value'));
     expect(values).toEqual(['team-b', 'team-c']);
   });
 

@@ -113,6 +113,22 @@ describe('a11y guards', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('no native <select> or <datalist> in apps/web/src (use components/ui/Select or Combobox)', () => {
+    // The OS popover (blue highlight, rounded white menu) ignores every brand
+    // token and both themes. Select/Combobox carry the listbox semantics instead.
+    const NATIVE_MENU = /<(select|datalist)\b/;
+    expect(NATIVE_MENU.test('<select value={x}>')).toBe(true);
+    expect(NATIVE_MENU.test('<Select value={x}>')).toBe(false);
+    const offenders: string[] = [];
+    for (const file of sourceFiles()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      src.split('\n').forEach((line, i) => {
+        if (NATIVE_MENU.test(line)) offenders.push(`${relative(WEB_SRC, file)}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('role="switch" only appears inside components/ui/Switch.tsx', () => {
     const offenders = sourceFiles()
       .filter(f => !f.endsWith(join('components', 'ui', 'Switch.tsx')))

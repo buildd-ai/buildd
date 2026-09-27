@@ -3,6 +3,7 @@
 import { useId, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Dialog from '@/components/ui/Dialog';
+import { Select } from '@/components/ui/Select';
 import { formatOutcomeDetail, formatPhaseLabel, isPhaseSuccess } from '@/lib/migration-outcomes';
 
 // Redeclared locally: @/lib/workspace-migration is server-only db code.
@@ -256,17 +257,15 @@ export default function MoveToTeamDialog({
             <div>
               <label htmlFor={`${titleId}-team`} className="field-label">Destination team</label>
               <div className="flex flex-col sm:flex-row gap-2">
-                <select
+                <Select
                   id={`${titleId}-team`}
+                  aria-label="Destination team"
                   value={teamId}
-                  onChange={(e) => pickTeam(e.target.value)}
+                  onChange={pickTeam}
                   disabled={busy !== null || repairPending}
-                  className="w-full sm:flex-1 min-w-0 h-11 px-3 rounded-lg border bg-surface"
-                >
-                  {destinations.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
+                  options={destinations.map((t) => ({ value: t.id, label: t.name }))}
+                  className="w-full sm:flex-1"
+                />
                 <button
                   type="button"
                   onClick={runCheck}
