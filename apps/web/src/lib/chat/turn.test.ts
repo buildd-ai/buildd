@@ -370,7 +370,7 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
   it('turnGroups: a member never gets admin, even when routing names it', async () => {
     const { turnGroups } = await import('./turn');
     const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: false });
-    expect([...g].sort()).toEqual(['missions', 'tasks']);
+    expect([...g].sort()).toEqual(['missions', 'notifications', 'tasks']);
     const a = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: true });
     expect(a.has('admin')).toBe(true);
   });
@@ -597,6 +597,94 @@ describe('"Allow" for a tool group (docs/design/agent-chat.md → Tools and perm
     await turn(userMsg('make this a mission with a $50 budget'));
     expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('approval-requested');
     expect(apiCalls).toEqual([]);
+  });
+});
+
+describe('watches from chat (docs/design/subscriptions-and-notifications.md → Approval)', () => {
+  const T = '33333333-3333-4333-8333-333333333333';
+  const SUB = '44444444-4444-4444-8444-444444444444';
+  const posted: any[] = [];
+  const world = (taskStatus = 'in_progress') => (method: string, path: string, body: any) => {
+    if (method === 'GET' && path === `/api/tasks/${T}`) return { id: T, title: 'Checkout rounding', status: taskStatus, workspaceId: 'ws-1', workers: [] };
+    if (method === 'GET' && path === '/api/subscriptions') {
+      return { subscriptions: [{ id: SUB, teamId: 'team-1', workspaceId: 'ws-1', subjectKind: 'task', subjectKey: T, eventTypes: ['task.completed'], expiresAt: '2026-10-03T00:00:00Z', label: 'Checkout rounding' }] };
+    }
+    if (method === 'POST' && path === '/api/subscriptions') { posted.push(body); return { subscription: { id: SUB, eventTypes: body.eventTypes } }; }
+    if (method === 'DELETE') return { ok: true };
+    return { tasks: [{ id: T, title: 'Checkout rounding', status: taskStatus, workspaceId: 'ws-1' }] };
+  };
+  const watchModel = (input: unknown = { taskId: T }) => new MockLanguageModelV4({ doStream: [toolStream('call-w', 'watch', input), textStream('Watching.')] as any });
+  beforeEach(() => { posted.length = 0; });
+
+  it('a one-shot watch skips its card when the person allowed watches and nothing was read', async () => {
+    const { turn, apiCalls } = harness({ model: watchModel(), api: world(), allowedGroups: ['notifications'] });
+    await turn(userMsg('tell me when checkout rounding is done'));
+    const part = lastAssistant().parts.find(p => p.type === 'tool-watch');
+    expect(part.state).toBe('output-available');
+    expect(part.output.allowed).toBe(true);
+    expect(approvals).toHaveLength(0);
+    expect(apiCalls.filter(c => !c.startsWith('GET '))).toEqual(['POST /api/subscriptions']);
+    // Delivered to this conversation: the turn supplies it, never the model.
+    expect(posted).toEqual([{ taskId: T, eventTypes: ['task.completed', 'task.failed'], conversationId: 'conv-1' }]);
+  });
+
+  it('without the allow it is a card that says what, until when and where; nothing is written', async () => {
+    const { turn, apiCalls } = harness({ model: watchModel(), api: world() });
+    await turn(userMsg('tell me when checkout rounding is done'));
+    const part = lastAssistant().parts.find(p => p.type === 'tool-watch');
+    expect(part.state).toBe('approval-requested');
+    expect(approvals).toHaveLength(1);
+    const reason = JSON.stringify(part.approval ?? part);
+    expect(reason).toContain('it finishes or fails');
+    expect(reason).toContain('in 7 days');
+    expect(reason).toContain('this conversation');
+    expect(apiCalls.filter(c => !c.startsWith('GET '))).toEqual([]);
+  });
+
+  it('confirming the card sets exactly one watch, for this conversation', async () => {
+    const { turn } = harness({ model: watchModel(), api: world() });
+    await turn(userMsg('tell me when checkout rounding is done'));
+    await turn(answer(true));
+    expect(posted).toEqual([{ taskId: T, eventTypes: ['task.completed', 'task.failed'], conversationId: 'conv-1' }]);
+  });
+
+  it('allowed, but tool output is in context: a card', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}), toolStream('call-w', 'watch', { taskId: T }), textStream('ok')] as any,
+    });
+    const { turn } = harness({ model, api: world(), allowedGroups: ['notifications'] });
+    await turn(userMsg('what is running? tell me when checkout is done'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-watch').state).toBe('approval-requested');
+    expect(posted).toEqual([]);
+  });
+
+  it('a task that already finished: a question back, no card, no watch', async () => {
+    const { turn } = harness({ model: watchModel(), api: world('completed'), allowedGroups: ['notifications'] });
+    await turn(userMsg('tell me when checkout rounding is done'));
+    const part = lastAssistant().parts.find(p => p.type === 'tool-watch');
+    expect(part.state).toBe('output-available');
+    expect(part.output.data).toContain('already completed');
+    expect(approvals).toHaveLength(0);
+    expect(posted).toEqual([]);
+  });
+
+  it('unwatch runs without a card while nothing was read', async () => {
+    const model = new MockLanguageModelV4({ doStream: [toolStream('call-u', 'unwatch', { taskId: T }), textStream('Stopped.')] as any });
+    const { turn, apiCalls } = harness({ model, api: world() });
+    await turn(userMsg('stop watching checkout rounding'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-unwatch').state).toBe('output-available');
+    expect(approvals).toHaveLength(0);
+    expect(apiCalls).toEqual(['GET /api/subscriptions', `DELETE /api/subscriptions/${SUB}`]);
+  });
+
+  it('unwatch after tool output is in context gets a card, like any write', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-l', 'list_watches', {}), toolStream('call-u', 'unwatch', { watchId: SUB }), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({ model, api: world() });
+    await turn(userMsg('what am I watching? stop the checkout one'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-unwatch').state).toBe('approval-requested');
+    expect(apiCalls.filter(c => c.startsWith('DELETE'))).toEqual([]);
   });
 });
 

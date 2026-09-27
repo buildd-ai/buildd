@@ -214,6 +214,9 @@ DELETE FROM system_cache;
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
 DELETE FROM watcher_events;
+-- Watches and their ledger: payloads carry task/PR titles and repo names.
+DELETE FROM notification_deliveries;
+DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
 DELETE FROM review_feedback;

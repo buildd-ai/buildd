@@ -56,6 +56,8 @@ export async function getTeamChannel(teamId: string): Promise<TeamChannel> {
       eq(secrets.teamId, teamId),
       isNull(secrets.accountId),
       isNull(secrets.workspaceId),
+      // Never a person's own row (pushover_personal): team alerts use the team channel only.
+      isNull(secrets.userId),
     ),
     columns: { purpose: true, encryptedValue: true },
   });

@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import ChatConversation from '@/components/chat/ChatConversation';
+import ChatPresenceBeat from '@/components/chat/ChatPresenceBeat';
 import { loadConversation } from '@/lib/chat/conversations';
 import { isUuid } from '@/lib/uuid';
 import { getUserTeamIds } from '@/lib/team-access';
@@ -28,6 +29,8 @@ export default async function ConversationPage({
   // A conversation lives in its team: leaving the team ends access to it.
   if (!conv || !teamIds.includes(conv.teamId)) notFound();
   return (
+    <>
+    <ChatPresenceBeat conversationId={conv.id} />
     <ChatConversation
       key={conv.id}
       conversationId={conv.id}
@@ -48,5 +51,6 @@ export default async function ConversationPage({
       focusRef={focusRefFrom(q, conv.workspaceId) ?? about}
       entry={{ ...entry, about: about ? entry.about : null }}
     />
+    </>
   );
 }

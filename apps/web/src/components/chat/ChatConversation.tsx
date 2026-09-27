@@ -23,6 +23,7 @@ import {
   type CreateConversationResponse, type GetConversationResponse,
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { useWatchDelivery } from './use-watch-delivery';
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
 import ChatWorkspace, { type ChatWorkspaceProps } from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
@@ -154,6 +155,9 @@ export default function ChatConversation(props: ChatConversationProps) {
       unsubscribeFromChannel(name);
     };
   }, [conversationId, refetch]);
+
+  // Watches set here that fired while the tab was away land in the feed.
+  useWatchDelivery(conversationId, () => { void refetch(); });
 
   // A finished turn may have renamed the conversation (auto-title after the first exchange).
   const prevStatus = useRef(status);

@@ -110,6 +110,11 @@ describe('manage_missions', () => {
     expect(handle).not.toHaveBeenCalled();
   });
 
+  it('with writes off, create is not even in the schema (watch tools)', () => {
+    expect(setup({ allowWrites: false }).tools.watch).toBeUndefined();
+    expect(setup({ allowWrites: false }).tools.list_watches).toBeDefined();
+  });
+
   it('with writes off, create is not even in the schema', () => {
     const { tools } = setup({ allowWrites: false });
     const schema = (tools.manage_missions as any).inputSchema;

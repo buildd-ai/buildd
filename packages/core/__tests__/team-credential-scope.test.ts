@@ -83,9 +83,12 @@ describe('teamCredentialWhere', () => {
 });
 
 describe('personal-scope write guard', () => {
-  it('only inference keys are personal', () => {
+  it('only inference keys and personal Pushover keys are personal', () => {
     expect(isPersonalSecretPurpose('inference_key')).toBe(true);
-    for (const p of ['mcp_connector_credential', 'mcp_credential', 'role_env_secret', 'oauth_token', 'anthropic_api_key', 'decision_key']) {
+    expect(isPersonalSecretPurpose('pushover_personal')).toBe(true);
+    // The TEAM Pushover channel stays team-only: a personal away-alert must
+    // never be able to resolve to it, and a team read of it never sees a person's row.
+    for (const p of ['pushover', 'notify_webhook', 'mcp_connector_credential', 'mcp_credential', 'role_env_secret', 'oauth_token', 'anthropic_api_key', 'decision_key']) {
       expect(isPersonalSecretPurpose(p)).toBe(false);
     }
   });
@@ -97,10 +100,15 @@ describe('personal-scope write guard', () => {
     expect(() => assertPersonalScopeAllowed(undefined, 'u-1')).toThrow();
   });
 
+  it('refuses a userId on the team Pushover channel', () => {
+    expect(() => assertPersonalScopeAllowed('pushover', 'u-1')).toThrow();
+  });
+
   it('allows team rows for any purpose and personal rows for inference keys', () => {
     expect(() => assertPersonalScopeAllowed('mcp_connector_credential', null)).not.toThrow();
     expect(() => assertPersonalScopeAllowed('mcp_credential', undefined)).not.toThrow();
     expect(() => assertPersonalScopeAllowed('inference_key', 'u-1')).not.toThrow();
+    expect(() => assertPersonalScopeAllowed('pushover_personal', 'u-1')).not.toThrow();
   });
 });
 
