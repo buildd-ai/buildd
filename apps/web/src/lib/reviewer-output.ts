@@ -54,13 +54,22 @@ export function parseReviewerOutput(raw: unknown): ParsedReviewerOutput {
 }
 
 /**
- * Turn an approval below the workspace's confidence threshold into an
- * escalation. Every approval posts a GitHub APPROVE and may run the bounded
- * merge into a mission integration branch, so the threshold has to apply to
- * the verdict itself, not only to the unbounded self-merge.
+ * Apply confidence gates to reviewer verdicts.
  *
- * Only `approve` is changed: request-changes merges nothing, and escalate is
- * already the outcome this produces.
+ * For `approve`: verdicts below the workspace's confidence threshold are
+ * downgraded to escalation (human review needed). Every approval posts a GitHub
+ * APPROVE and may run the bounded merge into a mission integration branch, so
+ * the threshold has to apply to the verdict itself.
+ *
+ * For `request-changes` and `escalate` from prose extraction: these verdicts
+ * with low confidence (from fallback extraction) are escalated for human
+ * confirmation rather than acting immediately. This prevents misclassified
+ * verdicts (e.g., "I considered changes but I approve" → misextracted as
+ * `request-changes`) from triggering unwanted automated actions like builder
+ * fix-retry or PR escalation.
+ *
+ * The threshold applies uniformly: verdicts below it are escalated, those at
+ * or above it pass through.
  */
 export function applyConfidenceGate(params: {
   verdict: ReviewerTaskOutput['verdict'];
@@ -68,15 +77,29 @@ export function applyConfidenceGate(params: {
   threshold?: number | null;
 }): { verdict: ReviewerTaskOutput['verdict']; overrideReason: string | null } {
   const { verdict, confidence } = params;
-  if (verdict !== 'approve') return { verdict, overrideReason: null };
   const threshold = params.threshold ?? DEFAULT_REVIEW_CONFIDENCE_THRESHOLD;
-  // The same predicate the self-merge paths use, so "clears the bar" has one
-  // definition.
-  if (isApprovalSelfMergeable({ verdict: 'approve', confidence, merged: false }, threshold)) {
-    return { verdict, overrideReason: null };
+
+  if (verdict === 'approve') {
+    // The same predicate the self-merge paths use, so "clears the bar" has one
+    // definition.
+    if (isApprovalSelfMergeable({ verdict: 'approve', confidence, merged: false }, threshold)) {
+      return { verdict, overrideReason: null };
+    }
+    return {
+      verdict: 'escalate',
+      overrideReason: `confidence ${confidence.toFixed(2)} below workspace threshold ${threshold.toFixed(2)}`,
+    };
   }
-  return {
-    verdict: 'escalate',
-    overrideReason: `confidence ${confidence.toFixed(2)} below workspace threshold ${threshold.toFixed(2)}`,
-  };
+
+  // For request-changes and escalate: also apply the confidence gate.
+  // Low-confidence verdicts from prose extraction should be escalated for human
+  // confirmation rather than acting immediately.
+  if (confidence < threshold) {
+    return {
+      verdict: 'escalate',
+      overrideReason: `${verdict} confidence ${confidence.toFixed(2)} below workspace threshold ${threshold.toFixed(2)} (escalated for human review)`,
+    };
+  }
+
+  return { verdict, overrideReason: null };
 }

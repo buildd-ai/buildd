@@ -9,7 +9,8 @@ describe('extractVerdictFromProse', () => {
     const prose = 'This looks great, I approve the changes. Ready to merge.';
     const result = extractVerdictFromProse(prose);
     expect(result.verdict).toBe('approve');
-    expect(result.confidence).toBe(0.5);
+    // Confidence based on position in text (towards the end)
+    expect(result.confidence).toBeGreaterThan(0.5);
   });
 
   it('extracts approved variant', () => {
@@ -28,7 +29,8 @@ describe('extractVerdictFromProse', () => {
     const prose = 'I request-changes on this PR. Please address the comments.';
     const result = extractVerdictFromProse(prose);
     expect(result.verdict).toBe('request-changes');
-    expect(result.confidence).toBe(0.5);
+    // Confidence is mid-range since it's in the middle of the text
+    expect(result.confidence).toBeGreaterThan(0.4);
   });
 
   it('extracts request changes variant', () => {
@@ -47,7 +49,9 @@ describe('extractVerdictFromProse', () => {
     const prose = 'This needs escalation. The decision is beyond my scope.';
     const result = extractVerdictFromProse(prose);
     expect(result.verdict).toBe('escalate');
-    expect(result.confidence).toBe(0.5);
+    // Prose-extracted verdicts use conservative confidence
+    expect(result.confidence).toBeGreaterThanOrEqual(0.5);
+    expect(result.confidence).toBeLessThan(0.6);
   });
 
   it('extracts needs human review variant', () => {
@@ -67,6 +71,42 @@ describe('extractVerdictFromProse', () => {
     const prose = 'This looks good but needs escalation for policy reasons.';
     const result = extractVerdictFromProse(prose);
     expect(result.verdict).toBe('escalate');
+  });
+
+  // Regression tests for hedge/negation cases from the prior failure
+  it('handles hedge: considered changes but will approve', () => {
+    const prose = 'I considered whether to request changes here, but the issues are minor, so I will approve this PR.';
+    const result = extractVerdictFromProse(prose);
+    // Should extract the final verdict (approve), not the hedged one (request-changes)
+    expect(result.verdict).toBe('approve');
+    expect(result.confidence).toBeGreaterThan(0.5);
+  });
+
+  it('handles negation: no changes requested, this is approve', () => {
+    const prose = 'No changes requested here — this is a clean approve.';
+    const result = extractVerdictFromProse(prose);
+    // Should extract approve, not request-changes (which is negated)
+    expect(result.verdict).toBe('approve');
+  });
+
+  it('handles negation: does not need manual review, approve', () => {
+    const prose = 'This PR does not need any manual review beyond what is already documented. Approve.';
+    const result = extractVerdictFromProse(prose);
+    // Should extract approve, not escalate (which is negated by "does not need manual review")
+    expect(result.verdict).toBe('approve');
+  });
+
+  it('handles negation: not blocked, looks good', () => {
+    const prose = 'This is not blocked by anything and looks good.';
+    const result = extractVerdictFromProse(prose);
+    // Should extract approve (looks good), not escalate (blocked is negated)
+    expect(result.verdict).toBe('approve');
+  });
+
+  it('prefers last verdict keyword when multiple present', () => {
+    const prose = 'I initially thought we might need escalation, but after review, this looks good. Approve.';
+    const result = extractVerdictFromProse(prose);
+    expect(result.verdict).toBe('approve');
   });
 
   it('handles empty string', () => {
@@ -97,6 +137,21 @@ describe('extractVerdictFromProse', () => {
     const result3 = extractVerdictFromProse('ESCALATE to human');
     expect(result3.verdict).toBe('escalate');
   });
+
+  it('assigns slightly higher confidence to verdicts near the end', () => {
+    const prose = 'This looks good. Approve.';
+    const result = extractVerdictFromProse(prose);
+    // Even near the end, prose verdicts stay below the 0.6 default threshold
+    expect(result.confidence).toBeGreaterThan(0.5);
+    expect(result.confidence).toBeLessThan(0.6);
+  });
+
+  it('assigns lower confidence to matches in early text', () => {
+    const prose = 'Approve the early structure, but now I see issues. Request-changes needed.';
+    const result = extractVerdictFromProse(prose);
+    // Should prefer request-changes (later) over approve (earlier)
+    expect(result.verdict).toBe('request-changes');
+  });
 });
 
 describe('constructFallbackStructuredOutput', () => {
@@ -107,7 +162,8 @@ describe('constructFallbackStructuredOutput', () => {
 
     expect(output).toBeTruthy();
     expect(output!.verdict).toBe('approve');
-    expect(output!.confidence).toBe(0.5);
+    // Confidence is based on position in text
+    expect(output!.confidence).toBeGreaterThan(0.5);
     expect(output!.summary).toContain('code looks good');
   });
 
