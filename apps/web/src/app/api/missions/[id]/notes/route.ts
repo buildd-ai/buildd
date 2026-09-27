@@ -6,7 +6,15 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { isUuid } from '@/lib/uuid';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
+
+function invalidUuid(label: string, value: string, status: 400 | 404) {
+  return NextResponse.json(
+    { error: `Invalid ${label}: expected a UUID, got "${value}". Pass the full UUID.` },
+    { status },
+  );
+}
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update', 'reply', 'guidance'];
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system', 'mcp'];
@@ -50,6 +58,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return invalidUuid('mission id', id, 404);
+  }
   const access = await resolveMissionAccess(req, id);
   if (!access) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -59,6 +70,10 @@ export async function GET(
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
   const cursor = url.searchParams.get('cursor'); // noteId for cursor-based pagination
   const typeFilter = url.searchParams.get('type');
+
+  if (cursor && !isUuid(cursor)) {
+    return invalidUuid('cursor', cursor, 400);
+  }
 
   try {
     const conditions = [eq(missionNotes.missionId, id)];
@@ -105,6 +120,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return invalidUuid('mission id', id, 404);
+  }
   const access = await resolveMissionAccess(req, id);
   if (!access) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
