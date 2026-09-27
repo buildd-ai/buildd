@@ -268,7 +268,7 @@ describe('indexAdoptionLine', () => {
     expect(line.label).toBe(
       'Graph queried in 8 of 16 sessions where it was available (7d, completed sessions only)',
     );
-    expect(line.shortLabel).toBe('Index adoption — 50% — 8/16 CBM-enabled sessions');
+    expect(line.shortLabel).toBe('Index adoption · 50% · 8/16 CBM-enabled sessions');
     expect(line.label.toLowerCase()).not.toContain('task');
     expect(line.shortLabel.toLowerCase()).not.toContain('task');
   });
@@ -323,8 +323,8 @@ describe('formatDelta', () => {
     expect(formatDelta(row({ previousPerTask: 0, deltaPct: null }), false)).toBe('new');
   });
 
-  it('renders an em-dash when deltas are withheld', () => {
-    expect(formatDelta(row({}), true)).toBe('—');
+  it('renders nothing when deltas are withheld', () => {
+    expect(formatDelta(row({}), true)).toBe('');
   });
 });
 

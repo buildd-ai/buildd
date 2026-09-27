@@ -13,7 +13,13 @@ export function formatPer1k(usd: number): string {
   return `$${Number(usd.toPrecision(2)).toString()}`;
 }
 
+/** A tier's display name, sentence case: 'standard' -> 'Standard'; null (routed per turn) -> 'Auto'. */
+export function tierDisplayName(tier: string | null): string {
+  return tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : 'Auto';
+}
+
+/** The composer chip's label, one format everywhere (phone and desktop): 'Auto · Standard' / 'Premium' / 'Auto'. */
 export function tierChipLabel(t: { pinned: string | null; last: string | null }): string {
-  if (t.pinned) return t.pinned;
-  return t.last ? `auto · ${t.last}` : 'auto';
+  if (t.pinned) return tierDisplayName(t.pinned);
+  return t.last ? `Auto · ${tierDisplayName(t.last)}` : 'Auto';
 }

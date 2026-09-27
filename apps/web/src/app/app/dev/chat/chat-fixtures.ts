@@ -134,7 +134,7 @@ export const questionView = (open = true): QuestionObjectView => ({
 export const taskView = (): TaskObjectView => ({
   kind: 'task', id: 'task-fx', workspaceId: WS.id, title: 'feat(fx): rates service with a 15-minute cache', scope: 'fx', label: 'rates service',
   status: 'completed', roleName: 'Builder', roleColor: '#0C72CB', missionId: MISSION_ID, missionTitle: 'Multi-currency invoices',
-  worker: { id: 'w-fx', status: 'completed', runner: 'atlas', startedAt: at(11), completedAt: at(15), currentAction: null, waiting: false, prNumber: 413, prUrl: pr(413), mergedAt: at(16), prLifecycleStatus: 'merged' },
+  worker: { id: 'w-fx', status: 'completed', runner: 'atlas', startedAt: at(11), completedAt: at(15), currentAction: null, waiting: false, prNumber: 413, prUrl: pr(413), mergedAt: at(16), prLifecycleStatus: 'merged', turns: 12, updatedAt: at(15) },
   now: null, renderedAt: at(16),
 });
 

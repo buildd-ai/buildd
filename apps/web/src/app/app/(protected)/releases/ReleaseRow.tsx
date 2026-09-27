@@ -25,7 +25,7 @@ interface ReleaseRowProps {
 }
 
 function relativeTime(iso: string | Date | null): string {
-  if (!iso) return '—';
+  if (!iso) return '';
   const date = typeof iso === 'string' ? new Date(iso) : iso;
   const diff = Date.now() - date.getTime();
   const s = Math.floor(diff / 1000);

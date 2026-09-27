@@ -139,3 +139,24 @@ describe('presentation', () => {
     expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.presentation).toBe('takeover');
   });
 });
+
+describe('stacking', () => {
+  // "Ask about this mission" (AskAboutLink) renders inside the mission page's
+  // sticky masthead — a `position: sticky` ancestor that caps anything
+  // painted inside it at its own place in the page's stacking order, the same
+  // trap BottomSheet.tsx and FlightDetailSheet.tsx portal past. The overlay —
+  // the pinned mission card at its top included — must render as a sibling of
+  // `document.body`, never as a descendant of the container the provider was
+  // mounted in, so it can never end up boxed inside whatever positioned
+  // ancestor summoned it.
+  it('portals the overlay to document.body, outside the mounted container', async () => {
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    const overlay = q('[data-testid="chat-canvas-overlay"]');
+    expect(overlay).not.toBeNull();
+    expect(container.contains(overlay)).toBe(false);
+    expect(document.body.contains(overlay)).toBe(true);
+    expect(overlay?.parentElement).toBe(document.body);
+  });
+});

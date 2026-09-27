@@ -38,10 +38,9 @@ describe('divergenceSummary', () => {
     expect(s.note).toBe('0 of 4 workers · all comparable');
   });
 
-  test('an unavailable metric is an em-dash with the reason, never 0%', () => {
+  test('an unavailable metric renders no headline, with the reason in the note, never 0%', () => {
     const s = divergenceSummary(derivedUnavailable<ModelDivergence>('no_scope', 'No comparable worker: all 3 of 3 lack an assigned model'));
-    expect(s.headline).toBe('—');
-    expect(s.headline).not.toContain('0');
+    expect(s.headline).toBe('');
     expect(s.note).toContain('all 3 of 3');
   });
 

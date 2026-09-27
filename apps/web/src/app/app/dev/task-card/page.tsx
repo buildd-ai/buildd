@@ -227,7 +227,7 @@ const TASK_DENSE_FANIN = {
       { id: 'dep-875ff4', title: 'Budget Forecast UI: stop presenting a p25 floor as high confidence', status: 'pending', workers: [], dependsOn: [] },
       { id: 'dep-8891ac', title: 'Fix planning-contract violation: runner not requesting outputFormat', status: 'pending', workers: [], dependsOn: [] },
       { id: 'dep-46bfab', title: 'Fix Pusher 413: heartbeat payloads exceed the 10KB event cap', status: 'pending', workers: [], dependsOn: [] },
-      { id: 'dep-aeb80f', title: 'SPEC: deliverable uniqueness — creates-vs-modifies manifests', status: 'pending', workers: [], dependsOn: [] },
+      { id: 'dep-aeb80f', title: 'SPEC: deliverable uniqueness, creates vs. modifies manifests', status: 'pending', workers: [], dependsOn: [] },
       { id: 'dep-0ced84', title: "AUDIT (read-only): why did #1854's card show CI failing hours after CI went green?", status: 'pending', workers: [], dependsOn: ['dep-875ff4', 'dep-8891ac', 'dep-46bfab', 'dep-aeb80f'] },
       { id: 'dep-e4443f', title: 'DESIGN (read-only, Fable): make context inheritance for CI-fix workers actually work', status: 'pending', workers: [], dependsOn: ['dep-875ff4', 'dep-8891ac', 'dep-46bfab', 'dep-aeb80f', 'dep-0ced84'] },
     ],
@@ -259,7 +259,7 @@ const TASK_ALL_DEPS_CANCELLED = {
     task: { id: 'task-008', status: 'pending' },
     deps: [
       { id: 'dep-2ba59f', title: "Determine whether the team's oauth account rows share one credential", status: 'cancelled', workers: [] },
-      { id: 'dep-f5129c', title: 'Abandoned PR — closed, never merged', status: 'completed', workers: [{ prUrl: 'https://github.com/buildd-ai/buildd/pull/1799', prNumber: 1799, mergedAt: null, prLifecycleStatus: 'closed' }] },
+      { id: 'dep-f5129c', title: 'Abandoned PR: closed, never merged', status: 'completed', workers: [{ prUrl: 'https://github.com/buildd-ai/buildd/pull/1799', prNumber: 1799, mergedAt: null, prLifecycleStatus: 'closed' }] },
     ],
     dependents: 2,
   }),
@@ -272,7 +272,7 @@ export default function TaskCardFixturePage() {
     <div className="min-h-screen bg-surface-1 p-8">
       <div className="max-w-3xl mx-auto space-y-12">
         <div>
-          <h1 className="text-xl font-bold text-text-primary mb-1">TaskCard — dev fixtures</h1>
+          <h1 className="text-xl font-bold text-text-primary mb-1">TaskCard · dev fixtures</h1>
           <p className="text-[12px] text-text-secondary font-mono">
             Three densities · all states · no database
           </p>
@@ -280,7 +280,7 @@ export default function TaskCardFixturePage() {
 
         {/* ── FULL density ─────────────────────────────────────────────────── */}
         <section>
-          <div className="section-label mb-4">full — Home / Right Now</div>
+          <div className="section-label mb-4">full · Home / Right Now</div>
           <div className="space-y-2">
             <TaskCard {...TASK_WITH_CHAIN_FULL} density="full" />
 
@@ -323,7 +323,7 @@ export default function TaskCardFixturePage() {
 
         {/* ── ROW density ──────────────────────────────────────────────────── */}
         <section>
-          <div className="section-label mb-4">row — Activity list</div>
+          <div className="section-label mb-4">row · Activity list</div>
           <div className="card">
             <TaskCard {...TASK_WITH_CHAIN_FULL} density="row" />
             <TaskCard {...TASK_WAITING} density="row" />
@@ -338,7 +338,7 @@ export default function TaskCardFixturePage() {
 
         {/* ── INLINE density ───────────────────────────────────────────────── */}
         <section>
-          <div className="section-label mb-4">inline — Mission timeline</div>
+          <div className="section-label mb-4">inline · Mission timeline</div>
           <div className="card divide-y divide-border-default">
             <div className="px-3">
               <TaskCard {...TASK_WITH_CHAIN_FULL} density="inline" />
@@ -366,14 +366,14 @@ export default function TaskCardFixturePage() {
 
         {/* ── Chain strip states close-up ──────────────────────────────────── */}
         <section>
-          <div className="section-label mb-4">chain strip — segment states</div>
+          <div className="section-label mb-4">chain strip · segment states</div>
           <p className="text-[11px] text-text-muted mb-3 font-mono">
             filled=merged · half=open-PR (silent blocker) · struck=cancelled (satisfied, undelivered) · outlined=current · faint=pending
           </p>
           <div className="space-y-1">
             <TaskCard
               id="chain-demo-1"
-              title="Pending — upstream PR still open (half state blocks gate)"
+              title="Pending: upstream PR still open (half state blocks gate)"
               taskStatus="pending"
               workerStatus={null}
               taskCreatedAt={ago(20 * min)}

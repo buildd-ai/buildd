@@ -104,6 +104,10 @@ export type BookkeepingTask = {
   title: string;
   taskUpdatedAt: string;
   latestWorker: { prUrl: string | null; mergedAt: string | null } | null;
+  /** Present for orchestrator planning runs — the Orchestrator sheet uses
+   * these to name the row by what it did instead of the shared mission title. */
+  status?: string;
+  resultSummary?: string | null;
 };
 
 export type CondensedTimelineGroups = {

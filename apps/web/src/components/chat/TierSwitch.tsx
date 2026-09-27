@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react';
 import type { ChatTierInfo, ChatTierName, GetChatTiersResponse } from '@buildd/shared';
 import ComposerMenu from './ComposerMenu';
-import { formatCost, formatPer1k, tierChipLabel } from './composer-format';
+import { formatCost, formatPer1k, tierChipLabel, tierDisplayName } from './composer-format';
 
 export function TierDetail({ info, cost }: { info: ChatTierInfo | null; cost: number | null }) {
   const spent = formatCost(cost);
@@ -66,9 +66,8 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
       hover={<TierDetail info={info} cost={cost} />}
       trigger={(
         <>
-          {/* A phone shows the tier alone; the routed-to tier joins it from sm up. */}
-          <span className="whitespace-nowrap">{pinned ?? 'auto'}</span>
-          {!pinned && last && <span className="hidden whitespace-nowrap text-text-secondary sm:inline">{`· ${last}`}</span>}
+          {/* Same label everywhere — phone and desktop both read "Auto · Standard". */}
+          <span className="whitespace-nowrap">{tierChipLabel({ pinned, last })}</span>
           {spent && <span data-testid="composer-tier-cost" className="text-text-muted">{spent}</span>}
           <span aria-hidden="true" className="text-text-muted">▾</span>
         </>
@@ -92,7 +91,7 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
                     className={`flex min-h-11 w-full items-center justify-between gap-3 px-3 py-1.5 text-left font-mono hover:bg-surface-3 ${selected ? 'text-text-primary' : 'text-text-secondary'}`}
                   >
                     <span className="min-w-0">
-                      <span className="block text-[13px] font-semibold">{t ?? 'Auto'}</span>
+                      <span className="block text-[13px] font-semibold">{tierDisplayName(t)}</span>
                       <span className="block truncate text-[11px] text-text-muted">
                         {t ? (tInfo ? `${tInfo.model} · ${formatPer1k(tInfo.inputPer1kUsd)} / ${formatPer1k(tInfo.outputPer1kUsd)} per 1k` : '') : 'Routed per message'}
                       </span>

@@ -10,6 +10,12 @@ import type { CanvasScope } from '@/lib/chat/canvas-scope';
 export interface ChatCanvasApi {
   /** Open the canvas. No scope = the current page's. */
   open(scope?: Partial<CanvasScope>): void;
+  /**
+   * Open the canvas rescoped to steer one running worker (a task's card/tile
+   * — Board, the tasks list, home's fleet slot) instead of talking with an
+   * agent. Every send goes straight to that worker's instruction queue.
+   */
+  openSteer(taskId: string): void;
   close(): void;
   isOpen: boolean;
 }

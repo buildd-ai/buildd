@@ -86,7 +86,7 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
               statusClass = 'text-status-error';
               rowClass = 'bg-status-error/5';
             } else {
-              statusLabel = '—';
+              statusLabel = 'PENDING';
             }
 
             return (

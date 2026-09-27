@@ -71,11 +71,11 @@ describe('renderTrackerContent (render logic)', () => {
 });
 
 describe('TrackerCard (presentation edge cases)', () => {
-  it('shows an em dash and no bar when percent is null', () => {
+  it('shows no percent text and no bar when percent is null', () => {
     const html = renderToStaticMarkup(
       <TrackerCard provider="linear" items={[item({ percent: null })]} />,
     );
-    expect(html).toContain('—');
+    expect(html).not.toContain('%');
     expect(html).not.toContain('tracker-bar');
   });
 

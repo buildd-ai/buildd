@@ -383,7 +383,7 @@ export function buildMissionListCard(
 
 /** "37m", "5h", "3d" — compact durations for list meta. */
 export function shortDuration(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms)) return '—';
+  if (ms == null || !Number.isFinite(ms)) return '';
   const m = Math.round(ms / 60_000);
   if (m < 60) return `${m}m`;
   const h = Math.round(m / 60);

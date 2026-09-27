@@ -57,7 +57,7 @@ function StepRail({ steps }: { steps: NowState['steps'] }) {
           />
           {s.label}
           <span className="block mt-0.5 font-normal tracking-normal normal-case text-[11px] text-text-muted tabular-nums">
-            {s.at ?? (s.state === 'current' ? 'next' : '—')}
+            {s.at ?? (s.state === 'current' ? 'next' : '')}
           </span>
         </li>
       ))}
@@ -118,7 +118,7 @@ export function PausedBar({ pct, elapsed, turns, tokens }: { pct: number | null;
     <div data-testid="worker-paused-bar" className="border-2 border-border-default bg-surface-2 px-4 py-3 md:px-6 md:py-4">
       <div className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-3">
         <span className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted whitespace-nowrap">
-          Paused at <b className="text-text-primary font-semibold">{pct != null ? `${pct}%` : '—'}</b>
+          {pct != null ? <>Paused at <b className="text-text-primary font-semibold">{pct}%</b></> : 'Paused'}
         </span>
         <ProgressCells pct={pct} mode="paused" className="order-last md:order-none basis-full md:basis-auto md:flex-1" />
         <span className="ml-auto font-mono text-[11px] uppercase tracking-[1.5px] text-text-muted whitespace-nowrap tabular-nums">

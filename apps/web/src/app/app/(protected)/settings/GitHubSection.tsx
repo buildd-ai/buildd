@@ -121,6 +121,17 @@ export default function GitHubSection() {
           >
             Connect an org
           </a>
+          <p className="text-xs text-text-secondary mt-4 pt-3 border-t border-border-default">
+            To modify repo access, visit{' '}
+            <a
+              href="https://github.com/settings/installations"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
+              GitHub Settings
+            </a>
+          </p>
         </div>
       ) : (
         <div className="card divide-y divide-border-default">
@@ -164,20 +175,19 @@ export default function GitHubSection() {
               </div>
             </div>
           ))}
+          <p className="p-4 text-xs text-text-secondary">
+            To modify repo access, visit{' '}
+            <a
+              href="https://github.com/settings/installations"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
+              GitHub Settings
+            </a>
+          </p>
         </div>
       )}
-
-      <p className="text-xs text-text-secondary mt-3">
-        To modify repo access, visit{' '}
-        <a
-          href="https://github.com/settings/installations"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary hover:underline"
-        >
-          GitHub Settings
-        </a>
-      </p>
 
       <ConfirmDialog
         open={!!disconnecting}
