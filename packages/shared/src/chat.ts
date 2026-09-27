@@ -9,7 +9,7 @@
  *
  * TODO(P6, docs/design/shared-ai-kit.md): the generic half of this file (tool
  * part states, message parts, approval previews, usage, tool-permission rows)
- * now also lives in `@buildd/ai-kit/chat/contract`, which apps/web imports.
+ * now also lives in `@builddai/ai-kit/chat/contract`, which apps/web imports.
  * It is duplicated here, not re-exported, because installed runners
  * sparse-check-out only `apps/runner/` + `packages/shared/`
  * (apps/runner/install.sh, the self-updater), so a runtime import of the kit

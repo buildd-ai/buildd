@@ -1,5 +1,5 @@
 /**
- * `@buildd/ai-kit/decide`: Jev decisions (server; peer `@typesafe-ai/sdk`).
+ * `@builddai/ai-kit/decide`: Jev decisions (server; peer `@typesafe-ai/sdk`).
  *
  * - Typed question builders: `choice`, `score`, `noul`.
  * - `decide({ apiKey, state, questions })`: one call over the TypeSafe SDK to

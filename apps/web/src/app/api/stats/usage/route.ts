@@ -15,7 +15,7 @@ import {
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 
-const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none', 'executor'];
+const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none', 'executor'];
 
 /** Labels for `groupBy=executor` keys (see `executorOf`). */
 const EXECUTOR_LABELS: Record<string, string> = {
@@ -33,7 +33,7 @@ const EXECUTOR_LABELS: Record<string, string> = {
  * Query params:
  *   window    - "24h" | "7d" | "30d" (default "7d")
  *   workspace - workspaceId filter (optional; must be one the caller can see)
- *   groupBy   - "role" | "workspace" | "executor" | "none" (default "role").
+ *   groupBy   - "role" | "workspace" | "creationSource" | "executor" | "none" (default "role").
  *               "executor" splits workers claimed from an interactive MCP
  *               session (workers.runner = 'mcp') from runner-claimed ones.
  *
@@ -114,7 +114,10 @@ export async function GET(req: NextRequest) {
 
 /**
  * Human labels for group keys: role slugs → role names (+ color, for the health
- * page chips), workspace ids → workspace names.
+ * page chips), workspace ids → workspace names. creationSource keys (dashboard,
+ * api, mcp, ...) are already human-readable, so they're returned as-is by the
+ * route's `labels[g.key] ?? g.key` fallback — looking them up against the roles
+ * table would risk a false-positive match if a role slug ever collided with one.
  */
 async function groupLabels(
   keys: string[],
@@ -128,6 +131,7 @@ async function groupLabels(
     return Object.fromEntries(scopedWorkspaces.map(w => [w.id, w.name]));
   }
   if (groupBy === 'executor') return EXECUTOR_LABELS;
+  if (groupBy === 'creationSource') return {};
 
   const slugs = keys.filter(k => k !== UNASSIGNED_ROLE);
   if (slugs.length === 0) return {};
