@@ -3,12 +3,12 @@
 /**
  * "⋮" on the task page: the admin actions (Edit, Reassign, View Source,
  * Delete) behind one control, so the title has the header to itself
- * (docs/design/mission-feed-mobile-continuity.md W6, addendum D9). Same
- * bottom-sheet mechanism as the mission page's ⋮. The actions are passed in
+ * (docs/design/mission-feed-mobile-continuity.md W6, addendum D9). The same
+ * side sheet as the mission page's ⋮: Edit stacks on top of it with Back. The actions are passed in
  * as children and keep their own confirm/modal logic unchanged.
  */
 import { useState, type ReactNode } from 'react';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 
 /**
  * The sheet is the only route to these actions on mobile, so every button and
@@ -36,9 +36,9 @@ export default function TaskOverflowMenu({ children }: { children: ReactNode }) 
           <rect x="13" y="8" width="3" height="3" />
         </svg>
       </button>
-      <BottomSheet open={open} onClose={() => setOpen(false)} title="Task actions" trapFocus>
+      <SideSheet open={open} onClose={() => setOpen(false)} title="Task actions" testId="task-actions-sheet">
         <div className={TASK_SHEET_ACTIONS_CLASS}>{children}</div>
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }

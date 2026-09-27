@@ -8,7 +8,7 @@
  * milestones and draws edges from what it waited on.
  */
 import { useMemo, useState } from 'react';
-import SlotLanes, { type SlotLane, type SlotLaneBar } from '@/components/fleet/SlotLanes';
+import SlotLanes, { SHORT_FRACTION, type SlotLane, type SlotLaneBar } from '@/components/fleet/SlotLanes';
 import { fitLaneWindowStart, formatAxisMinutes, LANE_WINDOW_MIN_SPAN_MS } from '@/components/fleet/slot-lanes-layout';
 import { formatAge, formatClock, type BoardTask, type MissionBoardModel, type MissionLaneBar } from '@/lib/mission-board';
 import {
@@ -17,6 +17,8 @@ import {
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
+import { describeMissionDuration } from '@/lib/mission-duration';
+import CriteriaCheckNow from './CriteriaCheckNow';
 
 export interface MissionLanesProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -63,14 +65,14 @@ export default function MissionLanes({ model: serverModel, completionText, visua
         tone: b.tone,
         scope: b.scope,
         label: b.label,
-        prefix: b.retry ? '↻' : null,
+        prefix: b.retry ? '↻' : b.tone === 'side' ? '⚑' : null,
         endMark: b.endMark,
         waits: b.waits,
         group: b.taskId,
         deps: b.deps,
         href: taskSheetHref(link, b.taskId),
         linkData: { 'data-task-id': b.taskId },
-        title: model.tasks[b.taskId]?.title,
+        title: [b.kindTitle, model.tasks[b.taskId]?.title ?? b.taskTitle].filter(Boolean).join(' · ') || undefined,
       })),
     }));
   }, [model, link]);
@@ -131,7 +133,7 @@ export default function MissionLanes({ model: serverModel, completionText, visua
         </div>
         <Side model={model} now={now} link={link} completionText={completionText ?? null} shots={visual?.shots ?? null} />
       </div>
-      <Legend />
+      <Legend kinds={legendKinds(model.bars, from, to, now)} />
     </div>
   );
 }
@@ -231,8 +233,10 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
   if (model.complete) {
     const r = model.record;
     const review = shots ? summarizeVisualRun(shots) : null;
-    const stat = (n: string, l: string, cls = 'text-text-primary') => (
-      <div className="flex flex-col gap-[3px]">
+    const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });
+    const unevaluated = !model.criteriaEvaluated && model.criteria.length > 0;
+    const stat = (n: string, l: string, cls = 'text-text-primary', testId?: string) => (
+      <div data-testid={testId} className="flex flex-col gap-[3px]">
         <b className={`font-mono text-[22px] font-semibold tabular-nums ${cls}`}>{n}</b>
         <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.2px] text-text-muted">{l}</span>
       </div>
@@ -255,16 +259,21 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
               review.issues > 0 ? 'text-status-error' : 'text-text-primary',
             )}
             {stat(String(r.decisions), 'your answers', r.decisions ? 'text-accent-text' : 'text-text-primary')}
+            {d.work && stat(d.work, 'of work', 'text-text-primary', 'record-time')}
+            {d.showOpen && stat(d.open, 'open', 'text-text-secondary', 'record-open')}
           </div>
         </div>
-        {sec('Goal criteria', model.criteriaPassed, false, 'lanes-criteria', model.criteria.map((c, i) => (
-          <div key={i} className={row}>
-            <CriterionBox c={c} size={13} />
-            <span className="min-w-0 truncate font-medium text-text-primary">{c.label}</span>
-            <span className="flex-1" />
-            <span className="tabular-nums">{c.value}</span>
-          </div>
-        )))}
+        {sec(unevaluated ? 'Goal criteria · not evaluated' : 'Goal criteria', unevaluated ? model.criteria.length : model.criteriaPassed, false, 'lanes-criteria', <>
+          {unevaluated && <div className="py-2"><CriteriaCheckNow missionId={link.missionId} /></div>}
+          {model.criteria.map((c, i) => (
+            <div key={i} className={row}>
+              <CriterionBox c={c} size={13} />
+              <span className="min-w-0 truncate font-medium text-text-primary">{c.label}</span>
+              <span className="flex-1" />
+              {!(unevaluated && c.state === 'pending') && <span className="tabular-nums">{c.value}</span>}
+            </div>
+          ))}
+        </>)}
       </aside>
     );
   }
@@ -323,18 +332,31 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
   );
 }
 
-function Legend() {
+/** Bar kinds on this chart beyond the everyday ones, so the legend names each one drawn. */
+export function legendKinds(bars: readonly MissionLaneBar[], from: number, to: number, now: number): { short: boolean; side: boolean; stopped: boolean } {
+  const span = Math.max(1, to - from);
+  return {
+    short: bars.some(b => b.end != null && (b.end - b.start) / span < SHORT_FRACTION),
+    side: bars.some(b => b.tone === 'side'),
+    stopped: bars.some(b => b.tone === 'stopped'),
+  };
+}
+
+function Legend({ kinds }: { kinds: { short: boolean; side: boolean; stopped: boolean } }) {
   const sw = 'mr-1.5 inline-block h-2.5 w-3.5 align-[-1px] border-[1.5px]';
   return (
-    <footer className="mt-6 hidden flex-wrap items-center gap-4 border-t border-border-default py-2.5 font-mono text-[11px] text-text-muted md:flex">
+    <footer data-testid="mission-lanes-legend" className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default py-2.5 font-mono text-[11px] text-text-muted">
       <span><i className={`${sw} border-accent bg-accent-soft`} />working</span>
       <span><i className={`${sw} border-border-strong bg-surface-3`} />done</span>
       <span><i className={`${sw} fleet-hatch-accent h-1.5 border border-accent`} />waiting on you</span>
       <span className="text-status-success">✓ merged</span>
       <span className="text-accent-text">◌ in CI</span>
       <span className="text-status-error">✕ CI failed</span>
-      <span><i className={`${sw} border-dashed border-border-strong`} />planning</span>
-      <span className="ml-auto">hover a bar for its milestones · click to open</span>
+      <span><i className={`${sw} border-dashed border-border-strong`} />orchestrator</span>
+      {kinds.short && <span data-legend="short"><i className="mr-1.5 inline-block h-3 w-1.5 align-[-2px] border-[1.5px] border-text-muted bg-text-muted" />run too short to label</span>}
+      {kinds.side && <span data-legend="side"><i className={`${sw} border-dotted border-[var(--fleet-border-mid)]`} />⚑ friction report · not mission work</span>}
+      {kinds.stopped && <span data-legend="stopped"><i className={`${sw} border-status-error`} />stopped or orphaned run</span>}
+      <span className="ml-auto hidden md:inline">hover a bar for its milestones · click to open</span>
     </footer>
   );
 }

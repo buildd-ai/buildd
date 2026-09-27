@@ -48,9 +48,35 @@ describe('MissionBoardHeader', () => {
     expect(html).toContain('Do the example thing.');
   });
 
-  it('reads took once complete', () => {
-    const html = renderToStaticMarkup(<MissionBoardHeader {...base} endedAt={T + 37 * 60_000} />);
+  it('reads took once complete, in readable units', () => {
+    const html = renderToStaticMarkup(<MissionBoardHeader {...base} endedAt={T + 37 * 60_000} activeMs={36 * 60_000} />);
     expect(html).toContain('took ');
-    expect(html).toContain('37:00');
+    expect(html).toContain('36m');
+  });
+
+  it('names work and open time apart when a mission stayed open for weeks', () => {
+    const DAY = 86_400_000;
+    const html = renderToStaticMarkup(<MissionBoardHeader {...base} endedAt={T + 35 * DAY + 3_600_000} activeMs={40 * 60_000} />);
+    const clock = html.split('data-testid="mission-clock"')[1]?.split('</span>')[0] ?? '';
+    expect(clock).toContain('40m');
+    expect(clock).toContain('of work');
+    expect(clock).toContain('open');
+    expect(clock).toContain('35d');
+    expect(html).not.toMatch(/\d{3,}:\d{2}:\d{2}/);
+  });
+
+  it('stops ticking H:MM:SS once a running mission is over a day old', () => {
+    const DAY = 86_400_000;
+    const html = renderToStaticMarkup(<MissionBoardHeader {...base} serverNow={T + 3 * DAY} activeMs={50 * 60_000} />);
+    const clock = html.split('data-testid="mission-clock"')[1]?.split('</span>')[0] ?? '';
+    expect(clock).toContain('50m');
+    expect(clock).toContain('3d');
+    expect(clock).not.toContain('T+');
+  });
+
+  it('shows the full description behind a Description control, not a truncated preamble', () => {
+    const html = renderToStaticMarkup(<MissionBoardHeader {...base} goal="Retry failed webhooks with backoff." description={<p>Full text</p>} />);
+    expect(html).toContain('Retry failed webhooks with backoff.');
+    expect(html).toContain('data-testid="mission-description-open"');
   });
 });

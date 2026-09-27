@@ -29,6 +29,7 @@ import {
 import { deriveWorkKind, LIVE_WORKER_STATUSES } from './task-presentation';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
+import { activeWorkMs, formatDuration } from './mission-duration';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -214,7 +215,14 @@ export interface TickerEvent {
   text: string;
 }
 
-export type LaneBarTone = 'live' | 'done' | 'waiting' | 'plan';
+/**
+ * - `plan`: an orchestrator run (planning, a tick, the closing evaluation).
+ * - `side`: work filed beside the mission that is not a deliverable — a
+ *   `[friction]` report, a bookkeeping task. Never counted as mission work.
+ * - `stopped`: a run that failed or was cancelled without leaving a PR,
+ *   including one orphaned when its runner went away.
+ */
+export type LaneBarTone = 'live' | 'done' | 'waiting' | 'plan' | 'side' | 'stopped';
 
 export interface MissionLaneBar {
   id: string;
@@ -233,6 +241,10 @@ export interface MissionLaneBar {
   endMark: 'ok' | 'fail' | 'ci' | null;
   waits: Array<{ start: number; end: number | null }>;
   deps: string[];
+  /** What this kind of bar is, for its tooltip (`Friction report · …`, `Stopped · …`). */
+  kindTitle?: string | null;
+  /** The run's own task title (a side task has no board row to read it from). */
+  taskTitle?: string;
 }
 
 /**
@@ -259,8 +271,15 @@ export interface MissionBoardModel {
   /** When the mission completed; null while it runs. */
   endedAt: number | null;
   complete: boolean;
-  /** `T+ 11:50` while running, `took 37:00` once complete. */
+  /** `T+ 11:50` while running, `took 37:00` once complete; days past a day (`35d`). */
   clockLabel: string;
+  /**
+   * Wall time some agent was working (plan and deliverable runs, unioned),
+   * to `now` for a live run. Friction and bookkeeping runs are not mission work.
+   */
+  activeMs: number;
+  /** Something evaluated the goal criteria (any verdict on record). */
+  criteriaEvaluated: boolean;
   clockPrefix: 'T+' | 'took';
   phases: BoardPhase[];
   /** Set only while no deliverable exists yet and a planning task does. */
@@ -305,8 +324,9 @@ function epoch(v: unknown): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-/** `11:50` — minutes:seconds under an hour, `h:mm:ss` past it. */
+/** `11:50` — minutes:seconds under an hour, `h:mm:ss` past it, `3d 4h` past a day. */
 export function formatClock(ms: number): string {
+  if (ms >= 86_400_000) return formatDuration(ms);
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600);
   const mm = Math.floor((s % 3600) / 60);
@@ -612,7 +632,11 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   for (const t of input.tasks) {
     const rowId = rowIdFor.get(t.id) ?? null;
     if (rowId && skipped.has(rowId)) continue;
-    const isPlan = !rowId || t.mode === 'planning';
+    const isPlan = t.mode === 'planning';
+    // Not a deliverable and not the orchestrator: a friction report or other
+    // bookkeeping filed beside the mission. It keeps its own kind on the lanes.
+    const isSide = !rowId && !isPlan;
+    const isFriction = /^\[friction\]/i.test(t.title ?? '');
     const retry = !!rowId && rowId !== t.id;
     if (retry && t.ciRetryPrNumber != null) {
       ciFails.push({ at: epoch(t.createdAt) ?? now, pr: t.ciRetryPrNumber, taskId: rowId });
@@ -628,8 +652,12 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       if (start == null || !w.runner) continue;
       const end = live ? null : w.completedAt ?? w.updatedAt ?? start;
       const rowMerged = (rowId ? tasks[rowId] : undefined)?.status === 'merged';
-      const endGlyph: MissionLaneBar['endMark'] = live || isPlan
-        ? null
+      const stopped = !live && (w.status === 'failed' || w.status === 'cancelled') && !w.prNumber;
+      // A run the platform failed later, with no completion of its own: its
+      // runner went away and the bar's end is when someone noticed.
+      const orphaned = stopped && w.completedAt == null;
+      const endGlyph: MissionLaneBar['endMark'] = live || isPlan || isSide
+        ? (isSide && stopped ? 'fail' : null)
         : w.mergedAt || rowMerged || (!w.prNumber && w.status === 'completed' && !retry)
           ? 'ok'
           : w.prLifecycleStatus === 'ci_failed' || w.status === 'failed'
@@ -644,11 +672,19 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
         runnerId: runnerKey(w) ?? w.runner,
         start,
         end,
-        tone: w.status === 'waiting_input' ? 'waiting' : live ? 'live' : isPlan ? 'plan' : 'done',
-        scope: retry ? labelOf.get(rowId!)?.scope ?? lbl.scope : isPlan && t.mode === 'planning' ? null : lbl.scope,
+        tone: w.status === 'waiting_input' ? 'waiting' : live ? 'live' : isPlan ? 'plan' : isSide ? 'side' : stopped ? 'stopped' : 'done',
+        scope: retry ? labelOf.get(rowId!)?.scope ?? lbl.scope : isPlan ? null : lbl.scope,
         // A retry's title repeats its parent's; what it is, is the fix. An
         // orchestrator run's title is the mission's own; it is the plan.
-        label: retry ? (t.ciRetryPrNumber != null ? 'CI fix' : 'retry') : isPlan && t.mode === 'planning' ? 'plan' : lbl.label,
+        label: retry ? (t.ciRetryPrNumber != null ? 'CI fix' : 'retry') : isPlan ? 'plan' : lbl.label,
+        taskTitle: t.title,
+        kindTitle: isSide
+          ? `${isFriction ? 'Friction report' : 'Side task'} · not mission work${orphaned ? ' · run orphaned (its runner went away)' : stopped ? ' · run stopped' : ''}`
+          : isPlan
+            ? 'Orchestrator run'
+            : stopped
+              ? `Stopped · ${orphaned ? 'run orphaned (its runner went away)' : w.status === 'cancelled' ? 'cancelled' : 'failed without a PR'}`
+              : null,
         retry,
         endMark: endGlyph,
         waits: w.status === 'waiting_input' && w.updatedAt != null ? [{ start: w.updatedAt, end: null }] : [],
@@ -720,7 +756,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const tag = (bt: BoardTask) => bt.scope ?? bt.label;
   for (const b of bars) {
     const bt = tasks[b.taskId];
-    if (!bt || b.tone === 'plan') continue;
+    if (!bt || b.tone === 'plan' || b.tone === 'side') continue;
     ticker.push({ kind: 'claimed', at: b.start, taskId: bt.id, text: `${b.retry ? `${tag(bt)} fix` : tag(bt)} → ${runnerDisplay.get(b.runnerId)?.initial ?? b.runner.slice(0, 1).toUpperCase()}` });
     if (b.tone === 'waiting' && b.waits[0]) ticker.push({ kind: 'asked', at: b.waits[0].start, taskId: bt.id, text: `${tag(bt)} asked you` });
   }
@@ -746,10 +782,12 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const complete = input.missionStatus === 'completed';
   const startedAt = input.missionCreatedAt;
   const endAt = complete ? input.missionCompletedAt ?? Math.max(now, ...bars.map(b => b.end ?? now)) : now;
+  // Friction and other side runs are not mission work: not in the peak.
+  const workBars = bars.filter(b => b.tone !== 'side');
   let peak = 0;
-  const edges = bars.flatMap(b => [b.start, b.end ?? endAt]).sort((a, b) => a - b);
+  const edges = workBars.flatMap(b => [b.start, b.end ?? endAt]).sort((a, b) => a - b);
   for (const e of edges) {
-    const n = bars.filter(b => b.start <= e && (b.end ?? endAt) > e).length;
+    const n = workBars.filter(b => b.start <= e && (b.end ?? endAt) > e).length;
     if (n > peak) peak = n;
   }
   const lineRows = rows.map(r => tasks[r.task.id].lines).filter((l): l is NonNullable<typeof l> => !!l);
@@ -783,6 +821,8 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     endedAt: complete ? endAt : null,
     complete,
     clockLabel: formatClock(endAt - startedAt),
+    activeMs: activeWorkMs(bars.filter(b => b.tone !== 'side').map(b => ({ start: b.start, end: b.end ?? (complete ? endAt : now) })), now),
+    criteriaEvaluated: (input.criteriaState ?? []).length > 0,
     clockPrefix: complete ? 'took' : 'T+',
     phases,
     planning,

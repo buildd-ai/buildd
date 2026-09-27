@@ -50,7 +50,8 @@ describe('S3 retirements', () => {
     expect(src).not.toMatch(/import MissionArtifacts\b/);
     expect(src).not.toMatch(/import \{ MissionProgressBar \}/);
     expect(src).toContain('MissionRecordsSheet');
-    expect(src).toContain('MissionDelivery');
+    // The Delivery stepper went with the legacy Feed; the band says what it said.
+    expect(src).not.toContain('<MissionDelivery');
   });
 
   it('F6: the mission page carries no workspace release queue and no Release now trigger', () => {
@@ -58,7 +59,8 @@ describe('S3 retirements', () => {
     expect(grep(['-w', 'ReleaseNowButton'])).toEqual([]);
     expect(src).not.toContain('deriveReleaseNowState');
     expect(src).not.toContain('vercel_token');
-    expect(src).toMatch(/rows=\{\{[\s\S]*?shipped:[\s\S]*?<MissionReleaseSection/);
+    // The Shipped row is a footer row now, fed the Shipped step.
+    expect(src).toMatch(/<MissionReleaseSection step=\{shippedStep\}/);
   });
 
   it('F6: the Shipped link opens the release that carries this mission, not the workspace\'s latest', () => {
@@ -82,9 +84,9 @@ describe('S3 retirements', () => {
     expect(src).not.toContain('feedContent');
   });
 
-  it('F5: the description renders once, under the masthead; Settings only renames', () => {
+  it('F5: the description renders once, behind the header\'s Description; Settings only renames', () => {
     const src = readFileSync(PAGE, 'utf8');
-    expect(src).toMatch(/description=\{\s*<MissionDescription\b/);
+    expect(src).toMatch(/description=\{mission\.description \|\| !isTerminal \? <MissionDescription\b/);
     expect(src.split('<MissionDescription').length - 1).toBe(1);
     // Settings' editor no longer receives the description (or re-renders the title).
     expect(src).not.toMatch(/<MissionInlineEdit[^>]*initialDescription/);

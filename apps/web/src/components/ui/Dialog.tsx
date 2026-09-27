@@ -23,6 +23,13 @@ export type DialogProps = DialogName & {
   children: ReactNode;
 };
 
+/**
+ * The brand shell for a confirmation (a destructive action): square, a 2px
+ * ink border and the hard offset shadow, like every other card.
+ */
+export const BRAND_DIALOG_PANEL =
+  'w-full max-w-[calc(100vw-2rem)] sm:max-w-sm mx-4 border-2 border-border-strong bg-surface-1 shadow-[var(--card-shadow)] outline-none';
+
 const DEFAULT_PANEL =
   'bg-surface-2 rounded-lg shadow-xl w-full max-w-[calc(100vw-2rem)] sm:max-w-sm mx-4 outline-none';
 

@@ -35,7 +35,46 @@ function t(id: string, phase: 1 | 2, over: Partial<BoardTaskInput>): BoardTaskIn
   };
 }
 
-export function boardFixture(moment: 'running' | 'question' | 'complete' | 'planning'): MissionBoardModel {
+const DAY = 24 * 60 * 60_000;
+
+/**
+ * Complete, but open for weeks: two tasks and ~40 minutes of work, a PR that
+ * sat in review for a month, a friction report whose run was orphaned, and
+ * goal criteria nothing evaluated.
+ */
+function longOpenFixture(): MissionBoardModel {
+  const day = (n: number) => BOARD_T0 + n * DAY;
+  const plan = (id: string, at: number) => t(id, 1, {
+    title: 'Mission: Example goal', taskClass: 'bookkeeping', mode: 'planning', status: 'completed', roleSlug: 'organizer',
+    missionPhaseIndex: null, missionPhaseLabel: null, outputRequirement: null,
+    workers: [w({ status: 'completed', startedAt: at, completedAt: at + 60_000 })],
+  });
+  return buildMissionBoard({
+    tasks: [
+      plan('plan', min(0)),
+      t('retry', 1, { status: 'completed', workers: [w({ status: 'completed', startedAt: min(4), completedAt: min(24), prNumber: 201, mergedAt: day(33), linesAdded: 300, linesRemoved: 40 })] }),
+      t('friction', 1, {
+        title: '[friction] no admin API to list parked rows', label: 'no admin API', taskClass: 'bookkeeping', status: 'failed',
+        missionPhaseIndex: null, missionPhaseLabel: null, outputRequirement: null,
+        workers: [w({ runner: 'beta', status: 'failed', startedAt: min(9), completedAt: null, updatedAt: day(5) })],
+      }),
+      plan('tick', day(12)),
+      t('replay', 1, { status: 'completed', dependsOn: ['retry'], workers: [w({ runner: 'beta', status: 'completed', startedAt: day(33) + 10 * 60_000, completedAt: day(33) + 27 * 60_000, prNumber: 202, mergedAt: day(34), linesAdded: 200, linesRemoved: 10 })] }),
+      plan('close', day(35)),
+    ],
+    roles: [{ slug: 'builder', name: 'Builder', color: 'var(--test-role-colour)' }],
+    now: day(35) + 2 * 3_600_000,
+    missionCreatedAt: BOARD_T0,
+    missionCompletedAt: day(35) + 90_000,
+    missionStatus: 'completed',
+    criteria: [{ type: 'all_prs_merged' }, { type: 'no_open_tasks' }, { type: 'description', label: 'an outage drops nothing' }],
+    criteriaState: [],
+    humanTouches: [min(15), day(33) + 19 * 60_000],
+  });
+}
+
+export function boardFixture(moment: 'running' | 'question' | 'complete' | 'planning' | 'long-open'): MissionBoardModel {
+  if (moment === 'long-open') return longOpenFixture();
   if (moment === 'planning') {
     return buildMissionBoard({
       tasks: [t('plan', 1, {

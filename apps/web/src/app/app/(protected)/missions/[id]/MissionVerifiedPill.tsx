@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
-import BottomSheet from '@/components/BottomSheet';
+import SideSheet from '@/components/SideSheet';
 import MissionGoalCriteria from './MissionGoalCriteria';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 
@@ -100,7 +100,7 @@ function MissionVerifiedPillInner({
         >
           + Criteria
         </button>
-        <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
+        <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
           <MissionGoalCriteria
             missionId={missionId}
             criteria={criteria}
@@ -109,7 +109,7 @@ function MissionVerifiedPillInner({
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
           />
-        </BottomSheet>
+        </SideSheet>
       </>
     );
   }
@@ -156,7 +156,7 @@ function MissionVerifiedPillInner({
       >
         {icon ? `${icon} ${text}` : text}
       </button>
-      <BottomSheet open={open} onClose={handleClose} title="Goal criteria">
+      <SideSheet open={open} onClose={handleClose} title="Goal criteria" testId="mission-criteria-sheet">
         <MissionGoalCriteria
           missionId={missionId}
           criteria={criteria}
@@ -165,7 +165,7 @@ function MissionVerifiedPillInner({
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
         />
-      </BottomSheet>
+      </SideSheet>
     </>
   );
 }

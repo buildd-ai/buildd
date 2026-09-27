@@ -590,7 +590,7 @@ export default async function HomePage({
             .slice(0, 1)
             .map(({ view, model }) => ({
               id: view.id, title: view.title, href: view.href, completedAt: view.completedAt!,
-              prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null,
+              prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null, activeMs: model.done?.activeMs ?? null,
               criteria: model.criteria,
             }));
           // The shipped card (and the stat strip) say what the mission's visual

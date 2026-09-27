@@ -22,7 +22,7 @@ import Link from 'next/link';
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { assignSlots, axisFraction, axisTicks, dependencyEdge, formatAxisMinutes, SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from './slot-lanes-layout';
 
-export type SlotLaneTone = 'live' | 'done' | 'waiting' | 'plan' | 'foreign';
+export type SlotLaneTone = 'live' | 'done' | 'waiting' | 'plan' | 'foreign' | 'side' | 'stopped';
 
 export interface SlotLaneBar {
   id: string;
@@ -106,7 +106,7 @@ const OUTSIDE_LABEL_FRACTION = 0.06;
  * start). The label goes beside it, left, when there is room, else into its
  * tooltip.
  */
-const SHORT_FRACTION = 0.1;
+export const SHORT_FRACTION = 0.1;
 /**
  * An open bar younger than this is a claim the runner has not really started:
  * as a bar it would be a sliver under the NOW line with its label floating
@@ -120,6 +120,16 @@ const TONE_CLASS: Record<SlotLaneTone, string> = {
   waiting: 'border-2 border-accent bg-card',
   plan: 'border-dashed border-border-strong bg-transparent',
   foreign: 'border-dashed border-[var(--fleet-border-mid)] bg-transparent',
+  // Filed beside the work (a friction report): dotted, faint, never solid.
+  side: 'border-dotted border-[var(--fleet-border-mid)] bg-transparent',
+  // Failed or cancelled without a PR, or orphaned: an error-toned outline.
+  stopped: 'border-status-error bg-transparent',
+};
+
+/** The short-run tick for a tone that is not "done" work. */
+const TICK_TONE: Partial<Record<SlotLaneTone, string>> = {
+  side: 'border-dotted border-text-muted bg-transparent',
+  stopped: 'border-status-error bg-transparent',
 };
 
 const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
@@ -273,7 +283,7 @@ export default function SlotLanes({
                   {b.endMark && <span className={`ml-auto shrink-0 text-[11px] font-bold ${END_MARK[b.endMark].cls}`}>{END_MARK[b.endMark].glyph}</span>}
                 </>
               );
-              const tickTone = b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted';
+              const tickTone = TICK_TONE[b.tone] ?? (b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted');
               const cls = claimed
                 ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${isActive ? 'shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`
                 : tick
@@ -416,7 +426,7 @@ function BarLabel({ bar }: { bar: SlotLaneBar }): ReactNode {
           {bar.prefix ? `${bar.prefix} ` : ''}{bar.scope ?? ''}
         </span>
       )}
-      <span className={`min-w-0 truncate font-semibold ${bar.tone === 'foreign' ? 'font-medium text-[var(--fleet-faint)]' : 'text-text-primary'}`}>{bar.label}</span>
+      <span className={`min-w-0 truncate font-semibold ${bar.tone === 'foreign' || bar.tone === 'side' ? 'font-medium text-[var(--fleet-faint)]' : bar.tone === 'stopped' ? 'font-medium text-text-secondary' : 'text-text-primary'}`}>{bar.label}</span>
     </>
   );
 }

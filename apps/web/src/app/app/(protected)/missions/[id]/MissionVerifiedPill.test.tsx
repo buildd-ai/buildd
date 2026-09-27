@@ -25,7 +25,7 @@ mock.module('@buildd/core/mission-helpers', () => ({
   },
 }));
 
-mock.module('@/components/BottomSheet', () => ({
+mock.module('@/components/SideSheet', () => ({
   default: ({ open, onClose, title, children }: any) =>
     open ? `<div role="dialog" aria-label="${title}">${children}</div>` : null,
 }));

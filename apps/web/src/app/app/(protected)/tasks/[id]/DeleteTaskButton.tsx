@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Dialog, { BRAND_DIALOG_PANEL } from '@/components/ui/Dialog';
 
 interface Props {
   taskId: string;
@@ -52,14 +53,18 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
         Delete
       </button>
 
-      {showConfirm && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={(e) => e.target === e.currentTarget && setShowConfirm(false)}
-        >
-          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-semibold mb-2">Delete task?</h3>
-            <p className="text-text-secondary text-sm mb-4">
+      {/* Destructive: a confirmation dialog, not a sheet — in the brand's square, ink-bordered shell. */}
+      <Dialog
+        open={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        labelledBy="delete-task-title"
+        describedBy="delete-task-body"
+        dismissible={!loading}
+        className={BRAND_DIALOG_PANEL}
+      >
+          <div className="p-5">
+            <h3 id="delete-task-title" className="mb-2 font-mono text-[15px] font-semibold text-text-primary">Delete task?</h3>
+            <p id="delete-task-body" className="text-text-secondary text-sm mb-4">
               This deletes the task and its history. You can’t undo it.
             </p>
 
@@ -86,8 +91,7 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
               </button>
             </div>
           </div>
-        </div>
-      )}
+      </Dialog>
     </>
   );
 }

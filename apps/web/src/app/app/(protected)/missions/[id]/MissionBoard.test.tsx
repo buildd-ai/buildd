@@ -238,3 +238,36 @@ describe('MissionBoard — visual review', () => {
     expect(html).not.toContain('data-testid="record-screens"');
   });
 });
+
+describe('MissionBoard — complete, open for weeks', () => {
+  const html = render('long-open', { completionText: 'Webhooks now retry for a day, then park.' });
+  const record = html.split('data-testid="mission-completion-record"')[1]?.split('</section>')[0] ?? '';
+
+  it('the completion record is one compact card: the summary, then the numbers in a row', () => {
+    expect(record).toContain('Webhooks now retry for a day, then park.');
+    expect(record).toContain('data-testid="record-stats"');
+    // No big label-only block beside the stats.
+    expect(html).not.toMatch(/data-testid="mission-completion-record" class="[^"]*grid-cols-\[1\.4fr_1fr\]/);
+  });
+
+  it('the record names work time and open time in readable units', () => {
+    const time = record.split('data-testid="record-time"')[1] ?? '';
+    expect(time).toContain('40m');
+    expect(time).toContain('open 35d');
+  });
+
+  it('says once that nothing evaluated the criteria, with Check now, instead of per-row noise', () => {
+    const goal = html.split('data-testid="goal-band"')[1]?.split('data-testid="fleet-band"')[0] ?? '';
+    expect(count(goal, 'Criteria not evaluated')).toBe(1);
+    expect(goal).toContain('data-testid="criteria-check-now"');
+    expect(goal).not.toContain('not checked');
+  });
+
+  it('the agents-over-time axis reads in days, with a handful of ticks', () => {
+    const conc = html.split('data-testid="mission-concurrency"')[1] ?? '';
+    const ticks = [...conc.matchAll(/data-testid="concurrency-tick"/g)].length;
+    expect(ticks).toBeGreaterThan(1);
+    expect(ticks).toBeLessThanOrEqual(12);
+    expect(conc).toMatch(/>\d+d</);
+  });
+});

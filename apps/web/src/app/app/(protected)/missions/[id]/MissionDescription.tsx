@@ -41,17 +41,20 @@ export default function MissionDescription({
   missionId,
   initialDescription,
   readonly = false,
+  defaultExpanded = false,
 }: {
   missionId: string;
   initialDescription: string | null;
   /** Terminal missions show the description but do not offer editing. */
   readonly?: boolean;
+  /** Open in full (the header's Description sheet), not collapsed behind Show more. */
+  defaultExpanded?: boolean;
 }) {
   const [description, setDescription] = useState((initialDescription ?? '').trim());
   const [draft, setDraft] = useState(description);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [error, setError] = useState<string | null>(null);
   // Re-sync after a server refresh (MissionAutoRefresh) — but never under an
   // open draft; a prop that changes mid-edit is picked up once editing ends.
