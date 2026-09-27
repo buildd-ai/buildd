@@ -18,6 +18,7 @@ import { ToolCallGroup } from './ToolCallRows';
 import { ObjectsSegment } from './objects/registry';
 import TurnFeedback from './TurnFeedback';
 import { intentTag, thinkingSteps, type ThinkingStep } from './thinking-model';
+import WatchNotice from './WatchNotice';
 
 export interface ChatAgent {
   name: string;
@@ -58,6 +59,8 @@ function Segment({ seg }: { seg: FeedSegment }) {
       return <ApprovalCard part={seg.part} />;
     case 'objects':
       return <ObjectsSegment refs={seg.refs} />;
+    case 'watch':
+      return <WatchNotice text={seg.text} notice={seg.notice} />;
     case 'event':
       return (
         <div data-testid="feed-event" data-event={seg.event} className="flex items-center gap-2 font-mono text-[12px] text-text-secondary">

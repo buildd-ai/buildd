@@ -160,6 +160,8 @@ const LABELS: Record<string, string> = {
   create_artifact: 'New artifact',
   trigger_release: 'Start release',
   memory_delete: 'Delete memory',
+  watch: 'Tell me when',
+  unwatch: 'Stop watching',
 };
 
 /** "New mission": what the card is, never the tool it runs through. */

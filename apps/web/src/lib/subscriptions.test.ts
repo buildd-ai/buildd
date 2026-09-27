@@ -329,3 +329,52 @@ describe('expiry by time', () => {
     expect(() => resolveExpiresAt({ lifetime: 'one_shot', expiresAt: new Date(now.getTime() - 1) }, now)).toThrow(/future/);
   });
 });
+
+// ── The origin conversation's record ────────────────────────────────────────
+
+describe('listUnpostedForConversation: what the origin conversation still has to show', () => {
+  const CONV = '66666666-6666-4666-8666-666666666666';
+  it('is the person\'s own watches from this conversation, pending or delivered by any route, not yet posted', async () => {
+    const { listUnpostedForConversationSql } = await import('./subscriptions');
+    const r = render(listUnpostedForConversationSql({ userId: USER }, CONV, 50));
+    const q = r.sql.replace(/\s+/g, ' ');
+    expect(q).toContain('s."owner_user_id" = $1::uuid');
+    expect(q).toContain('s."conversation_id" = $2::uuid');
+    expect(r.params.slice(0, 2)).toEqual([USER, CONV]);
+    expect(q).toContain(`d."status" in ('pending', 'delivered')`);
+    // Posted once: the event message's id is the ledger row id.
+    expect(q).toContain('not exists (select 1 from "conversation_messages" m where m."id" = d."id")');
+  });
+
+  it('a one-shot posts its first row only, and a cancelled watch posts nothing more', async () => {
+    const { listUnpostedForConversationSql } = await import('./subscriptions');
+    const q = text(listUnpostedForConversationSql({ userId: USER }, CONV, 50));
+    expect(q).toContain(`(s."ended_at" is null or s."end_reason" = 'delivered')`);
+    expect(q).toContain(`s."lifetime" = 'standing' or d."id" = ( select d2."id"`);
+    expect(q).toContain('order by (d2."status" = \'delivered\') desc, d2."created_at" asc');
+  });
+
+  it('clamps the page size', async () => {
+    const { listUnpostedForConversation } = await import('./subscriptions');
+    const { calls, exec } = recorder([]);
+    await listUnpostedForConversation({ userId: USER }, CONV, { exec, limit: 10_000 });
+    expect(render(calls[0]).params).toContain(200);
+  });
+});
+
+describe('conversationOwnersSql: who the watch-pending flag goes to', () => {
+  const SUB_A = '88888888-8888-4888-8888-888888888888';
+  const SUB_B = '99999999-9999-4999-8999-999999999999';
+  it('is exactly these subscriptions, person owners only, and only watches that post into a conversation', async () => {
+    const { conversationOwnersSql } = await import('./subscriptions');
+    const r = render(conversationOwnersSql([SUB_A, SUB_B]));
+    const q = r.sql.replace(/\s+/g, ' ');
+    expect(q).toContain('select distinct s."owner_user_id" as "userId" from "subscriptions" s');
+    expect(q).toContain('s."id" in ($1::uuid, $2::uuid)');
+    expect(r.params).toEqual([SUB_A, SUB_B]);
+    // Each scoping predicate is load-bearing: an agent-owned watch or one with
+    // no origin conversation has no open tab to wake.
+    expect(q).toContain('s."owner_user_id" is not null');
+    expect(q).toContain('s."conversation_id" is not null');
+  });
+});

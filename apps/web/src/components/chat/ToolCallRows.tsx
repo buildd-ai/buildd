@@ -30,7 +30,10 @@ function json(v: unknown): string {
   }
 }
 
-/** `label` replaces the tool name and action (a decided approval reads "New mission"). */
+/**
+ * `label` replaces the tool name and action (a decided approval reads "New mission").
+ * Chat v3: square, a 1px rule on the chat surface (docs/design/chat-canvas.md).
+ */
 export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRowView; note?: string | null; label?: string; flush?: boolean }) {
   const [open, setOpen] = useState(false);
   const mark = MARK[view.state];
@@ -41,13 +44,13 @@ export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRo
       data-testid="tool-call-row"
       data-state={view.state}
       data-tool={view.name}
-      className={`${flush ? '' : 'overflow-hidden rounded-[12px] bg-[var(--convo-soft)]'} ${live ? '!bg-[var(--accent-soft)]' : ''}`}
+      className={`${flush ? '' : 'overflow-hidden border border-[var(--chat-rule)] bg-[var(--chat-surface)]'} ${live ? '!bg-[var(--accent-soft)]' : ''}`}
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
-        className="flex min-h-11 md:min-h-9 w-full min-w-0 items-center gap-2.5 px-3.5 py-1.5 text-left font-mono text-[12.5px] hover:bg-[var(--convo-soft)]"
+        className="flex min-h-11 md:min-h-9 w-full min-w-0 items-center gap-2.5 px-3.5 py-1.5 text-left font-mono text-[12.5px] hover:bg-[var(--chat-raised)]"
       >
         <span aria-label={mark.label} className={`w-3 shrink-0 text-center font-semibold ${mark.cls}`}>{mark.glyph}</span>
         <span className={`shrink-0 font-semibold ${live ? 'text-accent-text' : 'text-text-primary'}`}>{label ?? view.name}</span>
@@ -67,14 +70,14 @@ export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRo
         <span aria-hidden="true" className={`ml-auto shrink-0 text-text-muted transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
       </button>
       {open && (
-        <div data-testid="tool-call-raw" className="grid gap-2 border-t border-[var(--convo-line)] px-3.5 py-2.5 font-mono text-[11.5px]">
+        <div data-testid="tool-call-raw" className="grid gap-2 border-t border-[var(--chat-rule)] px-3.5 py-2.5 font-mono text-[11.5px]">
           <div>
             <div className="section-label !text-[11px] mb-1">Input</div>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[8px] bg-[var(--convo-soft)] p-2 text-text-secondary">{json(view.input)}</pre>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] border border-[var(--chat-rule)] bg-[var(--chat-ground)] p-2 text-text-secondary">{json(view.input)}</pre>
           </div>
           <div>
             <div className="section-label !text-[11px] mb-1">{view.state === 'failed' ? 'Error' : 'Output'}</div>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[8px] bg-[var(--convo-soft)] p-2 text-text-secondary">{view.state === 'failed' ? view.errorText ?? '—' : json(view.output)}</pre>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] border border-[var(--chat-rule)] bg-[var(--chat-ground)] p-2 text-text-secondary">{view.state === 'failed' ? view.errorText ?? '—' : json(view.output)}</pre>
           </div>
         </div>
       )}
@@ -90,12 +93,12 @@ export function ToolCallGroup({ calls }: { calls: readonly ChatToolPart[] }) {
   if (views.length === 1) return <ToolCallRow view={views[0]} />;
   const tail = summary.running > 0 ? `${summary.running} running` : summary.failed > 0 ? `${summary.failed} failed` : null;
   return (
-    <div data-testid="tool-call-group" className="overflow-hidden rounded-[12px] bg-[var(--convo-soft)]">
+    <div data-testid="tool-call-group" className="overflow-hidden border border-[var(--chat-rule)] bg-[var(--chat-surface)]">
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
-        className={`flex min-h-11 md:min-h-9 w-full items-center gap-2 px-3.5 font-mono text-[11.5px] text-text-muted hover:text-text-primary ${open ? 'border-b border-[var(--convo-line)]' : ''}`}
+        className={`flex min-h-11 md:min-h-9 w-full items-center gap-2 px-3.5 font-mono text-[11.5px] text-text-muted hover:text-text-primary ${open ? 'border-b border-[var(--chat-rule)]' : ''}`}
       >
         <span className="font-semibold text-text-secondary">{`${summary.count} tool calls`}</span>
         {summary.readOnly && <span>· read-only</span>}
@@ -103,7 +106,7 @@ export function ToolCallGroup({ calls }: { calls: readonly ChatToolPart[] }) {
         <span aria-hidden="true" className={`ml-auto transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
       </button>
       {open && (
-        <div className="divide-y divide-[var(--convo-line)]">
+        <div className="divide-y divide-[var(--chat-rule)]">
           {views.map(v => <ToolCallRow key={v.id} view={v} flush />)}
         </div>
       )}
