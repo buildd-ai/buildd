@@ -362,7 +362,7 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
     return { ok: false, error: { kind: 'capability_disabled', capability: params.capability } };
   }
 
-  const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId);
+  const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId, 'chat');
   const provider = entry.provider;
 
   if (provider !== 'anthropic' && provider !== 'openrouter') {

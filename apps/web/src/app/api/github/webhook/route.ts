@@ -23,7 +23,7 @@ import {
 } from '@/lib/review-feedback';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
+import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -1172,6 +1172,12 @@ async function handlePullRequestEvent(event: {
         console.error(
           `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
           + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
+        );
+        // Console-only was the silence the comment above already names: a
+        // no-op for every reason but the two that can recur forever with no
+        // self-correction (see `noteMissionPrOpenFailure`).
+        noteMissionPrOpenFailure(worker.task.missionId, opened).catch(e =>
+          console.error(`[webhook] mission PR failure note failed for ${worker.task!.missionId}:`, e),
         );
       }
     }

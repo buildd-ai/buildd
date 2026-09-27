@@ -20,6 +20,7 @@ import type { ClaimTasksResponse, PendingCredentialRefresh } from '@buildd/share
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveClaudeCredential } from '@/lib/claude-credential';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -49,9 +50,8 @@ export async function attachServerManagedSecrets(
       if (task?.backend === 'codex') continue;
 
       const workerSecrets = await db.query.secrets.findMany({
-        where: and(
-          eq(secrets.teamId, workspaceTeamId),
-          inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
+        where: teamCredentialWhere(
+          { teamId: workspaceTeamId, purpose: ['anthropic_api_key', 'oauth_token', 'mcp_credential'] },
           or(
             isNull(secrets.accountId),
             eq(secrets.accountId, accountId),

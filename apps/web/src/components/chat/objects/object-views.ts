@@ -57,6 +57,9 @@ export interface TaskObjectView {
     prUrl: string | null;
     mergedAt: number | null;
     prLifecycleStatus: string | null;
+    /** The Steer canvas's "turn N" and freshness — worker.turns and worker.updatedAt. */
+    turns: number;
+    updatedAt: number | null;
   } | null;
   /** The task page's Now strip state (deriveNow over the live worker's milestones); null unless live. */
   now: NowState | null;

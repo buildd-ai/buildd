@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { isUuid } from '@/lib/uuid';
 
 // POST /api/tasks/[id]/notes/[noteId]/reply — reply to a question note on a task
 export async function POST(
@@ -13,6 +14,12 @@ export async function POST(
   { params }: { params: Promise<{ id: string; noteId: string }> },
 ) {
   const { id, noteId } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid task id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
+  if (!isUuid(noteId)) {
+    return NextResponse.json({ error: `Invalid note id: expected a UUID, got "${noteId}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

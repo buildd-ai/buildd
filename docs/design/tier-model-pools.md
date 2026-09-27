@@ -1,6 +1,7 @@
 # Tier model pools
 
-**Status:** Proposed
+**Status:** Proposed (P1 partly built; amended by `docs/design/tier-weights.md`)
+**Amended by:** `docs/design/tier-weights.md` supersedes §3's split shares and per-pool bounds, §3's auto-challenger trigger (now family succession), §6's auto-shift bounds, the bound columns in §8, and the share inputs in §9. Where the two disagree, `tier-weights.md` wins.
 **Related:** `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/model-catalog.ts`, `packages/core/model-capability-requirements.ts`, `packages/core/experiment-randomizer.ts`, `packages/core/experiment-readout.ts`, `packages/core/model-routing-experiment.ts`, `packages/core/model-routing-experiment-source.ts`, `packages/core/decision-client.ts`, `packages/core/inference-client.ts`, `packages/core/inference-keys.ts`, `packages/core/inference-policy.ts`, `packages/core/oauth-budget.ts`, `packages/core/db/schema.ts` (`modelTierRegistry`, `experiments`, `experimentAssignments`, `taskOutcomes`, `userFeedback`, `reviewFeedback`, `conversationMessages`, `conversationApprovals`), `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/tier-mapping.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/model-tiers/route.ts`, `apps/web/src/app/api/feedback/route.ts`, `apps/web/src/app/app/(protected)/settings/models/`, `cron-manifest.json`, `docs/design/model-tiers.md`, `docs/design/model-routing-experiment.md`, `docs/design/experiment-lifecycle.md`, `docs/design/decision-calls.md`, `docs/design/agent-chat.md`, `docs/design/inference-calls-primitive.md`
 
 ---
@@ -119,9 +120,11 @@ route ∈ anthropic | openai | openrouter      -- API keys: chat and quick calls
   part of what the arm measures (latency, price, provider errors). If an arm's
   route has no key for the acting user, the turn serves the incumbent and
   records `served = false`.
-- **Incumbent = the registry row.** The incumbent arm of both pools of a tier
-  is the existing `model_tier_registry` entry, served on each surface's native
-  route. Adding the first challenger **pins the incumbent** if the tier was on
+- **Incumbent = the registry row.** Each pool's incumbent is the
+  `model_tier_registry` entry its surface resolves to, served on that
+  surface's native route. A tier with only a shared row (surface NULL) gives
+  both pools the same incumbent; a split tier gives each pool its own
+  (docs/design/model-tiers.md, "Per-surface rows"). Adding the first challenger **pins the incumbent** if the tier was on
   the catalog's auto pick. A baseline that self-heals to a new model mid-test
   would contaminate every comparison against it.
 - **Pool size: 1 to 4 arms.** Enforced at the write boundary with a
@@ -160,8 +163,13 @@ No key: OpenAI       [Add key]
 | Mode | Arms | Who sets shares | Default |
 |---|---|---|---|
 | `pinned` | 1 | nobody; 100% | **every tier today** |
-| `split` | 2–4 | admin types shares; buildd suggests | |
-| `explore` | 2–4 | cron proposes; admin applies, or auto-shift applies within bounds | |
+| `split` | 2–4 | admin sets a weight per arm (`off`/`low`/`med`/`high`); buildd normalizes to shares (*amended: `tier-weights.md` §1*) | |
+| `explore` | 2–4 | buildd applies within internal policy bounds; choosing explore is the auto-shift opt-in (*amended: `tier-weights.md` §3*) | |
+
+> **Superseded by `tier-weights.md` §1 and §3.** Split has no bounds (the
+> admin's weights are final). Explore uses the learning share, stage table and
+> incumbent floor 0.20 in code (`EXPLORE_POLICY`), not per-pool settings. The
+> list below is kept for history.
 
 Per-pool bounds, all admin-editable:
 
@@ -183,7 +191,9 @@ clamp the incumbent to `≥ incumbentFloor`, cap challengers' sum at
 prior is its last 30 days of graded outcomes on the same pool, so a
 challenger has to beat real history, not a flat prior.
 
-**Auto-challenger (P3, opt-in).** When the catalog shows an in-band release
+**Auto-challenger (P3, opt-in).** *Amended: `tier-weights.md` §4b makes the
+trigger a family successor (`modelFamily`, version tuple, `created` day), adds
+the old arm's decay, and adds OpenRouter rankings as a weak prior (§4a).* When the catalog shows an in-band release
 newer than every arm, from a route the pool can serve (keys for chat;
 `makeCatalogServabilityCheck` for runners), and the pool has fewer than four
 arms, the cron adds it at `challengerMin`. Bounds: one auto-challenger per
@@ -437,7 +447,9 @@ Below that, the arm shows `learning n/30` and the readout verdict is
 - **Never a silent switch.** Every change row notifies the team's admins
   through the existing notify rules. Auto-shift batches into one daily digest
   per team. The tier screen shows the last change on each pool.
-- **Auto-shift bounds (P3, opt-in per pool).** It may move shares only among
+- **Auto-shift bounds (P3, opt-in per pool).** *Superseded by
+  `tier-weights.md` §3: explore is the opt-in, and its bounds are the stage
+  table there.* It may move shares only among
   challengers and between the incumbent and challengers inside
   `[incumbentFloor, 1]`; at most `maxStep` per arm per day; only past the §5e
   minimum; never promote; never add an arm except the auto-challenger.
@@ -488,6 +500,8 @@ tier_pools                                  -- one per (team, workspace?, tier, 
   allocation jsonb {armId: share}           -- current, applied
   allocation_version int
   incumbent_floor real 0.6, exploration_cap real 0.3, challenger_min real 0.05, max_step real 0.1
+                                            -- amended: unread after tier-weights W3/W7, dropped in W11;
+                                            -- tier-weights adds weights jsonb {armId: level}
   cost_weight real 0.1, latency_weight real 0.05
   challenger_daily_cap numeric NULL, auto_challenger bool false, auto_shift bool false
   frozen_at, frozen_by, created_at, updated_at
@@ -557,7 +571,7 @@ keys move to a compact strip at the top (route, last four, status) with the
 full cards one tap away.
 
 - **Tier list.** One row per tier per section. Each row lists its arms with
-  traffic %, win rate (share of graded units with severity `none`), severity
+  a weight control and the computed traffic % (*amended: `tier-weights.md` §6*), win rate (share of graded units with severity `none`), severity
   mix as a four-segment bar, and cost per 1k units. A suggestion sits inline
   on the row it concerns: the one-line evidence, then `[Shift traffic]
   [Dismiss]`. No explanatory paragraphs; the mode chip (`pinned` / `split` /
@@ -592,7 +606,8 @@ Load-bearing piece first.
    type); approval `edited` flag.
 5. The cron's resolve, deterministic grade and stats steps. No Jev yet.
 6. The rebuilt screen: tier list, picker, detail, manual split, audit log,
-   freeze. Suggestions in P1 are readout-based only (Newcombe on `q`).
+   freeze. (*Split by weights and the rest of P2/P3 are re-planned as W1–W12
+   in `tier-weights.md`.*) Suggestions in P1 are readout-based only (Newcombe on `q`).
 
 **P2: explore and Jev.**
 

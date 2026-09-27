@@ -55,6 +55,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       columns: {
         id: true, status: true, runner: true, startedAt: true, completedAt: true, currentAction: true,
         waitingFor: true, prNumber: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, milestones: true,
+        turns: true, updatedAt: true,
       },
     }),
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as { teamId?: string } | null)?.teamId, slug: task.roleSlug }),
@@ -94,6 +95,8 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       prUrl: latest.prUrl ?? null,
       mergedAt: epoch(latest.mergedAt),
       prLifecycleStatus: latest.prLifecycleStatus ?? null,
+      turns: latest.turns,
+      updatedAt: epoch(latest.updatedAt),
     } : null,
     now,
     renderedAt,

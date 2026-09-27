@@ -358,7 +358,7 @@ export function DoneMissionRows({ items }: { items: ReadonlyArray<{ view: Missio
             >
               {view.title}
             </Link>
-            <span className="hidden truncate md:block">{meta || '—'}</span>
+            <span className="hidden truncate md:block">{meta}</span>
             <span className="hidden h-2 gap-[2px] md:flex" aria-hidden="true">
               {Array.from({ length: Math.min(view.total, 16) }, (_, i) => (
                 <i key={i} className="flex-1 bg-status-success" />

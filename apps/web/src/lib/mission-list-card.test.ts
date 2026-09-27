@@ -204,7 +204,7 @@ describe('shortDuration', () => {
     expect(shortDuration(5 * 3600_000)).toBe('5h');
     expect(shortDuration(3 * 86_400_000)).toBe('3d');
     expect(shortDuration(24 * 3600_000)).toBe('1d');
-    expect(shortDuration(null)).toBe('—');
+    expect(shortDuration(null)).toBe('');
   });
 });
 

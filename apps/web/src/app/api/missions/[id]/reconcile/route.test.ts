@@ -25,8 +25,8 @@ mock.module('@buildd/core/db', () => ({
 
 import { POST } from './route';
 
-function callHandler(url = 'http://localhost:3000/api/missions/m1/reconcile') {
-  return POST(new NextRequest(url, { method: 'POST' }), { params: Promise.resolve({ id: 'm1' }) });
+function callHandler(url = 'http://localhost:3000/api/missions/ffffffff-ffff-4fff-8fff-ffffffffffff/reconcile', id = 'ffffffff-ffff-4fff-8fff-ffffffffffff') {
+  return POST(new NextRequest(url, { method: 'POST' }), { params: Promise.resolve({ id }) });
 }
 
 beforeEach(() => {
@@ -48,6 +48,15 @@ describe('POST /api/missions/[id]/reconcile', () => {
     expect((await callHandler()).status).toBe(401);
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u1' });
+    const url = 'http://localhost:3000/api/missions/a1b2c3d4/reconcile';
+    const res = await callHandler(url, 'a1b2c3d4');
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when the mission is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u1' });
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -56,14 +65,14 @@ describe('POST /api/missions/[id]/reconcile', () => {
 
   it('returns 404 for a mission on another team with a non-open workspace', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'm1', teamId: 'team-other', workspaceId: 'ws1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', teamId: 'team-other', workspaceId: 'ws1' });
     mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'restricted' });
     expect((await callHandler()).status).toBe(404);
   });
 
   it('reports the corrections it made', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'm1', teamId: 'team-1', workspaceId: 'ws1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', teamId: 'team-1', workspaceId: 'ws1' });
     mockReconcile.mockResolvedValue({
       checked: 3,
       fixes: [
@@ -89,11 +98,11 @@ describe('POST /api/missions/[id]/reconcile', () => {
 
   it('honours ?dryRun=true', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u1' });
-    mockMissionsFindFirst.mockResolvedValue({ id: 'm1', teamId: 'team-1', workspaceId: 'ws1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', teamId: 'team-1', workspaceId: 'ws1' });
 
-    const res = await callHandler('http://localhost:3000/api/missions/m1/reconcile?dryRun=true');
+    const res = await callHandler('http://localhost:3000/api/missions/ffffffff-ffff-4fff-8fff-ffffffffffff/reconcile?dryRun=true');
     expect(res.status).toBe(200);
     expect((await res.json()).dryRun).toBe(true);
-    expect(mockReconcile).toHaveBeenCalledWith('m1', { dryRun: true });
+    expect(mockReconcile).toHaveBeenCalledWith('ffffffff-ffff-4fff-8fff-ffffffffffff', { dryRun: true });
   });
 });

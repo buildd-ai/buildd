@@ -28,12 +28,13 @@
  */
 import { hashUnitInterval } from './experiment-randomizer';
 import { isReviewerTask } from './experiment-lineage';
-import type { Tier } from './model-tier-defaults';
+import type { Tier, TierSurface } from './model-tier-defaults';
+import { TIER_SURFACES } from './model-tier-defaults';
 
 export const TIER_POOL_EXPERIMENT_KIND = 'tier_pool' as const;
 
-export type PoolSurface = 'agent' | 'chat';
-export const POOL_SURFACES: readonly PoolSurface[] = ['agent', 'chat'];
+export type PoolSurface = TierSurface;
+export const POOL_SURFACES: readonly PoolSurface[] = TIER_SURFACES;
 
 export type PoolMode = 'pinned' | 'split' | 'explore';
 
@@ -63,8 +64,9 @@ export function tierAllowsPool(tier: string): tier is Exclude<Tier, 'premium-plu
 }
 
 /**
- * The incumbent's route on a surface, from the registry row's provider. Agent
- * runs go through runner credentials; chat uses the provider's API key.
+ * The incumbent's route on a surface, from the provider of the registry row
+ * that surface resolves to (its own row when the tier is split). Agent runs go
+ * through runner credentials; chat uses the provider's API key.
  */
 export function incumbentRoute(surface: PoolSurface, provider: string): ArmRoute {
   if (surface === 'agent') return provider === 'openai-codex' || provider === 'openai' ? 'runner:codex' : 'runner:claude';
@@ -262,7 +264,7 @@ export interface PoolEligibilityInput {
 export function poolEligibility(input: PoolEligibilityInput): { eligible: true } | { eligible: false; reason: PoolIneligibleReason } {
   const no = (reason: PoolIneligibleReason) => ({ eligible: false as const, reason });
   if (!tierAllowsPool(input.tier)) return no('tier_excluded');
-  if (input.mode !== 'split' || input.frozen) return no('pool_not_split');
+  if (!poolTakesDraws(input.mode, input.frozen)) return no('pool_not_split');
   if (input.workspaceSensitive) return no('sensitive_workspace');
   if (input.workspaceOverride) return no('workspace_override');
   if (input.explicitModel) return no('explicit_model');
@@ -273,6 +275,11 @@ export function poolEligibility(input: PoolEligibilityInput): { eligible: true }
     return no('budget_pressure');
   }
   return { eligible: true };
+}
+
+/** Split and explore pools draw; pinned and frozen pools serve the incumbent. */
+export function poolTakesDraws(mode: PoolMode, frozen: boolean): boolean {
+  return (mode === 'split' || mode === 'explore') && !frozen;
 }
 
 /** A role floor names a tier, not a model, so it does not pin one. */

@@ -53,6 +53,40 @@ export function useHideNeedsInputWhileOpen(taskId: string | null | undefined): v
   useEffect(() => (taskId ? hideNeedsInputFor(taskId) : undefined), [taskId]);
 }
 
+// ── Phone suppression ───────────────────────────────────────────────────────
+// The phone chat canvas in needs-you mood says what waits on the viewer in its
+// hero and copper row; the banner above it would only repeat it, in a third
+// accent colour. While a surface holds this, the banner hides below md.
+
+let phoneHolds = 0;
+
+/** Hide the banner on a phone until the returned release is called (idempotent, counted). */
+export function hideNeedsInputBannerOnPhone(): () => void {
+  phoneHolds += 1;
+  publish();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    phoneHolds = Math.max(0, phoneHolds - 1);
+    publish();
+  };
+}
+
+export function phoneBannerHiddenSnapshot(): boolean {
+  return phoneHolds > 0;
+}
+
+/** Whether the banner should hide on a phone right now. */
+export function usePhoneBannerHidden(): boolean {
+  return useSyncExternalStore(subscribeHiddenNeedsInput, phoneBannerHiddenSnapshot, phoneBannerHiddenSnapshot);
+}
+
+/** While mounted and `active`, the banner hides on a phone. */
+export function useHideNeedsInputBannerOnPhone(active: boolean): void {
+  useEffect(() => (active ? hideNeedsInputBannerOnPhone() : undefined), [active]);
+}
+
 /** The waiting tasks the banner may name: the hidden ones dropped, order kept. */
 export function bannerTasks<T extends { id: string }>(tasks: readonly T[], hidden: ReadonlySet<string>): readonly T[] {
   if (hidden.size === 0) return tasks;

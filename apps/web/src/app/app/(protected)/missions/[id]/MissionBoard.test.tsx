@@ -14,6 +14,7 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
 const { toVisualShots } = await import('@/lib/mission-visual-review');
+const { CanvasContext } = await import('@/components/chat/canvas-context');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
   renderToStaticMarkup(<MissionBoard model={boardFixture(moment)} missionId="mission-1" {...extra} />);
@@ -84,6 +85,25 @@ describe('MissionBoard — planning (no tasks yet)', () => {
     expect(html).toContain('Organizer is planning');
     expect(html).toContain('Mapped the example tables');
     expect(html).toContain('alpha');
+  });
+
+  it('Landed reads as an empty state until there are tasks, not "0 of 0"', () => {
+    const landed = html.split('data-testid="landed-band"')[1]?.split('data-testid="goal-band"')[0] ?? '';
+    expect(landed).not.toContain('of 0');
+    expect(landed).toContain('data-testid="landed-empty"');
+    expect(landed).not.toMatch(/>\s*[-\u2013\u2014]\s*</);
+  });
+});
+
+describe('MissionBoard — band alignment', () => {
+  const html = render('running');
+
+  // The Goal label sat inside an inline <a>, whose line box (body font) pushed
+  // it below Landed / Fleet / Needs you. The link must be a flex box like the cells.
+  it('the Goal label link is a flex box, so its label shares the other cells\' baseline', () => {
+    const goal = html.split('data-testid="goal-band"')[1] ?? '';
+    const cls = goal.match(/<a href="#[^"]*" class="([^"]*)"/)?.[1] ?? '';
+    expect(cls.split(/\s+/)).toContain('flex');
   });
 });
 
@@ -174,10 +194,15 @@ describe('MissionBoard — compact (docked pane / phone sheet)', () => {
     for (const c of model.criteria) expect(html).toContain(`title="${c.label} · ${c.value}"`);
   });
 
-  it('lets phase headers wrap instead of truncating', () => {
-    const labels = [...html.matchAll(/data-testid="board-phase-label"[^>]*class="([^"]+)"/g)].map(m => m[1]);
+  // A wrapped phase header pushed its underline below its neighbours'. One line,
+  // the full name on hover.
+  it('phase headers stay on one line with the full name in a title', () => {
+    const labels = [...html.matchAll(/data-testid="board-phase-label"[^>]*title="([^"]+)"[^>]*class="([^"]+)"/g)];
     expect(labels.length).toBe(model.phases.length);
-    for (const cls of labels) expect(cls.split(/\s+/)).not.toContain('truncate');
+    for (const [, title, cls] of labels) {
+      expect(cls.split(/\s+/)).toContain('truncate');
+      expect(title.length).toBeGreaterThan(0);
+    }
   });
 
   it('tile titles use the short label, wrapped to two lines with the full title on hover', () => {
@@ -280,5 +305,27 @@ describe('MissionBoard — complete, open for weeks', () => {
     expect(ticks).toBeGreaterThan(1);
     expect(ticks).toBeLessThanOrEqual(12);
     expect(conc).toMatch(/>\d+d</);
+  });
+});
+
+describe('MissionBoard — Steer', () => {
+  it('a running tile offers Steer when the chat canvas is available', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={{ open: () => {}, openSteer: () => {}, close: () => {}, isOpen: false }}>
+        <MissionBoard model={boardFixture('running')} missionId="mission-1" />
+      </CanvasContext.Provider>,
+    );
+    // 'running' has two live (running) tiles per tileStatuses above.
+    expect(count(html, 'data-testid="steer-trigger"')).toBe(2);
+  });
+
+  it('offers nothing to steer without the chat canvas (no provider, or chat unavailable)', () => {
+    expect(render('running')).not.toContain('steer-trigger');
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={null}>
+        <MissionBoard model={boardFixture('running')} missionId="mission-1" />
+      </CanvasContext.Provider>,
+    );
+    expect(html).not.toContain('steer-trigger');
   });
 });

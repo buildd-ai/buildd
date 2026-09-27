@@ -22,6 +22,7 @@
  * opens the task sheet.
  */
 import type { ReactNode } from 'react';
+import SteerButton from '@/components/chat/SteerButton';
 import { BOARD_LANDED, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import {
   AnswerButtons, CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
@@ -103,15 +104,17 @@ export default function MissionBoard({ model: serverModel, completionText, notic
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
-              <div className={`flex gap-2.5 border-b-2 border-border-strong pb-2 ${compact ? 'items-start' : 'items-center'}`}>
+              <div className="flex items-center gap-2.5 border-b-2 border-border-strong pb-2">
                 <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>
+                {/* One line: a wrapped header pushes its underline below its neighbours'. */}
                 <SectionLabel
                   data-testid="board-phase-label"
-                  className={`min-w-0 !text-text-primary ${compact ? 'flex-1 [overflow-wrap:anywhere]' : 'truncate'}`}
+                  title={p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                  className={`min-w-0 truncate !text-text-primary ${compact ? 'flex-1' : ''}`}
                 >
                   {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
                 </SectionLabel>
-                <span aria-hidden="true" className={`ml-auto flex shrink-0 gap-0.5 ${compact ? 'mt-[3px]' : ''}`}>
+                <span aria-hidden="true" className="ml-auto flex shrink-0 gap-0.5">
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
@@ -158,8 +161,16 @@ export function Band({ model, compact, missionId }: { model: MissionBoardModel; 
           phase captions and every criterion); Fleet and Needs you pair up. */}
       <div data-testid="landed-band" className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
-        <Big n={model.landed.done} small={`of ${model.landed.total}`} />
-        <LandedMeter model={model} variant="band" compact={compact} />
+        {model.landed.total > 0 ? (
+          <>
+            <Big n={model.landed.done} small={`of ${model.landed.total}`} />
+            <LandedMeter model={model} variant="band" compact={compact} />
+          </>
+        ) : (
+          <span data-testid="landed-empty" className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
+            No tasks yet
+          </span>
+        )}
       </div>
       <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`} />
       <div data-testid="fleet-band" className={`${cell} md:border-r`}>
@@ -200,7 +211,8 @@ export function GoalCell({ model, compact, missionId, className }: { model: Miss
   const heading = unevaluated ? 'Goal' : `Goal · ${model.criteriaPassed}/${model.criteria.length} criteria`;
   return (
     <div data-testid="goal-band" data-evaluated={unevaluated ? 'false' : undefined} className={className}>
-      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="hover:underline">
+      {/* flex, not inline: an inline link's line box sat the label lower than the other cells'. */}
+      <a href={`#${MISSION_CRITERIA_ANCHOR}`} className="flex self-start hover:underline">
         <SectionLabel>{heading}</SectionLabel>
       </a>
       {unevaluated && (
@@ -289,6 +301,7 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
 function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
+  const live = t.status === 'running' || t.status === 'fixing';
   const head = (
     <div className={`flex min-w-0 gap-2 ${compact ? 'items-start' : 'items-center'}`}>
       <RoleGlyph task={t} />
@@ -304,6 +317,7 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
       {t.attempt > 1 && (
         <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>
       )}
+      {live && <SteerButton taskId={t.id} />}
       {!queued && <RunnerAvatar runner={t.runner} />}
     </div>
   );
@@ -341,7 +355,6 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
       </div>
     );
   } else {
-    const live = t.status === 'running' || t.status === 'fixing';
     const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
     // A live tile says what it is doing (the current action, else the elapsed
     // strip) and for how long — or nothing: no empty second line under the title.
@@ -567,7 +580,7 @@ function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; te
       ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review), subCls: review.ok === review.shots ? 'text-status-success' : 'text-text-secondary' }]
       : []),
     { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
-    { label: 'Work', value: d.work ?? '—', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
+    { label: 'Work', value: d.work ?? '0m', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
   ];
   return (
     <section data-testid="mission-completion-record" className="mt-[18px] flex flex-col gap-3 border-2 border-border-strong bg-card px-[18px] py-3.5 shadow-[var(--card-shadow)]">

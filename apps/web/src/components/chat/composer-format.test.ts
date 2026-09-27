@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { formatCost, formatPer1k, tierChipLabel } from './composer-format';
+import { formatCost, formatPer1k, tierChipLabel, tierDisplayName } from './composer-format';
 
 describe('formatCost', () => {
   it('nothing spent: no label', () => {
@@ -23,10 +23,19 @@ describe('formatPer1k', () => {
   });
 });
 
+describe('tierDisplayName', () => {
+  it('sentence-cases a tier name; null (routed per turn) reads as Auto', () => {
+    expect(tierDisplayName('budget')).toBe('Budget');
+    expect(tierDisplayName('standard')).toBe('Standard');
+    expect(tierDisplayName('premium')).toBe('Premium');
+    expect(tierDisplayName(null)).toBe('Auto');
+  });
+});
+
 describe('tierChipLabel', () => {
-  it('pinned shows the pin; auto shows the last tier it ran on', () => {
-    expect(tierChipLabel({ pinned: 'premium', last: 'budget' })).toBe('premium');
-    expect(tierChipLabel({ pinned: null, last: 'budget' })).toBe('auto · budget');
-    expect(tierChipLabel({ pinned: null, last: null })).toBe('auto');
+  it('pinned shows the pin, sentence case; auto shows the last tier it ran on, same format on every viewport', () => {
+    expect(tierChipLabel({ pinned: 'premium', last: 'budget' })).toBe('Premium');
+    expect(tierChipLabel({ pinned: null, last: 'budget' })).toBe('Auto · Budget');
+    expect(tierChipLabel({ pinned: null, last: null })).toBe('Auto');
   });
 });

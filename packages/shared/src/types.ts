@@ -1253,8 +1253,44 @@ export type ClaimDiagnosticReason =
   | 'context_paused'
   | 'path_overlap_blocked';
 
+/**
+ * Which gate excluded an explicitly requested task (claim with `taskId`) from
+ * the claim query. See apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts.
+ */
+export type ClaimTaskExclusionCode =
+  | 'not_found'
+  | 'not_pending'
+  | 'already_claimed'
+  | 'deferred'
+  | 'active_worker'
+  | 'task_held'
+  | 'mission_held'
+  | 'deps_blocked'
+  | 'subject_dead'
+  | 'runner_preference'
+  | 'role_mismatch'
+  | 'runner_cooldown'
+  | 'workspace_cap'
+  | 'path_overlap'
+  | 'unknown';
+
+export interface ClaimTaskExclusion {
+  code: ClaimTaskExclusionCode;
+  /** One human sentence, including the override when there is one. */
+  detail: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
+  /**
+   * The specific gate that excluded an explicit `taskId` claim. Set either when
+   * the claim query filtered the task out entirely (reason `no_pending_tasks`),
+   * or when the task reached the dispatch loop but was itself the one deferred
+   * by the path-overlap backstop (reason `all_candidates_deferred`/`race_lost`)
+   * — the two mechanisms that can silently exclude a named task without a claim
+   * attempt ever being made.
+   */
+  taskExclusion?: ClaimTaskExclusion;
   pendingTasks?: number;
   matchedTasks?: number;
   activeWorkers?: number;

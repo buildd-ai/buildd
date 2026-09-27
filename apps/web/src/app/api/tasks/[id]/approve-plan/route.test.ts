@@ -83,7 +83,7 @@ function createMockRequest(options: {
 } = {}): NextRequest {
   const { method = 'POST', headers = {}, body } = options;
 
-  const url = 'http://localhost:3000/api/tasks/plan-task-1/approve-plan';
+  const url = 'http://localhost:3000/api/tasks/44444444-4444-4444-8444-444444444444/approve-plan';
   const init: RequestInit = {
     method,
     headers: new Headers(headers),
@@ -123,11 +123,23 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     mockGetCurrentUser.mockResolvedValue(null);
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe('Unauthorized');
+  });
+
+  it('returns 404 for a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+
+    const request = createMockRequest();
+    const response = await callHandler(POST, request, 'a1b2c3d4');
+
+    expect(response.status).toBe(404);
+    const data = await response.json();
+    expect(data.error).toContain('UUID');
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 404 when task not found', async () => {
@@ -135,7 +147,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     mockTasksFindFirst.mockResolvedValue(null);
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(404);
     const data = await response.json();
@@ -145,7 +157,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 400 when task is not planning mode', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'execution',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -153,7 +165,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -163,7 +175,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 400 when task is not completed', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'running',
       workspaceId: 'ws-1',
@@ -171,7 +183,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -181,7 +193,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 400 when no plan in structured output', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -190,7 +202,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -200,7 +212,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('creates child tasks from plan steps', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -221,7 +233,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -231,16 +243,16 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     // Verify insert was called for each step
     expect(mockInsertValues).toHaveLength(2);
     expect(mockInsertValues[0].title).toBe('Research');
-    expect(mockInsertValues[0].parentTaskId).toBe('plan-task-1');
+    expect(mockInsertValues[0].parentTaskId).toBe('44444444-4444-4444-8444-444444444444');
     expect(mockInsertValues[0].mode).toBe('execution');
     expect(mockInsertValues[1].title).toBe('Implement');
-    expect(mockInsertValues[1].parentTaskId).toBe('plan-task-1');
+    expect(mockInsertValues[1].parentTaskId).toBe('44444444-4444-4444-8444-444444444444');
   });
 
   it('resolves ref-based dependsOn to actual task IDs', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -261,7 +273,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -276,7 +288,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 409 when plan already approved (duplicate guard)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -293,7 +305,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     mockTasksFindMany.mockResolvedValue([{ id: 'existing-child-1' }]);
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(409);
     const data = await response.json();
@@ -305,7 +317,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('preserves missionId on child execution tasks', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -323,7 +335,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     expect(mockInsertValues).toHaveLength(2);
@@ -334,7 +346,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 400 when plan has circular dependencies', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -352,7 +364,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(400);
     const data = await response.json();
@@ -368,7 +380,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('returns 409 when the plan was already rejected', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -385,7 +397,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(409);
     const data = await response.json();
@@ -400,7 +412,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     // Route handler and approvePlan() each independently fetch the task —
     // must persist across both calls, not just the first.
     mockTasksFindFirst.mockResolvedValue({
-      id: 'plan-task-1',
+      id: '44444444-4444-4444-8444-444444444444',
       mode: 'planning',
       status: 'completed',
       workspaceId: 'ws-1',
@@ -451,7 +463,7 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     });
 
     const request = createMockRequest();
-    const response = await callHandler(POST, request, 'plan-task-1');
+    const response = await callHandler(POST, request, '44444444-4444-4444-8444-444444444444');
 
     expect(response.status).toBe(200);
     const data = await response.json();

@@ -22,6 +22,12 @@ export type InstructionHistoryEntry = {
   message?: string;
   timestamp: number;
   deliveryState?: 'pending' | 'delivered';
+  /**
+   * `workers.turns` at send time. Recorded only: `workers.turns` counts runner
+   * check-ins, not agent turns, so nothing derives a status from it (see
+   * `messageDeliveryStatus`).
+   */
+  turnAtSend?: number;
 };
 
 /** Cap on `workers.instructionHistory` length (JSONB bloat guard). */
@@ -52,15 +58,16 @@ export function isUnreachableWorkerStatus(status: string | null | undefined): bo
  */
 export function appendInstructionHistory(
   current: unknown,
-  opts: { message: string; isSensitive: boolean; deliveryState: 'pending' | 'delivered' },
+  opts: { message: string; isSensitive: boolean; deliveryState: 'pending' | 'delivered'; turnAtSend?: number },
 ): InstructionHistoryEntry[] {
   const history: InstructionHistoryEntry[] = Array.isArray(current)
     ? (current as InstructionHistoryEntry[])
     : [];
 
+  const turn = opts.turnAtSend != null ? { turnAtSend: opts.turnAtSend } : {};
   const entry: InstructionHistoryEntry = opts.isSensitive
-    ? { type: 'instruction', timestamp: Date.now(), deliveryState: opts.deliveryState }
-    : { type: 'instruction', message: opts.message, timestamp: Date.now(), deliveryState: opts.deliveryState };
+    ? { type: 'instruction', timestamp: Date.now(), deliveryState: opts.deliveryState, ...turn }
+    : { type: 'instruction', message: opts.message, timestamp: Date.now(), deliveryState: opts.deliveryState, ...turn };
 
   const updated = [...history, entry];
   if (updated.length > INSTRUCTION_HISTORY_CAP) {
@@ -103,4 +110,18 @@ export function markInstructionsDelivered(
       : deliveredText.includes(entry.message);
     return confirmed ? { ...entry, deliveryState: 'delivered' as const } : entry;
   });
+}
+
+/**
+ * One instruction's status for the Steer canvas: 'sent' (queued, not yet
+ * confirmed) or 'delivered' (a consumer confirmed the agent received it).
+ * There is no "read" state: `workers.turns` advances on every runner check-in,
+ * not on agent turns, so it can't show the agent acted on the message.
+ */
+export type MessageDeliveryStatus = { state: 'sent' } | { state: 'delivered' };
+
+export function messageDeliveryStatus(
+  entry: Pick<InstructionHistoryEntry, 'deliveryState'>,
+): MessageDeliveryStatus {
+  return entry.deliveryState === 'delivered' ? { state: 'delivered' } : { state: 'sent' };
 }

@@ -134,7 +134,7 @@ export const questionView = (open = true): QuestionObjectView => ({
 export const taskView = (): TaskObjectView => ({
   kind: 'task', id: 'task-fx', workspaceId: WS.id, title: 'feat(fx): rates service with a 15-minute cache', scope: 'fx', label: 'rates service',
   status: 'completed', roleName: 'Builder', roleColor: '#0C72CB', missionId: MISSION_ID, missionTitle: 'Multi-currency invoices',
-  worker: { id: 'w-fx', status: 'completed', runner: 'atlas', startedAt: at(11), completedAt: at(15), currentAction: null, waiting: false, prNumber: 413, prUrl: pr(413), mergedAt: at(16), prLifecycleStatus: 'merged' },
+  worker: { id: 'w-fx', status: 'completed', runner: 'atlas', startedAt: at(11), completedAt: at(15), currentAction: null, waiting: false, prNumber: 413, prUrl: pr(413), mergedAt: at(16), prLifecycleStatus: 'merged', turns: 12, updatedAt: at(15) },
   now: null, renderedAt: at(16),
 });
 
@@ -169,6 +169,8 @@ function call(name: string, input: Record<string, unknown>, output: unknown, ove
   return { type: `tool-${name}`, toolCallId: `call-${pseq}`, state: 'output-available', input, output, ...over };
 }
 const user = (id: string, text: string, min: number): ChatMessage => ({ id, role: 'user', metadata: { createdAt: iso(min), authorName: VIEWER }, parts: [{ type: 'text', text }] });
+/** The turn was routed to the fixture workspace (streamed turn metadata). */
+const withScope = (m: ChatMessage): ChatMessage => ({ ...m, metadata: { ...(m.metadata as object), scope: { id: WS.id, name: WS.name, source: 'routed' } } });
 const agent = (id: string, min: number, parts: ChatMessage['parts'], durationMs?: number): ChatMessage => ({ id, role: 'assistant', metadata: { createdAt: iso(min), durationMs }, parts });
 
 const MISSION_DRAFT = {
@@ -215,11 +217,11 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
         title: null, status: 'streaming',
         messages: [
           user('m1', 'What would it take to bill customers in their own currency?', 1),
-          agent('m2', 1, [
+          withScope(agent('m2', 1, [
             call('manage_missions', { action: 'list', workspace: 'billing-web' }, { summary: '3 open, none touch currency', data: [], objects: [] }),
             call('recall', { query: 'currency money rounding' }, undefined, { state: 'input-available' }),
             { type: 'text', text: 'Nothing in flight touches currency. Amounts are integer', state: 'streaming' },
-          ]),
+          ])),
         ],
       };
     case 'propose':
@@ -228,7 +230,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
       return {
         title: 'Multi-currency invoices', status: 'ready',
         messages: [...explore(), agent('m4', 3, [
-          { type: 'text', text: 'Here’s a draft. I won’t file it until you confirm.' },
+          { type: 'text', text: 'Here’s a draft.' },
           call('manage_missions', MISSION_DRAFT, undefined, denied
             ? { state: 'output-denied', approval: { id: 'approval-1', approved: false, reason: 'Discarded by the user' } }
             : { state: 'approval-requested', approval: { id: 'approval-1' } }),
@@ -239,7 +241,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
       return {
         title: 'Multi-currency invoices', status: 'ready',
         messages: [...explore(), agent('m4', 4, [
-          { type: 'text', text: 'Here’s a draft. I won’t file it until you confirm.' },
+          { type: 'text', text: 'Here’s a draft.' },
           call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-1', approved: true } }),
           { type: 'text', text: 'Filed. buildd is planning it now; the card fills in as agents pick up tasks.' },
         ], 2400)],

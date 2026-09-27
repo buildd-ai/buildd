@@ -768,7 +768,7 @@ chat = {
             {"key": "C1m4", "role": "assistant", "_at": "-2m", "tier": "standard",
              "parts": [
                  {"type": "step-start"},
-                 {"type": "text", "text": "Here's a draft. I won't file it until you confirm."},
+                 {"type": "text", "text": "Here's a draft."},
                  {"type": "tool-manage_missions", "toolCallId": "call_demo_create", "state": "approval-requested",
                   "input": M1_DRAFT, "approval": {"id": "demo-approval-m1"}},
              ]},

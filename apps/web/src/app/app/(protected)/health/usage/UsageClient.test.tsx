@@ -246,7 +246,7 @@ describe('UsageClient — index adoption', () => {
   it('labels the line in sessions and never in tasks', () => {
     const html = render();
     expect(html).toContain('Graph queried in 8 of 16 sessions where it was available (7d, completed sessions only)');
-    expect(html).toContain('Index adoption — 50% — 8/16 CBM-enabled sessions');
+    expect(html).toContain('Index adoption · 50% · 8/16 CBM-enabled sessions');
   });
 
   it('declares itself session-keyed on an otherwise task-keyed page', () => {

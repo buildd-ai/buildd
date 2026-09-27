@@ -125,6 +125,7 @@ export async function POST(
     message,
     isSensitive,
     deliveryState,
+    turnAtSend: worker.turns,
   });
 
   // Urgent instructions are queued as well as pushed, so a Pusher event that

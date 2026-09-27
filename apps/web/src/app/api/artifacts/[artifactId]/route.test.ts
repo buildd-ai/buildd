@@ -69,7 +69,9 @@ function createMockPatchRequest(body: object, apiKey?: string): NextRequest {
   });
 }
 
-const mockParams = Promise.resolve({ artifactId: 'artifact-1' });
+const ARTIFACT_ID = '11111111-1111-4111-8111-111111111111';
+const mockParams = Promise.resolve({ artifactId: ARTIFACT_ID });
+const nonUuidParams = Promise.resolve({ artifactId: 'artifact-1' });
 
 describe('GET /api/artifacts/[artifactId]', () => {
   beforeEach(() => {
@@ -97,6 +99,18 @@ describe('GET /api/artifacts/[artifactId]', () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe('Artifact not found');
+  });
+
+  it('rejects a non-UUID artifact id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+
+    const req = createMockGetRequest('bld_test');
+    const res = await GET(req, { params: nonUuidParams });
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns artifact when requester owns the worker', async () => {
@@ -341,6 +355,16 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
     const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(404);
+  });
+
+  it('rejects a non-UUID artifact id without querying the db', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
+    const res = await PATCH(req, { params: nonUuidParams });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
   });
 
   it('allows update when requester owns the worker', async () => {

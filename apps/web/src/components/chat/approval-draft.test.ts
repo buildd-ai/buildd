@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { ChatToolPart } from './chat-contract';
 import { encodeApprovalPreview } from '@buildd/shared';
-import { approvalDraft, approvalVerb, firstParagraph } from './approval-draft';
+import { approvalDraft, approvalLabel, firstParagraph } from './approval-draft';
 
 const part = (input: Record<string, unknown>, name = 'manage_missions'): ChatToolPart => ({
   type: `tool-${name}`, toolCallId: 'c1', state: 'approval-requested', input, approval: { id: 'ap-1' },
@@ -45,9 +45,12 @@ describe('approvalDraft', () => {
     expect(d).toEqual({ kind: 'generic', fields: [{ key: 'missionId', value: 'm1' }, { key: 'title', value: 'x' }], workspaceId: null });
   });
 
-  it('names the tool as the verb', () => {
-    expect(approvalVerb(part({ action: 'create' }))).toBe('manage_missions · create');
-    expect(approvalVerb(part({}, 'create_task'))).toBe('create_task');
+  it('names the write in words, never the tool', () => {
+    expect(approvalLabel(part({ action: 'create' }))).toBe('New mission');
+    expect(approvalLabel(part({ action: 'arm' }))).toBe('Start mission');
+    expect(approvalLabel(part({}, 'create_task'))).toBe('New task');
+    // A tool with no label yet reads as words, never snake_case.
+    expect(approvalLabel(part({ action: 'sync' }, 'frob_widgets'))).toBe('Frob widgets');
   });
 
   it('firstParagraph strips markdown', () => {

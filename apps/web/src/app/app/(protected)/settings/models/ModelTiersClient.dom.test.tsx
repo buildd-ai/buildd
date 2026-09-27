@@ -35,14 +35,22 @@ const MODELS = [
 ];
 
 const posts: unknown[] = [];
+const deletes: string[] = [];
+let tiersBody: Record<string, unknown> = TIERS;
 beforeEach(() => {
   posts.length = 0;
+  deletes.length = 0;
+  tiersBody = TIERS;
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
       posts.push(JSON.parse(String(init.body)));
       return new Response('{}', { status: 200 });
     }
-    if (String(url).startsWith('/api/model-tiers')) return new Response(JSON.stringify(TIERS), { status: 200 });
+    if (init?.method === 'DELETE') {
+      deletes.push(String(url));
+      return new Response('{}', { status: 200 });
+    }
+    if (String(url).startsWith('/api/model-tiers')) return new Response(JSON.stringify(tiersBody), { status: 200 });
     if (String(url).startsWith('/api/models')) {
       return new Response(JSON.stringify({
         models: MODELS, catalogComplete: true,
@@ -133,5 +141,59 @@ describe('ModelTiersClient', () => {
     const row = host.querySelector('[data-testid="tier-row-standard"]')!;
     expect((row.querySelector('[data-testid="model-picker-trigger"]') as HTMLButtonElement).disabled).toBe(true);
     expect(Array.from(row.querySelectorAll('button')).some((b) => b.textContent === 'Switch')).toBe(false);
+  });
+
+  it('has no subtitle on Base models', async () => {
+    await mount();
+    expect(host.textContent).not.toContain('the registry row each tier serves by default');
+  });
+
+  it('split off: one picker serves both surfaces', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-standard"]')!;
+    expect(row.querySelector('[data-testid="tier-split"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(row.querySelectorAll('[data-testid="model-picker-trigger"]').length).toBe(1);
+    expect(row.querySelector('[data-testid="tier-surface-agent"]')).toBeNull();
+  });
+
+  it('split on: two pickers labelled agent and chat; Apply writes that surface\'s row', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-standard"]')!;
+    await act(async () => { (row.querySelector('[data-testid="tier-split"]') as HTMLButtonElement).click(); });
+    const agent = row.querySelector('[data-testid="tier-surface-agent"]')!;
+    const chat = row.querySelector('[data-testid="tier-surface-chat"]')!;
+    expect(agent.textContent).toContain('agent');
+    expect(chat.textContent).toContain('chat');
+    expect(posts).toEqual([]);
+
+    await act(async () => { (chat.querySelector('[data-testid="model-picker-trigger"]') as HTMLButtonElement).click(); });
+    await act(async () => { (document.querySelector('[data-key="openrouter::deepseek/deepseek-v4-pro"]') as HTMLElement).click(); });
+    await act(async () => { (chat.querySelector('[data-testid="tier-apply"]') as HTMLButtonElement).click(); });
+    expect(posts).toEqual([{ tier: 'standard', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', teamId: 'team-demo', surface: 'chat' }]);
+  });
+
+  it('a saved split opens split; turning it off drops the surface rows', async () => {
+    tiersBody = {
+      ...TIERS,
+      standard: {
+        ...TIERS.standard,
+        bySurface: {
+          agent: { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team', surface: 'agent' },
+          chat: { ...TIERS.standard },
+        },
+      },
+    };
+    await mount();
+    const row = host.querySelector('[data-testid="tier-row-standard"]')!;
+    const toggle = row.querySelector('[data-testid="tier-split"]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(row.querySelector('[data-testid="tier-surface-agent"] [data-testid="model-picker-trigger"]')!.textContent).toContain('claude-sonnet-5');
+    expect(row.querySelector('[data-testid="tier-surface-chat"] [data-testid="model-picker-trigger"]')!.textContent).toContain('claude-sonnet-4-6');
+
+    await act(async () => { toggle.click(); });
+    expect(deletes).toHaveLength(1);
+    const qs = new URLSearchParams(deletes[0].split('?')[1]);
+    expect(qs.get('tier')).toBe('standard');
+    expect(qs.get('surface')).toBe('agent');
   });
 });

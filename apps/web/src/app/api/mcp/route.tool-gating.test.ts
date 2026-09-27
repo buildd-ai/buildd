@@ -454,4 +454,29 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     await ctx.getWorkspaceId();
     expect(await ctx.getMemoryClient()).toEqual({ id: 'store-1' });
   });
+
+  // claim_task names the workspace the memory is for — the claimed task's own.
+  // The store is that workspace's team's (never the account-team fallback), and
+  // withheld when that workspace is sensitive.
+  const CLAIMED_WS = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
+  it("resolves the claimed task's workspace store without the account-team fallback", async () => {
+    workspaceIs('standard');
+    // The caller reaches a sensitive workspace elsewhere; the claimed one is standard.
+    mockSelectLimit.mockResolvedValueOnce([{ id: WORKSPACE_ID }]);
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient(CLAIMED_WS)).toEqual({ id: 'store-1' });
+    expect(mockGetMemoryStoreForTeam).toHaveBeenCalledWith(CLAIMED_WS);
+  });
+
+  it("withholds the memory client when the claimed task's workspace is sensitive", async () => {
+    workspaceIs('sensitive');
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient(CLAIMED_WS)).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
 });

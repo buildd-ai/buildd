@@ -76,6 +76,14 @@ describe('GET /api/missions/[id]/artifacts/content', () => {
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await GET(req(`?ids=${A1}`), { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('404 for a mission outside the caller’s teams', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-other', workspaceId: null });

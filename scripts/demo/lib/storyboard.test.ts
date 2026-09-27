@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, resolveViewports, scrollPlan, stepViewports } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -110,5 +110,14 @@ describe('loginUser', () => {
   });
   test('a story with no users fails', () => {
     expect(() => loginUser([])).toThrow(/no users/);
+  });
+});
+
+describe('reducedMotionFor', () => {
+  test('a step can ask for reduced motion; the board sets the default; otherwise motion is on', () => {
+    expect(reducedMotionFor({}, {})).toBe('no-preference');
+    expect(reducedMotionFor({ reducedMotion: true }, {})).toBe('reduce');
+    expect(reducedMotionFor({}, { reducedMotion: true })).toBe('reduce');
+    expect(reducedMotionFor({ reducedMotion: false }, { reducedMotion: true })).toBe('no-preference');
   });
 });

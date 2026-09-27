@@ -5,6 +5,7 @@ import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { isUuid } from '@/lib/uuid';
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
 export async function GET(
@@ -12,6 +13,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid task id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -53,7 +57,13 @@ export async function GET(
       deliveryState?: 'pending' | 'delivered';
     }> | null) ?? [];
 
-    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, messages });
+    // Whether this caller may send, by the same rule POST /api/workers/[id]/instruct
+    // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
+    const canSend = apiAccount?.level === 'admin'
+      ? apiAccount.teamId === task.workspace?.teamId
+      : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
+
+    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, canSend, messages });
   } catch (error) {
     console.error('Get task messages error:', error);
     return NextResponse.json({ error: 'Failed to get task messages' }, { status: 500 });

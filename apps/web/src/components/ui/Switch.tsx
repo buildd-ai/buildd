@@ -37,14 +37,15 @@ export default function Switch({ checked, onChange, disabled, label, labelledBy,
       aria-labelledby={labelledBy}
       disabled={disabled}
       onClick={(e) => onChange(!checked, e)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 ${
-        checked ? 'bg-accent border-accent' : 'bg-surface-4 border-border-default'
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center border-2 transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 ${
+        checked ? 'bg-accent border-accent' : 'bg-surface-1 border-border-strong'
       } ${className}`}
     >
+      {/* One square knob, no shadow: off = muted at the left, on = ink at the right. */}
       <span
         aria-hidden="true"
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform duration-200 ${
-          checked ? 'translate-x-[18px]' : 'translate-x-[2px]'
+        className={`inline-block h-3 w-3 transition-transform duration-200 ${
+          checked ? 'bg-[var(--on-accent)] translate-x-[18px]' : 'bg-text-muted translate-x-[2px]'
         }`}
       />
     </button>

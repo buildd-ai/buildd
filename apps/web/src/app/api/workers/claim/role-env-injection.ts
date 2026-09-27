@@ -25,6 +25,7 @@ import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveRoleRow } from './skill-and-role-injection';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** The claim-candidate rows this block looks tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -78,10 +79,8 @@ export async function attachRoleEnvSecrets(
 
       const labels = [...new Set(Object.values(mapping))];
       const rows = await db.query.secrets.findMany({
-        where: and(
-          eq(secrets.teamId, teamId),
-          eq(secrets.purpose, 'role_env_secret'),
-          inArray(secrets.label, labels),
+        where: teamCredentialWhere(
+          { teamId, purpose: 'role_env_secret', label: labels },
           or(isNull(secrets.accountId), eq(secrets.accountId, accountId)),
           or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
         ),

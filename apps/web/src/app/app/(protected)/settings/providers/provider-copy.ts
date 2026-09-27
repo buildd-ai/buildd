@@ -2,9 +2,6 @@ import { CHAT_PROVIDER_INFO, type ChatKeySummary, type KeyPolicy } from '@/lib/p
 
 export const PROVIDERS_HREF = '/app/settings/providers';
 
-/** One line on what a key is for, stated once at the top of the page. */
-export const KEY_UNLOCKS = 'Pays for interactive AI and server-side features. Runners use their own seat.';
-
 export interface PolicyChoice {
   mode: 'team' | 'own';
   /** Only meaningful with mode 'team'. */
@@ -30,8 +27,8 @@ export interface ChatStatus {
 }
 
 /**
- * The interactive AI status line: what it runs on, or (with no key) the one
- * action that fixes it. Interactive AI is always on; there is no switch.
+ * The chat status line: what it uses, or (with no key) the one action that
+ * fixes it. Chat is always on, so this is a status, never an on/off state.
  */
 export function chatStatusCopy(
   availability: { available: boolean; reason: 'no_key' | null },
@@ -42,20 +39,20 @@ export function chatStatusCopy(
   if (availability.available) {
     const whose = key.kind === 'own' ? 'your key' : 'team key';
     const text = key.kind === 'own' || key.kind === 'team'
-      ? `Interactive AI is on · ${label(key.provider)} · ${whose}`
-      : 'Interactive AI is on';
+      ? `Chat uses: ${label(key.provider)} · ${whose}`
+      : 'Chat is set up';
     return { tone: 'success', text, action: null };
   }
   if (policy === 'own') {
     return {
       tone: 'warning',
-      text: 'Each person uses their own key. Add yours.',
+      text: 'Chat needs your own key.',
       action: { href: '/app/settings/account', label: 'Add your key' },
     };
   }
   return {
     tone: 'warning',
-    text: isAdmin ? 'Connect a provider below to start interactive AI' : 'Interactive AI starts once an admin connects a provider',
+    text: isAdmin ? 'Chat needs a key. Add one below.' : 'Chat needs a key. Ask an admin.',
     action: null,
   };
 }

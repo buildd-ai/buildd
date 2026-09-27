@@ -15,7 +15,7 @@ import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, ty
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary } from '@/lib/mission-steering-events';
+import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary, describeOrchestratorRun, extractRunSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
@@ -573,6 +573,8 @@ export default async function MissionDetailPage({
       title: t.title,
       taskUpdatedAt: t.updatedAt.toISOString(),
       latestWorker: lw ? { prUrl: lw.prUrl ?? null, mergedAt: lw.mergedAt ? String(lw.mergedAt) : null } : null,
+      status: t.status,
+      resultSummary: extractRunSummary(digestOf(t.id).result),
     };
   });
 
@@ -1104,9 +1106,12 @@ export default async function MissionDetailPage({
       {/* Where this mission sits, and the chips that used to crowd the header. */}
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-muted">
         {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-          <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
-            {displayWorkspaceName(mission.workspace.name)}
-          </Link>
+          <span>
+            Workspace:{' '}
+            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
+              {displayWorkspaceName(mission.workspace.name)}
+            </Link>
+          </span>
         )}
         {displayState === 'active' && driveNextRun.text && (
           <span className="font-mono text-[11px]">{driveNextRun.text}</span>
@@ -1223,11 +1228,16 @@ export default async function MissionDetailPage({
       )}
 
       {/* Diagnostics — steering-cost stats live here, not in the header
-          chip row (addendum D2: no internal jargon on cards or headers). */}
-      <div className="card p-4" data-testid="mission-diagnostics">
-        <h2 className="section-label mb-2">Diagnostics</h2>
-        <MissionAuthorshipStats health={authorshipHealth} />
-      </div>
+          chip row (addendum D2: no internal jargon on cards or headers).
+          Collapsed by default: this is debug detail, not a primary setting. */}
+      <details className="card p-4 group" data-testid="mission-diagnostics">
+        <summary className="cursor-pointer text-[11px] text-text-muted list-none">
+          <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Advanced
+        </summary>
+        <div className="mt-2">
+          <MissionAuthorshipStats health={authorshipHealth} />
+        </div>
+      </details>
     </MissionSecondaryPanel>
   );
 
@@ -1323,26 +1333,49 @@ export default async function MissionDetailPage({
       {settings}
     </>
   );
+  // Orchestrator runs share one task title ("Mission: <title>"); name each
+  // row by what it did instead. Only planning runs get relabeled (by mode,
+  // never by title prefix: task-class-invariants); other bookkeeping rows
+  // such as a friction report keep their own title. Position is by time.
+  const planningRunIds = new Set(footerTasks.filter(t => t.mode === 'planning').map(t => t.id));
+  const orchestratorRunIds = bookkeepingTasks
+    .filter(t => planningRunIds.has(t.id))
+    .slice()
+    .sort((a, b) => a.taskUpdatedAt.localeCompare(b.taskUpdatedAt))
+    .map(t => t.id);
+  const firstRunId = orchestratorRunIds[0];
+  const lastRunId = orchestratorRunIds[orchestratorRunIds.length - 1];
+
   const orchestratorRow = (orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
     <MissionSheetRow label={orchestratorLabel} title="Orchestrator" testId="mission-orchestrator-row" sheetTestId="mission-orchestrator-sheet">
       {bookkeepingTasks.length === 0 ? (
         <p className="font-mono text-[12px] text-text-muted">No orchestrator runs to show.</p>
       ) : (
         <ul>
-          {bookkeepingTasks.map(t => (
-            <li key={t.id}>
-              {/* data-task-id: the task sheet opens on top, with Back to this list. */}
-              <a
-                href={missionTaskHref({ missionId: id, taskId: t.id, from: boardLink.from, initiativeId: boardLink.initiativeId, mode: 'sheet' })}
-                data-task-id={t.id}
-                className="flex min-h-11 items-center gap-2 border-b border-border-default font-mono text-[12px] text-text-secondary hover:text-text-primary"
-              >
-                <span className="min-w-0 flex-1 truncate">{t.title}</span>
-                <ZonedTime value={t.taskUpdatedAt} format="date" className="shrink-0 text-[11px] text-text-muted" />
-                <span aria-hidden="true">›</span>
-              </a>
-            </li>
-          ))}
+          {bookkeepingTasks.map(t => {
+            const isRun = t.title.startsWith('Mission:');
+            const rowLabel = isRun
+              ? describeOrchestratorRun(
+                  { status: t.status ?? '', resultSummary: t.resultSummary },
+                  { isFirst: t.id === firstRunId, isLast: t.id === lastRunId },
+                  isTerminal,
+                )
+              : t.title;
+            return (
+              <li key={t.id}>
+                {/* data-task-id: the task sheet opens on top, with Back to this list. */}
+                <a
+                  href={missionTaskHref({ missionId: id, taskId: t.id, from: boardLink.from, initiativeId: boardLink.initiativeId, mode: 'sheet' })}
+                  data-task-id={t.id}
+                  className="flex min-h-11 items-center gap-2 border-b border-border-default font-mono text-[12px] text-text-secondary hover:text-text-primary"
+                >
+                  <span className="min-w-0 flex-1 truncate">{rowLabel}</span>
+                  <ZonedTime value={t.taskUpdatedAt} format="date" className="shrink-0 text-[11px] text-text-muted" />
+                  <span aria-hidden="true">›</span>
+                </a>
+              </li>
+            );
+          })}
         </ul>
       )}
     </MissionSheetRow>

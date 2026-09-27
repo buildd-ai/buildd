@@ -28,7 +28,7 @@ export default async function AccountSettingsPage() {
             )}
             <div className="flex-1 min-w-0">
               <p className="text-[15px] font-medium text-text-primary truncate">{user.name || 'Unnamed'}</p>
-              <p className="text-xs text-text-secondary truncate">{user.email}</p>
+              <p className="text-xs text-text-secondary break-all">{user.email}</p>
             </div>
             <SignOutButton />
           </div>
@@ -37,7 +37,7 @@ export default async function AccountSettingsPage() {
 
       <KeyboardHintsSetting initial={user.showKeyboardHints === true} />
 
-      {/* What interactive AI runs on for you; your own key only when the team's policy allows it. */}
+      {/* What chat uses for you (links to Model providers); your own key only when the team's policy allows it. */}
       <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />
 
       <section aria-labelledby="teams-h">

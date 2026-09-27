@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -77,10 +78,7 @@ export async function GET(
     if (connectorIds.length > 0) {
       const ownerTeamIds = [...new Set(rows.map(r => r.connector?.teamId).filter(Boolean))] as string[];
       const secretRows = await db.query.secrets.findMany({
-        where: and(
-          inArray(secrets.teamId, ownerTeamIds.length > 0 ? ownerTeamIds : [teamId]),
-          eq(secrets.purpose, 'mcp_connector_credential'),
-        ),
+        where: teamCredentialWhere({ teamId: ownerTeamIds.length > 0 ? ownerTeamIds : [teamId], purpose: 'mcp_connector_credential' }),
         columns: { label: true, tokenExpiresAt: true },
       });
       for (const s of secretRows) {

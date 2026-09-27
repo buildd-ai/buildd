@@ -232,7 +232,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
-    getMemoryClient: async () => {
+    getMemoryClient: async (targetWorkspaceId?: string) => {
+      // A named workspace (the task claim_task just claimed) is checked
+      // directly, and its store is its own team's — no account-team fallback,
+      // which could hand back a different team's store.
+      if (targetWorkspaceId) {
+        if (await knowledgeBlockedFor(targetWorkspaceId)) return null;
+        return getMemoryClientForTeam(targetWorkspaceId);
+      }
       if (await knowledgeBlockedFor(resolvedWorkspaceId)) return null;
       // Without a pinned workspace, the calling action may target a workspace
       // this connection never resolves (claim_task with an explicit id, or a

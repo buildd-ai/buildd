@@ -176,6 +176,13 @@ export const accounts = pgTable('accounts', {
   monthlyCostMonth: text('monthly_cost_month'),
   budgetAlertsSent: jsonb('budget_alerts_sent').default([]).$type<number[]>().notNull(),
 
+  // Daily cap, in USD, on the model spend a sibling app reports under this key
+  // (ai_usage receipts, day in the team's timezone). POST /api/ai/plan answers
+  // `downgrade` from 80% of it and `deny` at 100%. NULL = no buildd-side cap:
+  // the app's own provider-key limit is the hard ceiling
+  // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
+  aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
@@ -3413,6 +3420,8 @@ export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
 
 // Model tier registry — maps premium-plus/premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
+// surface = NULL means the row serves agent runs and chat; 'agent' or 'chat'
+// scopes it to one surface and wins over the NULL row at the same scope.
 // See docs/design/model-tiers.md for the resolution chain.
 export const modelTierRegistry = pgTable('model_tier_registry', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -3421,12 +3430,13 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
   provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
+  surface: text('surface').$type<'agent' | 'chat'>(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier),
+  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier, t.surface),
   teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
 }));
 
@@ -3512,6 +3522,72 @@ export const tierPoolChanges = pgTable('tier_pool_changes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   poolCreatedIdx: index('tier_pool_changes_pool_created_idx').on(t.poolId, t.createdAt),
+}));
+
+// Model plans served to sibling apps by POST /api/ai/plan
+// (docs/design/shared-ai-kit.md §2). One row per plan: which model buildd
+// chose for an app account, and the may-spend decision it returned. The model
+// call itself runs in the app; buildd never sees its content. Metadata only:
+// `kind` is the app's free attribution label, no other text is stored.
+export const aiPlans = pgTable('ai_plans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  requestedTier: text('requested_tier').notNull(),
+  // The tier actually served (differs from requestedTier on a downgrade).
+  tier: text('tier').notNull(),
+  surface: text('surface').notNull().$type<'chat' | 'inference'>(),
+  kind: text('kind').notNull(),
+  // NULL on a deny: no model was offered.
+  provider: text('provider'),
+  model: text('model'),
+  source: text('source').notNull().$type<'registry' | 'pool' | 'catalog' | 'default'>(),
+  // Set when the tier's chat pool drew this plan's arm.
+  poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'set null' }),
+  armId: uuid('arm_id').references(() => tierPoolArms.id, { onDelete: 'set null' }),
+  action: text('action').notNull().$type<'ok' | 'downgrade' | 'deny'>(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  teamCreatedIdx: index('ai_plans_team_created_idx').on(t.teamId, t.createdAt),
+  accountCreatedIdx: index('ai_plans_account_created_idx').on(t.accountId, t.createdAt),
+}));
+
+// Usage receipts from sibling apps, POST /api/ai/usage. Content-free and
+// identity-free by construction: no prompt, reply, tool output or end-user id
+// column exists, and the route rejects any field outside its metadata schema.
+// Feeds model-choice statistics and the per-account daily AI cap
+// (accounts.aiDailyBudgetUsd).
+export const aiUsage = pgTable('ai_usage', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // The account that reported the receipt (the app's service account).
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  // NULL when the app ran on its own fallback plan (buildd was unreachable).
+  planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
+  tier: text('tier').notNull(),
+  surface: text('surface'),
+  kind: text('kind'),
+  provider: text('provider').notNull(),
+  model: text('model').notNull(),
+  // How the app got the plan it ran on: a fresh plan's source, or 'cached' / 'fallback'.
+  planSource: text('plan_source'),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  cacheReadTokens: integer('cache_read_tokens').notNull().default(0),
+  cacheWriteTokens: integer('cache_write_tokens').notNull().default(0),
+  costUsd: decimal('cost_usd', { precision: 12, scale: 6 }).notNull(),
+  costSource: text('cost_source').notNull().$type<'reported' | 'estimated'>(),
+  latencyMs: integer('latency_ms').notNull(),
+  outcome: text('outcome').notNull().$type<'ok' | 'error' | 'aborted'>(),
+  feedback: text('feedback').$type<'up' | 'down'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  accountCreatedIdx: index('ai_usage_account_created_idx').on(t.accountId, t.createdAt),
+  teamCreatedIdx: index('ai_usage_team_created_idx').on(t.teamId, t.createdAt),
+  planIdx: index('ai_usage_plan_idx').on(t.planId),
 }));
 
 // Workspace migration ledger — one row per (runId, phase). Tracks the destructive

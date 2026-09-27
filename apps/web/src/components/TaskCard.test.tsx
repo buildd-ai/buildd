@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TaskCard, type TaskCardProps } from './TaskCard';
+import { CanvasContext } from './chat/canvas-context';
 
 function baseProps(overrides: Partial<TaskCardProps> = {}): TaskCardProps {
   return {
@@ -210,5 +211,32 @@ describe('TaskCard — PR link edge cases', () => {
       // Never the old 14px vertical spill.
       expect(afterClasses.some(c => c.includes('inset-y-3.5'))).toBe(false);
     }
+  });
+});
+
+describe('TaskCard — Steer', () => {
+  const canvas = { open: () => {}, openSteer: () => {}, close: () => {}, isOpen: false };
+
+  it('row density: a running task offers Steer when the chat canvas is available', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={canvas}>
+        <TaskCard {...baseProps({ taskStatus: 'in_progress', workerStatus: 'running' })} />
+      </CanvasContext.Provider>,
+    );
+    expect(html).toContain('data-testid="steer-trigger"');
+  });
+
+  it('row density: a completed task offers nothing to steer', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={canvas}>
+        <TaskCard {...baseProps({ taskStatus: 'completed' })} />
+      </CanvasContext.Provider>,
+    );
+    expect(html).not.toContain('data-testid="steer-trigger"');
+  });
+
+  it('row density: nothing to steer without the chat canvas in context', () => {
+    const html = renderToStaticMarkup(<TaskCard {...baseProps({ taskStatus: 'in_progress', workerStatus: 'running' })} />);
+    expect(html).not.toContain('data-testid="steer-trigger"');
   });
 });

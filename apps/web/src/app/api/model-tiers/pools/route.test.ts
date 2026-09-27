@@ -17,14 +17,15 @@ let addResult: any = { ok: true, armId: 'arm-2' };
 let writeVersion: number | null = 5;
 let removeVersion: number | null = 6;
 let registryRow: any = null;
+let changes: any[] = [];
 const calls: Record<string, any[]> = {};
 const log = (k: string) => (...a: any[]) => { (calls[k] ??= []).push(a); };
 
 const POOL = {
   pool: { id: 'pool-1', tier: 'standard', surface: 'chat', mode: 'split', allocation: { inc: 1, ch: 0 }, allocationVersion: 4, incumbentFloor: 0.6, explorationCap: 0.3 },
   arms: [
-    { id: 'inc', role: 'incumbent', status: 'active', route: 'anthropic', model: 'claude-sonnet-5' },
-    { id: 'ch', role: 'challenger', status: 'active', route: 'openrouter', model: 'qwen/qwen3-coder' },
+    { id: 'inc', role: 'incumbent', status: 'active', route: 'anthropic', model: 'claude-sonnet-5', addedAt: new Date('2026-01-01') },
+    { id: 'ch', role: 'challenger', status: 'active', route: 'openrouter', model: 'qwen/qwen3-coder', addedAt: new Date('2026-01-02') },
   ],
 };
 
@@ -47,9 +48,15 @@ mock.module('@buildd/core/tier-pool-admin', () => ({
   loadPool: async () => POOL,
   writeAllocation: async (a: any) => { log('writeAllocation')(a); return writeVersion; },
   removeChallenger: async (a: any) => { log('removeChallenger')(a); return removeVersion; },
-  listPoolChanges: async () => [],
+  listPoolChanges: async () => changes,
 }));
-mock.module('@buildd/core/tier-pool-source', () => ({ invalidateTierPoolCache: log('invalidatePool') }));
+mock.module('@buildd/core/tier-pool-source', () => ({
+  invalidateTierPoolCache: log('invalidatePool'),
+  orderArms: (a: any[]) => [...a].sort((x, y) => (x.role === 'incumbent' ? 0 : 1) - (y.role === 'incumbent' ? 0 : 1)),
+}));
+mock.module('@buildd/core/tier-pool-daily-source', () => ({
+  loadPoolEvidence: async (p: any) => new Map(p.arms.map((a: any) => [a.id, { graded: 0, successes: 0, failures: 0, earlyCritical: 0, spread: { units: 0, conversations: 0, users: 0 } }])),
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: { modelTierRegistry: { findFirst: async () => registryRow } },
@@ -72,7 +79,8 @@ beforeEach(() => {
   tierEntry = { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team' };
   cred = { key: 'k', scope: 'team' };
   addResult = { ok: true, armId: 'arm-2' };
-  writeVersion = 5; removeVersion = 6; registryRow = null;
+  writeVersion = 5; removeVersion = 6; registryRow = null; changes = [];
+  POOL.pool.mode = 'split';
   for (const k of Object.keys(calls)) delete calls[k];
 });
 
@@ -147,9 +155,39 @@ describe('PATCH /api/model-tiers/pools/[id] — traffic', () => {
     expect((await patch({ mode: 'pinned' })).status).toBe(409);
   });
 
+  it('explore projects the current split onto stage bounds: a new challenger learns at 10%', async () => {
+    POOL.pool.allocation = { inc: 1, ch: 0 };
+    const res = await patch({ mode: 'explore' });
+    expect(res.status).toBe(200);
+    expect(calls.writeAllocation[0][0]).toMatchObject({ mode: 'explore', kind: 'mode', allocation: { inc: 0.9, ch: 0.1 }, actorUserId: 'user-1' });
+  });
+
+  it('an explore pool takes no typed allocation', async () => {
+    POOL.pool.mode = 'explore';
+    expect((await patch({ allocation: { inc: 0.9, ch: 0.1 } })).status).toBe(400);
+    POOL.pool.mode = 'split';
+    expect((await patch({ allocation: { inc: 0.9, ch: 0.1 }, mode: 'explore' })).status).toBe(400);
+    expect(calls.writeAllocation).toBeUndefined();
+  });
+
   it('members cannot change traffic', async () => {
     role = 'member';
     expect((await patch({ mode: 'pinned' })).status).toBe(403);
+  });
+});
+
+describe('GET /api/model-tiers/pools/[id] — change log', () => {
+  it('never re-serves rankings: evidence (popularity priors, views, as-of) is not returned', async () => {
+    changes = [{
+      id: 'c1', poolId: 'pool-1', kind: 'allocation', before: { allocation: { inc: 1 } }, after: { allocation: { inc: 0.9, ch: 0.1 } },
+      evidence: { arms: { ch: { prior: { signal: 'popularity', views: ['text'], asOf: '2026-09-26', m: 0.55 } } }, signals: [{ kind: 'popularity', armId: 'ch' }] },
+      actorUserId: null, actorSystem: 'system:explore', createdAt: new Date('2026-09-27T06:00:00Z'),
+    }];
+    const res = await poolById.GET(req('/api/model-tiers/pools/pool-1?teamId=team-1', 'GET'), ctx({ id: 'pool-1' }));
+    const body = await res.json();
+    expect(body.changes[0]).toMatchObject({ id: 'c1', actor: 'system:explore' });
+    expect(JSON.stringify(body)).not.toContain('popularity');
+    expect(JSON.stringify(body)).not.toContain('asOf');
   });
 });
 

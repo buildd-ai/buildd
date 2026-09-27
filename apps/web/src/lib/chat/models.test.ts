@@ -51,6 +51,21 @@ describe('resolveChatModel — OpenRouter as the fallback route', () => {
     expect(r.ok && r.modelId).toBe('openai/gpt-5.6-terra');
   });
 
+  it('resolves the tier for the chat surface', async () => {
+    const surfaces: unknown[] = [];
+    const r = await resolveChatModel(base, {
+      resolveTierEntry: (async (_t: string, _team: string, _ws: string | null, surface: unknown) => {
+        surfaces.push(surface);
+        return surface === 'chat'
+          ? { provider: 'anthropic', model: 'chat-model', source: 'team', surface: 'chat' }
+          : { provider: 'anthropic', model: 'agent-model', source: 'team', surface: 'agent' };
+      }) as never,
+      resolveInferenceCredential: keys({ anthropic: 'k' }) as never,
+    });
+    expect(surfaces).toEqual(['chat']);
+    expect(r.ok && r.modelId).toBe('chat-model');
+  });
+
   it('reports no_key when neither the provider nor OpenRouter has a key', async () => {
     const r = await resolveChatModel(base, {
       resolveTierEntry: tier('anthropic', 'claude-sonnet-5'),

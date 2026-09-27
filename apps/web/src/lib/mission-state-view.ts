@@ -186,6 +186,35 @@ export type WaitingOnDescriptor =
       taskIds: string[];
       /** True when the unmerged PR is the mission's own integration PR, not a task PR. */
       missionPr: boolean;
+      /**
+       * Set only when `missionPr` is true. `open` is the ordinary "ask to
+       * merge" reading; `not_opened` and `closed` name a mission PR that does
+       * not exist to merge — "merge the mission PR" is an impossible
+       * instruction for either, so callers must branch on this before
+       * offering that action. Undefined only for a caller that predates this
+       * field and is assumed `open` (the only state it could produce).
+       */
+      missionPrState?: 'open' | 'closed' | 'not_opened';
+    }
+  /**
+   * A completed task's PR closed WITHOUT merging, and nothing recorded that the
+   * work shipped elsewhere (task fcaf83d5's `closedUnsuperseded`). Deliberately
+   * a distinct kind from `merge`, not a flag on it: GitHub will not let this PR
+   * merge — "waiting on you to merge" is a false headline for a closed PR, and
+   * every renderer of `merge` (the situation phrase, the primary affordance,
+   * the causal chain) would otherwise have to remember to branch on a flag it
+   * could just as easily forget. The remedy is `record_pr_supersession` or
+   * investigation, never a merge click.
+   */
+  | {
+      kind: 'pr_closed_unmerged';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      prNumbers: number[];
+      /** Hrefs to the closed PRs, for "view" rather than "merge". */
+      prUrls: string[];
+      taskIds: string[];
     }
   /**
    * The completion gate is holding on a criterion that failed.
@@ -406,11 +435,14 @@ export interface MissionStateInput {
     blockedByPr?: number | null;
   }>;
   /**
-   * The mission's own integration PR, when one is open. `canCompleteMission`
-   * knows a mission PR is unmerged but not where it lives; the URL is what
-   * turns "waiting on you to merge the mission PR" into an affordance.
+   * The mission's own integration PR, when one exists. `canCompleteMission`
+   * knows a mission PR is unmerged but not where it lives or whether it was
+   * ever opened; `state` is what tells `mergeFact` whether there is
+   * anything to merge at all, and the URL is what turns "waiting on you to
+   * merge the mission PR" into an affordance when there is. A caller that
+   * has not loaded the row omits this rather than guessing.
    */
-  missionPr?: { prNumber: number | null; prUrl: string | null } | null;
+  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
   /**
    * Open task PRs, read straight off the worker rows. For a caller that cannot
    * afford a `canCompleteMission` decision per subject — a list page renders
@@ -469,11 +501,16 @@ export const OUTSTANDING_RANK: Record<WaitingOnDescriptor['kind'], number> = {
   human_decision: 1,
   dependency: 2,
   merge: 3,
-  criterion_failing: 4,
-  claim_deferral: 5,
-  task: 6,
-  criterion_unverified: 7,
-  self_resolving_wait: 8,
+  // Ranked below a genuinely open, mergeable PR: both need the owner, but a PR
+  // GitHub closed months ago is not a live merge tap the way an open one is,
+  // and must not bury today's actionable merges under old dead ones in the
+  // workspace ranking (the exact failure this kind was split out to fix).
+  pr_closed_unmerged: 4,
+  criterion_failing: 5,
+  claim_deferral: 6,
+  task: 7,
+  criterion_unverified: 8,
+  self_resolving_wait: 9,
 };
 
 /**
@@ -807,6 +844,48 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   if (completion && isMergeBlockCode(completion.code)) {
     const details = completion.awaitingMergeDetails ?? [];
     const missionPr = completion.code === 'awaiting_mission_pr';
+    // `awaiting_mission_pr` covers three different states of the mission's own
+    // PR (not yet opened / open / closed without merging) behind one code —
+    // only `findMissionPrOwner` knows which, and only the `open` branch of
+    // `canCompleteMission` populates `awaitingMergeDetails`. A caller that
+    // loaded the row passes `input.missionPr.state` directly; one that only
+    // ran the completion gate is assumed `open` when there are details to show
+    // (the only state that produces them) and unknown otherwise — never
+    // assumed open with nothing to point at.
+    const missionPrState = missionPr
+      ? input.missionPr?.state ?? (details.length > 0 ? 'open' : undefined)
+      : undefined;
+
+    // Not yet opened, or closed without merging: there is no PR to merge, so
+    // the ordinary "merge the mission PR" reading below would be an
+    // impossible instruction — the false headline this branch exists to
+    // prevent (mirrors `pr_closed_unmerged` below, for the mission's own PR
+    // instead of a task's).
+    if (missionPr && missionPrState !== 'open') {
+      const prNumber = input.missionPr?.prNumber ?? null;
+      return {
+        kind: 'awaiting_merge',
+        waitingOn: {
+          kind: 'merge',
+          tone: 'warning',
+          label: missionPrState === 'closed'
+            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} was closed without merging, so the work is still only on the integration branch`
+            : 'The mission’s work has landed on its integration branch, but the mission PR has not opened yet',
+          count: 1,
+          prNumbers: missionPrState === 'closed' && prNumber != null ? [prNumber] : [],
+          // No href either way: a closed PR cannot merge, and a not-yet-opened
+          // one has no URL to give. `affordanceFor` reads an empty `prUrls` as
+          // "no button" — the sentence stands alone, which is correct here.
+          prUrls: [],
+          taskIds: [],
+          missionPr: true,
+          missionPrState: missionPrState ?? 'not_opened',
+        },
+        displayState: 'review',
+        source: 'canCompleteMission',
+      };
+    }
+
     // `canCompleteMission` knows the mission PR is unmerged without knowing
     // where it is; the caller passes `missionPr` when it loaded the row, and
     // that is the difference between a sentence and a link.
@@ -816,6 +895,30 @@ function mergeFact(input: MissionStateInput): Resolution | null {
     const prUrls = missionPr && input.missionPr?.prUrl
       ? [input.missionPr.prUrl]
       : details.map(d => d.prUrl).filter((u): u is string => typeof u === 'string');
+
+    // Every named PR closed without merging, with no supersession recorded: a
+    // dead PR, not a merge tap. Mixed sets (some still open) keep the ordinary
+    // `merge` reading below — an open PR genuinely needs merging, so that
+    // remedy still holds even when a sibling PR is dead.
+    if (!missionPr && details.length > 0 && details.every(d => d.closedUnsuperseded)) {
+      return {
+        kind: 'awaiting_merge',
+        waitingOn: {
+          kind: 'pr_closed_unmerged',
+          tone: 'warning',
+          label: details.length === 1
+            ? `PR #${details[0].prNumber} closed without merging, no supersession recorded`
+            : `${details.length} completed task(s) have a PR closed without merging, no supersession recorded`,
+          count: details.length,
+          prNumbers,
+          prUrls,
+          taskIds: details.map(d => d.taskId),
+        },
+        displayState: 'review',
+        source: 'canCompleteMission',
+      };
+    }
+
     return {
       kind: 'awaiting_merge',
       waitingOn: {
@@ -829,6 +932,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         prUrls,
         taskIds: details.map(d => d.taskId),
         missionPr,
+        missionPrState: missionPr ? 'open' : undefined,
       },
       displayState: 'review',
       source: 'canCompleteMission',
@@ -855,9 +959,14 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   // evaluation still holds the task + worker rows that prove a PR is open. Same
   // fact, cheaper source — and it is the difference between a mission card that
   // says "waiting on you to merge the mission PR" and one that says nothing.
-  const openMissionPr = input.missionPr && (input.missionPr.prNumber != null || input.missionPr.prUrl)
-    ? input.missionPr
-    : null;
+  //
+  // Gated on `state === 'open'`, not just "a PR reference exists": this path
+  // has no completion decision to say whether the mission's work is even done
+  // (that gate lives in `canCompleteMission`, not here), so a `not_opened` or
+  // `closed` mission PR must stay silent rather than guess — the same false
+  // "merge the mission PR" headline the completion-based branch above exists
+  // to prevent, and this cheaper path has no evidence to say anything truer.
+  const openMissionPr = input.missionPr?.state === 'open' ? input.missionPr : null;
   const rowPrs = input.unmergedPrs ?? [];
   if (openMissionPr || rowPrs.length > 0) {
     const missionPr = openMissionPr !== null;
@@ -878,6 +987,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
           : rowPrs.map(p => p.prUrl).filter((u): u is string => typeof u === 'string'),
         taskIds: missionPr ? [] : rowPrs.map(p => p.taskId),
         missionPr,
+        missionPrState: missionPr ? 'open' : undefined,
       },
       displayState: 'review',
       source: 'workers.prUrl + workers.mergedAt',
@@ -1218,11 +1328,23 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
           : `${d.titles.length || 'one or more'} tasks failed`;
     case 'merge': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      if (d.missionPr && d.missionPrState === 'closed') {
+        return `mission PR${ref} was closed without merging`;
+      }
+      if (d.missionPr && d.missionPrState === 'not_opened') {
+        return 'the mission’s work has landed on its integration branch, but the mission PR has not opened yet';
+      }
       return d.missionPr
         ? `waiting on you to merge the mission PR${ref}`
         : d.count === 1
           ? `waiting on you to merge 1 open PR${ref}`
           : `waiting on you to merge ${d.count} open PRs`;
+    }
+    case 'pr_closed_unmerged': {
+      const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      return d.count === 1
+        ? `PR${ref} closed without merging, no supersession recorded`
+        : `${d.count} completed tasks have a PR closed without merging, no supersession recorded`;
     }
     case 'criterion_failing': {
       const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
@@ -1353,9 +1475,17 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
+      if (waitingOn.missionPr && waitingOn.missionPrState === 'closed') {
+        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
+      }
+      if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
+        return 'Nothing to merge yet. The mission PR opens automatically once every task PR has landed on the integration branch; if it still has not after a while, the opener is stuck and needs investigating.';
+      }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
         : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
+    case 'pr_closed_unmerged':
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or investigate why it closed unmerged.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
@@ -1399,6 +1529,7 @@ const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
  */
 const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
   'merge',
+  'pr_closed_unmerged',
   'task_failed',
   'human_decision',
 ]);

@@ -48,6 +48,45 @@ export function buildSteeringEvents(
   return [...orchestratorEvents, ...humanEvents];
 }
 
+/**
+ * Names an orchestrator run row by what it did instead of the mission's
+ * title, which every row shares (the run's task is literally titled
+ * `Mission: <title>`). The first run planned the mission; a run that lands
+ * after the mission itself is done closed it; everything else replanned it.
+ * `resultSummary`, when the run left one on completion, becomes the reason.
+ */
+export function describeOrchestratorRun(
+  run: { status: string; resultSummary?: string | null },
+  position: { isFirst: boolean; isLast: boolean },
+  missionIsTerminal: boolean,
+): string {
+  const reason = run.resultSummary?.trim() || null;
+  if (run.status === 'failed') {
+    return reason ? `Replan failed: ${reason}` : 'Replan failed';
+  }
+  if (position.isFirst) return 'Planned';
+  if (position.isLast && missionIsTerminal) {
+    return reason ? `Closed after ${reason}` : 'Closed';
+  }
+  return reason ? `Replanned after ${reason}` : 'Replanned';
+}
+
+/** Pulls the free-text summary an orchestrator run left on completion, out of
+ * the task-result digest ({@link TASK_DIGEST_SELECTION}). Checked at the top
+ * level first (`selectMissionCompletionSummary`'s `authoredSummary`), then
+ * `structuredOutput.summary`, since either can be the one an agent set. */
+export function extractRunSummary(result: Record<string, unknown> | null | undefined): string | null {
+  if (!result) return null;
+  const top = result.summary;
+  if (typeof top === 'string' && top.trim()) return top.trim();
+  const structured = result.structuredOutput;
+  if (structured && typeof structured === 'object') {
+    const nested = (structured as Record<string, unknown>).summary;
+    if (typeof nested === 'string' && nested.trim()) return nested.trim();
+  }
+  return null;
+}
+
 /** N in "Orchestrator · N plans, M ticks" — total plan-cycle count (Rule S-2),
  * read off the already-computed rail so the UI never re-derives the cap/cluster logic. */
 export function countOrchestratorPlans(rail: { marks: Array<{ kind: 'human' | 'orchestrator'; count: number }> }): number {

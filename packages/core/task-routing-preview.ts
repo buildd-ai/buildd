@@ -21,6 +21,7 @@ import {
 } from './model-router';
 import { TIER_DEFAULTS, type Tier } from './model-tier-defaults';
 import { getModelDisplayName } from './model-display';
+import { isExactRoleModel, roleFloorTier } from './role-model-routing';
 
 const ROUTER_TIER_TO_REGISTRY_TIER: Record<RouterTier, Tier> = {
   haiku: 'budget',
@@ -166,6 +167,20 @@ export interface RoutingPreviewInput extends RoutingInferenceInput {
   tier?: Tier | null;
   /** `context.model` — an explicit model id, wins over everything. */
   model?: string | null;
+  /** The STATED role (`tasks.roleSlug`), if any. */
+  roleSlug?: string | null;
+  /**
+   * That role's `model`, resolved like the claim route (workspace override,
+   * else team default — `pickRoleRowForTask`). An exact id pins the model
+   * below `tier`; a tier/alias is a floor over the matrix.
+   */
+  roleModel?: string | null;
+  /**
+   * No role stated AND the workspace has at least two roles a later
+   * inference could choose between. Adds a note that an inferred role will
+   * not change the model (docs/design/role-routing.md §4.2).
+   */
+  roleMayBeInferred?: boolean;
 }
 
 export interface RoutingPreview {
@@ -182,7 +197,28 @@ export interface RoutingPreview {
  * budget pressure and spike detection ignored, since a preview computed at
  * creation time cannot know either, and both gates only ever downshift.
  */
+// Low → high, for comparing a role floor against the matrix tier.
+const TIER_RANK: Record<Tier, number> = { budget: 0, standard: 1, premium: 2, 'premium-plus': 3 };
+
+export const ROLE_MAY_BE_INFERRED_NOTE =
+  'no role given — one may be inferred after creation; an inferred role does not change the model';
+
+/**
+ * Preview what the claim-time router would do with this task RIGHT NOW —
+ * budget pressure and spike detection ignored, since a preview computed at
+ * creation time cannot know either, and both gates only ever downshift.
+ * Same precedence as the claim: pin → tier → role exact id → matrix + role
+ * floor (see role-model-routing.ts).
+ */
 export function computeRoutingPreview(input: RoutingPreviewInput): RoutingPreview {
+  const preview = computeRoutingPreviewCore(input);
+  if (!input.roleSlug && input.roleMayBeInferred) {
+    preview.reason = `${preview.reason}; ${ROLE_MAY_BE_INFERRED_NOTE}`;
+  }
+  return preview;
+}
+
+function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
   if (input.model && input.model.trim() && input.model.trim().toLowerCase() !== 'inherit') {
     const model = input.model.trim();
     return {
@@ -203,6 +239,16 @@ export function computeRoutingPreview(input: RoutingPreviewInput): RoutingPrevie
     };
   }
 
+  const roleModel = input.roleSlug ? (input.roleModel ?? null) : null;
+  if (isExactRoleModel(roleModel)) {
+    return {
+      tier: null,
+      model: roleModel,
+      reason: `role "${input.roleSlug}" pins ${roleModel} — bypasses tier routing`,
+      inferred: false,
+    };
+  }
+
   const hasKind = input.kind !== undefined && input.kind !== null;
   const hasComplexity = input.complexity !== undefined && input.complexity !== null;
   const inference = inferRouting(input);
@@ -217,22 +263,29 @@ export function computeRoutingPreview(input: RoutingPreviewInput): RoutingPrevie
   });
   // Budget/spike gates are the only paths that can return 'paused', and both
   // are fed zeroes above, so this is always a plain haiku/sonnet/opus alias.
-  const tier = ROUTER_TIER_TO_REGISTRY_TIER[decision.model as RouterTier];
+  const matrixTier = ROUTER_TIER_TO_REGISTRY_TIER[decision.model as RouterTier];
+  const floor = roleFloorTier(roleModel);
+  const floorRaises = floor !== null && TIER_RANK[floor] > TIER_RANK[matrixTier];
+  const tier = floorRaises ? floor : matrixTier;
   const modelLabel = getModelDisplayName(TIER_DEFAULTS[tier].model);
+  const matrixLabel = getModelDisplayName(TIER_DEFAULTS[matrixTier].model);
 
   const missing = [!hasKind && 'kind', !hasComplexity && 'complexity'].filter(Boolean).join('/');
 
   let reason: string;
   if (!missing) {
-    reason = `kind:"${inference.kind}" complexity:"${inference.complexity}" → ${tier} (${modelLabel})`;
+    reason = `kind:"${inference.kind}" complexity:"${inference.complexity}" → ${matrixTier} (${matrixLabel})`;
   } else if (inferred) {
     const reasons = [inference.kindReason, inference.complexityReason].filter(Boolean).join('; ');
-    reason = `no ${missing} given — inferred ${inference.kind}/${inference.complexity} (${reasons}) → ${tier} (${modelLabel})`;
+    reason = `no ${missing} given — inferred ${inference.kind}/${inference.complexity} (${reasons}) → ${matrixTier} (${matrixLabel})`;
   } else {
-    const bump = tier === 'premium'
+    const bump = tier === 'premium' || floorRaises
       ? ''
       : ` Pass complexity:"complex" or tier:"premium" for a higher tier.`;
-    reason = `no ${missing} given — defaulted to ${inference.kind}/${inference.complexity} → ${tier} (${modelLabel}).${bump}`;
+    reason = `no ${missing} given — defaulted to ${inference.kind}/${inference.complexity} → ${matrixTier} (${matrixLabel}).${bump}`;
+  }
+  if (floorRaises) {
+    reason = `${reason}; role "${input.roleSlug}" floor ${floor} raised ${matrixTier} → ${tier} (${modelLabel})`;
   }
 
   return { tier, model: TIER_DEFAULTS[tier].model, reason, inferred };

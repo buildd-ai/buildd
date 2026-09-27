@@ -74,7 +74,7 @@ function timeAgo(iso: string | null): string {
 }
 
 function shortSha(sha: string | null): string {
-  return sha ? sha.slice(0, 7) : '—';
+  return sha ? sha.slice(0, 7) : 'none';
 }
 
 export default function KnowledgeHealthSection({ workspaceId }: Props) {

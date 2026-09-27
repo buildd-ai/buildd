@@ -17,6 +17,7 @@ import { resolveInferenceCredential, isInferenceKeyProvider, type InferenceKeySc
 import { priceForModel } from '@buildd/core/model-prices';
 import type { Tier } from '@buildd/core/model-tier-defaults';
 import type { ChatProvider } from '@buildd/shared';
+import { openRouterModelId } from './openrouter-id';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
@@ -38,19 +39,7 @@ export function languageModelFor(provider: ChatProvider, modelId: string, apiKey
   }
 }
 
-/**
- * The OpenRouter slug for a native model id. OpenRouter writes Anthropic
- * versions with a dot and no snapshot date (`claude-haiku-4-5-20251001` ->
- * `anthropic/claude-haiku-4.5`); OpenAI ids keep their own dots.
- */
-export function openRouterModelId(provider: string, modelId: string): string {
-  if (provider === 'openrouter' || modelId.includes('/')) return modelId;
-  if (provider === 'anthropic') {
-    const undated = modelId.replace(/-\d{8}$/, '');
-    return `anthropic/${undated.replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
-  }
-  return `${provider}/${modelId}`;
-}
+export { openRouterModelId };
 
 interface ResolveDeps {
   resolveTierEntry: typeof resolveTierEntry;
@@ -100,7 +89,7 @@ async function withChatPool(
   deps: ResolveDeps,
 ): Promise<ResolvedChatModel> {
   try {
-    const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+    const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId, 'chat');
     const draw = await deps.drawChatPoolArm!({
       teamId: opts.teamId, workspaceId: opts.workspaceId, tier: opts.tier,
       conversationId: pool.conversationId, drawKey: pool.drawKey, previous: pool.previous,
@@ -139,7 +128,7 @@ async function resolveIncumbentChatModel(
   opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string },
   deps: ResolveDeps,
 ): Promise<ResolvedChatModel> {
-  const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId);
+  const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId, 'chat');
   const provider = entry.provider as string;
   if (!isInferenceKeyProvider(provider)) return { ok: false, reason: 'unsupported_provider', provider, tier: opts.tier };
   const scope = { teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId };

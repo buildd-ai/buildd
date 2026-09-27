@@ -18,15 +18,16 @@ export function Stat({ label, value, sub }: { label: string; value: string; sub:
 }
 
 /**
- * A stat tile over a `DerivedMetric`. On `unavailable` it shows an em-dash with
- * the reason as a tooltip — never a zero, which would read as "this task cost
- * nothing" instead of "we never recorded it".
+ * A stat tile over a `DerivedMetric`. On `unavailable` it renders no number at
+ * all, with the reason as a tooltip and "not recorded" underneath — never a
+ * zero, which would read as "this task cost nothing" instead of "we never
+ * recorded it".
  *
  * The tooltip prefers `detail` (a sentence written for a reader) over `reason`
  * (a machine token like `no_scope`), per the reachable-reason contract in
  * `docs/design/derived-metric-availability.md`.
  *
- * `extra` renders under the em-dash on the unavailable path only: it is where a
+ * `extra` renders under the value on the unavailable path only: it is where a
  * measurable STAND-IN goes, for a metric that is structurally absent under some
  * auth modes. It must never be a version of the missing number itself.
  */
@@ -47,7 +48,7 @@ export function MetricStat<T>({
     return (
       <div title={metric.detail ?? metric.reason}>
         <div className="text-xs text-text-muted">{label}</div>
-        <div className="text-lg text-text-muted tabular-nums">—</div>
+        <div className="text-lg text-text-muted tabular-nums">&nbsp;</div>
         <div className="text-xs text-text-muted">not recorded</div>
         {extra && <div className="text-[11px] text-text-muted/80 tabular-nums">{extra}</div>}
       </div>

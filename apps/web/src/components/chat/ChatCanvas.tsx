@@ -13,8 +13,10 @@
  * one is in the chat list).
  */
 import { usePathname, useRouter } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ChatConversation from './ChatConversation';
+import SteerConversation from './SteerConversation';
 import type { ChatAgent } from './ChatFeed';
 import type { BuilddObjectRef } from './chat-contract';
 import type { ComposerWorkspace } from './ChatComposer';
@@ -30,7 +32,7 @@ import { CanvasContext, type ChatCanvasApi } from './canvas-context';
 
 export { useChatCanvas } from './canvas-context';
 
-const scopeKey = (s: CanvasScope) => (s.about ? `${s.about.kind}:${s.about.id}` : s.workspaceId ? `ws:${s.workspaceId}` : 'none');
+const scopeKey = (s: CanvasScope) => (s.steer ? `steer:${s.steer.taskId}` : s.about ? `${s.about.kind}:${s.about.id}` : s.workspaceId ? `ws:${s.workspaceId}` : 'none');
 
 function aboutRef(about: ChatAbout): BuilddObjectRef {
   return { kind: about.kind, id: about.id, workspaceId: null, fallbackText: about.kind === 'mission' ? 'This mission' : 'This task' };
@@ -49,7 +51,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const router = useRouter();
   const [isOpen, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null });
+  const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null, steer: null });
   const scopeRef = useRef<CanvasScope>(scope);
   const [session, setSession] = useState(0);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -58,9 +60,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const [presentation, setPresentation] = useState<'peek' | 'takeover'>('peek');
   const enabled = available && !!teamId;
 
-  const open = useCallback((over?: Partial<CanvasScope>) => {
-    if (!enabled) return;
-    const next: CanvasScope = over ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null } : canvasScopeFromPath(pathname);
+  const openScope = useCallback((next: CanvasScope) => {
     if (scopeKey(scopeRef.current) !== scopeKey(next)) {
       setConversationId(null);
       setSession(n => n + 1);
@@ -70,7 +70,21 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     setPresentation(canvasPresentation(window.innerWidth));
     setMounted(true);
     setOpen(true);
-  }, [enabled, pathname]);
+  }, []);
+
+  const open = useCallback((over?: Partial<CanvasScope>) => {
+    if (!enabled) return;
+    const next: CanvasScope = over
+      ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null, steer: over.steer ?? null }
+      : canvasScopeFromPath(pathname);
+    openScope(next);
+  }, [enabled, pathname, openScope]);
+
+  const openSteer = useCallback((taskId: string) => {
+    if (!enabled) return;
+    openScope({ about: null, workspaceId: null, steer: { taskId } });
+  }, [enabled, openScope]);
+
   const close = useCallback(() => setOpen(false), []);
 
   // The agent's name and colour, once, on first open.
@@ -123,7 +137,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
     return () => { unlock(); window.clearTimeout(t); };
   }, [isOpen, shell]);
 
-  const api = useMemo<ChatCanvasApi>(() => ({ open, close, isOpen }), [open, close, isOpen]);
+  const api = useMemo<ChatCanvasApi>(() => ({ open, openSteer, close, isOpen }), [open, openSteer, close, isOpen]);
 
   const onOpenObject = useCallback((ref: BuilddObjectRef) => {
     const href = popOutHref(ref);
@@ -139,6 +153,67 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const showFab = enabled && !isOpen && showsAskButton(pathname, true);
   // Asked about the page you're on: the page behind already is the object.
   const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
+
+  const missionSheet = !scope.steer && scope.about?.kind === 'mission';
+  const overlay = enabled && mounted && (
+    <div
+      data-testid="chat-canvas-overlay"
+      data-presentation={presentation}
+      data-sheet={missionSheet ? 'mission' : undefined}
+      data-open={isOpen ? 'true' : 'false'}
+      className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
+    >
+      {/* A flat dim: the page stays readable behind the peek. Over a mission on
+          a phone the scrim is near-opaque: nothing on the page reads through. */}
+      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className={`absolute inset-0 ${missionSheet ? 'bg-[var(--chat-scrim)] md:bg-[var(--canvas-dim)]' : 'bg-[var(--canvas-dim)]'}`} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={missionSheet ? 'Ask about this mission' : 'Chat'}
+        data-testid="canvas-dialog"
+        className={`canvas-rise absolute flex flex-col overflow-hidden md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:bg-[var(--canvas-bg)] md:pt-0 md:shadow-[var(--canvas-lift)] ${
+          missionSheet
+            // The mission sheet (phone): opaque, from 84px down to the bottom
+            // edge, over the bottom nav; a 2px top edge and a square grabber.
+            ? 'inset-x-0 bottom-0 top-[84px] border-t-2 border-[var(--chat-rule-strong)] bg-[var(--chat-bar)] pb-[env(safe-area-inset-bottom)] md:pb-0'
+            : 'inset-0 bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)]'
+        }`}
+      >
+        {missionSheet && (
+          <div data-testid="canvas-grabber" aria-hidden="true" className="flex h-3 shrink-0 items-center justify-center md:hidden">
+            <span className="h-1 w-9 bg-[var(--chat-rule-strong)]" />
+          </div>
+        )}
+        {scope.steer ? (
+          <SteerConversation key={scope.steer.taskId} taskId={scope.steer.taskId} onClose={close} />
+        ) : shell ? (
+          <ChatConversation
+            key={`${session}:${conversationId ?? 'new'}`}
+            conversationId={conversationId}
+            teamId={teamId!}
+            teamName={null}
+            initialMessages={[]}
+            title={null}
+            titleSource="auto"
+            tier={null}
+            agent={shell.agent}
+            workspaces={workspaces}
+            workspaceId={scope.workspaceId}
+            viewerName={viewerName}
+            canManageTeamKeys={shell.canManageTeamKeys}
+            focusRef={scope.about ? aboutRef(scope.about) : null}
+            entry={entry}
+            onConversationCreated={setConversationId}
+            canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
+          />
+        ) : (
+          <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
+            {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <CanvasContext.Provider value={enabled ? api : null}>
@@ -157,49 +232,25 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
           <Kbd tone="accent">⌘K</Kbd>
         </button>
       )}
-      {enabled && mounted && (
-        <div
-          data-testid="chat-canvas-overlay"
-          data-presentation={presentation}
-          data-open={isOpen ? 'true' : 'false'}
-          className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
-        >
-          {/* A flat dim: the page stays readable behind the peek. */}
-          <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className="absolute inset-0 bg-[var(--canvas-dim)]" />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Chat"
-            className="canvas-rise absolute inset-0 flex flex-col overflow-hidden bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)] md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:pt-0 md:shadow-[var(--canvas-lift)]"
-          >
-            {shell ? (
-              <ChatConversation
-                key={`${session}:${conversationId ?? 'new'}`}
-                conversationId={conversationId}
-                teamId={teamId!}
-                teamName={null}
-                initialMessages={[]}
-                title={null}
-                titleSource="auto"
-                tier={null}
-                agent={shell.agent}
-                workspaces={workspaces}
-                workspaceId={scope.workspaceId}
-                viewerName={viewerName}
-                canManageTeamKeys={shell.canManageTeamKeys}
-                focusRef={scope.about ? aboutRef(scope.about) : null}
-                entry={entry}
-                onConversationCreated={setConversationId}
-                canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
-              />
-            ) : (
-              <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
-                {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/*
+       * Portal to <body>: "Ask about this mission" (AskAboutLink) renders
+       * inside the mission page's sticky masthead (`MissionMasthead`, `sticky
+       * top-0 z-20` — MissionDetailView.tsx), the same class of ancestor that
+       * trapped BottomSheet.tsx's and FlightDetailSheet.tsx's own overlays
+       * under a lower-z sibling until they portaled too — a `position:
+       * sticky` box establishes its own stacking context, so anything that
+       * paints inside it is capped at its place in the page's order no matter
+       * how high its own z-index reads. This provider renders `{children}`
+       * (the whole page, masthead included) ahead of the overlay today, so
+       * nothing traps it yet, but that is an accident of every context
+       * provider between here and the root staying a transparent, DOM-less
+       * wrapper — portaling makes the pinned mission card at its top, and
+       * everything else in the canvas, immune to that by construction rather
+       * than by every provider's node-free luck holding forever. No `document`
+       * on the server, but `mounted` (client-only) already gates this to the
+       * browser, so the ternary is only for the type.
+       */}
+      {typeof document !== 'undefined' ? createPortal(overlay, document.body) : overlay}
     </CanvasContext.Provider>
   );
 }

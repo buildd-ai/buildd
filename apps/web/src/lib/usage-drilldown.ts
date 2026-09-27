@@ -26,7 +26,7 @@ import type { DerivedMetric } from '@buildd/core/derived-metric';
 export const DRILLDOWN_WINDOWS = ['7d', '30d'] as const;
 export type DrilldownWindow = typeof DRILLDOWN_WINDOWS[number];
 
-export const CLAMP_NOTICE = '24h is too thin for stable percentages here — showing 7d.';
+export const CLAMP_NOTICE = '24h is too thin for stable percentages here. Showing 7d.';
 
 export interface WindowResolution {
   window: DrilldownWindow;
@@ -200,10 +200,10 @@ export function buildCodeNavigationPanel(
 function withheldReason(previous: PreviousPeriod | null, window: DrilldownWindow): string | null {
   if (!previous) return 'No previous period was read, so there is nothing to compare against.';
   if (previous.truncated) {
-    return `The previous ${window} hit the scan cap, so its counts are a floor — a delta against a floor would read as a rise that never happened.`;
+    return `The previous ${window} hit the scan cap, so its counts are a floor. A delta against a floor would read as a rise that never happened.`;
   }
   if (previous.stats.totals.tasks < MIN_DELTA_TASKS) {
-    return `Only ${previous.stats.totals.tasks} task${previous.stats.totals.tasks === 1 ? '' : 's'} in the previous ${window} — too few to compare.`;
+    return `Only ${previous.stats.totals.tasks} task${previous.stats.totals.tasks === 1 ? '' : 's'} in the previous ${window}, too few to compare.`;
   }
   return null;
 }
@@ -264,8 +264,8 @@ export function buildShellPanel(current: UsageStats): ShellPanel {
 export const INDEX_ADOPTION_TOOLTIP =
   'Failed workers are excluded entirely, from both sides: a session that queried the graph and then failed is invisible here. '
   + 'Workers that predate the CBM metric carry no record at all and fall out of BOTH sides of the ratio rather than counting as zero. '
-  + 'Sessions where the graph was unavailable — by design (Codex tasks, worktree-less runs, role opt-outs) or through breakage '
-  + '(binary absent, sandbox mount unavailable) — sit outside the denominator, which is "sessions where it was available", not "sessions".';
+  + 'Sessions where the graph was unavailable, by design (Codex tasks, worktree-less runs, role opt-outs) or through breakage '
+  + '(binary absent, sandbox mount unavailable), sit outside the denominator, which is "sessions where it was available", not "sessions".';
 
 /**
  * The half of the tooltip a reader must not have to hover to find: the two
@@ -282,7 +282,7 @@ export const INDEX_ADOPTION_CAVEAT =
  * of work, not a relabelling — so it keeps its own population and declares it.
  */
 export const SESSION_KEYED_NOTE =
-  'Session-keyed — the only line on this page that is. Everything else here is folded to tasks; this counts worker sessions, so a task retried three times counts three times.';
+  'Session-keyed: the only line on this page that is. Everything else here is folded to tasks; this counts worker sessions, so a task retried three times counts three times.';
 
 export interface IndexAdoptionLine {
   available: boolean;
@@ -320,24 +320,24 @@ export function indexAdoptionLine(
       n: 0,
       sessions: 0,
       rate: null,
-      label: `Graph queried in — of 0 sessions where it was available (${window}, completed sessions only)`,
-      shortLabel: 'Index adoption — —',
+      label: `No sessions had the graph available (${window}, completed sessions only)`,
+      shortLabel: 'Index adoption unavailable',
       unavailableReason:
-        `No completed session in this window had the graph available — nothing to take a ratio of. `
+        `No completed session in this window had the graph available, so there is nothing to take a ratio of. `
         + `Sessions are excluded when CBM was disabled by design or unavailable through breakage, and failed workers are never counted.`,
     };
   }
 
   const n = sessions - cbm.zeroCallTasks;
   const rate = cbm.adoptionRate;
-  const pct = rate === null ? '—' : `${Math.round(rate * 100)}%`;
+  const pctText = rate === null ? null : `${Math.round(rate * 100)}%`;
   return {
     available: true,
     n,
     sessions,
     rate,
     label: `Graph queried in ${n} of ${sessions} sessions where it was available (${window}, completed sessions only)`,
-    shortLabel: `Index adoption — ${pct} — ${n}/${sessions} CBM-enabled sessions`,
+    shortLabel: ['Index adoption', pctText, `${n}/${sessions} CBM-enabled sessions`].filter(Boolean).join(' · '),
     unavailableReason: null,
   };
 }
@@ -509,31 +509,31 @@ export function shortToolName(name: string): string {
 
 /** Compact token counts — per-task input runs into the millions. */
 export function formatTokens(n: number): string {
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return `${Math.round(n)}`;
 }
 
 export function formatUsd(n: number): string {
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '';
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
 }
 
 /** One decimal below 10, whole numbers above — a per-task rate of 0.3 is a real reading. */
 export function formatRate(n: number): string {
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '';
   return n >= 10 ? Math.round(n).toString() : n.toFixed(1);
 }
 
 /**
  * A delta reads as a delta: signed, or `new` when the previous period had none,
- * or an em-dash when it is withheld. Never a bare 0 standing in for "unknown".
+ * or nothing when it is withheld. Never a bare 0 standing in for "unknown".
  */
 export function formatDelta(row: ToolUsageRow, withheld: boolean): string {
-  if (withheld) return '—';
-  if (row.previousPerTask === 0) return row.calls > 0 ? 'new' : '—';
-  if (row.deltaPct === null) return '—';
+  if (withheld) return '';
+  if (row.previousPerTask === 0) return row.calls > 0 ? 'new' : '';
+  if (row.deltaPct === null) return '';
   const pct = Math.round(row.deltaPct * 100);
   return `${pct > 0 ? '+' : ''}${pct}%`;
 }

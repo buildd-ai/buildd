@@ -37,7 +37,7 @@ const workFinishedMissionPrOpen: MissionStateInput = {
     awaitingMerge: 1,
     awaitingMergeDetails: [],
   },
-  missionPr: { prNumber: 4242, prUrl: 'https://example.invalid/pr/4242' },
+  missionPr: { state: 'open', prNumber: 4242, prUrl: 'https://example.invalid/pr/4242' },
 };
 
 function factOfKind(facts: readonly WaitingOnDescriptor[], kind: WaitingOnDescriptor['kind']) {
@@ -268,12 +268,23 @@ describe('degraded input — a caller that could not afford the full derivations
     const view = deriveMissionStateView({
       ...base,
       progress: 100,
-      missionPr: { prNumber: 77, prUrl: 'https://example.invalid/pr/77' },
+      missionPr: { state: 'open', prNumber: 77, prUrl: 'https://example.invalid/pr/77' },
     });
 
     expect(view.kind).toBe('awaiting_merge');
     expect(view.situation.derivedFrom).toBe('workers.prUrl + workers.mergedAt');
     expect(view.situation.headline).toBe('Waiting on you to merge the mission PR #77.');
+  });
+
+  it('stays quiet about a mission PR that has not opened yet — no completion decision to say the work is even done', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      progress: 100,
+      missionPr: { state: 'not_opened', prNumber: null, prUrl: null },
+    });
+
+    expect(view.kind).not.toBe('awaiting_merge');
+    expect(view.waitingOn).toBeNull();
   });
 
   it('finds unmerged task PRs from worker rows alone', () => {

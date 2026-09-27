@@ -30,6 +30,23 @@ steps:
     waitFor: canvas-empty
     caption: "A plain greeting and questions you can tap."
 
+  # w8 waits on Maya from 14:28 to 16:54 (pinned by multi-currency-story.test.ts),
+  # so the empty canvas reads NEEDS YOU with the copper row and rule.
+  - id: k1b-chat-new-needs-you
+    advance: "14:30"
+    goto: /app/chat
+    viewports: [phone]
+    waitFor: canvas-empty
+    caption: "Something waits on you: the canvas says so, in copper."
+
+  - id: k1c-chat-new-reduced-motion
+    advance: "14:30"
+    goto: /app/chat
+    viewports: [phone]
+    waitFor: canvas-empty
+    reducedMotion: true
+    caption: "Reduced motion: still pools, no sweep."
+
   - id: k2-chat-filed
     advance: "1:00"
     goto: /app/chat/{C1}

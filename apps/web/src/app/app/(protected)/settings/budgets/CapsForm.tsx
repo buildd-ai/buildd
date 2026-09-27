@@ -8,8 +8,8 @@ const perDay = (n: number) => `$${Number.isInteger(n) ? n : n.toFixed(2)}/day`;
 
 /**
  * Daily caps on interactive (server-side) spend: `teams.chatDailyBudgetUsd` and
- * `chatUserDailyBudgetUsd`. An empty field means the default, shown as the
- * placeholder. Under "each person's own key" there is no team cap and the
+ * `chatUserDailyBudgetUsd`. An empty field means the default, named beside the
+ * label so the field itself only ever shows a cap someone set. Under "each person's own key" there is no team cap and the
  * per-person cap defaults to none (lib/chat/limits.ts).
  */
 export default function CapsForm({
@@ -73,20 +73,22 @@ export default function CapsForm({
   }
 
   const field = (
-    id: string, label: string, value: string, set: (v: string) => void, placeholder: string,
+    id: string, label: string, value: string, set: (v: string) => void, fallback: string,
     parsed: ReturnType<typeof parseBudgetInput>,
   ) => (
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 px-4 py-3">
-      <label htmlFor={id} className="text-sm text-text-primary">{label}</label>
+      <span>
+        <label htmlFor={id} className="block text-sm text-text-primary">{label}</label>
+        <span className="block text-xs text-text-muted" data-testid={`${id}-default`}>{fallback}</span>
+      </span>
       <div className="sm:text-right">
         <input
           id={id}
           inputMode="decimal"
           value={value}
           onChange={(e) => set(e.target.value)}
-          placeholder={placeholder}
           disabled={!canManage || !loaded}
-          className="w-full sm:w-36 h-11 sm:h-9 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm sm:text-right disabled:opacity-60"
+          className="w-full sm:w-36 h-11 sm:h-9 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm text-text-primary sm:text-right disabled:opacity-100 disabled:cursor-default"
         />
         {!parsed.ok && <p className="text-xs text-status-error mt-1">{parsed.error}</p>}
       </div>
@@ -94,10 +96,10 @@ export default function CapsForm({
   );
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
       <div className="card divide-y divide-border-default" data-testid="caps">
-        {!own && field('cap-team', 'Team', team, setTeam, perDay(defaultTeamUsd), teamParsed)}
-        {field('cap-user', 'Each person', user, setUser, own ? 'No cap' : perDay(effectiveTeam * defaultUserShare), userParsed)}
+        {!own && field('cap-team', 'Team', team, setTeam, `Default ${perDay(defaultTeamUsd)}`, teamParsed)}
+        {field('cap-user', 'Each person', user, setUser, own ? 'No cap' : `Default ${perDay(effectiveTeam * defaultUserShare)}`, userParsed)}
       </div>
       {canManage ? (
         <div className="flex flex-wrap items-center gap-2">

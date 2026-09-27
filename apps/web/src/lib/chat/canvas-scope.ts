@@ -11,9 +11,15 @@ export interface CanvasScope {
   about: ChatAbout | null;
   /** The page's workspace, when the page is one. */
   workspaceId: string | null;
+  /**
+   * Steering one running worker instead of talking with an agent (Board
+   * tiles, the tasks list, home's fleet slot — "Steer"). Mutually exclusive
+   * with `about`: never set by `canvasScopeFromPath`, only by `openSteer`.
+   */
+  steer: { taskId: string } | null;
 }
 
-const NONE: CanvasScope = { about: null, workspaceId: null };
+const NONE: CanvasScope = { about: null, workspaceId: null, steer: null };
 
 export function canvasScopeFromPath(pathname: string | null | undefined): CanvasScope {
   if (!pathname) return NONE;
@@ -21,10 +27,10 @@ export function canvasScopeFromPath(pathname: string | null | undefined): Canvas
   if (seg[0] !== 'app') return NONE;
   const [, section, id] = seg;
   if ((section === 'missions' || section === 'tasks') && id && isUuid(id)) {
-    return { about: { kind: section === 'missions' ? 'mission' : 'task', id }, workspaceId: null };
+    return { about: { kind: section === 'missions' ? 'mission' : 'task', id }, workspaceId: null, steer: null };
   }
-  if (section === 'workspaces' && id && isUuid(id)) return { about: null, workspaceId: id };
-  if (section === 'settings' && seg[2] === 'workspace' && seg[3] && isUuid(seg[3])) return { about: null, workspaceId: seg[3] };
+  if (section === 'workspaces' && id && isUuid(id)) return { about: null, workspaceId: id, steer: null };
+  if (section === 'settings' && seg[2] === 'workspace' && seg[3] && isUuid(seg[3])) return { about: null, workspaceId: seg[3], steer: null };
   return NONE;
 }
 
