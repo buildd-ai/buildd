@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -32,7 +32,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, pathsOverlap, declaresNoScope, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -929,6 +929,13 @@ export async function POST(req: NextRequest) {
   // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
   // that want to name the PR an idle runner is waiting on).
   let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
+  // Set when the EXPLICITLY requested task (claim with `taskId`) is itself the
+  // one deferred by the path-overlap backstop below. This task already passed
+  // every SQL-level claimability gate (it is in `filteredTasks`), so the
+  // explicit-task-exclusion probe never runs for it and would say 'unknown' —
+  // the route already knows exactly which PR or task blocked it, so surface
+  // that instead of falling back to the generic deferral message.
+  let explicitTaskExclusion: ClaimTaskExclusion | null = null;
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
@@ -1218,6 +1225,17 @@ export async function POST(req: NextRequest) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
         firstBlockingPr ??= blockedByPr;
+        if (task.id === taskId) {
+          const blockingEntry = filterOpenPrTasks.find(
+            t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
+          );
+          const overlapPaths = intersectPaths(taskManifest, blockingEntry?.pathManifest ?? []);
+          const prLabel = blockedByPr.prNumber ? `#${blockedByPr.prNumber}` : (blockedByPr.prUrl ?? 'an open PR');
+          explicitTaskExclusion = {
+            code: 'path_overlap',
+            detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
+          };
+        }
         deferTask(task, 'path_overlap', blockedByPr);
         continue;
       }
@@ -1243,6 +1261,13 @@ export async function POST(req: NextRequest) {
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+              if (task.id === taskId) {
+                const overlapPaths = intersectPaths(concreteManifest, concreteClaimed);
+                explicitTaskExclusion = {
+                  code: 'path_overlap',
+                  detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
+                };
+              }
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
               deferTask(task, 'path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
@@ -1911,6 +1936,7 @@ export async function POST(req: NextRequest) {
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
         ...(firstBlockingPr ? { blockedByPr: firstBlockingPr } : {}),
+        ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
         // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
         // attributable ("seat capped at 97% of the learned window") instead of
         // looking like an unexplained stall.

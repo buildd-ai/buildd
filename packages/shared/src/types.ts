@@ -1271,6 +1271,7 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  | 'path_overlap'
   | 'unknown';
 
 export interface ClaimTaskExclusion {
@@ -1282,8 +1283,12 @@ export interface ClaimTaskExclusion {
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
-   * Set only for an explicit `taskId` claim whose task the claim query filtered
-   * out (reason `no_pending_tasks`): the specific gate that excluded it.
+   * The specific gate that excluded an explicit `taskId` claim. Set either when
+   * the claim query filtered the task out entirely (reason `no_pending_tasks`),
+   * or when the task reached the dispatch loop but was itself the one deferred
+   * by the path-overlap backstop (reason `all_candidates_deferred`/`race_lost`)
+   * — the two mechanisms that can silently exclude a named task without a claim
+   * attempt ever being made.
    */
   taskExclusion?: ClaimTaskExclusion;
   pendingTasks?: number;

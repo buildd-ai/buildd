@@ -4756,6 +4756,70 @@ describe('path-overlap claim guard', () => {
       prUrl: 'https://github.com/org/repo/pull/1126',
     });
   });
+
+  // ── Explicit-taskId diagnosis of a path-overlap deferral ────────────────────
+  // The task reached the dispatch loop (it passed every SQL-level claimability
+  // gate) but was itself the one deferred by the in-loop path-overlap backstop.
+  // Without this, an explicit `claim_task(taskId)` caller saw only the generic
+  // "held back this poll" fallback (or 'unknown' via the SQL-gate probe) even
+  // though the route already knew exactly which PR or task was blocking it.
+
+  it('layer 1: names the explicit task exclusion as path_overlap with the blocking PR and paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.taskExclusion).toEqual({
+      code: 'path_overlap',
+      detail: 'Its files overlap open PR #2700 (apps/web/src/lib/mcp-oauth.ts). Wait for it to merge, or rebase onto it.',
+    });
+  });
+
+  it('layer 2: names the explicit task exclusion as path_overlap with the claiming task id and paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+
+    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.taskExclusion).toEqual({
+      code: 'path_overlap',
+      detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
+    });
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
