@@ -124,12 +124,6 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
           )}
         </div>
       </form>
-      {!compact && (
-        <div className="mt-2 hidden justify-between gap-4 font-mono text-[11.5px] text-text-muted md:flex">
-          <span>Enter to send · Shift+Enter for a new line</span>
-          <span>Reads run on their own. Filing asks you first.</span>
-        </div>
-      )}
     </div>
   );
 });
