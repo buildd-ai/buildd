@@ -7,8 +7,9 @@
  * On a phone the same object opens as a sheet over the conversation.
  *
  * The canvas (docs/design/chat-canvas.md): crumbs for who you're talking to
- * and about what, the live object pinned at the top, an orange line scanning
- * the top edge while a turn streams, a soft conversation, and the composer.
+ * and about what, the live object pinned at the top, a soft conversation over
+ * the sea (sea.ts), and the composer, whose top edge carries the one glow while
+ * a turn streams.
  * Before the first message: the mood, a hero line and two picked questions
  * (canvas-empty.ts), all square.
  *
@@ -26,6 +27,8 @@ import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
 import PinnedObject from './objects/PinnedObject';
+import SeaLayer from './SeaLayer';
+import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
@@ -389,9 +392,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-canvas={variant}
       data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${docked ? 'md:w-[540px] md:shrink-0' : 'flex-1'}`}
     >
-      {busy && <div data-testid="canvas-scan" aria-hidden="true" className="canvas-scan z-10" />}
+      {/* The sea: soft pools behind the phone canvas, coloured by mood. The
+          summoned overlay is an opaque sheet and draws none. */}
+      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden" />}
       {header}
       {strip}
       {pin && !missionEmpty && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
@@ -406,7 +411,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && (
             <div data-testid="chat-empty-state" className={historyOpen ? '' : 'hidden md:block'}>{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} error={error} />
+          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>

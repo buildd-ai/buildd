@@ -169,6 +169,8 @@ function call(name: string, input: Record<string, unknown>, output: unknown, ove
   return { type: `tool-${name}`, toolCallId: `call-${pseq}`, state: 'output-available', input, output, ...over };
 }
 const user = (id: string, text: string, min: number): ChatMessage => ({ id, role: 'user', metadata: { createdAt: iso(min), authorName: VIEWER }, parts: [{ type: 'text', text }] });
+/** The turn was routed to the fixture workspace (streamed turn metadata). */
+const withScope = (m: ChatMessage): ChatMessage => ({ ...m, metadata: { ...(m.metadata as object), scope: { id: WS.id, name: WS.name, source: 'routed' } } });
 const agent = (id: string, min: number, parts: ChatMessage['parts'], durationMs?: number): ChatMessage => ({ id, role: 'assistant', metadata: { createdAt: iso(min), durationMs }, parts });
 
 const MISSION_DRAFT = {
@@ -215,11 +217,11 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
         title: null, status: 'streaming',
         messages: [
           user('m1', 'What would it take to bill customers in their own currency?', 1),
-          agent('m2', 1, [
+          withScope(agent('m2', 1, [
             call('manage_missions', { action: 'list', workspace: 'billing-web' }, { summary: '3 open, none touch currency', data: [], objects: [] }),
             call('recall', { query: 'currency money rounding' }, undefined, { state: 'input-available' }),
             { type: 'text', text: 'Nothing in flight touches currency. Amounts are integer', state: 'streaming' },
-          ]),
+          ])),
         ],
       };
     case 'propose':
