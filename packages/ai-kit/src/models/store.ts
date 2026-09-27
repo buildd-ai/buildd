@@ -7,7 +7,7 @@
  * cold starts. Values are small JSON; a store may serialise them.
  */
 
-import type { WirePlan } from './types.js';
+import type { WirePlan } from './types';
 
 export interface StoredPlan {
   /** buildd's answer, verbatim. */

@@ -120,6 +120,24 @@ describe('POST /api/ai/usage — storing receipts', () => {
     expect(saved[0][0]).toMatchObject({ planId: null, tier: 'budget', surface: null, kind: null, provider: 'anthropic', outcome: 'error' });
   });
 
+  it('stores a Jev decision receipt with no plan and no tier as its own kind', async () => {
+    const { deps, saved } = makeDeps();
+    const res = await handleUsageRequest(req({
+      planId: null, model: 'typesafe/jev-1.13', provider: 'openrouter', planSource: 'fallback', kind: 'decision',
+      tokens: { input: 400, output: 20 }, costUsd: 0.0002, latencyMs: 700, outcome: 'ok',
+    }), deps);
+    expect(await res.json()).toEqual({ accepted: 1, rejected: [] });
+    // The receipt's kind is stored as its surface, beside the plan surfaces
+    // chat / inference, so decision spend is not counted as budget-tier chat.
+    expect(saved[0][0]).toMatchObject({ planId: null, tier: null, surface: 'decision', kind: null, model: 'typesafe/jev-1.13', costUsd: 0.0002 });
+  });
+
+  it('lets the receipt\'s kind override its plan\'s surface, and keeps the plan\'s surface otherwise', async () => {
+    const { deps, saved } = makeDeps();
+    await handleUsageRequest(req({ records: [{ ...REC, kind: 'inference' }, REC] }), deps);
+    expect(saved[0].map((r) => [r.surface, r.kind, r.tier])).toEqual([['inference', 'chat_turn', 'standard'], ['chat', 'chat_turn', 'standard']]);
+  });
+
   it('rejects a receipt for a denied plan that names no model', async () => {
     const { deps, saved } = makeDeps();
     const res = await handleUsageRequest(req({ ...REC, planId: DENIED }), deps);

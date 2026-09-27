@@ -17,6 +17,9 @@ export interface ContextNeedsYou {
   label?: string | null;
   /** What the worker is waiting for (workers.waitingFor.type). */
   waitingType?: string | null;
+  /** The waiting task and its workspace (the desktop dock loads it). */
+  taskId?: string | null;
+  workspaceId?: string | null;
 }
 export interface ContextMission { id: string; title: string; state: string; meta?: string | null; tone?: 'live' | 'attention' | 'idle' }
 

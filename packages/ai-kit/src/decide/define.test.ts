@@ -194,7 +194,8 @@ describe('receipts fit /models', () => {
   it('toModelsUsage produces a recordUsage input', () => {
     const input: UsageReceipt = toModelsUsage(receipt);
     expect(input).toEqual({
-      plan: { planId: null, planSource: 'fallback', model: 'typesafe/jev-1.13-20260917', provider: 'openrouter', tier: 'budget' },
+      plan: { planId: null, planSource: 'fallback', model: 'typesafe/jev-1.13-20260917', provider: 'openrouter' },
+      kind: 'decision',
       tokens: { input: 400, output: 50 },
       costUsd: 0.00002,
       latencyMs: 212,
@@ -205,5 +206,6 @@ describe('receipts fit /models', () => {
   it('carries a plan id and tier when the app has one', () => {
     const input = toModelsUsage(receipt, { planId: '00000000-0000-4000-8000-000000000000', tier: 'standard' });
     expect(input.plan).toMatchObject({ planSource: 'default', tier: 'standard' });
+    expect(input.kind).toBe('decision');
   });
 });

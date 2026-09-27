@@ -504,7 +504,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
-    list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
+    list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
@@ -949,6 +949,33 @@ async function requireExplicitWorkspace(
   };
 }
 
+/** Minute-precision UTC stamp: `2026-09-27 17:07Z`. */
+const stamp = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z`;
+
+/**
+ * list_releases text: one line per release and the tasks it shipped. The raw
+ * rows (archetype, SHAs, run metadata) cost the reader ~1K tokens each and
+ * answered "what shipped?" with nothing; get_release has the full record.
+ */
+export function renderReleaseList(
+  rows: Array<Record<string, any>>,
+  sinceDays: number | null,
+): string {
+  if (rows.length === 0) return sinceDays ? `No releases in the last ${sinceDays} days.` : 'No releases found.';
+  const MAX_TASKS = 15;
+  return rows.map((r) => {
+    const state = r.failureReason && r.state !== 'healthy' ? `${r.state} (${r.failureReason})` : r.state;
+    const when = r.deployedAt ? `deployed ${stamp(r.deployedAt)}` : `created ${stamp(r.createdAt)}`;
+    const head = [r.version ?? 'unversioned', state, when, r.headSha ? String(r.headSha).slice(0, 7) : null]
+      .filter(Boolean).join(' · ');
+    const shipped: Array<{ title: string | null; prNumber: number | null }> = r.tasks ?? [];
+    const lines = shipped.slice(0, MAX_TASKS)
+      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}`);
+    if (shipped.length > MAX_TASKS) lines.push(`    - …and ${shipped.length - MAX_TASKS} more (get_release)`);
+    return [`- ${head} (id ${r.id})`, ...lines].join('\n');
+  }).join('\n');
+}
+
 /**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
  * Falls back to context workspace ID if no param given.
@@ -965,10 +992,16 @@ async function resolveWorkspaceId(
   if (!raw) return ctx.getWorkspaceId();
 
   // Not a UUID — resolve by repo name or workspace name
-  // Try by-repo first (handles "owner/repo" format)
+  // Try by-repo first (handles "owner/repo" format). It searches only the
+  // caller's reachable workspaces and answers 404 otherwise, which `api`
+  // throws on; that is a miss, not an error, so fall through to the list.
   if (raw.includes('/')) {
-    const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
-    if (data.workspace?.id) return data.workspace.id;
+    try {
+      const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
+      if (data?.workspace?.id) return data.workspace.id;
+    } catch {
+      // not reachable / not found — fall through
+    }
   }
 
   // Fall back to name match across accessible workspaces
@@ -1325,7 +1358,11 @@ export async function handleBuilddAction(
 
   switch (action) {
     case 'list_tasks': {
-      const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
+      // An explicit workspaceId (the guard above asks for one) wins over the default.
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : ctx.workspaceId || await ctx.getWorkspaceId();
+      if (params.workspaceId && !wsId) throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
       const rawLimit = params.limit;
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(Math.max(Math.trunc(rawLimit), 1), 50)
@@ -4913,9 +4950,12 @@ export async function handleBuilddAction(
       if (typeof params.missionId === 'string') qs.set('missionId', params.missionId);
       if (typeof params.state === 'string') qs.set('state', params.state);
       if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+      const sinceDays = typeof params.sinceDays === 'number' && params.sinceDays > 0 ? params.sinceDays : null;
+      if (sinceDays) qs.set('sinceDays', String(sinceDays));
+      qs.set('include', 'tasks');
 
       const data = await api(`/api/releases?${qs.toString()}`);
-      return text(JSON.stringify(data));
+      return text(renderReleaseList(data.releases ?? [], sinceDays));
     }
 
     case 'get_release': {

@@ -19,7 +19,7 @@ describe('parsePrRefId', () => {
 });
 const { shapeQuestion, askerLabelFor } = await import('./load-question-object');
 const { missionGoalLine } = await import('./load-mission-object');
-const { taskNowState } = await import('./load-task-object');
+const { taskNowState, taskHappened } = await import('./load-task-object');
 
 describe('prStateOf', () => {
   it('a merge stamp wins over any lifecycle value', () => {
@@ -115,5 +115,24 @@ describe('taskNowState', () => {
     const s = taskNowState({ status: 'running', currentAction: 'Reading files', prUrl: null, startedAt: now - 60_000, milestones: null }, now);
     expect(s).not.toBeNull();
     expect(Array.isArray(s!.steps)).toBe(true);
+  });
+});
+
+describe('taskHappened (the dock\'s WHAT HAPPENED)', () => {
+  it('keeps labelled status and checkpoint milestones, oldest first, the last few only', () => {
+    const rows = taskHappened([
+      { type: 'action', label: 'Edited a.ts', ts: 5 },
+      { type: 'status', label: 'Tests failed on rounding', ts: 3 },
+      { type: 'checkpoint', event: 'first_commit', label: 'Committed the change', ts: 4 },
+      { type: 'status', label: 'Started the change', ts: 1 },
+      { type: 'status', ts: 2 },
+      { type: 'phase', label: 'Reading', toolCount: 3, ts: 2 },
+    ], 2);
+    expect(rows).toEqual([{ ts: 3, text: 'Tests failed on rounding' }, { ts: 4, text: 'Committed the change' }]);
+  });
+
+  it('drops question bookkeeping and tolerates a non-array column', () => {
+    expect(taskHappened([{ type: 'status', label: 'Asked: per line?', ts: 1 }])).toEqual([]);
+    expect(taskHappened(null)).toEqual([]);
   });
 });

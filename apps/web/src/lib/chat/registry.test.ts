@@ -55,9 +55,9 @@ describe('every op is declared well enough to be enforced', () => {
     }
   }
 
-  it('every write route in CHAT_ROUTES is reachable only by some write or admin op', () => {
+  it('every write route in CHAT_ROUTES is reachable only by some write, admin or self op', () => {
     const byWriteOps = new Set(Object.values(ALL_CHAT_TOOL_SPECS).flatMap(s => opsOf(s))
-      .filter(([, o]) => o.class === 'write' || o.class === 'admin').flatMap(([, o]) => o.routes));
+      .filter(([, o]) => o.class === 'write' || o.class === 'admin' || o.class === 'self').flatMap(([, o]) => o.routes));
     const writeRoutes = [...declared].filter(r => !r.startsWith('GET '));
     expect(writeRoutes.filter(r => !byWriteOps.has(r as never))).toEqual([]);
   });

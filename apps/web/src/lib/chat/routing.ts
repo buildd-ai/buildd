@@ -51,6 +51,7 @@ export const CHAT_ROUTING_QUESTIONS = {
       memory: 'Team knowledge: recalling what was decided or learned, saving a lesson.',
       schedules: 'Recurring work: creating, changing, pausing or tracing a schedule.',
       artifacts: 'Reports, analyses and other artifacts.',
+      notifications: 'Being told later: "let me know when it merges", "tell me when checkout is done", or stopping or listing those watches.',
       admin: 'Workspace settings, roles/skills, experiments, watched projects, or triggering a release.',
       general: 'None of the above clearly, or several at once.',
     },
@@ -84,7 +85,11 @@ export const WORKSPACE_MIN_CONFIDENCE = 0.85;
 const MAX_WORKSPACE_LABELS = 255;
 
 /** A workspace the turn may be routed to, with what it's about (repo, projects). */
-export interface RoutableWorkspace { id: string; name: string; hint?: string | null }
+export interface RoutableWorkspace {
+  id: string; name: string; hint?: string | null;
+  /** Latest task activity (ISO), null = none in the lookback; spanning reads skip idle ones. */
+  lastActiveAt?: string | null;
+}
 
 /**
  * What a workspace is about, for the workspace question: its repo's name and

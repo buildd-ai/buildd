@@ -120,6 +120,17 @@ describe('canSkipCard', () => {
     expect(canSkipCard({ tool: 'create_task', input: { ...base, model: 'opus' }, allowedGroups: allowed('tasks'), ...clean })).toBe(false);
   });
 
+  it('a one-shot watch skips under the Watches allow; a standing one always asks', () => {
+    const watch = (input: Record<string, unknown>, groups = allowed('notifications')) =>
+      canSkipCard({ tool: 'watch', input, allowedGroups: groups, ...clean });
+    expect(ALLOWABLE_GROUPS).toContain('notifications');
+    expect(watch({ prNumber: 42 })).toBe(true);
+    expect(watch({ prNumber: 42, lifetime: 'one_shot' })).toBe(true);
+    expect(watch({ prNumber: 42 }, allowed('tasks'))).toBe(false);
+    expect(watch({ prNumber: 42, lifetime: 'standing' })).toBe(false);
+    expect(canSkipCard({ tool: 'watch', input: { prNumber: 42 }, allowedGroups: allowed('notifications'), tainted: true, docked: false })).toBe(false);
+  });
+
   it('reads and unknown tools never go through here', () => {
     expect(canSkipCard({ tool: 'list_tasks', input: {}, allowedGroups: allowed('tasks'), ...clean })).toBe(false);
     expect(canSkipCard({ tool: 'manage_secrets', input: {}, allowedGroups: allowed('tasks'), ...clean })).toBe(false);

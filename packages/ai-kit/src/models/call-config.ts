@@ -9,7 +9,7 @@
  * ```
  */
 
-import type { KitProvider, PlanEffort, ResolvedPlan } from './types.js';
+import type { KitProvider, PlanEffort, ResolvedPlan } from './types';
 
 export const PROVIDER_BASE_URLS: Record<KitProvider, string> = {
   openrouter: 'https://openrouter.ai/api/v1',

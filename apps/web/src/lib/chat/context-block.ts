@@ -6,6 +6,8 @@
  * the clock and zone are parameters, so it is testable with a fixed instant.
  */
 
+import { activityLabel, type WorkspaceActivity } from './workspace-activity';
+
 export interface ChatContextInput {
   now: Date;
   /** IANA zone: users.timezone, then teams.timezone, then UTC. */
@@ -17,7 +19,7 @@ export interface ChatContextInput {
    */
   workspace: { id: string; name: string; source?: 'pinned' | 'routed' } | null;
   /** With no default: the workspaces in reach, so the model can name one. */
-  workspaces?: ReadonlyArray<{ id: string; name: string }>;
+  workspaces?: ReadonlyArray<WorkspaceActivity>;
   user: { name: string | null; teamRole: 'owner' | 'admin' | 'member'; isOperator: boolean };
   tier: string;
   /** True once the team has used 80% of its daily chat budget. */
@@ -70,9 +72,12 @@ function workspaceLine(input: ChatContextInput): string {
     return `Workspace for this turn: ${w.name} (id ${w.id}), picked from the message. Tool calls use it unless the user names another.`;
   }
   if (w) return `Default workspace: ${w.name} (id ${w.id}). Tool calls use it unless the user names another.`;
-  const list = (input.workspaces ?? []).map(x => `${x.name} (id ${x.id})`).join(', ');
+  const list = (input.workspaces ?? []).map(x => {
+    const act = activityLabel(x.lastActiveAt, input.now.getTime());
+    return `${x.name} (id ${x.id}${act ? `, ${act}` : ''})`;
+  }).join(', ');
   return list
-    ? `Scope: all workspaces in reach: ${list}. No default workspace: reads may span them; for anything that needs one, pass workspaceId if the message names it, or ask which one.`
+    ? `Scope: all workspaces in reach: ${list}. No default workspace. A list read (list_tasks, list_releases, list_schedules, list_discrepancies) without workspaceId covers the active workspaces in one call: don't repeat it per workspace. Pass workspaceId when the message names one. For anything that needs one workspace, ask which one.`
     : 'No default workspace: ask which workspace, or pass workspaceId, before filing work.';
 }
 
