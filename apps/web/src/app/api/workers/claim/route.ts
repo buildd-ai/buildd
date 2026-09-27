@@ -13,7 +13,8 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential } from '@/lib/codex-credential';
-import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
+import { resolveEffectiveModel } from '@buildd/core/model-router';
+import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
 import {
   describeOauthPressure,
   learnOauthCapacity,
@@ -24,7 +25,7 @@ import {
   type OauthBudgetPressure,
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
-import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
+import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
@@ -825,40 +826,35 @@ export async function POST(req: NextRequest) {
     .where(and(eq(tasks.claimedBy, account.id), gte(tasks.claimedAt, tenMinAgo)));
   const recentClaimCount = recentClaims[0]?.count ?? 0;
 
-  // Pre-fetch role floors for every unique roleSlug referenced by the filtered tasks.
-  // Resolution: workspace override > team default > account-level (legacy).
+  // Pre-fetch role rows for every unique roleSlug referenced by the filtered
+  // tasks, in one query. Resolved per task below by pickRoleRowForTask: the
+  // task workspace's override, else its team's default — never another
+  // workspace's override of the same slug (role-routing.md §3.1).
   const uniqueRoleSlugs = [...new Set(
     filteredTasks.map(t => (t as any).roleSlug as string | null).filter(Boolean) as string[],
   )];
-  const roleFloorMap = new Map<string, string>();
+  let roleModelRows: RoleModelRow[] = [];
   if (uniqueRoleSlugs.length > 0) {
+    const taskWorkspaceIds = [...new Set(filteredTasks.map(t => t.workspaceId))];
     const taskTeamIds = [...new Set(
       filteredTasks.map(t => (t as any).workspace?.teamId as string | undefined).filter(Boolean) as string[],
     )];
-    const wsRoles = await db.query.workspaceSkills.findMany({
+    roleModelRows = await db.query.workspaceSkills.findMany({
       where: and(
         inArray(workspaceSkills.slug, uniqueRoleSlugs),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
         or(
-          // Workspace override rows
-          inArray(workspaceSkills.workspaceId, workspaceIds),
+          // Workspace override rows for the tasks' own workspaces
+          inArray(workspaceSkills.workspaceId, taskWorkspaceIds),
           // Team-level default rows
           taskTeamIds.length > 0
             ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, taskTeamIds))
             : undefined,
-          // Legacy account-level fallback
-          eq(workspaceSkills.accountId, account.id),
         ),
       ),
-      columns: { slug: true, model: true, workspaceId: true },
+      columns: { slug: true, model: true, workspaceId: true, teamId: true },
     });
-    for (const r of wsRoles) {
-      // Prefer the most-specific (workspace-scoped) entry if both exist.
-      if (!roleFloorMap.has(r.slug) || r.workspaceId) {
-        roleFloorMap.set(r.slug, r.model ?? 'inherit');
-      }
-    }
   }
 
   // Claim tasks and create workers with optimistic locking to prevent double-assignment.
@@ -1581,24 +1577,21 @@ export async function POST(req: NextRequest) {
     // Only a caller PIN counts as explicit — not the model a previous claim of
     // this task wrote into context.model (a requeue keeps it). See model-pin.ts.
     const explicit = readModelPin(taskContext);
-    const TIER_ALIASES = new Set<string>(['haiku', 'sonnet', 'opus', 'inherit', ...TIERS]);
-    const roleModel = roleSlug ? (roleFloorMap.get(roleSlug) ?? null) : null;
-    const roleIsFullId = roleModel !== null && !TIER_ALIASES.has(roleModel);
-
-    // Map role model alias to the old-vocabulary tier floor used by the router.
-    // 'premium'/'standard'/'budget' are translated to 'opus'/'sonnet'/'haiku' for
-    // backward compat with the router's internal Tier type.
-    const roleFloorRaw = roleIsFullId ? null : (roleModel as string | null);
-    // premium-plus clamps to 'opus', the router's ceiling: the router only speaks
-    // haiku/sonnet/opus, and the concrete Fable id comes from the tier registry
-    // lookup below, not from the router.
-    const routerRoleFloor = roleFloorRaw === 'premium-plus' || roleFloorRaw === 'premium' ? 'opus'
-      : roleFloorRaw === 'standard' ? 'sonnet'
-      : roleFloorRaw === 'budget' ? 'haiku'
-      : (roleFloorRaw as Tier | 'inherit' | null);
+    const taskTier = (task as any).tier as RegistryTier | null | undefined;
+    const roleRow = pickRoleRowForTask(roleModelRows, {
+      roleSlug, workspaceId: task.workspaceId, teamId: taskTeamId,
+    });
+    // Precedence: pin → tasks.tier → role exact id → matrix + role floor. An
+    // inferred role never touches the model (role-routing.md §4.1).
+    const { roleModel, explicitModel, routerRoleFloor, roleTierOverride } = resolveClaimModelInputs({
+      pin: explicit,
+      taskTier,
+      roleModel: roleRow ? (roleRow.model ?? 'inherit') : null,
+      roleInferred: taskContext?.roleInferred != null,
+    });
 
     const routingDecision = resolveEffectiveModel({
-      explicitModel: explicit ?? (roleIsFullId ? roleModel : null),
+      explicitModel,
       kind: (task as any).kind || null,
       complexity: (task as any).complexity || null,
       roleFloor: routerRoleFloor,
@@ -1632,9 +1625,10 @@ export async function POST(req: NextRequest) {
     if (routingDecision.reason === 'explicit_override') {
       resolvedModel = routingDecision.model;
     } else {
-      // Determine the tier to look up: task.tier takes precedence, then derive from router alias.
-      const taskTier = (task as any).tier as RegistryTier | null | undefined;
-      const derivedTier = taskTier ?? mapRouterAlias(routingDecision.model);
+      // Determine the tier to look up: task.tier takes precedence, then a
+      // premium-plus role floor (above the router's opus ceiling), then the
+      // router alias.
+      const derivedTier = taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
 
       if (taskTeamId) {
         const entry = await resolveTierEntry(
