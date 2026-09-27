@@ -25,6 +25,7 @@ import { isUuid, type Resolution } from './targets';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
+import { ACTIVE_WINDOW_DAYS, splitByActivity, type WorkspaceActivity } from './workspace-activity';
 import {
   ALL_CHAT_TOOL_SPECS, CHAT_TOOL_SPECS, isExposed, opSpec, opsOf, SELF_SCOPED_ALLOWLIST,
   type ChatOpSpec, type ToolGroup,
@@ -271,8 +272,24 @@ export interface ChatToolDeps {
   onMissionFiled?: (args: { missionId: string; toolCallId: string; result: ChatToolResult }) => Promise<void>;
   /** Team memory for recall/learn, for an in-reach workspace; null when unavailable. */
   memory?: (workspaceId: string | null) => Promise<{ store: Parameters<typeof handleRecallAction>[0]; ctx: Parameters<typeof handleRecallAction>[2] } | null>;
+  /**
+   * The in-reach workspaces when the turn has no default. A read that needs
+   * one (WORKSPACE_SCOPED_READS) and names none runs once per recently
+   * active workspace (workspace-activity.ts).
+   */
+  workspaces?: ReadonlyArray<WorkspaceActivity>;
+  now?: () => number;
   handle?: typeof handleBuilddAction;
 }
+
+/**
+ * Reads whose handler needs a single workspace and errors without one. With no
+ * turn scope they span every workspace in reach, as the context block promises,
+ * instead of sending the model hunting workspace by workspace.
+ */
+export const WORKSPACE_SCOPED_READS: ReadonlySet<string> = new Set([
+  'list_tasks', 'list_releases', 'list_schedules', 'list_discrepancies',
+]);
 
 function errorResult(message: string): ChatToolResult<string> {
   return { data: `Error: ${message}`, objects: [], summary: message.slice(0, 120) };
@@ -369,7 +386,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         let text: string;
         let failed = false;
         try {
-          const out = await runAction(action, callInput, api, deps, handle);
+          const out = spansWorkspaces(action, callInput, deps)
+            ? await runAcrossWorkspaces(action, callInput, api, deps, handle)
+            : await runAction(action, callInput, api, deps, handle);
           text = out.content.map(c => c.text).join('\n');
           failed = out.isError === true;
         } catch (e) {
@@ -414,6 +433,47 @@ async function runAction(
   if (action === 'unwatch') return runUnwatch(api, input);
   if (action === 'list_watches') return runListWatches(api);
   return handle(api, action, input, deps.ctx);
+}
+
+function spansWorkspaces(action: string, input: Record<string, unknown>, deps: ChatToolDeps): boolean {
+  return WORKSPACE_SCOPED_READS.has(action) && !input.workspaceId && !deps.ctx.workspaceId
+    && (deps.workspaces?.length ?? 0) > 0;
+}
+
+/** A handler's "nothing here" answer: one line starting "No …" (No releases found., No completed tasks found.). */
+const isEmptyAnswer = (text: string) => /^No [^\n]*\.$/.test(text.trim());
+
+/**
+ * One call per recently active workspace, in parallel. Answers are headed by
+ * the workspace name; empty ones fold into a single "Nothing in" line and the
+ * idle workspaces are named, not checked, so the reply isn't a list of blanks.
+ * A failure is named; the rest still answer.
+ */
+async function runAcrossWorkspaces(
+  action: string,
+  input: Record<string, unknown>,
+  api: ApiFn,
+  deps: ChatToolDeps,
+  handle: typeof handleBuilddAction,
+) {
+  const { active, idle } = splitByActivity(deps.workspaces!, (deps.now ?? Date.now)());
+  const answers = await Promise.all(active.map(async ws => {
+    try {
+      const out = await runAction(action, { ...input, workspaceId: ws.id }, api, deps, handle);
+      return { ws, text: out.content.map(c => c.text).join('\n') };
+    } catch (e) {
+      return { ws, text: `Error: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }));
+  if (active.length === 1) return textOut(answers[0].text);
+  const found = answers.filter(a => !isEmptyAnswer(a.text));
+  const empty = answers.filter(a => isEmptyAnswer(a.text));
+  const lines = found.map(a => `## ${a.ws.name}\n${a.text}`);
+  if (empty.length) {
+    lines.push(found.length ? `Nothing in: ${empty.map(a => a.ws.name).join(', ')}.` : `${empty[0].text} (${empty.map(a => a.ws.name).join(', ')})`);
+  }
+  if (idle.length) lines.push(`Not checked (no activity in ${ACTIVE_WINDOW_DAYS} days): ${idle.map(w => w.name).join(', ')}.`);
+  return textOut(lines.join('\n\n'));
 }
 
 const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });

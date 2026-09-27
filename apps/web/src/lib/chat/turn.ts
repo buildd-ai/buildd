@@ -309,6 +309,9 @@ export async function runChatTurn(args: {
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
     conversationId: conv.id,
     memory,
+    // Unscoped: scoped reads span these rather than ask which workspace.
+    ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
+    now: () => now.getTime(),
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
