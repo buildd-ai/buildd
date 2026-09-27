@@ -60,6 +60,8 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   (story.users ?? []).forEach(reg);
   (story.accounts ?? []).forEach(reg);
   reg(story.workspace);
+  (story.extraTeams ?? []).forEach(reg);
+  (story.extraWorkspaces ?? []).forEach(reg);
   (story.roles ?? []).forEach(reg);
   (story.initiatives ?? []).forEach(reg);
   (story.missions ?? []).forEach(reg);
@@ -109,6 +111,21 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   }) as any);
   for (const a of story.accounts ?? []) {
     await db.insert(s.accountWorkspaces).values({ accountId: ids.get(a.key), workspaceId: ids.get(ws.key), canClaim: true, canCreate: true });
+  }
+
+  // ── extra teams + workspaces (multi-team views, e.g. Settings → Workspaces) ──
+  // Every user joins each extra team with `_role` (default owner).
+  for (const t of story.extraTeams ?? []) {
+    await db.insert(s.teams).values(toRow(t, ids, { id: ids.get(t.key), createdAt: at('-60d') }) as any);
+    for (const u of story.users ?? []) {
+      await db.insert(s.teamMembers).values({ teamId: ids.get(t.key), userId: ids.get(u.key), role: t._role ?? 'owner' });
+    }
+  }
+  checkColumns('extraWorkspaces', s.workspaces, story.extraWorkspaces ?? []);
+  for (const w of story.extraWorkspaces ?? []) {
+    await db.insert(s.workspaces).values(toRow(w, ids, {
+      id: ids.get(w.key), teamId: w.teamId ? ids.ref(w.teamId) : ids.get(team.key), createdAt: at('-60d'),
+    }) as any);
   }
 
   // ── roles (team-level, like seedDefaultRolesForTeam) ──────────────────────

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
 import type { HealthItem } from '@/lib/workspace-health';
-import { TeamMigrationSection } from './TeamMigrationSection';
+import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
 
 interface Props {
     workspace: { id: string; name: string; teamId: string };
@@ -29,7 +29,7 @@ const DOT: Record<HealthItem['severity'], string> = {
  *                     (the scan behind MCP manage_workspaces action=init), shown
  *                     as a diff, then on Apply PATCH /api/workspaces/[id]/config
  *                     { policyConfig }
- *   move-team       → WorkspaceMigrationModal (/migrate/precheck → /migrate/execute)
+ *   move-team       → MoveToTeamDialog (/migrate/precheck → /migrate/execute)
  */
 export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
     const router = useRouter();
@@ -49,7 +49,7 @@ export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
                     </button>
                 );
             case 'move-team':
-                return <TeamMigrationSection workspace={workspace} teams={teams} className={BUTTON} />;
+                return <MoveToTeamButton workspace={workspace} teams={teams} className={BUTTON} />;
         }
     }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { MergePolicy, MergePolicyTier, WorkspacePolicyConfig } from '@buildd/shared';
@@ -27,6 +27,8 @@ interface Props {
   policyConfig: WorkspacePolicyConfig | null;
   roles: Role[];
   missionOverrides: MissionOverride[];
+  /** Right of the page title (the workspace's "Move to team…"). */
+  headerAction?: ReactNode;
 }
 
 const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = [
@@ -66,6 +68,7 @@ export default function MergePolicyEditor({
   policyConfig,
   roles,
   missionOverrides: initialOverrides,
+  headerAction,
 }: Props) {
   const router = useRouter();
   const [rescanOpen, setRescanOpen] = useState(false);
@@ -165,11 +168,14 @@ export default function MergePolicyEditor({
         <span className="text-text-primary">Merge Policy</span>
       </div>
 
-      <div>
-        <h1 className="text-xl font-semibold text-text-primary">Merge Policy</h1>
-        <p className="mt-1 text-sm text-text-muted">
-          Controls when and how PRs created by agents are merged in <strong>{workspaceName}</strong>.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-text-primary">Merge Policy</h1>
+          <p className="mt-1 text-sm text-text-muted">
+            Controls when and how PRs created by agents are merged in <strong>{workspaceName}</strong>.
+          </p>
+        </div>
+        {headerAction && <div className="shrink-0">{headerAction}</div>}
       </div>
 
       {/* Tier selector */}
