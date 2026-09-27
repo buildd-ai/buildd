@@ -441,7 +441,7 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
                   onClick={() => activate(i)}
                   className={`cursor-pointer border-l-[3px] px-2 py-1.5 pl-8 font-mono text-[12px] md:text-[11.5px] text-accent-text ${i === active ? 'border-l-primary bg-surface-3' : 'border-l-transparent'}`}
                 >
-                  + {v.more} more {vendorLabel(v.vendor)}
+                  + {v.more} more{showVendors ? ` ${vendorLabel(v.vendor)}` : ''}
                 </div>
               );
             })()}
