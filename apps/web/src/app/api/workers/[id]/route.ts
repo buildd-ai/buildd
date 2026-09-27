@@ -51,6 +51,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
@@ -4705,10 +4706,41 @@ async function handleReviewerOutcomeIfNeeded(
           // query rather than a second one.
           backend: true, roleSlug: true, kind: true, complexity: true,
           missionPhaseIndex: true, missionPhaseLabel: true,
+          context: true,
         },
       });
       if (!originalTask) {
         console.warn(`[reviewer] Cannot create retry: original task ${originalTaskId} not found`);
+        return;
+      }
+
+      // An explicitly-reviewed dependency-bot PR gets its verdict, not a
+      // builder: a fix commit would take the branch away from the bot. The
+      // feedback stays on the review for a human (or the bot's next bump).
+      if (isDependencyBotPrContext(originalTask.context)) {
+        const reason = dependencyBotPushRefusal(prNumber);
+        console.log(`[reviewer] request-changes on PR #${prNumber}: ${reason} — no follow-up builder`);
+        fireGateEvent({
+          gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason,
+          workspaceId,
+          taskId: originalTaskId,
+          callerOrigin: 'system',
+          detail: { prNumber, headSha, stage: 'review_followup' },
+        });
+        await appendPrActivity({
+          installationId,
+          repoFullName,
+          prNumber,
+          entry: {
+            kind: 'review_escalated',
+            detail: 'dependency-bot PR · no fix pushed',
+            note: output.feedback ?? output.summary ?? null,
+          },
+          workspaceId,
+        });
         return;
       }
 
