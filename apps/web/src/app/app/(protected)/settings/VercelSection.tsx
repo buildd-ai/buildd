@@ -112,11 +112,11 @@ export default function VercelSection({ teams }: Props) {
   return (
     <SettingsSection title="Vercel">
         <p className="text-sm text-text-secondary">
-          The watcher uses these tokens to read your Vercel deployment status and alert you when prod is unhealthy. Create one at{' '}
+          Create a token at{' '}
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
             vercel.com/account/tokens
           </a>{' '}
-          with read access. buildd stores it encrypted at the team level and never sends it to runners.
+          to get alerts when prod is unhealthy.
         </p>
 
         {justAdded && (
@@ -212,6 +212,7 @@ export default function VercelSection({ teams }: Props) {
             >
               Store token
             </button>
+            <p className="text-xs text-text-muted">Stored encrypted at the team level. Never sent to runners.</p>
           </div>
         )}
 
