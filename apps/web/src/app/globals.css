@@ -163,6 +163,9 @@ input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="ran
 textarea[data-bare-input] {
   border: 0 !important;
 }
+/* The chat composer's box spans the slab edge to edge: the ring above would
+   draw two copper lines across it. Its focus cue is the slab's own top rule. */
+textarea[data-composer-input]:focus-visible { outline: none; }
 
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and

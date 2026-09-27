@@ -97,6 +97,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         <textarea
           id="chat-composer-input"
           data-bare-input
+          data-composer-input
           ref={area}
           rows={2}
           value={value}

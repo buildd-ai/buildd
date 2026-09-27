@@ -35,6 +35,24 @@ describe('chat foreground', () => {
     expect(chip).not.toMatch(/rounded/);
   });
 
+  it('one top rule: the focused composer draws no second line', () => {
+    // The global `:focus-visible` ring (2px accent, 2px offset) is unlayered,
+    // so it beats Tailwind's `focus-visible:outline-none` and drew two copper
+    // lines across the full-width box: one along the slab's top rule, one over
+    // the toolbar. The composer's focus cue is its own top rule instead.
+    const css = read('app/globals.css');
+    const ring = css.indexOf(':focus-visible {');
+    const off = css.search(/textarea\[data-composer-input\]:focus-visible\s*\{[^}]*outline:\s*none/);
+    expect(ring).toBeGreaterThanOrEqual(0);
+    expect(off).toBeGreaterThan(ring);
+    const composer = read('components/chat/ChatComposer.tsx');
+    expect(composer).toMatch(/<textarea[\s\S]*?data-composer-input[\s\S]*?\/>/);
+    // The toolbar's own rule is the quiet 1px one, never a mood colour.
+    const toolbar = composer.slice(composer.indexOf('data-testid="composer-toolbar"'), composer.indexOf('>', composer.indexOf('data-testid="composer-toolbar"')));
+    expect(toolbar).toContain('border-t border-[var(--chat-rule)]');
+    expect(toolbar).not.toMatch(/mood-needs|accent/);
+  });
+
   it('the colour roles exist in both themes', () => {
     const css = read('app/globals.css');
     for (const v of ['--chat-ground', '--chat-surface', '--chat-rule', '--chat-rule-strong', '--chat-text', '--chat-muted', '--mood-calm', '--mood-needs', '--mood-needs-fill', '--mood-thinking', '--mood-landed']) {
