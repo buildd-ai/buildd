@@ -102,7 +102,7 @@ describe('canvasSuggestions: a plain new chat (PICKED FOR YOU)', () => {
   it('needs you: row 1 is the thing waiting, copper, and sends in one tap', () => {
     const [first, second] = canvasSuggestions(PLAIN, ONE);
     expect(first).toEqual({
-      label: 'Answer the round line question',
+      label: 'Answer the waiting question',
       text: 'What does "Round per line, or only the total?" need from me?',
       send: true,
       tone: 'needs',
@@ -193,39 +193,45 @@ describe('pulseNeedsYou', () => {
 });
 
 describe('needsYouAction: row 1 as a short action', () => {
-  it('a pending question: answer it, named by the short task label', () => {
-    expect(needsYouAction({ title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe currency', waitingType: 'question' }))
-      .toBe('Answer the Stripe currency question');
-  });
+  // Fictional, real-shaped titles. The subject keeps content words only (no
+  // articles, prepositions or verbs), prefers the head noun phrase plus a
+  // proper noun, and falls back to a generic action rather than read wrong.
+  const CASES: Array<[string, Parameters<typeof needsYouAction>[0], string]> = [
+    ['the demo question (no stored label)', { title: 'feat(checkout): pay in the presentment currency via Stripe', waitingType: 'question' }, 'Answer the Stripe currency question'],
+    ['a classifier label that leads with a function word', { title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe in presentment currency', waitingType: 'question' }, 'Answer the Stripe currency question'],
+    ['a clean stored label', { title: 'x', label: 'Stripe currency', waitingType: 'question' }, 'Answer the Stripe currency question'],
+    ['a question title with no noun phrase', { title: 'Round per line, or only the total?', waitingType: 'question' }, 'Answer the waiting question'],
+    ['a conventional-commit title', { title: 'feat(billing): add multi-currency support to invoices', waitingType: 'question' }, 'Answer the multi-currency support question'],
+    ['failed tests on a commit-style title', { title: 'fix(labels): shipping label webhook fails on busy days', state: 'tests_failed' }, 'Fix the failing shipping label webhook change'],
+    ['failed tests on a one-word stored label', { title: 'fix(labels): label retries', label: 'label', state: 'tests_failed' }, 'Fix the failing label change'],
+    ['a permission', { title: 'chore(db): drop the old invoices table', waitingType: 'permission' }, 'Approve the old invoices table step'],
+    ['a confirmation with a stored label', { title: 'x', label: 'old table', waitingType: 'confirmation' }, 'Confirm the old table change'],
+    ['a one-word derived subject falls back', { title: 'Pick a currency' }, 'Answer the waiting question'],
+    ['an acronym keeps its case', { title: 'feat(export): add CSV export for invoices', waitingType: 'question' }, 'Answer the CSV export question'],
+    ['nothing usable at all', { title: 'feat: ???', state: 'tests_failed' }, 'Fix the failing change'],
+  ];
+  for (const [name, input, want] of CASES) {
+    it(name, () => expect(needsYouAction(input)).toBe(want));
+  }
 
-  it('failed tests: fix the failing change', () => {
-    expect(needsYouAction({ title: 'fix(labels): label retries', label: 'label', state: 'tests_failed' })).toBe('Fix the failing label change');
-  });
-
-  it('a permission or a confirmation asks for a go-ahead', () => {
-    expect(needsYouAction({ title: 'chore: drop old table', label: 'old table', waitingType: 'permission' })).toBe('Approve the old table step');
-    expect(needsYouAction({ title: 'chore: drop old table', label: 'old table', waitingType: 'confirmation' })).toBe('Confirm the old table change');
-  });
-
-  it('anything else waiting reads as a question', () => {
-    expect(needsYouAction({ title: 'Pick a currency' })).toBe('Answer the pick currency question');
-  });
-
-  it('caps the length by dropping whole words: never an ellipsis, never a cut word', () => {
-    const a = needsYouAction({ title: 'x', label: 'shipping label webhook retries on busy evening days', waitingType: 'question' });
-    expect(a.length).toBeLessThanOrEqual(36);
-    expect(a).not.toContain('…');
-    expect(a).toMatch(/^Answer the (\w+ )+question$/);
-    expect('shipping label webhook retries on busy evening days').toContain(a.replace(/^Answer the | question$/g, ''));
+  const FUNCTION = /\b(a|an|the|in|on|of|to|for|via|with|per|or|and|only|by|at|from)\b/i;
+  it('never names a function word in the subject, never cuts a word, never uses an ellipsis', () => {
+    for (const [, input] of CASES) {
+      const a = needsYouAction(input);
+      const subject = a.replace(/^(Answer|Approve|Confirm) the |^Fix the failing /, '').replace(/ (question|step|change)$/, '');
+      expect(a).not.toContain('…');
+      if (subject !== 'waiting' && !/^(question|step|change)$/.test(subject)) expect(subject).not.toMatch(FUNCTION);
+      expect(a.length).toBeLessThanOrEqual(48);
+    }
   });
 
   it('pulseNeedsYou carries the action, from the loader state', () => {
-    const [n] = pulseNeedsYou([{ title: 'feat(checkout): pay in currency', label: 'currency', waitingType: 'question' }]);
-    expect(n).toEqual({ title: 'Pay in currency', action: 'Answer the currency question' });
+    const [n] = pulseNeedsYou([{ title: 'feat(checkout): pay in the presentment currency via Stripe', waitingType: 'question' }]);
+    expect(n).toEqual({ title: 'Pay in the presentment currency via Stripe', action: 'Answer the Stripe currency question' });
   });
 
   it('the sub line keeps the full task name', () => {
-    const pulse = { needsYou: pulseNeedsYou([{ title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe currency', waitingType: 'question' }]), live: 0 };
+    const pulse = { needsYou: pulseNeedsYou([{ title: 'feat(checkout): pay in the presentment currency via Stripe', waitingType: 'question' }]), live: 0 };
     expect(canvasHero({ pulse, name: null, now: NOW, timeZone: 'UTC' }).sub).toContain('Pay in the presentment currency via Stripe');
     expect(canvasSuggestions(PLAIN, pulse)[0].label).toBe('Answer the Stripe currency question');
   });
