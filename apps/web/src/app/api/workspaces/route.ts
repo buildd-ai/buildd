@@ -10,6 +10,7 @@ import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
+import { toPublicWorkspace } from '@/lib/workspace-public';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -100,8 +101,10 @@ export async function GET(req: NextRequest) {
         (aw) => aw.account?.type === 'user' && aw.canClaim
       );
 
+      // An explicit allowlist, never `...ws`: the row carries
+      // webhook_config.token, a plaintext bearer credential.
       return {
-        ...ws,
+        ...toPublicWorkspace(ws),
         runners: {
           action: hasActionRunner,
           service: hasServiceRunner,
@@ -272,7 +275,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json(workspace);
+    return NextResponse.json(toPublicWorkspace(workspace));
   } catch (error) {
     console.error('Create workspace error:', error);
     return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 });

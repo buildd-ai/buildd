@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { workspaceRepoMatches } from '@/lib/repo-scope';
+import { toPublicWorkspace } from '@/lib/workspace-public';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -24,5 +25,6 @@ export async function GET(req: NextRequest) {
     where: workspaceRepoMatches(repoFullName),
   });
 
-  return NextResponse.json({ workspace: workspace || null });
+  // Allowlisted fields only — the row carries webhook_config.token.
+  return NextResponse.json({ workspace: workspace ? toPublicWorkspace(workspace) : null });
 }

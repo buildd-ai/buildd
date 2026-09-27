@@ -140,6 +140,34 @@ describe('GET /api/workspaces/[id]', () => {
     const data = await res.json();
     expect(data.workspace.name).toBe('My Workspace');
   });
+
+  it('masks webhook_config secrets and keeps the loaded relations', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      name: 'My Workspace',
+      webhookConfig: {
+        url: 'https://hooks.example.test/agent',
+        token: 'tok-SHOULD-NOT-LEAK',
+        enabled: true,
+        webhookSecret: 'whsec-SHOULD-NOT-LEAK',
+        callbackToken: 'cb-SHOULD-NOT-LEAK',
+      },
+      tasks: [{ id: 't-1' }],
+      workers: [{ id: 'w-1' }],
+      githubRepo: null,
+    });
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain('SHOULD-NOT-LEAK');
+    expect(body).not.toMatch(/"(token|webhookSecret|callbackToken)"\s*:/);
+    const { workspace } = JSON.parse(body);
+    expect(workspace.webhookConfig).toEqual({ url: 'https://hooks.example.test/agent', enabled: true, hasToken: true });
+    expect(workspace.tasks).toEqual([{ id: 't-1' }]);
+    expect(workspace.workers).toEqual([{ id: 'w-1' }]);
+  });
 });
 
 describe('PATCH /api/workspaces/[id]', () => {
