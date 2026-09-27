@@ -141,3 +141,20 @@ export function tierSuggestions(
   }
   return out;
 }
+
+/**
+ * Which surfaces can run a tier. The registry is shared: agent runs and chat
+ * both ask for a tier, but a Codex seat only signs in a runner and an OpenAI
+ * API key only serves server-side calls.
+ */
+export function tierUsedBy(provider: string): 'agent runs, chat' | 'agent runs only' | 'chat only' {
+  if (provider === 'openai-codex') return 'agent runs only';
+  if (provider === 'openai') return 'chat only';
+  return 'agent runs, chat';
+}
+
+/** The one catalog note to show on a tier's row: a newer release wins over a missing id. */
+export function suggestionFor(list: readonly TierSuggestion[], tier: string): TierSuggestion | null {
+  const mine = list.filter((s) => s.tier === tier);
+  return mine.find((s) => s.kind === 'newer') ?? mine[0] ?? null;
+}

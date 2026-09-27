@@ -32,6 +32,9 @@ const RAW_STRING_PURPOSES = new Set([
   'inference_key',
   // OpenRouter key for decision calls (packages/core/decision-client.ts).
   'decision_key',
+  // A role/workspace env-mapping value (e.g. a private-registry token) — see
+  // docs/credentials-architecture.md and docs/design/reliable-env-provisioning.md.
+  'role_env_secret',
 ]);
 
 /**
@@ -40,7 +43,7 @@ const RAW_STRING_PURPOSES = new Set([
  * would silently make a team credential work only for tasks that one account
  * files.
  */
-const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key']);
+const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret']);
 
 /** Required prefixes for Claude credential purposes. */
 const REQUIRED_PREFIXES: Record<string, string> = {
@@ -114,14 +117,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key'];
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret'];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
 
-  // MCP credentials require a label (env var name)
-  if (purpose === 'mcp_credential' && !label) {
-    return NextResponse.json({ error: 'label is required for mcp_credential secrets' }, { status: 400 });
+  // MCP credentials and role-env secrets are looked up by label (env var name), not singleton-per-scope.
+  if ((purpose === 'mcp_credential' || purpose === 'role_env_secret') && !label) {
+    return NextResponse.json({ error: `label is required for ${purpose} secrets` }, { status: 400 });
   }
 
   // Sanitize the raw value: trim, and strip wrapping quotes for raw-string purposes.
@@ -156,8 +159,9 @@ export async function POST(req: NextRequest) {
     // fresh token sits unused. See docs/credentials-architecture.md.
     const id = await provider.replaceScoped(sanitizedValue, {
       teamId: targetTeamId,
-      // MCP credentials and decision/inference keys are team-wide (shared by everyone in
-      // the team), so don't scope them to the caller's account by default.
+      // MCP credentials, decision/inference keys, and role-env secrets are team-wide
+      // (shared by everyone in the team), so don't scope them to the caller's account
+      // by default.
       accountId: (TEAM_WIDE_BY_DEFAULT.has(purpose) ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
       workspaceId,
       purpose,

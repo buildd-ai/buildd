@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 let secretRows: any[] = [];
 let lastWhere: any = null;
+let teamRow: any = undefined;
 
 mock.module('../db', () => ({
   db: {
@@ -17,11 +18,15 @@ mock.module('../db', () => ({
       secrets: {
         findMany: (q: any) => { lastWhere = q?.where; return Promise.resolve(secretRows); },
       },
+      teams: {
+        findFirst: () => Promise.resolve(teamRow),
+      },
     },
   },
 }));
 
 mock.module('../db/schema', () => ({
+  teams: { id: 'id', inferenceKeyPolicy: 'inference_key_policy' },
   secrets: {
     id: 'id', teamId: 'team_id', accountId: 'account_id', userId: 'user_id', purpose: 'purpose',
     label: 'label', encryptedValue: 'encrypted_value', workspaceId: 'workspace_id',
@@ -69,6 +74,7 @@ let savedNodeEnv: string | undefined;
 beforeEach(() => {
   secretRows = [];
   lastWhere = null;
+  teamRow = undefined;
   savedEnv = Object.fromEntries(ENV_VARS.map(k => [k, process.env[k]]));
   savedNodeEnv = process.env.NODE_ENV;
   for (const k of ENV_VARS) delete process.env[k];
@@ -200,6 +206,45 @@ describe('resolveInferenceKey precedence', () => {
   it('returns null for a provider with no API-key form (openai-codex)', async () => {
     secretRows = [row({ label: 'openai-codex' })];
     expect(await resolveInferenceKey({ provider: 'openai-codex' as any, teamId: 't-1' })).toBeNull();
+  });
+});
+
+describe('team key policy', () => {
+  const MINE = () => row({ id: 'mine', userId: 'u-1', encryptedValue: 'enc:mine' });
+  const TEAM = () => row({ id: 'team', encryptedValue: 'enc:team' });
+  const WS = () => row({ id: 'ws', workspaceId: 'w-1', encryptedValue: 'enc:ws' });
+
+  it("'team' ignores a person's own key: the team key pays for everyone", async () => {
+    secretRows = [MINE(), TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1', keyPolicy: 'team' })).toBe('team');
+  });
+
+  it("'team_or_own' lets a person's own key win, as before", async () => {
+    secretRows = [MINE(), TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1', keyPolicy: 'team_or_own' })).toBe('mine');
+  });
+
+  it("'own' refuses the team fallback, and the workspace and env ones too", async () => {
+    process.env.NODE_ENV = 'development';
+    process.env.OPENROUTER_API_KEY = 'env-key';
+    secretRows = [TEAM(), WS()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', workspaceId: 'w-1', userId: 'u-1', keyPolicy: 'own' })).toBeNull();
+    secretRows = [MINE(), TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1', keyPolicy: 'own' })).toBe('mine');
+  });
+
+  it("the policy only binds a person's call: team work with no user still uses the team key", async () => {
+    secretRows = [TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', keyPolicy: 'own' })).toBe('team');
+  });
+
+  it('reads the policy from the team when the caller does not pass one', async () => {
+    teamRow = { inferenceKeyPolicy: 'own' };
+    secretRows = [TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBeNull();
+    teamRow = { inferenceKeyPolicy: 'team' };
+    secretRows = [MINE(), TEAM()];
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBe('team');
   });
 });
 

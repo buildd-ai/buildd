@@ -106,4 +106,63 @@ describe('POST /api/github/pr/supersede', () => {
     const json = await res.json();
     expect(json.error).toContain('not merged');
   });
+
+  it('prioritizes explicit prNumber over implicit workerId when both are supplied (MCP auto-fill scenario)', async () => {
+    // Regression test for: when MCP handler auto-fills workerId with ctx.workerId,
+    // the route should still resolve by the explicit prNumber if provided.
+    // This simulates: record_pr_supersession({prNumber: 2287, supersedingPrNumber: 2293})
+    // gets auto-filled to {workerId: 'caller-w-id', prNumber: 2287, supersedingPrNumber: 2293}
+    // Expected: resolve worker from prNumber=2287 (w-2), not from workerId='caller-w-id'
+
+    // The caller's own worker (auto-filled)
+    const callerWorkerId = 'caller-w-id';
+    // The actual worker for PR #2287 (different from caller)
+    const prOwnerWorkerId = 'w-2';
+
+    mockWorkersFindFirst.mockImplementation((opts: any) => {
+      if (opts.where.a === 'id' && opts.where.b === callerWorkerId) {
+        // Caller's own worker (has no PR)
+        return Promise.resolve({ id: callerWorkerId, workspace: { teamId: 'team-1' } } as any);
+      }
+      return Promise.resolve(null as any);
+    });
+
+    mockResolveWorkerByPrNumber.mockImplementation((...args: any[]) => {
+      const prNum = args[1];
+      if (prNum === 2287) {
+        // PR #2287 belongs to a different worker
+        return Promise.resolve({ id: prOwnerWorkerId, workspace: { teamId: 'team-1' } } as any);
+      }
+      return Promise.resolve({ error: 'PR not found', status: 404 } as any);
+    });
+
+    // Both workerId and prNumber supplied (simulating MCP auto-fill)
+    const res = await POST(makeRequest({
+      workerId: callerWorkerId,
+      prNumber: 2287,
+      supersedingPrNumber: 2293,
+      reason: 'branch deleted',
+    }));
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+
+    // Most important: should have called resolveWorkerByPrNumber, indicating
+    // it prioritized the explicit prNumber over the implicit workerId
+    expect(mockResolveWorkerByPrNumber).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-1' }),
+      2287,
+      null,
+    );
+
+    // Should have passed the PR owner's worker ID to recordPrSupersession,
+    // not the caller's auto-filled workerId
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: prOwnerWorkerId,
+      supersedingPrNumber: 2293,
+      reason: 'branch deleted',
+      recordedBy: 'Agent Bob',
+    }));
+  });
 });

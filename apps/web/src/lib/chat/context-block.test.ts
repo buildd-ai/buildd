@@ -54,6 +54,23 @@ describe('renderChatContextBlock', () => {
     expect(block.toLowerCase()).toContain('no default workspace');
   });
 
+  it('names the object the chat was opened from, by id, and how to read it', () => {
+    const M = '11111111-1111-4111-8111-111111111111';
+    const block = renderChatContextBlock({ ...base, entry: { about: { kind: 'mission', id: M } } });
+    expect(block).toContain(`mission ${M}`);
+    expect(block).toContain('manage_missions');
+    expect(block).toContain('"this mission"');
+    const task = renderChatContextBlock({ ...base, entry: { about: { kind: 'task', id: M } } });
+    expect(task).toContain(`task ${M}`);
+    expect(task).toContain('get_task');
+  });
+
+  it('says what the user came to file when they opened chat from New task or + Mission', () => {
+    expect(renderChatContextBlock({ ...base, entry: { intent: 'task' } })).toContain('New task');
+    expect(renderChatContextBlock({ ...base, entry: { intent: 'mission' } })).toContain('New mission');
+    expect(renderChatContextBlock(base)).not.toContain('opened this chat');
+  });
+
   it('adds the 80% budget note only when asked', () => {
     expect(renderChatContextBlock(base)).not.toContain('budget');
     expect(renderChatContextBlock({ ...base, budgetWarning: true }).toLowerCase()).toContain('80%');

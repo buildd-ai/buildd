@@ -399,8 +399,8 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
             ) : (
               <span className="text-amber-600 font-medium">
                 Not configured ·{' '}
-                <Link href="/app/settings" className="underline hover:no-underline">
-                  Configure in Connections →
+                <Link href="/app/settings/github" className="underline hover:no-underline">
+                  Add one in Settings, GitHub and Vercel
                 </Link>
               </span>
             )}

@@ -1,11 +1,12 @@
 'use client';
 
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceFilter } from './WorkspaceFilter';
-import { mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
+import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
 import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
@@ -34,6 +35,7 @@ export default function MobilePageHeader({
 }) {
   const pathname = usePathname();
   const title = mobilePageTitle(pathname);
+  const backHref = mobileBackHref(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
   const bannersRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -63,6 +65,17 @@ export default function MobilePageHeader({
             segment that gives way (TeamSwitcher caps itself at 140px), which is
             why this is `shrink-0` — as a flex sibling it used to surrender
             characters first and render `Initiativ…`. */}
+        {backHref && (
+          <Link
+            href={backHref}
+            aria-label={`Back to ${mobilePageTitle(backHref) ?? 'the previous page'}`}
+            className="-ml-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <polyline points="15,5 8,12 15,19" />
+            </svg>
+          </Link>
+        )}
         <span className="shrink-0 font-semibold text-text-primary">{title}</span>
         {currentTeam && (
           <>

@@ -97,8 +97,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         codexRevoked++;
         void notifyTeam(cred.teamId, 'credentialExpired', {
           title: 'Codex credential revoked — action required',
-          message: 'Your Codex (ChatGPT) OAuth session was revoked by OpenAI. Re-authenticate in Settings → Agent Backends to resume Codex tasks.',
-          url: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/settings`,
+          message: 'Your Codex (ChatGPT) OAuth session was revoked by OpenAI. Sign in again under Settings, Runners to resume Codex tasks.',
+          url: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/settings/runners`,
           urlTitle: 'Open settings',
           priority: 1,
         });

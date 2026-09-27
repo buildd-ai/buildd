@@ -131,11 +131,51 @@ describe('PATCH /api/teams/[id] — chat budgets', () => {
     expect(capturedUpdates).toHaveLength(0);
   });
 
+  it('GET returns the key policy and the chat switch too', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ inferenceKeyPolicy: true, chatDisabled: true });
+    principal = null;
+  });
+
   it('GET returns both, so a settings page can show them', async () => {
     principal = { kind: 'user', user: { id: 'user-1' } };
     teamQueries.length = 0;
     await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true });
     principal = null;
+  });
+});
+
+describe('PATCH /api/teams/[id] — key policy and chat switch', () => {
+  it('an admin sets the key policy', async () => {
+    for (const p of ['team', 'team_or_own', 'own']) {
+      capturedUpdates.length = 0;
+      const res = await PATCH(patchReq({ inferenceKeyPolicy: p }), ctx);
+      expect(res.status).toBe(200);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: p });
+    }
+  });
+
+  it('rejects an unknown policy', async () => {
+    const res = await PATCH(patchReq({ inferenceKeyPolicy: 'anyone' }), ctx);
+    expect(res.status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('an admin switches chat off and back on', async () => {
+    await PATCH(patchReq({ chatDisabled: true }), ctx);
+    await PATCH(patchReq({ chatDisabled: false }), ctx);
+    expect(capturedUpdates.map((u) => u.chatDisabled)).toEqual([true, false]);
+    const bad = await PATCH(patchReq({ chatDisabled: 'yes' }), ctx);
+    expect(bad.status).toBe(400);
+  });
+
+  it('a member can change neither', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    expect((await PATCH(patchReq({ inferenceKeyPolicy: 'own' }), ctx)).status).toBe(403);
+    expect((await PATCH(patchReq({ chatDisabled: true }), ctx)).status).toBe(403);
+    expect(capturedUpdates).toHaveLength(0);
   });
 });

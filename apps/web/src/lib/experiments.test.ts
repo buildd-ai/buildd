@@ -44,6 +44,20 @@ describe('visibility', () => {
 });
 
 describe('parseCreateExperiment', () => {
+  it('cbm_access: accepted, gets its own default config, and has NO implicit share', () => {
+    const noShare = parseCreateExperiment({ key: 'cbm-value', title: 'CBM value', kind: 'cbm_access' });
+    expect(noShare.ok).toBe(false);
+    if (!noShare.ok) expect(noShare.error).toContain('treatmentFraction is required');
+
+    const r = parseCreateExperiment({ key: 'cbm-value', title: 'CBM value', kind: 'cbm_access', treatmentFraction: 0.2 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('cbm_access');
+    expect(r.value.treatmentFraction).toBe(0.2);
+    expect((r.value.config as any).arms.treatment).toBe('cbm_withheld');
+    expect((r.value.config as any).eligibility.kinds).toEqual(['engineering', 'research', 'analysis']);
+  });
+
   it('fills defaults: draft-only fields, admins visibility, half fraction, explicit config', () => {
     const r = parseCreateExperiment({ key: 'premium-vs-standard', title: '  Premium vs standard ' });
     expect(r.ok).toBe(true);

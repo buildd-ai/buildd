@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeInferenceCapabilities } from '@buildd/core/inference-policy';
+import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -90,6 +91,8 @@ export async function GET(
         enabledInferenceCapabilities: true,
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
+        inferenceKeyPolicy: true,
+        chatDisabled: true,
       },
     });
 
@@ -142,7 +145,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd } = body;
+    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDisabled } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -206,6 +209,20 @@ export async function PATCH(
         );
       }
       updates[field] = value.toFixed(2);
+    }
+    // Whose key a person's chat turn spends; enforced by resolveInferenceKey.
+    if (inferenceKeyPolicy !== undefined) {
+      if (!isInferenceKeyPolicy(inferenceKeyPolicy)) {
+        return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
+      }
+      updates.inferenceKeyPolicy = inferenceKeyPolicy;
+    }
+    // Chat is on whenever a key resolves; this is the admin's off switch.
+    if (chatDisabled !== undefined) {
+      if (typeof chatDisabled !== 'boolean') {
+        return NextResponse.json({ error: 'chatDisabled must be true or false' }, { status: 400 });
+      }
+      updates.chatDisabled = chatDisabled;
     }
     if (slug !== undefined) {
       // Validate slug format

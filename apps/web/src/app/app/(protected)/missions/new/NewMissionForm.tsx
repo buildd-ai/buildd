@@ -103,7 +103,7 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
         <span className="w-1.5 h-1.5 rounded-full bg-status-warning shrink-0" />
         <span className="text-xs text-status-warning">
           Token expired:{' '}
-          <Link href="/app/settings" className="underline">refresh in Settings</Link>
+          <Link href="/app/settings/runners" className="underline">refresh in Settings, Runners</Link>
         </span>
       </div>
     );
@@ -114,8 +114,8 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
       <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
       <span className="text-xs text-text-muted">
         Not configured:{' '}
-        <Link href="/app/settings" className="underline hover:text-text-secondary">
-          add credentials in Settings
+        <Link href="/app/settings/runners" className="underline hover:text-text-secondary">
+          add credentials in Settings, Runners
         </Link>
       </span>
     </div>

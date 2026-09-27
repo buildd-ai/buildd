@@ -98,6 +98,12 @@ const selectProjectedColumns = (projection?: Record<string, unknown>) => {
 };
 const mockSelect = mock(selectAllColumns);
 
+// Dashboard session — accepted on GET only.
+const mockGetCurrentUser = mock(async () => null as { id: string } | null);
+mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
+const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
+mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));
+
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
@@ -693,6 +699,85 @@ describe('GET /api/workers/[id]', () => {
     const data = await res.json();
     expect(data.id).toBe('worker-1');
     expect(data.status).toBe('running');
+  });
+});
+
+describe('GET /api/workers/[id] — dashboard session', () => {
+  const SESSION_WORKER = {
+    id: 'worker-1',
+    accountId: 'account-runner',
+    workspaceId: 'ws-1',
+    status: 'running',
+    milestones: [{ label: 'Edited route.ts' }],
+    task: { id: 'task-1', title: 'Test Task' },
+    workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig: { url: 'https://example.test/hook', token: 'hook-secret', enabled: true } },
+  };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindFirst.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockReset();
+  });
+
+  it('returns the worker (with milestones) to a member of its workspace', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.id).toBe('worker-1');
+    expect(data.milestones).toEqual([{ label: 'Edited route.ts' }]);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1');
+  });
+
+  it('never hands the workspace webhook bearer token to a session caller', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(JSON.stringify(await res.json())).not.toContain('hook-secret');
+  });
+
+  it('404s (not 403) a worker outside the user teams', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const res = await GET(createMockRequest(), { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Worker not found');
+  });
+
+  it('401s with neither a session nor a key', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await GET(createMockRequest(), { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps the key path authoritative when a key is present', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockVerifyWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a session on PATCH', async () => {
+    mockWorkersFindFirst.mockResolvedValue(SESSION_WORKER);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+
+    const res = await PATCH(createMockRequest({ method: 'PATCH', body: { status: 'completed' } }), { params: mockParams });
+
+    expect(res.status).toBe(401);
   });
 });
 

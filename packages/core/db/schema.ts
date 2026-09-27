@@ -78,6 +78,14 @@ export const teams = pgTable('teams', {
   // Per-person daily share of that budget, in USD. NULL = DEFAULT_CHAT_USER_SHARE
   // of the team budget. Always clamped to the team budget.
   chatUserDailyBudgetUsd: decimal('chat_user_daily_budget_usd', { precision: 10, scale: 2 }),
+  // Whose provider key a person's chat turn spends (packages/core/inference-keys.ts
+  // enforces it): 'team' = the team key for everyone, personal keys ignored;
+  // 'team_or_own' = the team key, and a person may use their own instead;
+  // 'own' = everyone brings their own key, no team fallback for chat.
+  inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Chat is on whenever a key resolves; an admin can switch it off for the team.
+  // Replaces the opt-in `chat` entry in enabledInferenceCapabilities.
+  chatDisabled: boolean('chat_disabled').notNull().default(false),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -225,6 +233,13 @@ export interface WorkspaceGitConfig {
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
   defaultBackend?: 'claude' | 'codex';
+
+  // Workspace-wide ENV_NAME → secret label mapping, resolved at claim time
+  // against the `secrets` table (purpose='role_env_secret') the same way a
+  // role's own `requiredEnvVars` is. Applies to every role in the workspace as
+  // a base; a role's own `requiredEnvVars` overrides the same key. See
+  // docs/design/reliable-env-provisioning.md → "Private registry credentials".
+  envMapping?: Record<string, string>;
 
   // Who grades prose (`description`) goal criteria in this workspace:
   // 'api' (inference call, per-token), 'runner' (read-only task on a runner's
@@ -600,7 +615,7 @@ export interface CbmMetrics {
   /** How CBM was activated for this task. */
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
   /**
    * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
    * outcome='enforced'.
@@ -2347,14 +2362,15 @@ export const experiments = pgTable('experiments', {
   title: text('title').notNull(),
   hypothesis: text('hypothesis'),
   status: text('status').notNull().default('draft').$type<'draft' | 'running' | 'paused' | 'concluded'>(),
-  kind: text('kind').notNull().$type<'model_routing'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
   treatmentFraction: real('treatment_fraction').notNull().default(0.5),
   policyVersion: integer('policy_version').notNull().default(1),
   // Kind-specific shape; for model_routing see ModelRoutingExperimentConfig in
-  // packages/core/model-routing-experiment.ts.
+  // packages/core/model-routing-experiment.ts, for cbm_access see
+  // CbmAccessExperimentConfig in packages/core/cbm-access-experiment.ts.
   config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
   visibility: text('visibility').notNull().default('admins').$type<'admins' | 'team'>(),
   decision: text('decision'),
@@ -2435,7 +2451,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).

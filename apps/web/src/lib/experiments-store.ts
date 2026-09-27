@@ -9,6 +9,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@buildd/core/db';
 import { experiments } from '@buildd/core/db/schema';
 import { invalidateModelRoutingExperimentCache } from '@buildd/core/model-routing-experiment-source';
+import { invalidateCbmAccessExperimentCache } from '@buildd/core/cbm-access-experiment-source';
 import type { NewExperimentValues } from './experiments';
 
 export type ExperimentRow = typeof experiments.$inferSelect;
@@ -25,7 +26,7 @@ export function teamExperimentScope(teamId: string, id: string) {
 export function otherRunningScope(teamId: string, kind: string, excludeId: string) {
   return and(
     eq(experiments.teamId, teamId),
-    eq(experiments.kind, kind as 'model_routing'),
+    eq(experiments.kind, kind as ExperimentRow['kind']),
     eq(experiments.status, 'running'),
     ne(experiments.id, excludeId),
   );
@@ -58,7 +59,7 @@ export function guardedUpdateScope(
     notExists(
       db.select({ one: sql`1` }).from(other).where(and(
         eq(other.teamId, teamId),
-        eq(other.kind, requireNoOtherRunning.kind as 'model_routing'),
+        eq(other.kind, requireNoOtherRunning.kind as ExperimentRow['kind']),
         eq(other.status, 'running'),
         ne(other.id, id),
       )),
@@ -119,5 +120,6 @@ export async function applyExperimentUpdate(
   // this process's copy so a start/pause here is visible to the next claim it
   // serves. Other instances converge within the TTL.
   invalidateModelRoutingExperimentCache(teamId);
+  invalidateCbmAccessExperimentCache(teamId);
   return rows[0] ?? null;
 }

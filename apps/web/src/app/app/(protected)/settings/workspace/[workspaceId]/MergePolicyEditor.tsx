@@ -158,7 +158,7 @@ export default function MergePolicyEditor({
     <div className="space-y-8">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-sm text-text-muted">
-        <Link href="/app/settings" className="hover:text-text-primary transition-colors">Settings</Link>
+        <Link href="/app/settings/workspaces" className="hover:text-text-primary transition-colors">Workspaces</Link>
         <span>/</span>
         <span className="text-text-primary">{workspaceName}</span>
         <span>/</span>

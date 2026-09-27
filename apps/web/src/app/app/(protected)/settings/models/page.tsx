@@ -3,16 +3,16 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
 import ModelTiersClient from './ModelTiersClient';
+import LegacyAnchorRedirect from '../_components/LegacyAnchorRedirect';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Agent backends → Model tiers.
+ * Settings → AI → Model tiers.
  *
- * Tier → model mapping plus the team's chat provider keys. Everyone in the team
- * can see it; only owners and admins can change it (the APIs enforce the same
- * rule, this only decides which controls render). Chat links its setup card
- * here: `/app/settings/models#provider-keys`.
+ * Tier → model mapping. Everyone in the team can see it; only owners and
+ * admins can change it (the APIs enforce the same rule, this only decides which
+ * controls render). Provider keys live at /app/settings/providers.
  */
 export default async function ModelTiersPage() {
   const user = await getCurrentUser();
@@ -27,8 +27,10 @@ export default async function ModelTiersPage() {
   const isAdmin = team?.role === 'owner' || team?.role === 'admin' || team?.slug === `personal-${user.id}`;
 
   return (
-    <main className="min-h-screen pt-4 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-6xl mx-auto">
+    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
+      <div className="max-w-6xl">
+        {/* #provider-keys moved to Settings → Model providers. */}
+        <LegacyAnchorRedirect />
         {teamId ? (
           <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
         ) : (

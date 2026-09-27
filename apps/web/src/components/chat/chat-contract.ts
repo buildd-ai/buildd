@@ -25,6 +25,7 @@ import {
 export {
   CHAT_EVENT_PART_TYPE,
   CHAT_READ_TOOLS,
+  chatToolIsRead,
   chatToolNeedsApproval,
   type BuilddObjectKind,
   type BuilddObjectRef,
@@ -41,6 +42,8 @@ export interface ToolApproval {
   id: string;
   approved?: boolean;
   reason?: string;
+  /** Why the server asked: for chat writes, the encoded before → after preview (CHAT_PREVIEW_PREFIX). */
+  requestReason?: string;
 }
 
 export interface ChatToolPart {

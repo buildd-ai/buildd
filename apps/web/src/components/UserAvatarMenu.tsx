@@ -10,7 +10,7 @@ interface UserAvatarMenuProps {
   userInitial: string;
   /** 'up' opens above the avatar (desktop sidebar bottom); 'down' opens below (mobile top header). */
   direction?: 'up' | 'down';
-  /** On an account page (/app/you, /app/settings): no tab owns those, so the avatar shows "you are here". */
+  /** On a settings page: no tab owns those, so the avatar shows "you are here". */
   active?: boolean;
 }
 
@@ -49,7 +49,7 @@ export default function UserAvatarMenu({ userInitial, direction = 'up', active =
           direction === 'up' ? 'bottom-full left-0 mb-2' : 'top-full right-0 mt-2'
         }`}>
           <Link
-            href="/app/you"
+            href="/app/settings/account"
             onClick={() => setOpen(false)}
             className="block px-3 py-3 md:py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
           >
@@ -60,7 +60,7 @@ export default function UserAvatarMenu({ userInitial, direction = 'up', active =
             onClick={() => setOpen(false)}
             className="block px-3 py-3 md:py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
           >
-            Connections
+            Settings
           </Link>
           <div className="border-t border-border-default" />
           <button

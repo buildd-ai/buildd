@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
+import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -50,34 +51,37 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'reason is required' }, { status: 400 });
   }
 
-  let resolvedWorkerId = workerId ?? null;
+  let resolvedWorkerId: string;
 
-  if (!resolvedWorkerId) {
-    // Resolve the worker whose PR is being superseded from prNumber — the
-    // exact same resolver `get_pr`/`explain` use, so "which PR is this"
-    // cannot drift between read and write paths.
+  if (prNumber != null) {
+    // prNumber is explicit — resolve by it. This takes precedence over workerId
+    // (which may be implicitly added by the MCP handler). Explicit prNumber means
+    // "supersede THIS PR", regardless of which worker initially created it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const resolved: any = await resolveWorkerByPrNumber(account, prNumber!, workspaceId ?? null);
+    const resolved: any = await resolveWorkerByPrNumber(account, prNumber, workspaceId ?? null);
     if (typeof resolved.status === 'number') {
       return NextResponse.json(
         { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
         { status: resolved.status },
       );
     }
-    if (resolved.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
     resolvedWorkerId = resolved.id as string;
-  } else {
+  } else if (workerId) {
     // workerId supplied directly — still must belong to the caller's team.
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, resolvedWorkerId),
+      where: eq(workers.id, workerId),
       with: { workspace: true },
     });
     if (!worker) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    if (worker.workspace?.teamId !== account.teamId) {
+    if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
+    resolvedWorkerId = workerId;
+  } else {
+    return NextResponse.json({ error: 'workerId or prNumber is required' }, { status: 400 });
   }
 
   const result = await recordPrSupersession({

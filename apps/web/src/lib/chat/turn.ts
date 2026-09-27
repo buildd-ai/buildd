@@ -22,10 +22,13 @@ import {
   type ToolSet,
   type UIMessage,
 } from 'ai';
-import type { ActionContext, ApiFn } from '@buildd/core/mcp-tools';
+import type { ActionContext } from '@buildd/core/mcp-tools';
 import {
   CHAT_EVENT_PART_TYPE,
+  encodeApprovalPreview,
+  type ChatApprovalPreview,
   type ChatMessagePart,
+  type ChatTurnEntry,
   type ChatTurnRequest,
   type ChatUnavailableReason,
   type ChatUsage,
@@ -35,9 +38,13 @@ import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type TurnRoute } from './routing';
 import { resolveChatModel, turnCostUsd, type ChatTier, type ResolvedChatModel } from './models';
-import { buildChatTools } from './tools';
+import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
+import { chatReadRoutes } from './in-process-api';
+import { loadDocked, renderDocked } from './docked';
+import { buildPreview } from './previews';
+import { resolveTaskRef } from './targets';
+import { opSpec, type ToolGroup } from './registry';
 import type { LimitVerdict } from './limits';
-import type { ApiCall } from './in-process-api';
 import {
   HISTORY_LIMIT,
   insertMessage,
@@ -69,11 +76,15 @@ export interface TurnDeps {
   limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
   resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string }) => Promise<ResolvedChatModel>;
-  makeApi: (onCall: (c: ApiCall) => void) => ApiFn;
+  makeApi: ChatToolDeps['makeApi'];
   actionContext: ActionContext;
+  /** Team memory for recall/learn (see ChatToolDeps.memory). */
+  memory?: ChatToolDeps['memory'];
   decide?: DecideFn;
   /** Link a filed mission to this conversation (missions.conversation_id). */
   linkMission: (missionId: string) => Promise<void>;
+  /** The mission this conversation filed, docked when the request docks nothing. */
+  linkedMissionId?: () => Promise<string | null>;
   /** Scheduled after the response (Next `after()`); runs inline in tests. */
   later?: (fn: () => Promise<void>) => void;
   autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }) => Promise<void>;
@@ -104,6 +115,24 @@ export function toUiHistory(rows: MessageRow[]): UIMessage[] {
     if (parts.length > 0) out.push({ id: m.id, role: m.role, parts } as UIMessage);
   }
   return out;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The client's `entry` (how the chat was opened), reduced to known values.
+ * It only shapes the context block; the tools' reach checks still decide what
+ * the model can read, so an id outside the conversation's team reads nothing.
+ */
+export function turnEntry(raw: unknown): ChatTurnEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { intent?: unknown; about?: unknown };
+  const intent = r.intent === 'mission' || r.intent === 'task' ? r.intent : null;
+  const a = r.about as { kind?: unknown; id?: unknown } | null | undefined;
+  const about = a && (a.kind === 'mission' || a.kind === 'task') && typeof a.id === 'string' && UUID_RE.test(a.id)
+    ? { kind: a.kind as 'mission' | 'task', id: a.id }
+    : null;
+  return intent || about ? { intent, about } : null;
 }
 
 function userText(message: ChatTurnRequest['message']): string | null {
@@ -156,6 +185,7 @@ export async function runChatTurn(args: {
   const resolveModel = deps.resolveModel ?? resolveChatModel;
   let route: TurnRoute;
   let authorizedToolCallIds = new Set<string>();
+  let approvedPreviews = new Map<string, ChatApprovalPreview>();
   let continuing: MessageRow | null = null;
 
   if (message.role === 'user') {
@@ -167,6 +197,7 @@ export async function runChatTurn(args: {
     const r = await reconcileApprovals(last.parts, message.parts, deps.decide ?? dbDecide(conv.id, user.id));
     if (r.decided === 0) return Response.json({ error: 'approval_not_pending' }, { status: 409 });
     authorizedToolCallIds = r.authorizedToolCallIds;
+    approvedPreviews = r.approvedPreviews;
     continuing = { ...last, parts: r.parts };
     await updateMessage(last.id, conv.id, { parts: r.parts });
     route = { tier: (last.tier as ChatTier) || FALLBACK_TIER, allowWrites: true, source: 'fallback' };
@@ -194,18 +225,63 @@ export async function runChatTurn(args: {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }
 
+  const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
+  const entry = turnEntry(body.entry);
+
+  // Reads for the docked object and for approval cards: every chat GET, still
+  // reach-guarded, never a write route.
+  const read = deps.makeApi(() => {}, { routes: chatReadRoutes() });
+  const linkedMissionId = entry?.about ? null : await (deps.linkedMissionId?.() ?? Promise.resolve(null)).catch(() => null);
+  const docked = await loadDocked(read, entry?.about ?? null, linkedMissionId);
+  const previewEnv = {
+    read,
+    scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: args.workspace?.id ?? null },
+  };
+  const preview = (tool: string, input: Record<string, unknown>) => {
+    const s = opSpec(tool, input);
+    const admin = !!s && effectiveClass(tool, s.op, s.spec, input) === 'admin';
+    return buildPreview(tool, input, previewEnv, { confirmAdmin: admin });
+  };
+
   const tools: ToolSet = buildChatTools({
     ctx: deps.actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
+    canAdmin,
     authorizedToolCallIds,
+    approvedPreviews,
+    preview,
+    resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
+    memory: deps.memory,
     onMissionFiled: async ({ missionId, toolCallId, result }) => {
       await deps.linkMission(missionId);
       await storeApprovalResult(toolCallId, conv.id, result).catch(() => {});
     },
   });
+  const activeTools = toolNamesForGroups(tools, turnGroups({
+    route, continuing, canAdmin, dockGroups: docked ? ['missions', 'tasks', 'workers'] : [],
+  }));
 
   let approvalsThisTurn = 0;
+  const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
+    name,
+    async (input: unknown) => {
+      if (!needsApproval(name, input)) return 'not-applicable' as const;
+      // At most one approval card per turn; a second write waits.
+      if (approvalsThisTurn >= 1) {
+        return { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+      }
+      // The card says exactly what changes, from current state. A target that
+      // isn't exactly one thing gets no card: the tool answers with a question.
+      const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);
+      if (p && !p.ok) return 'not-applicable' as const;
+      approvalsThisTurn += 1;
+      return p?.ok
+        ? { type: 'user-approval' as const, reason: encodeApprovalPreview(p.preview) }
+        : 'user-approval' as const;
+    },
+  ]));
+  const dockedBlock = docked ? `\n\n${renderDocked(docked)}` : '';
   const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
@@ -214,25 +290,20 @@ export async function runChatTurn(args: {
     user: { name: user.name, teamRole: user.teamRole, isOperator: user.teamRole !== 'member' },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
-  })}`;
+    entry,
+  })}${dockedBlock}`;
 
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,
     instructions,
     messages: await convertToModelMessages(uiMessages, { tools, ignoreIncompleteToolCalls: true }),
     tools,
+    // Only this turn's groups are sent to the model; every tool stays defined,
+    // so an approved call from an earlier turn still executes.
+    activeTools,
     stopWhen: isStepCount(MAX_STEPS),
     abortSignal: AbortSignal.timeout(TURN_BUDGET_MS),
-    toolApproval: {
-      manage_missions: (input: { action?: string }) => {
-        if (input?.action !== 'create') return 'not-applicable';
-        // At most one approval card per turn; a second write waits.
-        approvalsThisTurn += 1;
-        return approvalsThisTurn === 1
-          ? 'user-approval'
-          : { type: 'denied', reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
-      },
-    },
+    toolApproval,
   });
 
   const stream = toUIMessageStream({
@@ -292,4 +363,31 @@ export async function runChatTurn(args: {
     consumeSseStream: ({ stream: s }) => consumeStream({ stream: s }),
     headers: { 'x-buildd-chat-tier': resolved.tier },
   });
+}
+
+/**
+ * Which tool groups this turn sends to the model (docs/design/agent-chat.md →
+ * Tool groups): the core groups, plus the area routing named when confident,
+ * else the fallback set. Admin tools only for an owner/admin. A continuation
+ * adds the groups of the tools it's answering, so the approved call's tool is
+ * active.
+ */
+export function turnGroups(args: {
+  route: TurnRoute;
+  continuing: MessageRow | null;
+  canAdmin: boolean;
+  /** Groups implied by the docked object (a mission or task pane). */
+  dockGroups?: readonly ToolGroup[];
+}): Set<ToolGroup> {
+  const groups = new Set<ToolGroup>(CORE_GROUPS);
+  for (const g of args.route.area ? [args.route.area] : FALLBACK_GROUPS) groups.add(g);
+  for (const g of args.dockGroups ?? []) groups.add(g);
+  for (const p of args.continuing?.parts ?? []) {
+    if (isToolPart(p)) {
+      const g = groupOf(p.type.slice('tool-'.length));
+      if (g) groups.add(g);
+    }
+  }
+  if (!args.canAdmin) groups.delete('admin');
+  return groups;
 }

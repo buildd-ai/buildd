@@ -10,6 +10,7 @@
 
 import { gateChoice, type ChoiceQuestion, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
+import type { ToolGroup } from './registry';
 
 export const CHAT_ROUTING_QUESTIONS = {
   complexity: {
@@ -28,14 +29,32 @@ export const CHAT_ROUTING_QUESTIONS = {
     type: 'choice',
     instructions: {
       question: 'What does the user want done with the latest message in `turn.message`?',
-      rule: 'Choose file_work only when the user asks to create, file, start or schedule something now.',
+      rule: 'Choose act only when the user asks to create, change or steer something now.',
     },
     criteria: {
       answer: 'Conversation that needs no buildd data: thanks, a clarification about what was just said, general advice.',
       needs_tools: 'A question answered from live buildd state: tasks, missions, schedules, artifacts, what is running or shipped.',
-      file_work: 'A request to create or file work now: "make this a mission", "file it", "start a mission for…".',
+      act: 'A request to create, change or steer work now: "make this a mission", "pause checkout", "tell the agent to…", "drop that task", "schedule a sweep".',
     },
-  } satisfies ChoiceQuestion<'answer' | 'needs_tools' | 'file_work'>,
+  } satisfies ChoiceQuestion<'answer' | 'needs_tools' | 'act'>,
+  area: {
+    type: 'choice',
+    instructions: {
+      question: 'Which area of buildd does the latest message in `turn.message` mostly concern?',
+      rule: 'Pick the area whose tools would answer or carry out the request. Choose general when no single area fits.',
+    },
+    criteria: {
+      missions: 'Missions or initiatives: goals, criteria, phases, holding or arming a mission, spec discrepancies.',
+      tasks: 'Individual tasks: their status, creating, editing, cancelling or re-running one, plans awaiting approval.',
+      workers: 'Running agents: steering or messaging one, a waiting question, why something failed or is stuck, fleet health, CI failures, budget.',
+      prs: 'Pull requests, reviews, CI checks on a PR, and releases.',
+      memory: 'Team knowledge: recalling what was decided or learned, saving a lesson.',
+      schedules: 'Recurring work: creating, changing, pausing or tracing a schedule.',
+      artifacts: 'Reports, analyses and other artifacts.',
+      admin: 'Workspace settings, roles/skills, experiments, watched projects, or triggering a release.',
+      general: 'None of the above clearly, or several at once.',
+    },
+  } satisfies ChoiceQuestion<ToolGroup | 'general'>,
 };
 
 /** Thresholds live next to the questions; retuning one is a reviewed change. */
@@ -53,10 +72,15 @@ const TIER_FOR: Record<'simple' | 'standard' | 'complex', ChatTier> = {
   simple: 'budget', standard: 'standard', complex: 'premium',
 };
 
+/** An area answer is only used to *add* a tool group, so it's gated lower. */
+export const AREA_MIN_CONFIDENCE = 0.7;
+
 export interface TurnRoute {
   tier: ChatTier;
-  /** Load manage_missions create at all this turn. */
+  /** Offer write tools at all this turn. */
   allowWrites: boolean;
+  /** The tool group routing picked, when confident. Absent ⇒ the fallback groups. */
+  area?: ToolGroup;
   source: 'decision' | 'fallback';
   /** What the routing decision call cost, when it answered. Metered with the turn. */
   usage?: DecisionUsage;
@@ -89,12 +113,15 @@ export async function routeTurn(
 
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
   const intentGate = gateChoice(res.answers.intent, INTENT_MIN_CONFIDENCE);
+  const areaGate = gateChoice(res.answers.area, AREA_MIN_CONFIDENCE);
+  const area = areaGate.apply && areaGate.label !== 'general' ? areaGate.label : undefined;
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
-    // Withhold the write tools only on a confident "not filing work"; low
+    // Withhold the write tools only on a confident "not acting"; low
     // confidence keeps them (the approval card is the backstop either way).
-    allowWrites: !(intentGate.apply && intentGate.label !== 'file_work'),
-    source: tierGate.apply || intentGate.apply ? 'decision' : 'fallback',
+    allowWrites: !(intentGate.apply && intentGate.label !== 'act'),
+    ...(area ? { area } : {}),
+    source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
     ...(res.usage ? { usage: res.usage } : {}),
   };
 }

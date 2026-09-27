@@ -112,7 +112,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
 // Re-export for backwards compatibility (tests import from './workers')
@@ -1685,7 +1685,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; skillBundles?: SkillBundle[] },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1833,9 +1833,20 @@ export class WorkerManager {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s): ${Object.keys(claimedWorker.mcpSecrets).join(', ')}`);
     }
-    if (claimedWorker.mcpConnectors && claimedWorker.mcpConnectors.length > 0) {
-      (worker as any).mcpConnectors = claimedWorker.mcpConnectors;
-      console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.mcpConnectors.length} MCP connector(s): ${claimedWorker.mcpConnectors.map(c => c.name).join(', ')}`);
+    if (claimedWorker.cbmExperiment?.withheld) {
+      worker.cbmExperimentWithheld = true;
+      console.log(`[Worker ${claimedWorker.id}] CBM withheld by experiment ${claimedWorker.cbmExperiment.experimentId} (policy v${claimedWorker.cbmExperiment.policyVersion})`);
+    }
+    // A codebase-memory CONNECTOR is one of the routes the withheld arm closes.
+    // Dropped here, before it is stored, rather than unmounted later: a stored
+    // connector is also a required server for the MCP pre-flight, which would
+    // then fail the task for missing the very server the experiment withheld.
+    const claimConnectors = worker.cbmExperimentWithheld
+      ? withoutCbmConnectors(claimedWorker.mcpConnectors)
+      : claimedWorker.mcpConnectors;
+    if (claimConnectors && claimConnectors.length > 0) {
+      (worker as any).mcpConnectors = claimConnectors;
+      console.log(`[Worker ${claimedWorker.id}] Received ${claimConnectors.length} MCP connector(s): ${claimConnectors.map(c => c.name).join(', ')}`);
     }
     if (claimedWorker.codexCredential) {
       worker.codexCredential = claimedWorker.codexCredential;
@@ -1850,6 +1861,13 @@ export class WorkerManager {
     if (claimedWorker.roleInstructions?.content) {
       worker.roleInstructions = claimedWorker.roleInstructions;
       console.log(`[Worker ${claimedWorker.id}] Received role persona: ${claimedWorker.roleInstructions.slug} (${claimedWorker.roleInstructions.content.length} chars)`);
+    }
+    if (claimedWorker.roleEnvSecrets && Object.keys(claimedWorker.roleEnvSecrets).length > 0) {
+      worker.roleEnvSecrets = claimedWorker.roleEnvSecrets;
+      console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.roleEnvSecrets).length} role env secret(s): ${Object.keys(claimedWorker.roleEnvSecrets).join(', ')}`);
+    }
+    if (claimedWorker.roleEnvMissing && claimedWorker.roleEnvMissing.length > 0) {
+      worker.roleEnvMissing = claimedWorker.roleEnvMissing;
     }
     if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
       worker.skillBundles = claimedWorker.skillBundles;
@@ -2534,10 +2552,22 @@ export class WorkerManager {
    * The role's env (secret labels → values). One resolver for both consumers —
    * the worktree dependency install and the agent's cleanEnv — so the install
    * can never see a different set of secrets from the agent.
+   *
+   * Two sources, merged: the local env-mapping.json resolved against process
+   * env (file-based, requires a packaged `roleConfig` bundle — today always
+   * empty, see roles.ts), and `roleEnvSecrets`/`roleEnvMissing` delivered
+   * inline at claim time against the `secrets` table (role-env-injection.ts on
+   * the server). The claim-delivered source is independent of `roleConfig` so
+   * an MCP-registered role with no R2 bundle still gets its declared vars.
    */
-  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
-    if (!worker.roleConfig) return { resolved: {}, missing: [] };
-    return resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>);
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const fileBased = worker.roleConfig
+      ? await resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>)
+      : { resolved: {}, missing: [] };
+    return {
+      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+    };
   }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string, isClosingTurn = false, carriedStructuredOutput?: Record<string, unknown>) {
@@ -2552,6 +2582,7 @@ export class WorkerManager {
     const secretValues = [
       { label: 'BUILDD_API_KEY', value: this.config.apiKey },
       ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
+      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
     ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
@@ -2869,6 +2900,7 @@ export class WorkerManager {
         defaultBaseRef: cbmDefaultBaseRef,
         isCodexTask,
         cbmRoleDisabled: !!(worker as any).cbmDisabled,
+        cbmExperimentWithheld: !!worker.cbmExperimentWithheld,
       });
       const cbmEnforced = cbmActivation.enforced;
       // Whether the CBM server actually landed in the Codex config.toml. Tracked
@@ -3232,18 +3264,21 @@ export class WorkerManager {
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
 
-      // Resolve role env vars (secret labels → actual values)
-      if (worker.roleConfig) {
+      // Resolve role env vars (secret labels → actual values). Not gated on
+      // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
+      // independently of the packaged R2 bundle (see resolveWorkerRoleEnv).
+      if (worker.roleConfig || worker.roleEnvSecrets || worker.roleEnvMissing) {
         try {
           const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
-          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${worker.roleConfig.slug}`);
+          const roleLabel = worker.roleConfig?.slug ?? worker.roleInstructions?.slug ?? 'role';
+          console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${roleLabel}`);
           if (missing.length > 0) {
             // A role that declares a requirement and loses it is worse than one
             // that declares nothing — record it as a visible degraded milestone
             // instead of letting the session start looking identical to a role
             // with no requirements at all.
-            const label = `Role env degraded: ${worker.roleConfig.slug} missing ${missing.join(', ')}`;
+            const label = `Role env degraded: ${roleLabel} missing ${missing.join(', ')}`;
             console.warn(`[Worker ${worker.id}] ${label}`);
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           }
@@ -3932,6 +3967,16 @@ export class WorkerManager {
       if (cbmEnforced && !cbmMountBlocked && !isCodexTask && !queryOptions.mcpServers[CBM_SERVER_NAME]) {
         queryOptions.mcpServers[CBM_SERVER_NAME] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
+      }
+
+      // cbm_access experiment, withheld arm: the activation already refused, so
+      // the runner neither mounted CBM nor appended its steering block. Remove
+      // every other route to the tools too — see applyCbmWithholding.
+      if (worker.cbmExperimentWithheld && !isCodexTask) {
+        (queryOptions as any).disallowedTools = applyCbmWithholding({
+          mcpServers: queryOptions.mcpServers as Record<string, unknown> | undefined,
+          disallowedTools: (queryOptions as any).disallowedTools,
+        });
       }
 
       // CBM observability, final classification. The provisional outcome above was

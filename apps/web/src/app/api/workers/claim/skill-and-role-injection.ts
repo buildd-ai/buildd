@@ -98,6 +98,55 @@ export async function attachSkillBundles(
 }
 
 /**
+ * Resolve a role row by slug: workspace override > team default (§C.2
+ * precedence), falling back to the legacy account-level row when no team
+ * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle/CBM)
+ * and `attachRoleEnvSecrets` (role-env-injection.ts) so the precedence rule
+ * lives in exactly one place — a second, divergent copy is how the two ends
+ * up disagreeing about which role a task actually runs under.
+ */
+export async function resolveRoleRow(
+  roleSlug: string,
+  teamId: string | undefined,
+  wsId: string,
+  accountId: string,
+): Promise<typeof workspaceSkills.$inferSelect | undefined> {
+  let role;
+
+  if (teamId) {
+    const rows = await db.select()
+      .from(workspaceSkills)
+      .where(and(
+        eq(workspaceSkills.teamId, teamId),
+        eq(workspaceSkills.slug, roleSlug),
+        eq(workspaceSkills.enabled, true),
+        eq(workspaceSkills.isRole, true),
+        or(
+          isNull(workspaceSkills.workspaceId),
+          eq(workspaceSkills.workspaceId, wsId),
+        ),
+      ))
+      .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
+      .limit(1);
+    role = rows[0];
+  }
+
+  // Legacy account-level fallback
+  if (!role) {
+    role = await db.query.workspaceSkills.findFirst({
+      where: and(
+        eq(workspaceSkills.accountId, accountId),
+        eq(workspaceSkills.slug, roleSlug),
+        eq(workspaceSkills.enabled, true),
+        eq(workspaceSkills.isRole, true),
+      ),
+    });
+  }
+
+  return role ?? undefined;
+}
+
+/**
  * Resolve the task's role (`task.roleSlug`) and attach it to the claim.
  *
  * Precedence is workspace override > team default (§C.2), with a legacy
@@ -130,39 +179,8 @@ export async function attachRoleConfig(
     const wsId = task?.workspaceId;
     if (!wsId) continue;
 
-    // Look up the role: workspace override > team default (§C.2 precedence).
     const teamId = (task as any).workspace?.teamId as string | undefined;
-    let role;
-
-    if (teamId) {
-      const rows = await db.select()
-        .from(workspaceSkills)
-        .where(and(
-          eq(workspaceSkills.teamId, teamId),
-          eq(workspaceSkills.slug, roleSlug),
-          eq(workspaceSkills.enabled, true),
-          eq(workspaceSkills.isRole, true),
-          or(
-            isNull(workspaceSkills.workspaceId),
-            eq(workspaceSkills.workspaceId, wsId),
-          ),
-        ))
-        .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
-        .limit(1);
-      role = rows[0];
-    }
-
-    // Legacy account-level fallback
-    if (!role) {
-      role = await db.query.workspaceSkills.findFirst({
-        where: and(
-          eq(workspaceSkills.accountId, accountId),
-          eq(workspaceSkills.slug, roleSlug),
-          eq(workspaceSkills.enabled, true),
-          eq(workspaceSkills.isRole, true),
-        ),
-      });
-    }
+    const role = await resolveRoleRow(roleSlug, teamId, wsId, accountId);
 
     // Persona first — independent of packaging. A blank body attaches nothing
     // rather than an empty "## Role: X" section.

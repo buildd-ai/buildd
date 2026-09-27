@@ -525,7 +525,7 @@ export function HealthClient({
                       )}
                     </div>
                     <a
-                      href="/app/settings?section=agent-backends"
+                      href="/app/settings/runners"
                       className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                     >
                       Fix in Settings
@@ -564,7 +564,7 @@ export function HealthClient({
                     )}
                   </div>
                   <a
-                    href="/app/settings?section=agent-backends"
+                    href="/app/settings/runners"
                     className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                   >
                     Fix in Settings

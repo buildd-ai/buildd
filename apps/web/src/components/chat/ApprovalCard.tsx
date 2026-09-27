@@ -17,6 +17,13 @@ import { ToolCallRow } from './ToolCallRows';
 /** What stays in view on a phone: the draft's title and goal. */
 function DraftSummary({ draft }: { draft: ApprovalDraft }) {
   if (draft.kind === 'generic') return null;
+  if (draft.kind === 'preview') {
+    return (
+      <h3 data-testid="approval-draft-title" className="font-mono text-[15px] md:text-[17px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
+        {draft.headline}
+      </h3>
+    );
+  }
   return (
     <>
       <h3 data-testid="approval-draft-title" className="font-mono text-[17px] md:text-[20px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
@@ -30,6 +37,7 @@ function DraftSummary({ draft }: { draft: ApprovalDraft }) {
 /** "4 criteria · constraints · plan": what the folded details hold. */
 function detailsSummary(draft: ApprovalDraft): string {
   if (draft.kind === 'generic') return `${draft.fields.length} field${draft.fields.length === 1 ? '' : 's'}`;
+  if (draft.kind === 'preview') return `${draft.changes.length} change${draft.changes.length === 1 ? '' : 's'}`;
   const bits: string[] = [];
   if (draft.criteria.length) bits.push(`${draft.criteria.length} criteri${draft.criteria.length === 1 ? 'on' : 'a'}`);
   if (draft.constraints) bits.push('constraints');
@@ -38,10 +46,36 @@ function detailsSummary(draft: ApprovalDraft): string {
 }
 
 function hasDetails(draft: ApprovalDraft): boolean {
+  if (draft.kind === 'preview') return draft.changes.length > 0 || !!draft.note;
   return draft.kind === 'generic' ? draft.fields.length > 0 : draft.criteria.length > 0 || !!draft.constraints || !!draft.plan;
 }
 
+/** before → after, one row per change; a pure addition shows "+", a removal "−". */
+function PreviewDetails({ draft }: { draft: Extract<ApprovalDraft, { kind: 'preview' }> }) {
+  return (
+    <div className="mt-2 md:mt-3">
+      <ul data-testid="approval-changes" className="grid gap-1.5 font-mono text-[12.5px]">
+        {draft.changes.map((c, i) => (
+          <li key={i} data-testid="approval-change" className="grid grid-cols-1 md:grid-cols-[130px_1fr] gap-x-4 min-w-0">
+            <span className="uppercase tracking-[1.5px] text-[11px] text-text-muted md:pt-0.5 [overflow-wrap:anywhere]">{c.label}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere] text-text-primary">
+              {c.before === null && c.after !== null && <><span aria-label="added" className="text-accent font-semibold">+ </span>{c.after}</>}
+              {c.after === null && c.before !== null && <><span aria-label="removed" className="font-semibold text-text-muted">− </span><s className="text-text-muted">{c.before}</s></>}
+              {c.before !== null && c.after !== null && (
+                <><s className="text-text-muted">{c.before}</s><span aria-hidden="true" className="px-1.5 text-text-muted">→</span><span className="font-semibold">{c.after}</span></>
+              )}
+              {c.before === null && c.after === null && '—'}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {draft.note && <p data-testid="approval-note" className="mt-2 font-[family-name:var(--font-outfit)] text-[13.5px] text-text-secondary">{draft.note}</p>}
+    </div>
+  );
+}
+
 function DraftDetails({ draft }: { draft: ApprovalDraft }) {
+  if (draft.kind === 'preview') return <PreviewDetails draft={draft} />;
   if (draft.kind === 'generic') {
     return (
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 font-mono text-[12.5px]">
@@ -97,6 +131,8 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   const [sent, setSent] = useState<'confirm' | 'deny' | null>(null);
   // Phone only (md: always open): the full draft outgrew the viewport.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // Admin writes: the target's name, typed, is the confirmation (checked on the server).
+  const [typed, setTyped] = useState('');
   const draft = approvalDraft(part);
   const verb = approvalVerb(part);
   const wsName = draft.workspaceId ? actions.workspaceName(draft.workspaceId) : null;
@@ -111,7 +147,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
     return (
       <div data-testid="approval-card" data-state="denied" className="border-[1.5px] border-dashed border-border-default px-3 py-2 font-mono text-[12.5px] text-text-muted">
         <span className="font-semibold text-text-secondary">{verb}</span>
-        {' · discarded · nothing filed'}
+        {draft.kind === 'preview' ? ' · discarded · nothing changed' : ' · discarded · nothing filed'}
       </div>
     );
   }
@@ -119,6 +155,9 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   const deciding = part.state === 'approval-responded' || sent !== null;
   const isMission = draft.kind === 'mission';
   const confirmLabel = isMission ? 'Confirm & file' : 'Confirm';
+  const isChange = draft.kind === 'preview';
+  const confirmText = draft.kind === 'preview' ? draft.confirmText : null;
+  const typedOk = !confirmText || typed.trim() === confirmText.trim();
 
   return (
     <section
@@ -133,7 +172,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
         </span>
         <span className="font-mono text-[13px] font-semibold text-text-primary">{verb}</span>
         <span className="hidden border-[1.5px] border-border-strong px-1.5 py-px font-mono text-[11px] text-text-secondary md:inline">
-          {deciding ? (sent === 'deny' ? 'discarding…' : 'filing…') : 'not filed'}
+          {deciding ? (sent === 'deny' ? 'discarding…' : isChange ? 'applying…' : 'filing…') : isChange ? 'not applied' : 'not filed'}
         </span>
         {wsName && <span className="ml-auto font-mono text-[12px] text-text-muted">{wsName}</span>}
       </header>
@@ -162,16 +201,29 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
             </div>
           </>
         )}
+        {confirmText && (
+          <label className="mt-3 grid gap-1 font-mono text-[12px] text-text-secondary">
+            <span>Type <span className="font-semibold text-text-primary">{confirmText}</span> to confirm</span>
+            <input
+              data-testid="approval-typed-confirm"
+              value={typed}
+              onChange={e => setTyped(e.target.value)}
+              disabled={deciding}
+              autoComplete="off"
+              className="min-h-10 border-2 border-border-strong bg-surface-1 px-2.5 text-[13px] text-text-primary"
+            />
+          </label>
+        )}
       </div>
       <footer className="flex flex-nowrap items-center gap-2 border-t border-border-default px-4 py-2.5 md:gap-2.5 md:px-5 md:py-3">
         <button
           type="button"
           data-testid="approval-confirm"
-          disabled={deciding || !approvalId}
-          onClick={() => { if (!approvalId) return; setSent('confirm'); actions.respondToApproval(approvalId, true); }}
+          disabled={deciding || !approvalId || !typedOk}
+          onClick={() => { if (!approvalId) return; setSent('confirm'); actions.respondToApproval(approvalId, true, confirmText ? typed.trim() : undefined); }}
           className="min-h-11 border-2 border-[var(--on-accent)] shrink-0 whitespace-nowrap bg-accent px-3 md:px-5 font-mono text-[13px] md:text-[13.5px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover disabled:opacity-60"
         >
-          {sent === 'confirm' ? 'Filing…' : confirmLabel}
+          {sent === 'confirm' ? (isChange ? 'Applying…' : 'Filing…') : confirmLabel}
         </button>
         <button
           type="button"
@@ -191,7 +243,7 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
         >
           Discard
         </button>
-        <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:inline">{`files through ${verb.split(' · ')[0]}`}</span>
+        <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:inline">{`${isChange ? 'applies' : 'files'} through ${verb.split(' · ')[0]}`}</span>
       </footer>
     </section>
   );

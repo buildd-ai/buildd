@@ -35,6 +35,22 @@ export function missionNotHeld(): SQL {
 }
 
 /**
+ * Context key a single-task hold writes (PATCH /api/tasks/[id] `{ held: true }`,
+ * e.g. "pause checkout until the rounding decision is in" from chat). Its value
+ * is `{ at, userId, reason? }`; resuming removes the key.
+ */
+export const TASK_HOLD_KEY = 'heldBy' as const;
+
+/**
+ * Held-task gate for the claim route: TRUE when the task itself carries no
+ * hold. Independent of the mission gate above — a held task under an armed
+ * mission stays unclaimable, and a force-start doesn't lift it (resume does).
+ */
+export function taskNotHeld(): SQL {
+  return sql`(${tasks.context}->'heldBy') IS NULL`;
+}
+
+/**
  * Per-task check for /api/tasks/[id]/start: returns true when the task's mission
  * is held (and should be blocked), false otherwise. Mirrors the missionNotHeld()
  * SQL gate semantics — both live in this file to keep the implementations together.

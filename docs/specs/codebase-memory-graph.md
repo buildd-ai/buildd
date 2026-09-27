@@ -3,12 +3,12 @@ title: Codebase Memory Graph
 status: active
 owner: max
 last_verified: 2026-09-12
-summary: Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through four named reasons, and MUST never fail a task.
+summary: Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through five named reasons, and MUST never fail a task.
 domain: runners
 surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, apps/runner/src/codex-auth.ts, apps/web/src/lib/cbm-insight.ts]
 related: [mcp-connectors-and-roles, codex-backend-spec, worker-sandbox-isolation, knowledge-store-retrieval]
-keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_VERSION, grep-steering, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
-verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts, scripts/verify-cbm-grep-steering.test.ts]
+keywords: [codebase-memory, codebase-memory-mcp, CBM, cbm_access, experiment_withheld, CBM_VERSION, grep-steering, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
+verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-experiment-withheld.test.ts, packages/core/__tests__/cbm-access-experiment.test.ts, packages/core/__tests__/cbm-access-experiment-source.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts, scripts/verify-cbm-grep-steering.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -63,8 +63,9 @@ of files:
   encoded the bare-positional form, so **it passed for four weeks while every real
   bootstrap failed**. The `--repo-path` assertion (CBM-6) is that regression.
 - Once bootstrapping worked, the first cohort of enforced workers made **zero**
-  `mcp__codebase-memory__*` calls while `/api/cbm/metrics` reported a ~80% input
-  token reduction — a cohort artifact with no mechanism behind it.
+  `mcp__codebase-memory__*` calls while `/api/cbm/metrics` reported a large input
+  token reduction (figure: knowledge base artifact `cbm-repo-readouts-2026-09-24`)
+  — a cohort artifact with no mechanism behind it.
   `mechanismObserved` and `detectCbmEnforcedUnused` exist because of that.
 
 Every invariant below is falsifiable for the same reason: a silent capability
@@ -78,15 +79,16 @@ needs an assertion, not a preference.
 decision point. It is pure and does not create the cache directory.
 
 **Invariants**:
-- **CBM-1**: CBM is enforced iff **all three** hold: `worker.worktreePath` is set,
-  the role has not opted out, and `CBM_BINARY_PATH`
+- **CBM-1**: CBM is enforced iff **all four** hold: `worker.worktreePath` is set,
+  the claim did not draw the task into the withheld arm of a running `cbm_access`
+  experiment (CBM-6), the role has not opted out, and `CBM_BINARY_PATH`
   (`/opt/buildd/bin/codebase-memory-mcp`) exists on the host. Default-on: no role
   has to ask for it, and the agent backend is **not** a gate — a Codex task with a
   worktree is enforced exactly like a Claude one (CBM-27).
 - **CBM-2**: Each failing gate maps to exactly one `disableReason`, decided by
   `buildCbmActivation` itself and returned on the activation, in precedence order
-  `no_worktree`, `role_opt_out`, `codex_task`, `binary_absent`. There is no fifth
-  reason and no unlabelled disable. The caller MUST NOT re-derive the label: when
+  `no_worktree`, `experiment_withheld`, `role_opt_out`, `codex_task`,
+  `binary_absent`. There is no sixth reason and no unlabelled disable. The caller MUST NOT re-derive the label: when
   it did, it tested `isCodexTask` first, so every skip on a Codex task read
   `codex_task` — a by-design reason excluded from the eligible-fallback rate —
   and genuine breakage (`binary_absent`) on a Codex task left the metric silently.
@@ -105,7 +107,23 @@ decision point. It is pure and does not create the cache directory.
   reads `role.mcpServers['codebase-memory'] === false` and sets `cbmDisabled` on
   the claimed-worker payload (`claim/route.ts:2107-2112`); the runner copies it
   onto the worker (`workers.ts:1350`). It is checked independently of
-  `configStorageKey`, so opting out works with no R2 config present.
+  `configStorageKey`, so opting out works with no R2 config present. The role
+  opt-out is a per-role switch, NOT an experiment: roles do not self-enrol, so a
+  role-based control arm never gathers tasks. Randomised withholding is CBM-6.
+- **CBM-6**: CBM's value is A/B tested through the experiments registry
+  (kind `cbm_access`, `packages/core/cbm-access-experiment.ts`). After the claim
+  lock and role injection, the claim route draws an arm per task (FNV-1a salted
+  with experiment id + policy version; attempts inherit their parent's row; a
+  re-claim reuses its own) for eligible tasks only — Claude backend, a runner that
+  declared `runnerFeatures: ['cbm_withhold']` on the claim, repo-backed workspace, a configured graph-relevant kind, `work` class, not a reviewer, not a
+  CBM-opted-out role — and records arm and propensity in `experiment_assignments`
+  before the worker starts. A withheld task carries `cbmExperiment.withheld` on
+  the claimed-worker payload; the runner then reports `experiment_withheld`, drops
+  any codebase-memory connector, deletes any `codebase-memory` entry from
+  `mcpServers`, denies the server and every tool on `CBM_TOOL_SURFACE`, appends no
+  steering block, and the task-area hint omits the graph. With no `running`
+  experiment of that kind, nothing enrols. `experiment_withheld` is a by-design
+  skip for `cbm-insight` and is invisible to the `cbm-health` fleet streak.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a task with `worktreePath` set, `cbmRoleDisabled: false` and the
@@ -394,7 +412,7 @@ admin-scoped.
   and `deltasSuppressedBecause` names the reason
   (`no_graph_tool_calls_observed` | `insufficient_cohort`). Reporting a delta with
   no mechanism behind it is worse than reporting nothing — that is precisely the
-  ~80% figure this endpoint once published.
+  token-reduction figure this endpoint once published.
 - **CBM-25**: `binary_absent` workers are EXCLUDED from the comparison baseline
   (`comparableCount`). They come from a different infrastructure regime, not from
   a control group that could have used CBM and didn't. They remain in

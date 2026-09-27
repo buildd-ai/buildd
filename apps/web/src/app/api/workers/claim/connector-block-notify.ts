@@ -15,7 +15,7 @@
 import { notifyTeam, type NotifyPayload } from '@/lib/notify';
 
 const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev';
-const CONNECTOR_SETTINGS_PATH = '/app/settings#connectors';
+const CONNECTOR_SETTINGS_PATH = '/app/settings/connectors';
 
 // Floor, not a promise: the cron that drives the reminder runs hourly (to let
 // Neon's compute autosuspend), so a reminder lands 30–90 min after the block.
@@ -132,7 +132,7 @@ export async function notifyConnectorBlockReminder(
 // expiry was pure noise: the refresh sweep renews those, and Cue's 24h token
 // lifetime meant "expiring within 24h" was true essentially always.
 
-const CONNECTIONS_PATH = '/app/connections';
+const CONNECTIONS_PATH = '/app/settings/connectors';
 
 export interface ConnectorExpiryContext {
   teamId: string;

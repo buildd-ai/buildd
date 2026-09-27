@@ -30,6 +30,17 @@
  *
  * Within a scope: purpose preference, healthy over revoked, newest first.
  *
+ * ## The team's key policy (`teams.inferenceKeyPolicy`)
+ *
+ * Binds calls made for a person (`userId` set), i.e. chat turns:
+ *
+ * - `team`: the team key pays for everyone; a person's own key is ignored.
+ * - `team_or_own`: a person's own key wins, the team key covers the rest.
+ * - `own`: only the person's own key. No workspace, team, account or env
+ *   fallback, so a member without a key gets null and chat says so.
+ *
+ * Team work with no person (grading, visual QA, cron) ignores the policy.
+ *
  * ## Invariants
  *
  * - A key never reaches a provider it wasn't issued for. Purpose and label are
@@ -41,9 +52,10 @@
  */
 
 import { db } from './db';
-import { secrets } from './db/schema';
+import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { decrypt } from './secrets';
+import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 
 /** Providers with an API-key form. */
 export type InferenceKeyProvider = 'anthropic' | 'openai' | 'openrouter';
@@ -64,6 +76,22 @@ const ENV_VAR: Record<InferenceKeyProvider, string> = {
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
 };
+
+export { INFERENCE_KEY_POLICIES, isInferenceKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from './inference-key-policy';
+
+/**
+ * The team's policy. An unreadable row reads as `team_or_own`, the behaviour
+ * before the policy existed, so a lookup blip neither strands a person's own
+ * key nor invents a refusal.
+ */
+export async function loadInferenceKeyPolicy(teamId: string): Promise<InferenceKeyPolicy> {
+  try {
+    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { inferenceKeyPolicy: true } });
+    return isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own';
+  } catch {
+    return 'team_or_own';
+  }
+}
 
 export function isInferenceKeyProvider(value: unknown): value is InferenceKeyProvider {
   return typeof value === 'string' && (INFERENCE_KEY_PROVIDERS as readonly string[]).includes(value);
@@ -91,6 +119,11 @@ export interface ResolveInferenceKeyOptions {
    * the provider's set, so it can reorder but never widen what's accepted.
    */
   purposes?: readonly string[];
+  /**
+   * The team's key policy, when the caller already loaded it. Omitted with a
+   * `userId`, the resolver reads it itself: it is enforced here, not by callers.
+   */
+  keyPolicy?: InferenceKeyPolicy;
 }
 
 export type InferenceKeyScope = 'user' | 'account' | 'workspace' | 'team' | 'env';
@@ -116,10 +149,13 @@ interface CandidateRow {
 }
 
 /** Rank of a row for this caller, or null when it must not be used at all. */
-function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions): { rank: number; scope: InferenceKeyScope } | null {
+function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions, policy: InferenceKeyPolicy | null): { rank: number; scope: InferenceKeyScope } | null {
   if (r.userId != null) {
+    if (policy === 'team') return null;
     return opts.userId && r.userId === opts.userId ? { rank: 0, scope: 'user' } : null;
   }
+  // Everyone brings their own key: nothing shared stands in for a person's.
+  if (policy === 'own') return null;
   if (r.workspaceId != null && r.workspaceId !== opts.workspaceId) return null;
   if (r.accountId != null) {
     if (opts.accountId) return r.accountId === opts.accountId ? { rank: 1, scope: 'account' } : null;
@@ -138,6 +174,11 @@ export async function resolveInferenceCredential(
   const purposes = opts.purposes
     ? [...opts.purposes.filter(p => accepted.includes(p)), ...accepted.filter(p => !opts.purposes!.includes(p))]
     : accepted;
+
+  // Only a call for a person is bound by the team's policy.
+  const policy: InferenceKeyPolicy | null = opts.userId
+    ? opts.keyPolicy ?? await loadInferenceKeyPolicy(opts.teamId)
+    : null;
 
   let rows: CandidateRow[] = [];
   try {
@@ -162,7 +203,7 @@ export async function resolveInferenceCredential(
       purposes.includes(r.purpose) &&
       (r.purpose !== INFERENCE_KEY_PURPOSE || (r.label ?? '').toLowerCase() === provider),
     )
-    .map(r => ({ r, s: scopeRank(r, opts) }))
+    .map(r => ({ r, s: scopeRank(r, opts, policy) }))
     .filter((x): x is { r: CandidateRow; s: { rank: number; scope: InferenceKeyScope } } => x.s !== null)
     .sort((a, b) =>
       a.s.rank - b.s.rank ||
@@ -180,7 +221,7 @@ export async function resolveInferenceCredential(
     }
   }
 
-  if (envKeysAllowed()) {
+  if (envKeysAllowed() && policy !== 'own') {
     const value = process.env[ENV_VAR[provider]];
     if (value) return { key: value, scope: 'env', secretId: null, purpose: null };
   }

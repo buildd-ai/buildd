@@ -76,6 +76,14 @@ export interface ListProviderKeysResponse {
   /** Whether the caller can set/delete team-scope keys (team owner/admin). */
   canManageTeamKeys: boolean;
   providers: ProviderKeySummary[];
+  /**
+   * Whose key a person's chat turn spends (`teams.inferenceKeyPolicy`):
+   * `team` = the team key for everyone, `team_or_own` = the team key or your
+   * own, `own` = everyone brings their own.
+   */
+  keyPolicy: 'team' | 'team_or_own' | 'own';
+  /** An admin switched chat off for the team. */
+  chatDisabled: boolean;
 }
 
 /** `PUT /api/inference-keys` */
@@ -201,48 +209,145 @@ export interface ChatToolResult<T = unknown> {
   summary?: string;
 }
 
-// ── Tools ─────────────────────────────────────────────────────────────────────
-
 /**
  * Tool naming convention: a chat tool is named after the MCP action it wraps
  * (`packages/core/mcp-tools.ts`), so the UI part type is `tool-{action}` —
  * `tool-list_tasks`, `tool-manage_missions`. Actions with sub-operations carry
  * them in `input.action` (`manage_missions` + `{ action: 'create' }`), and the
  * approval card header renders `manage_missions · create`.
+ *
+ * The server's registry (apps/web/src/lib/chat/registry.ts) is the source of
+ * these lists; a test there fails if they drift.
  */
+/** Single-op tools in the read class: they run straight away, shown as rows. */
 export const CHAT_READ_TOOLS = [
-  // The design's read class: renders as a tool row and runs straight away.
-  // The server exposes a subset today (see CHAT_TOOL_ACTIONS in
-  // apps/web/src/lib/chat/tools.ts); the rest arrive as their routes accept a
-  // dashboard session. check_path_claim needs a worker context, so it's out.
-  'list_tasks',
-  'get_task',
-  'manage_missions', // list | get | get_criteria_state run straight away
-  'list_schedules',
-  'trace_schedule',
-  'list_artifacts',
-  'get_artifact',
-  'get_pr',
-  'get_pr_review',
-  'query_events',
-  'get_budget_forecast',
-  'explain',
-  'recall',
+  'list_tasks', 'get_task', 'get_task_messages',
+  'list_discrepancies', 'get_discrepancy',
+  'query_events', 'explain', 'get_error_traces', 'get_failure_analytics', 'get_budget_forecast', 'list_connectors',
+  'get_pr', 'get_pr_review', 'list_releases', 'get_release', 'release_status',
+  'spec_compare', 'recall',
+  'list_schedules', 'trace_schedule',
+  'list_artifacts', 'get_artifact', 'list_artifact_templates',
+  'list_skills', 'get_skill',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
+/** Multi-op tools: the sub-actions that are reads. */
+export const CHAT_READ_OPS: Readonly<Record<string, readonly string[]>> = {
+  manage_missions: ['list', 'get', 'get_criteria_state'],
+  manage_initiatives: ['list', 'get'],
+  manage_workspaces: ['list', 'get'],
+  manage_watched_projects: ['list'],
+  manage_experiments: ['list', 'get', 'readout'],
+};
+
 /**
  * (tool, sub-action) pairs that render as an approval card instead of running.
- * P1 ships exactly one: filing a mission.
+ * `''` is the single op of a tool without sub-actions.
  */
 export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  manage_missions: ['create'],
+  create_task: [''],
+  update_task: [''],
+  correct_task_result: [''],
+  approve_plan: [''],
+  reject_plan: [''],
+  manage_missions: ['create', 'update', 'arm', 'link_task', 'unlink_task', 'evaluate', 'delete'],
+  manage_initiatives: ['create', 'update', 'link_mission', 'unlink_mission', 'delete'],
+  link_tracker: [''],
+  adjudicate_discrepancy: [''],
+  promote_discrepancy: [''],
+  send_agent_message: [''],
+  trigger_release: [''],
+  consolidate_knowledge: [''],
+  memory_delete: [''],
+  create_schedule: [''],
+  update_schedule: [''],
+  pause_schedules: [''],
+  delete_schedule: [''],
+  create_artifact: [''],
+  manage_workspaces: ['create', 'update', 'create_repo', 'init'],
+  manage_watched_projects: ['create', 'update', 'run', 'delete'],
+  register_skill: [''],
+  update_skill: [''],
+  delete_skill: [''],
+  manage_experiments: ['create', 'update', 'start', 'pause', 'conclude'],
+  answer_question: [''],
+  hold_task: [''],
+  learn: [''],
 };
+
+/**
+ * What an approval card shows for a proposed write: exactly what changes, as
+ * before → after. Built on the server from the target's current state (never
+ * from the model's prose) and carried in the approval request's reason
+ * (`approval.requestReason` on the part, prefixed with CHAT_PREVIEW_PREFIX).
+ * The stored copy is what the write is checked against: if the target's
+ * before-state no longer matches `fingerprint` when the approval arrives,
+ * nothing runs.
+ */
+export interface ChatApprovalPreview {
+  v: 1;
+  /** "Hold task", "Message the agent on", "Edit mission" */
+  verb: string;
+  target: {
+    kind: string;
+    id: string;
+    /** "checkout · Stripe in currency" */
+    label: string;
+    /** "running on dune", "waiting for input", "held" */
+    detail?: string;
+    workspaceId?: string | null;
+  };
+  /** `before: null` = added; `after: null` = removed. */
+  changes: Array<{ label: string; before: string | null; after: string | null }>;
+  /** One line on side effects: "The running agent is told to stop at a safe point." */
+  note?: string;
+  /** Admin writes: the user must type this (the target's name) to confirm. */
+  confirmText?: string;
+  fingerprint: string;
+}
+
+export const CHAT_PREVIEW_PREFIX = 'buildd-preview:';
+
+export function encodeApprovalPreview(p: ChatApprovalPreview): string {
+  return `${CHAT_PREVIEW_PREFIX}${JSON.stringify(p)}`;
+}
+
+export function parseApprovalPreview(reason: unknown): ChatApprovalPreview | null {
+  if (typeof reason !== 'string' || !reason.startsWith(CHAT_PREVIEW_PREFIX)) return null;
+  try {
+    const p = JSON.parse(reason.slice(CHAT_PREVIEW_PREFIX.length)) as ChatApprovalPreview;
+    return p && p.v === 1 && typeof p.verb === 'string' && p.target && Array.isArray(p.changes) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "Hold task: checkout · Stripe in currency (running on dune)" */
+export function approvalHeadline(p: ChatApprovalPreview): string {
+  return `${p.verb}: ${p.target.label}${p.target.detail ? ` (${p.target.detail})` : ''}`;
+}
+
+/** "Goal criteria: + JPY e2e passes", "Status: running → cancelled" */
+export function approvalChangeLine(c: ChatApprovalPreview['changes'][number]): string {
+  if (c.before === null && c.after !== null) return `${c.label}: + ${c.after}`;
+  if (c.after === null && c.before !== null) return `${c.label}: − ${c.before}`;
+  return `${c.label}: ${c.before ?? '—'} → ${c.after ?? '—'}`;
+}
+
+/** Is this tool call a read (runs at once, grouped as a read-only row)? */
+export function chatToolIsRead(tool: string, input: unknown): boolean {
+  if ((CHAT_READ_TOOLS as readonly string[]).includes(tool)) return true;
+  const ops = CHAT_READ_OPS[tool];
+  const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
+  return !!ops && typeof action === 'string' && ops.includes(action);
+}
 
 /** Does this tool call need an approval card before it runs? */
 export function chatToolNeedsApproval(tool: string, input: unknown): boolean {
   const subs = CHAT_APPROVAL_TOOLS[tool];
   if (!subs) return false;
+  if (subs.includes('')) return true;
   const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
   return typeof action === 'string' && subs.includes(action);
 }
@@ -387,6 +492,19 @@ export interface UpdateConversationRequest {
  */
 export interface ChatTurnRequest {
   message: { id: string; role: 'user' | 'assistant'; parts: ChatMessagePart[] };
+  /**
+   * How the conversation was opened: from + Mission / New task (`intent`), or
+   * from "Ask about this mission/task" (`about`, docked beside the chat). The
+   * server validates both and names them in the turn's context block; an
+   * invalid value is dropped. Never trusted for authorization — the tools'
+   * reach checks still decide what the model can read.
+   */
+  entry?: ChatTurnEntry;
+}
+
+export interface ChatTurnEntry {
+  intent?: 'mission' | 'task' | null;
+  about?: { kind: 'mission' | 'task'; id: string } | null;
 }
 
 /**
@@ -415,6 +533,8 @@ export interface ChatAvailabilityResponse {
   available: boolean;
   reason: ChatUnavailableReason | null;
   canManageTeamKeys: boolean;
+  /** The team's key policy, so a setup card can say whose key is missing. */
+  keyPolicy?: 'team' | 'team_or_own' | 'own';
 }
 
 // ── Realtime ──────────────────────────────────────────────────────────────────

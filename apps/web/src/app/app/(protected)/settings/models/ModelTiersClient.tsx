@@ -1,21 +1,21 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TIERS, type Tier, type TierEntry, type TierProvider } from '@buildd/core/model-tier-defaults';
 import {
   TIER_PROVIDER_OPTIONS,
   modelOptionsFor,
   providerForModel,
-  providerLabel,
+  suggestionFor,
   tierBandLabel,
   tierSourceState,
   tierSuggestions,
+  tierUsedBy,
   type CatalogModel,
   type TierAuditLike,
   type TierSuggestion,
 } from '@/lib/tier-mapping';
-import ProviderKeysPanel from './ProviderKeysPanel';
+import Link from 'next/link';
 
 interface Props {
   teamId: string;
@@ -29,17 +29,22 @@ interface ModelsResponse {
   tierAudit?: TierAuditLike;
 }
 
-/** Grounded hints only: what the code actually routes to a tier. */
-const TIER_HINT: Partial<Record<Tier, string>> = {
-  'premium-plus': 'Opt-in. Nothing routes here unless a task or role asks for it.',
-  standard: 'Chat’s default tier.',
+/** What the code routes to a tier by default, as a short row tag. */
+const TIER_TAG: Partial<Record<Tier, string>> = {
+  'premium-plus': 'opt-in',
+  standard: 'chat default',
 };
 
-export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
+/**
+ * Settings → AI → Model tiers. One compact table: tier → provider + model →
+ * Apply. The registry is shared by agent runs and chat, so each row says which
+ * of the two can use it instead of splitting the table in two. Catalog notes
+ * sit on their row as an action ("… is newer · Switch").
+ */
+export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   const [tiers, setTiers] = useState<Record<Tier, TierEntry> | null>(null);
   const [catalog, setCatalog] = useState<ModelsResponse>({});
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [chatOn, setChatOn] = useState<boolean | null>(null);
 
   const loadTiers = useCallback(async () => {
     try {
@@ -60,14 +65,6 @@ export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
       .then((r) => (r.ok ? r.json() : {}))
       .then((d: ModelsResponse) => { if (!cancelled) setCatalog(d); })
       .catch(() => {});
-    fetch(`/api/teams/${teamId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d) return;
-        const list = (d.team?.enabledInferenceCapabilities ?? []) as string[];
-        setChatOn(list.includes('chat'));
-      })
-      .catch(() => {});
     return () => { cancelled = true; };
   }, [teamId]);
 
@@ -78,33 +75,18 @@ export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
 
   return (
     <div>
-      <nav className="text-[11px] font-mono font-semibold uppercase tracking-[2px] text-text-muted" aria-label="Breadcrumb">
-        <Link href="/app/settings" className="hover:text-text-primary">Settings</Link>
-        <span className="mx-1.5">·</span>
-        <span>Team</span>
-        <span className="mx-1.5">·</span>
-        <Link href="/app/settings#agent-backends" className="hover:text-text-primary">Agent backends</Link>
-      </nav>
-      <h1 className="text-xl md:text-2xl font-semibold text-text-primary mt-1 mb-1.5">Model tiers</h1>
-      <p className="font-[family-name:var(--font-outfit)] text-[15px] text-text-secondary max-w-3xl">
-        Chat and agents ask for a tier, never a specific model. You decide which model backs each tier.
-        buildd can suggest a change when it has evidence, but it won&apos;t make one on its own.
+      <h1 className="hidden md:block text-xl font-semibold text-text-primary mb-1.5">Model tiers</h1>
+      <p className="text-sm text-text-secondary">
+        Agent runs and chat ask for a tier. Pick the model behind each one.{' '}
+        <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
       </p>
 
-      <ChatStatus chatOn={chatOn} teamName={teamName} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-7 mt-6 items-start">
-        <section aria-labelledby="tier-map-h">
-          <div className="flex items-baseline justify-between gap-3 mb-2.5">
-            <h2 id="tier-map-h" className="section-label">Tier → model</h2>
-            <span className="text-[11px] text-text-muted">{isAdmin ? 'team-wide · admins only' : 'team-wide · read-only for members'}</span>
-          </div>
-
+      <div className="mt-6 max-w-4xl">
+        <section aria-label="Tiers">
           {loadError && <div className="notice notice-err mb-3">{loadError}</div>}
-
           <div className="card" data-testid="tier-table">
-            <div className="hidden md:grid grid-cols-[140px_minmax(0,1fr)_110px] gap-3 px-3 py-2 border-b-2 border-border-strong text-[11px] md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
-              <span>Tier</span><span>Model</span><span className="text-right">Status</span>
+            <div className="hidden md:grid grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+              <span>Tier</span><span>Provider</span><span>Model</span><span className="text-right">Mode</span>
             </div>
             {TIERS.map((tier) => (
               <TierRow
@@ -112,71 +94,46 @@ export default function ModelTiersClient({ teamId, teamName, isAdmin }: Props) {
                 tier={tier}
                 entry={tiers?.[tier] ?? null}
                 models={catalog.models ?? []}
+                suggestion={suggestionFor(suggestions, tier)}
                 teamId={teamId}
                 isAdmin={isAdmin}
                 onChanged={loadTiers}
               />
             ))}
           </div>
-
-          <p className="mt-3.5 text-xs text-text-secondary border-l-[3px] border-status-success bg-surface-2 px-2.5 py-1.5">
-            Pinned tiers stay where you put them. Auto tiers follow the newest model in their price band.
-            A suggestion never changes either one.
-          </p>
-
-          <SuggestionCard suggestions={suggestions} />
         </section>
-
-        <ProviderKeysPanel teamId={teamId} isAdmin={isAdmin} />
       </div>
     </div>
   );
 }
 
-function ChatStatus({ chatOn, teamName }: { chatOn: boolean | null; teamName: string | null }) {
-  if (chatOn === null) return null;
-  return (
-    <div className="mt-4 inset-panel flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="chat-status">
-      <span className={`status-pill ${chatOn ? 'status-pill-ok' : 'status-pill-idle'}`}>chat {chatOn ? 'on' : 'off'}</span>
-      <span className="text-text-secondary">
-        {chatOn
-          ? `Chat is on for ${teamName ?? 'this team'}. It needs a provider key below.`
-          : `Chat is off for ${teamName ?? 'this team'}. Adding a key spends nothing until you turn it on.`}
-      </span>
-      <Link href="/app/settings#inference-spending" className="underline text-text-primary hover:text-accent-text">
-        {chatOn ? 'Chat setting' : 'Turn on chat'}
-      </Link>
-    </div>
-  );
-}
-
 function TierRow({
-  tier, entry, models, teamId, isAdmin, onChanged,
+  tier, entry, models, suggestion, teamId, isAdmin, onChanged,
 }: {
   tier: Tier;
   entry: TierEntry | null;
   models: CatalogModel[];
+  suggestion: TierSuggestion | null;
   teamId: string;
   isAdmin: boolean;
   onChanged: () => Promise<void>;
 }) {
-  const [editing, setEditing] = useState(false);
   const [provider, setProvider] = useState<TierProvider>('anthropic');
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const state = tierSourceState(entry?.source);
-  const options = useMemo(() => modelOptionsFor(provider, models, editing ? undefined : entry?.model), [provider, models, editing, entry]);
-  const chosen = options.find((o) => o.value === model);
-  const providerNote = TIER_PROVIDER_OPTIONS.find((p) => p.id === provider)?.note;
+  // Drafts follow the saved row until the admin edits them.
+  useEffect(() => {
+    if (!entry) return;
+    setProvider(providerForModel(entry.provider));
+    setModel(entry.model);
+  }, [entry]);
 
-  function openEditor() {
-    setProvider(providerForModel(entry?.provider ?? 'anthropic'));
-    setModel(entry?.model ?? '');
-    setErr(null);
-    setEditing(true);
-  }
+  const state = tierSourceState(entry?.source);
+  const options = useMemo(() => modelOptionsFor(provider, models, entry?.model), [provider, models, entry]);
+  const dirty = !!entry && (provider !== providerForModel(entry.provider) || model.trim() !== entry.model);
+  const listId = `tier-models-${tier}`;
 
   async function pin(p: TierProvider, m: string) {
     setBusy(true);
@@ -188,7 +145,6 @@ function TierRow({
         body: JSON.stringify({ tier, provider: p, model: m.trim(), teamId }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
-      setEditing(false);
       await onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Could not save');
@@ -206,165 +162,102 @@ function TierRow({
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
       await onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not unpin');
+      setErr(e instanceof Error ? e.message : 'Could not switch to auto');
     } finally {
       setBusy(false);
     }
   }
 
-  const listId = `tier-models-${tier}`;
+  const controlCls = 'h-9 w-full px-2 bg-surface-1 border border-border-default focus:border-primary outline-none text-xs disabled:opacity-70';
 
   return (
-    <div className="border-b border-border-default last:border-b-0 px-3 py-3" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[140px_minmax(0,1fr)_110px] gap-x-3 gap-y-2 items-start">
-        <div className="min-w-0">
-          <div className="text-[13px] font-bold text-text-primary">{tier}</div>
-          <div className="text-[11px] text-text-muted mt-0.5 hidden md:block">{tierBandLabel(tier)}</div>
+    <div className="border-b border-border-default last:border-b-0 px-3 py-2.5" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:grid-cols-[130px_150px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
+        <div className="min-w-0" title={tierBandLabel(tier)}>
+          <span className="text-[13px] font-bold text-text-primary">{tier}</span>
         </div>
 
-        <div className="col-span-2 md:col-span-1 row-start-2 md:row-start-auto min-w-0">
-          {entry ? (
-            <button
-              type="button"
-              onClick={isAdmin ? openEditor : undefined}
-              disabled={!isAdmin || busy}
-              aria-label={isAdmin ? `Change the model for ${tier}` : undefined}
-              className={`inline-flex max-w-full items-center gap-2 border border-border-strong bg-surface-2 px-2 py-1 text-left ${isAdmin ? 'hover:bg-surface-3 cursor-pointer' : 'cursor-default'}`}
-            >
-              <span className="shrink-0 text-[11px] md:text-[10px] uppercase tracking-[1.3px] text-text-muted">{providerLabel(entry.provider)}</span>
-              <span className="min-w-0 truncate font-mono text-xs font-semibold text-text-primary">{entry.model}</span>
-              {isAdmin && <span aria-hidden className="text-text-muted">▾</span>}
-            </button>
-          ) : (
-            <span className="text-xs text-text-muted">loading…</span>
-          )}
-          <p className="text-[11px] text-text-muted mt-1">
-            {state.explain}{TIER_HINT[tier] ? ` ${TIER_HINT[tier]}` : ''}
-          </p>
+        {/* Mode sits top-right on a phone, last column on desktop. */}
+        <div className="flex justify-end md:order-last">
+          <button
+            type="button"
+            onClick={state.pinned ? unpin : () => entry && pin(providerForModel(entry.provider), entry.model)}
+            disabled={!isAdmin || busy || !entry}
+            aria-pressed={state.pinned}
+            aria-label={state.pinned ? `${tier} is pinned. Switch to auto` : `${tier} follows the catalog. Pin this model`}
+            data-testid="tier-state"
+            className={`inline-flex items-center gap-1.5 h-8 px-2 border text-[11px] font-semibold uppercase tracking-[1px] ${
+              state.pinned ? 'border-border-strong text-text-primary' : 'border-border-default text-text-muted'
+            } ${isAdmin ? 'hover:bg-surface-3' : 'cursor-default'}`}
+          >
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <rect x="5" y="11" width="14" height="10" />
+              {state.pinned ? <path d="M8 11V7a4 4 0 018 0v4" /> : <path d="M8 11V7a4 4 0 017.5-2" />}
+            </svg>
+            {state.label}
+          </button>
         </div>
 
-        <div className="flex md:justify-end items-center gap-2 row-start-1 col-start-2 md:col-start-auto md:row-start-auto">
-          <span className={`status-pill status-pill-plain ${state.pinned ? '' : 'status-pill-idle'}`} data-testid="tier-state">{state.label}</span>
-        </div>
-      </div>
+        <select
+          aria-label={`Provider for ${tier}`}
+          value={provider}
+          disabled={!isAdmin || busy || !entry}
+          onChange={(e) => { setProvider(e.target.value as TierProvider); setModel(''); }}
+          className={controlCls}
+        >
+          {TIER_PROVIDER_OPTIONS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
 
-      {isAdmin && !editing && entry && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {state.pinned ? (
-            <button className="btn btn-sm" onClick={unpin} disabled={busy}>{busy ? 'Saving…' : 'Unpin (follow catalog)'}</button>
-          ) : (
-            <button className="btn btn-sm" onClick={() => pin(providerForModel(entry.provider), entry.model)} disabled={busy}>
-              {busy ? 'Saving…' : `Pin ${entry.model}`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {editing && (
-        <div className="mt-3 inset-panel space-y-2.5" data-testid={`tier-editor-${tier}`}>
-          <div>
-            <span className="field-label">Provider</span>
-            <div className="seg" role="radiogroup" aria-label="Provider">
-              {TIER_PROVIDER_OPTIONS.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={provider === p.id}
-                  className={`seg-item ${provider === p.id ? 'seg-item-active' : ''}`}
-                  onClick={() => { setProvider(p.id); setModel(''); }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {providerNote && <p className="text-[11px] text-status-warning mt-1.5">{providerNote}</p>}
-          </div>
-          <div>
-            <label className="field-label" htmlFor={`${listId}-input`}>Model</label>
-            <input
-              id={`${listId}-input`}
-              list={listId}
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={provider === 'openrouter' ? 'vendor/model, e.g. qwen/qwen3-coder' : 'model id'}
-              spellCheck={false}
-              autoComplete="off"
-              className="w-full h-10 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs"
-            />
-            <datalist id={listId}>
-              {options.map((o) => (
-                <option key={o.value} value={o.value}>{o.price ? `${o.label}  ${o.price}` : o.label}</option>
-              ))}
-            </datalist>
-            <p className="text-[11px] text-text-muted mt-1">
-              {options.length > 0
-                ? `${options.length} in the catalog for ${providerLabel(provider)}.`
-                : `The ${providerLabel(provider)} catalog didn’t load. Type a model id.`}
-              {chosen?.price ? ` ${chosen.price} per MTok in / out.` : ''}
-              {' '}This tier&apos;s auto band is {tierBandLabel(tier)}.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button className="btn btn-primary" disabled={busy || !model.trim()} onClick={() => pin(provider, model)}>
-              {busy ? 'Saving…' : 'Save and pin'}
-            </button>
-            <button className="btn btn-quiet" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      {err && <p role="alert" className="mt-2 text-xs text-status-error">{err}</p>}
-    </div>
-  );
-}
-
-/**
- * Read-only. Catalog notes are real (a newer release exists, a pinned id is
- * gone); outcome-based suggestions from experiments are not wired yet, so that
- * half says so instead of inventing numbers.
- */
-function SuggestionCard({ suggestions }: { suggestions: TierSuggestion[] }) {
-  return (
-    <div
-      className="mt-6 bg-card border-2 border-dashed border-accent shadow-[5px_5px_0_0_var(--accent)]"
-      data-testid="tier-suggestions"
-    >
-      <div className="flex flex-wrap items-center gap-2.5 px-3.5 py-2.5 border-b border-border-default">
-        <span className="bg-accent text-white text-[11px] md:text-[10px] font-bold uppercase tracking-[1.5px] px-2 py-0.5">suggested by buildd</span>
-        <span className="flex-1" />
-        <span className="text-[11px] text-text-muted">read-only</span>
-      </div>
-      <div className="px-3.5 py-3 text-xs space-y-3">
-        {suggestions.length > 0 ? (
-          <ul className="space-y-2">
-            {suggestions.map((s) => (
-              <li key={`${s.tier}-${s.kind}`} className="border border-border-default px-2.5 py-2">
-                <div className="font-semibold text-text-primary">{s.tier} tier</div>
-                {s.kind === 'newer' ? (
-                  <p className="text-text-secondary mt-0.5">
-                    Pinned to <code className="font-mono">{s.model}</code>. <code className="font-mono">{s.newer}</code> is newer in the same family.
-                    Check its price and quality before you switch.
-                  </p>
-                ) : (
-                  <p className="text-text-secondary mt-0.5">
-                    Pinned to <code className="font-mono">{s.model}</code>, which the provider no longer lists. Tasks on this tier may fail. Pick a current model.
-                  </p>
-                )}
-              </li>
+        <div className="flex items-center gap-2 min-w-0">
+          <input
+            aria-label={`Model for ${tier}`}
+            list={listId}
+            value={entry ? model : ''}
+            placeholder={entry ? (provider === 'openrouter' ? 'vendor/model' : 'model id') : 'loading…'}
+            onChange={(e) => setModel(e.target.value)}
+            disabled={!isAdmin || busy || !entry}
+            spellCheck={false}
+            autoComplete="off"
+            className={`${controlCls} font-mono min-w-0`}
+          />
+          <datalist id={listId}>
+            {options.map((o) => (
+              <option key={o.value} value={o.value}>{o.price ? `${o.label}  ${o.price}` : o.label}</option>
             ))}
-          </ul>
-        ) : (
-          <p className="text-text-secondary">The catalog shows nothing newer for your pinned tiers.</p>
-        )}
-        <div className="border-t border-border-default pt-3">
-          <h3 className="text-[13px] font-semibold text-text-primary">Evidence-based suggestions</h3>
-          <p className="text-text-secondary mt-1">
-            Not wired yet. When a tier experiment finishes, its result shows here with the numbers: agreement,
-            latency, cost. You apply it or dismiss it. buildd never switches a tier by itself.
-          </p>
+          </datalist>
+          {isAdmin && dirty && (
+            <button className="btn btn-primary shrink-0" disabled={busy || !model.trim()} onClick={() => pin(provider, model)}>
+              {busy ? 'Saving…' : 'Apply'}
+            </button>
+          )}
         </div>
       </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+        {TIER_TAG[tier] && <span className="uppercase tracking-[1px] text-text-secondary">{TIER_TAG[tier]}</span>}
+        <span data-testid="tier-used-by">{tierUsedBy(provider)}</span>
+        {suggestion?.kind === 'newer' && (
+          <span className="flex items-center gap-1.5 text-text-secondary" data-testid="tier-suggestion">
+            <code className="font-mono text-text-primary">{suggestion.newer}</code> is newer
+            {isAdmin && entry && (
+              <>
+                <span aria-hidden>·</span>
+                <button type="button" className="underline text-accent-text hover:no-underline" disabled={busy}
+                  onClick={() => pin(providerForModel(entry.provider), suggestion.newer)}>
+                  Switch
+                </button>
+              </>
+            )}
+          </span>
+        )}
+        {suggestion?.kind === 'missing' && (
+          <span className="text-status-warning" data-testid="tier-suggestion">
+            <code className="font-mono">{suggestion.model}</code> is not in the catalog
+          </span>
+        )}
+      </div>
+
+      {err && <p role="alert" className="mt-1.5 text-xs text-status-error">{err}</p>}
     </div>
   );
 }

@@ -43,7 +43,7 @@ import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { missionNotHeld } from './held-gate';
+import { missionNotHeld, taskNotHeld } from './held-gate';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -51,6 +51,8 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachCbmExperimentArm } from './cbm-experiment';
+import { attachRoleEnvSecrets } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
@@ -416,6 +418,8 @@ export async function POST(req: NextRequest) {
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
   claimableConditions.push(missionNotHeld());
+  // A single task held by a person (PATCH { held: true }) waits for resume.
+  claimableConditions.push(taskNotHeld());
 
   // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
   // exclude tasks whose subject PR has been reconciled (marked dead by the
@@ -1941,6 +1945,14 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
+  await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
+  // CBM-access experiment: after role config (eligibility reads the role's CBM
+  // opt-out) and before the prompt-context blocks (the task-area hint drops its
+  // graph mention for a withheld task). No-op without a running experiment.
+  await attachCbmExperimentArm(claimedWorkers, {
+    cliVersion: body.environment?.claudeCliVersion,
+    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
+  });
 
   // Predict each task's file area from what similar COMPLETED tasks actually
   // touched, before any block is built — attachKnowledgeContext uses it as its

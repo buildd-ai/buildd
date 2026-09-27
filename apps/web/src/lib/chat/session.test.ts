@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-/** Chat availability: the capability AND a resolvable key, or nothing shows. */
+/** Team chat settings. Availability itself lives in lib/chat-availability.ts. */
 
-let team: any = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
+let team: any = { chatDisabled: false, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
 let modelOk = true;
 
 mock.module('@buildd/core/db', () => ({
@@ -16,32 +16,17 @@ mock.module('./models', () => ({
   resolveChatModel: async () => (modelOk ? { ok: true } : { ok: false, reason: 'no_key', provider: 'anthropic', tier: 'standard' }),
 }));
 
-const { chatAvailability, loadTeamChatSettings } = await import('./session');
+const { loadTeamChatSettings } = await import('./session');
 
 beforeEach(() => {
-  team = { enabledInferenceCapabilities: null, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
+  team = { chatDisabled: false, timezone: null, chatDailyBudgetUsd: null, chatUserDailyBudgetUsd: null };
   modelOk = true;
 });
 
-describe('chatAvailability', () => {
-  it('capability off (the default) ⇒ no Chat entry point, even with a key', async () => {
-    expect(await chatAvailability('t', 'u', 'member')).toEqual({ available: false, reason: 'capability_disabled', canManageTeamKeys: false });
-  });
-
-  it('capability on but no key resolves (e.g. an OAuth-only team) ⇒ no turn is possible', async () => {
-    team.enabledInferenceCapabilities = ['chat'];
-    modelOk = false;
-    expect(await chatAvailability('t', 'u', 'admin')).toEqual({ available: false, reason: 'no_key', canManageTeamKeys: true });
-  });
-
-  it('capability on and a key ⇒ available', async () => {
-    team.enabledInferenceCapabilities = ['chat'];
-    expect((await chatAvailability('t', 'u', 'member')).available).toBe(true);
-  });
-
-  it('other capabilities being on does not turn chat on', async () => {
-    team.enabledInferenceCapabilities = ['criteria_grading', 'task_category_shadow'];
-    expect((await chatAvailability('t', 'u', 'member')).available).toBe(false);
+describe('one availability source', () => {
+  it('session no longer carries its own chatAvailability: lib/chat-availability.ts is the only one', async () => {
+    const mod = await import('./session') as Record<string, unknown>;
+    expect(mod.chatAvailability).toBeUndefined();
   });
 });
 

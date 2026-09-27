@@ -218,18 +218,13 @@
       "id": "settings",
       "path": "/app/settings",
       "title": "Settings",
-      "specRef": "§2 Workspace gitConfig, releaseConfig, webhookConfig; §4 PATCH /api/workspaces/[id]/config",
+      "specRef": "lib/settings-nav.ts (settings information architecture)",
       "category": "core",
       "expectations": [
         {
           "id": "settings-renders",
-          "desc": "Settings page renders without a blank screen or error",
-          "specClaim": "Workspace config (gitConfig, releaseConfig) must be editable"
-        },
-        {
-          "id": "settings-key-toggles",
-          "desc": "Key config toggles (e.g. auto-merge, CI retries) are present",
-          "specClaim": "gitConfig: autoMergeOnGreenCI, maxCiRetries, etc."
+          "desc": "Settings index renders every section, grouped (Account, Team, Connections, AI, Workspaces)",
+          "specClaim": "Settings is a list of linkable sections; desktop adds a sub-nav"
         },
         {
           "id": "settings-no-errors",

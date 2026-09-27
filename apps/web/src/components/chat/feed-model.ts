@@ -4,15 +4,13 @@
  * row, and which object the docked pane follows.
  */
 import {
-  CHAT_READ_TOOLS, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, objectsOf, refKey, toolNameOf,
+  chatToolIsRead, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, objectsOf, refKey, toolNameOf,
   type BuilddObjectRef, type ChatEventData, type ChatMessage, type ChatPart, type ChatToolPart,
 } from './chat-contract';
 
 // ── Tool classes ─────────────────────────────────────────────────────────────
 
 /** The read class (shared contract): runs straight away, shown as rows. */
-const READ_TOOLS: ReadonlySet<string> = new Set<string>(CHAT_READ_TOOLS);
-const READ_MISSION_ACTIONS: ReadonlySet<string> = new Set(['list', 'get', 'get_criteria_state']);
 
 export function toolAction(part: ChatToolPart): string | null {
   const input = part.input as Record<string, unknown> | undefined;
@@ -23,11 +21,7 @@ export function toolAction(part: ChatToolPart): string | null {
 export function isReadTool(part: ChatToolPart): boolean {
   const name = toolNameOf(part);
   if (chatToolNeedsApproval(name, part.input)) return false;
-  if (name === 'manage_missions') {
-    const a = toolAction(part);
-    return a !== null && READ_MISSION_ACTIONS.has(a);
-  }
-  return READ_TOOLS.has(name);
+  return chatToolIsRead(name, part.input);
 }
 
 // ── One row per call ─────────────────────────────────────────────────────────

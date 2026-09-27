@@ -206,20 +206,24 @@ describe('homeAudience', () => {
   });
 });
 
-describe('homeChatPlacement — chat on Home, and the fallback', () => {
+describe('homeChatPlacement — chat first on Home, and the fallback', () => {
   const on = { available: true, reason: null, canManageTeamKeys: false };
-  it('available: a member opens on chat; an operator keeps the fleet first', () => {
-    expect(homeChatPlacement('member', on)).toEqual({ kind: 'member-first' });
-    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'operator-after-fleet' });
+  it('available: the composer is the first thing on Home for members and operators alike', () => {
+    expect(homeChatPlacement('member', on)).toEqual({ kind: 'chat' });
+    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'chat' });
   });
-  it('capability off (every team by default): Home is unchanged for everyone, admins included', () => {
+  it('switched off: Home is unchanged for everyone, admins included (they chose it)', () => {
     const off = { available: false, reason: 'capability_disabled', canManageTeamKeys: true };
     expect(homeChatPlacement('operator', off)).toEqual({ kind: 'none' });
     expect(homeChatPlacement('member', { ...off, canManageTeamKeys: false })).toEqual({ kind: 'none' });
     expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
   });
-  it('turned on but no key (an OAuth-only team): the admin gets the setup card, a member gets nothing', () => {
-    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true })).toEqual({ kind: 'setup', reason: 'no_key' });
-    expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false })).toEqual({ kind: 'none' });
+  it('no key resolves: the admin gets onboarding in place of chat, a member gets nothing', () => {
+    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'team' })).toEqual({ kind: 'onboarding' });
+    expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false, keyPolicy: 'team' })).toEqual({ kind: 'none' });
+  });
+  it('everyone brings their own key: anyone without one gets the connect card', () => {
+    expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false, keyPolicy: 'own' })).toEqual({ kind: 'connect-own' });
+    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'own' })).toEqual({ kind: 'connect-own' });
   });
 });

@@ -38,11 +38,9 @@ tree via `git ls-tree`/`git show`, chunks with ast-grep symbol alignment, and �
 entities/edges/aliases through the authenticated, idempotent
 `POST /api/knowledge/ingest-jobs/[id]/graph`.
 
-**The gate is open in production.** Measured on the live runner:
-
-```
-pid 58980  bun run apps/runner/src/index.ts   KNOWLEDGE_SCIP=1
-```
+**The gate is open in production.** Verified by reading the environment of the live
+runner's `bun run apps/runner/src/index.ts` process, which carries `KNOWLEDGE_SCIP=1`
+(process listing: knowledge base artifact `cbm-repo-readouts-2026-09-24`).
 
 (Set from `templates/claude-code/main.tf:254` in the infrastructure repo;
 `@sourcegraph/scip-typescript` baked at `build/Dockerfile:63`. Note the screen/bash
@@ -58,13 +56,11 @@ modelled in an `entityAliases` table. Freshness scaffolding already exists in
 
 ## 2. Indexing "the mainline checkout" is dead on arrival here
 
-Measured in the live workspace:
+Measured in the live workspace, the mainline buildd checkout was a full (non-shallow) clone
+sitting dozens of commits behind `origin/dev` (exact readout: knowledge base artifact
+`cbm-repo-readouts-2026-09-24`).
 
-```
-/home/coder/project/buildd   3753b5cf   61 commits behind origin/dev   shallow=false
-```
-
-Nothing refreshes it. `main.tf:168` clones five `maxjacu/*` repos and buildd is not
+Nothing refreshes it. `main.tf:168` clones a fixed list of repos and buildd is not
 among them; the one buildd clone refreshed at start (`$HOME/.buildd`, `main.tf:296`)
 is `--depth 1`, so it cannot compute "N commits behind" at all.
 
@@ -93,7 +89,7 @@ the anchor source does not touch the bottleneck.** Ranking and raising the cap d
 
 ## 4. The evidence base is n=1, and the path has never run
 
-- The vocabulary gap has exactly one measurement (PR #1429 / task `a61de0b5`): a
+- The vocabulary gap has exactly one measurement (PR #1429): a
   single query pair, `0.013` prose vs `0.789` identifier. Those values are now
   **hardcoded literals in a mocked test**
   (`packages/core/__tests__/mcp-tools-spec-compare.test.ts:52,60`), asserting the code
@@ -125,7 +121,8 @@ the anchor source does not touch the bottleneck.** Ranking and raising the cap d
    `0.013`, and it is independent of any indexer.
 3. **Give `/api/cbm/metrics` a consumer**, and fix its efficacy maths. It currently
    compares post-fix `cbmActive` workers against pre-fix `cbmDisabled` workers and
-   reported `inputTokenDeltaPct: -0.808` — with **no mechanism behind it**, because
+   reported a large negative `inputTokenDeltaPct` (value: knowledge base artifact
+   `cbm-repo-readouts-2026-09-24`) — with **no mechanism behind it**, because
    `avgToolCalls` was `{}`, i.e. zero graph tool calls. Same-window comparison at
    minimum.
 

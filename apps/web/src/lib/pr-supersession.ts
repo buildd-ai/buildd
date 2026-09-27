@@ -82,7 +82,13 @@ export async function recordPrSupersession(
   });
   if (!worker) return { ok: false, error: 'Worker not found', status: 404 };
   if (!worker.prNumber || !worker.prUrl) {
-    return { ok: false, error: 'Worker has no PR to supersede', status: 400 };
+    return {
+      ok: false,
+      error: 'Worker has no PR to supersede — this worker is not tracking a PR. '
+        + 'If you intended to record a supersession for a specific PR, '
+        + 'use record_pr_supersession with prNumber to resolve the correct worker.',
+      status: 400,
+    };
   }
   if (worker.mergedAt) {
     return { ok: false, error: `PR #${worker.prNumber} already merged — nothing to supersede`, status: 409 };

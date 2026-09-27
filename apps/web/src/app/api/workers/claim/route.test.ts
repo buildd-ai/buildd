@@ -271,6 +271,14 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
   recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
 }));
 
+// CBM-access experiment glue. The real module is exercised in
+// packages/core/__tests__/cbm-access-experiment-source.test.ts; here only the
+// call-site wiring is under test. Default: no running experiment.
+const mockEnrolCbmAccessExperiment = mock((_args: any): Promise<any> => Promise.resolve(null));
+mock.module('@buildd/core/cbm-access-experiment-source', () => ({
+  enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -1378,6 +1386,53 @@ describe('POST /api/workers/claim', () => {
       mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
       await POST(claimReq());
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+    });
+
+    describe('CBM-access experiment wiring', () => {
+      beforeEach(() => {
+        mockEnrolCbmAccessExperiment.mockReset();
+        mockEnrolCbmAccessExperiment.mockResolvedValue(null);
+      });
+
+      it('asks the experiment about every claimed task, with its team and the runner CLI version', async () => {
+        setup();
+        const res = await POST(claimReq());
+        const data = await res.json();
+        expect(data.workers.length).toBe(1);
+        expect(mockEnrolCbmAccessExperiment).toHaveBeenCalledTimes(1);
+        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0]).toMatchObject({
+          teamId: 'team-1', task: { id: 'task-1' }, roleCbmDisabled: false, runnerCliVersion: '2.1.300',
+          // This request declares no runnerFeatures: an old runner, not enrolable.
+          runnerCanWithhold: false,
+        });
+        // Not enrolled: the payload carries no marker, so the runner runs CBM as today.
+        expect(data.workers[0].cbmExperiment).toBeUndefined();
+      });
+
+      it('a runner that declares the withhold feature is enrolable', async () => {
+        setup();
+        const req = createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
+        });
+        await POST(req);
+        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0].runnerCanWithhold).toBe(true);
+      });
+
+      it('a withheld draw reaches the runner on the claimed worker', async () => {
+        setup();
+        const marker = { experimentId: 'exp-cbm', policyVersion: 1, arm: 'treatment', withheld: true };
+        mockEnrolCbmAccessExperiment.mockResolvedValue(marker);
+        const data = await (await POST(claimReq())).json();
+        expect(data.workers[0].cbmExperiment).toEqual(marker);
+      });
+
+      it('does not enrol a task whose claim lock was lost', async () => {
+        setup();
+        mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
+        await POST(claimReq());
+        expect(mockEnrolCbmAccessExperiment).not.toHaveBeenCalled();
+      });
     });
   });
 

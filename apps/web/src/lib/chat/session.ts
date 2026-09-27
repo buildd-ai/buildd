@@ -4,16 +4,12 @@
  */
 
 import type { NextRequest } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, teams, workspaces } from '@buildd/core/db/schema';
-import { isInferenceEnabled } from '@buildd/core/inference-policy';
 import { resolveTimezone } from '@buildd/core/timezone';
-import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
-import { resolveChatModel } from './models';
-import { FALLBACK_TIER } from './routing';
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
 
@@ -35,10 +31,11 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { enabledInferenceCapabilities: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
+    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true },
   });
   return {
-    chatEnabled: isInferenceEnabled('chat', team?.enabledInferenceCapabilities ?? null),
+    // On whenever a key resolves; an admin can switch it off (teams.chatDisabled).
+    chatEnabled: team ? team.chatDisabled !== true : false,
     timezone: team?.timezone ?? null,
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
@@ -54,20 +51,6 @@ export async function turnUserFor(user: CurrentUser, teamId: string, teamTimezon
     teamRole: role,
     timeZone: resolveTimezone(user.timezone, teamTimezone),
   };
-}
-
-/**
- * Should the UI show a Chat entry point for this user in this team? Only when
- * the capability is on AND a key resolves for the default tier — so a team
- * with chat off, or with no key, sees nothing change.
- */
-export async function chatAvailability(teamId: string, userId: string, role: string | null): Promise<ChatAvailabilityResponse> {
-  const canManageTeamKeys = role === 'owner' || role === 'admin';
-  const settings = await loadTeamChatSettings(teamId);
-  if (!settings.chatEnabled) return { available: false, reason: 'capability_disabled', canManageTeamKeys };
-  const model = await resolveChatModel({ tier: FALLBACK_TIER, teamId, workspaceId: null, userId });
-  if (!model.ok) return { available: false, reason: 'no_key', canManageTeamKeys };
-  return { available: true, reason: null, canManageTeamKeys };
 }
 
 /**
@@ -98,6 +81,16 @@ export async function workspaceForConversation(workspaceId: string | null, teamI
 }
 
 /** Record which conversation a mission was filed from, within the team. */
+/** The mission this conversation filed most recently (docked when the request docks nothing). */
+export async function linkedMissionFor(conversationId: string, teamId: string): Promise<string | null> {
+  const [row] = await db.select({ id: missions.id })
+    .from(missions)
+    .where(and(eq(missions.conversationId, conversationId), eq(missions.teamId, teamId)))
+    .orderBy(desc(missions.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export async function linkMissionToConversation(missionId: string, conversationId: string, teamId: string) {
   await db.update(missions)
     .set({ conversationId })

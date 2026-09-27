@@ -21,16 +21,18 @@
 import type {
   CreateExperimentInput,
   Experiment,
+  ExperimentKind,
   ExperimentStatus,
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
+import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
 export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ['draft', 'running', 'paused', 'concluded'];
 export const EXPERIMENT_VISIBILITIES: readonly ExperimentVisibility[] = ['admins', 'team'];
-export const EXPERIMENT_KINDS = ['model_routing'] as const;
+export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
 export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {
@@ -89,7 +91,7 @@ export interface NewExperimentValues {
   key: string;
   title: string;
   hypothesis: string | null;
-  kind: 'model_routing';
+  kind: ExperimentKind;
   treatmentFraction: number;
   config: Record<string, unknown>;
   visibility: ExperimentVisibility;
@@ -113,6 +115,12 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
     return { ok: false, status: 400, error: `kind must be one of ${EXPERIMENT_KINDS.join(', ')}` };
   }
 
+  // cbm_access has no implicit share: withholding the graph from half the
+  // fleet because a caller omitted a field is not a safe default. The operator
+  // names the share (e.g. 0.2) explicitly, or the create is refused.
+  if (kind === 'cbm_access' && b.treatmentFraction === undefined) {
+    return { ok: false, status: 400, error: 'treatmentFraction is required for kind cbm_access (the share of eligible tasks that run WITHOUT CBM, e.g. 0.2)' };
+  }
   const fraction = b.treatmentFraction ?? 0.5;
   if (!validFraction(fraction)) return { ok: false, status: 400, error: 'treatmentFraction must be a number strictly between 0 and 1' };
 
@@ -127,9 +135,10 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
       key: b.key,
       title: b.title.trim(),
       hypothesis: hyp.value ?? null,
-      kind: 'model_routing',
+      kind: kind as ExperimentKind,
       treatmentFraction: fraction,
-      config: (b.config as Record<string, unknown> | undefined) ?? defaultModelRoutingConfig(),
+      config: (b.config as Record<string, unknown> | undefined)
+        ?? (kind === 'cbm_access' ? defaultCbmAccessConfig() : defaultModelRoutingConfig()),
       visibility,
     },
   };
