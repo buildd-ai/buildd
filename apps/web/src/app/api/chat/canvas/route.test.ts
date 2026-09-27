@@ -11,7 +11,7 @@ mock.module('@/lib/chat/session', () => ({
 }));
 mock.module('@/lib/chat-availability', () => ({ getChatAvailability: async () => avail }));
 mock.module('@/lib/chat/chat-page-data', () => ({
-  loadTeamChatAgent: async (teamId: string) => { agentCalls.push(teamId); return { name: 'Organizer', color: '#6366F1' }; },
+  loadTeamChatAgent: async (teamId: string) => { agentCalls.push(teamId); return { name: 'buildd', color: '#6366F1' }; },
 }));
 
 const { GET } = await import('./route');
@@ -26,7 +26,7 @@ describe('GET /api/chat/canvas', () => {
   it("returns the team's chat agent and the key-admin flag the summoned canvas needs", async () => {
     const res = await GET(new NextRequest('http://localhost/api/chat/canvas'));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ available: true, agent: { name: 'Organizer', color: '#6366F1' }, canManageTeamKeys: false });
+    expect(await res.json()).toEqual({ available: true, agent: { name: 'buildd', color: '#6366F1' }, canManageTeamKeys: false });
     expect(agentCalls).toEqual(['t-1']);
   });
 

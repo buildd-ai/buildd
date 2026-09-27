@@ -37,7 +37,7 @@ beforeEach(() => {
   (globalThis as any).fetch = async (url: string) => {
     fetched.push(String(url));
     if (String(url).startsWith('/api/chat/canvas')) {
-      return new Response(JSON.stringify({ available: true, agent: { name: 'Organizer', color: '#6366F1' }, canManageTeamKeys: false }), { status: 200 });
+      return new Response(JSON.stringify({ available: true, agent: { name: 'buildd', color: '#6366F1' }, canManageTeamKeys: false }), { status: 200 });
     }
     // The pinned object's live view: not needed for these assertions.
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
