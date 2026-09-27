@@ -256,6 +256,24 @@ function causeLinksFor(
         ),
       );
 
+    case 'pr_closed_unmerged':
+      return (extra.unmergedPrs ?? [])
+        .filter(p => p.closedUnsuperseded)
+        .slice(0, 10)
+        .map(p =>
+          link(
+            `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+              + 'work shipped elsewhere. If it did, record it with record_pr_supersession.',
+            'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber',
+            {
+              ...base,
+              taskId: p.taskId,
+              ...(p.prNumber != null ? { prNumber: p.prNumber } : {}),
+              ...(p.prUrl ? { prUrl: p.prUrl } : {}),
+            },
+          ),
+        );
+
     case 'criterion_failing':
       return (w.criteria.length ? w.criteria : ['criterion']).map(c =>
         link(`Goal criterion "${c}" returned a failing verdict.`, 'missions.goalCriteriaState', {

@@ -188,6 +188,26 @@ export type WaitingOnDescriptor =
       missionPr: boolean;
     }
   /**
+   * A completed task's PR closed WITHOUT merging, and nothing recorded that the
+   * work shipped elsewhere (task fcaf83d5's `closedUnsuperseded`). Deliberately
+   * a distinct kind from `merge`, not a flag on it: GitHub will not let this PR
+   * merge — "waiting on you to merge" is a false headline for a closed PR, and
+   * every renderer of `merge` (the situation phrase, the primary affordance,
+   * the causal chain) would otherwise have to remember to branch on a flag it
+   * could just as easily forget. The remedy is `record_pr_supersession` or
+   * investigation, never a merge click.
+   */
+  | {
+      kind: 'pr_closed_unmerged';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      prNumbers: number[];
+      /** Hrefs to the closed PRs, for "view" rather than "merge". */
+      prUrls: string[];
+      taskIds: string[];
+    }
+  /**
    * The completion gate is holding on a criterion that failed.
    *
    * `blockers` names what holds a structural criterion (`no_open_tasks`: the
@@ -469,11 +489,16 @@ export const OUTSTANDING_RANK: Record<WaitingOnDescriptor['kind'], number> = {
   human_decision: 1,
   dependency: 2,
   merge: 3,
-  criterion_failing: 4,
-  claim_deferral: 5,
-  task: 6,
-  criterion_unverified: 7,
-  self_resolving_wait: 8,
+  // Ranked below a genuinely open, mergeable PR: both need the owner, but a PR
+  // GitHub closed months ago is not a live merge tap the way an open one is,
+  // and must not bury today's actionable merges under old dead ones in the
+  // workspace ranking (the exact failure this kind was split out to fix).
+  pr_closed_unmerged: 4,
+  criterion_failing: 5,
+  claim_deferral: 6,
+  task: 7,
+  criterion_unverified: 8,
+  self_resolving_wait: 9,
 };
 
 /**
@@ -816,6 +841,30 @@ function mergeFact(input: MissionStateInput): Resolution | null {
     const prUrls = missionPr && input.missionPr?.prUrl
       ? [input.missionPr.prUrl]
       : details.map(d => d.prUrl).filter((u): u is string => typeof u === 'string');
+
+    // Every named PR closed without merging, with no supersession recorded: a
+    // dead PR, not a merge tap. Mixed sets (some still open) keep the ordinary
+    // `merge` reading below — an open PR genuinely needs merging, so that
+    // remedy still holds even when a sibling PR is dead.
+    if (!missionPr && details.length > 0 && details.every(d => d.closedUnsuperseded)) {
+      return {
+        kind: 'awaiting_merge',
+        waitingOn: {
+          kind: 'pr_closed_unmerged',
+          tone: 'warning',
+          label: details.length === 1
+            ? `PR #${details[0].prNumber} closed without merging, no supersession recorded`
+            : `${details.length} completed task(s) have a PR closed without merging, no supersession recorded`,
+          count: details.length,
+          prNumbers,
+          prUrls,
+          taskIds: details.map(d => d.taskId),
+        },
+        displayState: 'review',
+        source: 'canCompleteMission',
+      };
+    }
+
     return {
       kind: 'awaiting_merge',
       waitingOn: {
@@ -1224,6 +1273,12 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
           ? `waiting on you to merge 1 open PR${ref}`
           : `waiting on you to merge ${d.count} open PRs`;
     }
+    case 'pr_closed_unmerged': {
+      const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      return d.count === 1
+        ? `PR${ref} closed without merging, no supersession recorded`
+        : `${d.count} completed tasks have a PR closed without merging, no supersession recorded`;
+    }
     case 'criterion_failing': {
       const named = d.count === 1 && d.criteria[0] ? `"${d.criteria[0]}"` : `${d.count} goal criteria`;
       if (d.stale) {
@@ -1356,6 +1411,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
         : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
+    case 'pr_closed_unmerged':
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or investigate why it closed unmerged.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
@@ -1399,6 +1456,7 @@ const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
  */
 const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
   'merge',
+  'pr_closed_unmerged',
   'task_failed',
   'human_decision',
 ]);

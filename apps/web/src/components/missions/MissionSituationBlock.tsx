@@ -93,6 +93,14 @@ export function affordanceFor(
         : focus.count === 1 ? 'Review and merge the open PR' : `Review ${focus.count} open PRs`;
       return { kind: 'external', label, href };
     }
+    case 'pr_closed_unmerged': {
+      // GitHub will not reopen a closed PR, so there is nothing to "merge" —
+      // the affordance is to go look at it, not a merge button.
+      const href = focus.prUrls[0];
+      if (!href) return null;
+      const label = focus.count === 1 ? 'Review the closed PR' : `Review ${focus.count} closed PRs`;
+      return { kind: 'external', label, href };
+    }
     case 'criterion_failing':
     case 'criterion_unverified':
       if (ctx.criteriaReachable === false) return null;
