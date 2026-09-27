@@ -1,6 +1,6 @@
 import ChatConversation from '@/components/chat/ChatConversation';
 import { formHref, parseChatEntry } from '@/lib/chat/entry-points';
-import { ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
+import { canvasPulse, ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
 
 /**
  * /app/chat — a new conversation, with your recent ones above the composer.
@@ -42,6 +42,7 @@ export default async function ChatPage({
       canManageTeamKeys={data.canManageTeamKeys}
       aside={contextAside(data)}
       emptyState={<ConversationList items={data.conversations} />}
+      pulse={canvasPulse(data.context)}
       focusRef={about}
       entry={{ ...entry, about: about ? entry.about : null }}
       formFallbackHref={about ? null : formHref(entry.intent ?? 'mission', workspaceId)}

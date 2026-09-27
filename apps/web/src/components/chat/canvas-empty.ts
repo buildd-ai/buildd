@@ -1,7 +1,12 @@
 /**
- * The canvas before the first message: a greeting in plain words and a few
- * one-tap questions, so nobody has to know what to type (or that there are
+ * The canvas before the first message: a line on where things stand, and two
+ * picked questions, so nobody has to know what to type (or that there are
  * shortcuts). Pure.
+ *
+ * The mood is deterministic: `needs` when anything waits on the viewer, else
+ * `calm` (docs/design/chat-canvas.md, "Empty canvas"). Every number shown comes
+ * from the pulse; nothing is invented, and a needs-you prompt is never offered
+ * when nothing needs you.
  */
 export interface CanvasSuggestion {
   label: string;
@@ -9,14 +14,95 @@ export interface CanvasSuggestion {
   text: string;
   /** Send right away (a question), or only fill the box (a starter to finish). */
   send: boolean;
+  /** `needs`: this row is the thing waiting on the viewer (drawn copper). */
+  tone?: 'needs';
 }
 
-export function canvasGreeting(name: string | null, about?: { kind: string; title: string | null } | null): string {
+/**
+ * What the chat page already loads for its context panel: what waits on the
+ * viewer (newest first) and how many agents are at work.
+ */
+export interface CanvasPulse {
+  needsYou: readonly { title: string }[];
+  /** The list was cut at the loader's limit: the real count is at least its length. */
+  needsYouCapped?: boolean;
+  live: number;
+}
+
+export type CanvasMood = 'calm' | 'needs';
+
+export interface CanvasHero {
+  /** `SUN 27 SEP · CALM`; the date alone when the mood is unknown. */
+  overline: string;
+  mood: CanvasMood | null;
+  hero: string;
+  sub: string | null;
+}
+
+type About = { kind: string; title: string | null } | null | undefined;
+
+export function canvasGreeting(name: string | null, about?: About): string {
   if (about) return about.title ? `Ask anything about ${about.title}.` : `Ask anything about this ${about.kind}.`;
   return name ? `Hi ${name}, what are we working on?` : 'Hi, what are we working on?';
 }
 
-export function canvasSuggestions(entry: { intent: 'mission' | 'task' | null; about: 'mission' | 'task' | null }): CanvasSuggestion[] {
+/** Null without a pulse (the summoned canvas loads none): claim no mood. */
+export function canvasMood(pulse: CanvasPulse | null | undefined): CanvasMood | null {
+  if (!pulse) return null;
+  return pulse.needsYou.length > 0 ? 'needs' : 'calm';
+}
+
+const WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+const MOOD_LABEL: Record<CanvasMood, string> = { calm: 'CALM', needs: 'NEEDS YOU' };
+
+function dayPart(now: Date, timeZone?: string): 'morning' | 'afternoon' | 'evening' {
+  const h = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone }).format(now));
+  return h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+}
+
+function dateLabel(now: Date, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 'numeric', month: 'short', timeZone }).formatToParts(now);
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
+  return `${get('weekday')} ${get('day')} ${get('month')}`.toUpperCase();
+}
+
+const agents = (n: number) => (n === 1 ? '1 agent is at work on its own' : `${n} agents are at work on their own`);
+
+export function canvasHero(input: { pulse: CanvasPulse | null | undefined; name: string | null; about?: About; intent?: 'mission' | 'task' | null; now: Date; timeZone?: string }): CanvasHero {
+  const { pulse, name, about, intent, now, timeZone } = input;
+  const mood = canvasMood(pulse);
+  const overline = mood ? `${dateLabel(now, timeZone)} · ${MOOD_LABEL[mood]}` : dateLabel(now, timeZone);
+  if (about || intent) return { overline, mood, hero: canvasGreeting(name, about), sub: null };
+  if (!pulse || !mood) {
+    return { overline, mood, hero: canvasGreeting(name), sub: 'Ask about your work in plain words, or describe something to build.' };
+  }
+  if (mood === 'calm') {
+    const tail = pulse.live > 0 ? `${agents(pulse.live)}.` : `A good ${dayPart(now, timeZone)} to start something.`;
+    return { overline, mood, hero: 'All quiet.', sub: `Nothing is waiting on you. ${tail}` };
+  }
+  const n = pulse.needsYou.length;
+  const first = pulse.needsYou[0].title;
+  if (n === 1 && !pulse.needsYouCapped) {
+    return { overline, mood, hero: 'One thing needs you.', sub: `“${first}” is waiting on your answer.` };
+  }
+  return {
+    overline,
+    mood,
+    hero: pulse.needsYouCapped ? 'Several things need you.' : `${WORDS[n] ?? n} things need you.`,
+    sub: pulse.needsYouCapped ? `“${first}” and more are waiting on you.` : `“${first}” and ${n - 1} more are waiting on you.`,
+  };
+}
+
+const short = (s: string, max = 40) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
+
+const START: CanvasSuggestion = { label: 'Start something new', text: 'I want to build ', send: false };
+const RUNNING: CanvasSuggestion = { label: "What's running right now?", text: "What's running right now?", send: true };
+const SHIPPED: CanvasSuggestion = { label: 'What shipped this week?', text: 'What shipped this week?', send: true };
+
+export function canvasSuggestions(
+  entry: { intent: 'mission' | 'task' | null; about: 'mission' | 'task' | null },
+  pulse?: CanvasPulse | null,
+): CanvasSuggestion[] {
   if (entry.about === 'mission') {
     return [
       { label: 'How is it going?', text: 'How is this mission going?', send: true },
@@ -31,10 +117,39 @@ export function canvasSuggestions(entry: { intent: 'mission' | 'task' | null; ab
     ];
   }
   if (entry.intent) return [];
-  return [
-    { label: 'What needs me?', text: 'What needs me right now?', send: true },
-    { label: "What's running right now?", text: "What's running right now?", send: true },
-    { label: 'What shipped this week?', text: 'What shipped this week?', send: true },
-    { label: 'Start something new', text: 'I want to build ', send: false },
-  ];
+  // PICKED FOR YOU: exactly two rows, from what is actually going on.
+  if (!pulse) return [RUNNING, START];
+  const n = pulse.needsYou.length;
+  if (n > 0) {
+    const first = pulse.needsYou[0].title;
+    const needs: CanvasSuggestion = n === 1 && !pulse.needsYouCapped
+      ? { label: `What does “${short(first)}” need from me?`, text: `What does "${first}" need from me?`, send: true, tone: 'needs' }
+      : {
+          label: pulse.needsYouCapped ? "Walk me through what's waiting on me" : `Walk me through the ${n} things waiting on me`,
+          text: 'What needs me right now?',
+          send: true,
+          tone: 'needs',
+        };
+    return [needs, pulse.live > 0 ? RUNNING : SHIPPED];
+  }
+  if (pulse.live > 0) {
+    const label = pulse.live === 1 ? 'What is the agent working on?' : `What are the ${pulse.live} agents working on?`;
+    return [{ label, text: "What's running right now?", send: true }, START];
+  }
+  return [START, SHIPPED];
+}
+
+/** The composer's placeholder is the top suggestion; a starter trails off. */
+export function canvasPlaceholder(suggestions: readonly CanvasSuggestion[]): string | undefined {
+  const top = suggestions[0];
+  if (!top) return undefined;
+  return top.send ? top.label : `${top.label}…`;
+}
+
+/** The PICKED FOR YOU header's right-hand status. */
+export function pickedStatus(pulse: CanvasPulse | null | undefined): string | null {
+  if (!pulse) return null;
+  const n = pulse.needsYou.length;
+  if (n === 0) return 'nothing blocked';
+  return pulse.needsYouCapped ? `${n}+ blocked` : `${n} blocked`;
 }

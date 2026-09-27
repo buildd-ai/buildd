@@ -340,10 +340,11 @@ export function WorkspaceSwitcher({
       data-scope={selectedId ? 'pinned' : routed ? 'routed' : 'all'}
       onClick={() => setOpen((prev) => !prev)}
       onKeyDown={handleKeyDown}
-      className="inline-flex min-h-9 min-w-0 max-w-full sm:max-w-[26ch] items-center gap-1.5 rounded-[999px] bg-[var(--convo-soft)] px-3 font-mono text-[12.5px] font-medium text-text-secondary ring-1 ring-inset ring-[var(--convo-line)] hover:bg-[var(--convo-me)] hover:text-text-primary aria-expanded:bg-[var(--convo-me)] aria-expanded:text-text-primary"
+      className="flex h-full min-h-11 w-full min-w-0 items-center gap-1.5 px-3 font-mono text-[12.5px] font-medium text-[var(--chat-muted)] hover:bg-[var(--chat-raised)] hover:text-[var(--chat-text)] aria-expanded:bg-[var(--chat-raised)] aria-expanded:text-[var(--chat-text)]"
     >
       <span aria-hidden="true" className={chipLabel.glyph === '→' ? 'text-accent-text' : 'text-text-muted'}>{chipLabel.glyph}</span>
       <span className="min-w-0 truncate">{chipLabel.name}</span>
+      <span aria-hidden="true" className="shrink-0 text-[var(--chat-dim)]">▾</span>
     </button>
   ) : (
     <button
@@ -393,7 +394,7 @@ export function WorkspaceSwitcher({
   );
 
   return (
-    <div ref={containerRef} className={`relative ${chip ? 'min-w-0' : ''}`}>
+    <div ref={containerRef} className={`relative ${chip ? 'h-full min-w-0' : ''}`}>
       {trigger}
 
       {/* Mobile: the shared BottomSheet — portaled to <body> (inside the fixed
