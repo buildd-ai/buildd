@@ -6,6 +6,7 @@ import { CHAT_PROVIDER_INFO, checkKeyShape, type ChatProvider } from '@/lib/prov
 import { setProviderKey } from '@/lib/provider-keys-api';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { Select } from '@/components/ui/Select';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 /** localStorage key for "Not now", per team. Resumable: the card folds, it never vanishes until done. */
 export function onboardingFoldKey(teamId: string): string {
@@ -21,6 +22,7 @@ export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
   const router = useRouter();
   const search = useSearchParams();
   const flow = providerFlowMessage(search);
+  const isMobile = useIsMobile();
   const [folded, setFolded] = useState(false);
   const [provider, setProvider] = useState<ChatProvider>('openrouter');
   const [value, setValue] = useState('');
@@ -86,8 +88,50 @@ export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
     );
   }
 
+  const pasteKeyOption = (
+    <li className="px-5 py-4 space-y-2">
+      <span className="block text-sm font-semibold text-text-primary">Paste a key</span>
+      <div className="flex flex-col sm:flex-row gap-2">
+        <Select
+          aria-label="Provider"
+          value={provider}
+          onChange={(v) => { setProvider(v as ChatProvider); setMsg(null); }}
+          options={CHAT_PROVIDER_INFO.map((p) => ({ value: p.id, label: p.label }))}
+          className="sm:w-40 shrink-0"
+        />
+        <input
+          type="password"
+          aria-label={`${info.label} API key`}
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={info.placeholder}
+          className="h-10 flex-1 min-w-0 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm"
+        />
+        <button type="button" className="btn h-10" onClick={save} disabled={busy !== null || !value.trim() || shape?.ok === false}>
+          {busy === 'save' ? 'Testing…' : 'Save and test'}
+        </button>
+      </div>
+      {shape?.message && <p className={`text-xs ${shape.ok ? 'text-status-warning' : 'text-status-error'}`}>{shape.message}</p>}
+      <p className="text-xs text-text-muted">Goes in as the team key. buildd tests it with {info.label} before saving, and nobody can read it back.</p>
+    </li>
+  );
+
+  const personalKeysOption = (
+    <li className="flex flex-col sm:flex-row sm:items-center gap-3 px-5 py-4">
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-semibold text-text-primary">Let each person connect their own</span>
+        <span className="block text-xs text-text-secondary mt-0.5">No team key. Everyone adds their own before chat works for them.</span>
+      </span>
+      <button type="button" className="btn" onClick={everyoneOwn} disabled={busy !== null}>
+        {busy === 'own' ? 'Saving…' : 'Use personal keys'}
+      </button>
+    </li>
+  );
+
   return (
-    <section className="mb-8 border-2 border-border-strong bg-card shadow-[var(--card-shadow)]" data-testid="provider-onboarding" data-folded="false" aria-labelledby="provider-onboarding-h">
+    <section className="mb-8 pb-16 md:pb-0 border-2 border-border-strong bg-card shadow-[var(--card-shadow)]" data-testid="provider-onboarding" data-folded="false" aria-labelledby="provider-onboarding-h">
       <div className="flex items-start justify-between gap-3 px-5 pt-4">
         <div>
           <div className="section-label !text-accent-text">Chat setup · 1 of 2</div>
@@ -110,43 +154,24 @@ export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
           <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/home" />
         </li>
 
-        <li className="px-5 py-4 space-y-2">
-          <span className="block text-sm font-semibold text-text-primary">Paste a key</span>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <Select
-              aria-label="Provider"
-              value={provider}
-              onChange={(v) => { setProvider(v as ChatProvider); setMsg(null); }}
-              options={CHAT_PROVIDER_INFO.map((p) => ({ value: p.id, label: p.label }))}
-              className="sm:w-40 shrink-0"
-            />
-            <input
-              type="password"
-              aria-label={`${info.label} API key`}
-              autoComplete="off"
-              spellCheck={false}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={info.placeholder}
-              className="h-10 flex-1 min-w-0 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm"
-            />
-            <button type="button" className="btn h-10" onClick={save} disabled={busy !== null || !value.trim() || shape?.ok === false}>
-              {busy === 'save' ? 'Testing…' : 'Save and test'}
-            </button>
-          </div>
-          {shape?.message && <p className={`text-xs ${shape.ok ? 'text-status-warning' : 'text-status-error'}`}>{shape.message}</p>}
-          <p className="text-xs text-text-muted">Goes in as the team key. buildd tests it with {info.label} before saving, and nobody can read it back.</p>
-        </li>
-
-        <li className="flex flex-col sm:flex-row sm:items-center gap-3 px-5 py-4">
-          <span className="flex-1 min-w-0">
-            <span className="block text-sm font-semibold text-text-primary">Let each person connect their own</span>
-            <span className="block text-xs text-text-secondary mt-0.5">No team key. Everyone adds their own before chat works for them.</span>
-          </span>
-          <button type="button" className="btn" onClick={everyoneOwn} disabled={busy !== null}>
-            {busy === 'own' ? 'Saving…' : 'Use personal keys'}
-          </button>
-        </li>
+        {isMobile ? (
+          <li className="px-5 py-4">
+            <details className="group">
+              <summary className="cursor-pointer text-sm font-semibold text-text-primary list-none flex items-center gap-1.5">
+                <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> More ways to connect
+              </summary>
+              <ol className="mt-3 -mx-5 divide-y divide-border-default border-t border-border-default">
+                {pasteKeyOption}
+                {personalKeysOption}
+              </ol>
+            </details>
+          </li>
+        ) : (
+          <>
+            {pasteKeyOption}
+            {personalKeysOption}
+          </>
+        )}
       </ol>
 
       <div className="flex items-center gap-2 border-t border-border-default px-5 py-3 text-xs text-text-muted">
