@@ -8,9 +8,11 @@
  *
  *  - the call's effective class is `write`. Admin-class calls (deletes, budget
  *    changes, workspace config) always ask, and never-in-chat actions are not
- *    tools at all;
- *  - nothing a tool returned is in the model's context: no tool result in the
- *    history or earlier in this turn, and no docked object (its task titles are
+ *    tools at all. A mission or task write carrying a field that shapes spend
+ *    or run state (SKIPPABLE_FIELDS) asks too;
+ *  - nothing a tool returned is in the model's context: no tool result
+ *    anywhere in the stored conversation (not only the window the model gets)
+ *    or earlier in this turn, and no docked object (its task titles are
  *    in the instructions). Tool output is where injected instructions come from,
  *    so a write the model proposes after reading anything still gets a card;
  *  - the same server-side preview (target resolution, reach) a card would have
@@ -73,6 +75,42 @@ export function contentInContext(messages: readonly ModelMessage[]): boolean {
     || (Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some(p => p?.type === 'tool-result')));
 }
 
+/**
+ * Fields a skipped card may carry, for tools whose schema passes extra fields
+ * through (`catchall`). Anything else (concurrency, model, schedule, pacing,
+ * start, status, orchestration…) changes what the team spends or what runs, so
+ * it gets a card like a budget change does. An allowlist, so a field added to
+ * the tool later asks until someone decides it is safe.
+ */
+const SKIPPABLE_FIELDS: Record<string, ReadonlySet<string>> = {
+  manage_missions: new Set([
+    'action', 'missionId', 'workspaceId', 'title', 'description',
+    'goalCriteria', 'addGoalCriteria', 'removeGoalCriteria', 'priority',
+  ]),
+  create_task: new Set([
+    'title', 'description', 'missionId', 'dependsOn', 'baseBranch', 'pathManifest',
+    'workspaceId', 'priority', 'roleSlug', 'kind', 'label', 'outputRequirement',
+  ]),
+};
+
+function onlySkippableFields(tool: string, input: unknown): boolean {
+  const fields = SKIPPABLE_FIELDS[tool];
+  if (!fields) return true;
+  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  return Object.keys(i).every(k => i[k] === undefined || fields.has(k));
+}
+
+/**
+ * Did a tool ever return anything in this conversation? Sticky: once tool
+ * output was read, later assistant text may repeat it after the tool part
+ * itself has left the model's window. `truncated` (the load hit its limit, so
+ * older rows are unseen) counts as yes.
+ */
+export function toolOutputInHistory(rows: ReadonlyArray<{ parts: ReadonlyArray<{ type?: string }> }>, truncated: boolean): boolean {
+  if (truncated) return true;
+  return rows.some(m => m.parts.some(p => typeof p?.type === 'string' && (p.type.startsWith('tool-') || p.type === 'dynamic-tool')));
+}
+
 /** May this call run without its card for this person? */
 export function canSkipCard(args: {
   tool: string;
@@ -88,5 +126,6 @@ export function canSkipCard(args: {
   const s = opSpec(args.tool, args.input);
   if (!spec || !s) return false;
   if (effectiveClass(args.tool, s.op, s.spec, args.input) !== 'write') return false;
+  if (!onlySkippableFields(args.tool, args.input)) return false;
   return allowable.has(spec.group) && args.allowedGroups.has(spec.group);
 }
