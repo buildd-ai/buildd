@@ -30,7 +30,8 @@ function json(v: unknown): string {
   }
 }
 
-export function ToolCallRow({ view, note, flush = false }: { view: ToolRowView; note?: string | null; flush?: boolean }) {
+/** `label` replaces the tool name and action (a decided approval reads "New mission"). */
+export function ToolCallRow({ view, note, label, flush = false }: { view: ToolRowView; note?: string | null; label?: string; flush?: boolean }) {
   const [open, setOpen] = useState(false);
   const mark = MARK[view.state];
   const result = view.state === 'running' ? 'running…' : view.result;
@@ -49,8 +50,8 @@ export function ToolCallRow({ view, note, flush = false }: { view: ToolRowView; 
         className="flex min-h-11 md:min-h-9 w-full min-w-0 items-center gap-2.5 px-3.5 py-1.5 text-left font-mono text-[12.5px] hover:bg-[var(--convo-soft)]"
       >
         <span aria-label={mark.label} className={`w-3 shrink-0 text-center font-semibold ${mark.cls}`}>{mark.glyph}</span>
-        <span className={`shrink-0 font-semibold ${live ? 'text-accent-text' : 'text-text-primary'}`}>{view.name}</span>
-        {view.action && <span className="shrink-0 text-text-secondary">{view.action}</span>}
+        <span className={`shrink-0 font-semibold ${live ? 'text-accent-text' : 'text-text-primary'}`}>{label ?? view.name}</span>
+        {!label && view.action && <span className="shrink-0 text-text-secondary">{view.action}</span>}
         {(view.output as { allowed?: boolean } | undefined)?.allowed === true && (
           <span data-testid="tool-call-allowed" className="shrink-0 border border-border-default px-1 text-[11px] md:text-[10.5px] uppercase tracking-[1px] text-text-muted">allowed</span>
         )}
