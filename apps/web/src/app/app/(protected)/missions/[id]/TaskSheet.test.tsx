@@ -198,3 +198,14 @@ describe('pure helpers', () => {
     expect(eventTaskId(null)).toBeNull();
   });
 });
+
+// Regression (UX review, long-open task sheet): the sheet's title bar showed
+// the raw commit-style title ("feat(webhooks): retry failed deliveries wit…")
+// where the task page heads the same task with the sentence.
+describe('TaskSheet — title reads like the task page', () => {
+  it('drops the conventional-commit prefix', () => {
+    const html = render({ summary: { data: summaryData({ title: 'feat(webhooks): retry failed deliveries with backoff' }), loading: false, error: null } });
+    expect(html).toContain('Retry failed deliveries with backoff');
+    expect(html).not.toContain('feat(webhooks)');
+  });
+});
