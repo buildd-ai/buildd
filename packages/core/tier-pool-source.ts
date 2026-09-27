@@ -19,6 +19,7 @@ import {
   decideAgentArm,
   drawPoolArm,
   poolEligibility,
+  poolTakesDraws,
   routeBackend,
   type Allocation,
   type ArmRoute,
@@ -397,7 +398,7 @@ export function chatPreviousScope(experimentId: string, messageId: string) {
 export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw | null> {
   try {
     const pool = await findPool(args.teamId, args.tier, 'chat');
-    if (!pool || !pool.experimentId || pool.mode !== 'split' || pool.frozen) return null;
+    if (!pool || !pool.experimentId || !poolTakesDraws(pool.mode, pool.frozen)) return null;
 
     let sensitive = false;
     if (args.workspaceId) {
