@@ -75,7 +75,7 @@ function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, 
         {title} <span className="text-[12px] font-normal text-text-muted">{note}</span>
       </h2>
       <div className="card overflow-hidden">
-        <div className="hidden md:grid grid-cols-[150px_minmax(0,1fr)_150px_60px_130px_80px_104px] gap-3 px-3 py-2 border-b-2 border-border-strong text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+        <div className="hidden md:grid grid-cols-[150px_minmax(0,1fr)_150px_60px_130px_80px_104px] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
           <span>Tier</span><span>Model</span><span>Traffic</span><span className="text-right">Win</span><span>Mistakes</span><span className="text-right">/1k {unit}</span><span />
         </div>
         {!rows && <div className="px-3 py-4 text-xs text-text-muted">Loading…</div>}
@@ -90,7 +90,7 @@ function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, 
 function ModeChip({ row }: { row: TierPoolRowView }) {
   const split = row.mode === 'split';
   return (
-    <span data-testid="pool-mode" className={`inline-block border px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-[1.5px] ${
+    <span data-testid="pool-mode" className={`inline-block border px-1.5 py-0.5 font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.5px] ${
       split ? 'border-accent text-accent-text' : 'border-border-strong text-text-primary'}`}>
       {split ? 'split' : 'pinned'}
     </span>
@@ -99,7 +99,7 @@ function ModeChip({ row }: { row: TierPoolRowView }) {
 
 function RouteChip({ route }: { route: ArmRoute }) {
   return (
-    <span className="shrink-0 border border-border-default px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[1.2px] text-text-secondary">
+    <span className="shrink-0 border border-border-default px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-[1.2px] text-text-secondary">
       {ROUTE_LABEL[route]}
     </span>
   );
@@ -147,7 +147,7 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
       <span className={`hidden md:block text-right font-mono text-[12.5px] tabular-nums ${win.learning ? 'text-text-muted' : 'text-text-primary'}`} data-testid="pool-win">{win.text}</span>
       <span className="hidden md:block"><MistakeBar stats={arm.stats} /></span>
       <span className="hidden md:block text-right font-mono text-[12.5px] tabular-nums text-text-primary" data-testid="pool-cost">
-        {cost}{cost !== '–' && isVirtualCost(arm.route) && <span className="block text-[10.5px] text-text-muted">virtual</span>}
+        {cost}{cost !== '–' && isVirtualCost(arm.route) && <span className="block md:text-[10.5px] text-text-muted">virtual</span>}
       </span>
       {/* Phone: win and cost under the model. */}
       <span className="md:hidden flex items-center gap-3 font-mono text-[11.5px] text-text-muted">
@@ -258,7 +258,7 @@ function AddModel({ row, teamId, models, onDone }: { row: TierPoolRowView; teamI
           <li key={l.value} className="flex items-center gap-3 py-1.5 font-mono text-[12px]">
             <span className="min-w-0 flex-1 truncate text-text-primary">{l.value}</span>
             {l.price && <span className="text-text-muted tabular-nums">{l.price}</span>}
-            {l.band && <span className={`text-[10.5px] uppercase tracking-[1px] ${l.band === 'in band' ? 'text-status-success' : 'text-text-muted'}`}>{l.band}</span>}
+            {l.band && <span className={`text-[11px] md:text-[10.5px] uppercase tracking-[1px] ${l.band === 'in band' ? 'text-status-success' : 'text-text-muted'}`}>{l.band}</span>}
             <button type="button" className="font-semibold text-accent-text hover:underline disabled:opacity-60" disabled={busy} onClick={() => add(l.value)}>Add</button>
           </li>
         ))}
