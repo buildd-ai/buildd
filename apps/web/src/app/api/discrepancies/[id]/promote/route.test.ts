@@ -72,7 +72,7 @@ function reset() {
   currentUser = { id: 'u-1', email: 'max@example.com' };
   apiAccountRow = null;
   discrepancyRow = {
-    id: 'd1',
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     workspaceId: 'ws-1',
     specPath: 'docs/design/x.md',
     assertionId: 'a1',
@@ -104,32 +104,32 @@ describe('POST /api/discrepancies/[id]/promote', () => {
   it('401s with neither a session nor an API key', async () => {
     currentUser = null;
     apiAccountRow = null;
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(401);
   });
 
   it('403s for a non-admin API key', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-1', level: 'worker' };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(403);
   });
 
   it('404s when the row does not exist', async () => {
     discrepancyRow = null;
-    const res = await POST(req(), { params: params('missing') });
+    const res = await POST(req(), { params: params('00000000-0000-4000-8000-000000000000') });
     expect(res.status).toBe(404);
   });
 
   it('404s when the user lacks access to the row\'s workspace', async () => {
     workspaceAccessResult = null;
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(404);
   });
 
   it('is idempotent when the row is already promoted', async () => {
     discrepancyRow.promotedMissionId = 'existing-mission';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.alreadyPromoted).toBe(true);
@@ -137,13 +137,13 @@ describe('POST /api/discrepancies/[id]/promote', () => {
   });
 
   it('400s without missionId', async () => {
-    const res = await POST(req({}), { params: params('d1') });
+    const res = await POST(req({}), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
   });
 
   it('400s a code_ahead row — never promotable (§8 gate)', async () => {
     discrepancyRow.direction = 'code_ahead';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toMatch(/code_ahead/);
@@ -151,24 +151,24 @@ describe('POST /api/discrepancies/[id]/promote', () => {
 
   it('400s a contradicted row — needs adjudication first', async () => {
     discrepancyRow.direction = 'contradicted';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
   });
 
   it('404s when the given missionId does not exist', async () => {
     missionRow = null;
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(404);
   });
 
   it('400s when the mission belongs to a different workspace', async () => {
     missionRow = { id: 'm1', workspaceId: 'other-ws' };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
   });
 
   it('links a spec_ahead row to the given mission', async () => {
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     expect(lastUpdateSet).toEqual({ promotedMissionId: 'm1' });
     const data = await res.json();
@@ -179,14 +179,14 @@ describe('POST /api/discrepancies/[id]/promote', () => {
   it('409s when the conditional link write finds no matching row (race)', async () => {
     updateReturnRows = [];
     refetchedRow = { ...discrepancyRow, direction: 'contradicted', promotedMissionId: null };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(409);
   });
 
   it('reports already-promoted (not an error) when the race loser sees the winner\'s write', async () => {
     updateReturnRows = [];
     refetchedRow = { ...discrepancyRow, promotedMissionId: 'm1' };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.alreadyPromoted).toBe(true);
