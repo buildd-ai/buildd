@@ -129,6 +129,16 @@ describe('status derivation — queued is never shown as working', () => {
     expect(body).not.toContain(SPINNER_PATH);
   });
 
+  it('a migration-number collision is also queued until claimed, and does not say human review', () => {
+    const body = renderPrActivityComment([
+      { kind: 'migration_collision_fixing', iteration: 1, maxIterations: 3, at: at(0) },
+    ]);
+    expect(headerOf(body)).toContain('**Migration slot conflict · fix 1 of 3 queued**');
+    expect(body).toContain('- `0m` Migration slot conflict · fix 1 of 3 queued');
+    expect(body).not.toContain('human review required');
+    expect(body).not.toContain(SPINNER_PATH);
+  });
+
   it('fix_started without its own iteration inherits the queued one', () => {
     const header = headerOf(renderPrActivityComment([queued, { kind: 'fix_started', at: at(12) }]));
     expect(header).toContain('**Fixing · fix 1 of 3**');

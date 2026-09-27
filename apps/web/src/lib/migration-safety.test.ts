@@ -228,7 +228,7 @@ describe('classifyPullRequestMigrations', () => {
     });
   });
 
-  it('keeps migration-number collisions as CONTRACT regardless of content', () => {
+  it('flags a migration-number collision as CONTRACT with a collision field when this PR is the owner (higher PR number)', () => {
     expect(
       classifyPullRequestMigrations(
         [
@@ -237,13 +237,63 @@ describe('classifyPullRequestMigrations', () => {
             content: 'CREATE INDEX "missions_title_idx" ON "missions" ("title");',
           },
         ],
-        ['packages/core/drizzle/0093_other.sql'],
+        [{ path: 'packages/core/drizzle/0093_other.sql', prNumber: 100 }],
+        200,
       ),
     ).toEqual({
       safe: false,
       operationClass: 'CONTRACT',
       reason:
-        'migration number collision: 0093_safe.sql conflicts with open PR migration 0093_other.sql',
+        'migration number collision: 0093_safe.sql conflicts with open PR #100 migration 0093_other.sql',
+      collision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 },
+    });
+  });
+
+  it('defaults to owning the collision when this PR number is unknown (fail-safe, old behavior)', () => {
+    const result = classifyPullRequestMigrations(
+      [
+        {
+          filename: 'packages/core/drizzle/0093_safe.sql',
+          content: 'CREATE INDEX "missions_title_idx" ON "missions" ("title");',
+        },
+      ],
+      [{ path: 'packages/core/drizzle/0093_other.sql', prNumber: 100 }],
+    );
+    expect(result.safe).toBe(false);
+    expect(result.safe ? undefined : result.collision).toBeTruthy();
+  });
+
+  it('does not own the collision when this PR number is lower than the other PR — proceeds as safe', () => {
+    expect(
+      classifyPullRequestMigrations(
+        [
+          {
+            filename: 'packages/core/drizzle/0093_safe.sql',
+            content: 'CREATE INDEX "missions_title_idx" ON "missions" ("title");',
+          },
+        ],
+        [{ path: 'packages/core/drizzle/0093_other.sql', prNumber: 300 }],
+        100,
+      ),
+    ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a collision with destructive SQL still escalates as plain CONTRACT, no collision field', () => {
+    expect(
+      classifyPullRequestMigrations(
+        [
+          {
+            filename: 'packages/core/drizzle/0093_drop.sql',
+            content: 'ALTER TABLE "missions" DROP COLUMN "legacy";',
+          },
+        ],
+        [{ path: 'packages/core/drizzle/0093_other.sql', prNumber: 100 }],
+        200,
+      ),
+    ).toEqual({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops column missions.legacy',
     });
   });
 

@@ -1,8 +1,32 @@
 export type OperationClass = 'EXPAND' | 'CONTRACT';
 
+export interface MigrationCollision {
+  /** This PR's colliding migration filename (basename only). */
+  file: string;
+  /** The other open PR's colliding migration filename (basename only). */
+  otherFile: string;
+  /** The other open PR's number. */
+  otherPrNumber: number;
+}
+
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }
-  | { safe: false; reason: string; operationClass: 'CONTRACT' };
+  | {
+      safe: false;
+      reason: string;
+      operationClass: 'CONTRACT';
+      /**
+       * Present only when the sole reason for `!safe` is a migration-number
+       * collision AND this PR's own SQL is independently non-destructive. A
+       * collision is a mechanical renumber, not the same class as a DROP
+       * COLUMN — callers use this to route to an auto-dispatched fix instead
+       * of human review. Absent for every other CONTRACT reason, and absent
+       * when the colliding migration's own content is independently
+       * destructive (that still escalates on its own merits — see
+       * `classifyPullRequestMigrations`).
+       */
+      collision?: MigrationCollision;
+    };
 
 const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
 
@@ -235,9 +259,29 @@ export interface PullRequestMigrationFile {
   content?: string;
 }
 
+export interface OpenPullRequestMigration {
+  /** Full migration file path from the other PR's diff. */
+  path: string;
+  /** The PR number that owns this path. */
+  prNumber: number;
+}
+
+function basename(path: string): string {
+  return path.split('/').at(-1) ?? path;
+}
+
 export function classifyPullRequestMigrations(
   files: PullRequestMigrationFile[],
-  openPullRequestMigrationPaths: string[],
+  openPullRequestMigrations: OpenPullRequestMigration[],
+  /**
+   * This PR's own number. Used to pick a deterministic owner for a collision
+   * so both colliding PRs don't try to renumber at once: the higher (later
+   * opened) PR number owns the fix and the lower one proceeds as if there
+   * were no collision at all. Omit only from call sites that cannot know
+   * their own PR number yet — they keep the old fail-safe behavior of always
+   * treating a collision as theirs to report.
+   */
+  prNumber?: number,
 ): MigrationSafety {
   const migrations = files.filter((file) => isGeneratedMigrationPath(file.filename));
 
@@ -248,20 +292,9 @@ export function classifyPullRequestMigrations(
   // structural change whose migration was never generated — this classifier is
   // about irreversibility, not about whether `bun db:generate` was run.
   const results: MigrationSafety[] = [];
+  let collision: MigrationCollision | null = null;
 
   for (const migration of migrations) {
-    const number = getMigrationNumber(migration.filename)!;
-    const collision = openPullRequestMigrationPaths.find(
-      (path) => getMigrationNumber(path) === number,
-    );
-    if (collision) {
-      return {
-        safe: false,
-        operationClass: 'CONTRACT',
-        reason: `migration number collision: ${migration.filename.split('/').at(-1)} conflicts with open PR migration ${collision.split('/').at(-1)}`,
-      };
-    }
-
     if (migration.content === undefined) {
       return {
         safe: false,
@@ -271,6 +304,17 @@ export function classifyPullRequestMigrations(
     }
 
     results.push(classifyMigrationSql(migration.content));
+
+    if (!collision) {
+      const number = getMigrationNumber(migration.filename)!;
+      const other = openPullRequestMigrations.find((m) => getMigrationNumber(m.path) === number);
+      // A collision is only this PR's to report when it is the deterministic
+      // owner (the higher/later PR number) — otherwise the other PR renumbers
+      // and this PR proceeds normally (see the doc comment on `prNumber`).
+      if (other && (prNumber === undefined || prNumber > other.prNumber)) {
+        collision = { file: basename(migration.filename), otherFile: basename(other.path), otherPrNumber: other.prNumber };
+      }
+    }
   }
 
   const firstContract = results.find((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
@@ -288,7 +332,19 @@ export function classifyPullRequestMigrations(
     };
   }
 
+  // A migration whose own SQL is genuinely destructive always escalates on
+  // its own merits — a collision on the same slot doesn't make it MORE
+  // destructive, and it doesn't make it any safer either.
   if (firstContract) return firstContract;
+
+  if (collision) {
+    return {
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: `migration number collision: ${collision.file} conflicts with open PR #${collision.otherPrNumber} migration ${collision.otherFile}`,
+      collision,
+    };
+  }
 
   return { safe: true, operationClass: 'EXPAND' };
 }
