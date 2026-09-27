@@ -18,7 +18,17 @@ function getSql() {
     // Opt-in local Postgres via a Neon HTTP proxy (scripts/demo). No-op unless
     // NEON_LOCAL_FETCH_ENDPOINT is set; throws if DATABASE_URL is not loopback.
     applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });
-    _sql = neon(config.databaseUrl);
+    const baseSql = neon(config.databaseUrl);
+    // Wrap the sql function to capture DB errors on the active span.
+    // This is the central point where all drizzle queries execute, regardless
+    // of builder depth (select().from(), insert().values(), etc).
+    _sql = ((strings: any, ...values: any) => {
+      const promise = baseSql(strings, ...values);
+      return promise.catch((error: unknown) => {
+        capturePostgresErrorOnSpan(error);
+        throw error;
+      });
+    }) as NeonQueryFunction<false, false>;
   }
   return _sql;
 }
@@ -36,23 +46,6 @@ export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
     if (!_db) {
       _db = drizzle(getSql(), { schema });
     }
-    const value = (_db as any)[prop];
-
-    // Wrap query-returning methods to capture DB errors on the active span
-    if (typeof value === 'function' && typeof prop === 'string' && (prop === 'select' || WRITE_OPS.has(prop))) {
-      return function wrappedMethod(...args: unknown[]) {
-        const result = value.apply(_db, args);
-        // If the result is a promise-like, wrap it to capture errors
-        if (result && typeof result.then === 'function') {
-          return result.catch((error: unknown) => {
-            capturePostgresErrorOnSpan(error);
-            throw error;
-          });
-        }
-        return result;
-      };
-    }
-
-    return value;
+    return (_db as any)[prop];
   },
 });

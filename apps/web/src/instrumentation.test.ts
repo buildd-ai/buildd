@@ -1,46 +1,86 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 
 describe('instrumentation', () => {
   describe('register - OTel registration gating', () => {
-    it('registers OTel only when VERCEL_ENV is set', async () => {
-      const registerOTelMock = mock(() => {});
+    let registerOTelMock: any;
+    let originalVercelEnv: string | undefined;
+    let originalOtelDebug: string | undefined;
+
+    beforeEach(() => {
+      originalVercelEnv = process.env.VERCEL_ENV;
+      originalOtelDebug = process.env.OTEL_DEBUG;
+      delete process.env.VERCEL_ENV;
+      delete process.env.OTEL_DEBUG;
+
+      registerOTelMock = mock(() => {});
       mock.module('@vercel/otel', () => ({
         registerOTel: registerOTelMock,
       }));
+    });
 
-      // Clear the module cache to reimport with mocked dependency
-      delete require.cache[require.resolve('./instrumentation')];
+    afterEach(() => {
+      if (originalVercelEnv !== undefined) {
+        process.env.VERCEL_ENV = originalVercelEnv;
+      } else {
+        delete process.env.VERCEL_ENV;
+      }
+      if (originalOtelDebug !== undefined) {
+        process.env.OTEL_DEBUG = originalOtelDebug;
+      } else {
+        delete process.env.OTEL_DEBUG;
+      }
+    });
+
+    it('does not register when VERCEL_ENV and OTEL_DEBUG are not set', async () => {
+      delete process.env.VERCEL_ENV;
+      delete process.env.OTEL_DEBUG;
+
       const { register } = await import('./instrumentation');
-
-      // Test 1: VERCEL_ENV not set - should not register
-      delete process.env.VERCEL_ENV;
       register();
-      expect(registerOTelMock).toHaveBeenCalledTimes(0);
 
-      // Test 2: VERCEL_ENV set to 'production' - should register
+      expect(registerOTelMock).not.toHaveBeenCalled();
+    });
+
+    it('registers when VERCEL_ENV is set to production', async () => {
       process.env.VERCEL_ENV = 'production';
-      registerOTelMock.mockClear();
+      delete process.env.OTEL_DEBUG;
+
+      const { register } = await import('./instrumentation');
       register();
-      expect(registerOTelMock).toHaveBeenCalledTimes(1);
+
       expect(registerOTelMock).toHaveBeenCalledWith(
         expect.objectContaining({
           serviceName: 'buildd-web',
         }),
       );
+    });
 
-      // Test 3: VERCEL_ENV set to 'preview' - should register
+    it('registers when VERCEL_ENV is set to preview', async () => {
       process.env.VERCEL_ENV = 'preview';
-      registerOTelMock.mockClear();
+      delete process.env.OTEL_DEBUG;
+
+      const { register } = await import('./instrumentation');
       register();
-      expect(registerOTelMock).toHaveBeenCalledTimes(1);
+
       expect(registerOTelMock).toHaveBeenCalledWith(
         expect.objectContaining({
           serviceName: 'buildd-web',
         }),
       );
+    });
 
-      // Cleanup
+    it('registers when OTEL_DEBUG is set for local development', async () => {
       delete process.env.VERCEL_ENV;
+      process.env.OTEL_DEBUG = 'true';
+
+      const { register } = await import('./instrumentation');
+      register();
+
+      expect(registerOTelMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serviceName: 'buildd-web',
+        }),
+      );
     });
   });
 });

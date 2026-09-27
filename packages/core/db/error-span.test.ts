@@ -1,62 +1,89 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 
-describe('DB error span recording', () => {
-  it('records Postgres error code and detail without query params', () => {
+describe('capturePostgresErrorOnSpan', () => {
+  let getActiveSpanMock: any;
+  let setAttributesMock: any;
+  let recordExceptionMock: any;
+
+  beforeEach(() => {
+    // Set up mock span with tracking
+    setAttributesMock = mock(() => {});
+    recordExceptionMock = mock(() => {});
+    const mockSpan = {
+      setAttributes: setAttributesMock,
+      recordException: recordExceptionMock,
+    };
+
+    getActiveSpanMock = mock(() => mockSpan);
+
+    // Mock the @opentelemetry/api module before importing capturePostgresErrorOnSpan
+    mock.module('@opentelemetry/api', () => ({
+      trace: {
+        getActiveSpan: getActiveSpanMock,
+      },
+    }));
+  });
+
+  it('sets db.error.code and db.error.detail on active span', async () => {
+    const { capturePostgresErrorOnSpan } = await import('./error-span');
+
     const postgresError = new Error('duplicate key value violates unique constraint');
     (postgresError as any).code = '23505';
     (postgresError as any).detail = 'Key (id)=(123) already exists.';
 
-    // Build attributes the same way the real function does
-    const err = postgresError as Record<string, unknown>;
-    const attributes: Record<string, string> = {};
-    if (typeof err.code === 'string') attributes['db.error.code'] = err.code;
-    if (typeof err.detail === 'string') attributes['db.error.detail'] = err.detail;
+    capturePostgresErrorOnSpan(postgresError);
 
-    expect(attributes).toEqual({
-      'db.error.code': '23505',
-      'db.error.detail': 'Key (id)=(123) already exists.',
-    });
+    expect(setAttributesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'db.error.code': '23505',
+        'db.error.detail': 'Key (id)=(123) already exists.',
+      }),
+    );
+    expect(recordExceptionMock).toHaveBeenCalledWith(postgresError);
   });
 
-  it('does not capture sql or params in error attributes', () => {
+  it('does not include sql or params in span attributes', async () => {
+    const { capturePostgresErrorOnSpan } = await import('./error-span');
+
     const postgresError = new Error('query failed');
     (postgresError as any).code = '22P02';
     (postgresError as any).detail = 'invalid input syntax for type integer';
     (postgresError as any).sql = 'SELECT * FROM users WHERE id = $1';
     (postgresError as any).params = ['123'];
 
-    // Build attributes the same way the real function does
-    const err = postgresError as Record<string, unknown>;
-    const attributes: Record<string, string> = {};
-    if (typeof err.code === 'string') attributes['db.error.code'] = err.code;
-    if (typeof err.detail === 'string') attributes['db.error.detail'] = err.detail;
+    capturePostgresErrorOnSpan(postgresError);
 
-    expect(attributes).not.toHaveProperty('sql');
-    expect(attributes).not.toHaveProperty('params');
-    expect(attributes).not.toHaveProperty('db.error.sql');
-    expect(Object.keys(attributes)).toEqual(['db.error.code', 'db.error.detail']);
+    // Get the actual call to verify exact attributes
+    const callArgs = (setAttributesMock.mock.calls[0]?.[0] || {}) as Record<string, unknown>;
+    expect(callArgs['db.error.code']).toBe('22P02');
+    expect(callArgs['db.error.detail']).toBe('invalid input syntax for type integer');
+    expect(callArgs['sql']).toBeUndefined();
+    expect(callArgs['params']).toBeUndefined();
+    expect(callArgs['db.error.sql']).toBeUndefined();
   });
 
-  it('handles errors without code or detail gracefully', () => {
+  it('handles errors without code or detail gracefully', async () => {
+    const { capturePostgresErrorOnSpan } = await import('./error-span');
+
     const error = new Error('generic error');
+    capturePostgresErrorOnSpan(error);
 
-    const err = error as Record<string, unknown>;
-    const attributes: Record<string, string> = {};
-    if (typeof err.code === 'string') attributes['db.error.code'] = err.code;
-    if (typeof err.detail === 'string') attributes['db.error.detail'] = err.detail;
-
-    expect(Object.keys(attributes).length).toBe(0);
+    expect(recordExceptionMock).toHaveBeenCalledWith(error);
+    expect(setAttributesMock).not.toHaveBeenCalled();
   });
 
-  it('handles non-Error types gracefully', () => {
-    const err = { code: '23505', detail: 'Key violation' } as Record<string, unknown>;
-    const attributes: Record<string, string> = {};
-    if (typeof err.code === 'string') attributes['db.error.code'] = err.code;
-    if (typeof err.detail === 'string') attributes['db.error.detail'] = err.detail;
+  it('handles null span gracefully', async () => {
+    getActiveSpanMock = mock(() => null);
+    mock.module('@opentelemetry/api', () => ({
+      trace: {
+        getActiveSpan: getActiveSpanMock,
+      },
+    }));
 
-    expect(attributes).toEqual({
-      'db.error.code': '23505',
-      'db.error.detail': 'Key violation',
-    });
+    const { capturePostgresErrorOnSpan } = await import('./error-span');
+    const postgresError = new Error('query error');
+    (postgresError as any).code = '23505';
+
+    expect(() => capturePostgresErrorOnSpan(postgresError)).not.toThrow();
   });
 });
