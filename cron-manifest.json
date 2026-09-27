@@ -31,6 +31,13 @@
       "enabled": true
     },
     {
+      "$comment": "Tier model pools daily step (docs/design/tier-weights.md \u00a73c, \u00a74). Hourly at :00 inside the wake window the schedules tick already opens; the work inside is once per UTC day: OpenRouter rankings after 03:00 UTC for teams with an explore pool (their own key, at most 3 requests, no retry), then one step per unfrozen split/explore pool after 06:00 UTC. A second run the same day writes nothing. No pools \u2192 one cheap query.",
+      "title": "Buildd: Tier Pools Daily Step",
+      "path": "/api/cron/tier-pools",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Routing Calibration",
       "path": "/api/cron/routing-calibration",
@@ -91,6 +98,20 @@
       "title": "Buildd: Lease Expiry Guard (gated)",
       "path": "/api/cron/lease-expiry-guard?gate=due",
       "schedule": "*/5 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts). Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
+      "title": "Buildd: Notify Away",
+      "path": "/api/cron/notify-away",
+      "schedule": "13 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Redis-gated fast tick for the same route. Reads buildd:due:notify-away (written by recordEvent for each new ledger row, due one 60s coalesce window later) and returns without touching Postgres unless a row is due, so */2 costs Redis reads and no extra Neon wake while nothing happens. This is the latency path for 'tell me when X' while you are away. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB. See apps/web/src/lib/cron-due-queue.ts.",
+      "title": "Buildd: Notify Away (gated)",
+      "path": "/api/cron/notify-away?gate=due",
+      "schedule": "*/2 * * * *",
       "method": "GET"
     },
     {

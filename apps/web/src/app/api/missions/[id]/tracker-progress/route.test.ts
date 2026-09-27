@@ -11,7 +11,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
-const mockMissionsFindFirst = mock(async () => ({ id: 'm-1', teamId: 'team-1', workspaceId: 'ws-1' }) as any);
+const mockMissionsFindFirst = mock(async () => ({ id: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', workspaceId: 'ws-1' }) as any);
 const mockWorkspacesFindFirst = mock(async () => ({ workTrackerConfig: { provider: 'linear', connectorId: 'conn-1' } }) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
@@ -35,11 +35,12 @@ mock.module('@buildd/core/db', () => ({
 
 import { GET, missionTrackerProgress } from './route';
 
-const call = (opts?: { auth?: string }) => {
+const call = (opts?: { auth?: string; id?: string }) => {
   const headers: Record<string, string> = {};
   if (opts?.auth) headers.authorization = opts.auth;
-  const req = new NextRequest('http://localhost/api/missions/m-1/tracker-progress', { headers });
-  return GET(req, { params: Promise.resolve({ id: 'm-1' }) });
+  const id = opts?.id ?? '33333333-3333-4333-8333-333333333333';
+  const req = new NextRequest(`http://localhost/api/missions/${id}/tracker-progress`, { headers });
+  return GET(req, { params: Promise.resolve({ id }) });
 };
 
 // missionTrackerProgress never touches this db (getLinks is injected).
@@ -57,7 +58,7 @@ describe('GET /api/missions/[id]/tracker-progress — auth + 404 (handler)', () 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'm-1', teamId: 'team-1', workspaceId: 'ws-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', workspaceId: 'ws-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ workTrackerConfig: { provider: 'linear', connectorId: 'conn-1' } });
   });
 
@@ -65,6 +66,11 @@ describe('GET /api/missions/[id]/tracker-progress — auth + 404 (handler)', () 
     mockGetCurrentUser.mockReturnValue(null as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     expect((await call()).status).toBe(401);
+  });
+
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    expect((await call({ id: 'a1b2c3d4' })).status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
   });
 
   it('403 for a non-admin API key', async () => {
@@ -79,7 +85,7 @@ describe('GET /api/missions/[id]/tracker-progress — auth + 404 (handler)', () 
   });
 
   it('404 when the mission belongs to another team', async () => {
-    mockMissionsFindFirst.mockResolvedValue({ id: 'm-1', teamId: 'team-other', workspaceId: null });
+    mockMissionsFindFirst.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', teamId: 'team-other', workspaceId: null });
     mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'team' });
     expect((await call()).status).toBe(404);
   });
@@ -91,7 +97,7 @@ describe('missionTrackerProgress — progress/linking logic (DI)', () => {
     const fetchProgress = mock(async () => null as any);
     const res = await missionTrackerProgress(
       fakeDb,
-      { missionId: 'm-1', teamId: 'team-1', connectorId: 'conn-1' },
+      { missionId: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', connectorId: 'conn-1' },
       { getLinks, fetchProgress, parseUrl: parseProject },
     );
     expect(res).toMatchObject({ linked: false, provider: null, items: [] });
@@ -106,7 +112,7 @@ describe('missionTrackerProgress — progress/linking logic (DI)', () => {
     const fetchProgress = mock(async () => ({ title: 'Mobile App', percent: 40, state: 'started' }) as any);
     const res = await missionTrackerProgress(
       fakeDb,
-      { missionId: 'm-1', teamId: 'team-1', connectorId: 'conn-1' },
+      { missionId: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', connectorId: 'conn-1' },
       { getLinks, fetchProgress, parseUrl: parseProject },
     );
     expect(res.linked).toBe(true);
@@ -132,7 +138,7 @@ describe('missionTrackerProgress — progress/linking logic (DI)', () => {
     const fetchProgress = mock(async () => null as any);
     const res = await missionTrackerProgress(
       fakeDb,
-      { missionId: 'm-1', teamId: 'team-1', connectorId: 'conn-1' },
+      { missionId: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', connectorId: 'conn-1' },
       { getLinks, fetchProgress, parseUrl: parseProject },
     );
     expect(res.linked).toBe(true);
@@ -147,7 +153,7 @@ describe('missionTrackerProgress — progress/linking logic (DI)', () => {
     const fetchProgress = mock(async () => null as any);
     const res = await missionTrackerProgress(
       fakeDb,
-      { missionId: 'm-1', teamId: 'team-1', connectorId: null },
+      { missionId: '33333333-3333-4333-8333-333333333333', teamId: 'team-1', connectorId: null },
       { getLinks, fetchProgress, parseUrl: parseProject },
     );
     expect(res.linked).toBe(true);

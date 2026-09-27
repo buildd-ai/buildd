@@ -26,7 +26,7 @@ import type { OwnedKind } from './reach-rules';
 
 export type ToolClass = 'read' | 'write' | 'admin' | 'self' | 'deferred';
 
-export const TOOL_GROUPS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'admin'] as const;
+export const TOOL_GROUPS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
 export type ToolGroup = (typeof TOOL_GROUPS)[number];
 
 /** `GET /api/tasks/:id` — a method and a CHAT_ROUTES pattern. */
@@ -64,6 +64,8 @@ const read = (...routes: RouteRef[]): ChatOpSpec => ({ class: 'read', routes: [W
 const write = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'write', target, routes: [WS, ...routes] });
 const admin = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'admin', target, routes: [WS, ...routes] });
 const deferred = (reason: string): ChatOpSpec => ({ class: 'deferred', routes: [], deferredReason: reason });
+/** Reversible and caller-only; may run without a card if listed in SELF_SCOPED_ALLOWLIST. */
+const self = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'self', target, routes: [WS, ...routes] });
 /** A write that starts recurring or unattended work: never skips its card. */
 const startsWork = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
 const single = (group: ToolGroup, op: ChatOpSpec): ChatToolSpec => ({ group, ops: { '': op } });
@@ -127,6 +129,7 @@ export const CHAT_TOOL_SPECS = {
   get_budget_forecast: single('workers', read('GET /api/health/budget')),
   list_connectors: single('workers', read('GET /api/connectors/mounted')),
   get_usage_stats: single('workers', deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
+  list_runners: single('workers', deferred('each row carries a workspaceIds array (a runner can serve several workspaces), and the generic reach filter only scopes rows by a single workspaceId field — exposing it needs array-aware filtering first')),
 
   // ── PRs, reviews, releases ──
   get_pr: single('prs', read('GET /api/github/pr')),
@@ -217,6 +220,18 @@ export const CHAT_NATIVE_TOOL_SPECS = {
   recall: single('memory', read()),
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */
   learn: single('memory', write({ conversation: true })),
+
+  // ── notifications (docs/design/subscriptions-and-notifications.md → Chat tool surface) ──
+  /**
+   * Tell me once when a task or PR does something, here in this conversation.
+   * One-shot only in P1: it notifies only the caller and ends by itself, so
+   * the person's "Allow" for the group may skip its card. A standing watch
+   * would start unattended work and always ask (startsUnattendedWork).
+   */
+  watch: single('notifications', write({ conversation: true }, 'POST /api/subscriptions')),
+  /** Stop one of the caller's own watches. */
+  unwatch: single('notifications', self({ param: 'watchId', is: 'subscription' }, 'GET /api/subscriptions', 'DELETE /api/subscriptions/:id')),
+  list_watches: single('notifications', read('GET /api/subscriptions')),
 } satisfies Record<string, ChatToolSpec>;
 
 export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATIVE_TOOL_SPECS;
@@ -243,8 +258,12 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
 };
 
-/** Self-scoped writes that may run without a card (see the design doc). Empty until directives ship. */
-export const SELF_SCOPED_ALLOWLIST: readonly string[] = [];
+/**
+ * Self-scoped writes that may run without a card while nothing a tool
+ * returned is in context (turn.ts). `unwatch` only ends the caller's own
+ * watch, and setting it again is one sentence.
+ */
+export const SELF_SCOPED_ALLOWLIST: readonly string[] = ['unwatch'];
 
 /** Ops of a spec, as `[op, spec]`; op is '' for single-op tools. */
 export function opsOf(spec: ChatToolSpec): Array<[string, ChatOpSpec]> {

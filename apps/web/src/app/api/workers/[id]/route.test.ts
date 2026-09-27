@@ -383,6 +383,16 @@ mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
 }));
 
+// Subscriptions ledger: builders stood in by tagged objects so a test reads
+// exactly which event the route recorded. Real builders: lib/subscriptions.test.ts.
+const mockRecordEvent = mock((_e: any) => Promise.resolve({ recorded: 0 }));
+mock.module('@/lib/subscriptions', () => ({
+  recordEvent: mockRecordEvent,
+  taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
+  taskFailedEvent: (a: any) => ({ type: 'task.failed', ...a }),
+  taskNeedsInputEvent: (a: any) => ({ type: 'task.needs_input', ...a }),
+}));
+
 const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
@@ -2396,6 +2406,70 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(completionRequest({}), { params: mockParams });
 
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('subscriptions ledger', () => {
+    const recorded = () => mockRecordEvent.mock.calls.map(c => c[0]);
+    function workerUpdateReturns(rows: any[]) {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => rows) })) })),
+      });
+    }
+    beforeEach(() => {
+      mockRecordEvent.mockClear();
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        branch: 'feature/test', milestones: [], pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', outputRequirement: 'none', missionId: null, title: 'Fix the cursor',
+        workspace: { name: 'W', teamId: 'team-1' },
+      });
+    });
+
+    it('a completion records task.completed for the task and worker', async () => {
+      workerUpdateReturns([{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]);
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Fixed the off-by-one error.', summarySource: 'agent' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(recorded()).toContainEqual({
+        type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1',
+      });
+      expect(recorded().some((e: any) => e.type === 'task.failed')).toBe(false);
+    });
+
+    it('a question records task.needs_input with the prompt, after the worker write landed', async () => {
+      workerUpdateReturns([{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]);
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which region?' } },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(recorded()).toContainEqual({ type: 'task.needs_input', taskId: 'task-1', workerId: WORKER_ID, prompt: 'Which region?' });
+    });
+
+    it('a question whose worker write lost the race (409) records nothing', async () => {
+      workerUpdateReturns([]);
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which region?' } },
+      }), { params: mockParams });
+      expect(res.status).toBe(409);
+      expect(recorded().filter((e: any) => e.type === 'task.needs_input')).toEqual([]);
+    });
+
+    it('a progress PATCH with no question and no terminal status records nothing', async () => {
+      workerUpdateReturns([{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]);
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Reading files' },
+      }), { params: mockParams });
+      expect(recorded()).toEqual([]);
     });
   });
 
@@ -8214,6 +8288,31 @@ describe('PATCH /api/workers/[id]', () => {
       // Dedup key fields must be set so a second reviewer completion is a no-op
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
+    });
+
+    it('request-changes on an explicitly-reviewed dependency-bot PR files no builder — nothing may push to the bot branch', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // The retry path's original-task read is the one selecting the attempt
+      // identity columns; every other read gets the reviewer task as before.
+      const reviewerTaskImpl = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts_?: any) =>
+        opts_?.columns?.missionPhaseIndex
+          ? Promise.resolve({
+              id: 'original-task-1',
+              title: 'PR #42: chore(deps): update dependency postcss',
+              description: null,
+              missionId: null,
+              pathManifest: null,
+              context: { adoptedPr: { prNumber: 42, author: 'renovate[bot]', authorType: 'Bot' } },
+            })
+          : reviewerTaskImpl(opts_),
+      );
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
     });
 
     it('request-changes: on a mission-branch PR, baseBranch is the PR\'s recorded base, not workerBranch', async () => {

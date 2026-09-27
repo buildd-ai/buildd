@@ -24,6 +24,8 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockSelectLimit = mock(() => Promise.resolve([] as any[]));
 const selectWheres: unknown[] = [];
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
+// The team's sensitive workspaces, as the memory project-key resolver reads them.
+const mockWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockGetMemoryStoreForTeam = mock(() => Promise.resolve(null as any));
 const mockHandleMemoryAction = mock(async () => ({ content: [{ type: 'text', text: '{"handled":true}' }] }));
 const mockHandleRecallAction = mock(async () => ({ content: [{ type: 'text', text: '{"recalled":true}' }] }));
@@ -37,7 +39,7 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workspaces: { findFirst: mockWorkspacesFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
       accountWorkspaces: {
         findFirst: mock(() => Promise.resolve(null)),
         findMany: mock(() => Promise.resolve([])),
@@ -186,6 +188,8 @@ describe('MCP tool gating — admin-only knowledge management', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockGetMemoryStoreForTeam.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
     mockHandleMemoryAction.mockClear();
     mockWorkspacesFindFirst.mockResolvedValue({
       dataClass: 'standard',
@@ -453,5 +457,40 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
     await ctx.getWorkspaceId();
     expect(await ctx.getMemoryClient()).toEqual({ id: 'store-1' });
+  });
+
+  // claim_task names the workspace the memory is for — the claimed task's own.
+  // The store is that workspace's team's (never the account-team fallback), and
+  // withheld when that workspace is sensitive.
+  const CLAIMED_WS = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
+  it("resolves the claimed task's workspace store without the account-team fallback", async () => {
+    workspaceIs('standard');
+    // The caller reaches a sensitive workspace elsewhere; the claimed one is standard.
+    mockSelectLimit.mockResolvedValueOnce([{ id: WORKSPACE_ID }]);
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient(CLAIMED_WS)).toEqual({ id: 'store-1' });
+    expect(mockGetMemoryStoreForTeam).toHaveBeenCalledWith(CLAIMED_WS);
+  });
+
+  it("withholds the memory client when a sensitive workspace in the team shares the claimed workspace's project key", async () => {
+    workspaceIs('standard');
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'sensitive-ws', repo: null, name: 'ws', dataClass: 'sensitive' }]);
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient(CLAIMED_WS)).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalledWith(CLAIMED_WS);
+  });
+
+  it("withholds the memory client when the claimed task's workspace is sensitive", async () => {
+    workspaceIs('sensitive');
+
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(await ctx.getMemoryClient(CLAIMED_WS)).toBeNull();
+    expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
   });
 });

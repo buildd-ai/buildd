@@ -125,6 +125,17 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/watched-projects/:id', methods: ['PATCH', 'DELETE'], load: () => import('@/app/api/watched-projects/[id]/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },
   { pattern: '/api/watched-projects/:id/run', methods: ['POST'], load: () => import('@/app/api/watched-projects/[id]/run/route'), reach: { path: path(['id', 'watched_project']), ...ROWS } },
 
+  // ── watches (the caller's own subscriptions) ──
+  {
+    pattern: '/api/subscriptions', methods: ['GET', 'POST'], load: () => import('@/app/api/subscriptions/route'),
+    reach: {
+      unpinned: 'lists only the caller\'s own watches; every row carries its teamId and workspaceId and is filtered',
+      requireBody: ['taskId', 'workspaceId'],
+      ...ROWS,
+    },
+  },
+  { pattern: '/api/subscriptions/:id', methods: ['DELETE'], load: () => import('@/app/api/subscriptions/[id]/route'), reach: { path: path(['id', 'subscription']), ...ROWS } },
+
   // ── experiments ──
   { pattern: '/api/experiments', methods: ['GET', 'POST'], load: () => import('@/app/api/experiments/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
   { pattern: '/api/experiments/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/experiments/[id]/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },

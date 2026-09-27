@@ -63,6 +63,10 @@ function call(apiKey = 'bld_test') {
   return GET(makeRequest(apiKey), { params: Promise.resolve({ id: RELEASE_ID }) });
 }
 
+function callWithId(id: string, apiKey = 'bld_test') {
+  return GET(makeRequest(apiKey), { params: Promise.resolve({ id }) });
+}
+
 beforeEach(() => {
   mockGetCurrentUser.mockReset().mockResolvedValue(null);
   mockAuthenticateApiKey.mockReset().mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: TEAM_ID, authType: 'api' });
@@ -89,6 +93,14 @@ describe('GET /api/releases/[id]', () => {
     mockGetReleaseWithTaskEdges.mockResolvedValue(null);
     const res = await call();
     expect(res.status).toBe(404);
+  });
+
+  it('rejects a non-UUID release id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await callWithId('a1b2c3d4');
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockGetReleaseWithTaskEdges).not.toHaveBeenCalled();
   });
 
   it('403s when an API key belongs to a different team', async () => {

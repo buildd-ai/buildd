@@ -6,6 +6,21 @@
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput } from '@/lib/mission-board';
 import type { BuilddObjectRef, ChatMessage, ChatToolPart } from '@/components/chat/chat-contract';
 import type { MissionObjectView, ObjectView, PrObjectView, QuestionObjectView, TaskObjectView } from '@/components/chat/objects/object-views';
+import { CHAT_EVENT_PART_TYPE } from '@/components/chat/chat-contract';
+import { watchNotice } from '@/lib/watch-notice';
+import { encodeApprovalPreview, type ChatApprovalPreview } from '@buildd/shared';
+
+/** The card `watch` gets without an allow (lib/chat/previews.ts builds the real one). */
+const WATCH_PREVIEW: ChatApprovalPreview = {
+  v: 1, verb: 'Watch',
+  target: { kind: 'pr', id: 'ws-billing-web#421', label: 'PR #421', detail: 'billing-web', workspaceId: 'ws-billing-web' },
+  changes: [
+    { label: 'When', before: null, after: 'it merges' },
+    { label: 'Where', before: null, after: 'here, in this conversation' },
+    { label: 'Ends', before: null, after: 'after it tells you once, or in 7 days' },
+  ],
+  fingerprint: 'fixture',
+};
 
 /**
  * The story's clock. Anchored 16 minutes before "now" (to the minute) so the
@@ -169,7 +184,14 @@ function call(name: string, input: Record<string, unknown>, output: unknown, ove
   return { type: `tool-${name}`, toolCallId: `call-${pseq}`, state: 'output-available', input, output, ...over };
 }
 const user = (id: string, text: string, min: number): ChatMessage => ({ id, role: 'user', metadata: { createdAt: iso(min), authorName: VIEWER }, parts: [{ type: 'text', text }] });
+/** The turn was routed to the fixture workspace (streamed turn metadata). */
+const withScope = (m: ChatMessage): ChatMessage => ({ ...m, metadata: { ...(m.metadata as object), scope: { id: WS.id, name: WS.name, source: 'routed' } } });
 const agent = (id: string, min: number, parts: ChatMessage['parts'], durationMs?: number): ChatMessage => ({ id, role: 'assistant', metadata: { createdAt: iso(min), durationMs }, parts });
+/** A fired watch, as watch-delivery.ts stores it: one event part with the notice. */
+const fired = (id: string, min: number, eventType: string, payload: Record<string, unknown>): ChatMessage => {
+  const n = watchNotice({ eventType, payload, subjectRef: {} });
+  return { id, role: 'event', metadata: { createdAt: iso(min) }, parts: [{ type: CHAT_EVENT_PART_TYPE, data: { event: 'watch', objects: [], text: n.text, watch: n.watch } }] };
+};
 
 const MISSION_DRAFT = {
   action: 'create',
@@ -198,8 +220,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'denied';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'denied'];
+export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'denied' | 'watch';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'denied', 'watch'];
 
 export function isChatFixtureState(v: string | null | undefined): v is ChatFixtureState {
   return !!v && (CHAT_FIXTURE_STATES as string[]).includes(v);
@@ -215,11 +237,11 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
         title: null, status: 'streaming',
         messages: [
           user('m1', 'What would it take to bill customers in their own currency?', 1),
-          agent('m2', 1, [
+          withScope(agent('m2', 1, [
             call('manage_missions', { action: 'list', workspace: 'billing-web' }, { summary: '3 open, none touch currency', data: [], objects: [] }),
             call('recall', { query: 'currency money rounding' }, undefined, { state: 'input-available' }),
             { type: 'text', text: 'Nothing in flight touches currency. Amounts are integer', state: 'streaming' },
-          ]),
+          ])),
         ],
       };
     case 'propose':
@@ -273,6 +295,29 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
             call('list_tasks', { status: 'completed', since: 'today' }, { summary: '7 PRs across 2 missions', data: [], objects: prRefs }),
             { type: 'text', text: 'Seven PRs merged today. Multi-currency is 9 of 12 done, and checkout is in CI.' },
           ], 1900),
+        ],
+      };
+    case 'watch':
+      // Fired watches first, so a top-of-page capture shows them: one of each
+      // tone, then a watch waiting for its card (the v3 approval rows).
+      return {
+        title: 'Checkout rounding', status: 'ready',
+        messages: [
+          user('w1', 'Let me know when #418 merges, and if the export task needs me.', 30),
+          agent('w2', 30, [
+            call('watch', { prNumber: 418 }, { summary: 'watching #418', data: 'Watching #418.', objects: [], allowed: true }),
+            { type: 'text', text: 'Watching both. You will hear here.' },
+          ], 1100),
+          fired('w3', 44, 'pr.merged', { repo: 'harborline/billing-web', prNumber: 418, title: 'Round per line at checkout', url: pr(418) }),
+          fired('w4', 58, 'task.needs_input', { taskId: 'task-export', title: 'feat(export): dual-currency CSV' }),
+          fired('w5', 70, 'pr.ci_failed', { repo: 'harborline/billing-web', prNumber: 421 }),
+          user('w6', 'Tell me when #421 merges too.', 71),
+          agent('w7', 71, [
+            call('watch', { prNumber: 421 }, undefined, {
+              state: 'approval-requested',
+              approval: { id: 'approval-watch', requestReason: encodeApprovalPreview(WATCH_PREVIEW) } as ChatToolPart['approval'],
+            }),
+          ]),
         ],
       };
   }

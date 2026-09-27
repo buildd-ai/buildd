@@ -13,7 +13,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
-  artifacts, experiments, initiatives, missions, releases, specDiscrepancies, taskSchedules, tasks,
+  artifacts, experiments, initiatives, missions, releases, specDiscrepancies, subscriptions, taskSchedules, tasks,
   watchedProjects, workers, workspaceSkills, workspaces,
 } from '@buildd/core/db/schema';
 import type { ChatObjectOwner, ChatReach } from './in-process-api';
@@ -82,6 +82,10 @@ export const OWNER_LOOKUPS: Record<OwnedKind, (id: string) => Promise<Owner | nu
     const row = await one(db.select({ workspaceId: releases.workspaceId }).from(releases).where(eq(releases.id, id)).limit(1));
     return row ? { teamId: null, workspaceId: row.workspaceId } : null;
   },
+  // A watch's scope only (its team and subject workspace); ownership is the
+  // route's job (cancelSubscription matches the caller).
+  subscription: async (id) => one(db.select({ teamId: subscriptions.teamId, workspaceId: subscriptions.workspaceId })
+    .from(subscriptions).where(eq(subscriptions.id, id)).limit(1)),
   experiment: async (id) => {
     const row = await one(db.select({ teamId: experiments.teamId }).from(experiments).where(eq(experiments.id, id)).limit(1));
     return row ? { teamId: row.teamId, workspaceId: null } : null;

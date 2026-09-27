@@ -81,6 +81,13 @@ export const GATE_SLUGS = {
    * routes the PR through the same rebase-and-retest path as a real conflict.
    */
   MERGE_BASE_FRESHNESS: 'merge_base_freshness',
+  /**
+   * A dependency-bot PR (Renovate, Dependabot) — skipped by automatic
+   * adoption, and refused by every path that would push to its branch (CI fix,
+   * conflict retry, update-branch, review follow-up). The bot owns the branch;
+   * one foreign commit stops it rebasing. See `lib/dependency-bot-pr.ts`.
+   */
+  DEPENDENCY_BOT_PR: 'dependency_bot_pr',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

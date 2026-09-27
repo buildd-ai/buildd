@@ -224,6 +224,10 @@ export async function GET(req: NextRequest) {
           commitDrift: hb.commitDrift ?? null,
           updating: hb.updating ?? null,
           updateAvailable: hb.updateAvailable ?? null,
+          // Set the moment updateAvailable first flipped true; null while
+          // up to date. Makes "how long has it been behind" a measured value
+          // instead of something inferred from boot age.
+          updateAvailableSince: hb.updateAvailableSince ?? null,
           trackedBranch: hb.trackedBranch || null,
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.

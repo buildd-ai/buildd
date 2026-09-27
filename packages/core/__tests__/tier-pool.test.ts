@@ -130,6 +130,10 @@ describe('poolEligibility', () => {
   it('admits a plain unit on a split pool', () => {
     expect(poolEligibility(eligible)).toEqual({ eligible: true });
   });
+  it('admits a plain unit on an explore pool', () => {
+    expect(poolEligibility({ ...eligible, mode: 'explore' })).toEqual({ eligible: true });
+    expect(poolEligibility({ ...eligible, mode: 'explore', frozen: true })).toEqual({ eligible: false, reason: 'pool_not_split' });
+  });
   const cases: Array<[string, Partial<PoolEligibilityInput>, string]> = [
     ['premium-plus never explores', { tier: 'premium-plus' }, 'tier_excluded'],
     ['a pinned pool draws nothing', { mode: 'pinned' }, 'pool_not_split'],

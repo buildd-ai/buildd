@@ -111,6 +111,12 @@ mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mock(() => Promise.resolve({ createdByAccountId: null, createdByWorkerId: null, creationSource: 'api', parentTaskId: null })),
 }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mock(() => Promise.resolve()) }));
+// Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts;
+// the list here is whatever the session user's workspace ids are.
+mock.module('@/lib/workspace-access', () => ({
+  listReachableWorkspaceIds: () => mockGetUserWorkspaceIds(),
+  resolveWorkspaceAccess: async () => ({ ok: false, reason: 'not_found', status: 404, error: 'No workspace found' }),
+}));
 mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mock(() => null),
   autoResolveAccountWorkspace: mock(() => Promise.resolve({ workspaceId: 'ws-1' })),
@@ -178,7 +184,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt', title: 'title', status: 'status', description: 'description', context: 'context', updatedAt: 'updatedAt', pathManifest: 'pathManifest', priority: 'priority', category: 'category' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt', title: 'title', status: 'status', description: 'description', context: 'context', updatedAt: 'updatedAt', pathManifest: 'pathManifest', priority: 'priority', category: 'category', roleSlug: 'roleSlug', creationSource: 'creationSource' },
   systemCache: { key: 'key', expiresAt: 'expiresAt' },
   missions: { id: 'id' },
   workspaceSkills: { id: 'id', slug: 'slug', workspaceId: 'workspaceId', enabled: 'enabled' },
@@ -207,7 +213,7 @@ mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
 // VISUAL_AUDITOR_ROLE_SLUG: read at import by lib/mission-surface-audit.
-mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor' }));
+mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor', EXPLICIT_ROLE_SLUGS: ['visual-auditor'] }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 
@@ -384,6 +390,31 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
       expect(body.tasks[0].prNumber).toBeNull();
       expect(body.tasks[0].hasArtifact).toBe(false);
       expect(body.tasks[0].updatedAt).toBeDefined();
+    });
+
+    // Regression for the friction report: role-attribution analysis over audit
+    // mode had no roleSlug/creationSource on the row, so a role-less-task bucket
+    // could only be sized qualitatively. Assert both the select-list requests
+    // the columns and the response passes them through.
+    it('exposes roleSlug/creationSource on each row for role/creation-site attribution', async () => {
+      mockSelectResult = [{ total: 1, pendingCount: 0 }];
+      mockSelectRowsResult = [
+        {
+          id: 't1', workspaceId: 'ws-1', title: 'Reviewer run', status: 'completed',
+          priority: 0, category: 'bug', descriptionPreview: 'desc',
+          updatedAt: new Date('2026-09-14T00:00:00Z'), summarySource: 'agent', prNumber: 42, hasArtifact: true,
+          roleSlug: 'builder', creationSource: 'mcp',
+        },
+      ];
+
+      const req = makeRequest({ limit: '5', status: 'completed' });
+      const res = await GET(req);
+      const body = await res.json();
+
+      expect(body.tasks[0].roleSlug).toBe('builder');
+      expect(body.tasks[0].creationSource).toBe('mcp');
+      expect(lastRowsSelectCols).toHaveProperty('roleSlug', 'roleSlug');
+      expect(lastRowsSelectCols).toHaveProperty('creationSource', 'creationSource');
     });
 
     it('guards the prNumber cast so a non-numeric result.prNumber cannot 500 the whole audit query', async () => {

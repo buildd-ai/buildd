@@ -4,7 +4,7 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { count, desc, eq } from 'drizzle-orm';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { boardTaskLabel } from '@/lib/mission-board-label';
 import { resolveRunnerDisplay } from '@/lib/runner-display';
@@ -37,6 +37,23 @@ export function taskNowState(
   });
 }
 
+// Bookkeeping around a question, not something that happened to the work.
+const NOT_AN_EVENT = /^(Asked:|Question:|Answer received:|User:)/;
+
+/**
+ * WHAT HAPPENED in the desktop dock: the worker's labelled status and
+ * checkpoint milestones, oldest first, the last `max`. Tool actions and phases
+ * are the Now strip's business, not this list's. Pure.
+ */
+export function taskHappened(milestones: unknown, max = 4): Array<{ ts: number; text: string }> {
+  if (!Array.isArray(milestones)) return [];
+  return (milestones as Milestone[])
+    .filter(m => (m.type === 'status' || m.type === 'checkpoint') && typeof m.ts === 'number' && !!m.label?.trim() && !NOT_AN_EVENT.test(m.label.trim()))
+    .sort((a, b) => a.ts - b.ts)
+    .slice(-max)
+    .map(m => ({ ts: m.ts, text: m.label!.trim() }));
+}
+
 export async function loadTaskObject(taskId: string, userId: string): Promise<TaskObjectView | null> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
@@ -47,7 +64,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   });
   if (!task) return null;
 
-  const [access, latest, role] = await Promise.all([
+  const [access, latest, role, runs] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findFirst({
       where: eq(workers.taskId, taskId),
@@ -55,10 +72,11 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       columns: {
         id: true, status: true, runner: true, startedAt: true, completedAt: true, currentAction: true,
         waitingFor: true, prNumber: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, milestones: true,
-        turns: true, updatedAt: true,
+        turns: true, updatedAt: true, error: true,
       },
     }),
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as { teamId?: string } | null)?.teamId, slug: task.roleSlug }),
+    db.select({ n: count() }).from(workers).where(eq(workers.taskId, taskId)).then(r => Number(r[0]?.n ?? 0)).catch(() => null),
   ]);
   if (!access) return null;
 
@@ -99,6 +117,10 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       updatedAt: epoch(latest.updatedAt),
     } : null,
     now,
+    attempts: runs ?? (latest ? 1 : 0),
+    waitingPrompt: latest?.waitingFor?.prompt ?? null,
+    error: latest?.error ?? null,
+    happened: latest ? taskHappened(latest.milestones) : [],
     renderedAt,
   };
 }

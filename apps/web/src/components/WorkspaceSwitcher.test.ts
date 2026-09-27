@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'bun:test';
-import { buildWorkspaceParam } from './WorkspaceSwitcher';
+import { buildWorkspaceParam, scopeChipLabel } from './WorkspaceSwitcher';
+
+describe('scopeChipLabel', () => {
+  const ws = [{ id: 'a', name: 'billing-web' }];
+  it('all workspaces in scope: the long label for desktop, `all` on a phone', () => {
+    expect(scopeChipLabel(ws, null, null)).toEqual({ glyph: '@', name: 'All workspaces', short: 'all' });
+  });
+  it('a pinned or routed workspace has no separate short form', () => {
+    expect(scopeChipLabel(ws, 'a', null)).toEqual({ glyph: '@', name: 'billing-web', short: 'billing-web' });
+    expect(scopeChipLabel(ws, null, ws[0])).toEqual({ glyph: '→', name: 'billing-web', short: 'billing-web' });
+  });
+});
 
 describe('buildWorkspaceParam', () => {
   it('returns empty string (no param) when workspaceId is null — team-wide default', () => {

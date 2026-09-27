@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
+import { isUuid } from '@/lib/uuid';
 
 // POST /api/tasks/[id]/approve-plan - Approve a planning task's plan and create child execution tasks
 export async function POST(
@@ -13,6 +14,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid task id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

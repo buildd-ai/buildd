@@ -195,6 +195,8 @@ export async function writeAllocation(args: {
   mode?: PoolMode;
   kind: 'allocation' | 'mode' | 'arm_removed';
   actorUserId: string | null;
+  /** `system:*` when buildd made the change (tier-weights §5). */
+  actorSystem?: string | null;
   evidence?: Record<string, unknown>;
 }): Promise<number | null> {
   const result = await db.execute(sql`
@@ -210,12 +212,12 @@ export async function writeAllocation(args: {
       WHERE id = ${args.poolId} AND team_id = ${args.teamId} AND allocation_version = ${args.expectedVersion}
       RETURNING allocation, mode, allocation_version
     ), log AS (
-      INSERT INTO tier_pool_changes (pool_id, kind, before, after, evidence, actor_user_id)
+      INSERT INTO tier_pool_changes (pool_id, kind, before, after, evidence, actor_user_id, actor_system)
       SELECT ${args.poolId}::uuid, ${args.kind}::text,
         jsonb_build_object('allocation', prev.allocation, 'mode', prev.mode, 'version', prev.allocation_version),
         jsonb_build_object('allocation', u.allocation, 'mode', u.mode, 'version', u.allocation_version),
         ${args.evidence ? JSON.stringify(args.evidence) : null}::jsonb,
-        ${args.actorUserId}::uuid
+        ${args.actorUserId}::uuid, ${args.actorSystem ?? null}::text
       FROM u, prev
     )
     SELECT allocation_version FROM u

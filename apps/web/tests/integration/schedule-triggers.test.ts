@@ -14,7 +14,7 @@
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, findFixtureWorkspace } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
@@ -33,14 +33,6 @@ const cleanup = createCleanup(api);
 let workspaceId: string;
 const scheduleIds: string[] = [];
 
-async function findWorkspace(): Promise<string> {
-  if (process.env.BUILDD_WORKSPACE_ID) return process.env.BUILDD_WORKSPACE_ID;
-  const { workspaces } = await api('/api/workspaces');
-  if (!workspaces.length) throw new Error('No workspaces available');
-  const ws = workspaces.find((w: any) => w.name?.includes('buildd')) || workspaces[0];
-  return ws.id;
-}
-
 async function deleteSchedule(id: string) {
   try {
     await api(`/api/workspaces/${workspaceId}/schedules/${id}`, { method: 'DELETE' });
@@ -50,7 +42,7 @@ async function deleteSchedule(id: string) {
 // --- Setup / Teardown ---
 
 beforeAll(async () => {
-  workspaceId = await findWorkspace();
+  workspaceId = await findFixtureWorkspace(api);
   console.log(`  Workspace: ${workspaceId}`);
 });
 

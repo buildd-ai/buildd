@@ -80,7 +80,7 @@ const get = () => new NextRequest('http://localhost/api/missions/m1/evaluate');
 
 function reset() {
   missionRow = {
-    id: 'm1',
+    id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     teamId: 'team-1',
     workspaceId: 'ws-1',
     goalCriteria: [{ type: 'description', description: 'Rows exist', notMechanizableReason: 'stated reason' }],
@@ -100,28 +100,35 @@ describe('POST /api/missions/[id]/evaluate — auth', () => {
   it('401s with neither a session nor an API key', async () => {
     currentUser = null;
     apiAccountRow = null;
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(401);
+    expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
+  });
+
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await POST(post(), { params: makeParams('a1b2c3d4') });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
     expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
   });
 
   it('403s for a non-admin API key', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-1', level: 'worker' };
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(403);
   });
 
   it('404s for a mission outside the caller\'s teams', async () => {
-    missionRow = { id: 'm1', teamId: 'other-team', workspaceId: null, goalCriteria: [] };
-    const res = await POST(post(), { params: makeParams('m1') });
+    missionRow = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', teamId: 'other-team', workspaceId: null, goalCriteria: [] };
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(404);
   });
 
   it('allows an open-access workspace mission from another team', async () => {
     missionRow = { ...missionRow, teamId: 'other-team' };
     workspaceRow = { accessMode: 'open' };
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(200);
   });
 });
@@ -131,7 +138,7 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
 
   it('short-circuits when the mission states no criteria', async () => {
     missionRow = { ...missionRow, goalCriteria: [] };
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -142,17 +149,17 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
 
   it('429s past the hourly rate limit without evaluating', async () => {
     noteCountRows = [{ value: 6 }];
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
 
     expect(res.status).toBe(429);
     expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
   });
 
   it('evaluates as manual for a session user and reports why completion is still blocked', async () => {
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     const body = await res.json();
 
-    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('m1', expect.objectContaining({
+    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', expect.objectContaining({
       evaluatedBy: 'manual',
       noteTitle: 'Goal criteria evaluated (on-demand)',
       allowWorkerDispatch: true,
@@ -167,9 +174,9 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
   it('attributes an admin API key run to mcp', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-1', level: 'admin' };
-    await POST(post(), { params: makeParams('m1') });
+    await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
 
-    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('m1', expect.objectContaining({ evaluatedBy: 'mcp' }));
+    expect(mockEvaluateCriteriaNow).toHaveBeenCalledWith('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', expect.objectContaining({ evaluatedBy: 'mcp' }));
   });
 
   it('completes the mission when a fresh pass is the last thing it was waiting for', async () => {
@@ -184,11 +191,11 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
       decision: { ok: true, code: 'ok', reason: 'All 1 goal criteria pass' },
     }) as any);
 
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     const body = await res.json();
 
     // Reuses the verdict just written rather than evaluating twice.
-    expect(mockCompleteMissionIfVerified).toHaveBeenCalledWith('m1', {
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledWith('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
       path: 'criteria_eval',
       predicate: 'on-demand criteria evaluation',
       evaluateCriteria: false,
@@ -199,7 +206,7 @@ describe('POST /api/missions/[id]/evaluate — evaluation', () => {
 
   it('500s (not a crash) when evaluation throws', async () => {
     mockEvaluateCriteriaNow.mockImplementation(() => Promise.reject(new Error('boom')) as any);
-    const res = await POST(post(), { params: makeParams('m1') });
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(500);
   });
 });
@@ -213,7 +220,7 @@ describe('GET /api/missions/[id]/evaluate', () => {
       goalCriteriaState: { evaluatedAt: '2026-08-28T00:00:00.000Z', overall: 'fail', criteria: [] },
     };
 
-    const res = await GET(get(), { params: makeParams('m1') });
+    const res = await GET(get(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -224,7 +231,14 @@ describe('GET /api/missions/[id]/evaluate', () => {
   it('401s without auth', async () => {
     currentUser = null;
     apiAccountRow = null;
-    const res = await GET(get(), { params: makeParams('m1') });
+    const res = await GET(get(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(401);
+  });
+
+  it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await GET(get(), { params: makeParams('a1b2c3d4') });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import { normalizeProject, workspaceProjectKey } from './project-scope';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -145,7 +146,10 @@ export interface ActionContext {
   embedder?: Embedder | null;
   // Resolve a MemoryStore for this context (team-keyed, in-process).
   // Injected by the MCP route so the callback type stays decoupled from the route layer.
-  getMemoryClient?: () => Promise<MemoryStore | null>;
+  // `workspaceId`, when given, names the workspace the memory is for (e.g. the
+  // task claim_task just claimed): the store is that workspace's team's, and
+  // null when it is sensitive or cannot be resolved.
+  getMemoryClient?: (workspaceId?: string) => Promise<MemoryStore | null>;
 }
 
 export type ToolResult = {
@@ -251,6 +255,12 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  // Read-only heartbeat snapshot for the caller's runners — the same data
+  // GET /api/workers/active serves, exposed as an MCP action so a task doing
+  // update/version recon doesn't need SSH or a dashboard session to see it.
+  // Worker level, not admin: any worker's own recon needs this, same
+  // reasoning as get_failure_analytics above.
+  'list_runners',
   // Split by sub-action: list/get/readout are worker level (and only return
   // visibility='team' experiments below admin — the API 404s the rest); every
   // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
@@ -421,7 +431,7 @@ export const learnToolDefinition = {
       },
       scope: {
         type: "string" as const,
-        description: "Project/monorepo scope for this memory.",
+        description: "Omit. Memories are always filed under the calling workspace's project; naming any other project is refused.",
       },
       supersedes: {
         type: "array" as const,
@@ -497,10 +507,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
-    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    list_runners: '{ } — read-only heartbeat snapshot for every runner the caller\'s account can see (same rows GET /api/workers/active serves): localUiUrl, accountName, capacity (maxConcurrent/activeWorkers), workspaceIds/workspaceNames, environment, runnerCommit/runnerVersion, the update-state bundle (currentCommit, diskCommit, commitDrift, updating, updateAvailable, updateAvailableSince — set the moment updateAvailable first flipped true, so "how long has it been behind" is measured, not inferred from boot age), trackedBranch, upToDateWithDeployed (only meaningful for a `main`-tracking runner), and lastHeartbeatAt. No params — scoping matches the caller\'s own workspace access, same as get_failure_analytics.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
-    list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
+    list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
@@ -521,8 +532,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
 
 export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    context: '{ project? } — get markdown-formatted memory context for agent injection',
-    search: '{ query?, type?, files? (array), project?, limit?, offset? }',
+    context: '{ project? } — get markdown-formatted memory context for agent injection. Memory is scoped to the calling workspace; naming another project is refused.',
+    search: '{ query?, type?, files? (array), project? (must be the calling workspace\'s own), limit?, offset? }',
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
@@ -945,6 +956,33 @@ async function requireExplicitWorkspace(
   };
 }
 
+/** Minute-precision UTC stamp: `2026-09-27 17:07Z`. */
+const stamp = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z`;
+
+/**
+ * list_releases text: one line per release and the tasks it shipped. The raw
+ * rows (archetype, SHAs, run metadata) cost the reader ~1K tokens each and
+ * answered "what shipped?" with nothing; get_release has the full record.
+ */
+export function renderReleaseList(
+  rows: Array<Record<string, any>>,
+  sinceDays: number | null,
+): string {
+  if (rows.length === 0) return sinceDays ? `No releases in the last ${sinceDays} days.` : 'No releases found.';
+  const MAX_TASKS = 15;
+  return rows.map((r) => {
+    const state = r.failureReason && r.state !== 'healthy' ? `${r.state} (${r.failureReason})` : r.state;
+    const when = r.deployedAt ? `deployed ${stamp(r.deployedAt)}` : `created ${stamp(r.createdAt)}`;
+    const head = [r.version ?? 'unversioned', state, when, r.headSha ? String(r.headSha).slice(0, 7) : null]
+      .filter(Boolean).join(' · ');
+    const shipped: Array<{ title: string | null; prNumber: number | null }> = r.tasks ?? [];
+    const lines = shipped.slice(0, MAX_TASKS)
+      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}`);
+    if (shipped.length > MAX_TASKS) lines.push(`    - …and ${shipped.length - MAX_TASKS} more (get_release)`);
+    return [`- ${head} (id ${r.id})`, ...lines].join('\n');
+  }).join('\n');
+}
+
 /**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
  * Falls back to context workspace ID if no param given.
@@ -961,10 +999,16 @@ async function resolveWorkspaceId(
   if (!raw) return ctx.getWorkspaceId();
 
   // Not a UUID — resolve by repo name or workspace name
-  // Try by-repo first (handles "owner/repo" format)
+  // Try by-repo first (handles "owner/repo" format). It searches only the
+  // caller's reachable workspaces and answers 404 otherwise, which `api`
+  // throws on; that is a miss, not an error, so fall through to the list.
   if (raw.includes('/')) {
-    const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
-    if (data.workspace?.id) return data.workspace.id;
+    try {
+      const data = await api(`/api/workspaces/by-repo?repo=${encodeURIComponent(raw)}`);
+      if (data?.workspace?.id) return data.workspace.id;
+    } catch {
+      // not reachable / not found — fall through
+    }
   }
 
   // Fall back to name match across accessible workspaces
@@ -1321,7 +1365,11 @@ export async function handleBuilddAction(
 
   switch (action) {
     case 'list_tasks': {
-      const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
+      // An explicit workspaceId (the guard above asks for one) wins over the default.
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : ctx.workspaceId || await ctx.getWorkspaceId();
+      if (params.workspaceId && !wsId) throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
       const rawLimit = params.limit;
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(Math.max(Math.trunc(rawLimit), 1), 50)
@@ -1551,13 +1599,25 @@ export async function handleBuilddAction(
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
       ).join('\n\n---\n\n');
 
-      // Proactively fetch relevant memory from memory service
+      // Proactively fetch relevant memory. Invariant: only memory from the
+      // claimed task's own workspace, never from a sensitive one. The store is
+      // team-keyed, so the search must also carry the workspace's project key —
+      // a bare title search ranks every workspace in the team. Anything we can't
+      // scope (no workspace on the payload, no project key) gets no memory.
       let memorySection = '';
       try {
-        const memClient = ctx.getMemoryClient ? await ctx.getMemoryClient() : null;
-        if (memClient && workers[0]?.task?.title) {
+        const claimedTask = workers[0]?.task;
+        const claimedWs = claimedTask?.workspace;
+        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive'
+          ? workspaceProjectKey(claimedWs.repo, claimedWs.name)
+          : null;
+        const memClient = memProject && claimedTask?.title && ctx.getMemoryClient
+          ? await ctx.getMemoryClient(claimedTask.workspaceId ?? claimedWs.id)
+          : null;
+        if (memClient && memProject) {
           const searchData = await memClient.search({
-            query: workers[0].task.title,
+            query: claimedTask.title,
+            project: memProject,
             limit: 5,
           });
           const results = searchData.results || [];
@@ -3853,6 +3913,34 @@ export async function handleBuilddAction(
       return text(lines.join('\n'));
     }
 
+    case 'list_runners': {
+      // No workspaceId param: scoping matches whatever GET /api/workers/active
+      // already resolves for this caller (API key → linked + open workspaces;
+      // OAuth → team + open workspaces) — narrowing further here would just
+      // duplicate that logic and risk drifting from it.
+      const data = await api('/api/workers/active');
+      const runners = (data?.activeLocalUis ?? []) as Array<Record<string, unknown>>;
+      if (runners.length === 0) return text('No active runners visible to this token.');
+
+      const lines = runners.map((r) => {
+        const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — capacity ${r.activeWorkers}/${r.maxConcurrent} — branch ${r.trackedBranch ?? 'unknown'}`;
+        const update = [
+          `currentCommit=${r.currentCommit ?? 'null'}`,
+          `diskCommit=${r.diskCommit ?? 'null'}`,
+          `commitDrift=${r.commitDrift ?? 'null'}`,
+          `updating=${r.updating ?? 'null'}`,
+          `updateAvailable=${r.updateAvailable ?? 'null'}`,
+        ];
+        if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
+        if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
+        const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'}`;
+        const workspaces = ((r.workspaceNames as string[]) ?? []).join(', ') || 'none';
+        return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
+      });
+
+      return text(`${runners.length} runner(s):\n\n${lines.join('\n\n')}`);
+    }
+
     case 'list_connectors': {
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) {
@@ -4897,9 +4985,12 @@ export async function handleBuilddAction(
       if (typeof params.missionId === 'string') qs.set('missionId', params.missionId);
       if (typeof params.state === 'string') qs.set('state', params.state);
       if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+      const sinceDays = typeof params.sinceDays === 'number' && params.sinceDays > 0 ? params.sinceDays : null;
+      if (sinceDays) qs.set('sinceDays', String(sinceDays));
+      qs.set('include', 'tasks');
 
       const data = await api(`/api/releases?${qs.toString()}`);
-      return text(JSON.stringify(data));
+      return text(renderReleaseList(data.releases ?? [], sinceDays));
     }
 
     case 'get_release': {
@@ -5457,6 +5548,51 @@ type MemoryActionCtx = {
   isSensitive?: boolean;
 };
 
+// ── Memory project scoping ───────────────────────────────────────────────────
+//
+// Invariant: memory surfaced to an agent comes only from the requesting
+// workspace, never from a sensitive one. The store and the `{teamId}:memory`
+// namespace are team-wide; the only thing separating one workspace's memories
+// from another's is the project key, and `ctx.project` is that key as the
+// server resolved it for this connection. Callers never choose it: a project
+// named in params is refused, and no key means no memory.
+
+const NO_MEMORY_SCOPE = 'no memory scope for this workspace';
+
+/** The caller's own project key, or an error when the caller named another one or has none. */
+function ownMemoryProject(ctx: MemoryActionCtx, requested?: unknown): { project: string } | { error: string } {
+  const own = normalizeProject(ctx.project);
+  if (!own) return { error: NO_MEMORY_SCOPE };
+  if (typeof requested === 'string' && requested.trim() !== '' && normalizeProject(requested) !== own) {
+    return { error: `project "${requested}" is not this workspace's — memory is scoped to the calling workspace` };
+  }
+  return { project: own };
+}
+
+/** Whether a stored memory belongs to the caller's workspace. */
+function isOwnMemory(m: { project?: string | null }, ctx: MemoryActionCtx): boolean {
+  const own = normalizeProject(ctx.project);
+  return !!own && normalizeProject(m.project) === own;
+}
+
+/**
+ * Narrow `{teamId}:memory` hits to the caller's project. Chunk metadata is not
+ * trusted for this (older chunks carry no project); the memories table is.
+ * A hit with no backing memory row is dropped.
+ */
+async function ownMemoryHits(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  hits: QueryResult[],
+): Promise<QueryResult[]> {
+  const own = normalizeProject(ctx.project);
+  if (!own || !mc || hits.length === 0) return [];
+  const memoryIdOf = (r: QueryResult) => (typeof r.metadata?.memoryId === 'string' ? r.metadata.memoryId : r.id);
+  const { memories } = await mc.batch(hits.map(memoryIdOf));
+  const allowed = new Set(memories.filter(m => normalizeProject(m.project) === own).map(m => m.id));
+  return hits.filter(r => allowed.has(memoryIdOf(r)));
+}
+
 /**
  * Extracts implementation anchors from spec chunks for two-hop code retrieval.
  * Captures file paths, route paths, camelCase symbols, and PascalCase types —
@@ -5595,7 +5731,8 @@ function formatCorpusFailures(failures: CorpusFailure[]): string {
  */
 async function fanOutCorpora(
   ks: KnowledgeStore,
-  ctx: { isSensitive?: boolean; workspaceId?: string; teamId?: string },
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
@@ -5603,12 +5740,22 @@ async function fanOutCorpora(
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
       if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      if (c === 'memory' && !normalizeProject(ctx.project)) {
+        failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
+        return [];
+      }
       const ns = knowledgeNamespace(ctx, c);
       if (!ns) {
         failures.push({ corpus: c, reason: (c === 'memory' || c === 'initiative') ? 'teamId required' : 'workspaceId required' });
         return [];
       }
       try {
+        // The memory namespace is team-wide: over-fetch, then keep the caller's project.
+        if (c === 'memory') {
+          const raw = await ks.query(ns, { ...opts, topK: Math.min(opts.topK * 5, 100) });
+          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
+          return own.slice(0, opts.topK);
+        }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
@@ -5637,6 +5784,8 @@ export async function handleRecallAction(
   if (params.id) {
     const data = await memoryClient.get(params.id as string);
     const m = data.memory;
+    // Same message as a miss, so a foreign id is not confirmed to exist.
+    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,
@@ -5682,7 +5831,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5716,6 +5865,9 @@ export async function handleRecallAction(
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
   }
+  if (scope === 'memory' && !normalizeProject(ctx.project)) {
+    return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
+  }
 
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
@@ -5734,10 +5886,16 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+  const raw = await ks.query(ns, {
+    text: query,
+    mode,
+    topK: scope === 'memory' ? Math.min(fetchTopK * 5, 100) : fetchTopK,
+  });
 
   // Exclude superseded entries by default, apply type/files filters, then the caller limit.
   let results = raw.filter(r => r.isCurrent !== false);
+  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
   if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
   results = results.slice(0, limit);
 
@@ -5777,6 +5935,10 @@ export async function handleLearnAction(
   if (ctx.isSensitive) {
     return errorResult('workspace is sensitive — memory writes disabled');
   }
+  // Written under the caller's own project key only — a memory filed under
+  // another workspace's key would surface there.
+  const learnScope = ownMemoryProject(ctx, params.scope);
+  if ('error' in learnScope) return errorResult(learnScope.error);
 
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
@@ -5817,7 +5979,7 @@ export async function handleLearnAction(
     type: params.type as string,
     title: params.title as string,
     content: params.content as string,
-    project: (params.scope as string) || ctx.project || undefined,
+    project: learnScope.project,
     tags: params.tags as string[] | undefined,
     files: params.files as string[] | undefined,
     source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
@@ -5835,7 +5997,7 @@ export async function handleLearnAction(
       lexicalText,
       sourceType: 'memory',
       sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
+      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
       ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
     }]).catch(() => undefined);
     if (upsertRes) learnSuperseded = upsertRes.superseded;
@@ -5908,17 +6070,20 @@ export async function handleMemoryAction(
   switch (action) {
     case 'context': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
-      const project = (params.project as string) || ctx.project;
-      const data = await mc.getContext(project);
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
+      const data = await mc.getContext(scoped.project);
       return text(data.markdown || '(No memories yet)');
     }
 
     case 'search': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
       const data = await mc.search({
         query: params.query as string | undefined,
         type: params.type as string | undefined,
-        project: (params.project as string) || ctx.project,
+        project: scoped.project,
         files: params.files as string[] | undefined,
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
@@ -5963,6 +6128,9 @@ export async function handleMemoryAction(
         throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
       }
 
+      const saveScope = ownMemoryProject(ctx, params.project);
+      if ('error' in saveScope) return errorResult(saveScope.error);
+
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
@@ -5970,7 +6138,7 @@ export async function handleMemoryAction(
         type: params.type as string,
         title: params.title as string,
         content: params.content as string,
-        project: (params.project as string) || ctx.project || undefined,
+        project: saveScope.project,
         tags: params.tags as string[] | undefined,
         files: params.files as string[] | undefined,
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
@@ -6021,6 +6189,7 @@ export async function handleMemoryAction(
       if (!params.id) throw new Error('id is required');
       const data = await mc.get(params.id as string);
       const m = data.memory;
+      if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
       const meta = [
         `Type: ${m.type}`,
         m.project && `Project: ${m.project}`,
@@ -6049,6 +6218,12 @@ export async function handleMemoryAction(
 
       const updateSupersedes = parseSupersedesParam(params.supersedes);
       if (updateSupersedes.error) throw new Error(updateSupersedes.error);
+
+      // Only the caller's own memories, and never moved to another project key.
+      const updateScope = ownMemoryProject(ctx, params.project);
+      if ('error' in updateScope) return errorResult(updateScope.error);
+      const existing = await mc.get(params.id as string);
+      if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
       const data = await mc.update(params.id as string, updateFields);
 
@@ -6118,7 +6293,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6170,6 +6345,9 @@ export async function handleMemoryAction(
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
       }
+      if (corpus === 'memory' && !normalizeProject(ctx.project)) {
+        throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);
+      }
 
       const ns = knowledgeNamespace(ctx, corpus);
 
@@ -6182,11 +6360,15 @@ export async function handleMemoryAction(
       // Reranker passed here too: without it this fallback ranked by age decay
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
-      const results = await ks.query(ns, {
+      // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+      const queried = await ks.query(ns, {
         text: params.query as string,
         mode,
-        topK,
+        topK: corpus === 'memory' ? Math.min(topK * 5, 100) : topK,
       });
+      const results = corpus === 'memory'
+        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
+        : queried;
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

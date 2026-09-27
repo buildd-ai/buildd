@@ -23,7 +23,7 @@ import {
 } from '@/lib/review-feedback';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
+import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -65,6 +65,7 @@ import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
+import { recordEvent, prMergedEvent, prCiFailedEvent, taskCompletedEvent } from '@/lib/subscriptions';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
@@ -76,6 +77,7 @@ import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-statu
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 
 export async function POST(req: NextRequest) {
@@ -456,6 +458,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           taskId: worker.taskId,
         });
       }
+    }
+    // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
+    for (const pr of check_suite.pull_requests) {
+      await recordEvent(prCiFailedEvent({ repoFullName: repository.full_name, prNumber: pr.number, headSha }));
     }
     await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
@@ -981,6 +987,12 @@ async function handlePullRequestEvent(event: {
   // exactly-once now that they no longer ride on the task's status transition.
   const mergeIsNew = !worker?.mergedAt;
 
+  // Subscriptions ledger: any merged PR, buildd-opened or not. Idempotent on
+  // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
+  if (pr.merged) {
+    await recordEvent(prMergedEvent({ repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url }));
+  }
+
   // Resolve the sticky activity comment: the PR closing is the last word, so a
   // header left on a working state ("Review passed — merging once checks are
   // green") must stop spinning even though no buildd step ran after it.
@@ -1172,6 +1184,12 @@ async function handlePullRequestEvent(event: {
           `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
           + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
         );
+        // Console-only was the silence the comment above already names: a
+        // no-op for every reason but the two that can recur forever with no
+        // self-correction (see `noteMissionPrOpenFailure`).
+        noteMissionPrOpenFailure(worker.task.missionId, opened).catch(e =>
+          console.error(`[webhook] mission PR failure note failed for ${worker.task!.missionId}:`, e),
+        );
       }
     }
   }
@@ -1198,6 +1216,8 @@ async function handlePullRequestEvent(event: {
         .set({ status: 'completed', updatedAt: new Date() })
         .where(eq(tasks.id, worker.task.id));
       console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+      // Same fact as the worker route's completion, same dedupe key: one row.
+      await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
 
       // Work-tracker: post completion comment and transition issue to "Done".
       // Stays inside the transition guard deliberately: a "Done" comment is a
@@ -1560,6 +1580,24 @@ async function handleCheckSuiteFailure(
           continue;
         }
 
+        // Renovate/Dependabot own their branch and stop rebasing it the moment
+        // anyone else commits — a CI fix from buildd would hijack the PR.
+        if (isDependencyBotAuthor(prData.user)) {
+          console.log(
+            `[webhook] Skipping adoption of dependency-bot PR #${pr.number} on ${repository.full_name} (author: ${prData.user?.login})`,
+          );
+          fireGateEvent({
+            gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+            surface: 'webhook:check_suite',
+            outcome: 'rejected',
+            reason: 'CI failed on a dependency-bot PR — not adopted, the bot owns the branch',
+            workspaceId: adoptingWorkspace.id,
+            callerOrigin: 'system',
+            detail: { prNumber: pr.number, repo: repository.full_name, author: prData.user?.login ?? null, stage: 'adoption' },
+          });
+          continue;
+        }
+
         const { ownerWorker } = await resolveOrAdoptPrOwner({
           workspaceId: adoptingWorkspace.id,
           installationId,
@@ -1578,6 +1616,24 @@ async function handleCheckSuiteFailure(
         }
       }
       const task = worker.task;
+
+      // Already adopted (an explicit request_pr_review) — reviewing a bot PR is
+      // fine, pushing a CI fix to its branch is not.
+      if (isDependencyBotPrContext(task.context)) {
+        console.log(`[webhook] No CI-fix for dependency-bot PR #${pr.number} on ${repository.full_name}`);
+        fireGateEvent({
+          gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+          surface: 'webhook:check_suite',
+          outcome: 'rejected',
+          reason: dependencyBotPushRefusal(pr.number),
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          workerId: worker.id,
+          callerOrigin: 'system',
+          detail: { prNumber: pr.number, repo: repository.full_name, stage: 'ci_fix' },
+        });
+        continue;
+      }
 
       // Terminal tasks (completed/failed/cancelled) must not spawn retry children —
       // the PR is orphaned from the agent's perspective. Surface CI failures to the

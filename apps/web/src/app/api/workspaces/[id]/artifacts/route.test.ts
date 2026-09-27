@@ -14,6 +14,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => false as any);
 const mockVerifyAccountWorkspaceAccess = mock(() => false as any);
 const mockArtifactsFindFirst = mock(() => null as any);
+const mockArtifactsFindMany = mock(() => [] as any[]);
 const mockArtifactsInsert = mock(() => [] as any);
 const mockArtifactsUpdate = mock(() => [] as any);
 
@@ -37,7 +38,7 @@ mock.module('@/lib/app-url', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      artifacts: { findFirst: mockArtifactsFindFirst },
+      artifacts: { findFirst: mockArtifactsFindFirst, findMany: mockArtifactsFindMany },
     },
     insert: () => ({
       values: () => ({
@@ -89,13 +90,19 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', workspaceId: 'workspaceId' },
 }));
 
-const { POST } = await import('./route');
+const { GET, POST } = await import('./route');
 
 function req(body: unknown, authHeader = 'Bearer test-key'): NextRequest {
   return new NextRequest('http://localhost:3000/api/workspaces/ws-1/artifacts', {
     method: 'POST',
     headers: { authorization: authHeader, 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+}
+
+function getReq(query = ''): NextRequest {
+  return new NextRequest(`http://localhost:3000/api/workspaces/ws-1/artifacts${query}`, {
+    headers: { authorization: 'Bearer test-key' },
   });
 }
 
@@ -165,5 +172,42 @@ describe('POST /api/workspaces/[id]/artifacts', () => {
     expect(data.upserted).toBe(true);
     expect(mockArtifactsUpdate).toHaveBeenCalled();
     expect(mockArtifactsInsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/workspaces/[id]/artifacts — missionId query param', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockArtifactsFindMany.mockReset();
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindMany.mockResolvedValue([]);
+  });
+
+  it('rejects a non-UUID missionId (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await GET(getReq('?missionId=short8'), params());
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('accepts a full-UUID missionId', async () => {
+    const res = await GET(getReq('?missionId=11111111-1111-4111-8111-111111111111'), params());
+
+    expect(res.status).toBe(200);
+    expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+
+  it('omitting missionId is fine', async () => {
+    const res = await GET(getReq(), params());
+
+    expect(res.status).toBe(200);
+    expect(mockArtifactsFindMany).toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@
  * below it (demo capture: the banner sat on top of the sheet answering it).
  */
 import { describe, expect, it } from 'bun:test';
-import { bannerTasks, hideNeedsInputFor, hiddenNeedsInputSnapshot, subscribeHiddenNeedsInput } from './needs-input-hidden';
+import { bannerHiddenSnapshot, bannerTasks, hideNeedsInputBanner, hideNeedsInputBannerOnPhone, hideNeedsInputFor, hiddenNeedsInputSnapshot, phoneBannerHiddenSnapshot, subscribeHiddenNeedsInput } from './needs-input-hidden';
 
 describe('needs-input hidden set', () => {
   it('hides a task while held and releases it after', () => {
@@ -54,5 +54,45 @@ describe('bannerTasks', () => {
 
   it('keeps everything when nothing is hidden', () => {
     expect(bannerTasks(tasks, new Set())).toBe(tasks);
+  });
+});
+
+// The phone chat canvas in needs-you mood already says what waits on you, in
+// its hero and copper row; the yellow banner above it only repeats it.
+describe('phone banner suppression', () => {
+  it('is held while any surface asks and released after, counted', () => {
+    expect(phoneBannerHiddenSnapshot()).toBe(false);
+    const a = hideNeedsInputBannerOnPhone();
+    const b = hideNeedsInputBannerOnPhone();
+    expect(phoneBannerHiddenSnapshot()).toBe(true);
+    a();
+    a();
+    expect(phoneBannerHiddenSnapshot()).toBe(true);
+    b();
+    expect(phoneBannerHiddenSnapshot()).toBe(false);
+  });
+
+  it('notifies subscribers', () => {
+    let n = 0;
+    const off = subscribeHiddenNeedsInput(() => { n += 1; });
+    hideNeedsInputBannerOnPhone()();
+    off();
+    expect(n).toBe(2);
+  });
+});
+
+// The summoned canvas over a page: the banner would sit bright above its scrim.
+describe('banner suppression at every width', () => {
+  it('is held while the canvas is up and released after, counted, apart from the phone hold', () => {
+    expect(bannerHiddenSnapshot()).toBe(false);
+    const a = hideNeedsInputBanner();
+    const b = hideNeedsInputBanner();
+    expect(bannerHiddenSnapshot()).toBe(true);
+    expect(phoneBannerHiddenSnapshot()).toBe(false);
+    a();
+    a();
+    expect(bannerHiddenSnapshot()).toBe(true);
+    b();
+    expect(bannerHiddenSnapshot()).toBe(false);
   });
 });

@@ -1,0 +1,62 @@
+name: Deploy Annotation
+
+# Marks every successful Production deploy on the Axiom `buildd-traces`
+# dataset, so each dashboard chart shows a vertical line where a release went
+# live. A latency jump or failure spike can then be read against the deploy
+# that preceded it.
+#
+# Advisory: a failed or skipped annotation never affects the deploy.
+#
+# NOTE: deployment_status workflows always run from the file on the repository's
+# DEFAULT branch (`dev`), even for deploys of `main` (see cron-sync.yml).
+#
+# Requires repo secrets: AXIOM_ANNOTATIONS_TOKEN (annotations:create),
+# AXIOM_ORG_ID. Both live in Doppler `buildd`.
+
+on:
+  deployment_status: {}
+
+jobs:
+  annotate:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          sparse-checkout: apps/web/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Post deploy annotation to Axiom
+        env:
+          AXIOM_TOKEN: ${{ secrets.AXIOM_ANNOTATIONS_TOKEN }}
+          AXIOM_ORG_ID: ${{ secrets.AXIOM_ORG_ID }}
+          SHA: ${{ github.event.deployment.sha }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ -z "$AXIOM_TOKEN" ] || [ -z "$AXIOM_ORG_ID" ]; then
+            echo "::warning::AXIOM_ANNOTATIONS_TOKEN / AXIOM_ORG_ID not set; skipping deploy annotation"
+            exit 0
+          fi
+          VERSION=$(jq -r .version apps/web/package.json)
+          body=$(jq -n --arg v "$VERSION" --arg sha "$SHA" --arg url "$REPO_URL/commit/$SHA" '{
+            type: "deploy",
+            datasets: ["buildd-traces"],
+            title: ("Deploy v" + $v),
+            description: ("Production deploy of " + $sha[0:9]),
+            url: $url
+          }')
+          code=$(curl -sS -o response.json -w '%{http_code}' -m 30 -X POST \
+            https://api.axiom.co/v2/annotations \
+            -H "Authorization: Bearer $AXIOM_TOKEN" \
+            -H "X-Axiom-Org-Id: $AXIOM_ORG_ID" \
+            -H 'Content-Type: application/json' \
+            -d "$body" || echo "000")
+          if [ "$code" != "200" ] && [ "$code" != "201" ]; then
+            echo "::warning::Axiom annotation failed (HTTP $code): $(cat response.json 2>/dev/null)"
+            exit 0
+          fi
+          echo "Annotated v$VERSION ($SHA) on buildd-traces"

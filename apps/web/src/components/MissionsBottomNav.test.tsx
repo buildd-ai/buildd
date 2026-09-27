@@ -1,34 +1,39 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-mock.module('next/navigation', () => ({ usePathname: () => '/app/home' }));
+mock.module('next/navigation', () => ({ usePathname: () => '/app/chat' }));
 mock.module('./NeedsInputProvider', () => ({ useNeedsInput: () => ({ count: 3 }) }));
 mock.module('./EscalationProvider', () => ({ useEscalation: () => ({ count: 0 }) }));
 
 const { default: MissionsBottomNav } = await import('./MissionsBottomNav');
 
-/** Inner HTML of the first <span> whose class contains `cls` (depth-matched). */
-function spanContents(html: string, cls: string): string {
-  const open = html.search(new RegExp(`<span class="[^"]*${cls}[^"]*">`));
-  if (open < 0) return '';
-  const start = html.indexOf('>', open) + 1;
-  let depth = 1;
-  const re = /<span\b|<\/span>/g;
-  re.lastIndex = start;
-  for (let m = re.exec(html); m; m = re.exec(html)) {
-    depth += m[0] === '</span>' ? -1 : 1;
-    if (depth === 0) return html.slice(start, m.index);
-  }
-  return html.slice(start);
-}
+const html = renderToStaticMarkup(<MissionsBottomNav />);
+const tab = (href: string) => html.match(new RegExp(`<a[^>]*href="${href}"[\\s\\S]*?</a>`))?.[0] ?? '';
 
-describe('MissionsBottomNav badges', () => {
-  it('an inactive tab dims its icon but not its badge', () => {
-    const html = renderToStaticMarkup(<MissionsBottomNav />);
-    const activity = html.match(/<a[^>]*href="\/app\/tasks"[\s\S]*?<\/a>/)?.[0] ?? '';
-    expect(activity).toContain('>3<');
-    // The badge must not be a descendant of the opacity-35 wrapper.
-    expect(activity).toContain('opacity-35');
-    expect(spanContents(activity, 'opacity-35')).not.toContain('>3<');
+describe('MissionsBottomNav (v3 phone nav)', () => {
+  it('mono caps labels in order, no icons', () => {
+    expect(html).not.toContain('<svg');
+    expect(html).toMatch(/<nav[^>]*font-mono/);
+    expect(html).toMatch(/<nav[^>]*uppercase/);
+    const labels = [...html.matchAll(/data-testid="nav-tab-label"[^>]*>([^<]+)</g)].map(m => m[1]);
+    expect(labels).toEqual(['Home', 'Chat', 'Missions', 'Activity', 'Health']);
+  });
+
+  it('marks only the active tab, with a bar on its top edge', () => {
+    expect(tab('/app/chat')).toContain('aria-current="page"');
+    expect(tab('/app/chat')).toContain('data-testid="nav-active-bar"');
+    expect(tab('/app/chat')).toMatch(/nav-active-bar"[^>]*top-0/);
+    expect(html.match(/nav-active-bar/g)).toHaveLength(1);
+    expect(tab('/app/home')).not.toContain('aria-current');
+  });
+
+  it('every tab is at least a 44px touch target', () => {
+    const links = html.match(/<a\b[^>]*>/g) ?? [];
+    expect(links.length).toBe(5);
+    for (const a of links) expect(a).toMatch(/min-h-11/);
+  });
+
+  it('an alert count still shows on its tab', () => {
+    expect(tab('/app/tasks')).toMatch(/data-testid="nav-tab-badge"[^>]*>3</);
   });
 });

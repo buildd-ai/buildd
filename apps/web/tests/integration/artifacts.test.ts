@@ -15,7 +15,7 @@
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, findFixtureWorkspace } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
@@ -29,10 +29,8 @@ describe('Artifact Lifecycle', () => {
   let taskId: string;
 
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
-    console.log(`  Using workspace: ${workspaces[0].name} (${workspaceId})`);
+    workspaceId = await findFixtureWorkspace(api);
+    console.log(`  Using workspace: ${workspaceId}`);
 
     const task = await api('/api/tasks', {
       method: 'POST',
@@ -85,8 +83,11 @@ describe('Artifact Lifecycle', () => {
     expect(artifact.type).toBe('content');
     expect(artifact.title).toBe('Test Report');
     expect(artifact.content).toBe('This is the artifact content from the integration test.');
-    expect(artifact.shareUrl).toBeTruthy();
-    expect(artifact.shareToken).toBeTruthy();
+    // New artifacts are private: no share token is minted and no share URL is
+    // exposed until someone publishes the artifact (route + its unit test).
+    expect(artifact.visibility).toBe('private');
+    expect(artifact.shareToken).toBeNull();
+    expect(artifact.shareUrl).toBeNull();
   }, TIMEOUT);
 
   test('GET artifacts returns created artifact', async () => {
@@ -169,9 +170,7 @@ describe('PR-or-Artifact Enforcement', () => {
   let workerId: string;
 
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
+    workspaceId = await findFixtureWorkspace(api);
 
     const task = await api('/api/tasks', {
       method: 'POST',

@@ -28,6 +28,7 @@ import {
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
+import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -1176,7 +1177,7 @@ export async function PUT(req: NextRequest) {
       const task = worker.taskId
         ? await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            columns: { id: true, requiresReview: true, missionId: true },
+            columns: { id: true, requiresReview: true, missionId: true, context: true },
           })
         : null;
       const mission = task?.missionId
@@ -1288,7 +1289,11 @@ export async function PUT(req: NextRequest) {
         // rather than leave the caller a manual rebase. Never merge in the
         // same call — the update is a new head whose CI has not run, which is
         // the very thing the freshness refusal guards against.
-        if (isBehindBaseRefusal(safety.reason)) {
+        if (isBehindBaseRefusal(safety.reason) && isDependencyBotPrContext(task?.context)) {
+          // The bot rebases its own branch; an update-branch commit from us
+          // would stop it doing so for good.
+          recordMergeGate('rejected', dependencyBotPushRefusal(prNumber), { tier: policy.tier }, GATE_SLUGS.DEPENDENCY_BOT_PR);
+        } else if (isBehindBaseRefusal(safety.reason)) {
           const update = await updateBehindPrBranch({
             installationId: repo.installation.installationId,
             repoFullName: repo.fullName,

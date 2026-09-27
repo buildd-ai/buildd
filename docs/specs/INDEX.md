@@ -73,7 +73,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-25
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-27
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
@@ -105,8 +105,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-20
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
-- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-08-30
-  A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, role pin, task tier, then kind×complexity baseline under budget gates — recorded on tasks.predicted_model.
+- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
+  A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29

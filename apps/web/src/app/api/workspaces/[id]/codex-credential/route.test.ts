@@ -38,7 +38,12 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@buildd/core/secrets', () => ({
   encrypt: (s: string) => `enc:${s}`,
-  decrypt: (s: string) => s.replace(/^enc:/, ''),
+  decrypt: (s: string) => {
+    if (s === 'invalidblobencryptedwithdifferentkey') {
+      throw new Error('Unsupported state or unable to authenticate data');
+    }
+    return s.replace(/^enc:/, '');
+  },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -262,5 +267,27 @@ describe('DELETE /api/workspaces/[id]/codex-credential', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.connected).toBe(false);
+  });
+
+  it('returns 200 with undecryptable error when blob was encrypted with a different key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    // Simulate a blob encrypted with a different encryption key
+    // This will fail during decrypt with "Unsupported state or unable to authenticate data"
+    mockDbFindFirst.mockResolvedValue({
+      encryptedValue: 'invalidblobencryptedwithdifferentkey',
+      workspaceId: null,
+      tokenExpiresAt: new Date(Date.now() + 3600_000),
+      lastRefreshedAt: new Date(),
+      lastVerifiedAt: null,
+      lastVerificationError: null,
+    });
+
+    const res = await GET(makeReq('GET'), { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.connected).toBe(true);
+    expect(data.accountId).toBeNull();
+    expect(data.lastVerificationError).toBeTruthy();
+    expect(data.lastVerificationError).toContain('undecryptable');
   });
 });

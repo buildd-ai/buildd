@@ -15,6 +15,7 @@ import { notify } from '@/lib/pushover';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
+import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -51,6 +52,7 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
@@ -3601,6 +3603,13 @@ export async function PATCH(
                 .then(m => m.postTaskCompletedEvent({ taskId }))
                 .catch(() => {});
             }
+            // Subscriptions ledger. Fire-and-forget; never throws. Title omitted for sensitive workspaces.
+            void recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
+              taskId,
+              workerId: id,
+              title: isSensitive ? null : taskRecord.title,
+              workspaceId: worker.workspaceId,
+            }));
             void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
               title: isDone ? 'Task done' : 'Task failed',
               message: isSensitive
@@ -3702,6 +3711,14 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // Subscriptions ledger: "tell me when this task needs input". Only after the
+  // worker write landed, so a conflicted PATCH records nothing. The key is per
+  // question, so the runner re-sending the same waitingFor writes one row.
+  // Fire-and-forget: recordEvent catches its own errors and adds no latency.
+  if (waitingFor?.type === 'question' && worker.taskId) {
+    void recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
   }
 
   // One terminal record per worker, on every path that lands here: a real
@@ -4705,10 +4722,41 @@ async function handleReviewerOutcomeIfNeeded(
           // query rather than a second one.
           backend: true, roleSlug: true, kind: true, complexity: true,
           missionPhaseIndex: true, missionPhaseLabel: true,
+          context: true,
         },
       });
       if (!originalTask) {
         console.warn(`[reviewer] Cannot create retry: original task ${originalTaskId} not found`);
+        return;
+      }
+
+      // An explicitly-reviewed dependency-bot PR gets its verdict, not a
+      // builder: a fix commit would take the branch away from the bot. The
+      // feedback stays on the review for a human (or the bot's next bump).
+      if (isDependencyBotPrContext(originalTask.context)) {
+        const reason = dependencyBotPushRefusal(prNumber);
+        console.log(`[reviewer] request-changes on PR #${prNumber}: ${reason} — no follow-up builder`);
+        fireGateEvent({
+          gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason,
+          workspaceId,
+          taskId: originalTaskId,
+          callerOrigin: 'system',
+          detail: { prNumber, headSha, stage: 'review_followup' },
+        });
+        await appendPrActivity({
+          installationId,
+          repoFullName,
+          prNumber,
+          entry: {
+            kind: 'review_escalated',
+            detail: 'dependency-bot PR · no fix pushed',
+            note: output.feedback ?? output.summary ?? null,
+          },
+          workspaceId,
+        });
         return;
       }
 

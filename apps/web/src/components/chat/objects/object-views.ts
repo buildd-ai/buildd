@@ -63,6 +63,14 @@ export interface TaskObjectView {
   } | null;
   /** The task page's Now strip state (deriveNow over the live worker's milestones); null unless live. */
   now: NowState | null;
+  /** Agent runs on this task so far (the desktop dock's TRIES cell). */
+  attempts?: number;
+  /** What the waiting worker asked (workers.waitingFor.prompt). */
+  waitingPrompt?: string | null;
+  /** The latest worker's own error line, when it stopped on one. */
+  error?: string | null;
+  /** The latest worker's status and checkpoint milestones, oldest first (WHAT HAPPENED). */
+  happened?: Array<{ ts: number; text: string }>;
   renderedAt: number;
 }
 

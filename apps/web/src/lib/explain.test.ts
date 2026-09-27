@@ -143,6 +143,7 @@ beforeEach(() => {
   missionRows = [];
   taskRows = [];
   workerRows = [];
+  gateEventRows = [];
   completionDecision = { ok: true, code: 'ok', reason: 'clear' };
   workStateResult = null;
   inFlightCanCompleteMission = 0;
@@ -275,6 +276,45 @@ describe('explainMission', () => {
 
   it('returns null for a mission that does not exist', async () => {
     expect(await explainMission('nope')).toBeNull();
+  });
+
+  // Friction dbaadf34: `explain` kept citing "the claim loop deferred a task
+  // 24 times in a row" for a task that had since completed. `gate_events`
+  // never gets a "cleared" row when a task finally dispatches, so age alone
+  // (the freshness window `loadMissionClaimDeferrals` applies) cannot tell a
+  // resolved streak from a live one — the task's current status can.
+  describe('claim-loop deferrals', () => {
+    function deferralRow(over: Partial<Row> = {}): Row {
+      return {
+        taskId: 'task-1',
+        reason: 'oauth_parallelism',
+        occurredAt: new Date(),
+        detail: {
+          consecutiveDeferrals: 24,
+          firstDeferredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        },
+        ...over,
+      };
+    }
+
+    it('drops the warning once the deferred task has left pending', async () => {
+      missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [task({ id: 'task-1', status: 'completed', title: 'OAuth parallelism' })];
+      gateEventRows = [deferralRow()];
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect(answer.outstanding.some(o => o.kind === 'claim_deferral')).toBe(false);
+      expect(answer.situation.headline).not.toContain('times in a row');
+    });
+
+    it('still reports the warning while the deferred task is pending', async () => {
+      missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [task({ id: 'task-1', status: 'pending', title: 'OAuth parallelism' })];
+      gateEventRows = [deferralRow()];
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect(answer.outstanding.some(o => o.kind === 'claim_deferral')).toBe(true);
+    });
   });
 });
 

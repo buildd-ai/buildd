@@ -1,6 +1,7 @@
 import ChatConversation from '@/components/chat/ChatConversation';
+import ChatPresenceBeat from '@/components/chat/ChatPresenceBeat';
 import { formHref, parseChatEntry } from '@/lib/chat/entry-points';
-import { ChatUnavailable, ConversationList, contextAside, firstName, loadAboutRef, loadChatShell } from './chat-shell';
+import { canvasPulse, ChatUnavailable, ConversationList, historyPanel, firstName, loadAboutRef, loadChatShell } from './chat-shell';
 
 /**
  * /app/chat — a new conversation, with your recent ones above the composer.
@@ -26,7 +27,18 @@ export default async function ChatPage({
   // workspace switcher) was on, else all workspaces: routed per turn.
   const picked = typeof q.workspace === 'string' ? q.workspace : null;
   const workspaceId = [about?.workspaceId, entry.workspaceId, picked].find((id): id is string => !!id && wsIds.includes(id)) ?? null;
+  // A phone's HISTORY → (`?view=history`): the conversation list in place of
+  // the empty canvas. On desktop HISTORY → opens the right panel, and this
+  // deep link opens it there; only the tablet band shows the list above the canvas.
+  const historyOpen = q.view === 'history' && !about && !entry.intent;
+  const emptyState = data.conversations.length > 0
+    ? <ConversationList items={data.conversations} />
+    : historyOpen
+      ? <p data-testid="conversation-list-empty" className="px-1 font-voice text-[17px] italic text-[var(--chat-muted)] md:hidden">No chats yet. Start one below.</p>
+      : null;
   return (
+    <>
+    <ChatPresenceBeat conversationId={null} />
     <ChatConversation
       conversationId={null}
       teamId={data.teamId}
@@ -40,11 +52,14 @@ export default async function ChatPage({
       workspaceId={workspaceId}
       viewerName={firstName(data.user)}
       canManageTeamKeys={data.canManageTeamKeys}
-      aside={contextAside(data)}
-      emptyState={<ConversationList items={data.conversations} />}
+      aside={historyPanel(data)}
+      emptyState={emptyState}
+      historyOpen={historyOpen}
+      pulse={canvasPulse(data.context)}
       focusRef={about}
       entry={{ ...entry, about: about ? entry.about : null }}
       formFallbackHref={about ? null : formHref(entry.intent ?? 'mission', workspaceId)}
     />
+    </>
   );
 }

@@ -270,6 +270,17 @@ export interface WebhookConfig {
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
 }
 
+/**
+ * `webhookConfig` as the workspace API returns it: the bearer token is never
+ * serialised, only whether one is set (apps/web/src/lib/workspace-public.ts).
+ */
+export interface PublicWebhookConfig {
+  url: string | null;
+  enabled: boolean;
+  runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  hasToken: boolean;
+}
+
 export interface WorkspaceProject {
   name: string;
   path?: string;
@@ -284,7 +295,7 @@ export interface Workspace {
   localPath: string | null;
   memory: Record<string, unknown>;
   projects?: WorkspaceProject[];
-  webhookConfig?: WebhookConfig | null;
+  webhookConfig?: PublicWebhookConfig | null;
   accessMode?: 'open' | 'restricted';
   dataClass?: 'standard' | 'sensitive';
   createdAt: Date;
@@ -1271,6 +1282,7 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  | 'path_overlap'
   | 'unknown';
 
 export interface ClaimTaskExclusion {
@@ -1282,8 +1294,12 @@ export interface ClaimTaskExclusion {
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
-   * Set only for an explicit `taskId` claim whose task the claim query filtered
-   * out (reason `no_pending_tasks`): the specific gate that excluded it.
+   * The specific gate that excluded an explicit `taskId` claim. Set either when
+   * the claim query filtered the task out entirely (reason `no_pending_tasks`),
+   * or when the task reached the dispatch loop but was itself the one deferred
+   * by the path-overlap backstop (reason `all_candidates_deferred`/`race_lost`)
+   * — the two mechanisms that can silently exclude a named task without a claim
+   * attempt ever being made.
    */
   taskExclusion?: ClaimTaskExclusion;
   pendingTasks?: number;

@@ -22,6 +22,7 @@ import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criter
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { isUuid } from '@/lib/uuid';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -44,6 +45,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -181,6 +185,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -830,6 +837,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

@@ -418,8 +418,12 @@ function deriveCardState(
       .filter(t => t.status === 'failed')
       // No `infra`: it only matters with a completion decision, which a card never has.
       .map(t => ({ id: t.id, title: t.title })),
-    missionPr: integrationPr && integrationPr.state === 'open'
-      ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+    // Cards run no completion decision, so `mergeFact`'s "rows only" path is
+    // gated to `open` only — passing the other states through is harmless
+    // (they read as no fact, same as before) and keeps this in step with
+    // `deriveMissionIntegrationPr`'s real state rather than re-deriving it.
+    missionPr: integrationPr && integrationPr.state !== 'merged'
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
       : null,
     unmergedPrs,
   });
