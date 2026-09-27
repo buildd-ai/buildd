@@ -60,3 +60,6 @@ scripts/agent-docs-drift.test.ts
 apps/runner/__tests__/unit/task-shape-contract.test.ts
 # Enumerates tracked files for a prod server started under Bun (`--bun next start`).
 scripts/prod-server-runtime.test.ts
+# Enumerates every tracked source file for raw secrets lookups by label: a
+# personal secret must never be mounted as a team credential.
+packages/core/__tests__/team-credential-guard.test.ts
