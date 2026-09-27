@@ -255,6 +255,12 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  // Read-only heartbeat snapshot for the caller's runners — the same data
+  // GET /api/workers/active serves, exposed as an MCP action so a task doing
+  // update/version recon doesn't need SSH or a dashboard session to see it.
+  // Worker level, not admin: any worker's own recon needs this, same
+  // reasoning as get_failure_analytics above.
+  'list_runners',
   // Split by sub-action: list/get/readout are worker level (and only return
   // visibility='team' experiments below admin — the API 404s the rest); every
   // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
@@ -503,6 +509,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    list_runners: '{ } — read-only heartbeat snapshot for every runner the caller\'s account can see (same rows GET /api/workers/active serves): localUiUrl, accountName, capacity (maxConcurrent/activeWorkers), workspaceIds/workspaceNames, environment, runnerCommit/runnerVersion, the update-state bundle (currentCommit, diskCommit, commitDrift, updating, updateAvailable, updateAvailableSince — set the moment updateAvailable first flipped true, so "how long has it been behind" is measured, not inferred from boot age), trackedBranch, upToDateWithDeployed (only meaningful for a `main`-tracking runner), and lastHeartbeatAt. No params — scoping matches the caller\'s own workspace access, same as get_failure_analytics.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -3904,6 +3911,34 @@ export async function handleBuilddAction(
       if (groups.length > 0) lines.push(`By ${data.groupBy}:\n${groups.join('\n')}`);
 
       return text(lines.join('\n'));
+    }
+
+    case 'list_runners': {
+      // No workspaceId param: scoping matches whatever GET /api/workers/active
+      // already resolves for this caller (API key → linked + open workspaces;
+      // OAuth → team + open workspaces) — narrowing further here would just
+      // duplicate that logic and risk drifting from it.
+      const data = await api('/api/workers/active');
+      const runners = (data?.activeLocalUis ?? []) as Array<Record<string, unknown>>;
+      if (runners.length === 0) return text('No active runners visible to this token.');
+
+      const lines = runners.map((r) => {
+        const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — capacity ${r.activeWorkers}/${r.maxConcurrent} — branch ${r.trackedBranch ?? 'unknown'}`;
+        const update = [
+          `currentCommit=${r.currentCommit ?? 'null'}`,
+          `diskCommit=${r.diskCommit ?? 'null'}`,
+          `commitDrift=${r.commitDrift ?? 'null'}`,
+          `updating=${r.updating ?? 'null'}`,
+          `updateAvailable=${r.updateAvailable ?? 'null'}`,
+        ];
+        if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
+        if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
+        const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'}`;
+        const workspaces = ((r.workspaceNames as string[]) ?? []).join(', ') || 'none';
+        return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
+      });
+
+      return text(`${runners.length} runner(s):\n\n${lines.join('\n\n')}`);
     }
 
     case 'list_connectors': {

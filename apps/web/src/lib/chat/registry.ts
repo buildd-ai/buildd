@@ -129,6 +129,7 @@ export const CHAT_TOOL_SPECS = {
   get_budget_forecast: single('workers', read('GET /api/health/budget')),
   list_connectors: single('workers', read('GET /api/connectors/mounted')),
   get_usage_stats: single('workers', deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
+  list_runners: single('workers', deferred('each row carries a workspaceIds array (a runner can serve several workspaces), and the generic reach filter only scopes rows by a single workspaceId field — exposing it needs array-aware filtering first')),
 
   // ── PRs, reviews, releases ──
   get_pr: single('prs', read('GET /api/github/pr')),
