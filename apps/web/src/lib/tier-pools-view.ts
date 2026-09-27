@@ -18,6 +18,7 @@ import {
   type ArmStats,
   type PoolSurface,
 } from '@buildd/core/tier-pool';
+import { nearestWeightForShare, type WeightLevel } from '@buildd/core/tier-weights';
 
 export interface PoolArmView {
   /** Null for the synthetic incumbent of a tier with no pool yet. */
@@ -27,6 +28,8 @@ export interface PoolArmView {
   role: 'incumbent' | 'challenger';
   status: 'active' | 'paused';
   share: number;
+  /** `split` only. Snapped from the live share when the pool predates weights. */
+  weight: WeightLevel;
   stats: ArmStats | null;
 }
 
@@ -63,7 +66,7 @@ export const CHAT_POOL_TIERS: readonly Tier[] = ['premium', 'standard', 'budget'
 export interface PoolInput {
   pool: {
     id: string; tier: string; surface: PoolSurface; mode: string; allocation: Record<string, number>;
-    allocationVersion: number; incumbentFloor: number; explorationCap: number;
+    allocationVersion: number; weights: Record<string, WeightLevel>; incumbentFloor: number; explorationCap: number;
   };
   arms: Array<{ id: string; route: ArmRoute; model: string; role: 'incumbent' | 'challenger'; status: string; addedAt: Date | string }>;
   lastChange: { kind: string; createdAt: Date | string; actorUserId: string | null; actorSystem: string | null } | null;
@@ -87,7 +90,7 @@ export function buildTierPoolRows(args: {
         rows.push({
           tier, surface, poolId: null, mode: 'pinned', locked, allocationVersion: null,
           incumbentFloor: 0.6, explorationCap: 0.3,
-          arms: [{ id: null, route: baseRoute, model: entry?.model ?? '', role: 'incumbent', status: 'active', share: 1, stats: null }],
+          arms: [{ id: null, route: baseRoute, model: entry?.model ?? '', role: 'incumbent', status: 'active', share: 1, weight: 'high', stats: null }],
           lastChange: null, minGraded: MIN_GRADED_UNITS[surface],
         });
         continue;
@@ -99,18 +102,24 @@ export function buildTierPoolRows(args: {
       rows.push({
         tier, surface, poolId: p.pool.id, mode: pinned ? 'pinned' : 'split', locked, allocationVersion: p.pool.allocationVersion,
         incumbentFloor: p.pool.incumbentFloor, explorationCap: p.pool.explorationCap,
-        arms: live.map(a => ({
-          id: a.id,
-          // The incumbent is the registry row: show what serves today, not the
-          // snapshot taken when the pool was created.
-          route: a.role === 'incumbent' ? baseRoute : a.route,
-          model: a.role === 'incumbent' ? (entry?.model ?? a.model) : a.model,
-          role: a.role,
-          status: a.status === 'paused' ? 'paused' : 'active',
-          // A pinned pool serves the incumbent only, whatever the saved split.
-          share: pinned ? (a.role === 'incumbent' ? 1 : 0) : (p.pool.allocation[a.id] ?? 0),
-          stats: args.stats.get(a.id) ?? null,
-        })),
+        arms: live.map(a => {
+          const share = pinned ? (a.role === 'incumbent' ? 1 : 0) : (p.pool.allocation[a.id] ?? 0);
+          return {
+            id: a.id,
+            // The incumbent is the registry row: show what serves today, not the
+            // snapshot taken when the pool was created.
+            route: a.role === 'incumbent' ? baseRoute : a.route,
+            model: a.role === 'incumbent' ? (entry?.model ?? a.model) : a.model,
+            role: a.role,
+            status: a.status === 'paused' ? 'paused' : 'active',
+            // A pinned pool serves the incumbent only, whatever the saved split.
+            share,
+            // A pool created before weights existed has no entry for this arm
+            // yet: snap its current share to the nearest level for display.
+            weight: p.pool.weights?.[a.id] ?? nearestWeightForShare(share),
+            stats: args.stats.get(a.id) ?? null,
+          };
+        }),
         lastChange: p.lastChange
           ? { kind: p.lastChange.kind, at: new Date(p.lastChange.createdAt).toISOString(), actor: p.lastChange.actorSystem ?? (p.lastChange.actorUserId ? 'admin' : null) }
           : null,

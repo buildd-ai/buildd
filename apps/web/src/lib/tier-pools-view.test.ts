@@ -13,7 +13,7 @@ const bySurface = { agent: tiers, chat: tiers };
 const pool = (over: Record<string, unknown> = {}) => ({
   pool: {
     id: 'p1', tier: 'standard', surface: 'chat' as const, mode: 'split', allocation: { inc: 0.8, ch: 0.2 },
-    allocationVersion: 3, incumbentFloor: 0.6, explorationCap: 0.3, ...over,
+    weights: { inc: 'high', ch: 'low' }, allocationVersion: 3, incumbentFloor: 0.6, explorationCap: 0.3, ...over,
   },
   arms: [
     { id: 'ch', route: 'openrouter' as const, model: 'qwen/qwen3-coder', role: 'challenger' as const, status: 'active', addedAt: '2026-09-02' },
@@ -27,7 +27,7 @@ describe('buildTierPoolRows', () => {
     const rows = buildTierPoolRows({ tiers: bySurface as never, pools: [], stats: new Map() });
     const agentStd = rows.find(r => r.surface === 'agent' && r.tier === 'standard')!;
     expect(agentStd).toMatchObject({ mode: 'pinned', poolId: null, locked: false });
-    expect(agentStd.arms).toEqual([{ id: null, route: 'runner:claude', model: 'claude-sonnet-5', role: 'incumbent', status: 'active', share: 1, stats: null }]);
+    expect(agentStd.arms).toEqual([{ id: null, route: 'runner:claude', model: 'claude-sonnet-5', role: 'incumbent', status: 'active', share: 1, weight: 'high', stats: null }]);
   });
 
   it('a split tier shows each surface its own base model and route', () => {
@@ -52,8 +52,15 @@ describe('buildTierPoolRows', () => {
     const row = buildTierPoolRows({ tiers: bySurface as never, pools: [pool()], stats }).find(r => r.poolId === 'p1')!;
     expect(row.mode).toBe('split');
     expect(row.arms.map(a => [a.id, a.model, a.share])).toEqual([['inc', 'claude-sonnet-5', 0.8], ['ch', 'qwen/qwen3-coder', 0.2]]);
+    expect(row.arms.map(a => a.weight)).toEqual(['high', 'low']);
     expect(row.arms[1].stats?.units).toBe(1);
     expect(row.lastChange).toMatchObject({ kind: 'allocation', actor: 'admin' });
+  });
+
+  it('a legacy pool with no stored weights snaps each arm\'s level from its live share', () => {
+    const row = buildTierPoolRows({ tiers: tiers as never, pools: [pool({ weights: {} })], stats: new Map() }).find(r => r.poolId === 'p1')!;
+    // inc share 0.8 -> high; ch share 0.2 -> med (nearestWeightForShare thresholds).
+    expect(row.arms.map(a => a.weight)).toEqual(['high', 'med']);
   });
 
   it('a pinned pool shows everything on the base, whatever the saved split', () => {

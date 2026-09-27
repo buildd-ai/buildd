@@ -10,11 +10,12 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const executed: any[] = [];
 let executeRows: any[] = [];
 let queue: any[][] = [];
+let selectQueue: any[][] = [];
 
 mock.module('../db/client', () => ({
   db: {
     execute: async (q: any) => { executed.push(q); return { rows: queue.length ? queue.shift()! : executeRows }; },
-    select: () => ({ from: () => ({ where: async () => [] }) }),
+    select: () => ({ from: () => ({ where: async () => (selectQueue.length ? selectQueue.shift()! : []) }) }),
   },
 }));
 
@@ -25,13 +26,13 @@ const render = (q: any) => {
   return { sql: r.sql.replace(/\s+/g, ' ').trim(), params: r.params };
 };
 
-beforeEach(() => { executed.length = 0; executeRows = []; queue = []; });
+beforeEach(() => { executed.length = 0; executeRows = []; queue = []; selectQueue = []; });
 
 describe('writeAllocation', () => {
-  it('compare-and-sets the version, scoped to the team, and logs the change in the same statement', async () => {
+  it('compare-and-sets the version, scoped to the team, and logs the change (with weights) in the same statement', async () => {
     executeRows = [{ allocation_version: 5 }];
     const v = await admin.writeAllocation({
-      teamId: 'team-1', poolId: 'pool-1', expectedVersion: 4, allocation: { a: 0.8, b: 0.2 },
+      teamId: 'team-1', poolId: 'pool-1', expectedVersion: 4, allocation: { a: 0.8, b: 0.2 }, weights: { a: 'high', b: 'low' },
       mode: 'split', kind: 'allocation', actorUserId: 'user-1',
     });
     expect(v).toBe(5);
@@ -44,7 +45,15 @@ describe('writeAllocation', () => {
     expect(params).toContain(4);
     expect(params).toContain('team-1');
     expect(params).toContain(JSON.stringify({ a: 0.8, b: 0.2 }));
+    expect(params).toContain(JSON.stringify({ a: 'high', b: 'low' }));
     expect(params).toContain('user-1');
+  });
+
+  it('leaves stored weights untouched when none are passed (a mode-only or arm-removal write)', async () => {
+    executeRows = [{ allocation_version: 5 }];
+    await admin.writeAllocation({ teamId: 'team-1', poolId: 'pool-1', expectedVersion: 4, allocation: { a: 1 }, kind: 'mode', mode: 'pinned', actorUserId: 'user-1' });
+    const { sql } = render(executed[0]);
+    expect(sql).toContain('weights = COALESCE(');
   });
 
   it('returns null when another admin wrote first', async () => {
@@ -54,16 +63,42 @@ describe('writeAllocation', () => {
 });
 
 describe('addChallenger', () => {
-  it('caps live arms at four in the insert itself and logs the add', async () => {
-    executeRows = [{ id: 'arm-9' }];
-    const r = await admin.addChallenger({ poolId: 'pool-1', route: 'openrouter', model: 'qwen/qwen3-coder', actorUserId: 'user-1' });
+  it('caps live arms at four in the insert itself', async () => {
+    queue = [[{ id: 'arm-9' }]];
+    const r = await admin.addChallenger({ teamId: 'team-1', poolId: 'pool-1', route: 'openrouter', model: 'qwen/qwen3-coder', weight: 'med', actorUserId: 'user-1' });
     expect(r).toEqual({ ok: true, armId: 'arm-9' });
     const { sql, params } = render(executed[0]);
     expect(sql).toContain("INSERT INTO tier_pool_arms");
     expect(sql).toMatch(/WHERE \(SELECT count\(\*\) FROM tier_pool_arms WHERE pool_id = \$\d+ AND status <> 'removed'\) < \$\d+/);
     expect(sql).toContain('ON CONFLICT DO NOTHING');
-    expect(sql).toContain("'arm_added'");
     expect(params).toContain(4);
+  });
+
+  it("folds the new arm into the pool's weights and writes the resulting allocation in a second statement", async () => {
+    queue = [[{ id: 'arm-9' }], [{ allocation_version: 6 }]];
+    selectQueue = [
+      [{ allocationVersion: 5, weights: { inc: 'high' }, allocation: { inc: 1 } }],
+      [{ id: 'inc', role: 'incumbent', addedAt: new Date('2026-01-01T00:00:00Z') }, { id: 'arm-9', role: 'challenger', addedAt: new Date('2026-01-02T00:00:00Z') }],
+    ];
+    const r = await admin.addChallenger({ teamId: 'team-1', poolId: 'pool-1', route: 'openrouter', model: 'qwen/qwen3-coder', weight: 'low', actorUserId: 'user-1' });
+    expect(r).toEqual({ ok: true, armId: 'arm-9' });
+    const { sql, params } = render(executed[1]);
+    expect(sql).toContain('UPDATE tier_pools');
+    expect(params).toContain(JSON.stringify({ inc: 0.75, 'arm-9': 0.25 }));
+    expect(params).toContain(JSON.stringify({ inc: 'high', 'arm-9': 'low' }));
+  });
+
+  it("backfills a legacy pool's missing weights from its live share before folding in the new arm", async () => {
+    queue = [[{ id: 'arm-9' }], [{ allocation_version: 6 }]];
+    selectQueue = [
+      // A pool created before this feature shipped: weights = {}.
+      [{ allocationVersion: 3, weights: {}, allocation: { inc: 1 } }],
+      [{ id: 'inc', role: 'incumbent', addedAt: new Date('2026-01-01T00:00:00Z') }, { id: 'arm-9', role: 'challenger', addedAt: new Date('2026-01-02T00:00:00Z') }],
+    ];
+    await admin.addChallenger({ teamId: 'team-1', poolId: 'pool-1', route: 'openrouter', model: 'qwen/qwen3-coder', weight: 'low', actorUserId: 'user-1' });
+    const { params } = render(executed[1]);
+    // inc's 100% share snaps to `high`, so it is not zeroed out by the new arm.
+    expect(params).toContain(JSON.stringify({ inc: 'high', 'arm-9': 'low' }));
   });
 });
 

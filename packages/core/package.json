@@ -64,6 +64,7 @@
     "./model-succession": "./model-succession.ts",
     "./openrouter-rankings": "./openrouter-rankings.ts",
     "./openrouter-rankings-source": "./openrouter-rankings-source.ts",
+    "./tier-weights": "./tier-weights.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
