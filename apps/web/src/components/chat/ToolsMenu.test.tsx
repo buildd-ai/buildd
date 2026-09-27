@@ -1,7 +1,29 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ToolRows } from './ToolsMenu';
+import { ToolRows, ToolsTrigger, allowedCount } from './ToolsMenu';
 import { TierDetail } from './TierSwitch';
+
+describe('tools cell', () => {
+  it('counts the groups on Allow', () => {
+    expect(allowedCount(null)).toBeNull();
+    expect(allowedCount([
+      { key: 'tasks', label: 'Tasks', mode: 'allow', locked: false },
+      { key: 'prs', label: 'PRs', mode: 'allow', locked: false },
+      { key: 'missions', label: 'Missions', mode: 'ask', locked: false },
+    ])).toBe(2);
+  });
+
+  it('shows the count beside the dots only when something is allowed', () => {
+    const two = renderToStaticMarkup(<ToolsTrigger count={2} />);
+    expect(two).toContain('···');
+    expect(two).toMatch(/data-testid="composer-tools-count"[^>]*>2</);
+    for (const count of [0, null]) {
+      const html = renderToStaticMarkup(<ToolsTrigger count={count} />);
+      expect(html).toContain('···');
+      expect(html).not.toContain('composer-tools-count');
+    }
+  });
+});
 
 describe('ToolRows', () => {
   const rows = [

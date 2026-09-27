@@ -17,7 +17,6 @@ import ChatSetupCard from '@/components/chat/ChatSetupCard';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import ChatContextPanel, { contextPanelModel } from '@/components/chat/ChatContextPanel';
 import { homeAudience } from '../home/home-view';
-import { ZonedTime } from '@/components/DisplayTimezone';
 import { isUuid } from '@/lib/uuid';
 import type { BuilddObjectRef } from '@/components/chat/chat-contract';
 import { eq } from 'drizzle-orm';
@@ -114,29 +113,8 @@ export function firstName(user: { name: string | null; email: string | null }): 
   return user.email?.split('@')[0] ?? null;
 }
 
-/** The conversation list: auto titles, newest first. */
-export function ConversationList({ items, currentId }: { items: readonly ConversationListItem[]; currentId?: string | null }) {
-  if (items.length === 0) return null;
-  return (
-    <nav data-testid="conversation-list" aria-label="Conversations" className="mb-8">
-      <div className="mb-2 px-1 font-convo text-[13px] font-medium text-text-muted">Pick up where you left off</div>
-      <ul className="divide-y divide-[var(--chat-rule)] border border-[var(--chat-rule)] bg-[var(--chat-panel)]">
-        {items.map(c => (
-          <li key={c.id}>
-            <Link
-              href={`/app/chat/${c.id}`}
-              aria-current={c.id === currentId ? 'page' : undefined}
-              className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-[var(--convo-soft)]"
-            >
-              <span className={`min-w-0 flex-1 truncate font-convo text-[14.5px] ${c.untitled ? 'text-text-muted' : 'font-medium text-text-primary'}`}>{c.title}</span>
-              <ZonedTime value={c.lastMessageAt} format="datetime-short" className="shrink-0 font-mono text-[11.5px] text-text-muted" />
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
-}
+/** The conversation list: auto titles, newest first (components/chat/ConversationList.tsx). */
+export { default as ConversationList } from '@/components/chat/ConversationList';
 
 /**
  * "Ask about this mission/task": the object to dock, if it's in this team and

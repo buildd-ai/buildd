@@ -9,14 +9,19 @@ import { navItemsFor, type NavContext } from '@/lib/nav-config';
 
 const OPERATOR_NAV: NavContext = { audience: 'operator' };
 
+/**
+ * The phone tab bar (mobile chat v3): mono caps labels, no icons, the active
+ * tab marked by a short accent bar on its top edge. Shared by every page on a
+ * phone; the desktop rail (MissionsSidebar) keeps the icons.
+ */
 export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavContext }) {
   const pathname = usePathname();
   const { count: needsInputCount } = useNeedsInput();
   const { count: escalationCount } = useEscalation();
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] md:hidden">
-      <div className="flex items-center justify-around h-14">
+    <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] backdrop-blur-[12px] border-t border-border-strong pb-[env(safe-area-inset-bottom)] font-mono uppercase md:hidden">
+      <div className="flex items-stretch justify-around h-14">
         {navItemsFor(nav, 'mobile').map((tab) => {
           const active = isNavActive(pathname, tab.href);
           const showBadge = (tab.href === '/app/tasks' && needsInputCount > 0) || (tab.href === '/app/home' && escalationCount > 0);
@@ -26,23 +31,18 @@ export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavCon
             <Link
               key={tab.href}
               href={tab.href}
-              className={`flex flex-col items-center justify-center gap-1 flex-1 h-full transition-colors duration-200 ${
-                active ? 'text-accent-text' : 'text-text-muted'
+              aria-current={active ? 'page' : undefined}
+              className={`relative flex min-h-11 min-w-11 flex-1 items-center justify-center gap-1 text-[11px] tracking-[.08em] transition-colors duration-200 ${
+                active ? 'text-accent-text' : 'text-text-muted hover:text-text-primary'
               }`}
             >
-              <span className="relative w-[22px] h-[22px]">
-                {/* Only the glyph dims on inactive tabs; the badge sits outside the
-                    opacity wrapper so an alert count stays full-strength. */}
-                <span className={`block w-full h-full ${active ? 'opacity-100' : 'opacity-35'}`}>{tab.icon}</span>
-                {showBadge && (
-                  <span className="absolute -top-1 -right-2 flex items-center justify-center min-w-4 h-4 px-0.5 text-[11px] leading-none font-bold rounded-full bg-status-error text-white">
-                    {badgeCount}
-                  </span>
-                )}
-              </span>
-              <span className={`text-[11px] md:text-[10px] tracking-[0.3px] ${active ? 'font-medium' : 'font-normal'}`}>
-                {tab.label}
-              </span>
+              {active && <span aria-hidden="true" data-testid="nav-active-bar" className="absolute top-0 left-1/2 h-[3px] w-10 -translate-x-1/2 bg-accent" />}
+              <span data-testid="nav-tab-label">{tab.label}</span>
+              {showBadge && (
+                <span data-testid="nav-tab-badge" className="absolute top-1.5 right-1 flex items-center justify-center min-w-4 h-4 px-0.5 text-[10px] leading-none font-bold bg-status-error text-white">
+                  {badgeCount}
+                </span>
+              )}
             </Link>
           );
         })}
