@@ -81,7 +81,9 @@ export interface UsageRow {
   teamId: string;
   accountId: string;
   planId: string | null;
-  tier: string;
+  /** NULL only for a planless decision receipt. */
+  tier: string | null;
+  /** The receipt's `kind` if given, else the plan's surface: chat | inference | decision. */
   surface: string | null;
   kind: string | null;
   provider: string;
@@ -241,8 +243,8 @@ export async function handleUsageRequest(req: Request, deps: UsageDeps): Promise
         teamId: account.teamId,
         accountId: account.id,
         planId: plan?.id ?? null,
-        tier: rec.tier ?? plan!.tier,
-        surface: plan?.surface ?? null,
+        tier: rec.tier ?? plan?.tier ?? null,
+        surface: rec.kind ?? plan?.surface ?? null,
         kind: plan?.kind ?? null,
         provider,
         model,

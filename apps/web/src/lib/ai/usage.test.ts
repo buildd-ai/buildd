@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { validateUsageRecord, validateUsageBody, receiptCost, MAX_USAGE_RECORDS } from './usage';
+import { validateUsageRecord, validateUsageBody, receiptCost, MAX_USAGE_RECORDS, USAGE_KINDS } from './usage';
 
 const PLAN = '22222222-2222-4222-8222-222222222222';
 const rec = { planId: PLAN, tokens: { input: 1200, output: 300 }, latencyMs: 850, outcome: 'ok' };
@@ -10,7 +10,7 @@ describe('validateUsageRecord', () => {
     expect(v.ok).toBe(true);
     if (!v.ok) return;
     expect(v.value).toEqual({
-      planId: PLAN, model: null, provider: null, tier: null, planSource: null,
+      planId: PLAN, model: null, provider: null, tier: null, kind: null, planSource: null,
       tokens: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0 },
       costUsd: null, latencyMs: 850, outcome: 'ok', feedback: null,
     });
@@ -49,6 +49,25 @@ describe('validateUsageRecord', () => {
     expect(validateUsageRecord({ ...noPlan, model: 'claude-haiku-4-5', provider: 'anthropic', tier: 'budget', planSource: 'fallback' }).ok).toBe(true);
   });
 
+  it('takes a kind, and a decision receipt needs no tier (Jev is outside the tier system)', () => {
+    const decision = { ...rec, planId: null, model: 'typesafe/jev-1.13', provider: 'openrouter', planSource: 'fallback', kind: 'decision' };
+    const v = validateUsageRecord(decision);
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.value).toMatchObject({ kind: 'decision', tier: null });
+    // A tier is still allowed on a decision, if the app wants one.
+    expect(validateUsageRecord({ ...decision, tier: 'budget' }).ok).toBe(true);
+    // Every other kind still has to name its tier without a plan.
+    for (const kind of ['chat', 'inference']) {
+      const nv = validateUsageRecord({ ...decision, kind });
+      expect(nv.ok).toBe(false);
+      if (!nv.ok) expect(nv.error).toContain('tier');
+    }
+    expect(validateUsageRecord({ ...decision, kind: undefined }).ok).toBe(false);
+    // Tied to a plan, kind is optional and free of the tier rule.
+    expect(validateUsageRecord({ ...rec, kind: 'chat' }).ok).toBe(true);
+    expect(USAGE_KINDS).toEqual(['chat', 'inference', 'decision']);
+  });
+
   it.each([
     [{ ...rec, planId: 'plan-1' }, 'planId'],
     [{ ...rec, tokens: { input: 1.5, output: 1 } }, 'tokens'],
@@ -62,6 +81,7 @@ describe('validateUsageRecord', () => {
     [{ ...rec, provider: 'openai-codex' }, 'provider'],
     [{ ...rec, tier: 'gold' }, 'tier'],
     [{ ...rec, planSource: 'mine' }, 'planSource'],
+    [{ ...rec, kind: 'chat_turn' }, 'kind'],
   ])('rejects %j', (body, field) => {
     const v = validateUsageRecord(body);
     expect(v.ok).toBe(false);

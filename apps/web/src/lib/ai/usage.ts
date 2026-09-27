@@ -25,10 +25,19 @@ export type UsageFeedback = (typeof USAGE_FEEDBACK)[number];
 export const USAGE_PLAN_SOURCES = ['registry', 'pool', 'catalog', 'default', 'cached', 'fallback'] as const;
 export type UsagePlanSource = (typeof USAGE_PLAN_SOURCES)[number];
 
+/**
+ * What kind of call a receipt is for. `chat` / `inference` are the plan
+ * surfaces; `decision` is a Jev call (`@buildd/ai-kit/decide`), which has no
+ * tier and no plan. Stored in `ai_usage.surface`, so decision spend is
+ * reported apart from budget-tier chat. Not the plan's free `kind` label.
+ */
+export const USAGE_KINDS = ['chat', 'inference', 'decision'] as const;
+export type UsageKind = (typeof USAGE_KINDS)[number];
+
 /** A batch is at most this many receipts (the kit batches fire-and-forget). */
 export const MAX_USAGE_RECORDS = 100;
 
-const RECORD_KEYS = ['planId', 'model', 'provider', 'tier', 'planSource', 'tokens', 'costUsd', 'latencyMs', 'outcome', 'feedback'] as const;
+const RECORD_KEYS = ['planId', 'model', 'provider', 'tier', 'kind', 'planSource', 'tokens', 'costUsd', 'latencyMs', 'outcome', 'feedback'] as const;
 const TOKEN_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 /** A model id: vendor/model:variant shapes only. No spaces, so no prose. */
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
@@ -42,6 +51,7 @@ export interface UsageRecord {
   model: string | null;
   provider: PlanProvider | null;
   tier: Tier | null;
+  kind: UsageKind | null;
   planSource: UsagePlanSource | null;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
   costUsd: number | null;
@@ -79,9 +89,14 @@ export function validateUsageRecord(raw: unknown): Validation<UsageRecord> {
   if (planSource !== null && !USAGE_PLAN_SOURCES.includes(planSource as UsagePlanSource)) {
     return { ok: false, error: `planSource must be one of ${USAGE_PLAN_SOURCES.join(', ')}` };
   }
-  // Without a plan, the receipt itself must say what ran.
-  if (planId === null && (model === null || provider === null || tier === null)) {
-    return { ok: false, error: 'a receipt without planId must give model, provider and tier' };
+  const kind = raw.kind ?? null;
+  if (kind !== null && !USAGE_KINDS.includes(kind as UsageKind)) {
+    return { ok: false, error: `kind must be one of ${USAGE_KINDS.join(', ')}` };
+  }
+  // Without a plan, the receipt itself must say what ran. A decision has no
+  // tier to name (Jev is outside the tier system).
+  if (planId === null && (model === null || provider === null || (tier === null && kind !== 'decision'))) {
+    return { ok: false, error: "a receipt without planId must give model, provider and tier (tier is optional when kind is 'decision')" };
   }
 
   if (!isPlainObject(raw.tokens)) return { ok: false, error: 'tokens must be an object' };
@@ -114,6 +129,7 @@ export function validateUsageRecord(raw: unknown): Validation<UsageRecord> {
       model: model as string | null,
       provider: provider as PlanProvider | null,
       tier: tier as Tier | null,
+      kind: kind as UsageKind | null,
       planSource: planSource as UsagePlanSource | null,
       tokens: { input: t.input as number, output: t.output as number, cacheRead: cacheRead as number, cacheWrite: cacheWrite as number },
       costUsd: costUsd as number | null,

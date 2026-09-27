@@ -9,10 +9,10 @@
  * instead of sinking the others.
  */
 
-import { KIT_PROVIDERS, KIT_TIERS, PLAN_SOURCES, type UsageReceipt, type WireUsageRecord } from './types.js';
+import { KIT_PROVIDERS, KIT_TIERS, PLAN_SOURCES, USAGE_KINDS, type UsageReceipt, type WireUsageRecord } from './types';
 
 /** Top-level keys the server accepts, in the server's order. */
-export const USAGE_RECORD_KEYS = ['planId', 'model', 'provider', 'tier', 'planSource', 'tokens', 'costUsd', 'latencyMs', 'outcome', 'feedback'] as const;
+export const USAGE_RECORD_KEYS = ['planId', 'model', 'provider', 'tier', 'kind', 'planSource', 'tokens', 'costUsd', 'latencyMs', 'outcome', 'feedback'] as const;
 export const USAGE_TOKEN_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 /** The server's per-batch limit. */
 export const MAX_USAGE_RECORDS = 100;
@@ -52,7 +52,11 @@ export function toWireReceipt(receipt: UsageReceipt): { ok: true; record: WireUs
   const { model, provider, tier, planSource } = plan;
   if (typeof model !== 'string' || !MODEL_RE.test(model)) return { ok: false, error: 'model must be a model id' };
   if (!includes(KIT_PROVIDERS, provider)) return { ok: false, error: 'unknown provider' };
-  if (!includes(KIT_TIERS, tier)) return { ok: false, error: 'unknown tier' };
+  const kind = r.kind ?? null;
+  if (kind !== null && !includes(USAGE_KINDS, kind)) return { ok: false, error: 'unknown kind' };
+  // A decision has no tier; anything else names one (buildd requires it without a plan).
+  const tierless = kind === 'decision' && (tier === undefined || tier === null);
+  if (!tierless && !includes(KIT_TIERS, tier)) return { ok: false, error: 'unknown tier' };
   if (!includes(PLAN_SOURCES, planSource)) return { ok: false, error: 'unknown planSource' };
 
   const t = r.tokens as Record<string, unknown> | null | undefined;
@@ -73,7 +77,8 @@ export function toWireReceipt(receipt: UsageReceipt): { ok: true; record: WireUs
     planId: planId as string | null,
     model,
     provider,
-    tier,
+    ...(tierless ? {} : { tier: tier as WireUsageRecord['tier'] }),
+    ...(kind !== null ? { kind } : {}),
     planSource,
     tokens: { input, output, cacheRead, cacheWrite },
     latencyMs,

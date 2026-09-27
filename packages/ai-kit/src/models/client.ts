@@ -15,13 +15,13 @@
  * batch once, then drops and counts it. It never throws into the app.
  */
 
-import { MAX_USAGE_RECORDS, toWireReceipt } from './receipt.js';
-import { memoryPlanStore, type PlanStore, type StoredPlan } from './store.js';
+import { MAX_USAGE_RECORDS, toWireReceipt } from './receipt';
+import { memoryPlanStore, type PlanStore, type StoredPlan } from './store';
 import {
   KIT_PROVIDERS, KIT_TIERS, PLAN_SURFACES,
   type BudgetReason, type KitProvider, type KitTier, type PlanRequest, type ResolvedPlan,
   type UsageReceipt, type WirePlan, type WireUsageRecord,
-} from './types.js';
+} from './types';
 
 export const DEFAULT_BASE_URL = 'https://buildd.dev';
 /** buildd's plan deadline: past this the client serves a cached or fallback plan. */

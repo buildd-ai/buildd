@@ -343,7 +343,9 @@ the route tree is authoritative.)
 - **Model plans for sibling apps** (`docs/design/shared-ai-kit.md` §2): `ai/plan`
   (tier → model on the app's providers, from the team's registry and chat pools,
   with an `ok`/`downgrade`/`deny` spend decision and a TTL), `ai/usage`
-  (content-free, identity-free receipts; unknown fields rejected). Any-level `bld_`
+  (content-free, identity-free receipts; unknown fields rejected; an optional
+  `kind` of `chat`/`inference`/`decision` is stored as the row's surface, and a
+  Jev `decision` receipt needs no tier). Any-level `bld_`
   key, team from the key. Code: `apps/web/src/lib/ai/`.
 - **Tasks:** `tasks` (+ `bulk`, `cleanup`, `waiting-input`), `tasks/[id]` (+ `start`,
   `run`, `messages`, `reassign`, `summary`, `error-traces`, `workers`,
