@@ -1,5 +1,5 @@
 /**
- * `@buildd/ai-kit/chat/contract`: the chat wire contract.
+ * `@builddai/ai-kit/chat/contract`: the chat wire contract.
  *
  * Isomorphic and dependency-free. Message `parts` are AI SDK v7 `UIMessage`
  * parts on the wire, but nothing here imports the SDK, so a server, a React

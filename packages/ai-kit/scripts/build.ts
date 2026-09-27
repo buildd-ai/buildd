@@ -91,5 +91,5 @@ if (import.meta.main) {
     if (existsSync(join(root, f))) cpSync(join(root, f), join(dist, f));
   }
   writeFileSync(join(dist, 'package.json'), `${JSON.stringify(distPackageJson(pkg), null, 2)}\n`);
-  console.log(`built @buildd/ai-kit@${pkg.version} → ${dist}`);
+  console.log(`built ${String(pkg.name)}@${String(pkg.version)} → ${dist}`);
 }
