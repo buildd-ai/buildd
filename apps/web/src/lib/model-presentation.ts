@@ -218,7 +218,7 @@ export function divergenceSummary(
   metric: DerivedMetric<ModelDivergence>,
 ): { headline: string; note: string } {
   if (metric.kind === 'unavailable') {
-    return { headline: '—', note: metric.detail ?? metric.reason };
+    return { headline: '', note: metric.detail ?? metric.reason };
   }
   const d = metric.value;
   const excluded = d.unattributed > 0

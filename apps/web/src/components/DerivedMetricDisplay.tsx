@@ -4,7 +4,7 @@ interface Props<T> {
   metric: DerivedMetric<T>
   /** Render the value when available */
   renderValue: (value: T) => React.ReactNode
-  /** Placeholder shown when unavailable (defaults to a neutral dash) */
+  /** Placeholder shown when unavailable (defaults to nothing, not a dash) */
   unavailableLabel?: React.ReactNode
   className?: string
 }
@@ -12,7 +12,7 @@ interface Props<T> {
 export function DerivedMetricDisplay<T>({
   metric,
   renderValue,
-  unavailableLabel = <span className="text-muted-foreground">—</span>,
+  unavailableLabel = null,
   className,
 }: Props<T>) {
   if (metric.kind === 'unavailable') {

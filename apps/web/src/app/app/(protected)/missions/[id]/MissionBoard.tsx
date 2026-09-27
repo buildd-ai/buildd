@@ -567,7 +567,7 @@ function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; te
       ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review), subCls: review.ok === review.shots ? 'text-status-success' : 'text-text-secondary' }]
       : []),
     { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
-    { label: 'Work', value: d.work ?? '—', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
+    { label: 'Work', value: d.work ?? '0m', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
   ];
   return (
     <section data-testid="mission-completion-record" className="mt-[18px] flex flex-col gap-3 border-2 border-border-strong bg-card px-[18px] py-3.5 shadow-[var(--card-shadow)]">

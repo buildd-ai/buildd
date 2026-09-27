@@ -136,7 +136,7 @@ export function TrackerCard({
                     )}
                   </div>
                   <span className="shrink-0 font-mono text-[11px] md:text-[10px] tabular-nums text-text-muted w-8 text-right">
-                    {pct != null ? `${Math.round(pct)}%` : '—'}
+                    {pct != null ? `${Math.round(pct)}%` : ''}
                   </span>
                   {item.state && (
                     <span className="shrink-0 text-[11px] md:text-[10px] uppercase tracking-wide text-text-secondary">

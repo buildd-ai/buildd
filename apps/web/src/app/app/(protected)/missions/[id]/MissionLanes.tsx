@@ -188,8 +188,8 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
       <div className="flex flex-wrap items-start gap-7">
         <Kv k="runner" v={`${bar.runner}${slotIndex ? ` ·${slotIndex}` : ''}`} />
         <Kv k={bar.end == null ? 'running' : 'ran'} v={formatAge(span)} />
-        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ') : '—'} />
-        <Kv k="unblocks" v={t && t.unblocks.length ? t.unblocks.map(u => u.scope ?? u.label).join('  ') : '—'} />
+        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ') : 'none'} />
+        <Kv k="unblocks" v={t && t.unblocks.length ? t.unblocks.map(u => u.scope ?? u.label).join('  ') : 'none'} />
         <div className="flex min-w-[200px] flex-1 flex-col gap-[5px]">
           <SectionLabel>{`${own.length} milestone${own.length === 1 ? '' : 's'}`}</SectionLabel>
           <div className="relative mt-0.5 h-2.5 border-b-[1.5px] border-[var(--fleet-border-mid)]">
@@ -202,7 +202,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
               />
             ))}
           </div>
-          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : '—'}</div>
+          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones yet'}</div>
         </div>
       </div>
     </section>

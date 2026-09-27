@@ -335,7 +335,7 @@ export default async function ReleaseDetailPage({
               <div key={edge.taskId} className="flex items-center justify-between gap-3 text-[12px]">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`shrink-0 font-mono text-[11px] md:text-[10px] ${TASK_STATUS_CLS[edge.taskStatus ?? ''] ?? 'text-text-muted'}`}>
-                    {edge.taskStatus ?? '—'}
+                    {edge.taskStatus ?? 'unknown'}
                   </span>
                   <Link
                     href={`/app/tasks/${edge.taskId}`}
