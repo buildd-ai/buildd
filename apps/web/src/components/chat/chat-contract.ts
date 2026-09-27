@@ -72,6 +72,8 @@ export interface ChatMessageMetadata {
   authorName?: string;
   /** The tier the turn ran on (assistant messages). */
   tier?: string;
+  /** The workspace the turn was scoped to (streamed; see ChatTurnMetadata). */
+  scope?: { id: string; name: string; source: 'pinned' | 'routed' } | null;
   /** Wall-clock duration of the turn in ms. */
   durationMs?: number;
 }

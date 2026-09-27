@@ -7,10 +7,25 @@ import { displayWorkspaceName } from '@buildd/shared';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import BottomSheet from './BottomSheet';
 
-export interface WorkspaceFilterProps {
+export interface WorkspaceSwitcherProps {
   workspaces: { id: string; name: string }[];
   /** When omitted the component reads ?workspace= from the URL. */
   selectedId?: string | null;
+  /**
+   * Controlled mode (the chat composer): called with the pick instead of
+   * navigating. Without it, a pick sets ?workspace= on the current page.
+   */
+  onSelect?: (id: string | null) => void;
+  /**
+   * `header`: the app header (label + name on desktop, a grid glyph on a phone).
+   * `chip`: the composer's scope chip (`@ All workspaces`, `@ billing-web`, or
+   * `→ billing-web` when the turn was routed there).
+   */
+  variant?: 'header' | 'chip';
+  /** Chip only: the workspace this turn was routed to, shown while nothing is pinned. */
+  routed?: { id: string; name: string } | null;
+  /** Shown above the list, so the menu says whose workspaces these are. */
+  teamName?: string | null;
 }
 
 /**
@@ -27,6 +42,18 @@ export function buildWorkspaceParam(currentSearch: string, workspaceId: string |
   return params.toString();
 }
 
+/** The chip's words. Pure. */
+export function scopeChipLabel(
+  workspaces: readonly { id: string; name: string }[],
+  selectedId: string | null,
+  routed: { id: string; name: string } | null,
+): { glyph: '@' | '→'; name: string } {
+  const pinned = selectedId ? workspaces.find(w => w.id === selectedId) : null;
+  if (pinned) return { glyph: '@', name: displayWorkspaceName(pinned.name) };
+  if (routed) return { glyph: '→', name: displayWorkspaceName(routed.name) };
+  return { glyph: '@', name: 'All workspaces' };
+}
+
 const MOBILE_BREAKPOINT = 640;
 
 function useIsMobile() {
@@ -41,19 +68,24 @@ function useIsMobile() {
 }
 
 /**
- * Shared workspace narrowing filter used on team-primary data surfaces.
- * State lives in the URL (?workspace=<id>) — shareable and back-button safe.
- * Null selection (default) means all workspaces in the active team.
- * Switching teams (page reload) naturally clears the param.
+ * The one workspace switcher: the app header (desktop and phone), Home and the
+ * chat composer all use it. `null` means all workspaces in the active team.
+ * Pages keep the selection in the URL (?workspace=<id>, shareable, back-button
+ * safe), and the composer starts from the same value, so a pick in the header
+ * carries into a new chat. Switching teams (page reload) clears it.
  *
  * Never uses a native <select> — rendered as a custom brutalist dropdown with
- * keyboard navigation, aria-listbox semantics, and a "+ New workspace" footer.
+ * keyboard navigation, aria-listbox semantics, and a "+ New workspace" footer
+ * (header only).
  */
-export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: WorkspaceFilterProps) {
+export function WorkspaceSwitcher({
+  workspaces, selectedId: selectedIdProp, onSelect, variant = 'header', routed = null, teamName = null,
+}: WorkspaceSwitcherProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
+  const chip = variant === 'chip';
 
   const selectedId = selectedIdProp !== undefined ? selectedIdProp : searchParams.get('workspace');
 
@@ -92,11 +124,15 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
 
   const handleSelect = useCallback(
     (id: string | null) => {
-      const qs = buildWorkspaceParam(searchParams.toString(), id);
-      router.replace(`${pathname}${qs ? `?${qs}` : ''}`);
+      if (onSelect) {
+        onSelect(id);
+      } else {
+        const qs = buildWorkspaceParam(searchParams.toString(), id);
+        router.replace(`${pathname}${qs ? `?${qs}` : ''}`);
+      }
       close();
     },
-    [router, pathname, searchParams, close],
+    [onSelect, router, pathname, searchParams, close],
   );
 
   // Decide drop direction on desktop
@@ -178,6 +214,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     >
       {options.map((option, i) => {
         const isSelected = option.id === selectedId || (option.id === null && !selectedId);
+        const isRouted = chip && !selectedId && option.id !== null && option.id === routed?.id;
         return (
           <button
             key={option.id ?? '__all__'}
@@ -197,6 +234,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
             } ${isMobile ? 'active:bg-surface-3' : ''}`}
           >
             <span className="truncate">{option.label}</span>
+            {isRouted && <span className="shrink-0 text-text-muted">this turn</span>}
             {isSelected && (
               <svg
                 className="w-3.5 h-3.5 shrink-0 text-accent"
@@ -217,7 +255,16 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     </div>
   );
 
-  const wsNavLinks = selectedId
+  const teamLabel = teamName ? (
+    <div
+      data-testid="workspace-switcher-team"
+      className={`border-b border-border-default font-mono uppercase tracking-widest text-text-muted ${isMobile ? 'px-5 py-2 text-[11px]' : 'px-3 py-1.5 text-[11px] md:text-[10px]'}`}
+    >
+      {teamName}
+    </div>
+  ) : null;
+
+  const wsNavLinks = selectedId && !chip
     ? [
         { label: 'Configure', href: `/app/workspaces/${selectedId}/config` },
         { label: 'Runners', href: `/app/workspaces/${selectedId}/runners` },
@@ -226,7 +273,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
       ]
     : null;
 
-  const newWorkspaceFooter = (
+  const newWorkspaceFooter = chip ? null : (
     <div className="border-t border-border-default">
       {wsNavLinks && (
         <div className="border-b border-border-default">
@@ -280,58 +327,81 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
     </div>
   );
 
+  const chipLabel = scopeChipLabel(workspaces, selectedId, routed);
+  const trigger = chip ? (
+    <button
+      ref={triggerRef}
+      type="button"
+      role="combobox"
+      aria-expanded={open}
+      aria-haspopup="listbox"
+      aria-label="Workspace for this conversation"
+      data-testid="composer-scope-chip"
+      data-scope={selectedId ? 'pinned' : routed ? 'routed' : 'all'}
+      onClick={() => setOpen((prev) => !prev)}
+      onKeyDown={handleKeyDown}
+      className="inline-flex min-h-9 min-w-0 max-w-full sm:max-w-[26ch] items-center gap-1.5 border-[1.5px] border-border-strong px-2.5 font-mono text-[12.5px] font-medium text-text-primary hover:bg-surface-3 aria-expanded:bg-surface-3"
+    >
+      <span aria-hidden="true" className={chipLabel.glyph === '→' ? 'text-accent-text' : 'text-text-muted'}>{chipLabel.glyph}</span>
+      <span className="min-w-0 truncate">{chipLabel.name}</span>
+    </button>
+  ) : (
+    <button
+      ref={triggerRef}
+      type="button"
+      role="combobox"
+      aria-expanded={open}
+      aria-haspopup="listbox"
+      aria-label="Filter by workspace"
+      onClick={() => setOpen((prev) => !prev)}
+      onKeyDown={handleKeyDown}
+      className={`max-md:min-h-11 max-md:min-w-11 max-md:justify-center max-md:items-center px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
+        open ? 'shadow-sm text-text-primary' : ''
+      }`}
+    >
+      <span className="text-[11px] md:text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
+      <div className="flex items-center gap-1.5">
+        {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
+        <svg
+          className={`w-3.5 h-3.5 shrink-0 md:hidden transition-colors ${
+            selectedId ? 'text-accent' : ''
+          }`}
+          fill={selectedId ? 'currentColor' : 'none'}
+          viewBox="0 0 12 12"
+          stroke="currentColor"
+          strokeWidth={selectedId ? 0 : 1.8}
+          aria-hidden="true"
+        >
+          <rect x="1" y="1" width="4" height="4" />
+          <rect x="7" y="1" width="4" height="4" />
+          <rect x="1" y="7" width="4" height="4" />
+          <rect x="7" y="7" width="4" height="4" />
+        </svg>
+        <span className="truncate max-w-[160px] text-xs hidden md:inline">{selectedLabel}</span>
+        <svg
+          className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2.5}
+          aria-hidden="true"
+        >
+          <path strokeLinecap="square" strokeLinejoin="miter" d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+    </button>
+  );
+
   return (
-    <div ref={containerRef} className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        role="combobox"
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-label="Filter by workspace"
-        onClick={() => setOpen((prev) => !prev)}
-        onKeyDown={handleKeyDown}
-        className={`max-md:min-h-11 max-md:min-w-11 max-md:justify-center max-md:items-center px-2.5 py-1 flex flex-col items-start gap-0 font-mono border-2 border-border-strong bg-surface-2 text-text-secondary hover:text-text-primary hover:shadow-sm transition-shadow cursor-pointer focus-visible:outline-accent ${
-          open ? 'shadow-sm text-text-primary' : ''
-        }`}
-      >
-        <span className="text-[11px] md:text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
-        <div className="flex items-center gap-1.5">
-          {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
-          <svg
-            className={`w-3.5 h-3.5 shrink-0 md:hidden transition-colors ${
-              selectedId ? 'text-accent' : ''
-            }`}
-            fill={selectedId ? 'currentColor' : 'none'}
-            viewBox="0 0 12 12"
-            stroke="currentColor"
-            strokeWidth={selectedId ? 0 : 1.8}
-            aria-hidden="true"
-          >
-            <rect x="1" y="1" width="4" height="4" />
-            <rect x="7" y="1" width="4" height="4" />
-            <rect x="1" y="7" width="4" height="4" />
-            <rect x="7" y="7" width="4" height="4" />
-          </svg>
-          <span className="truncate max-w-[120px] text-xs hidden md:inline">{selectedLabel}</span>
-          <svg
-            className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2.5}
-            aria-hidden="true"
-          >
-            <path strokeLinecap="square" strokeLinejoin="miter" d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </button>
+    <div ref={containerRef} className={`relative ${chip ? 'min-w-0' : ''}`}>
+      {trigger}
 
       {/* Mobile: the shared BottomSheet — portaled to <body> (inside the fixed
           header it sat under the bottom nav), modal with focus moved in and
           trapped, Escape to close, and the shell's scroll root locked. */}
       {isMobile && (
         <BottomSheet open={open} onClose={close} title="Workspace" trapFocus flush testId="workspace-filter-sheet">
+          {teamLabel}
           {optionsList}
           {newWorkspaceFooter}
         </BottomSheet>
@@ -340,11 +410,12 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
       {/* Desktop: anchored panel */}
       {open && !isMobile && (
         <div
-          className={`absolute z-50 min-w-[180px] bg-surface-2 border-2 border-border-strong shadow-md animate-dropdown-in origin-top ${
+          className={`absolute z-50 min-w-[200px] bg-surface-2 border-2 border-border-strong shadow-md animate-dropdown-in origin-top ${
             dropUp ? 'bottom-full mb-1' : 'top-full mt-1'
-          } right-0`}
+          } ${chip ? 'left-0' : 'right-0'}`}
           role="presentation"
         >
+          {teamLabel}
           {optionsList}
           {newWorkspaceFooter}
         </div>

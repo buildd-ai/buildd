@@ -447,6 +447,32 @@ Every turn gets a short context block ahead of the history:
 
 Schedules created from chat use the user's timezone, not UTC.
 
+### Workspace scope
+
+A new conversation covers **all workspaces** in reach (`conversations.workspace_id`
+NULL). The composer's scope chip reads *All workspaces*. Each turn, the routing
+decision call (below) also gets a Choice over the in-reach workspaces: the
+labels are their names, each defined by its repo name and projects
+(`workspaceHint`, `apps/web/src/lib/chat/routing.ts`). When it clears
+`WORKSPACE_MIN_CONFIDENCE` (0.85, provisional until the benchmark says
+otherwise), that workspace is the turn's default scope: tool calls, knowledge
+reads and the tier's workspace override use it, the context block says it was
+picked from the message, and the chip reads `→ billing-web` for that turn.
+Below the gate the turn has no default. The context block lists the workspaces
+by name and id, and the model names one in `workspaceId` or asks which one.
+Reach still bounds every call either way, so a wrong pick can only default a
+call to another workspace of the same team, never out of reach, and a write's
+card names the workspace it lands in.
+
+You can still pin one from the chip (`PATCH /api/chat/[id] { workspaceId }`,
+null to unpin). A pinned conversation isn't routed. An approval answer keeps
+the workspace its card was built in, so the rebuilt card matches.
+
+The chip, the app header and Home share one `WorkspaceSwitcher`
+(`apps/web/src/components/WorkspaceSwitcher.tsx`). The header puts it in the
+phone header and in a desktop bar on the pages that read `?workspace=`. A new
+chat starts from that same `?workspace=` value when there is one.
+
 ### Naming nothing
 
 Conversations are titled automatically after the first exchange, with a budget

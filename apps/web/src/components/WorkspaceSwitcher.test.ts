@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildWorkspaceParam } from './WorkspaceFilter';
+import { buildWorkspaceParam } from './WorkspaceSwitcher';
 
 describe('buildWorkspaceParam', () => {
   it('returns empty string (no param) when workspaceId is null — team-wide default', () => {

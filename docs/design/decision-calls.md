@@ -228,6 +228,10 @@ These are for agent chat, designed in `docs/design/agent-chat.md` (Proposed), wh
   - Second question: a Choice over the available tool groups.
   - Both go in one request against the same state, because questions are evaluated in parallel.
   - Below the gate, fall back to letting the generative model decide with all tools available.
+- **Routing a turn to a workspace.** A Choice over the conversation's in-reach workspaces, asked in the same request, only when the conversation isn't pinned to one and there are at least two.
+  - Labels are the workspace names (a shared name gets its short id), each defined by its repo name and projects. No catch-all: a message about no workspace in particular shows up as low confidence.
+  - Above the gate (0.85, provisional) the workspace becomes the turn's default scope. Below it the turn has no default and the agent asks, which is what an unpinned conversation did before.
+  - A wrong pick stays inside reach and inside the team, and a write's card names the workspace it lands in.
 
 ## Implementation sketch
 

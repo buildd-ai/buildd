@@ -110,7 +110,6 @@ const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null =
   renderToStaticMarkup(
     <UsageClient
       view={view(over)}
-      teamWorkspaces={[{ id: 'ws-1', name: 'ws' }]}
       wsFilter={wsFilter}
     />,
   );

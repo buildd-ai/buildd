@@ -3,7 +3,7 @@ import type { BuilddObjectRef, ChatMessage, ChatToolPart } from './chat-contract
 import { objectsOf } from './chat-contract';
 import {
   conversationRefs, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
-  toolResultLine, toolRowState, toolRowView,
+  routedScope, toolResultLine, toolRowState, toolRowView,
 } from './feed-model';
 
 const ref = (kind: BuilddObjectRef['kind'], id: string): BuilddObjectRef => ({ kind, id, workspaceId: 'ws-1', fallbackText: `${kind} ${id}` });
@@ -144,5 +144,21 @@ describe('provisionalTitle', () => {
   it('uses the first user message, trimmed', () => {
     expect(provisionalTitle([msg([{ type: 'text', text: '  what shipped\ntoday? ' }], 'user')])).toBe('what shipped today?');
     expect(provisionalTitle([])).toBe('New chat');
+  });
+});
+
+describe('routedScope', () => {
+  const a = (scope: unknown) => ({ id: 'a', role: 'assistant' as const, parts: [], metadata: { scope } });
+  const u = { id: 'u', role: 'user' as const, parts: [] };
+  it('the latest assistant turn\'s routed workspace', () => {
+    expect(routedScope([a({ id: 'w1', name: 'billing-web', source: 'routed' }), u])).toEqual({ id: 'w1', name: 'billing-web' });
+  });
+  it('pinned, unscoped or no assistant turn: none', () => {
+    expect(routedScope([a({ id: 'w1', name: 'x', source: 'pinned' })])).toBeNull();
+    expect(routedScope([a(null)])).toBeNull();
+    expect(routedScope([u])).toBeNull();
+  });
+  it('only the latest turn counts', () => {
+    expect(routedScope([a({ id: 'w1', name: 'x', source: 'routed' }), a(null)])).toBeNull();
   });
 });

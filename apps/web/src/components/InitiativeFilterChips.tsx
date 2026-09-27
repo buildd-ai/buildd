@@ -3,7 +3,7 @@ import Link from 'next/link';
 /**
  * Initiative scoping chips for the Home queues. Chips SCOPE (filter) the list —
  * they never group it. Server-rendered links driven by a `?initiative=` search
- * param (same pattern as WorkspaceFilter), so no client state. Renders nothing
+ * param (same pattern as WorkspaceSwitcher), so no client state. Renders nothing
  * when there are fewer than two initiatives present — a single option is not a
  * filter.
  */

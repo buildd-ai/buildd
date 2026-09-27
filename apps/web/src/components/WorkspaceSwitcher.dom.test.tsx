@@ -1,5 +1,5 @@
 /**
- * WorkspaceFilter mobile sheet, mounted (happy-dom at phone width). The filter
+ * WorkspaceSwitcher mobile sheet, mounted (happy-dom at phone width). The filter
  * lives inside the fixed mobile header, whose stacking context put the sheet
  * under the bottom nav; and the body scroll lock did nothing because the shell
  * scrolls inside <main>. Fixtures are illustrative.
@@ -23,7 +23,7 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { WorkspaceFilter } = await import('./WorkspaceFilter');
+const { WorkspaceSwitcher } = await import('./WorkspaceSwitcher');
 
 const WORKSPACES = [
   { id: 'ws-alpha', name: 'Alpha' },
@@ -43,7 +43,7 @@ beforeEach(() => {
   header.style.position = 'fixed';
   document.body.append(header, main);
   root = createRoot(header);
-  act(() => root.render(<WorkspaceFilter workspaces={WORKSPACES} />));
+  act(() => root.render(<WorkspaceSwitcher workspaces={WORKSPACES} />));
 });
 
 afterEach(() => {
@@ -58,7 +58,7 @@ function openSheet() {
   return document.querySelector<HTMLElement>('[role="dialog"][aria-label="Workspace"]');
 }
 
-describe('WorkspaceFilter mobile sheet', () => {
+describe('WorkspaceSwitcher mobile sheet', () => {
   it('portals the sheet to document.body, outside the header', () => {
     const dialog = openSheet();
     expect(dialog).not.toBeNull();

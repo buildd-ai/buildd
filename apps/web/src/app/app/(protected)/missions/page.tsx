@@ -19,7 +19,6 @@ import {
   type MissionCardRow,
 } from '@/lib/mission-card-view';
 import { MissionGrid, type MissionItem } from './MissionGrid';
-import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
   adaptFlightStripInputs,
@@ -270,12 +269,6 @@ export default async function MissionsPage({
               {activeSeats}/{maxSeats} slots
             </span>
           )}
-          <span className="hidden md:block">
-            <WorkspaceFilter
-              workspaces={teamWorkspaces}
-              selectedId={wsFilter ?? null}
-            />
-          </span>
           <SetUpChatNudge />
           <NewWorkLink
             kind="mission"

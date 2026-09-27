@@ -568,7 +568,6 @@ export default async function HealthPage({
       recentFailures={recentFailureRows ?? []}
       credentialHealth={credentialHealthRows ?? []}
       strandedBackends={strandedBackends}
-      teamWorkspaces={(teamWorkspaceRows as any[]).map((w: any) => ({ id: w.id as string, name: w.name as string }))}
       wsFilter={wsFilter ?? null}
       budgetForecast={budgetForecast ?? null}
       failureAnalytics={failureAnalytics ?? null}

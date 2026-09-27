@@ -17,7 +17,7 @@ import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract'
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions } from './ChatActions';
 import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from './ChatComposer';
 import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
-import { paneFocus, provisionalTitle } from './feed-model';
+import { paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
 
@@ -45,7 +45,7 @@ export interface ChatWorkspaceProps {
   costRefreshKey?: number;
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
-  onWorkspaceChange(id: string): void;
+  onWorkspaceChange(id: string | null): void;
   viewerName: string | null;
   /** Shown beside the chat when no object is docked (member / operator context). */
   aside?: ReactNode;
@@ -219,6 +219,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             workspaces={workspaces}
             workspaceId={workspaceId}
             onWorkspaceChange={onWorkspaceChange}
+            routedWorkspace={routedScope(messages)}
+            teamName={teamName}
             tier={tier}
             teamId={teamId}
             conversationId={conversationId}

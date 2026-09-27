@@ -171,7 +171,7 @@ export function mobileBackHref(pathname: string): string | null {
 
 /**
  * Top-level pages whose server component reads `?workspace=`. The header
- * WorkspaceFilter only renders here — anywhere else it would be a control that
+ * WorkspaceSwitcher only renders here — anywhere else it would be a control that
  * changes the URL and nothing else. nav-config.test.tsx checks each page.tsx.
  */
 export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
@@ -181,6 +181,7 @@ export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
   '/app/releases',
   '/app/tasks',
   '/app/health',
+  '/app/health/usage',
 ]);
 
 export function showsWorkspaceFilter(pathname: string): boolean {
