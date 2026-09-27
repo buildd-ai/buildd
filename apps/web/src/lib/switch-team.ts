@@ -9,3 +9,9 @@ export function switchTeam(teamId: string): void {
   document.cookie = `buildd-team=${teamId};path=/;max-age=${60 * 60 * 24 * 365}`;
   window.location.reload();
 }
+
+/** Make `teamId` the active team, then load `href` in it. */
+export function openInTeam(teamId: string, href: string): void {
+  document.cookie = `buildd-team=${teamId};path=/;max-age=${60 * 60 * 24 * 365}`;
+  window.location.assign(href);
+}
