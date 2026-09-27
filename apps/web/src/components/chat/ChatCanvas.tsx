@@ -13,6 +13,7 @@
  * one is in the chat list).
  */
 import { usePathname, useRouter } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ChatConversation from './ChatConversation';
 import type { ChatAgent } from './ChatFeed';
@@ -140,6 +141,50 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   // Asked about the page you're on: the page behind already is the object.
   const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
 
+  const overlay = enabled && mounted && (
+    <div
+      data-testid="chat-canvas-overlay"
+      data-presentation={presentation}
+      data-open={isOpen ? 'true' : 'false'}
+      className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
+    >
+      {/* A flat dim: the page stays readable behind the peek. */}
+      <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className="absolute inset-0 bg-[var(--canvas-dim)]" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Chat"
+        className="canvas-rise absolute inset-0 flex flex-col overflow-hidden bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)] md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:pt-0 md:shadow-[var(--canvas-lift)]"
+      >
+        {shell ? (
+          <ChatConversation
+            key={`${session}:${conversationId ?? 'new'}`}
+            conversationId={conversationId}
+            teamId={teamId!}
+            teamName={null}
+            initialMessages={[]}
+            title={null}
+            titleSource="auto"
+            tier={null}
+            agent={shell.agent}
+            workspaces={workspaces}
+            workspaceId={scope.workspaceId}
+            viewerName={viewerName}
+            canManageTeamKeys={shell.canManageTeamKeys}
+            focusRef={scope.about ? aboutRef(scope.about) : null}
+            entry={entry}
+            onConversationCreated={setConversationId}
+            canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
+          />
+        ) : (
+          <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
+            {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <CanvasContext.Provider value={enabled ? api : null}>
       {children}
@@ -157,49 +202,25 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
           <Kbd tone="accent">⌘K</Kbd>
         </button>
       )}
-      {enabled && mounted && (
-        <div
-          data-testid="chat-canvas-overlay"
-          data-presentation={presentation}
-          data-open={isOpen ? 'true' : 'false'}
-          className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
-        >
-          {/* A flat dim: the page stays readable behind the peek. */}
-          <div data-testid="canvas-dim" aria-hidden="true" onClick={close} className="absolute inset-0 bg-[var(--canvas-dim)]" />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Chat"
-            className="canvas-rise absolute inset-0 flex flex-col overflow-hidden bg-[var(--canvas-bg)] pt-[env(safe-area-inset-top)] md:inset-y-4 md:left-auto md:right-4 md:w-[min(600px,calc(100vw-7rem))] md:border-2 md:border-border-strong md:pt-0 md:shadow-[var(--canvas-lift)]"
-          >
-            {shell ? (
-              <ChatConversation
-                key={`${session}:${conversationId ?? 'new'}`}
-                conversationId={conversationId}
-                teamId={teamId!}
-                teamName={null}
-                initialMessages={[]}
-                title={null}
-                titleSource="auto"
-                tier={null}
-                agent={shell.agent}
-                workspaces={workspaces}
-                workspaceId={scope.workspaceId}
-                viewerName={viewerName}
-                canManageTeamKeys={shell.canManageTeamKeys}
-                focusRef={scope.about ? aboutRef(scope.about) : null}
-                entry={entry}
-                onConversationCreated={setConversationId}
-                canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
-              />
-            ) : (
-              <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
-                {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/*
+       * Portal to <body>: "Ask about this mission" (AskAboutLink) renders
+       * inside the mission page's sticky masthead (`MissionMasthead`, `sticky
+       * top-0 z-20` — MissionDetailView.tsx), the same class of ancestor that
+       * trapped BottomSheet.tsx's and FlightDetailSheet.tsx's own overlays
+       * under a lower-z sibling until they portaled too — a `position:
+       * sticky` box establishes its own stacking context, so anything that
+       * paints inside it is capped at its place in the page's order no matter
+       * how high its own z-index reads. This provider renders `{children}`
+       * (the whole page, masthead included) ahead of the overlay today, so
+       * nothing traps it yet, but that is an accident of every context
+       * provider between here and the root staying a transparent, DOM-less
+       * wrapper — portaling makes the pinned mission card at its top, and
+       * everything else in the canvas, immune to that by construction rather
+       * than by every provider's node-free luck holding forever. No `document`
+       * on the server, but `mounted` (client-only) already gates this to the
+       * browser, so the ternary is only for the type.
+       */}
+      {typeof document !== 'undefined' ? createPortal(overlay, document.body) : overlay}
     </CanvasContext.Provider>
   );
 }
