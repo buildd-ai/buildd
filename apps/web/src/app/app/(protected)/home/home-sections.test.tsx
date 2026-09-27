@@ -13,6 +13,7 @@ mock.module('next/navigation', () => ({
 
 import { buildFleetSnapshot } from '@/lib/fleet-view';
 import { buildTickerEvents } from '@/lib/home-ticker';
+import { CanvasContext } from '@/components/chat/canvas-context';
 import { StatStrip } from './StatStrip';
 import { FleetStrip } from './FleetStrip';
 import { NeedsYouStack } from './NeedsYouStack';
@@ -107,6 +108,22 @@ describe('FleetStrip', () => {
   });
   it('links slots into the mission, never to a bare task page', () => {
     expect(html).not.toContain('href="/app/tasks/');
+  });
+});
+
+describe('FleetStrip — Steer', () => {
+  it('a running slot offers Steer when the chat canvas is available; a waiting-on-you slot does not (the question hero owns that)', () => {
+    const html = renderToStaticMarkup(
+      <CanvasContext.Provider value={{ open: () => {}, openSteer: () => {}, close: () => {}, isOpen: false }}>
+        <FleetStrip fleet={fleet} roles={[{ slug: 'builder', name: 'Builder', color: '#0C72CB' }]} now={NOW} timeZone="UTC" />
+      </CanvasContext.Provider>,
+    );
+    expect(html.match(/data-testid="steer-trigger"/g)?.length).toBe(1);
+  });
+
+  it('nothing to steer without the chat canvas in context', () => {
+    const html = renderToStaticMarkup(<FleetStrip fleet={fleet} roles={[{ slug: 'builder', name: 'Builder', color: '#0C72CB' }]} now={NOW} timeZone="UTC" />);
+    expect(html).not.toContain('data-testid="steer-trigger"');
   });
 });
 

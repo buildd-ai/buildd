@@ -7,22 +7,22 @@ const W = '33333333-3333-4333-8333-333333333333';
 
 describe('canvasScopeFromPath', () => {
   it("a mission or task page scopes the canvas to that object (entry.about)", () => {
-    expect(canvasScopeFromPath(`/app/missions/${M}`)).toEqual({ about: { kind: 'mission', id: M }, workspaceId: null });
-    expect(canvasScopeFromPath(`/app/missions/${M}/settings`)).toEqual({ about: { kind: 'mission', id: M }, workspaceId: null });
-    expect(canvasScopeFromPath(`/app/tasks/${T}`)).toEqual({ about: { kind: 'task', id: T }, workspaceId: null });
-    expect(canvasScopeFromPath(`/app/tasks/${T}/respond`)).toEqual({ about: { kind: 'task', id: T }, workspaceId: null });
+    expect(canvasScopeFromPath(`/app/missions/${M}`)).toEqual({ about: { kind: 'mission', id: M }, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath(`/app/missions/${M}/settings`)).toEqual({ about: { kind: 'mission', id: M }, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath(`/app/tasks/${T}`)).toEqual({ about: { kind: 'task', id: T }, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath(`/app/tasks/${T}/respond`)).toEqual({ about: { kind: 'task', id: T }, workspaceId: null, steer: null });
   });
 
   it('a workspace page scopes the workspace', () => {
-    expect(canvasScopeFromPath(`/app/workspaces/${W}`)).toEqual({ about: null, workspaceId: W });
-    expect(canvasScopeFromPath(`/app/settings/workspace/${W}`)).toEqual({ about: null, workspaceId: W });
+    expect(canvasScopeFromPath(`/app/workspaces/${W}`)).toEqual({ about: null, workspaceId: W, steer: null });
+    expect(canvasScopeFromPath(`/app/settings/workspace/${W}`)).toEqual({ about: null, workspaceId: W, steer: null });
   });
 
   it('anything else, or a non-uuid segment, scopes nothing', () => {
-    expect(canvasScopeFromPath('/app/home')).toEqual({ about: null, workspaceId: null });
-    expect(canvasScopeFromPath('/app/missions/new')).toEqual({ about: null, workspaceId: null });
-    expect(canvasScopeFromPath('/app/tasks/new')).toEqual({ about: null, workspaceId: null });
-    expect(canvasScopeFromPath(null)).toEqual({ about: null, workspaceId: null });
+    expect(canvasScopeFromPath('/app/home')).toEqual({ about: null, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath('/app/missions/new')).toEqual({ about: null, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath('/app/tasks/new')).toEqual({ about: null, workspaceId: null, steer: null });
+    expect(canvasScopeFromPath(null)).toEqual({ about: null, workspaceId: null, steer: null });
   });
 });
 

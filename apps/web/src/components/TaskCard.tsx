@@ -14,6 +14,7 @@ import {
   type WorkKind,
 } from '@/lib/task-presentation';
 import { StageChip, stageChipShowsPrNumber } from '@/components/StageChip';
+import SteerButton from '@/components/chat/SteerButton';
 import { deriveStage, type Stage } from '@/lib/stage';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
@@ -458,7 +459,10 @@ export function TaskCard({
 
         {/* Right — health + provenance */}
         <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
-          <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
+          <div className="flex items-center gap-2">
+            <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
+            {displayStatus === 'running' && <span className="pointer-events-auto"><SteerButton taskId={id} /></span>}
+          </div>
 
           {/* T3 — elapsed */}
           <span className={`font-mono text-[11px] md:text-[10px] tabular-nums ${tierColor}`}>
