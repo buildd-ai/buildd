@@ -21,6 +21,7 @@ import {
 } from './pr-lede';
 import type { Direction } from './spec-discrepancy-ledger';
 import type {
+  ClaimDiagnostics,
   FailureAnalytics,
   FailureSignatureFamily,
   GateAnalytics,
@@ -406,7 +407,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? } — returns the current assignment when worker context is present; otherwise claims taskId (full UUID) if given, or auto-assigns the highest-priority pending task when omitted. An explicit taskId that cannot be claimed right now returns why (or 422 routing_mismatch for a connector failure) instead of silently falling back to auto-assign — call action=explain with the same taskId for the full gate history.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
@@ -521,6 +522,80 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+/**
+ * The claim route always computes a typed reason for a zero-worker response
+ * (`ClaimDiagnostics`), but claim_task used to discard it and print one
+ * generic line regardless of cause — a role mismatch, a held mission, an
+ * unmet dependency and a budget wall all looked identical, forcing the
+ * caller to guess. Surface the reason (and the per-gate deferral breakdown
+ * when present) instead.
+ *
+ * Several gates (role-slug match, held mission/task, dependency, subject
+ * liveness) run inside the claim route's SQL candidate query, so a task
+ * excluded by one of them folds into the generic `no_pending_tasks` reason
+ * with no per-gate breakdown here — that detail lives in that task's gate
+ * ledger, which is why an explicit taskId gets pointed at `explain` below.
+ */
+function describeEmptyClaim(
+  data: { diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null },
+  requestedTaskId?: string,
+): string {
+  const base = requestedTaskId
+    ? `Task ${requestedTaskId} was not claimed.`
+    : 'No tasks available to claim. All tasks may be assigned or completed.';
+  const d = data.diagnostics;
+  if (!d) return base;
+
+  const detail: string[] = [];
+  switch (d.reason) {
+    case 'no_slots':
+      detail.push(`This runner is at its concurrent-worker limit (${d.activeWorkers ?? '?'}/${d.maxConcurrent ?? '?'} active).`);
+      break;
+    case 'no_workspaces':
+      detail.push('This account has no claimable workspaces.');
+      break;
+    case 'no_pending_tasks':
+      detail.push(requestedTaskId
+        ? 'The task is not pending in a workspace this account can claim from, or a row-level gate (role match, held mission/task, unmet dependency, subject liveness) excluded it before any claim attempt was made.'
+        : 'No pending tasks matched the claim scope.');
+      break;
+    case 'capability_mismatch':
+      detail.push(`${d.pendingTasks ?? 0} pending task(s) were seen, but none matched this runner's capabilities (e.g. a codex-backend task without Codex auth).`);
+      break;
+    case 'budget_exhausted':
+    case 'budget_exhausted_partial':
+      detail.push("This account's OAuth budget is exhausted.");
+      if (data.budgetResetsAt) detail.push(`Resets at ${data.budgetResetsAt}.`);
+      break;
+    case 'race_lost':
+      detail.push(`${d.matchedTasks ?? '?'} matching task(s) were seen, but another worker won the claim race first — safe to retry.`);
+      break;
+    case 'all_candidates_deferred': {
+      detail.push(`${d.matchedTasks ?? '?'} matching task(s) were seen, but every one was deferred before a claim attempt.`);
+      if (d.deferrals) {
+        const breakdown = Object.entries(d.deferrals)
+          .filter(([, n]) => typeof n === 'number' && n > 0)
+          .map(([reason, n]) => `${reason.replace(/_/g, ' ')} (${n})`)
+          .join(', ');
+        if (breakdown) detail.push(`Deferred by: ${breakdown}.`);
+      }
+      if (d.blockedByPr?.prNumber) {
+        detail.push(`Blocked by open PR #${d.blockedByPr.prNumber}${d.blockedByPr.prUrl ? ` (${d.blockedByPr.prUrl})` : ''}.`);
+      }
+      break;
+    }
+    default:
+      detail.push(`Reason: ${d.reason}.`);
+  }
+  if (d.budgetPressure) {
+    detail.push(`OAuth seat pressure: ${Math.round(d.budgetPressure.pct * 100)}% (${d.budgetPressure.confidence} confidence).`);
+  }
+  const hint = requestedTaskId
+    ? `\n\nFor the full gate/deferral history on this task, call action=explain with taskId=${requestedTaskId}.`
+    : '';
+  return `${base} ${detail.join(' ')}${hint}`;
+}
 
 // ── Failure analytics formatting ─────────────────────────────────────────────
 
@@ -853,6 +928,11 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
  * NOT guarded (yet): update_task/update_progress/complete_task/create_pr —
  * these take a taskId/workerId which fully determines the workspace.
  * Follow-up: resource-derived workspace + sub-action guarding for manage_*.
+ *
+ * claim_task is exempt from this guard specifically when it carries an
+ * explicit taskId (see below) — that taskId, like the taskId/workerId params
+ * above, already fully determines the workspace, so there is no ambiguity to
+ * guard against.
  */
 const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
   'list_tasks',
@@ -880,6 +960,11 @@ async function requireExplicitWorkspace(
   if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
   if (params.workspaceId) return null;        // explicit per-call
   if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
+  // An explicit single-task claim already names the exact task — and hence
+  // its exact workspace — so there is nothing ambiguous left to guard here.
+  if (action === 'claim_task' && typeof params.taskId === 'string' && FULL_UUID_REGEX.test(params.taskId)) {
+    return null;
+  }
 
   let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
   try {
@@ -1329,7 +1414,7 @@ export async function handleBuilddAction(
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = isTerminalAudit
         ? ''
-        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
+        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task). Pass taskId to claim a specific one instead.`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
@@ -1488,13 +1573,48 @@ export async function handleBuilddAction(
 
     case 'claim_task': {
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      const data = await api('/api/workers/claim', {
-        method: 'POST',
-        body: JSON.stringify({ maxTasks: params.maxTasks || 1, workspaceId: wsId, runner: 'mcp' }),
-      });
+      const requestedTaskId = params.taskId !== undefined
+        ? requireFullUuid(params.taskId, 'taskId')
+        : undefined;
+
+      let data: any;
+      try {
+        data = await api('/api/workers/claim', {
+          method: 'POST',
+          body: JSON.stringify({
+            maxTasks: params.maxTasks || 1,
+            workspaceId: wsId,
+            runner: 'mcp',
+            // An explicit taskId already names one exact task — and hence its
+            // exact workspace — so the route's own ambiguous-multi-workspace
+            // guard (which knows nothing about taskId) would otherwise 400 a
+            // multi-workspace OAuth caller with no workspaceId. This opts in
+            // to the same "deliberate cross-workspace intent" path that
+            // guard already exempts, safely: the taskId equality condition
+            // still narrows the query to that one row regardless.
+            ...(requestedTaskId ? { taskId: requestedTaskId, claimAcrossAccessible: true } : {}),
+          }),
+        });
+      } catch (err) {
+        // api() throws on non-2xx: "API error: NNN - <body>". An explicit taskId
+        // blocked on connector availability comes back 422 routing_mismatch with
+        // typed failure info — unwrap it instead of a bare "API error: 422 - ...".
+        const raw = err instanceof Error ? err.message : String(err);
+        const match = raw.match(/^API error: \d+ - ([\s\S]*)$/);
+        if (match) {
+          try {
+            const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+            const detail = (parsed.detail ?? parsed.error ?? match[1]) as string;
+            return errorResult(`Claim failed: ${detail}`);
+          } catch {
+            return errorResult(`Claim failed: ${match[1] || raw}`);
+          }
+        }
+        throw err;
+      }
 
       const workers = data.workers || [];
-      if (workers.length === 0) return text('No tasks available to claim. All tasks may be assigned or completed.');
+      if (workers.length === 0) return text(describeEmptyClaim(data, requestedTaskId));
 
       const claimed = workers.map((w: any) =>
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
