@@ -56,7 +56,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 const { GET } = await import('./route');
 
-const mockParams = Promise.resolve({ artifactId: 'artifact-1' });
+const mockParams = Promise.resolve({ artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
 
 function req(opts: { apiKey?: string; token?: string } = {}): NextRequest {
   const url = opts.token
@@ -69,7 +69,7 @@ function req(opts: { apiKey?: string; token?: string } = {}): NextRequest {
 
 function artifact(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'artifact-1',
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     workerId: 'worker-1',
     workspaceId: 'ws-1',
     storageKey: 'artifacts/ws-1/uuid/report.pdf',
@@ -110,6 +110,13 @@ describe('GET /api/artifacts/[artifactId]/download', () => {
     // No scope resolution is attempted — publishing already opened the bytes.
     expect(mockVerifyAccountWorkspaceAccess).not.toHaveBeenCalled();
     expect(mockVerifyWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a non-UUID artifact id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await GET(req(), { params: Promise.resolve({ artifactId: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
   });
 
   it('returns 401 when there is no token and no caller', async () => {

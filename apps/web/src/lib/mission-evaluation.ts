@@ -10,6 +10,7 @@ import { missions, tasks } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 import { workspaces } from '@buildd/core/db/schema';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
@@ -203,6 +204,10 @@ export async function spawnEvaluationTask(
   const workspaceId = mission.workspaceId;
   if (!workspaceId) return null;
 
+  // Judging a mission's state and routing what is left is the Organizer's
+  // job, when this workspace has the role (role-routing §1 row 9, §3.1).
+  const roleSlug = await pickEffectiveRole(workspaceId, ['organizer']);
+
   const [evalTask] = await db
     .insert(tasks)
     .values({
@@ -213,6 +218,7 @@ export async function spawnEvaluationTask(
       status: 'pending',
       mode: 'planning',
       taskClass: 'bookkeeping',
+      roleSlug,
       context: {
         ...evalContext.context,
         triggeringTaskId,

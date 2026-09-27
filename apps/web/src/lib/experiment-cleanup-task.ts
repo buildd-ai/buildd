@@ -45,6 +45,7 @@ import {
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 
 export interface FileExperimentCleanupTaskParams {
   /**
@@ -74,6 +75,9 @@ export async function fileExperimentCleanupTask(
 
   const title = experimentCleanupTitle(spec);
   const description = buildExperimentCleanupDescription(spec);
+  // A code change that ends in a PR: Builder, when this workspace has the
+  // role (role-routing §1 row 9, §3.1). Else role-less, as before.
+  const roleSlug = await pickEffectiveRole(workspaceId, ['builder']);
 
   const [task] = await db
     .insert(tasks)
@@ -84,6 +88,7 @@ export async function fileExperimentCleanupTask(
       status: 'pending',
       mode: 'execution',
       category: 'chore',
+      roleSlug,
       // A PR is the deliverable. Without this the gate accepts a completion
       // that only *describes* removing the manifest entry.
       outputRequirement: 'pr_required',

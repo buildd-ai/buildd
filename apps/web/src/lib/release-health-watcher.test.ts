@@ -25,6 +25,7 @@ const schemaMock = {
   releases: 'releases_table',
   tasks: 'tasks_table',
   workspaces: 'workspaces_table',
+  watchedProjects: { roleSlug: 'wp.role_slug', workspaceId: 'wp.workspace_id', enabled: 'wp.enabled' },
 };
 mock.module('@buildd/core/db/schema', () => schemaMock);
 
@@ -39,6 +40,17 @@ mock.module('drizzle-orm', () => ({
     }),
     { raw: (s: string) => ({ type: 'sql_raw', s }) },
   ),
+}));
+
+// Roles effective for the release's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
 }));
 
 // Import AFTER mocks
@@ -82,11 +94,13 @@ function makeMockDb(opts: {
   existingTasks?: any[];
   workspace?: any;
   insertedTask?: any;
+  watchedProjects?: any[];
 } = {}) {
   let selectCount = 0;
   const selectBehaviors: any[][] = [
     opts.existingTasks ?? [],       // first select: dedup check
     opts.workspace != null ? [opts.workspace] : [],  // second select: workspace lookup
+    opts.watchedProjects ?? [],     // third select: watched projects' role
   ];
 
   const updateCalls: UpdateCall[] = [];
@@ -183,6 +197,41 @@ describe('autoFileDegradationTask', () => {
 
     expect(db._insertCalls).toHaveLength(0);
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('autoFileDegradationTask — role (role-routing §1 row 9)', () => {
+  beforeEach(() => { resetAll(); effectiveRoles = new Set(); pickRoleCalls.length = 0; });
+
+  const file = async (watchedProjects: any[]) => {
+    const db = makeMockDb({
+      workspace: { id: 'ws-1111', repo: 'org/repo', name: 'Test Workspace' },
+      insertedTask: { id: 'new-task-id' },
+      watchedProjects,
+    });
+    await autoFileDegradationTask(makeRelease(), db, 'HTTP 503');
+    return db._insertCalls[0].values;
+  };
+
+  it("runs as the watched projects' role when it resolves", async () => {
+    effectiveRoles = new Set(['ops', 'builder']);
+    const inserted = await file([{ roleSlug: 'ops' }, { roleSlug: 'ops' }]);
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1111', candidates: ['ops', 'builder'] }]);
+    expect(inserted.roleSlug).toBe('ops');
+  });
+
+  it('falls back to Builder when the watched role is missing or ambiguous', async () => {
+    effectiveRoles = new Set(['builder']);
+    expect((await file([{ roleSlug: 'ops' }])).roleSlug).toBe('builder');
+    resetAll();
+    effectiveRoles = new Set(['ops', 'sre', 'builder']);
+    expect((await file([{ roleSlug: 'ops' }, { roleSlug: 'sre' }])).roleSlug).toBe('builder');
+  });
+
+  it('files role-less when no candidate resolves', async () => {
+    const inserted = await file([]);
+    expect(inserted.roleSlug).toBeNull();
+    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
   });
 });
 

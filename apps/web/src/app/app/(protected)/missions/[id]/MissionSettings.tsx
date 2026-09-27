@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Spinner from '@/components/Spinner';
+import { Select } from '@/components/ui/Select';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -22,11 +23,32 @@ type RunOutcome =
   | { kind: 'budget' }
   | { kind: 'error'; message: string };
 
+/**
+ * The quick-add POST body. A role goes on the task only when the owner picked
+ * one; "Any role" (the default, `''`) sends none, so the task is filed exactly
+ * as before (role-routing §1 row 3).
+ */
+export function quickAddTaskBody(input: {
+  title: string;
+  workspaceId: string;
+  missionId: string;
+  roleSlug: string;
+}): { title: string; workspaceId: string; missionId: string; roleSlug?: string } {
+  const { title, workspaceId, missionId, roleSlug } = input;
+  return roleSlug ? { title, workspaceId, missionId, roleSlug } : { title, workspaceId, missionId };
+}
+
+/** The quick-add picker's options: "Any role" first, then the workspace's roles. */
+export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { value: string; label: string }[] {
+  return [{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))];
+}
+
 interface MissionSettingsProps {
   missionId: string;
   currentStatus: string;
   cronExpression: string | null;
   workspaceId: string | null;
+  /** Roles effective for the mission's workspace — the quick-add picker's options. */
   roles: { slug: string; name: string; color: string }[];
   hasSchedule: boolean;
   orchestrationMode?: 'auto' | 'manual';
@@ -62,6 +84,7 @@ export default function MissionSettings({
   const [isHeld, setIsHeld] = useState(initialIsHeld);
   const [modeLoading, setModeLoading] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
+  const [taskRoleSlug, setTaskRoleSlug] = useState('');
   const [taskLoading, setTaskLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRunLoading, setManualRunLoading] = useState(false);
@@ -216,10 +239,11 @@ export default function MissionSettings({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ title, workspaceId, missionId }),
+        body: JSON.stringify(quickAddTaskBody({ title, workspaceId, missionId, roleSlug: taskRoleSlug })),
       });
       if (res.ok) {
         setTaskTitle('');
+        setTaskRoleSlug('');
         setError(null);
         router.refresh();
       } else {
@@ -541,7 +565,7 @@ export default function MissionSettings({
         <div>
           <h2 className="section-label mb-2">Quick Task</h2>
           {workspaceId ? (
-            <form onSubmit={handleAddTask} className="flex gap-2">
+            <form onSubmit={handleAddTask} className="flex flex-wrap gap-2">
               <input
                 type="text"
                 value={taskTitle}
@@ -549,6 +573,16 @@ export default function MissionSettings({
                 placeholder="Add a task to this mission…"
                 className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-card-border text-base md:text-[13px] text-text-primary placeholder:text-text-desc focus:outline-none focus:border-accent/40 transition-colors"
               />
+              {roles.length > 0 && (
+                <Select
+                  aria-label="Role"
+                  testId="quick-task-role"
+                  value={taskRoleSlug}
+                  onChange={setTaskRoleSlug}
+                  options={quickAddRoleOptions(roles)}
+                  className="w-36 shrink-0"
+                />
+              )}
               <button
                 type="submit"
                 disabled={taskLoading || !taskTitle.trim()}

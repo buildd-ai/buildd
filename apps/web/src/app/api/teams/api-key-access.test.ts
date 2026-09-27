@@ -44,7 +44,7 @@ mock.module('@buildd/core/db', () => {
         },
         workspaces: { findMany: async () => [] },
         teamInvitations: { findFirst: async () => ({ id: 'inv-1', teamId: 'team-1', status: 'pending', email: 'o@example.test', expiresAt: new Date(Date.now() + 1e6) }), findMany: async () => [] },
-        connectors: { findFirst: async () => ({ id: 'c-1', teamId: 'team-1', authMode: 'oauth', clientId: 'cid', url: 'https://mcp.example.test', discoveredMetadata: { authMode: 'oauth', authorizationServer: { authorization_endpoint: 'https://as.example.test/a', token_endpoint: 'https://as.example.test/t' } } }) },
+        connectors: { findFirst: async () => ({ id: 'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', teamId: 'team-1', authMode: 'oauth', clientId: 'cid', url: 'https://mcp.example.test', discoveredMetadata: { authMode: 'oauth', authorizationServer: { authorization_endpoint: 'https://as.example.test/a', token_endpoint: 'https://as.example.test/t' } } }) },
         users: { findFirst: async () => null },
       },
       select: () => ({ from: () => ({ where: () => ({ groupBy: async () => [{ teamId: 'team-1', count: 1 }] }) }) }),
@@ -92,7 +92,7 @@ describe('team administration requires a signed-in session', () => {
     ['POST /api/teams/[id]/invitations', () => invitationsRoute.POST(req('POST', { email: 'x@example.test', role: 'admin' }), p({ id: 'team-1' }))],
     ['DELETE /api/teams/[id]/invitations/[invitationId]', () => invitationRoute.DELETE(req('DELETE'), p({ id: 'team-1', invitationId: 'inv-1' }))],
     ['POST /api/invitations/[token]/accept', () => acceptRoute.POST(req('POST'), p({ token: 'tok' }))],
-    ['POST /api/connectors/[id]/connect', () => connectRoute.POST(req('POST'), p({ id: 'c-1' }))],
+    ['POST /api/connectors/[id]/connect', () => connectRoute.POST(req('POST'), p({ id: 'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1' }))],
   ];
 
   for (const [name, call] of cases) {

@@ -29,7 +29,33 @@ export interface CompareFile {
 type Api = (installationId: number, path: string) => Promise<unknown>;
 
 /** GitHub's compare endpoint returns at most this many files. */
-const COMPARE_FILE_LIMIT = 300;
+export const COMPARE_FILE_LIMIT = 300;
+
+/**
+ * A PR's own file list, bounded against `baseRef` rather than against
+ * another commit on the same branch. `compare/baseRef...sha` is GitHub's
+ * merge-base-aware diff of the PR's tree against the base branch — a file
+ * the base branch changed independently never appears, because the PR's
+ * tree already matches base for that file at the merge-base. That holds
+ * regardless of how the PR branch got to `sha` (rebase, merge-in, whatever),
+ * which is what makes it safe to call at two different points on the same
+ * branch and read the difference as "what the PR itself changed between
+ * them" — see `reviewer.ts`'s delta-bounding use of this.
+ */
+export async function compareAgainstBase(params: {
+  installationId: number;
+  repoFullName: string;
+  baseRef: string;
+  sha: string;
+  api?: Api;
+}): Promise<CompareFile[] | null> {
+  const api = params.api ?? githubApi;
+  const data = (await api(
+    params.installationId,
+    `/repos/${params.repoFullName}/compare/${encodeURIComponent(params.baseRef)}...${params.sha}`,
+  )) as { files?: CompareFile[] } | null;
+  return Array.isArray(data?.files) ? data.files : null;
+}
 
 /**
  * Reduce a patch to the PR's own changed lines, in order. Hunk headers (line
@@ -53,13 +79,8 @@ export async function isContentEquivalentHead(params: {
   api?: Api;
 }): Promise<{ equivalent: boolean; reason: string }> {
   const api = params.api ?? githubApi;
-  const read = async (sha: string): Promise<CompareFile[] | null> => {
-    const data = (await api(
-      params.installationId,
-      `/repos/${params.repoFullName}/compare/${encodeURIComponent(params.baseRef)}...${sha}`,
-    )) as { files?: CompareFile[] } | null;
-    return Array.isArray(data?.files) ? data.files : null;
-  };
+  const read = (sha: string) =>
+    compareAgainstBase({ installationId: params.installationId, repoFullName: params.repoFullName, baseRef: params.baseRef, sha, api });
 
   let from: CompareFile[] | null;
   let to: CompareFile[] | null;
