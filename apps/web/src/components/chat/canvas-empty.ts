@@ -8,6 +8,7 @@
  * from the pulse; nothing is invented, and a needs-you prompt is never offered
  * when nothing needs you.
  */
+import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 export interface CanvasSuggestion {
@@ -25,18 +26,53 @@ export interface CanvasSuggestion {
  * viewer (newest first) and how many agents are at work.
  */
 export interface CanvasPulse {
-  needsYou: readonly { title: string }[];
+  /** `action`: row 1's short action (needsYouAction); derived from the title when absent. */
+  needsYou: readonly { title: string; action?: string }[];
   /** The list was cut at the loader's limit: the real count is at least its length. */
   needsYouCapped?: boolean;
   live: number;
 }
 
+/** Why a task waits on the viewer, as far as the page can tell. */
+export interface NeedsYouSource {
+  title: string;
+  label?: string | null;
+  /** `workers.waitingFor.type`: question | permission | confirmation. */
+  waitingType?: string | null;
+  /** A state beyond the question itself, when the loader knows one. */
+  state?: 'tests_failed' | null;
+}
+
+/** Row 1 stays a few words: whole words only, never an ellipsis. */
+const ACTION_MAX = 36;
+
+/**
+ * Picked row 1 on the needs-you canvas: a short action naming what to do,
+ * derived only from state ("Answer the Stripe currency question", "Fix the
+ * failing label change"). The subject is the task's short label
+ * (taskDisplayLabel), trimmed a whole word at a time to fit; the full task
+ * name stays in the italic sub line.
+ */
+export function needsYouAction(t: NeedsYouSource): string {
+  const [pre, post] = t.state === 'tests_failed'
+    ? ['Fix the failing', 'change']
+    : t.waitingType === 'permission'
+      ? ['Approve the', 'step']
+      : t.waitingType === 'confirmation'
+        ? ['Confirm the', 'change']
+        : ['Answer the', 'question'];
+  const words = taskDisplayLabel({ title: t.title, label: t.label ?? null }).label.split(/\s+/).filter(Boolean);
+  while (words.length > 1 && `${pre} ${words.join(' ')} ${post}`.length > ACTION_MAX) words.pop();
+  return words.length ? `${pre} ${words.join(' ')} ${post}` : `${pre} ${post}`;
+}
+
 /**
  * The waiting tasks as the pulse names them: the plain sentence every page
- * shows (taskHeading), never the raw "feat(scope): …" title.
+ * shows (taskHeading), never the raw "feat(scope): …" title, plus row 1's
+ * short action.
  */
-export function pulseNeedsYou(tasks: readonly { title: string; label?: string | null }[]): { title: string }[] {
-  return tasks.map(t => ({ title: taskHeading({ title: t.title, label: t.label ?? null }, null).heading }));
+export function pulseNeedsYou(tasks: readonly NeedsYouSource[]): { title: string; action: string }[] {
+  return tasks.map(t => ({ title: taskHeading({ title: t.title, label: t.label ?? null }, null).heading, action: needsYouAction(t) }));
 }
 
 export type CanvasMood = 'calm' | 'needs';
@@ -103,8 +139,6 @@ export function canvasHero(input: { pulse: CanvasPulse | null | undefined; name:
   };
 }
 
-const short = (s: string, max = 40) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
-
 const START: CanvasSuggestion = { label: 'Start something new', text: 'I want to build ', send: false };
 const RUNNING: CanvasSuggestion = { label: "What's running right now?", text: "What's running right now?", send: true };
 const SHIPPED: CanvasSuggestion = { label: 'What shipped this week?', text: 'What shipped this week?', send: true };
@@ -133,7 +167,7 @@ export function canvasSuggestions(
   if (n > 0) {
     const first = pulse.needsYou[0].title;
     const needs: CanvasSuggestion = n === 1 && !pulse.needsYouCapped
-      ? { label: `What does “${short(first)}” need from me?`, text: `What does "${first}" need from me?`, send: true, tone: 'needs' }
+      ? { label: pulse.needsYou[0].action ?? needsYouAction({ title: first }), text: `What does "${first}" need from me?`, send: true, tone: 'needs' }
       : {
           label: pulse.needsYouCapped ? "Walk me through what's waiting on me" : `Walk me through the ${n} things waiting on me`,
           text: 'What needs me right now?',

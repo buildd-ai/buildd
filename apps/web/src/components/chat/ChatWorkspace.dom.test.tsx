@@ -128,6 +128,30 @@ describe('thinking', () => {
   });
 });
 
+describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the composer', () => {
+  const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
+  for (const pulse of [{ needsYou: [], live: 0 }, { needsYou: [{ title: 'Pick a currency' }], live: 0 }]) {
+    it(`${pulse.needsYou.length ? 'needs-you' : 'calm'}: the panel is the last thing in a full-height column, after a growing gap`, async () => {
+      await render({ pulse });
+      const canvas = q('[data-testid="canvas-empty"]')!;
+      expect(canvas.dataset.layout).toBe('anchored');
+      expect(cls(canvas)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:flex-1', 'max-md:flex-col']));
+      const gap = q('[data-testid="canvas-sea-gap"]')!;
+      expect(cls(gap)).toContain('max-md:flex-1');
+      expect(gap.nextElementSibling?.getAttribute('data-testid')).toBe('canvas-suggestions');
+      expect(q('[data-testid="canvas-suggestions"]')?.nextElementSibling).toBeNull();
+      expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:min-h-full', 'max-md:flex-col']));
+    });
+  }
+
+  it('a scoped chat and a thread keep the flowing layout', async () => {
+    await render({ entryIntent: 'mission' });
+    expect(q('[data-testid="canvas-empty"]')?.dataset.layout).toBeUndefined();
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    expect(cls(q('[data-testid="chat-feed"]')?.parentElement ?? null)).not.toContain('max-md:min-h-full');
+  });
+});
+
 describe('needs-input banner on the phone canvas', () => {
   it('the needs-you empty canvas holds the banner off on a phone; calm and a thread do not', async () => {
     const { phoneBannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
@@ -251,7 +275,7 @@ describe('empty canvas', () => {
     const rows = qa('[data-testid="canvas-suggestion"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].dataset.tone).toBe('needs');
-    expect(placeholder()).toBe('What does “Pick a currency” need from me?');
+    expect(placeholder()).toBe('Answer the pick currency question');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('needs');
     await act(async () => { rows[0].click(); });
     expect(sent).toEqual(['What does "Pick a currency" need from me?']);
