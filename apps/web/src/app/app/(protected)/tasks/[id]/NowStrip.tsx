@@ -35,7 +35,7 @@ function StepRail({ steps }: { steps: NowState['steps'] }) {
         <li
           key={s.key}
           data-state={s.state}
-          className={`relative pt-[18px] font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] font-medium ${
+          className={`relative pt-[18px] font-mono text-[11px] md:text-[10px] uppercase tracking-normal md:tracking-[1.5px] font-medium ${
             s.state === 'done' ? 'text-text-primary' : s.state === 'current' ? 'text-accent-text' : 'text-text-muted'
           }`}
         >
