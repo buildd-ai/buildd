@@ -29,7 +29,7 @@ const missionPrOpen: MissionStateInput = {
     awaitingMerge: 1,
     awaitingMergeDetails: [],
   },
-  missionPr: { prNumber: 4242, prUrl: 'https://example.invalid/pr/4242' },
+  missionPr: { state: 'open', prNumber: 4242, prUrl: 'https://example.invalid/pr/4242' },
 };
 
 function render(input: MissionStateInput) {
@@ -220,6 +220,40 @@ describe('affordanceFor', () => {
 
   it('returns null when nothing is outstanding', () => {
     expect(affordanceFor(null, { missionId: 'm-1' })).toBeNull();
+  });
+
+  // Friction dbaadf34: offering a "Merge the mission PR" button with no PR to
+  // merge behind it is worse than the false headline alone — a click that
+  // goes nowhere. `mergeFact` leaves `prUrls` empty for both states, which is
+  // what makes this fall out for free rather than needing its own guard.
+  it('offers no button for a mission PR that has not opened yet, or one that closed unmerged', () => {
+    const notOpened = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'The mission PR is not open yet.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'not_opened', prNumber: null, prUrl: null },
+    });
+    expect(notOpened.situation.focus?.kind).toBe('merge');
+    expect(affordanceFor(notOpened.situation.focus, { missionId: 'm-1' })).toBeNull();
+
+    const closed = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'Mission PR #77 was closed without merging.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'closed', prNumber: 77, prUrl: 'https://example.invalid/pr/77' },
+    });
+    expect(closed.situation.focus?.kind).toBe('merge');
+    expect(affordanceFor(closed.situation.focus, { missionId: 'm-1' })).toBeNull();
   });
 
   it('sends a criteria hold to the Verified pill, a real target on this page (AC-16)', () => {

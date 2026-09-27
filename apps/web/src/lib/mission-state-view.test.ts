@@ -250,6 +250,61 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(view.nextAction).toContain('mission PR');
   });
 
+  // Friction dbaadf34: a mission whose work landed on its integration branch
+  // but whose PR never opened read as "waiting on you to merge the mission
+  // PR" with no PR number — an impossible action, since there was no PR.
+  it('never asks to merge a mission PR that has not opened yet', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'This mission uses an integration branch and its work has not reached trunk. The mission PR is not open yet.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'not_opened', prNumber: null, prUrl: null },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    if (waiting.kind !== 'merge') throw new Error('unreachable');
+    expect(waiting.missionPr).toBe(true);
+    expect(waiting.missionPrState).toBe('not_opened');
+    expect(waiting.prNumbers).toEqual([]);
+    expect(waiting.prUrls).toEqual([]);
+    expect(view.situation.headline).not.toContain('merge');
+    expect(view.nextAction).not.toContain('Merge the mission PR');
+    expect(nextActionFor(waiting)).not.toContain('Merge the mission PR');
+  });
+
+  it('never asks to merge a mission PR that closed without merging', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'Mission PR #77 was closed without merging, so the mission’s work is still only on the integration branch.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'closed', prNumber: 77, prUrl: 'https://example.invalid/pr/77' },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    if (waiting.kind !== 'merge') throw new Error('unreachable');
+    expect(waiting.missionPr).toBe(true);
+    expect(waiting.missionPrState).toBe('closed');
+    expect(waiting.prNumbers).toEqual([77]);
+    // No href for a closed PR: `affordanceFor` reads an empty `prUrls` as "no
+    // button", and a merge button pointed at a closed PR would be as false as
+    // the missing-PR case above.
+    expect(waiting.prUrls).toEqual([]);
+    expect(view.nextAction).not.toContain('Merge the mission PR');
+    expect(view.nextAction).toContain('Reopen it');
+  });
+
   it('falls back to evaluateMissionWorkState when only that was run', () => {
     const view = deriveMissionStateView({
       ...base,
