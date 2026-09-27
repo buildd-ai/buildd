@@ -1,7 +1,7 @@
 /**
  * The Steer canvas, mounted (happy-dom): sends go straight to the worker's
- * instruction queue (not a chat turn), and each message's status reads
- * sent → delivered → read at turn N.
+ * instruction queue (not a chat turn), each message's status reads
+ * sent → delivered, and only a caller who may send gets a composer.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -22,11 +22,11 @@ const WORKER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 let posted: Array<{ url: string; body: unknown }>;
-let messagesResponse: { workerId: string | null; turns: number | null; messages: unknown[] };
+let messagesResponse: { workerId: string | null; canSend: boolean; messages: unknown[] };
 
 beforeEach(() => {
   posted = [];
-  messagesResponse = { workerId: WORKER_ID, turns: 5, messages: [] };
+  messagesResponse = { workerId: WORKER_ID, canSend: true, messages: [] };
   (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
     const u = String(url);
     if (u.startsWith('/api/tasks/') && u.endsWith('/messages')) {
@@ -85,32 +85,39 @@ describe('SteerConversation — send', () => {
   });
 
   it('the composer is disabled with no worker to send to', async () => {
-    messagesResponse = { workerId: null, turns: null, messages: [] };
+    messagesResponse = { workerId: null, canSend: true, messages: [] };
     await render();
     const textarea = q('#steer-composer-input') as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
   });
+
+  it('a member who can read but not send gets a disabled composer that says why', async () => {
+    messagesResponse = { workerId: WORKER_ID, canSend: false, messages: [] };
+    await render();
+    const textarea = q('#steer-composer-input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(true);
+    expect(textarea.placeholder).toBe('Only workspace admins can steer this agent.');
+  });
 });
 
 describe('SteerConversation — message status', () => {
-  it('shows sent, delivered, and read at turn N from the task\'s own messages', async () => {
+  it('shows sent and delivered from the task\'s own messages, and never a turn-based read', async () => {
     messagesResponse = {
       workerId: WORKER_ID,
-      turns: 8,
+      canSend: true,
       messages: [
         { type: 'instruction', message: 'still queued', timestamp: 1 },
-        { type: 'instruction', message: 'runner has it', timestamp: 2, deliveryState: 'delivered', turnAtSend: 8 },
-        { type: 'instruction', message: 'agent turned since', timestamp: 3, deliveryState: 'delivered', turnAtSend: 6 },
+        { type: 'instruction', message: 'runner has it', timestamp: 2, deliveryState: 'delivered', turnAtSend: 6 },
       ],
     };
     await render();
     const rows = Array.from(container.querySelectorAll('[data-testid="steer-message"]'));
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
     expect(rows[0].getAttribute('data-status')).toBe('sent');
     expect(rows[0].textContent).toContain('Sent');
     expect(rows[1].getAttribute('data-status')).toBe('delivered');
     expect(rows[1].textContent).toContain('Delivered');
-    expect(rows[2].getAttribute('data-status')).toBe('read');
-    expect(rows[2].textContent).toContain('Read at turn 7');
+    expect(container.textContent).not.toContain('Read at turn');
+    expect(container.querySelector('[data-testid="steer-turn"]')).toBeNull();
   });
 });

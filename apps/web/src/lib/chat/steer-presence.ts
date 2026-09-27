@@ -2,8 +2,8 @@
  * The Steer canvas (docs/design/chat-canvas.md's "Ask about this task", but
  * for telling a running agent something instead of asking about it): the
  * title it rescopes to, and the small presence strip under the header —
- * who's running, how fresh their last heartbeat is, which turn they're on,
- * and what they're doing right now.
+ * who's running, how fresh their last heartbeat is, and what they're doing
+ * right now.
  *
  * Pure — the canvas supplies live values (the task object view, worker
  * heartbeats); this only formats them. `resolveRunnerDisplay` names the
@@ -22,14 +22,12 @@ export interface SteerPresence {
   runnerLabel: string | null;
   /** "12s ago" / "3m ago"; null with no heartbeat to measure yet. */
   heartbeatLabel: string | null;
-  /** "turn 4"; null when the worker's turn count isn't known. */
-  turnLabel: string | null;
   actionLabel: string | null;
 }
 
 export function steerPresence(
   worker: RunnerWorkerLike,
-  live: { lastHeartbeatAt: number | null; now: number; turns: number | null; currentAction: string | null },
+  live: { lastHeartbeatAt: number | null; now: number; currentAction: string | null },
   heartbeats?: readonly RunnerHeartbeatLike[],
 ): SteerPresence {
   const runner = resolveRunnerDisplay(worker, heartbeats);
@@ -37,7 +35,6 @@ export function steerPresence(
   return {
     runnerLabel: runner?.name ?? null,
     heartbeatLabel: age != null ? `${formatAge(age)} ago` : null,
-    turnLabel: live.turns != null ? `turn ${live.turns}` : null,
     actionLabel: live.currentAction ?? null,
   };
 }

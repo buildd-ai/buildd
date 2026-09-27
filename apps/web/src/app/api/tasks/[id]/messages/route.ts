@@ -43,7 +43,7 @@ export async function GET(
     const worker = await db.query.workers.findFirst({
       where: eq(workers.taskId, id),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, instructionHistory: true, turns: true },
+      columns: { id: true, instructionHistory: true },
     });
 
     const messages = (worker?.instructionHistory as Array<{
@@ -51,14 +51,15 @@ export async function GET(
       message: string;
       timestamp: number;
       deliveryState?: 'pending' | 'delivered';
-      /** worker.turns at send time — see messageDeliveryStatus in lib/worker-instructions.ts. */
-      turnAtSend?: number;
     }> | null) ?? [];
 
-    // The Steer canvas resolves each message's sent → delivered → read status
-    // against the worker's *current* turn count, so it travels with the
-    // messages rather than needing its own round trip.
-    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, turns: worker?.turns ?? null, messages });
+    // Whether this caller may send, by the same rule POST /api/workers/[id]/instruct
+    // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
+    const canSend = apiAccount?.level === 'admin'
+      ? apiAccount.teamId === task.workspace?.teamId
+      : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
+
+    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, canSend, messages });
   } catch (error) {
     console.error('Get task messages error:', error);
     return NextResponse.json({ error: 'Failed to get task messages' }, { status: 500 });

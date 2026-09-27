@@ -20,25 +20,14 @@ describe('appendInstructionHistory — turnAtSend', () => {
 });
 
 describe('messageDeliveryStatus', () => {
-  it('not yet confirmed delivered: sent, regardless of turns', () => {
-    expect(messageDeliveryStatus({ deliveryState: 'pending', turnAtSend: 3 }, 10)).toEqual({ state: 'sent' });
-    expect(messageDeliveryStatus({ deliveryState: undefined, turnAtSend: 3 }, 10)).toEqual({ state: 'sent' });
+  it('not yet confirmed delivered: sent', () => {
+    expect(messageDeliveryStatus({ deliveryState: 'pending' })).toEqual({ state: 'sent' });
+    expect(messageDeliveryStatus({ deliveryState: undefined })).toEqual({ state: 'sent' });
   });
 
-  it('delivered, but the worker has not turned since: delivered', () => {
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: 5 }, 5)).toEqual({ state: 'delivered' });
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: 5 }, 4)).toEqual({ state: 'delivered' });
-  });
-
-  it('delivered, and the worker has taken a turn since: read at turnAtSend + 1', () => {
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: 5 }, 6)).toEqual({ state: 'read', turn: 6 });
-    // The label is fixed at the first turn that could have read it, not the
-    // live count — it doesn't keep climbing as the worker keeps going.
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: 5 }, 40)).toEqual({ state: 'read', turn: 6 });
-  });
-
-  it('no turn baseline (older entry, or an unknown current count): delivered, never read', () => {
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: undefined }, 10)).toEqual({ state: 'delivered' });
-    expect(messageDeliveryStatus({ deliveryState: 'delivered', turnAtSend: 5 }, null)).toEqual({ state: 'delivered' });
+  it('confirmed delivered: delivered, and nothing past it', () => {
+    // workers.turns counts runner check-ins, not agent turns, so it can't back
+    // a "read at turn N" claim. Delivered is the last state we can prove.
+    expect(messageDeliveryStatus({ deliveryState: 'delivered' })).toEqual({ state: 'delivered' });
   });
 });
