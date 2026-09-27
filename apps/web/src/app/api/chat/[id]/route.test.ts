@@ -10,6 +10,10 @@ const inOk = { ...own, id: 'c-ok', workspaceId: 'ws-ok' };
 const apiOpts: any[] = [];
 const turnCalls: any[] = [];
 const titles: Array<[string, string, string]> = [];
+const tiers: Array<[string, string | null]> = [];
+mock.module('@/lib/chat/permissions-store', () => ({
+  loadAllowedToolGroups: async (teamId: string, userId: string) => new Set(teamId === 't-1' && userId === 'u-1' ? ['tasks'] : []),
+}));
 
 mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
@@ -27,6 +31,7 @@ mock.module('@/lib/chat/store', () => ({
   loadApprovals: async () => [],
   pingConversation: async () => {},
   setConversationArchived: async () => {},
+  setConversationTier: async (id: string, tier: string | null) => { tiers.push([id, tier]); },
   setConversationTitle: async (id: string, t: string, src: string) => { titles.push([id, t, src]); return t.trim() || null; },
   toConversationDTO: (c: any) => ({ id: c.id }),
   toMessageDTO: (m: any) => m,
@@ -51,7 +56,7 @@ const req = (method: string, body?: unknown) => new NextRequest('http://localhos
   method, headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
 });
 
-beforeEach(() => { turnCalls.length = 0; titles.length = 0; apiOpts.length = 0; });
+beforeEach(() => { turnCalls.length = 0; titles.length = 0; apiOpts.length = 0; tiers.length = 0; });
 
 describe('/api/chat/[id]', () => {
   it('404s a conversation that is not the caller\'s, for every method', async () => {
@@ -131,5 +136,20 @@ describe('/api/chat/[id]', () => {
     await POST(req('POST', body), ctx('c-ok'));
     const mem = await turnCalls[0].deps.memory(null);
     expect(mem.ctx).toMatchObject({ workspaceId: 'ws-ok', teamId: 't-1', isSensitive: false });
+  });
+});
+
+describe('/api/chat/[id]: tier pin and tool permissions', () => {
+  it('PATCH { tier } pins the conversation; null unpins; anything else is a 400', async () => {
+    expect((await PATCH(req('PATCH', { tier: 'premium' }), ctx('c-1'))).status).toBe(200);
+    expect((await PATCH(req('PATCH', { tier: null }), ctx('c-1'))).status).toBe(200);
+    expect(tiers).toEqual([['c-1', 'premium'], ['c-1', null]]);
+    expect((await PATCH(req('PATCH', { tier: 'claude-opus' }), ctx('c-1'))).status).toBe(400);
+    expect(tiers).toHaveLength(2);
+  });
+
+  it('a turn carries the caller\'s own allowed tool groups for the conversation team', async () => {
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
+    expect([...turnCalls[0].deps.allowedToolGroups]).toEqual(['tasks']);
   });
 });

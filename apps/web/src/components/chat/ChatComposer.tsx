@@ -1,12 +1,15 @@
 'use client';
 
 /**
- * The composer: the message, the workspace the turn's tools default to, and a
- * read-only chip naming the tier the team's admin mapped chat to. There is no
- * model picker, by design (docs/design/agent-chat.md, "Models: tiers, not a
- * model picker").
+ * The composer: the message, the workspace the turn's tools default to, the
+ * tools control (per-group "Ask first" / "Allow") and the tier switch. The
+ * switch picks a tier for the conversation, never a model: the tier → model
+ * mapping stays the team admin's (docs/design/agent-chat.md, "Models: tiers").
  */
 import { forwardRef, useImperativeHandle, useRef, type KeyboardEvent } from 'react';
+import type { ChatTierName } from '@buildd/shared';
+import ToolsMenu from './ToolsMenu';
+import TierSwitch from './TierSwitch';
 
 export interface ComposerWorkspace { id: string; name: string }
 
@@ -24,8 +27,19 @@ interface Props {
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
   onWorkspaceChange(id: string): void;
-  /** "standard" — shown, never chosen here. */
+  /** The tier the latest turn ran on ("standard"). */
   tier: string | null;
+  /**
+   * The team the tools and tier controls read and write. Without it (the dev
+   * fixtures) the controls are replaced by a static tier label.
+   */
+  teamId?: string | null;
+  conversationId?: string | null;
+  /** The conversation's tier pin; null = routed per turn. */
+  pinnedTier?: ChatTierName | null;
+  onTierChange?(tier: ChatTierName | null): void;
+  /** Bump after a turn to refresh the running cost. */
+  costRefreshKey?: number;
   /** Hide the keyboard hints (the narrow docked column, the phone). */
   compact?: boolean;
 }
@@ -33,6 +47,7 @@ interface Props {
 const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer({
   value, onChange, onSend, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
   workspaces, workspaceId, onWorkspaceChange, tier, compact = false,
+  teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0,
 }, ref) {
   const area = useRef<HTMLTextAreaElement>(null);
   useImperativeHandle(ref, () => ({
@@ -91,16 +106,22 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               </select>
             </label>
           )}
+          {teamId && <ToolsMenu teamId={teamId} />}
           <span className="flex-1" />
-          {tier && (
-            <span
-              data-testid="composer-tier-chip"
-              title="Your team admin maps chat to a tier in Settings. It isn't chosen per message."
-              className="hidden min-h-9 items-center border-[1.5px] border-dashed border-border-strong px-2.5 font-mono text-[12px] text-text-muted sm:inline-flex"
-            >
-              running on&nbsp;<b className="font-semibold text-text-primary">{tier}</b>
+          {teamId && onTierChange ? (
+            <TierSwitch
+              teamId={teamId}
+              conversationId={conversationId}
+              pinned={pinnedTier}
+              last={tier}
+              onChange={onTierChange}
+              refreshKey={costRefreshKey}
+            />
+          ) : tier ? (
+            <span data-testid="composer-tier-chip" className="inline-flex min-h-9 items-center border-[1.5px] border-dashed border-border-strong px-2.5 font-mono text-[12px] text-text-muted">
+              {tier}
             </span>
-          )}
+          ) : null}
           {busy && onStop ? (
             <button
               type="button"

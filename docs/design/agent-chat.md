@@ -364,6 +364,35 @@ member. Nothing in the current surface meets that bar. `learn` writes team
 knowledge, so it needs a card. The mechanism exists (`SELF_SCOPED_ALLOWLIST`,
 class `self`) so that adding a member is a reviewed one-line change with a test.
 
+**Decision: "Allow" for a tool group, per person.** The composer has a tools
+control (`⋯`) listing the tool groups. Each group with a write reads *Ask first*
+(the default) or *Allow*. Admin reads *Ask first* and can't be changed. A group
+with no write chat offers (`prs`) reads *Read only*, and `manage_secrets` reads
+*Never*. The choice is stored per person per team
+(`team_members.chat_allowed_tool_groups`, `apps/web/src/lib/chat/permissions.ts`)
+and applies to that person's turns only.
+
+An *Allow* lets a write run without its card only when all of these hold:
+
+- its effective class is `write`. Admin-class calls (any delete, a mission
+  budget change, workspace config) always get a card, and so does every write
+  in the `admin` group;
+- nothing a tool returned is in the model's context: no tool result earlier in
+  the turn, none in the history, and no docked object, whose task titles are in
+  the instructions. Tool output is where an injected instruction comes from, so
+  a write proposed after reading anything gets its card. In practice *Allow*
+  covers a write the model makes straight from your own words ("make this a
+  mission", "hold the Stripe checkout"), before it has read anything;
+- at most one per turn. The write's own result is tool output, so a second
+  write in the same turn gets a card anyway;
+- the server-built preview that would have filled the card succeeds. Target
+  resolution and the reach check run the same way; only the tap goes.
+
+A write that ran this way shows as a tool row tagged `allowed`. This relaxes
+the "every write needs a card" rule above only for the person who chose it, only
+in the groups they chose, and only for writes no content could have prompted.
+The prompt-injection tests run with *Allow* on and still get a card.
+
 The limits on each turn:
 
 - **Steps:** at most 8 model steps (`stopWhen: isStepCount(8)`).
@@ -431,8 +460,15 @@ A mission draft carries a suggested title the user can edit on the approval card
 Users never pick a vendor model. Chat asks for a **tier** like every other caller,
 and the mapping from tier to model is the team admin's call, made in Settings →
 Team → Agent backends through `resolveTierEntry` and `model_tier_registry`
-(`docs/design/model-tiers.md`). The chat header shows a read-only chip
-("running on standard").
+(`docs/design/model-tiers.md`). The composer shows a tier switch
+(*Auto*, `budget`, `standard`, `premium`). *Auto* routes each turn as below. A
+tier picked there pins the conversation (`conversations.tier`), and routing's
+tier pick is ignored while it's pinned; the intent and area picks still apply.
+Hovering or opening the switch shows each tier's current model, its expected
+price per 1k tokens (averaged over the tier's models when the tier is pooled,
+`docs/design/tier-model-pools.md`) and what the conversation has cost so far.
+The running total also sits on the chip. This is a tier choice, not a model
+choice: the tier → model mapping stays the admin's.
 
 **Choosing a tier per turn** uses a decision call (`docs/design/decision-calls.md`).
 It's a fixed-label classification, `simple | standard | complex`, mapped to
@@ -730,7 +766,9 @@ In dependency order, with the load-bearing piece first.
   chat turn. That's what runners are for.
 - A general "call a model" endpoint for agents. `docs/design/inference-calls-primitive.md`
   already rules it out, and chat doesn't bring it back.
-- A model picker for users, or per-conversation model overrides.
+- A model picker for users, or per-conversation model overrides. Pinning a
+  conversation to a *tier* is allowed (Models, above); which model a tier runs
+  stays the admin's.
 - Moving runner credentials (`LLM_PROVIDER` and friends) into `secrets`.
 - Voice input, attachments beyond text and images, and push notifications. The
   existing notification paths keep deep-linking into the conversation.

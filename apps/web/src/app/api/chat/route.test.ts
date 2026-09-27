@@ -62,6 +62,13 @@ describe('POST /api/chat', () => {
     expect(created).toHaveLength(0);
   });
 
+  it('pins a valid tier; drops anything else', async () => {
+    await post({ tier: 'premium' });
+    expect(created[0].tier).toBe('premium');
+    await post({ tier: 'gpt-5-turbo' });
+    expect(created[1].tier).toBeNull();
+  });
+
   it('refuses without a session', async () => {
     callerResponse = new Response('{}', { status: 401 });
     expect((await post({})).status).toBe(401);

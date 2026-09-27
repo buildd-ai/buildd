@@ -43,6 +43,9 @@ export function ToolCallRow({ view, note, flush = false }: { view: ToolRowView; 
         <span aria-label={mark.label} className={`w-3 shrink-0 text-center font-semibold ${mark.cls}`}>{mark.glyph}</span>
         <span className="shrink-0 font-semibold text-text-primary">{view.name}</span>
         {view.action && <span className="shrink-0 text-text-secondary">{view.action}</span>}
+        {(view.output as { allowed?: boolean } | undefined)?.allowed === true && (
+          <span data-testid="tool-call-allowed" className="shrink-0 border border-border-default px-1 text-[11px] md:text-[10.5px] uppercase tracking-[1px] text-text-muted">allowed</span>
+        )}
         {view.args.length > 0 && !note && (
           <span className="hidden min-w-0 truncate text-text-muted sm:inline">{`· ${view.args.join(' · ')}`}</span>
         )}

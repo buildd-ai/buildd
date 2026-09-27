@@ -45,6 +45,7 @@ import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
+import { canSkipCard, contentInContext } from './permissions';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -69,6 +70,11 @@ export interface TurnUser {
 
 export interface TurnDeps {
   now?: () => Date;
+  /**
+   * Tool groups this person set to "Allow" (permissions-store.ts). A write in
+   * one may run without its card while no tool output is in context.
+   */
+  allowedToolGroups?: ReadonlySet<ToolGroup>;
   chatEnabled: (teamId: string) => Promise<boolean>;
   /**
    * Budget and rate limits (limits.checkChatLimits). Required: a turn that
@@ -193,6 +199,8 @@ export async function runChatTurn(args: {
 
   if (message.role === 'user') {
     route = await routePromise!;
+    // A tier the person pinned for this conversation wins over routing's pick.
+    if (conv.tier) route = { ...route, tier: conv.tier };
   } else {
     // An approval answer: it must extend the latest stored assistant message.
     const last = stored.filter(m => m.role === 'assistant').at(-1);
@@ -255,12 +263,15 @@ export async function runChatTurn(args: {
     return buildPreview(tool, input, previewEnv, { confirmAdmin: admin });
   };
 
+  // Writes that run without a card this turn (the person's "Allow"; see below).
+  const allowedToolCallIds = new Set<string>();
   const tools: ToolSet = buildChatTools({
     ctx: deps.actionContext,
     makeApi: deps.makeApi,
     allowWrites: route.allowWrites,
     canAdmin,
     authorizedToolCallIds,
+    allowedToolCallIds,
     approvedPreviews,
     preview,
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
@@ -275,10 +286,27 @@ export async function runChatTurn(args: {
   }));
 
   let approvalsThisTurn = 0;
+  let allowedThisTurn = 0;
+  const allowedGroups = deps.allowedToolGroups ?? new Set<ToolGroup>();
   const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
     name,
-    async (input: unknown) => {
+    async (input: unknown, options?: { toolCallId?: string; messages?: Parameters<typeof contentInContext>[0] }) => {
       if (!needsApproval(name, input)) return 'not-applicable' as const;
+      // The person's "Allow": one write per turn, only while nothing a tool
+      // returned is in the model's context, and only with a preview that
+      // resolves inside reach. Anything else falls through to the card.
+      if (allowedThisTurn === 0 && options?.toolCallId && canSkipCard({
+        tool: name, input, allowedGroups,
+        tainted: contentInContext(options.messages ?? []),
+        docked: docked !== null,
+      })) {
+        const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);
+        if (p?.ok) {
+          allowedThisTurn += 1;
+          allowedToolCallIds.add(options.toolCallId);
+          return 'not-applicable' as const;
+        }
+      }
       // At most one approval card per turn; a second write waits.
       if (approvalsThisTurn >= 1) {
         return { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };

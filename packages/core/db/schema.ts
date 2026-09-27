@@ -101,6 +101,11 @@ export const teamMembers = pgTable('team_members', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   role: text('role').notNull().$type<'owner' | 'admin' | 'member'>(),
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
+  // Chat tool groups (apps/web/src/lib/chat/registry.ts TOOL_GROUPS) this person
+  // set to "Allow": a write in one of them may run without its approval card
+  // for THIS person only, and only when nothing a tool read is in the model's
+  // context (apps/web/src/lib/chat/permissions.ts). Empty = ask for every write.
+  chatAllowedToolGroups: text('chat_allowed_tool_groups').array().notNull().default(sql`'{}'::text[]`),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),
@@ -2572,6 +2577,10 @@ export const conversations = pgTable('conversations', {
   title: varchar('title', { length: 80 }),
   titleSource: text('title_source').default('auto').notNull().$type<'auto' | 'user'>(),
   agentRoleSlug: text('agent_role_slug').default('organizer').notNull(),
+  // The chat tier this conversation is pinned to ('budget' | 'standard' |
+  // 'premium'). NULL = routed per turn. A tier, never a model: the tier → model
+  // mapping stays the team admin's.
+  tier: text('tier').$type<'budget' | 'standard' | 'premium'>(),
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }).defaultNow().notNull(),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

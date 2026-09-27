@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import type { ChatTurnRequest, GetConversationResponse, UpdateConversationRequest } from '@buildd/shared';
+import { isChatTierName, type ChatTurnRequest, type GetConversationResponse, type UpdateConversationRequest } from '@buildd/shared';
 import {
   getOwnConversation,
   loadApprovals,
   loadMessages,
   pingConversation,
   setConversationArchived,
+  setConversationTier,
   setConversationTitle,
   toConversationDTO,
   toMessageDTO,
@@ -19,6 +20,7 @@ import {
   workspaceForConversation,
 } from '@/lib/chat/session';
 import { runChatTurn } from '@/lib/chat/turn';
+import { loadAllowedToolGroups } from '@/lib/chat/permissions-store';
 import { checkChatLimits } from '@/lib/chat/limits';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
@@ -55,13 +57,20 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   return NextResponse.json(body);
 }
 
-/** PATCH /api/chat/[id] { title?, archived? } — rename (titleSource → 'user') or archive. */
+/** PATCH /api/chat/[id] { title?, archived?, tier? } — rename (titleSource → 'user'), archive, or pin a tier. */
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   const r = await loadOwn(req, ctx);
   if ('response' in r) return r.response;
   let body: UpdateConversationRequest;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
+  if (body.tier !== undefined && body.tier !== null && !isChatTierName(body.tier)) {
+    return NextResponse.json({ error: 'tier must be budget, standard, premium or null' }, { status: 400 });
+  }
+  if (body.tier !== undefined) {
+    await setConversationTier(r.conversation.id, body.tier);
+    await pingConversation(r.conversation.id, 'tier');
+  }
   if (body.title !== undefined) {
     const title = await setConversationTitle(r.conversation.id, String(body.title), 'user');
     if (!title) return NextResponse.json({ error: 'title must not be empty' }, { status: 400 });
@@ -86,10 +95,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
   const settings = await loadTeamChatSettings(conv.teamId);
-  const [user, workspace, reach] = await Promise.all([
+  const [user, workspace, reach, allowedToolGroups] = await Promise.all([
     turnUserFor(r.caller.user, conv.teamId, settings.timezone),
     workspaceForConversation(conv.workspaceId, conv.teamId),
     loadChatReach(conv.teamId),
+    // The caller's own "Allow" choices; empty (ask for everything) on failure.
+    loadAllowedToolGroups(conv.teamId, r.caller.user.id),
   ]);
 
   // The default workspace only counts while it's in reach: a conversation
@@ -105,6 +116,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     user,
     body,
     deps: {
+      allowedToolGroups,
       chatEnabled: async () => settings.chatEnabled,
       limits: a => checkChatLimits({ ...a, settings }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),

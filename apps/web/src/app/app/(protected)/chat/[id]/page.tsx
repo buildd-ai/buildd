@@ -37,6 +37,7 @@ export default async function ConversationPage({
       title={conv.title}
       titleSource={conv.titleSource}
       tier={conv.tier}
+      pinnedTier={conv.pinnedTier}
       agent={data.context.agent}
       workspaces={data.workspaces}
       workspaceId={conv.workspaceId}

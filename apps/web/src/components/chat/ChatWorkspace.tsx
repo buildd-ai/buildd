@@ -11,6 +11,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions } from './ChatActions';
@@ -36,6 +37,12 @@ export interface ChatWorkspaceProps {
   teamName?: string | null;
   agent: ChatAgent;
   tier: string | null;
+  /** The composer's tools and tier controls (absent in the dev fixtures). */
+  teamId?: string | null;
+  conversationId?: string | null;
+  pinnedTier?: ChatTierName | null;
+  onTierChange?(tier: ChatTierName | null): void;
+  costRefreshKey?: number;
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
   onWorkspaceChange(id: string): void;
@@ -68,7 +75,7 @@ const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(m
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
-    agent, tier, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
+    agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null,
   } = props;
@@ -167,9 +174,6 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         </div>
         <div className="truncate font-mono text-[11.5px] text-text-muted md:hidden">{agent.name}</div>
       </div>
-      {tier && (
-        <span className="border-[1.5px] border-dashed border-border-strong px-2 py-1 font-mono text-[11.5px] text-text-muted sm:hidden">{tier}</span>
-      )}
       <Link
         href={newChatHref}
         data-testid="chat-new"
@@ -216,6 +220,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             workspaceId={workspaceId}
             onWorkspaceChange={onWorkspaceChange}
             tier={tier}
+            teamId={teamId}
+            conversationId={conversationId}
+            pinnedTier={pinnedTier}
+            onTierChange={onTierChange}
+            costRefreshKey={costRefreshKey}
             compact={docked}
           />
           {formFallbackHref && messages.length === 0 && (

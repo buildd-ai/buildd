@@ -9,7 +9,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import type { CreateConversationResponse } from '@buildd/shared';
+import type { ChatTierName, CreateConversationResponse } from '@buildd/shared';
 import ChatComposer, { type ComposerWorkspace } from './ChatComposer';
 import { parkPending } from './pending-message';
 import { chatErrorLine } from './chat-errors';
@@ -33,6 +33,7 @@ export default function HomeChatCard({
     (initialWorkspaceId && workspaces.some(w => w.id === initialWorkspaceId) ? initialWorkspaceId : null) ?? workspaces[0]?.id ?? null,
   );
   const [busy, setBusy] = useState(false);
+  const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function send(text: string) {
@@ -43,7 +44,7 @@ export default function HomeChatCard({
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId, workspaceId }),
+        body: JSON.stringify({ teamId, workspaceId, tier: pinnedTier }),
       });
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
@@ -72,6 +73,9 @@ export default function HomeChatCard({
         workspaceId={workspaceId}
         onWorkspaceChange={setWorkspaceId}
         tier={null}
+        teamId={teamId}
+        pinnedTier={pinnedTier}
+        onTierChange={setPinnedTier}
         compact
       />
       {error && <p role="alert" className="mt-2 font-mono text-[12px] text-status-error">{error}</p>}
