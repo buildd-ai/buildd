@@ -1104,9 +1104,12 @@ export default async function MissionDetailPage({
       {/* Where this mission sits, and the chips that used to crowd the header. */}
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-muted">
         {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
-          <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
-            {displayWorkspaceName(mission.workspace.name)}
-          </Link>
+          <span>
+            Workspace:{' '}
+            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
+              {displayWorkspaceName(mission.workspace.name)}
+            </Link>
+          </span>
         )}
         {displayState === 'active' && driveNextRun.text && (
           <span className="font-mono text-[11px]">{driveNextRun.text}</span>
@@ -1223,11 +1226,16 @@ export default async function MissionDetailPage({
       )}
 
       {/* Diagnostics — steering-cost stats live here, not in the header
-          chip row (addendum D2: no internal jargon on cards or headers). */}
-      <div className="card p-4" data-testid="mission-diagnostics">
-        <h2 className="section-label mb-2">Diagnostics</h2>
-        <MissionAuthorshipStats health={authorshipHealth} />
-      </div>
+          chip row (addendum D2: no internal jargon on cards or headers).
+          Collapsed by default: this is debug detail, not a primary setting. */}
+      <details className="card p-4 group" data-testid="mission-diagnostics">
+        <summary className="cursor-pointer text-[11px] text-text-muted list-none">
+          <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Advanced
+        </summary>
+        <div className="mt-2">
+          <MissionAuthorshipStats health={authorshipHealth} />
+        </div>
+      </details>
     </MissionSecondaryPanel>
   );
 
