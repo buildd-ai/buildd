@@ -12,7 +12,7 @@ import {
 
 /**
  * Which calls may spend a provider key. Three kinds:
- * - interactive (chat): on whenever a key resolves; the admin's kill switch is `chatDisabled`.
+ * - interactive (chat): always on; it runs whenever a key resolves. No switch.
  * - built-in decision calls: always allowed; they run when a key resolves.
  * - server-side features: default by billing model, per-feature override `runner`.
  */
@@ -20,24 +20,24 @@ import {
 describe('isInferenceAllowed', () => {
   it('allows every capability on a team that never touched a setting', () => {
     for (const c of ALL_INFERENCE_CAPABILITIES) {
-      expect(isInferenceAllowed(c, { chatDisabled: false, featureModes: null })).toBe(true);
+      expect(isInferenceAllowed(c, { featureModes: null })).toBe(true);
     }
   });
 
   it('never gates the built-in decision calls', () => {
-    const gate = { chatDisabled: true, featureModes: { task_classification: 'runner', task_category_shadow: 'runner' } };
+    const gate = { featureModes: { task_classification: 'runner', task_category_shadow: 'runner' } };
     expect(isInferenceAllowed('task_classification', gate)).toBe(true);
     expect(isInferenceAllowed('task_category_shadow', gate)).toBe(true);
   });
 
-  it('stops chat, and only chat, when an admin switches it off', () => {
-    const gate = { chatDisabled: true, featureModes: null };
-    expect(isInferenceAllowed('chat', gate)).toBe(false);
-    expect(isInferenceAllowed('criteria_grading', gate)).toBe(true);
+  it('never gates chat, whatever the deprecated chat_disabled column holds', () => {
+    const gate = { chatDisabled: true, featureModes: null } as Parameters<typeof isInferenceAllowed>[1];
+    expect(isInferenceAllowed('chat', gate)).toBe(true);
+    expect(isInferenceAllowed('chat', { featureModes: { chat: 'runner' } })).toBe(true);
   });
 
   it('sends a server-side feature to the runner when overridden', () => {
-    const gate = { chatDisabled: false, featureModes: { visual_qa: 'runner' } };
+    const gate = { featureModes: { visual_qa: 'runner' } };
     expect(isInferenceAllowed('visual_qa', gate)).toBe(false);
     expect(isInferenceAllowed('criteria_grading', gate)).toBe(true);
     expect(isInferenceAllowed('mission_summary', gate)).toBe(true);
@@ -48,8 +48,8 @@ describe('isInferenceAllowed', () => {
   });
 
   it('ignores garbage in the stored modes', () => {
-    expect(isInferenceAllowed('criteria_grading', { chatDisabled: false, featureModes: 'runner' })).toBe(true);
-    expect(isInferenceAllowed('criteria_grading', { chatDisabled: false, featureModes: { criteria_grading: 'off' } })).toBe(true);
+    expect(isInferenceAllowed('criteria_grading', { featureModes: 'runner' })).toBe(true);
+    expect(isInferenceAllowed('criteria_grading', { featureModes: { criteria_grading: 'off' } })).toBe(true);
   });
 });
 

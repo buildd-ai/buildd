@@ -33,11 +33,9 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { chatDisabled: true, timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
+    columns: { timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
   });
   return {
-    // On whenever a key resolves; an admin can switch it off (teams.chatDisabled).
-    chatEnabled: team ? team.chatDisabled !== true : false,
     timezone: team?.timezone ?? null,
     // NULL here means "not set": limits.resolveChatBudgets applies the defaults.
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,

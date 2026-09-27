@@ -26,7 +26,7 @@ const patches: unknown[] = [];
 
 beforeEach(() => {
   patches.length = 0;
-  body = { teamId: 't', canManageTeamKeys: true, keyPolicy: 'team', chatDisabled: false, providers: [] };
+  body = { teamId: 't', canManageTeamKeys: true, keyPolicy: 'team', providers: [] };
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     if (init?.method === 'PATCH') { patches.push(JSON.parse(String(init.body))); return new Response('{}', { status: 200 }); }
     if (String(url).startsWith('/api/inference-keys')) return new Response(JSON.stringify(body), { status: 200 });

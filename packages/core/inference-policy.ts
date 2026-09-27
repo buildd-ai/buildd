@@ -4,8 +4,8 @@
  *
  * Three kinds of call site, each with its own rule:
  *
- * - **interactive** (`chat`): on whenever a key resolves. The only control is
- *   the admin's kill switch, `teams.chatDisabled`.
+ * - **interactive** (`chat`): always on. It runs whenever a key resolves; there
+ *   is no switch (`teams.chatDisabled` is deprecated and unread).
  * - **built_in** decision calls (task classification, the task category shadow
  *   check): low cost, no toggle. They run whenever a key resolves.
  * - **server_feature** (goal grading, visual QA judgment, mission summaries):
@@ -122,7 +122,6 @@ function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null 
 
 /** The team columns the gate reads. */
 export interface InferenceGate {
-  chatDisabled?: boolean | null;
   featureModes?: unknown;
 }
 
@@ -134,8 +133,7 @@ export function isInferenceAllowed(capability: InferenceCapability, gate: Infere
   if (!gate) return false;
   const d = INFERENCE_CAPABILITIES[capability];
   if (!d) return false;
-  if (d.kind === 'built_in') return true;
-  if (d.kind === 'interactive') return gate.chatDisabled !== true;
+  if (d.kind === 'built_in' || d.kind === 'interactive') return true;
   return storedMode(gate.featureModes, capability as ServerFeature) !== 'runner';
 }
 

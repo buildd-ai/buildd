@@ -30,19 +30,19 @@ export interface ChatShellData {
   teamName: string | null;
   workspaces: Array<{ id: string; name: string }>;
   available: boolean;
-  reason: 'capability_disabled' | 'no_key' | 'budget_exhausted' | 'rate_limited' | null;
+  reason: 'no_key' | 'budget_exhausted' | 'rate_limited' | null;
   canManageTeamKeys: boolean;
   audience: 'member' | 'operator';
   context: ChatPageContext;
   conversations: ConversationListItem[];
 }
 
-export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'capability_disabled' | 'no_key'; policy?: 'team' | 'team_or_own' | 'own' }> {
+export async function loadChatShell(): Promise<ChatShellData | { unavailable: true; teamId: string | null; canManage: boolean; reason: 'no_key'; policy?: 'team' | 'team_or_own' | 'own' }> {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
   const scope = await resolveActiveTeamScope(user.id, (await cookies()).get('buildd-team')?.value);
   const teamId = scope.teamId;
-  if (!teamId) return { unavailable: true, teamId: null, canManage: false, reason: 'capability_disabled' };
+  if (!teamId) return { unavailable: true, teamId: null, canManage: false, reason: 'no_key' };
   const wsIds = scope.workspaces.map(w => w.id);
   const [avail, role, context, conversations] = await Promise.all([
     getChatAvailability(user.id, teamId),
@@ -51,7 +51,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
     listConversations(user.id, teamId).catch(() => []),
   ]);
   if (!avail.available) {
-    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: avail.reason === 'no_key' ? 'no_key' : 'capability_disabled', policy: avail.keyPolicy };
+    return { unavailable: true, teamId, canManage: avail.canManageTeamKeys, reason: 'no_key', policy: avail.keyPolicy };
   }
   return {
     user: { id: user.id, name: user.name ?? null, email: user.email ?? null },
@@ -67,7 +67,7 @@ export async function loadChatShell(): Promise<ChatShellData | { unavailable: tr
   };
 }
 
-export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'capability_disabled' | 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
+export function ChatUnavailable({ reason, canManage, policy, teamId = null, formHref = '/app/missions/new' }: { reason: 'no_key'; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own'; teamId?: string | null; formHref?: string }) {
   return (
     <div data-testid="chat-unavailable" className="mx-auto grid max-w-xl gap-4 px-4 py-8 md:py-14">
       {/* Everyone brings their own key and this person has none: the connect

@@ -92,7 +92,6 @@ export async function GET(
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
-        chatDisabled: true,
       },
     });
 
@@ -145,7 +144,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDisabled } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -217,13 +216,8 @@ export async function PATCH(
       }
       updates.inferenceKeyPolicy = inferenceKeyPolicy;
     }
-    // Chat is on whenever a key resolves; this is the admin's off switch.
-    if (chatDisabled !== undefined) {
-      if (typeof chatDisabled !== 'boolean') {
-        return NextResponse.json({ error: 'chatDisabled must be true or false' }, { status: 400 });
-      }
-      updates.chatDisabled = chatDisabled;
-    }
+    // Chat is always on: there is no switch. A `chatDisabled` field (the old
+    // kill switch; teams.chat_disabled is deprecated) is ignored.
     if (slug !== undefined) {
       // Validate slug format
       if (!/^[a-z0-9-]+$/.test(slug)) {

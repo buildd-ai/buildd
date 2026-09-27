@@ -226,12 +226,12 @@ describe('decisionCall gating', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it('does nothing for a chat routing call when an admin switched chat off', async () => {
+  it('runs a chat routing call even when the deprecated chat_disabled column is set', async () => {
     teamRow = { chatDisabled: true, inferenceFeatureModes: null };
     const fetcher = mock(async () => jsonResponse(OK_BODY));
     const res = await decisionCall(params({ fetcher, capability: 'chat' }));
-    expect(!res.ok && res.error).toEqual({ kind: 'capability_disabled', capability: 'chat' });
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(res.ok).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when the team row is missing', async () => {

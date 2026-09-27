@@ -203,7 +203,7 @@ export default function ChatConversation(props: ChatConversationProps) {
   }, [addToolApprovalResponse]);
 
   const unavailable = parseChatUnavailable(error);
-  const setupReason = unavailable && (unavailable.error === 'no_key' || unavailable.error === 'capability_disabled') ? unavailable.error : null;
+  const setupReason = unavailable?.error === 'no_key' ? 'no_key' : null;
   const errorLine = createError ?? (error && !setupReason ? chatErrorLine(error) : null);
 
   // Saved assistant turns can be rated; the one still streaming cannot yet.

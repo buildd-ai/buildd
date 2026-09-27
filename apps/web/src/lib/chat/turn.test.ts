@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any }) {
+function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any }) {
   const apiCalls: string[] = [];
   const resolveCalls: any[] = [];
   const poolRecords: Array<{ draw: any; messageId: string }> = [];
@@ -90,7 +90,6 @@ function harness(opts: { enabled?: boolean; key?: boolean; model?: MockLanguageM
   const deps = {
     now: () => new Date('2026-09-26T21:30:00Z'),
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
-    chatEnabled: async () => opts.enabled ?? true,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
@@ -135,17 +134,7 @@ function answer(approved: boolean, tamper?: Record<string, unknown>) {
 
 beforeEach(() => { messages = []; approvals = []; seq = 0; });
 
-describe('nothing changes without the capability or a key', () => {
-  it('capability off ⇒ 403 before any model call or write', async () => {
-    const model = new MockLanguageModelV4({ doStream: textStream('hi') as any });
-    const { turn } = harness({ enabled: false, model });
-    const { res, text } = await turn(userMsg('what is in flight?'));
-    expect(res.status).toBe(403);
-    expect(JSON.parse(text).error).toBe('capability_disabled');
-    expect(model.doStreamCalls).toHaveLength(0);
-    expect(messages).toHaveLength(0);
-  });
-
+describe('nothing changes without a key', () => {
   it('no key ⇒ 409 no_key, no model call, nothing saved (the UI falls back to the mission form)', async () => {
     const model = new MockLanguageModelV4({ doStream: textStream('hi') as any });
     const { turn } = harness({ key: false, model });

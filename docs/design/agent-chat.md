@@ -548,10 +548,13 @@ Settings → You → *Use my own key*. The existing capability toggle (`chat`, n
 `INFERENCE_CAPABILITIES`, `fallback: 'none'`) sits next to it, off by default,
 following the policy's rule that pasting a key never starts spending by itself.
 
-**When no key resolves:** chat doesn't start a turn. The composer turns into the
-existing mission form with the draft text kept, and a card explains why: admins
-see *Add a team key*, members see *Ask an admin to connect a provider, or use your
-own key*. Nothing falls back to a subscription seat.
+**When no key resolves:** chat doesn't start a turn. Chat is always on (it is
+part of buildd, not an option), so the Chat entry point still shows and its page
+renders one inline state that says who can fix it: owners and admins see
+*Connect a model provider*, members see *Ask a team admin*, and under the
+own-key policy everyone without a key sees *Connect OpenRouter to start*. The
+mission form stays one link away, with the draft text kept. Nothing falls back
+to a subscription seat.
 
 ### Cost and rate limits
 
@@ -708,9 +711,10 @@ In dependency order, with the load-bearing piece first.
    and the no-key fallback.
 
 **Acceptance:**
-- With the capability off, or no key resolved, nothing changes for any team:
-  there's no Chat entry point and the mission form behaves as today. A test
-  asserts both.
+- With no key resolved, the Chat entry point is still there and its page says
+  who can fix it; the mission form behaves as today. There is no capability to
+  turn off. Tests assert the nav entry is always present and the no-key state
+  per role and policy.
 - A read-only question ("what's in flight on billing-web?") streams its first
   token in under 2s at the p50 and shows every tool call as a row.
 - "Make this a mission" produces exactly one approval card. Confirming files one

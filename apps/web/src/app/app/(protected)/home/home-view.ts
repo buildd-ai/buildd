@@ -127,8 +127,8 @@ export type HomeChatPlacement =
  * page for everyone; operators get the fleet directly under it. No key: an
  * admin gets the provider step of onboarding in its place until a key works;
  * under "everyone brings their own key", anyone without one gets the single
- * connect card. A member of a team with no key sees nothing new, and a team
- * that switched chat off sees today's Home, unchanged.
+ * connect card. A member of a team with no key sees nothing new on Home; the
+ * Chat nav entry is always there and its page says who can fix it.
  */
 export function homeChatPlacement(
   _audience: HomeAudience,
@@ -136,7 +136,6 @@ export function homeChatPlacement(
 ): HomeChatPlacement {
   if (!avail) return { kind: 'none' };
   if (avail.available) return { kind: 'chat' };
-  if (avail.reason !== 'no_key') return { kind: 'none' };
   if (avail.keyPolicy === 'own') return { kind: 'connect-own' };
   if (avail.canManageTeamKeys) return { kind: 'onboarding' };
   return { kind: 'none' };

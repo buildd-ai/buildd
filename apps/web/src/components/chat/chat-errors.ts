@@ -5,7 +5,7 @@
  */
 import type { ChatUnavailableResponse } from '@buildd/shared';
 
-const REASONS = new Set(['capability_disabled', 'no_key', 'budget_exhausted', 'rate_limited']);
+const REASONS = new Set(['no_key', 'budget_exhausted', 'rate_limited']);
 
 export function parseChatUnavailable(err: unknown): ChatUnavailableResponse | null {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : null;

@@ -17,10 +17,14 @@ describe('chatStatusCopy', () => {
       .toMatchObject({ tone: 'success', text: 'Interactive AI is on · OpenRouter · team key', action: null });
   });
 
-  it('names the real reason: switched off, not a missing key', () => {
-    const off = chatStatusCopy({ available: false, reason: 'capability_disabled' }, { kind: 'team', provider: 'openrouter' }, true, 'team');
-    expect(off.text).toBe('Interactive AI is off for the team');
-    expect(off.action).toEqual({ href: '/app/settings/ai', label: 'Turn it on' });
+  it('never offers a switch to turn it on: the only unavailable reason is a missing key', () => {
+    for (const admin of [true, false]) {
+      for (const policy of ['team', 'team_or_own', 'own'] as const) {
+        const c = chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'none' }, admin, policy);
+        expect(`${c.text} ${c.action?.label ?? ''}`).not.toMatch(/turn (it )?on|is off|off for/i);
+        expect(c.action?.href).not.toBe('/app/settings/ai');
+      }
+    }
   });
 
   it('a missing key: admins get the fix, members get who to ask', () => {
@@ -39,7 +43,6 @@ describe('chatStatusCopy', () => {
   it('never calls it chat', () => {
     const all = [
       chatStatusCopy({ available: true, reason: null }, { kind: 'team', provider: 'openrouter' }, true, 'team'),
-      chatStatusCopy({ available: false, reason: 'capability_disabled' }, { kind: 'none' }, true, 'team'),
       chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'none' }, true, 'team'),
       chatStatusCopy({ available: false, reason: 'no_key' }, { kind: 'needs_own' }, false, 'own'),
     ];

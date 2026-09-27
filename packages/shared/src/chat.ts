@@ -82,8 +82,6 @@ export interface ListProviderKeysResponse {
    * own, `own` = everyone brings their own.
    */
   keyPolicy: 'team' | 'team_or_own' | 'own';
-  /** An admin switched chat off for the team. */
-  chatDisabled: boolean;
 }
 
 /** `PUT /api/inference-keys` */
@@ -586,11 +584,10 @@ export interface ChatTurnEntry {
 
 /**
  * Why a turn was refused before any model call. Returned as JSON with a 4xx
- * status instead of a stream. `no_key` / `capability_disabled` ⇒ show the
+ * status instead of a stream. `no_key` ⇒ show the
  * setup card and the mission form, keeping the draft text.
  */
 export type ChatUnavailableReason =
-  | 'capability_disabled'
   | 'no_key'
   | 'budget_exhausted'
   | 'rate_limited';
@@ -605,10 +602,14 @@ export interface ChatUnavailableResponse {
   scope?: 'team' | 'user';
 }
 
-/** `GET /api/chat/availability?teamId=` — should the UI show a Chat entry point? */
+/**
+ * `GET /api/chat/availability?teamId=` — can this person start a turn? Chat is
+ * always on and its entry point always shows; `no_key` picks the inline state
+ * that says who can fix it.
+ */
 export interface ChatAvailabilityResponse {
   available: boolean;
-  reason: ChatUnavailableReason | null;
+  reason: 'no_key' | null;
   canManageTeamKeys: boolean;
   /** The team's key policy, so a setup card can say whose key is missing. */
   keyPolicy?: 'team' | 'team_or_own' | 'own';

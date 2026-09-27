@@ -34,8 +34,10 @@ describe('NAV_ITEMS', () => {
     ]);
   });
 
-  it('only Chat is gated on chat availability', () => {
-    expect(NAV_ITEMS.filter((i) => i.requiresChat).map((i) => i.href)).toEqual(['/app/chat']);
+  it('Chat is a plain nav item, gated on nothing (chat is always on)', () => {
+    const chat = NAV_ITEMS.find((i) => i.href === '/app/chat');
+    expect(chat).toBeDefined();
+    expect(Object.keys(chat!).sort()).toEqual(['href', 'icon', 'label']);
   });
 
   it('provides an icon for every item', () => {
@@ -147,28 +149,30 @@ describe('showsWorkspaceFilter', () => {
 
 describe('navItemsFor', () => {
   const hrefs = (items: { href: string }[]) => items.map(i => i.href);
-  const withoutChat = NAV_ITEMS.filter(i => !i.requiresChat);
 
-  it('chat unavailable: exactly the nav as it was, for everyone, on both surfaces', () => {
+  it('the Chat entry is always present, for every audience, on both surfaces', () => {
     for (const audience of ['member', 'operator'] as const) {
-      expect(hrefs(navItemsFor({ chat: false, audience }, 'desktop'))).toEqual(hrefs(withoutChat));
-      expect(hrefs(navItemsFor({ chat: false, audience }, 'mobile'))).toEqual(hrefs(withoutChat.filter(i => !i.desktopOnly)));
+      for (const surface of ['desktop', 'mobile'] as const) {
+        expect(hrefs(navItemsFor({ audience }, surface))).toContain('/app/chat');
+      }
     }
   });
 
-  it('a member with chat gets Chat first, desktop and phone', () => {
-    expect(navItemsFor({ chat: true, audience: 'member' }, 'desktop')[0].href).toBe('/app/chat');
-    expect(navItemsFor({ chat: true, audience: 'member' }, 'mobile')[0].href).toBe('/app/chat');
+  it('a member gets Chat first, desktop and phone', () => {
+    expect(navItemsFor({ audience: 'member' }, 'desktop')[0].href).toBe('/app/chat');
+    expect(navItemsFor({ audience: 'member' }, 'mobile')[0].href).toBe('/app/chat');
   });
 
-  it('an operator with chat keeps Home (the fleet) first, Chat right after', () => {
-    expect(hrefs(navItemsFor({ chat: true, audience: 'operator' }, 'desktop')).slice(0, 2)).toEqual(['/app/home', '/app/chat']);
+  it('an operator keeps Home (the fleet) first, Chat right after', () => {
+    expect(hrefs(navItemsFor({ audience: 'operator' }, 'desktop')).slice(0, 2)).toEqual(['/app/home', '/app/chat']);
   });
 
   it('the phone tab bar never exceeds its limit; Team steps off, the rail keeps it', () => {
-    const mobile = navItemsFor({ chat: true, audience: 'member' }, 'mobile');
-    expect(mobile.length).toBeLessThanOrEqual(MOBILE_TAB_LIMIT);
-    expect(hrefs(mobile)).not.toContain('/app/team');
-    expect(hrefs(navItemsFor({ chat: true, audience: 'member' }, 'desktop'))).toContain('/app/team');
+    for (const audience of ['member', 'operator'] as const) {
+      const mobile = navItemsFor({ audience }, 'mobile');
+      expect(mobile.length).toBeLessThanOrEqual(MOBILE_TAB_LIMIT);
+      expect(hrefs(mobile)).not.toContain('/app/team');
+      expect(hrefs(navItemsFor({ audience }, 'desktop'))).toContain('/app/team');
+    }
   });
 });

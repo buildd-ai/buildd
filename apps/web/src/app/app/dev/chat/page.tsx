@@ -3,7 +3,7 @@
 /**
  * Agent chat states in isolation, from fictional fixtures — no database, no
  * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty`
- * and `&aside=member|operator`, `&setup=no_key|capability_disabled&admin=1`.
+ * and `&aside=member|operator`, `&setup=no_key&admin=1`.
  * Confirm, Discard and the question options work against the fixture.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -67,7 +67,7 @@ export default function DevChatPage() {
 
   if (!params) return null;
 
-  if (setup === 'no_key' || setup === 'capability_disabled') {
+  if (setup === 'no_key') {
     return (
       <div className="min-h-screen bg-surface-1 p-6 md:p-10">
         <div className="mx-auto grid max-w-xl gap-4">

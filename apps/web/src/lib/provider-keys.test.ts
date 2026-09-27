@@ -194,10 +194,11 @@ describe('deleteProviderKey', () => {
 });
 
 describe('team key policy', () => {
-  it('lists the policy and the chat switch with the keys', async () => {
+  it('lists the policy with the keys, and no chat switch (chat is always on)', async () => {
     teamRow = { inferenceKeyPolicy: 'own', chatDisabled: true };
     const view = await listProviderKeys('t-1', 'u-1', true);
-    expect(view).toMatchObject({ keyPolicy: 'own', chatDisabled: true });
+    expect(view).toMatchObject({ keyPolicy: 'own' });
+    expect(view).not.toHaveProperty('chatDisabled');
   });
 
   it("refuses a personal key when the team pays for everyone ('team')", async () => {
