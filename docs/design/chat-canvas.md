@@ -30,9 +30,9 @@ again.
 - **Fleet objects (hard):** missions, tasks, PRs, questions and approval cards
   keep square corners and ink borders. An approval gets an orange top edge for
   "needs you" and plain buttons.
-- **Orange** still means action or live: the send button, the running tool row,
-  and a segment that scans the canvas's top edge while a turn streams
-  (`.canvas-scan`, static under `prefers-reduced-motion`).
+- **Orange** still means action or live: the send button and the running tool
+  row. While a turn streams the one glow is blue, on the composer's top edge
+  (see "Thinking" below); the old orange scan line is gone.
 - **Pinned object:** the object the chat is about (`entry.about`), else the latest
   mission or task in the conversation (`canvasPin` in `feed-model.ts`), pinned at
   the top as a compact board: one column per phase, four rows each, and what
@@ -92,6 +92,43 @@ dark square. Every cell is at least 44px to touch.
 
 Copy is plain language for people who don't write code: "waiting on tests",
 not "in CI".
+
+**Thinking** (a turn in flight):
+
+- **Your message:** a raised square block (1px `--chat-rule-strong` border, 3px
+  offset shadow), Newsreader 17px, right aligned, at most 82% wide. Under it a
+  tiny mono tag names the workspace the reply went to (`routed · billing-web`,
+  `intentTag` in `thinking-model.ts`); tapping it opens the composer's scope.
+  Desktop keeps the soft bubble.
+- **The panel:** the turn in flight draws as a square panel with a plain 2px blue
+  left rule: BUILDD (copper), THINKING (blue) and three ticking 4px squares.
+  Then the steps, in plain words (`thinkingSteps`): each tool call is reworded
+  to a human verb ("Looked over the missions", "Read 3 tasks"), never a tool
+  name. Done steps are muted with a slate square, the one active step is bright
+  with a blue square breathing in opacity, a change waiting on you is an
+  outlined pending square ("Check it with you"). After the calls it says
+  "Writing the answer" while prose streams, else "Thinking it through". The
+  prose is Newsreader 17px with a solid blue block caret. Once the turn lands it
+  reads as the normal feed again, tool rows and all.
+- **Composer:** the placeholder reads "Steer while I think…" and send becomes Stop.
+- **One glow only:** a 140px blue segment with a soft glow sweeps left to right
+  along the composer's 2px top edge (`.composer-sweep`, 1.8s linear) while
+  busy. It is the only glowing element on the surface; `sea.test.ts` and the
+  canvas DOM test hold that. Reduced motion: a still blue rule, no glow.
+
+**The sea** (phone, behind the empty canvas and the thread; `sea.ts`,
+`SeaLayer.tsx`): nine round pools (`border-radius: 50%`, a radial gradient to
+transparent, `blur(28px)`, 170 to 320px) in one layer inset -60px behind the
+content. Each drifts on a slow out-and-back loop (24 to 44px, 29 to 52s). While
+a turn streams a second, faster current (14 to 23s) runs on top and pauses in
+place when it stops, so nothing jumps. Colours: calm is teal; needs-you swaps
+one low pool to copper; thinking is blue and violet. A mood change cross-fades
+the pool colour over 800ms through a registered colour property. No lines,
+bars or streaks: it must never read as data. Transform-only motion, paused
+while the tab is hidden, still under reduced motion. The summoned overlay draws
+no sea. Text sits on the ground or on `--chat-panel`; step text uses
+`--chat-muted` / `--chat-dim` rather than a darker grey so it holds AA over the
+brightest pool.
 
 ### Keyboard hints
 

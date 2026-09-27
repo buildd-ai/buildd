@@ -112,6 +112,7 @@ export default function DevChatPage() {
           status={fixture.status}
           onSend={onSend}
           onApproval={onApproval}
+          onStop={() => {}}
           answerQuestion={() => new Promise(r => setTimeout(r, 400))}
           title={fixture.title}
           teamName={TEAM_NAME}

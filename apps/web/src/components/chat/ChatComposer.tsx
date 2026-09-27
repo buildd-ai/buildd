@@ -54,6 +54,9 @@ interface Props {
   scopeLock?: ReactNode;
 }
 
+/** While a turn streams: typing is steering, not a new question. */
+export const BUSY_PLACEHOLDER = 'Steer while I think…';
+
 const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer({
   value, onChange, onSend, onStop, busy = false, disabled = false, placeholder = 'Ask about your fleet, or describe the work…',
   workspaces, workspaceId, onWorkspaceChange, routedWorkspace = null, teamName = null, tier, compact = false,
@@ -86,11 +89,17 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
     <div data-testid="chat-composer" data-mood={mood ?? undefined}>
       {/* A full-bleed slab on a phone, a square box on desktop: no radius
           anywhere in the foreground (docs/design/chat-canvas.md). The 2px top
-          rule turns copper while something needs the viewer. */}
+          rule turns copper while something needs the viewer; while a turn
+          streams a blue segment sweeps along it, the surface's one glow. */}
       <form
         onSubmit={(e) => { e.preventDefault(); send(); }}
-        className={`border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] focus-within:border-t-[var(--chat-text)]'}`}
+        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] focus-within:border-t-[var(--chat-text)]'}`}
       >
+        {busy && (
+          <span aria-hidden="true" data-testid="composer-sweep" data-glow="true" className="composer-edge">
+            <span className="composer-sweep" />
+          </span>
+        )}
         <label htmlFor="chat-composer-input" className="sr-only">Message your agent</label>
         {/* At least 64px and two rows, and sized to its content where the
             browser can, so a long placeholder wraps instead of clipping. */}
@@ -104,7 +113,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={placeholder}
+          placeholder={busy ? BUSY_PLACEHOLDER : placeholder}
           className={`block max-h-48 min-h-16 w-full resize-none [field-sizing:content] ${compact ? '' : 'md:min-h-[76px]'} bg-transparent px-4 py-3 font-voice text-[17px] leading-[1.35] text-[var(--chat-text)] placeholder:text-[var(--chat-muted)] focus:outline-none focus-visible:outline-none md:text-[16px]`}
         />
         <div data-testid="composer-toolbar" className="flex h-12 items-stretch divide-x divide-[var(--chat-rule)] border-t border-[var(--chat-rule)]">
@@ -137,10 +146,13 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
               {tier}
             </span>
           ) : null}
-          {busy && onStop ? (
+          {/* While a turn streams, send is Stop for the whole turn, disabled
+              only where the surface has nothing to stop it with. */}
+          {busy ? (
             <button
               type="button"
               onClick={onStop}
+              disabled={!onStop}
               aria-label="Stop"
               data-testid="composer-stop"
               className="grid w-[60px] shrink-0 place-items-center bg-[var(--chat-text)] hover:opacity-90"

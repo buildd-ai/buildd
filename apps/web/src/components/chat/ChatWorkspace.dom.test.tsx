@@ -1,8 +1,9 @@
 /**
- * The chat canvas, mounted (happy-dom): the scan line runs only while a turn
- * streams, the empty canvas greets and offers one-tap questions, the mission
- * the chat is about pins as a compact live board, and keyboard hints stay
- * hidden unless the person turned them on.
+ * The chat canvas, mounted (happy-dom): the composer sweep is the one glow and
+ * runs only while a turn streams, the sea follows the mood, the empty canvas
+ * greets and offers one-tap questions, the mission the chat is about pins as
+ * a compact live board, and keyboard hints stay hidden unless the person
+ * turned them on.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -67,15 +68,104 @@ async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?
 const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
 
-describe('scan line', () => {
-  it('runs along the top edge only while a turn is in flight', async () => {
-    const msgs = fixtures.chatFixture('streaming').messages;
-    await render({ messages: msgs, status: 'streaming' });
-    expect(q('[data-testid="canvas-scan"]')).not.toBeNull();
-    await render({ messages: msgs, status: 'submitted' });
-    expect(q('[data-testid="canvas-scan"]')).not.toBeNull();
-    await render({ messages: msgs, status: 'ready' });
+describe('thinking', () => {
+  const msgs = () => fixtures.chatFixture('streaming').messages;
+  const glows = () => qa('[data-glow="true"]');
+  const placeholder = () => (q('#chat-composer-input') as HTMLTextAreaElement).placeholder;
+
+  it('one glow only: the composer sweep, and only while a turn is in flight', async () => {
+    await render({ messages: msgs(), status: 'streaming' });
+    expect(glows().map(g => g.dataset.testid)).toEqual(['composer-sweep']);
+    expect(q('[data-testid="chat-composer"]')!.contains(glows()[0])).toBe(true);
+    await render({ messages: msgs(), status: 'submitted' });
+    expect(glows()).toHaveLength(1);
+    await render({ messages: msgs(), status: 'ready' });
+    expect(glows()).toHaveLength(0);
     expect(q('[data-testid="canvas-scan"]')).toBeNull();
+  });
+
+  it('while busy the composer invites steering and send becomes Stop', async () => {
+    await render({ messages: msgs(), status: 'streaming', onStop() {} });
+    expect(placeholder()).toBe('Steer while I think…');
+    expect(q('[data-testid="composer-stop"]')).not.toBeNull();
+    expect(q('[data-testid="composer-send"]')).toBeNull();
+  });
+
+  it('the streaming turn is the Thinking panel: plain steps, no tool names, one active step', async () => {
+    await render({ messages: msgs(), status: 'streaming' });
+    const panel = q('[data-testid="thinking-panel"]');
+    expect(panel).not.toBeNull();
+    const steps = qa('[data-testid="thinking-step"]');
+    expect(steps.map(s => s.dataset.state)).toEqual(['done', 'active']);
+    expect(panel!.textContent).not.toMatch(/manage_missions|recall\b/);
+    expect(q('[data-testid="tool-call-row"]')).toBeNull();
+    expect(panel!.querySelector('.stream-caret')).not.toBeNull();
+  });
+
+  it('the person\'s message carries a tiny tag naming where the turn went', async () => {
+    await render({ messages: msgs(), status: 'streaming' });
+    expect(q('[data-testid="feed-intent-tag"]')?.textContent).toBe('routed · billing-web');
+  });
+
+  it('send is the Stop block for the whole turn, even where nothing can stop it yet', async () => {
+    await render({ messages: msgs(), status: 'streaming' });
+    const stop = q('[data-testid="composer-stop"]') as HTMLButtonElement | null;
+    expect(stop).not.toBeNull();
+    expect(stop!.disabled).toBe(true);
+    expect(q('[data-testid="composer-send"]')).toBeNull();
+    expect(q('[data-testid="composer-sweep"]')).not.toBeNull();
+  });
+
+  it('once the turn lands it reads as the normal feed again', async () => {
+    await render({ messages: msgs(), status: 'ready' });
+    expect(q('[data-testid="thinking-panel"]')).toBeNull();
+    expect(q('[data-testid="tool-call-row"]')).not.toBeNull();
+  });
+
+  it('submitted, nothing streamed: the panel says it is reading the question', async () => {
+    await render({ messages: msgs().slice(0, 1), status: 'submitted' });
+    expect(qa('[data-testid="thinking-step"]').map(s => s.textContent)).toEqual(['Reading your question']);
+  });
+});
+
+describe('sea', () => {
+  const sea = () => q('[data-testid="chat-sea"] .sea') as HTMLElement | null;
+
+  it('one layer behind the page canvas, round pools, mood from the canvas', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    expect(qa('[data-testid="chat-sea"]')).toHaveLength(1);
+    expect(sea()?.dataset.mood).toBe('calm');
+    expect(qa('[data-testid="sea-pool"]').length).toBeGreaterThanOrEqual(8);
+    await render({ pulse: { needsYou: [{ title: 'Fix it' }], live: 0 } });
+    expect(sea()?.dataset.mood).toBe('needs');
+    await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming', pulse: { needsYou: [{ title: 'Fix it' }], live: 0 } });
+    expect(sea()?.dataset.mood).toBe('thinking');
+  });
+
+  it('sits above the ground and below the content: the column is its own stacking context', async () => {
+    await render({ pulse: { needsYou: [], live: 0 } });
+    const layer = q('[data-testid="chat-sea"]')!;
+    const column = q('[data-testid="chat-column"]')!;
+    expect(layer.parentElement).toBe(column);
+    expect(column.className.split(/\s+/)).toContain('isolate');
+    expect(layer.className.split(/\s+/)).toContain('-z-10');
+    // Nothing between the layer and the column paints an opaque ground over it.
+    expect(layer.className).not.toMatch(/\bbg-/);
+  });
+
+  it('holds still for reduced motion', async () => {
+    await render();
+    expect(sea()?.dataset.motion).toBe('static');
+    (window as any).matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    act(() => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(sea()?.dataset.motion).toBe('running');
+  });
+
+  it('the summoned overlay draws no sea', async () => {
+    await render({ variant: 'overlay', onClose() {} });
+    expect(q('[data-testid="chat-sea"]')).toBeNull();
   });
 });
 
