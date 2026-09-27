@@ -92,6 +92,7 @@ export async function GET(
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
+        timezone: true,
       },
     });
 
