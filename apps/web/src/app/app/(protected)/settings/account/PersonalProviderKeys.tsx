@@ -32,7 +32,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
   if (!teamId) return null;
 
   const summary = view ? chatKeySummary(view) : null;
-  const line = summary && view ? chatKeyLine(summary, { isAdmin, chatDisabled: view.chatDisabled }) : null;
+  const line = summary && view ? chatKeyLine(summary, { isAdmin }) : null;
   const ownAllowed = view ? view.keyPolicy !== 'team' : false;
   const required = view?.keyPolicy === 'own';
   const hasOwn = summary?.kind === 'own';

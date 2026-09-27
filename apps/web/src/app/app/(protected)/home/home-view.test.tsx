@@ -212,10 +212,7 @@ describe('homeChatPlacement — chat first on Home, and the fallback', () => {
     expect(homeChatPlacement('member', on)).toEqual({ kind: 'chat' });
     expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'chat' });
   });
-  it('switched off: Home is unchanged for everyone, admins included (they chose it)', () => {
-    const off = { available: false, reason: 'capability_disabled', canManageTeamKeys: true };
-    expect(homeChatPlacement('operator', off)).toEqual({ kind: 'none' });
-    expect(homeChatPlacement('member', { ...off, canManageTeamKeys: false })).toEqual({ kind: 'none' });
+  it('availability unknown (the read failed): Home is unchanged', () => {
     expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
   });
   it('no key resolves: the admin gets onboarding in place of chat, a member gets nothing', () => {

@@ -255,8 +255,8 @@ a mission can do useful work.
 **Capability statement**: A team owner or admin whose team has no model
 provider key MUST see one step on Home that gets chat working, with three
 choices on one screen: Connect OpenRouter (OAuth PKCE, no copy-paste), paste a
-key, or let each person connect their own. Members MUST NOT see it. Chat is on
-as soon as a key resolves; there is no separate "turn on chat" step.
+key, or let each person connect their own. Members MUST NOT see it. Chat is
+always on and runs as soon as a key resolves; there is no enable step.
 
 **Acceptance criteria**:
 - AC-1: GIVEN an owner or admin, no key resolving and the team key policy

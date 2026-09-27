@@ -11,7 +11,7 @@ mock.module('@/lib/team-access', () => ({
   getUserAdminTeamIds: async () => adminTeams,
   resolveActiveTeamId: async () => 't-1',
 }));
-mock.module('@/lib/provider-keys', () => ({ loadTeamKeySettings: async () => ({ keyPolicy: policy, chatDisabled: false }) }));
+mock.module('@/lib/provider-keys', () => ({ loadTeamKeySettings: async () => ({ keyPolicy: policy }) }));
 
 const { GET } = await import('./route');
 const { decodePkceCookie, PKCE_COOKIE } = await import('@/lib/openrouter-oauth');

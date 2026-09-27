@@ -76,7 +76,6 @@ export interface TurnDeps {
    * one may run without its card while no tool output is in context.
    */
   allowedToolGroups?: ReadonlySet<ToolGroup>;
-  chatEnabled: (teamId: string) => Promise<boolean>;
   /**
    * Budget and rate limits (limits.checkChatLimits). Required: a turn that
    * passes has been admitted and counted, so there is no unmetered default.
@@ -109,7 +108,6 @@ export interface TurnDeps {
 
 export function unavailable(reason: ChatUnavailableReason, status: number, extra: Record<string, unknown> = {}): Response {
   const message: Record<ChatUnavailableReason, string> = {
-    capability_disabled: 'Chat is not enabled for this team.',
     no_key: 'No provider key is connected for chat. An admin can add a team key, or you can use your own.',
     budget_exhausted: 'Today\'s chat budget is used up. It resets at midnight in the team\'s timezone, and a team owner or admin can raise it. The mission form still works.',
     rate_limited: 'Too many chat turns in the last few minutes. Try again shortly.',
@@ -171,9 +169,6 @@ export async function runChatTurn(args: {
 }): Promise<Response> {
   const { conversation: conv, user, body, deps } = args;
   const now = deps.now?.() ?? new Date();
-
-  // 1. Nothing starts unless the team turned chat on.
-  if (!(await deps.chatEnabled(conv.teamId))) return unavailable('capability_disabled', 403);
 
   const message = body?.message;
   if (!message || (message.role !== 'user' && message.role !== 'assistant') || !Array.isArray(message.parts)) {

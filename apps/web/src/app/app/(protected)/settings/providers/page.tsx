@@ -26,7 +26,7 @@ export default async function ModelProvidersPage() {
           isAdmin={isTeamAdmin}
           availability={{
             available: availability?.available === true,
-            reason: availability?.reason === 'capability_disabled' ? 'capability_disabled' : availability?.available ? null : 'no_key',
+            reason: availability?.available ? null : 'no_key',
           }}
         />
       ) : (

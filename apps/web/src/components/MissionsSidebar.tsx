@@ -23,9 +23,9 @@ interface MissionsSidebarProps {
   nav?: NavContext;
 }
 
-const NO_CHAT: NavContext = { chat: false, audience: 'operator' };
+const OPERATOR_NAV: NavContext = { audience: 'operator' };
 
-export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null, nav = NO_CHAT }: MissionsSidebarProps) {
+export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null, nav = OPERATOR_NAV }: MissionsSidebarProps) {
   const pathname = usePathname();
   const settingsActive = isAccountRoute(pathname);
   const { count: escalationCount } = useEscalation();

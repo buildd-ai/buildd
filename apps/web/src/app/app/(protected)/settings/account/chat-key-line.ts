@@ -9,9 +9,8 @@ const label = (id: string) => CHAT_PROVIDER_INFO.find((p) => p.id === id)?.label
  */
 export function chatKeyLine(
   key: ChatKeySummary,
-  ctx: { isAdmin: boolean; chatDisabled: boolean },
+  ctx: { isAdmin: boolean },
 ): { text: string; action: { href: string; label: string } | null } {
-  if (ctx.chatDisabled) return { text: 'Off for this team', action: ctx.isAdmin ? { href: '/app/settings/ai', label: 'Turn it on' } : null };
   if (key.kind === 'team') return { text: `${label(key.provider)} · team key`, action: null };
   if (key.kind === 'own') return { text: `${label(key.provider)} · your key`, action: null };
   if (key.kind === 'needs_own') return { text: 'Add your OpenRouter key', action: null };

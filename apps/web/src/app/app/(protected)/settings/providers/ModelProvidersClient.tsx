@@ -12,7 +12,7 @@ import { KEY_UNLOCKS, chatStatusCopy, choiceFromPolicy, policyFromChoice, type P
 
 export interface ChatAvailabilityProp {
   available: boolean;
-  reason: 'capability_disabled' | 'no_key' | null;
+  reason: 'no_key' | null;
 }
 
 /**

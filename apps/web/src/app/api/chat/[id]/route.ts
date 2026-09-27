@@ -172,7 +172,6 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     deps: {
       scopeFor: wsId => scopeFor(wsId),
       allowedToolGroups,
-      chatEnabled: async () => settings.chatEnabled,
       limits: a => checkChatLimits({ ...a, settings }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),
       memory: base.memory,

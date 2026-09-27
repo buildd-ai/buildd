@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { defaultLine, featureState, interactiveState, modeLabel, OVERRIDE_OPTIONS } from './feature-copy';
+import * as copy from './feature-copy';
+import { defaultLine, featureState, modeLabel, OVERRIDE_OPTIONS } from './feature-copy';
 
 describe('AI features copy', () => {
   it('states the default from the billing model', () => {
@@ -19,8 +20,12 @@ describe('AI features copy', () => {
     expect(modeLabel('server')).toBe('Server-side');
   });
 
-  it('never calls the interactive surface "chat", and stays a label', () => {
-    for (const s of [interactiveState(true), interactiveState(false), defaultLine(true), defaultLine(false)]) {
+  it('has no interactive on/off state: chat is always on', () => {
+    expect((copy as Record<string, unknown>).interactiveState).toBeUndefined();
+  });
+
+  it('the default line stays a label', () => {
+    for (const s of [defaultLine(true), defaultLine(false)]) {
       expect(s.toLowerCase()).not.toContain('chat');
       expect(s.length).toBeLessThanOrEqual(40);
     }

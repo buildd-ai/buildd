@@ -351,8 +351,9 @@ Also landed, beyond this doc's original scope:
   (`criteria_grading`, `visual_qa`, `task_classification`, `mission_summary`) and
   opted in individually. Default is empty: storing a key changes no behaviour and
   no team's costs move when this ships.
-  **Superseded:** the opt-in allowlist is retired. Chat runs whenever a key
-  resolves (admin kill switch `teams.chatDisabled`); decision calls are built-in;
+  **Superseded:** the opt-in allowlist is retired. Chat is always on and runs
+  whenever a key resolves (the old admin kill switch `teams.chatDisabled` is
+  deprecated and unread); decision calls are built-in;
   server-side features default by billing model (team key → server-side, else
   the runner) with per-feature overrides in `teams.inferenceFeatureModes`.
 - The check lives inside `inferenceCall`, ahead of tier resolution, so a new call

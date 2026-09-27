@@ -96,21 +96,18 @@ function pickTeamRow(rows: KeyRow[], provider: ChatProvider): KeyRow | null {
 }
 
 /**
- * The team's key policy and chat switch. An unreadable row reads as the
- * pre-policy behaviour (own keys allowed, chat on), like the resolver.
+ * The team's key policy. An unreadable row reads as the pre-policy behaviour
+ * (own keys allowed), like the resolver. Chat has no switch: it is always on.
  */
-export async function loadTeamKeySettings(teamId: string): Promise<{ keyPolicy: InferenceKeyPolicy; chatDisabled: boolean }> {
+export async function loadTeamKeySettings(teamId: string): Promise<{ keyPolicy: InferenceKeyPolicy }> {
   try {
     const row = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceKeyPolicy: true, chatDisabled: true },
+      columns: { inferenceKeyPolicy: true },
     });
-    return {
-      keyPolicy: isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own',
-      chatDisabled: row?.chatDisabled === true,
-    };
+    return { keyPolicy: isInferenceKeyPolicy(row?.inferenceKeyPolicy) ? row.inferenceKeyPolicy : 'team_or_own' };
   } catch {
-    return { keyPolicy: 'team_or_own', chatDisabled: false };
+    return { keyPolicy: 'team_or_own' };
   }
 }
 

@@ -27,7 +27,3 @@ export function featureState(r: { mode: FeatureMode; source: 'default' | 'overri
   if (r.needsKey) return 'Server-side · needs a team key';
   return r.source === 'override' ? `${modeLabel(r.mode)} · override` : modeLabel(r.mode);
 }
-
-export function interactiveState(disabled: boolean): string {
-  return disabled ? 'Off for the team' : 'On';
-}
