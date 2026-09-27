@@ -54,6 +54,28 @@ describe('manage_missions — workspace resolution', () => {
     expect(body.workspaceId).toBe(MOCK_WORKSPACE_ID);
   });
 
+  it('falls back to the workspace list when by-repo answers 404 for an owner/repo ref', async () => {
+    // by-repo 404s (not reachable / not found); `api` throws on non-2xx.
+    mockApi.mockRejectedValueOnce(new Error('API error: 404 - {"error":"Workspace not found"}'));
+    mockApi.mockResolvedValueOnce({
+      workspaces: [{ id: MOCK_WORKSPACE_ID, name: 'build', repo: 'buildd-ai/buildd' }],
+    });
+    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'T', status: 'active', priority: 5 });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'T', workspaceId: 'buildd-ai/buildd' },
+      createMockContext(),
+    );
+
+    expect(mockApi.mock.calls[0][0]).toBe('/api/workspaces/by-repo?repo=buildd-ai%2Fbuildd');
+    expect(mockApi.mock.calls[1][0]).toBe('/api/workspaces');
+    const [endpoint, opts] = mockApi.mock.calls[2];
+    expect(endpoint).toBe('/api/missions');
+    expect(JSON.parse(opts.body).workspaceId).toBe(MOCK_WORKSPACE_ID);
+  });
+
   it('passes UUID workspaceId directly on create', async () => {
     mockApi.mockResolvedValueOnce({
       id: 'mission-1',

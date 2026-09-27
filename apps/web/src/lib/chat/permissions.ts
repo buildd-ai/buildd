@@ -22,10 +22,16 @@
  *
  * Pure. The stored preference lives in `team_members.chat_allowed_tool_groups`
  * (permissions-store.ts).
+ *
+ * The rule set itself (and the taint checks) lives in the shared AI kit
+ * (`@buildd/ai-kit/chat/server`, `skipCardVerdict`), so every app that adopts
+ * the kit enforces Allow exactly as buildd does. This file resolves buildd's
+ * facts for a call (class, group, unattended work, skippable fields) from its
+ * registry and hands them to the kit.
  */
 
-import type { ModelMessage } from 'ai';
 import type { ChatToolPermissionRow } from '@buildd/shared';
+import { canSkipCard as kitCanSkipCard } from '@buildd/ai-kit/chat/server';
 import { effectiveClass, startsUnattendedWork } from './tools';
 import { ALL_CHAT_TOOL_SPECS, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ToolGroup } from './registry';
 
@@ -37,6 +43,7 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   memory: 'Knowledge',
   schedules: 'Schedules',
   artifacts: 'Artifacts',
+  notifications: 'Watches',
   admin: 'Admin',
 };
 
@@ -71,11 +78,8 @@ export function toolPermissionRows(allowed: ReadonlySet<ToolGroup>): ChatToolPer
   return rows;
 }
 
-/** Is anything a tool returned in the messages the model is reading? */
-export function contentInContext(messages: readonly ModelMessage[]): boolean {
-  return messages.some(m => m.role === 'tool'
-    || (Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some(p => p?.type === 'tool-result')));
-}
+/** Is anything a tool returned in the messages the model is reading? (the kit's taint check) */
+export { contentInContext, toolOutputInHistory } from '@buildd/ai-kit/chat/server';
 
 /**
  * Fields a skipped card may carry, for tools whose schema passes extra fields
@@ -102,17 +106,6 @@ function onlySkippableFields(tool: string, input: unknown): boolean {
   return Object.keys(i).every(k => i[k] === undefined || fields.has(k));
 }
 
-/**
- * Did a tool ever return anything in this conversation? Sticky: once tool
- * output was read, later assistant text may repeat it after the tool part
- * itself has left the model's window. `truncated` (the load hit its limit, so
- * older rows are unseen) counts as yes.
- */
-export function toolOutputInHistory(rows: ReadonlyArray<{ parts: ReadonlyArray<{ type?: string }> }>, truncated: boolean): boolean {
-  if (truncated) return true;
-  return rows.some(m => m.parts.some(p => typeof p?.type === 'string' && (p.type.startsWith('tool-') || p.type === 'dynamic-tool')));
-}
-
 /** May this call run without its card for this person? */
 export function canSkipCard(args: {
   tool: string;
@@ -123,12 +116,20 @@ export function canSkipCard(args: {
   /** An object is docked: its data is in the instructions. */
   docked: boolean;
 }): boolean {
-  if (args.tainted || args.docked || args.allowedGroups.size === 0) return false;
   const spec = ALL_CHAT_TOOL_SPECS[args.tool];
   const s = opSpec(args.tool, args.input);
-  if (!spec || !s) return false;
-  if (effectiveClass(args.tool, s.op, s.spec, args.input) !== 'write') return false;
-  if (startsUnattendedWork(args.tool, s.spec, args.input)) return false;
-  if (!onlySkippableFields(args.tool, args.input)) return false;
-  return allowable.has(spec.group) && args.allowedGroups.has(spec.group);
+  const known = !!spec && !!s;
+  return kitCanSkipCard({
+    callClass: known ? effectiveClass(args.tool, s.op, s.spec, args.input) : undefined,
+    group: known ? spec.group : undefined,
+    groupAllowable: known && allowable.has(spec.group),
+    allowedGroups: args.allowedGroups,
+    tainted: args.tainted,
+    docked: args.docked,
+    startsUnattendedWork: known && startsUnattendedWork(args.tool, s.spec, args.input),
+    inputSkippable: onlySkippableFields(args.tool, args.input),
+    // turn.ts allows one skipped write per turn and checks that itself
+    // (allowedThisTurn) before calling here.
+    skippedThisTurn: 0,
+  });
 }

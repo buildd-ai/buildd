@@ -180,3 +180,56 @@ describe('computeRoutingPreview', () => {
     expect(p.reason).not.toContain('pinned');
   });
 });
+
+describe('computeRoutingPreview — stated role', () => {
+  it('names a role floor that raises the tier', () => {
+    const p = computeRoutingPreview({ roleSlug: 'builder', roleModel: 'opus' });
+    expect(p.tier).toBe('premium');
+    expect(p.model).toBe('claude-opus-5');
+    expect(p.reason).toContain('role "builder" floor premium raised standard → premium');
+    expect(p.reason).not.toContain('Pass complexity');
+  });
+
+  it('a premium-plus role floor previews as premium-plus', () => {
+    const p = computeRoutingPreview({ roleSlug: 'x', roleModel: 'premium-plus' });
+    expect(p.tier).toBe('premium-plus');
+    expect(p.reason).toContain('floor premium-plus raised standard → premium-plus');
+  });
+
+  it('a floor at or below the matrix tier is not mentioned', () => {
+    const p = computeRoutingPreview({ roleSlug: 'researcher', roleModel: 'sonnet', kind: 'engineering', complexity: 'complex' });
+    expect(p.tier).toBe('premium');
+    expect(p.reason).not.toContain('role');
+  });
+
+  it('names a role exact-id pin', () => {
+    const p = computeRoutingPreview({ roleSlug: 'email-agent', roleModel: 'claude-sonnet-5' });
+    expect(p.tier).toBeNull();
+    expect(p.model).toBe('claude-sonnet-5');
+    expect(p.reason).toBe('role "email-agent" pins claude-sonnet-5 — bypasses tier routing');
+  });
+
+  it('an explicit tier beats a role exact-id pin (email-agent case)', () => {
+    const p = computeRoutingPreview({ tier: 'premium', roleSlug: 'email-agent', roleModel: 'claude-sonnet-5' });
+    expect(p.tier).toBe('premium');
+    expect(p.model).toBe('claude-opus-5');
+    expect(p.reason).toContain('tier:"premium" pinned');
+  });
+
+  it('an explicit tier beats a role floor', () => {
+    const p = computeRoutingPreview({ tier: 'budget', roleSlug: 'builder', roleModel: 'opus' });
+    expect(p.tier).toBe('budget');
+  });
+
+  it('ignores a role model when no role is stated', () => {
+    const p = computeRoutingPreview({ roleModel: 'opus' });
+    expect(p.tier).toBe('standard');
+  });
+
+  it('adds the inference note only for a role-less task that could be inferred', () => {
+    const note = 'no role given — one may be inferred after creation; an inferred role does not change the model';
+    expect(computeRoutingPreview({ roleMayBeInferred: true }).reason).toContain(note);
+    expect(computeRoutingPreview({ roleMayBeInferred: false }).reason).not.toContain(note);
+    expect(computeRoutingPreview({ roleSlug: 'builder', roleMayBeInferred: true }).reason).not.toContain(note);
+  });
+});

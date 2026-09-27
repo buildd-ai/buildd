@@ -196,6 +196,160 @@ describe('GET /api/workspaces', () => {
   });
 });
 
+// Evaluates the mocked drizzle predicates above against fixture rows, so the
+// scoping the route asks the db for is what decides the result — a mock that
+// returned rows regardless of WHERE would hide exactly the leak under test.
+function matches(p: any, row: Record<string, unknown>): boolean {
+  if (!p) return true;
+  if (p.type === 'eq') return row[p.field] === p.value;
+  if (p.type === 'inArray') return p.values.includes(row[p.field]);
+  if (p.type === 'and') return p.args.filter(Boolean).every((a: any) => matches(a, row));
+  throw new Error(`unhandled predicate ${p.type}`);
+}
+
+describe('GET /api/workspaces — API-account reach (shared rule)', () => {
+  const FIXTURE = [
+    { id: 'ws-own-open', teamId: 'team-a', accessMode: 'open', name: 'own open', accountWorkspaces: [] },
+    { id: 'ws-own-restricted', teamId: 'team-a', accessMode: 'restricted', name: 'own restricted', accountWorkspaces: [] },
+    { id: 'ws-linked', teamId: 'team-b', accessMode: 'restricted', name: 'linked', accountWorkspaces: [] },
+    { id: 'ws-foreign-open', teamId: 'team-b', accessMode: 'open', name: 'foreign open', accountWorkspaces: [] },
+  ];
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a' });
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-linked', canClaim: true, canCreate: true },
+    ]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockImplementation(async (opts: any) => FIXTURE.filter(r => matches(opts?.where, r)));
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  async function listedIds(): Promise<string[]> {
+    const res = await GET(createMockGetRequest({ Authorization: 'Bearer bld_test' }));
+    expect(res.status).toBe(200);
+    return (await res.json()).workspaces.map((w: any) => w.id).sort();
+  }
+
+  it("lists the account's own team's open workspaces", async () => {
+    expect(await listedIds()).toContain('ws-own-open');
+  });
+
+  it('lists a workspace the account is explicitly linked to, in another team', async () => {
+    expect(await listedIds()).toContain('ws-linked');
+  });
+
+  it("never lists another team's open workspace", async () => {
+    expect(await listedIds()).not.toContain('ws-foreign-open');
+  });
+
+  it('does not list a restricted workspace of its own team without a link', async () => {
+    expect(await listedIds()).toEqual(['ws-linked', 'ws-own-open']);
+  });
+
+  it('never serialises whole account rows for connected accounts', async () => {
+    await listedIds();
+    const byIds = mockWorkspacesFindMany.mock.calls.find((c: any) => c[0]?.with)?.[0] as any;
+    expect(byIds.with.accountWorkspaces.with.account).toEqual({ columns: { id: true, name: true, type: true } });
+  });
+});
+
+// The listing is an allowlist of workspace fields. webhook_config holds a
+// plaintext bearer token (and ingest configs a webhookSecret/callbackToken);
+// none of it may reach the caller, whichever auth path listed the workspace.
+describe('GET /api/workspaces — no secrets in the listing', () => {
+  const SECRET_ROW = {
+    id: 'ws-1',
+    name: 'Secretive',
+    repo: 'owner/repo',
+    teamId: 'team-a',
+    accessMode: 'open',
+    gitConfig: { defaultBranch: 'main' },
+    webhookConfig: {
+      url: 'https://hooks.example.test/agent',
+      token: 'tok-SHOULD-NOT-LEAK',
+      enabled: true,
+      runnerPreference: 'any',
+      webhookSecret: 'whsec-SHOULD-NOT-LEAK',
+      callbackToken: 'cb-SHOULD-NOT-LEAK',
+    },
+    someFutureColumn: 'future-SHOULD-NOT-LEAK',
+    accountWorkspaces: [
+      { accountId: 'acc-1', account: { id: 'acc-1', type: 'user', name: 'Runner' }, canClaim: true, canCreate: false },
+    ],
+  };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([SECRET_ROW]);
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  function expectNoSecrets(body: string) {
+    expect(body).not.toContain('SHOULD-NOT-LEAK');
+    expect(body).not.toMatch(/"token"\s*:/);
+    expect(body).not.toMatch(/"webhookSecret"\s*:/);
+    expect(body).not.toMatch(/"callbackToken"\s*:/);
+  }
+
+  it('session listing carries no token/secret fields', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await GET(createMockGetRequest());
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expectNoSecrets(body);
+    const ws = JSON.parse(body).workspaces[0];
+    // Non-secret fields consumers read survive.
+    expect(ws).toMatchObject({ id: 'ws-1', name: 'Secretive', repo: 'owner/repo', accessMode: 'open', teamId: 'team-a' });
+    expect(ws.gitConfig).toEqual({ defaultBranch: 'main' });
+    expect(ws.webhookConfig).toEqual({
+      url: 'https://hooks.example.test/agent', enabled: true, runnerPreference: 'any', hasToken: true,
+    });
+    expect(ws.connectedAccounts).toHaveLength(1);
+    expect(ws.runners.user).toBe(true);
+    // Unlisted columns (and the raw relation) are not passed through.
+    expect(ws.someFutureColumn).toBeUndefined();
+    expect(ws.accountWorkspaces).toBeUndefined();
+  });
+
+  it('API-key listing carries no token/secret fields', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a' });
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await GET(createMockGetRequest({ Authorization: 'Bearer bld_test' }));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expectNoSecrets(body);
+    expect(JSON.parse(body).workspaces[0].id).toBe('ws-1');
+  });
+
+  it('a workspace without a webhook lists webhookConfig as null', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindMany.mockResolvedValue([{ ...SECRET_ROW, webhookConfig: null }]);
+    const data = await (await GET(createMockGetRequest())).json();
+    expect(data.workspaces[0].webhookConfig).toBeNull();
+  });
+});
+
 describe('POST /api/workspaces', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();

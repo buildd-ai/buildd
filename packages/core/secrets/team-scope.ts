@@ -23,8 +23,16 @@ import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import { secrets } from '../db/schema';
 import type { SecretPurpose } from './types';
 
-/** Purposes a row may carry a `userId` for. Everything else is team-owned only. */
-export const PERSONAL_SECRET_PURPOSES = ['inference_key'] as const;
+/**
+ * Purposes a row may carry a `userId` for. Everything else is team-owned only.
+ *
+ * `pushover_personal` is one person's Pushover user key, where their away-alerts
+ * go (apps/web/src/lib/personal-pushover.ts). It is a separate purpose from the
+ * team's `pushover` channel on purpose: team reads of `pushover` stay
+ * unambiguous, and a personal alert can never resolve to the team key
+ * (docs/design/subscriptions-and-notifications.md, decision 1).
+ */
+export const PERSONAL_SECRET_PURPOSES = ['inference_key', 'pushover_personal'] as const;
 export type PersonalSecretPurpose = (typeof PERSONAL_SECRET_PURPOSES)[number];
 
 export function isPersonalSecretPurpose(purpose: string): purpose is PersonalSecretPurpose {

@@ -13,7 +13,7 @@
  *   bun test apps/web/tests/integration/concurrency.test.ts
  */
 
-import { requireTestEnv, createTestApi, createCleanup, sleep } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, sleep, findFixtureWorkspace } from '../../../../tests/test-utils';
 
 // --- Config ---
 
@@ -58,9 +58,7 @@ describe('Concurrency Control', () => {
 
   // Setup: Get/create workspace
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
+    workspaceId = await findFixtureWorkspace(api);
     console.log(`  Using workspace: ${workspaceId}`);
     // Raise the per-workspace concurrency cap so these tests exercise the ACCOUNT
     // maxConcurrentWorkers limit rather than the per-repo cap (default 3), which

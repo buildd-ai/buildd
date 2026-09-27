@@ -250,6 +250,61 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(view.nextAction).toContain('mission PR');
   });
 
+  // Friction dbaadf34: a mission whose work landed on its integration branch
+  // but whose PR never opened read as "waiting on you to merge the mission
+  // PR" with no PR number — an impossible action, since there was no PR.
+  it('never asks to merge a mission PR that has not opened yet', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'This mission uses an integration branch and its work has not reached trunk. The mission PR is not open yet.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'not_opened', prNumber: null, prUrl: null },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    if (waiting.kind !== 'merge') throw new Error('unreachable');
+    expect(waiting.missionPr).toBe(true);
+    expect(waiting.missionPrState).toBe('not_opened');
+    expect(waiting.prNumbers).toEqual([]);
+    expect(waiting.prUrls).toEqual([]);
+    expect(view.situation.headline).not.toContain('merge');
+    expect(view.nextAction).not.toContain('Merge the mission PR');
+    expect(nextActionFor(waiting)).not.toContain('Merge the mission PR');
+  });
+
+  it('never asks to merge a mission PR that closed without merging', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason: 'Mission PR #77 was closed without merging, so the mission’s work is still only on the integration branch.',
+        awaitingMerge: 0,
+        awaitingMergeDetails: [],
+      },
+      missionPr: { state: 'closed', prNumber: 77, prUrl: 'https://example.invalid/pr/77' },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    if (waiting.kind !== 'merge') throw new Error('unreachable');
+    expect(waiting.missionPr).toBe(true);
+    expect(waiting.missionPrState).toBe('closed');
+    expect(waiting.prNumbers).toEqual([77]);
+    // No href for a closed PR: `affordanceFor` reads an empty `prUrls` as "no
+    // button", and a merge button pointed at a closed PR would be as false as
+    // the missing-PR case above.
+    expect(waiting.prUrls).toEqual([]);
+    expect(view.nextAction).not.toContain('Merge the mission PR');
+    expect(view.nextAction).toContain('Reopen it');
+  });
+
   it('falls back to evaluateMissionWorkState when only that was run', () => {
     const view = deriveMissionStateView({
       ...base,
@@ -260,6 +315,54 @@ describe('deriveMissionStateView — awaiting merge', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'merge') throw new Error('unreachable');
     expect(waiting.count).toBe(3);
+  });
+
+  // Friction 1dd98bb2: a PR closed on GitHub months ago still read as "waiting
+  // on you to merge 1 open PR #N" — a false headline, since a closed PR cannot
+  // be merged. `pr_closed_unmerged` is a distinct kind precisely so this cannot
+  // silently fall back to reading as a live merge tap.
+  it('reports a PR that closed without merging as pr_closed_unmerged, not merge', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: '1 deliverable task(s) completed but not merged: "Wire the route" (PR #34) · closed unmerged, no supersession recorded',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [
+          { taskId: 'task-c', title: 'Wire the route', prNumber: 34, prUrl: 'https://example.invalid/pr/34', closedUnsuperseded: true },
+        ],
+      },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    expect(waiting.kind).toBe('pr_closed_unmerged');
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('unreachable');
+    expect(waiting.prNumbers).toEqual([34]);
+    expect(waiting.taskIds).toEqual(['task-c']);
+    expect(view.situation.headline).toContain('closed without merging');
+    expect(view.situation.headline).not.toContain('waiting on you to merge');
+    expect(view.nextAction).toContain('record_pr_supersession');
+  });
+
+  it('keeps the ordinary merge reading when only some of the unmerged PRs are closed', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: '2 deliverable task(s) completed but not merged',
+        awaitingMerge: 2,
+        awaitingMergeDetails: [
+          { taskId: 'task-open', title: 'Add the endpoint', prNumber: 900, prUrl: 'https://example.invalid/pr/900' },
+          { taskId: 'task-closed', title: 'Wire the route', prNumber: 34, prUrl: 'https://example.invalid/pr/34', closedUnsuperseded: true },
+        ],
+      },
+    });
+
+    const waiting = gated(view);
+    expect(waiting.kind).toBe('merge');
   });
 });
 

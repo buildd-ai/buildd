@@ -5,13 +5,13 @@
  * Override with setSecretsProvider() for custom backends (Vault, AWS Secrets Manager, etc.).
  */
 
-export type SecretPurpose = 'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret';
+export type SecretPurpose = 'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal';
 
 export interface SecretMetadata {
   teamId: string;
   accountId?: string;
   workspaceId?: string;
-  /** A person's own key (inference_key only). Omitted/null = not personal. */
+  /** A person's own key (PERSONAL_SECRET_PURPOSES only). Omitted/null = not personal. */
   userId?: string | null;
   purpose: SecretPurpose;
   label?: string;

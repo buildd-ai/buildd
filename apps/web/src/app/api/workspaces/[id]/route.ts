@@ -10,6 +10,7 @@ import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
+import { toPublicWorkspace } from '@/lib/workspace-public';
 
 /** Where a team change goes instead of PATCH: the checked move's dry run. */
 const MOVE_PRECHECK_ENDPOINT = '/api/workspaces/[id]/migrate/precheck';
@@ -48,7 +49,11 @@ export async function GET(
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ workspace });
+    // Allowlisted row (webhook_config.token masked) plus the loaded relations.
+    const { tasks, workers, githubRepo } = workspace;
+    return NextResponse.json({
+      workspace: { ...toPublicWorkspace(workspace), tasks, workers, githubRepo },
+    });
   } catch (error) {
     console.error('Get workspace error:', error);
     return NextResponse.json({ error: 'Failed to get workspace' }, { status: 500 });

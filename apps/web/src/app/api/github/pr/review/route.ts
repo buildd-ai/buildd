@@ -27,6 +27,7 @@ import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
@@ -313,6 +314,23 @@ export async function POST(req: NextRequest) {
     creationSource: 'mcp',
     accountId: account.id,
   });
+
+  // Automatic adoption skips dependency-bot PRs; an explicit request is the
+  // one door that adopts them. Recorded as a bypass so the ledger shows how
+  // often that happens. The push paths still refuse the bot's branch.
+  if (adopted && isDependencyBotAuthor(pr.user)) {
+    fireGateEvent({
+      gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+      surface: 'POST /api/github/pr/review',
+      outcome: 'bypassed',
+      reason: 'explicit review request adopted a dependency-bot PR — reviewed, never pushed to',
+      workspaceId: workspace.id,
+      taskId: ownerWorker.taskId,
+      workerId: ownerWorker.id,
+      callerOrigin: 'api',
+      detail: { prNumber, author: pr.user?.login ?? null, stage: 'adoption' },
+    });
+  }
 
   const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
   const roles = await listWorkspaceRoles(workspace.id, account.teamId);

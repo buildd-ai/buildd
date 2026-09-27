@@ -111,6 +111,12 @@ mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mock(() => Promise.resolve({ createdByAccountId: null, createdByWorkerId: null, creationSource: 'api', parentTaskId: null })),
 }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mock(() => Promise.resolve()) }));
+// Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts;
+// the list here is whatever the session user's workspace ids are.
+mock.module('@/lib/workspace-access', () => ({
+  listReachableWorkspaceIds: () => mockGetUserWorkspaceIds(),
+  resolveWorkspaceAccess: async () => ({ ok: false, reason: 'not_found', status: 404, error: 'No workspace found' }),
+}));
 mock.module('@/lib/workspace-resolver', () => ({
   resolveWorkspace: mock(() => null),
   autoResolveAccountWorkspace: mock(() => Promise.resolve({ workspaceId: 'ws-1' })),
@@ -207,7 +213,7 @@ mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
 // VISUAL_AUDITOR_ROLE_SLUG: read at import by lib/mission-surface-audit.
-mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor' }));
+mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor', EXPLICIT_ROLE_SLUGS: ['visual-auditor'] }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 

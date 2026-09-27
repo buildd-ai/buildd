@@ -58,7 +58,7 @@ export async function chatPoolModels(teamId: string, tier: ChatTierName): Promis
 }
 
 export interface LoadTierDeps {
-  resolveTierEntry: (tier: ChatTierName, teamId: string, workspaceId?: string | null) => Promise<{ model: string }>;
+  resolveTierEntry: (tier: ChatTierName, teamId: string, workspaceId: string | null, surface: 'chat') => Promise<{ model: string }>;
   price: Price;
   poolModels?: (teamId: string, tier: ChatTierName) => Promise<readonly TierModel[]>;
 }
@@ -69,7 +69,7 @@ export async function loadChatTiers(
 ): Promise<ChatTierInfo[]> {
   const rows = await Promise.all(CHAT_TIER_NAMES.map(async (tier) => {
     try {
-      const entry = await deps.resolveTierEntry(tier, scope.teamId, scope.workspaceId);
+      const entry = await deps.resolveTierEntry(tier, scope.teamId, scope.workspaceId, 'chat');
       const pool = deps.poolModels ? await deps.poolModels(scope.teamId, tier).catch(() => []) : [];
       return chatTierInfo(tier, entry.model, pool, deps.price);
     } catch {

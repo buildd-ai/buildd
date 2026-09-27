@@ -20,6 +20,7 @@ import {
   parseWindowMs,
   describeScan,
   isUnassignedWork,
+  executorOf,
   BUILT_IN_SERVER,
   UNASSIGNED_ROLE,
   type UsageWorkerRow,
@@ -846,5 +847,63 @@ describe('isUnassignedWork (role-routing §1 row 7)', () => {
 
   test('does not count a task that has a role', () => {
     expect(isUnassignedWork({ roleSlug: 'builder', taskClass: 'work' })).toBe(false);
+  });
+});
+
+describe('executor histogram (interactive MCP session vs runner)', () => {
+  test('splits workers by workers.runner: "mcp" is interactive, everything else is runner', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', runner: 'mcp', inputTokens: 100 }),
+      row({ taskId: 't2', runner: 'coder-ws-1', inputTokens: 5000 }),
+      row({ taskId: 't3', runner: 'local-laptop', inputTokens: 3000, taskStatus: 'failed' }),
+    ], 'executor');
+
+    expect(stats.groupBy).toBe('executor');
+    expect(stats.groups.map(g => g.key).sort()).toEqual(['interactive', 'runner']);
+    const interactive = stats.groups.find(g => g.key === 'interactive')!;
+    const runner = stats.groups.find(g => g.key === 'runner')!;
+    expect(interactive).toMatchObject({ tasks: 1, workers: 1, inputTokens: 100, completed: 1, failed: 0 });
+    expect(runner).toMatchObject({ tasks: 2, workers: 2, inputTokens: 8000, completed: 1, failed: 1 });
+    expect(runner.successRate).toBeCloseTo(0.5);
+    expect(runner.perTask.tasks).toBe(2);
+  });
+
+  test('a row with no recorded runner counts as runner, never as interactive', () => {
+    const stats = computeUsageStats([row({ taskId: 't1', runner: null })], 'executor');
+    expect(stats.groups.map(g => g.key)).toEqual(['runner']);
+  });
+
+  test('a task worked by both contributes to each group, and totals still count it once', () => {
+    const stats = computeUsageStats([
+      row({ workerId: 'w-bg', taskId: 'task-a', runner: 'coder-ws-1', inputTokens: 4000 }),
+      row({ workerId: 'w-me', taskId: 'task-a', runner: 'mcp', inputTokens: 1000 }),
+    ], 'executor');
+
+    expect(stats.groups.find(g => g.key === 'interactive')).toMatchObject({ tasks: 1, inputTokens: 1000, completed: 1 });
+    expect(stats.groups.find(g => g.key === 'runner')).toMatchObject({ tasks: 1, inputTokens: 4000, completed: 1 });
+    expect(stats.totals.tasks).toBe(1);
+    expect(stats.totals.inputTokens).toBe(5000);
+  });
+
+  test('placeholder workers (system, external, openclaw) go to "other", not "runner"', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', runner: 'system' }),
+      row({ taskId: 't2', runner: 'external' }),
+      row({ taskId: 't3', runner: 'openclaw' }),
+      row({ taskId: 't4', runner: 'coder-ws-1' }),
+    ], 'executor');
+    expect(stats.groups.find(g => g.key === 'other')).toMatchObject({ tasks: 3, workers: 3 });
+    expect(stats.groups.find(g => g.key === 'runner')).toMatchObject({ tasks: 1, workers: 1 });
+  });
+
+  test('executorOf classifies runner ids exactly', () => {
+    expect(executorOf('system')).toBe('other');
+    expect(executorOf('external')).toBe('other');
+    expect(executorOf('openclaw')).toBe('other');
+    expect(executorOf('mcp')).toBe('interactive');
+    expect(executorOf('MCP')).toBe('runner');
+    expect(executorOf('mcp-runner')).toBe('runner');
+    expect(executorOf(null)).toBe('runner');
+    expect(executorOf(undefined)).toBe('runner');
   });
 });

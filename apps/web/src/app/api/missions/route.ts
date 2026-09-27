@@ -7,6 +7,7 @@ import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
+import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
@@ -273,25 +274,24 @@ export async function POST(req: NextRequest) {
     }
 
     let workspaceGitConfig: WorkspaceGitConfig | null = null;
+    let resolvedWorkspaceId: string | null = null;
     if (workspaceId) {
-      // Look up workspace without team filter — then verify user has access
-      const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
-        columns: { id: true, teamId: true, accessMode: true, gitConfig: true },
-      });
-      if (!ws) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      // Same reach rule as workspace listing and task creation
+      // (lib/workspace-access.ts): an account reaches its own team's open
+      // workspaces plus its explicit links — never another team's open
+      // workspace; a user reaches their teams' workspaces.
+      const access = await resolveWorkspaceAccess(
+        String(workspaceId),
+        apiAccount ? { account: apiAccount } : { userId: user!.id },
+        'canCreate',
+      );
+      if (!access.ok) {
+        return NextResponse.json({ error: access.error }, { status: access.status });
       }
-      // For API key auth, workspace must belong to the account's team or be open-access
-      // For session auth, workspace must belong to one of the user's teams
-      if (apiAccount && ws.teamId !== teamId && ws.accessMode !== 'open') {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-      }
-      if (!apiAccount && !userTeamIds.includes(ws.teamId)) {
-        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-      }
+      const ws = access.workspace;
       // Workspace is the stronger signal — derive team from it
       teamId = ws.teamId;
+      resolvedWorkspaceId = ws.id;
       workspaceGitConfig = (ws.gitConfig as WorkspaceGitConfig | null) ?? null;
     }
 
@@ -335,7 +335,7 @@ export async function POST(req: NextRequest) {
         teamId,
         title,
         description: description || null,
-        workspaceId: workspaceId || null,
+        workspaceId: resolvedWorkspaceId,
         status: effectiveStatus,
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
@@ -418,7 +418,7 @@ export async function POST(req: NextRequest) {
       const [schedule] = await db
         .insert(taskSchedules)
         .values({
-          workspaceId: workspaceId || null,
+          workspaceId: resolvedWorkspaceId,
           name: `Mission: ${title}`,
           cronExpression: effectiveCron,
           timezone: scheduleTimezone,
@@ -454,8 +454,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Non-blocking: post a work-tracker suggestion note if the workspace has one configured
-    if (workspaceId) {
-      maybePostWorkTrackerNote(mission.id, workspaceId).catch(() => {});
+    if (resolvedWorkspaceId) {
+      maybePostWorkTrackerNote(mission.id, resolvedWorkspaceId).catch(() => {});
     }
 
     // Build informative creation response

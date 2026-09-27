@@ -24,6 +24,8 @@ import { asBool, previewMatches, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
+import { runListWatches, runUnwatch, runWatch } from './watch-tools';
+import { ACTIVE_WINDOW_DAYS, splitByActivity, type WorkspaceActivity } from './workspace-activity';
 import {
   ALL_CHAT_TOOL_SPECS, CHAT_TOOL_SPECS, isExposed, opSpec, opsOf, SELF_SCOPED_ALLOWLIST,
   type ChatOpSpec, type ToolGroup,
@@ -66,6 +68,8 @@ export function startsUnattendedWork(tool: string, spec: ChatOpSpec, input: unkn
   const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
   if (tool === 'pause_schedules') return i.enabled === true;
   if (tool === 'hold_task') return i.hold === false;
+  // A standing watch keeps acting after the person leaves (P1 offers none).
+  if (tool === 'watch') return i.lifetime !== undefined && i.lifetime !== 'one_shot';
   return false;
 }
 
@@ -85,8 +89,18 @@ export function needsApproval(tool: string, input: unknown): boolean {
   const s = opSpec(tool, input);
   if (!s) return false;
   if (s.spec.class === 'read' || s.spec.class === 'deferred') return false;
-  if (s.spec.class === 'self' && SELF_SCOPED_ALLOWLIST.includes(keyOf(tool, s.op))) return false;
+  if (isAllowlistedSelfOp(tool, input)) return false;
   return true;
+}
+
+/**
+ * A self-scoped op on SELF_SCOPED_ALLOWLIST: it skips its card, but only while
+ * nothing a tool returned is in the model's context. turn.ts shows the card
+ * when something is, the same taint rule "Allow" follows.
+ */
+export function isAllowlistedSelfOp(tool: string, input: unknown): boolean {
+  const s = opSpec(tool, input);
+  return !!s && s.spec.class === 'self' && SELF_SCOPED_ALLOWLIST.includes(keyOf(tool, s.op));
 }
 
 const ws = z.string().optional().describe('Workspace id or name; defaults to the conversation workspace.');
@@ -154,6 +168,23 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       });
     case 'answer_question':
       return z.object({ taskId: z.string(), answer: z.string().max(4000) });
+    case 'watch':
+      return z.object({
+        taskId: z.string().optional().describe('The task to watch: its id, short id, or the words the user used.'),
+        prNumber: z.union([z.number().int().positive(), z.string()]).optional().describe('Or the PR to watch: its number (42, "#42") or its GitHub URL.'),
+        workspaceId: ws,
+        on: z.array(z.enum(['done', 'failed', 'needs_input', 'merged', 'ci_failed'])).max(3).optional()
+          .describe('What to tell the user about. Default: a task when it is done or fails; a PR when it merges.'),
+      });
+    case 'unwatch':
+      return z.object({
+        watchId: z.string().optional().describe('The watch id (or its 8-character short id) from list_watches.'),
+        taskId: z.string().optional().describe('Or the watched task\'s id.'),
+        prNumber: z.union([z.number().int().positive(), z.string()]).optional().describe('Or the watched PR\'s number.'),
+        workspaceId: ws,
+      });
+    case 'list_watches':
+      return z.object({});
     case 'list_schedules':
       return z.object({
         workspaceId: ws,
@@ -195,6 +226,9 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   learn: learnToolDefinition.description,
   answer_question: `Answer (or re-answer) a waiting agent's question. Params: ${TASK_REF} answer: the reply. Shows the user an approval card first.`,
   hold_task: `Hold one task (no agent claims it; a running agent is told to stop at a safe point) or resume it. Params: ${TASK_REF} hold: true to hold, false to resume; reason: optional, e.g. "until the rounding decision is in". Shows the user an approval card first.`,
+  watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
+  unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
+  list_watches: 'The user\'s running watches: what each is for and when it ends.',
 };
 
 /** Steering tools whose taskId may be words; said in their description so the model doesn't hunt for ids. */
@@ -232,12 +266,30 @@ export interface ChatToolDeps {
   preview?: (tool: string, input: Record<string, unknown>) => Promise<PreviewOutcome>;
   /** Resolve a task named by short id or words (targets.ts), bound to this turn's dock. */
   resolveTask?: (ref: string) => Promise<Resolution>;
+  /** The conversation this turn is in: where a watch set here is delivered. */
+  conversationId?: string | null;
   /** After a mission is filed: link it to the conversation, store the result. */
   onMissionFiled?: (args: { missionId: string; toolCallId: string; result: ChatToolResult }) => Promise<void>;
   /** Team memory for recall/learn, for an in-reach workspace; null when unavailable. */
   memory?: (workspaceId: string | null) => Promise<{ store: Parameters<typeof handleRecallAction>[0]; ctx: Parameters<typeof handleRecallAction>[2] } | null>;
+  /**
+   * The in-reach workspaces when the turn has no default. A read that needs
+   * one (WORKSPACE_SCOPED_READS) and names none runs once per recently
+   * active workspace (workspace-activity.ts).
+   */
+  workspaces?: ReadonlyArray<WorkspaceActivity>;
+  now?: () => number;
   handle?: typeof handleBuilddAction;
 }
+
+/**
+ * Reads whose handler needs a single workspace and errors without one. With no
+ * turn scope they span every workspace in reach, as the context block promises,
+ * instead of sending the model hunting workspace by workspace.
+ */
+export const WORKSPACE_SCOPED_READS: ReadonlySet<string> = new Set([
+  'list_tasks', 'list_releases', 'list_schedules', 'list_discrepancies',
+]);
 
 function errorResult(message: string): ChatToolResult<string> {
   return { data: `Error: ${message}`, objects: [], summary: message.slice(0, 120) };
@@ -295,7 +347,11 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         }
         let target: ChatApprovalPreview['target'] | null = null;
         const allowed = deps.allowedToolCallIds?.has(toolCallId) === true;
-        if (isWrite && needsApproval(action, input)) {
+        // A card that was shown and approved binds the call to it, even for an
+        // op that may otherwise run cardless (unwatch after tool output): run
+        // exactly the input the card was built from, never the raw one.
+        const carded = deps.approvedPreviews?.has(toolCallId) === true;
+        if (isWrite && (needsApproval(action, input) || carded)) {
           if (!deps.allowWrites || (!deps.authorizedToolCallIds.has(toolCallId) && !allowed)) {
             // Never a write here. The SDK only executes an approved call, so an
             // unapproved one reaching execute means no card was shown: the
@@ -330,7 +386,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         let text: string;
         let failed = false;
         try {
-          const out = await runAction(action, callInput, api, deps, handle);
+          const out = spansWorkspaces(action, callInput, deps)
+            ? await runAcrossWorkspaces(action, callInput, api, deps, handle)
+            : await runAction(action, callInput, api, deps, handle);
           text = out.content.map(c => c.text).join('\n');
           failed = out.isError === true;
         } catch (e) {
@@ -371,7 +429,51 @@ async function runAction(
   }
   if (action === 'hold_task') return holdTask(api, input);
   if (action === 'answer_question') return answerQuestion(api, input);
+  if (action === 'watch') return runWatch(api, input, deps.conversationId ?? null);
+  if (action === 'unwatch') return runUnwatch(api, input);
+  if (action === 'list_watches') return runListWatches(api);
   return handle(api, action, input, deps.ctx);
+}
+
+function spansWorkspaces(action: string, input: Record<string, unknown>, deps: ChatToolDeps): boolean {
+  return WORKSPACE_SCOPED_READS.has(action) && !input.workspaceId && !deps.ctx.workspaceId
+    && (deps.workspaces?.length ?? 0) > 0;
+}
+
+/** A handler's "nothing here" answer: one line starting "No …" (No releases found., No completed tasks found.). */
+const isEmptyAnswer = (text: string) => /^No [^\n]*\.$/.test(text.trim());
+
+/**
+ * One call per recently active workspace, in parallel. Answers are headed by
+ * the workspace name; empty ones fold into a single "Nothing in" line and the
+ * idle workspaces are named, not checked, so the reply isn't a list of blanks.
+ * A failure is named; the rest still answer.
+ */
+async function runAcrossWorkspaces(
+  action: string,
+  input: Record<string, unknown>,
+  api: ApiFn,
+  deps: ChatToolDeps,
+  handle: typeof handleBuilddAction,
+) {
+  const { active, idle } = splitByActivity(deps.workspaces!, (deps.now ?? Date.now)());
+  const answers = await Promise.all(active.map(async ws => {
+    try {
+      const out = await runAction(action, { ...input, workspaceId: ws.id }, api, deps, handle);
+      return { ws, text: out.content.map(c => c.text).join('\n') };
+    } catch (e) {
+      return { ws, text: `Error: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }));
+  if (active.length === 1) return textOut(answers[0].text);
+  const found = answers.filter(a => !isEmptyAnswer(a.text));
+  const empty = answers.filter(a => isEmptyAnswer(a.text));
+  const lines = found.map(a => `## ${a.ws.name}\n${a.text}`);
+  if (empty.length) {
+    lines.push(found.length ? `Nothing in: ${empty.map(a => a.ws.name).join(', ')}.` : `${empty[0].text} (${empty.map(a => a.ws.name).join(', ')})`);
+  }
+  if (idle.length) lines.push(`Not checked (no activity in ${ACTIVE_WINDOW_DAYS} days): ${idle.map(w => w.name).join(', ')}.`);
+  return textOut(lines.join('\n\n'));
 }
 
 const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
@@ -428,8 +530,8 @@ function summarize(op: string, objects: BuilddObjectRef[], text: string): string
 
 // ── Groups ──────────────────────────────────────────────────────────────────
 
-/** Always offered: enough to orient and to find the thing the user means. */
-export const CORE_GROUPS: readonly ToolGroup[] = ['missions', 'tasks'];
+/** Always offered: enough to orient and to find the thing the user means, and "tell me when" on whatever that is. */
+export const CORE_GROUPS: readonly ToolGroup[] = ['missions', 'tasks', 'notifications'];
 /** When routing can't say which area a turn is about. */
 export const FALLBACK_GROUPS: readonly ToolGroup[] = ['missions', 'tasks', 'workers'];
 

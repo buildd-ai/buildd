@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.236.1",
+  "version": "0.240.2",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -20,6 +20,7 @@
     "@aws-sdk/client-s3": "^3.985.0",
     "@aws-sdk/s3-request-presigner": "^3.985.0",
     "@axiomhq/js": "^2.0.0",
+    "@buildd/ai-kit": "workspace:*",
     "@buildd/core": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",

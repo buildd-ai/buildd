@@ -82,7 +82,9 @@ describe('Ask button', () => {
     expect(overlay?.dataset.presentation).toBe('peek');
     expect(fetched[0]).toBe('/api/chat/canvas?teamId=team-1');
     expect(q('[data-testid="chat-column"]')?.dataset.canvas).toBe('overlay');
-    expect(q('[data-testid="canvas-pinned"]')?.dataset.kind).toBe('mission');
+    // The mission sheet: the context card stands in for the pinned strip until the first message.
+    expect(q('[data-testid="mission-context-card"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
     // The Ask button steps aside while the canvas is up.
     expect(q('[data-testid="canvas-ask"]')).toBeNull();
   });
@@ -137,6 +139,59 @@ describe('presentation', () => {
     await act(async () => { api!.open(); });
     await settle();
     expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.presentation).toBe('takeover');
+  });
+
+  it('over a mission: an opaque sheet from 84px, a square grabber, a scrim, above the bottom nav', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    const overlay = q('[data-testid="chat-canvas-overlay"]')!;
+    expect(overlay.dataset.sheet).toBe('mission');
+    // Above the bottom nav (z-20) and every page sheet (z-50).
+    expect(overlay.className).toContain('z-[55]');
+    const dialog = q('[data-testid="canvas-dialog"]')!;
+    expect(dialog.className).toContain('top-[84px]');
+    expect(dialog.className).toContain('bottom-0');
+    expect(dialog.className).toContain('bg-[var(--chat-bar)]');
+    expect(dialog.className).toContain('border-t-2');
+    expect(dialog.getAttribute('aria-label')).toBe('Ask about this mission');
+    expect(q('[data-testid="canvas-grabber"]')).not.toBeNull();
+    expect(q('[data-testid="canvas-dim"]')!.className).toContain('bg-[var(--chat-scrim)]');
+  });
+
+  it('about no mission: the plain takeover, no grabber', async () => {
+    pathname = '/app/tasks';
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.sheet).toBeUndefined();
+    expect(q('[data-testid="canvas-grabber"]')).toBeNull();
+    expect(q('[data-testid="canvas-dialog"]')!.className).toContain('inset-0');
+  });
+});
+
+describe('desktop peek (docs/design/chat-v3-desktop.md)', () => {
+  it('a solid 600px panel, 16px in, a 2px top edge, over a flat dim', async () => {
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    const cls = q('[data-testid="canvas-dialog"]')!.className.split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(['md:inset-y-4', 'md:right-4', 'md:w-[min(600px,calc(100vw-7rem))]', 'lg:border', 'lg:border-t-2', 'lg:border-[var(--chat-rule-strong)]', 'lg:bg-[var(--chat-bar)]', 'lg:shadow-none']));
+    // The frame's heavy scrim: the page shapes show, the text does not read.
+    expect(q('[data-testid="canvas-dim"]')!.className.split(/\s+/)).toContain('lg:bg-[var(--chat-scrim)]');
+  });
+
+  it('the global needs-input banner stays out from above the scrim while the peek is open', async () => {
+    const { bannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
+    await render();
+    expect(bannerHiddenSnapshot()).toBe(false);
+    await act(async () => { api!.open(); });
+    await settle();
+    expect(bannerHiddenSnapshot()).toBe(true);
+    await act(async () => { api!.close(); });
+    expect(bannerHiddenSnapshot()).toBe(false);
   });
 });
 

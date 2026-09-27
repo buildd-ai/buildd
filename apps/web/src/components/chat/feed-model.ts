@@ -143,6 +143,8 @@ export type FeedSegment =
   | { kind: 'tools'; key: string; calls: ChatToolPart[] }
   | { kind: 'approval'; key: string; part: ChatToolPart }
   | { kind: 'event'; key: string; event: ChatEventData['event']; text: string }
+  /** A watch the person set fired: its own notice card, not a status line. */
+  | { kind: 'watch'; key: string; text: string; notice: NonNullable<ChatEventData['watch']> }
   | { kind: 'objects'; key: string; refs: BuilddObjectRef[] };
 
 /** A part that asks for, or has had, a human decision renders as the approval card itself. */
@@ -199,6 +201,10 @@ export function feedSegments(parts: readonly ChatPart[]): FeedSegment[] {
     }
     if (isEventPart(p)) {
       flush();
+      if (p.data.event === 'watch' && p.data.watch) {
+        out.push({ kind: 'watch', key: `watch-${i}`, text: p.data.text, notice: p.data.watch });
+        return;
+      }
       out.push({ kind: 'event', key: `event-${i}`, event: p.data.event, text: p.data.text });
       const refs = eventObjects(p.data).filter(r => !shown.has(refKey(r)));
       refs.forEach(r => shown.add(refKey(r)));

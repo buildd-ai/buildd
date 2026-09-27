@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useNeedsInput } from './NeedsInputProvider';
 import { missionTaskHref } from '@/lib/mission-task-href';
-import { bannerTasks, useHiddenNeedsInput } from '@/lib/needs-input-hidden';
+import { bannerTasks, useBannerHidden, useHiddenNeedsInput, usePhoneBannerHidden } from '@/lib/needs-input-hidden';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 /**
@@ -20,8 +20,12 @@ export default function NeedsInputBanner() {
   // banner naming it on top of that sheet only repeats it.
   const tasks = bannerTasks(waiting, useHiddenNeedsInput());
   const count = tasks.length;
+  // The phone chat canvas in needs-you mood already says it (needs-input-hidden.ts).
+  const phoneHidden = usePhoneBannerHidden();
+  // The summoned chat canvas is up: the banner would sit bright above its scrim.
+  const hidden = useBannerHidden();
 
-  if (count === 0) return null;
+  if (count === 0 || hidden) return null;
 
   const firstTask = tasks[0];
   // The sentence every page shows, not the raw "feat(scope): …" title.
@@ -30,7 +34,7 @@ export default function NeedsInputBanner() {
   return (
     <div
       data-testid="global-needs-input-banner"
-      className="bg-status-warning/10 border-b border-status-warning/20 px-4 py-2"
+      className={`${phoneHidden ? 'hidden md:block ' : ''}bg-status-warning/10 border-b border-status-warning/20 px-4 py-2`}
     >
       <div className="flex items-center justify-center gap-2 text-sm">
         <span className="relative flex h-2 w-2 shrink-0">

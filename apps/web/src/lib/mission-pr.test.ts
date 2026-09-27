@@ -30,6 +30,7 @@ let missionRow: any = null;
 let workspaceRow: any = null;
 let repoRow: any = null;
 let orphanWorkerRow: any = null;
+let missionNoteRows: any[] = [];
 
 const inserts: Array<{ table: string; values: any }> = [];
 const updates: Array<{ setValues: any }> = [];
@@ -44,6 +45,7 @@ mock.module('drizzle-orm', () => ({
   isNull: (col: any) => ({ _op: 'isNull', col }),
   isNotNull: (col: any) => ({ _op: 'isNotNull', col }),
   inArray: (col: any, vals: any[]) => ({ _op: 'inArray', col, vals }),
+  gte: (col: any, val: any) => ({ _op: 'gte', col, val }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -53,7 +55,11 @@ mock.module('@buildd/core/db/schema', () => ({
     mergedAt: 'workers.merged_at',
   },
   missions: { id: 'missions.id', primaryPrNumber: 'missions.primary_pr_number' },
-  missionNotes: {},
+  missionNotes: {
+    missionId: 'mission_notes.mission_id',
+    title: 'mission_notes.title',
+    createdAt: 'mission_notes.created_at',
+  },
   workspaces: { id: 'workspaces.id' },
   githubRepos: { id: 'github_repos.id' },
 }));
@@ -108,6 +114,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: () => Promise.resolve(missionRow) },
       workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
       githubRepos: { findFirst: () => Promise.resolve(repoRow) },
+      missionNotes: { findMany: () => Promise.resolve(missionNoteRows) },
     },
     insert: (table: any) => ({
       values: (v: any) => {
@@ -152,6 +159,7 @@ const {
   guardMissionPrMerge,
   isMissionPrTask,
   maybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure,
   openMissionIntegrationPr,
   trunkBranches,
 } = await import('./mission-pr');
@@ -182,6 +190,7 @@ beforeEach(() => {
   taskRowsForMission = [];
   workerRowsByTask = {};
   orphanWorkerRow = null;
+  missionNoteRows = [];
   inserts.length = 0;
   updates.length = 0;
   githubCalls.length = 0;
@@ -872,6 +881,53 @@ describe('trunkBranches', () => {
     // unknown base ref claim the mission PR slot.
     expect(trunkBranches({ targetBranch: null, defaultBranch: 'main' }, null)).toEqual(['main']);
     expect(trunkBranches(null, null)).toEqual([]);
+  });
+});
+
+// Friction dbaadf34: both callers of `openMissionIntegrationPr` already log a
+// failed open to the console with a comment saying it "must not be silent" —
+// but a server log nobody reads is exactly that.
+describe('noteMissionPrOpenFailure', () => {
+  it('posts a note for a non-transient failure (api_error)', async () => {
+    await noteMissionPrOpenFailure(MISSION_ID, { ok: false, reason: 'api_error', detail: 'GitHub said no' });
+
+    const note = inserts.find(i => JSON.stringify(i.values).includes('Mission PR failed to open'));
+    expect(note).toBeDefined();
+    expect(note!.values.body).toContain('[api_error]');
+    expect(note!.values.body).toContain('GitHub said no');
+    expect(note!.values.type).toBe('warning');
+  });
+
+  it('posts a note for a broken repo/workspace link (no_repo)', async () => {
+    await noteMissionPrOpenFailure(MISSION_ID, { ok: false, reason: 'no_repo', detail: 'workspace not linked' });
+    expect(inserts.some(i => JSON.stringify(i.values).includes('Mission PR failed to open'))).toBe(true);
+  });
+
+  it.each([
+    ['success', { ok: true as const, prNumber: 1, prUrl: 'u', created: true }],
+    ['work_incomplete', { ok: false as const, reason: 'work_incomplete' as const }],
+    ['no_commits', { ok: false as const, reason: 'no_commits' as const }],
+    ['not_opted_in', { ok: false as const, reason: 'not_opted_in' as const }],
+    ['no_working_branch', { ok: false as const, reason: 'no_working_branch' as const }],
+    // The sweep's own comment already decided this case must stay quiet —
+    // reopening it would fight an explicit human decision, hourly.
+    ['mission_pr_closed', { ok: false as const, reason: 'mission_pr_closed' as const }],
+    [null, null],
+  ])('does not post for %s', async (_label, result) => {
+    await noteMissionPrOpenFailure(MISSION_ID, result as any);
+    expect(inserts.length).toBe(0);
+  });
+
+  it('dedupes within the window: a repeat of the same reason posts nothing new', async () => {
+    missionNoteRows = [{ body: '[api_error] a previous message' }];
+    await noteMissionPrOpenFailure(MISSION_ID, { ok: false, reason: 'api_error', detail: 'a new message' });
+    expect(inserts.length).toBe(0);
+  });
+
+  it('a different reason still posts, even with an unrelated recent note', async () => {
+    missionNoteRows = [{ body: '[no_repo] workspace not linked' }];
+    await noteMissionPrOpenFailure(MISSION_ID, { ok: false, reason: 'api_error', detail: 'GitHub said no' });
+    expect(inserts.some(i => JSON.stringify(i.values).includes('[api_error]'))).toBe(true);
   });
 });
 

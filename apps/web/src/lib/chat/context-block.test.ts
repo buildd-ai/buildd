@@ -64,6 +64,20 @@ describe('renderChatContextBlock', () => {
     expect(block.toLowerCase()).toContain('ask which one');
   });
 
+  it('all workspaces: marks activity and says one call spans them', () => {
+    const day = 86_400_000;
+    const block = renderChatContextBlock({
+      ...base, workspace: null,
+      workspaces: [
+        { id: 'ws-1', name: 'billing-web', lastActiveAt: new Date(base.now.getTime() - 2 * day).toISOString() },
+        { id: 'ws-2', name: 'docs-site', lastActiveAt: null },
+      ],
+    });
+    expect(block).toContain('billing-web (id ws-1, active 2d ago)');
+    expect(block).toContain('docs-site (id ws-2, no activity)');
+    expect(block).toContain('without workspaceId covers the active workspaces in one call');
+  });
+
   it('a routed workspace says it was picked from the message, not pinned', () => {
     const block = renderChatContextBlock({ ...base, workspace: { id: 'ws-1', name: 'billing-web', source: 'routed' } });
     expect(block).toContain('billing-web (id ws-1)');

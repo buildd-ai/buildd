@@ -197,6 +197,9 @@ input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="ran
 textarea[data-bare-input] {
   border: 0 !important;
 }
+/* The chat composer's box spans the slab edge to edge: the ring above would
+   draw two copper lines across it. Its focus cue is the slab's own top rule. */
+textarea[data-composer-input]:focus-visible { outline: none; }
 
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
@@ -646,7 +649,8 @@ textarea[data-bare-input] {
  * conversation is soft (Plex Sans, gentle tints, rounded bubbles, no frames)
  * and fleet objects inside it (a mission, an approval, a question, a task)
  * stay hard and square. Orange still means action or live, never decoration:
- * here it is the send button and the scan line while a turn streams. */
+ * here it is the send button. (While a turn streams, the only glow is the blue
+ * sweep on the composer's top edge, below.) */
 :root, [data-theme="dark"] {
   --canvas-bg: #1f1d1a;
   --convo-me: rgba(255, 245, 230, 0.075);
@@ -665,13 +669,92 @@ textarea[data-bare-input] {
 }
 @layer components {
   .font-convo { font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
-  /* A turn is streaming: an orange segment scans the canvas's top edge. */
-  .canvas-scan { position: absolute; inset: 0 0 auto 0; height: 3px; overflow: hidden; pointer-events: none; }
-  .canvas-scan::after {
-    content: ''; position: absolute; top: 0; bottom: 0; width: 22%; left: -22%;
-    background: var(--accent);
-    animation: canvas-scan 1.8s cubic-bezier(.6, 0, .4, 1) infinite alternate;
-  }
+}
+/* ── Chat v3 foreground (docs/design/chat-canvas.md, "Mobile canvas"). The
+ * foreground is square: no radius, 1px rules, offset shadows. Colour carries
+ * meaning only: calm (teal), needs you (copper), thinking (blue/violet),
+ * landed (green). Components read these roles, never the hex. */
+:root, [data-theme="dark"] {
+  --chat-ground: #141312;
+  --chat-bar: #171513;
+  --chat-surface: #1f1c19;
+  --chat-raised: #2a2622;
+  --chat-rule: #37322c;
+  --chat-rule-strong: #8a8378;
+  --chat-text: #efe8dc;
+  --chat-muted: #a89f92;
+  --chat-dim: #8b8276;
+  --chat-panel: rgba(20, 19, 18, 0.78);
+  --chat-scrim: rgba(14, 13, 12, 0.94);
+  --mood-calm: #8fb9b3;
+  --mood-needs: #e0955a;
+  --mood-needs-fill: #c9783b;
+  --on-mood-needs: #171513;
+  --mood-thinking: #7ea6ff;
+  --mood-thinking-alt: #b49cff;
+  --mood-thinking-rule: #5f7fd0;
+  --mood-thinking-done: #4a5a7a;
+  --mood-thinking-text: #dfe8ff;
+  --mood-thinking-label: #9ec0ff;
+  --mood-landed: #86c9a1;
+  /* Pools are capped so the dimmest body text (--text-muted) keeps AA over
+   * each one's peak (sea.test.ts, "AA over the sea"). */
+  --sea-calm-1: rgba(70, 122, 124, 0.24);
+  --sea-calm-2: rgba(44, 78, 100, 0.41);
+  --sea-calm-3: rgba(98, 130, 114, 0.21);
+  --sea-calm-4: rgba(28, 46, 60, 0.7);
+  --sea-needs: rgba(224, 149, 90, 0.15);
+  --sea-thinking-1: rgba(126, 166, 255, 0.23);
+  --sea-thinking-2: rgba(180, 156, 255, 0.22);
+  --sea-thinking-3: rgba(64, 112, 114, 0.4);
+  --sea-thinking-4: rgba(30, 40, 82, 0.7);
+}
+/* Day: the same roles on linen, each dark enough for AA on --chat-ground. */
+[data-theme="light"] {
+  --chat-ground: #f4efe8;
+  --chat-bar: #efe9e1;
+  --chat-surface: #fbf8f3;
+  --chat-raised: #e9e2d8;
+  --chat-rule: #d3cabe;
+  --chat-rule-strong: #5f574e;
+  --chat-text: #1f1b17;
+  --chat-muted: #514a42;
+  --chat-dim: #625a51;
+  --chat-panel: rgba(251, 248, 243, 0.86);
+  --chat-scrim: rgba(38, 34, 30, 0.9);
+  --mood-calm: #2f6f68;
+  --mood-needs: #9c4f14;
+  --mood-needs-fill: #c9783b;
+  --on-mood-needs: #171513;
+  --mood-thinking: #3a5fc4;
+  --mood-thinking-alt: #6a4fc0;
+  --mood-thinking-rule: #3a5fc4;
+  --mood-thinking-done: #8a9ac0;
+  --mood-thinking-text: #1f2f66;
+  --mood-thinking-label: #2c4fb0;
+  --mood-landed: #2f7d52;
+  --sea-calm-1: rgba(70, 122, 124, 0.22);
+  --sea-calm-2: rgba(44, 78, 100, 0.18);
+  --sea-calm-3: rgba(98, 130, 114, 0.18);
+  --sea-calm-4: rgba(28, 46, 60, 0.12);
+  --sea-needs: rgba(224, 149, 90, 0.24);
+  --sea-thinking-1: rgba(126, 166, 255, 0.24);
+  --sea-thinking-2: rgba(180, 156, 255, 0.22);
+  --sea-thinking-3: rgba(64, 112, 114, 0.18);
+  --sea-thinking-4: rgba(30, 40, 82, 0.12);
+}
+@layer components {
+  /* Anything said by Buildd or the person: hero, rows, placeholders. */
+  .font-voice { font-family: var(--font-newsreader), ui-serif, Georgia, serif; }
+  /* The 8px mood square: breathes in opacity, never glows. */
+  .mood-dot { animation: mood-dot 2.4s ease-in-out infinite; }
+}
+@keyframes mood-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mood-dot { animation: none; }
 }
 @keyframes canvas-rise {
   from { transform: translateY(14px); opacity: 0; }
@@ -680,11 +763,87 @@ textarea[data-bare-input] {
 @layer components {
   .canvas-rise { animation: canvas-rise 180ms cubic-bezier(.2, .8, .2, 1); }
 }
-@keyframes canvas-scan {
-  from { left: -22%; }
-  to { left: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .canvas-rise { animation: none; }
+}
+/* ── The sea (docs/design/chat-canvas.md, "The sea"): the one soft element on
+ * the chat surface. Round blurred pools drift behind the canvas; colour is the
+ * mood (sea.ts), cross-faded through a registered colour property so a mood
+ * change never snaps. Transform-only motion. The rest of the surface is square. */
+@property --pool-c {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+@layer components {
+  .sea { position: absolute; inset: -60px; pointer-events: none; }
+  /* The faster current, layered on the drift: runs only while a turn streams,
+   * and pauses in place (never resets) when it stops. */
+  .sea-current {
+    position: absolute; will-change: transform;
+    animation: sea-current var(--current-s) ease-in-out var(--delay) infinite alternate;
+    animation-play-state: paused;
+  }
+  .sea-pool {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(closest-side, var(--pool-c), transparent);
+    filter: blur(28px); will-change: transform;
+    transition: --pool-c 800ms ease;
+    animation: sea-drift var(--drift-s) ease-in-out var(--delay) infinite alternate;
+  }
+  .sea[data-mood="thinking"] .sea-current { animation-play-state: running; }
+  .sea[data-motion="paused"] .sea-current,
+  .sea[data-motion="paused"] .sea-pool { animation-play-state: paused; }
+
+  /* THE ONLY GLOW on the chat surface: while a turn streams, a blue segment
+   * sweeps along the composer's 2px top edge. The track clips it sideways. */
+  .composer-edge { position: absolute; left: 0; right: 0; top: -2px; height: 2px; overflow-x: clip; pointer-events: none; }
+  .composer-sweep {
+    position: absolute; inset: 0; will-change: transform;
+    animation: composer-sweep 1.8s linear infinite;
+  }
+  .composer-sweep::after {
+    content: ''; position: absolute; top: 0; left: 0; width: 140px; height: 2px;
+    background: var(--mood-thinking);
+    box-shadow: 0 0 12px var(--mood-thinking);
+  }
+
+  /* Thinking panel: three squares ticking, the active step breathing (opacity only). */
+  .thinking-tick { animation: thinking-tick 1.2s steps(1, end) infinite; }
+  .thinking-tick:nth-child(2) { animation-delay: .4s; }
+  .thinking-tick:nth-child(3) { animation-delay: .8s; }
+  .step-active { animation: mood-dot 1.6s ease-in-out infinite; }
+  /* A solid block caret trails the streaming prose. */
+  .stream-caret > :last-child::after {
+    content: ''; display: inline-block; width: .5em; height: 1em; margin-left: .12em;
+    vertical-align: -.14em; background: var(--mood-thinking);
+  }
+}
+/* Desktop (docs/design/chat-v3-desktop.md): the stage is wide, so the same
+ * pools grow to about 300-560px. `scale` grows each pool and its blur as one,
+ * so the peak it paints, and the AA cap above, stay the same. */
+@media (min-width: 1024px) {
+  .sea-current { scale: 1.75; }
+}
+@keyframes sea-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(var(--dx), var(--dy), 0); }
+}
+@keyframes sea-current {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(calc(var(--dy) * .6), calc(var(--dx) * -.6), 0); }
+}
+@keyframes composer-sweep {
+  from { transform: translateX(-140px); }
+  to { transform: translateX(100%); }
+}
+@keyframes thinking-tick {
+  0%, 66%, 100% { opacity: .35; }
+  33% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .canvas-scan::after { animation: none; left: 0; width: 100%; opacity: .7; }
-  .canvas-rise { animation: none; }
+  .sea-pool, .sea-current { animation: none; }
+  .composer-sweep { animation: none; }
+  .composer-sweep::after { width: 100%; box-shadow: none; }
+  .thinking-tick, .step-active { animation: none; }
 }

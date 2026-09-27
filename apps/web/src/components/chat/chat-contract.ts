@@ -18,8 +18,8 @@ import {
   isBuilddObjectRef,
   type BuilddObjectRef,
   type ChatEventData,
-  type ChatToolPartState,
 } from '@buildd/shared';
+import type { ChatMessage, ChatPart, ChatToolPart } from '@buildd/ai-kit/chat/contract';
 
 // The shared contract (packages/shared/src/chat.ts) is the source of truth.
 export {
@@ -31,39 +31,24 @@ export {
   type BuilddObjectRef,
   type ChatEventData,
   type ChatToolResult,
+  type ChatWatchNotice,
   type PrObjectRef,
   type QuestionObjectRef,
 } from '@buildd/shared';
 
-/** AI SDK v7 tool part states (UIToolInvocation). */
-export type ToolPartState = ChatToolPartState;
-
-export interface ToolApproval {
-  id: string;
-  approved?: boolean;
-  reason?: string;
-  /** Why the server asked: for chat writes, the encoded before → after preview (CHAT_PREVIEW_PREFIX). */
-  requestReason?: string;
-}
-
-export interface ChatToolPart {
-  /** `tool-<name>` for static tools, `dynamic-tool` with `toolName` otherwise. */
-  type: string;
-  toolName?: string;
-  toolCallId: string;
-  state: ToolPartState;
-  input?: unknown;
-  output?: unknown;
-  errorText?: string;
-  approval?: ToolApproval;
-}
-
-export interface ChatTextPart { type: 'text'; text: string; state?: 'streaming' | 'done' }
-
-/** A part the feed doesn't render specially (reasoning, step-start, files, data parts). */
-export interface ChatOtherPart { type: string; [key: string]: unknown }
-
-export type ChatPart = ChatTextPart | ChatToolPart | ChatOtherPart;
+// The message/part shapes and their guards live in the kit's contract
+// (packages/ai-kit/src/chat/contract): buildd's chat is its first consumer.
+export {
+  isTextPart,
+  isToolPart,
+  toolNameOf,
+  type ChatOtherPart,
+  type ChatPart,
+  type ChatTextPart,
+  type ChatToolPart,
+  type ToolApproval,
+  type ToolPartState,
+} from '@buildd/ai-kit/chat/contract';
 
 export interface ChatMessageMetadata {
   /** ISO timestamp the message was saved. */
@@ -78,28 +63,7 @@ export interface ChatMessageMetadata {
   durationMs?: number;
 }
 
-export interface ChatMessage {
-  id: string;
-  /** `event` is buildd's own: a planning-mode update, not a model turn. */
-  role: 'system' | 'user' | 'assistant' | 'event';
-  metadata?: unknown;
-  parts: ChatPart[];
-}
-
-export function isToolPart(part: ChatPart): part is ChatToolPart {
-  return typeof part.type === 'string'
-    && (part.type.startsWith('tool-') || part.type === 'dynamic-tool')
-    && typeof (part as ChatToolPart).toolCallId === 'string';
-}
-
-export function isTextPart(part: ChatPart): part is ChatTextPart {
-  return part.type === 'text' && typeof (part as ChatTextPart).text === 'string';
-}
-
-export function toolNameOf(part: ChatToolPart): string {
-  if (part.type === 'dynamic-tool') return part.toolName ?? 'tool';
-  return part.type.slice('tool-'.length);
-}
+export type { ChatMessage } from '@buildd/ai-kit/chat/contract';
 
 export function messageMeta(m: ChatMessage): ChatMessageMetadata {
   return m.metadata && typeof m.metadata === 'object' ? (m.metadata as ChatMessageMetadata) : {};

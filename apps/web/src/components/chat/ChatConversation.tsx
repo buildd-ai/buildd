@@ -23,6 +23,7 @@ import {
   type CreateConversationResponse, type GetConversationResponse,
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { useWatchDelivery } from './use-watch-delivery';
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
 import ChatWorkspace, { type ChatWorkspaceProps } from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
@@ -33,6 +34,7 @@ import { chatErrorLine, parseChatUnavailable } from './chat-errors';
 import { ObjectStoreProvider } from './objects/ObjectStoreProvider';
 import { parkPending, takePending } from './pending-message';
 import { composerHint, conversationHref, EMPTY_CHAT_ENTRY, type ChatEntry } from '@/lib/chat/entry-points';
+import type { CanvasPulse } from './canvas-empty';
 
 export { PENDING_KEY } from './pending-message';
 
@@ -53,11 +55,15 @@ export interface ChatConversationProps {
   canManageTeamKeys: boolean;
   aside?: ReactNode;
   emptyState?: ReactNode;
+  /** A phone's history view (/app/chat?view=history). */
+  historyOpen?: boolean;
   focusRef?: BuilddObjectRef | null;
   /** How the chat was opened (+ Mission, New task, Ask about…). Sent with every turn. */
   entry?: ChatEntry;
   /** "Fill in a form instead", until the first message. */
   formFallbackHref?: string | null;
+  /** The empty canvas's mood and picked questions (chat-shell.tsx, canvasPulse). */
+  pulse?: CanvasPulse | null;
   /**
    * The summoned canvas (ChatCanvasOverlay): a new conversation stays in place
    * instead of navigating to /app/chat/<id>, and the canvas chrome is passed
@@ -80,7 +86,7 @@ export function dtoToMessage(m: GetConversationResponse['messages'][number], vie
 export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
-    canManageTeamKeys, aside, emptyState, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null,
+    canManageTeamKeys, aside, emptyState, historyOpen = false, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null, pulse = null,
     onConversationCreated, canvas,
   } = props;
   const router = useRouter();
@@ -149,6 +155,9 @@ export default function ChatConversation(props: ChatConversationProps) {
       unsubscribeFromChannel(name);
     };
   }, [conversationId, refetch]);
+
+  // Watches set here that fired while the tab was away land in the feed.
+  useWatchDelivery(conversationId, () => { void refetch(); });
 
   // A finished turn may have renamed the conversation (auto-title after the first exchange).
   const prevStatus = useRef(status);
@@ -248,12 +257,14 @@ export default function ChatConversation(props: ChatConversationProps) {
         viewerName={viewerName}
         aside={aside}
         emptyState={emptyState}
+        historyOpen={historyOpen}
         focusRef={focusRef}
         focusOpensSheet={!entry.about}
         composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
         formFallbackHref={formFallbackHref}
         entryIntent={entry.intent}
+        pulse={pulse}
         {...canvas}
       />
       </TurnFeedbackProvider>

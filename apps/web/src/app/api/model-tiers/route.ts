@@ -11,7 +11,8 @@ import {
   verifyWorkspaceAccess,
   verifyAccountWorkspaceAccess,
 } from '@/lib/team-access';
-import { resolveAllTiers, invalidateTierCache, TIERS, type Tier } from '@buildd/core/model-tier-registry';
+import { resolveAllTiers, invalidateTierCache, TIERS, type Tier, type TierSurface } from '@buildd/core/model-tier-registry';
+import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
 
 // Resolve the teamId for a given workspaceId.
 async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null> {
@@ -105,8 +106,20 @@ async function authenticate(req: NextRequest) {
   return { user, apiAccount: apiAccount as { id: string; teamId?: string | null } | null };
 }
 
+/** `surface` from a body or query: absent/null = the shared row; anything else must name a surface. */
+function parseSurface(raw: unknown): { surface: TierSurface | null } | { error: NextResponse } {
+  if (raw == null || raw === '') return { surface: null };
+  if (isTierSurface(raw)) return { surface: raw };
+  return { error: NextResponse.json({ error: 'surface must be agent or chat' }, { status: 400 }) };
+}
+
+function surfaceMatch(surface: TierSurface | null) {
+  return surface ? eq(modelTierRegistry.surface, surface) : isNull(modelTierRegistry.surface);
+}
+
 // GET /api/model-tiers?workspaceId=<id> | ?teamId=<id>
-// Returns the effective tier map (workspace override → team default → catalog → code fallback).
+// Returns the effective tier map (workspace override → team default → catalog → code fallback)
+// for the shared rows, with each surface's resolution under `bySurface`.
 export async function GET(req: NextRequest) {
   const auth = await authenticate(req);
   if ('error' in auth) return auth.error;
@@ -122,8 +135,16 @@ export async function GET(req: NextRequest) {
     });
     if ('error' in resolved) return resolved.error;
 
-    const tiers = await resolveAllTiers(resolved.teamId, workspaceId);
-    return NextResponse.json(tiers);
+    const [shared, agent, chat] = await Promise.all([
+      resolveAllTiers(resolved.teamId, workspaceId, null),
+      resolveAllTiers(resolved.teamId, workspaceId, 'agent'),
+      resolveAllTiers(resolved.teamId, workspaceId, 'chat'),
+    ]);
+    const body = Object.fromEntries(TIERS.map((tier) => [
+      tier,
+      { ...shared[tier], bySurface: { agent: agent[tier], chat: chat[tier] } },
+    ])) as Record<Tier, TierEntryWithSurfaces>;
+    return NextResponse.json(body);
   } catch (error) {
     console.error('GET /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -131,7 +152,8 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/model-tiers — upsert a registry row (pins the tier)
-// Body: { tier, provider, model, workspaceId?, teamId?, defaultEffort?, defaultMaxTurns? }
+// Body: { tier, provider, model, surface?, workspaceId?, teamId?, defaultEffort?, defaultMaxTurns? }
+// surface absent = the row serves both surfaces.
 export async function POST(req: NextRequest) {
   const auth = await authenticate(req);
   if ('error' in auth) return auth.error;
@@ -149,6 +171,9 @@ export async function POST(req: NextRequest) {
     if (!model || typeof model !== 'string') {
       return NextResponse.json({ error: 'model is required' }, { status: 400 });
     }
+    const parsed = parseSurface(body.surface);
+    if ('error' in parsed) return parsed.error;
+    const { surface } = parsed;
 
     const resolved = await resolveTeam(req, auth.user, auth.apiAccount, {
       workspaceId: workspaceId ?? null,
@@ -168,6 +193,7 @@ export async function POST(req: NextRequest) {
         workspaceId
           ? eq(modelTierRegistry.workspaceId, workspaceId)
           : isNull(modelTierRegistry.workspaceId),
+        surfaceMatch(surface),
       ),
     });
 
@@ -189,6 +215,7 @@ export async function POST(req: NextRequest) {
         tier: tier as Tier,
         provider,
         model,
+        surface,
         defaultEffort: defaultEffort ?? null,
         defaultMaxTurns: typeof defaultMaxTurns === 'number' ? defaultMaxTurns : null,
         createdAt: now,
@@ -198,14 +225,14 @@ export async function POST(req: NextRequest) {
 
     invalidateTierCache(teamId, workspaceId ?? null);
 
-    return NextResponse.json({ ok: true, tier, provider, model });
+    return NextResponse.json({ ok: true, tier, provider, model, surface });
   } catch (error) {
     console.error('POST /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// DELETE /api/model-tiers?tier=<tier>&workspaceId=<id> | &teamId=<id>
+// DELETE /api/model-tiers?tier=<tier>&surface=<agent|chat>?&workspaceId=<id> | &teamId=<id>
 // Removes a registry row (unpins), falling back to the next level in the chain.
 export async function DELETE(req: NextRequest) {
   const auth = await authenticate(req);
@@ -218,6 +245,8 @@ export async function DELETE(req: NextRequest) {
   if (!tier || !TIERS.includes(tier as Tier)) {
     return NextResponse.json({ error: `tier must be one of ${TIERS.join(', ')}` }, { status: 400 });
   }
+  const parsed = parseSurface(searchParams.get('surface'));
+  if ('error' in parsed) return parsed.error;
 
   try {
     const resolved = await resolveTeam(req, auth.user, auth.apiAccount, {
@@ -236,6 +265,7 @@ export async function DELETE(req: NextRequest) {
         workspaceId
           ? eq(modelTierRegistry.workspaceId, workspaceId)
           : isNull(modelTierRegistry.workspaceId),
+        surfaceMatch(parsed.surface),
       ));
 
     invalidateTierCache(teamId, workspaceId ?? null);

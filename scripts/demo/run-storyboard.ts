@@ -26,6 +26,7 @@
  *       caption: "Six agents. Four machines. At the same time."
  *       fullPage: false               # default: viewport-sized shot
  *       hold: 500                     # ms to settle after load (default 400)
+ *       reducedMotion: true           # optional: shoot with prefers-reduced-motion: reduce (board-level default too)
  *       record: { ms: 8000, advanceTo: "14:30", ticks: 6 }   # optional webm: live replay via Pusher
  *
  * Output: <out>/<story>/<step>-<theme>.png (desktop) or <step>-<viewport>-<theme>.png,
@@ -45,7 +46,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -62,6 +63,7 @@ type Step = {
   fullPage?: boolean;
   hold?: number;
   shot?: boolean;
+  reducedMotion?: boolean;
   record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
 };
 type Storyboard = {
@@ -72,6 +74,8 @@ type Storyboard = {
   themes?: Array<'dark' | 'light'>;
   as?: string;
   highlight?: string[];
+  /** Default for every step's `reducedMotion`. */
+  reducedMotion?: boolean;
   steps: Step[];
 };
 type Theme = 'dark' | 'light';
@@ -166,6 +170,7 @@ async function main() {
     // takes must NOT: the pages' realtime throttles schedule off Date.now, and a
     // frozen clock turns them into debounces that never fire under steady pushes.
     if (opts.freezeClock !== false) await page.clock.setFixedTime(new Date());
+    await page.emulateMedia({ reducedMotion: reducedMotionFor(step, board) });
     const url = DEMO.baseUrl + fill(step.goto ?? new URL(page.url()).pathname, state.ids);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
     await page.addStyleTag({ content: HIDE_CSS });

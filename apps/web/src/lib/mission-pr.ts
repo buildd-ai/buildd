@@ -38,7 +38,7 @@ import {
   workers,
   workspaces,
 } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import {
@@ -707,6 +707,82 @@ export async function maybeOpenMissionIntegrationPr(
   // open, and that is not a failure to report anywhere.
   if (!missionIntegrationBase(mission)) return null;
   return openMissionIntegrationPr(missionId, opts);
+}
+
+/** Title of the mission-feed note {@link noteMissionPrOpenFailure} posts. */
+const MISSION_PR_FAILURE_NOTE_TITLE = 'Mission PR failed to open';
+
+/** Re-post the same failure at most once per window, so an hourly sweep does not spam the feed. */
+const MISSION_PR_FAILURE_NOTE_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The `reason`s worth a mission-feed note. Both callers of `openMissionIntegrationPr`
+ * (the merge webhook and the reconciliation sweep) already `console.error` every
+ * non-`work_incomplete` failure — comments on both call sites say the result
+ * "must not be silent", but a server log nobody reads is exactly that. This is
+ * the part actually worth an owner's attention:
+ *
+ *  - `no_repo` / `api_error` can recur forever with no self-correction (a
+ *    broken installation token, insufficient permissions, a persistent GitHub
+ *    error) — nothing else marks these non-transient or escalates them, so
+ *    the mission's work sits done and unshipped until a human notices.
+ *
+ * Deliberately excludes `mission_pr_closed`: the sweep's own comment already
+ * decided that case must stay quiet ("saying so hourly would be noise"), and
+ * `not_opted_in` / `no_working_branch` / `no_commits` / `work_incomplete` are
+ * either excluded upstream or ordinary, not-yet-done states.
+ */
+const NOTEWORTHY_MISSION_PR_FAILURE_REASONS: ReadonlySet<string> = new Set(['no_repo', 'api_error']);
+
+/**
+ * Post a mission-feed note for a mission-PR-open failure worth a human's
+ * attention. A no-op for every other outcome (success, or a reason that is
+ * either excluded by design or expected to self-resolve) and for a repeat
+ * within the dedup window — safe to call unconditionally from every caller of
+ * `openMissionIntegrationPr` / `maybeOpenMissionIntegrationPr`.
+ */
+export async function noteMissionPrOpenFailure(
+  missionId: string,
+  result: OpenMissionPrResult | null,
+): Promise<void> {
+  if (!result || result.ok) return;
+  if (!NOTEWORTHY_MISSION_PR_FAILURE_REASONS.has(result.reason)) return;
+
+  // First line is a stable machine-readable key; the prose below it carries
+  // the volatile detail (a GitHub error message, which can change between
+  // attempts at the same underlying failure). Deduping on the whole body
+  // would post a "new" note on every sweep of a failure whose message jitters.
+  const key = `[${result.reason}]`;
+  const body =
+    `${key} ${result.detail ?? result.reason}\n\n` +
+    `This mission's deliverable work has landed on its integration branch, but the mission PR ` +
+    `has not opened. It will keep retrying on the next task-PR merge and reconciliation sweep; ` +
+    `if this note repeats, the failure is not transient and needs a look.`;
+
+  try {
+    const since = new Date(Date.now() - MISSION_PR_FAILURE_NOTE_WINDOW_MS);
+    const recent = await db.query.missionNotes.findMany({
+      where: and(
+        eq(missionNotes.missionId, missionId),
+        eq(missionNotes.title, MISSION_PR_FAILURE_NOTE_TITLE),
+        gte(missionNotes.createdAt, since),
+      ),
+      columns: { body: true },
+      limit: 20,
+    });
+    if (recent.some(n => (n.body ?? '').startsWith(key))) return;
+
+    await db.insert(missionNotes).values({
+      missionId,
+      authorType: 'system',
+      type: 'warning',
+      title: MISSION_PR_FAILURE_NOTE_TITLE,
+      body,
+      status: 'open',
+    });
+  } catch (e) {
+    console.error(`[mission-pr] failure note failed for ${missionId}:`, e);
+  }
 }
 
 /** Lifecycle of a mission integration PR, as the mission's own gate sees it. */

@@ -8,7 +8,19 @@
  */
 import Link from 'next/link';
 
-export interface ContextNeedsYou { id: string; title: string; href: string; meta?: string | null }
+export interface ContextNeedsYou {
+  id: string;
+  title: string;
+  href: string;
+  meta?: string | null;
+  /** The task's short label (tasks.label), for the canvas's row 1 action. */
+  label?: string | null;
+  /** What the worker is waiting for (workers.waitingFor.type). */
+  waitingType?: string | null;
+  /** The waiting task and its workspace (the desktop dock loads it). */
+  taskId?: string | null;
+  workspaceId?: string | null;
+}
 export interface ContextMission { id: string; title: string; state: string; meta?: string | null; tone?: 'live' | 'attention' | 'idle' }
 
 export interface ChatContextPanelProps {

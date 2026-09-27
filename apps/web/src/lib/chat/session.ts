@@ -4,9 +4,9 @@
  */
 
 import type { NextRequest } from 'next/server';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, max } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import { resolveTimezone } from '@buildd/core/timezone';
 import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
@@ -108,5 +108,21 @@ export async function loadRoutableWorkspaces(teamId: string, inReach: ReadonlySe
     .from(workspaces)
     .where(and(eq(workspaces.teamId, teamId), inArray(workspaces.id, [...inReach])))
     .orderBy(asc(workspaces.name));
-  return rows.map(w => ({ id: w.id, name: w.name, hint: workspaceHint(w) }));
+  if (rows.length === 0) return [];
+  // Latest task activity per workspace, so spanning reads skip idle ones. Best
+  // effort: without it every workspace counts as active.
+  const since = new Date(Date.now() - ACTIVITY_LOOKBACK_DAYS * 86_400_000);
+  const activity = await db.select({ workspaceId: tasks.workspaceId, at: max(tasks.updatedAt) })
+    .from(tasks)
+    .where(and(inArray(tasks.workspaceId, rows.map(w => w.id)), gte(tasks.updatedAt, since)))
+    .groupBy(tasks.workspaceId)
+    .then(r => new Map(r.map(a => [a.workspaceId, a.at])))
+    .catch(() => null);
+  return rows.map(w => ({
+    id: w.id, name: w.name, hint: workspaceHint(w),
+    ...(activity ? { lastActiveAt: activity.get(w.id)?.toISOString() ?? null } : {}),
+  }));
 }
+
+/** How far back workspace activity is looked up; older reads as "no activity". */
+const ACTIVITY_LOOKBACK_DAYS = 60;

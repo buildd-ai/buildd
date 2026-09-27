@@ -2,12 +2,12 @@
 title: Model Routing and Tiers
 status: active
 owner: max
-last_verified: 2026-08-30
-summary: A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, role pin, task tier, then kind×complexity baseline under budget gates — recorded on tasks.predicted_model.
+last_verified: 2026-09-27
+summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
-surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/model-aliases.ts]
+surfaces: [packages/core/model-router.ts, packages/core/role-model-routing.ts, packages/core/model-tier-registry.ts, apps/web/src/app/api/workers/claim/route.ts]
 related: [provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
-verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
+verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
 keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
@@ -55,30 +55,51 @@ evaluate by hand.
   in the **same** `set()` payload
   (`apps/web/src/app/api/workers/claim/route.ts:1612-1630`), so the analytics
   column and the dispatched value cannot disagree.
-- The precedence is fixed and total:
+- The precedence is fixed and total (`resolveClaimModelInputs`,
+  `packages/core/role-model-routing.ts`):
   1. `tasks.context.model` (per-task pin, any string),
-  2. the role's `workspaceSkills.model` when it is **not** one of
-     `haiku`/`sonnet`/`opus`/`inherit`/`premium`/`standard`/`budget` — i.e. an
-     exact model id pinned on the role (`route.ts:1557-1567`),
-  3. `tasks.tier` (`premium`/`standard`/`budget`) → tier registry,
+  2. `tasks.tier` (`premium-plus`/`premium`/`standard`/`budget`) → tier
+     registry,
+  3. the role's `workspaceSkills.model` when it is **not** one of
+     `haiku`/`sonnet`/`opus`/`inherit`/`premium-plus`/`premium`/`standard`/`budget`
+     — i.e. an exact model id pinned on the role,
   4. the `kind × complexity` baseline matrix, after the budget and spike gates
      and the role floor clamp, mapped to a tier by `mapRouterAlias`.
-- A pin from step 1 or 2 short-circuits **everything**: `resolveEffectiveModel`
+  An explicit caller value always wins over a role: a role pinned to
+  `claude-sonnet-5` on a task filed with `tier: "premium"` runs at premium.
+- A pin from step 1 or 3 short-circuits **everything**: `resolveEffectiveModel`
   returns `reason: 'explicit_override'` before any gate runs
   (`packages/core/model-router.ts:99-106`), so a pinned task is not downshifted
   by budget pressure, not downshifted by a claim spike, not raised to a role
   floor, and not paused at 95% of the daily cost cap.
+- The role row is resolved **per task**, the same way `checkConnectorRouting`
+  resolves it (`pickRoleRowForTask`): the task workspace's override row, else
+  its team's default (`workspaceId IS NULL`). Another workspace's override of
+  the same slug never applies, whichever workspaces the claiming runner serves.
+- A role whose model comes from **inference** (`context.roleInferred` present)
+  contributes nothing to the model — not a pin, not a floor. Only a stated role
+  moves the model (`docs/design/role-routing.md` §4.1).
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
   computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates
   just applied.
-- `tasks.tier`, when set, overrides the router's computed tier — the budget and
-  spike downshifts are discarded (`route.ts:1597-1598`) — but the 95% **pause**
-  still applies, because it returns before the tier lookup.
+- A `premium-plus` role floor resolves to the `premium-plus` tier. The router
+  tops out at `opus`, so the claim route applies it after the router
+  (`roleTierOverride`), not through `mapRouterAlias`, which would give
+  `premium`.
+- `tasks.tier`, when set, overrides the router's computed tier and any role
+  floor — the budget and spike downshifts are discarded — but the 95%
+  **pause** still applies, because it returns before the tier lookup.
 - `mapRouterAlias` is total: `opus→premium`, `haiku→budget`, anything else
   (including `sonnet` and any unknown string) `→standard`
-  (`packages/core/model-tier-registry.ts:24-28`). Role tier values round-trip
+  (`packages/core/model-tier-registry.ts:34-38`). Role tier values round-trip
   without drift: `premium→opus→premium`.
+- The `create_task` response's `routing` preview (`computeRoutingPreview`,
+  `packages/core/task-routing-preview.ts`) follows the same precedence for the
+  **stated** role, using the same helpers, and its `reason` names a role floor
+  that raised the tier or a role exact-id pin. A role-less task in a workspace
+  with at least two inference candidates gets the note `no role given — one
+  may be inferred after creation; an inferred role does not change the model`.
 - The only non-claimable routing outcome is `'paused'`. The task is left
   `pending` — never failed, never given a `start_at` floor — and
   `diagnostics.deferrals.routing_paused` increments (`route.ts:1580-1583`).
@@ -103,6 +124,15 @@ evaluate by hand.
 - AC-3: GIVEN role `builder` configured with `model='sonnet'` AND a task
   `engineering/simple` routed to it WHEN a runner claims THEN
   `tasks.predicted_model` is `sonnet` — the floor raises the baseline `haiku`.
+- AC-3a: GIVEN role `email-agent` configured with `model='claude-sonnet-5'`
+  AND a task routed to it with `tier='premium'` WHEN a runner claims THEN
+  `tasks.predicted_model` is the premium tier's model, not `claude-sonnet-5`.
+- AC-3b: GIVEN role `builder` with `model='opus'` AND a task routed to it with
+  `context.roleInferred` set WHEN a runner claims THEN the floor does not apply
+  and an `engineering/simple` task resolves to the budget tier.
+- AC-3c: GIVEN workspaces A and B each overriding `builder` with a different
+  `model` WHEN a runner serving both claims a task in A THEN A's row sets the
+  floor.
 - AC-4 (failure path): GIVEN `dailyBudgetPct >= 0.95`, a task whose `kind` is
   not `coordination`, and `priority = 0` WHEN a runner claims THEN no worker is
   created for that task, the task stays `pending`, and
@@ -113,12 +143,16 @@ evaluate by hand.
 
 **Code surface**: `packages/core/model-router.ts`
 (`BASELINE`, `TIER_ORDER`, `downshift`, `resolveEffectiveModel`),
-`apps/web/src/app/api/workers/claim/route.ts:1551-1630`,
+`packages/core/role-model-routing.ts` (`pickRoleRowForTask`,
+`resolveClaimModelInputs`), `packages/core/task-routing-preview.ts`
+(`computeRoutingPreview`),
+`apps/web/src/app/api/workers/claim/route.ts:1527-1630`,
 `packages/core/db/schema.ts:866-876` (`tasks.kind`, `complexity`, `tier`,
 `predictedModel`, `classifiedBy`),
 `packages/core/__tests__/model-router.test.ts`,
+`packages/core/__tests__/role-model-routing.test.ts`,
 `apps/web/src/app/api/workers/claim/route.test.ts` (`describe('smart model
-routing')`, and the OAuth-pressure block at `:3796`).
+routing')` including `role model precedence`, and the OAuth-pressure block at `:3796`).
 
 **Out of scope**: which *backend process* executes the task
 (`provider-failover`), and per-task `effort` / `thinking` / `maxTurns`

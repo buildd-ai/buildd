@@ -258,6 +258,15 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
+// Explicit-taskId exclusion probe (own rendered-SQL tests in
+// explicit-task-exclusion.test.ts). Here we only pin that the route asks for it
+// and forwards the answer.
+const mockDiagnoseExplicitTaskExclusion = mock((_opts: any) => Promise.resolve(null as any));
+const mockStampLastClaimAttempt = mock((_opts: any) => Promise.resolve());
+mock.module('./explicit-task-exclusion', () => ({
+  diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
+  stampLastClaimAttempt: mockStampLastClaimAttempt,
+}));
 
 // Model-routing experiment glue. The real module is exercised against rendered
 // SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
@@ -289,6 +298,20 @@ mock.module('@buildd/core/tier-pool-source', () => ({
 const mockEnrolCbmAccessExperiment = mock((_args: any): Promise<any> => Promise.resolve(null));
 mock.module('@buildd/core/cbm-access-experiment-source', () => ({
   enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
+}));
+
+// Records every tier lookup the claim makes and delegates to the real
+// resolver, so tests can check the surface a claim asks for.
+// mock.module rewrites the live namespace, so the real function is captured first.
+const realTierRegistry = { ...(await import('@buildd/core/model-tier-registry')) };
+const realResolveTierEntry = realTierRegistry.resolveTierEntry;
+const tierLookups: unknown[][] = [];
+mock.module('@buildd/core/model-tier-registry', () => ({
+  ...realTierRegistry,
+  resolveTierEntry: (...args: Parameters<typeof realResolveTierEntry>) => {
+    tierLookups.push(args);
+    return realResolveTierEntry(...args);
+  },
 }));
 
 import { POST } from './route';
@@ -1967,6 +1990,97 @@ describe('POST /api/workers/claim', () => {
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
   });
 
+  // Friction task 81962c2f: an explicit taskId excluded by a WHERE-clause gate
+  // (held mission, held task, deps, ...) used to come back as a bare
+  // `no_pending_tasks`, indistinguishable from an empty queue.
+  it('explains why an explicitly requested task was excluded, scoped to the claimable workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce({ code: 'mission_held', detail: 'Its mission is held.' });
+    mockStampLastClaimAttempt.mockReset();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'mcp', taskId: 'task-held' },
+    }));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.workers).toEqual([]);
+    expect(data.diagnostics.reason).toBe('no_pending_tasks');
+    expect(data.diagnostics.taskExclusion).toEqual({ code: 'mission_held', detail: 'Its mission is held.' });
+    const opts = mockDiagnoseExplicitTaskExclusion.mock.calls[0][0];
+    expect(opts.taskId).toBe('task-held');
+    expect(opts.workspaceIds).toEqual(['ws-1']);
+    // The probe re-evaluates the route's own predicates, not copies of them.
+    expect(Object.keys(opts.gates)).toEqual(expect.arrayContaining(['missionHeld', 'taskHeld', 'deps', 'activeWorker']));
+    // The lastClaimAttempt stamp carries the same workspace scope as the claim
+    // query (its rendered WHERE is pinned in explicit-task-exclusion.test.ts).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockStampLastClaimAttempt).toHaveBeenCalledTimes(1);
+    expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({
+      taskId: 'task-held', workspaceIds: ['ws-1'], reason: 'no_pending_tasks',
+    });
+  });
+
+  it('an explicit claim rejected for no_slots still stamps, scoped to the claimable workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockStampLastClaimAttempt.mockReset();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'mcp', taskId: 'task-x', maxTasks: 0 },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics.reason).toBe('no_slots');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockStampLastClaimAttempt).toHaveBeenCalledTimes(1);
+    expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({ taskId: 'task-x', workspaceIds: ['ws-1'], reason: 'no_slots' });
+  });
+
+  it('an ordinary poll (no taskId) never stamps a task', async () => {
+    mockStampLastClaimAttempt.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockStampLastClaimAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not run the exclusion probe for an ordinary (no taskId) empty poll', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics.taskExclusion).toBeUndefined();
+    expect(mockDiagnoseExplicitTaskExclusion).not.toHaveBeenCalled();
+  });
+
   it('claims a task when its previous worker has already completed (no active worker)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
@@ -2858,6 +2972,13 @@ describe('POST /api/workers/claim', () => {
       expect(second.context.model).toBe(TIER_DEFAULTS.premium.model);
     });
 
+    it('resolves the tier for the agent surface', async () => {
+      tierLookups.length = 0;
+      await claimOnce({ workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' }, tier: 'premium' });
+      expect(tierLookups.length).toBeGreaterThan(0);
+      for (const args of tierLookups) expect(args[3]).toBe('agent');
+    });
+
     it('a requeued task re-routes when its complexity changes (no team registry)', async () => {
       const first = await claimOnce({ complexity: 'simple' });
       expect(first.predictedModel).toBe('haiku');
@@ -2975,6 +3096,82 @@ describe('POST /api/workers/claim', () => {
 
       // baseline=haiku, role floor=sonnet → clamped up to sonnet
       expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+    });
+
+    // --- Role model precedence (docs/design/role-routing.md §3.1, §4) ---
+    describe('role model precedence', () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+
+      it('an explicit tasks.tier beats a role pinned to an exact model id (email-agent)', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'email-agent', tier: 'premium' });
+        expect(res.context.routingReason).not.toBe('explicit_override');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
+      it('the role exact id still wins when the task has no tier', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'email-agent', tier: null });
+        expect(res.context.routingReason).toBe('explicit_override');
+        expect(res.predictedModel).toBe('claude-sonnet-5');
+      });
+
+      it('an inferred role floor does not raise the model', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({
+          workspace, roleSlug: 'builder', complexity: 'simple',
+          context: { roleInferred: { confidence: 0.93 } },
+        });
+        expect(res.context.routingReason).toBe('baseline');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('an inferred role exact-id pin does not bypass routing', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'email-agent', model: 'claude-sonnet-5', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({
+          workspace, roleSlug: 'email-agent', complexity: 'simple',
+          context: { roleInferred: { confidence: 0.93 } },
+        });
+        expect(res.context.routingReason).not.toBe('explicit_override');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('the same role stated (not inferred) does apply its floor', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'builder', complexity: 'simple' });
+        expect(res.context.routingReason).toBe('role_floor_clamp');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
+      it("another workspace's override of the same slug never sets this task's floor", async () => {
+        // ws-2's override is returned LAST, which is what used to win when
+        // floors were keyed by slug alone.
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'builder', model: 'budget', workspaceId: 'ws-1', teamId: 'team-1' },
+          { slug: 'builder', model: 'premium', workspaceId: 'ws-2', teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'builder', complexity: 'simple' });
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.budget.model);
+      });
+
+      it('a premium-plus role floor resolves to premium-plus, not premium', async () => {
+        mockWorkspaceSkillsFindMany.mockResolvedValue([
+          { slug: 'architect', model: 'premium-plus', workspaceId: null, teamId: 'team-1' },
+        ]);
+        const res = await claimOnce({ workspace, roleSlug: 'architect', complexity: 'simple' });
+        expect(res.predictedModel).toBe(TIER_DEFAULTS['premium-plus'].model);
+        expect(res.context.resolvedTier).toMatchObject({ tier: 'premium-plus' });
+      });
     });
   });
 
@@ -4633,6 +4830,70 @@ describe('path-overlap claim guard', () => {
     expect(data.diagnostics?.blockedByPr).toEqual({
       prNumber: 1126,
       prUrl: 'https://github.com/org/repo/pull/1126',
+    });
+  });
+
+  // ── Explicit-taskId diagnosis of a path-overlap deferral ────────────────────
+  // The task reached the dispatch loop (it passed every SQL-level claimability
+  // gate) but was itself the one deferred by the in-loop path-overlap backstop.
+  // Without this, an explicit `claim_task(taskId)` caller saw only the generic
+  // "held back this poll" fallback (or 'unknown' via the SQL-gate probe) even
+  // though the route already knew exactly which PR or task was blocking it.
+
+  it('layer 1: names the explicit task exclusion as path_overlap with the blocking PR and paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([  // open PR pre-fetch
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.taskExclusion).toEqual({
+      code: 'path_overlap',
+      detail: 'Its files overlap open PR #2700 (apps/web/src/lib/mcp-oauth.ts). Wait for it to merge, or rebase onto it.',
+    });
+  });
+
+  it('layer 2: names the explicit task exclusion as path_overlap with the claiming task id and paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+
+    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.taskExclusion).toEqual({
+      code: 'path_overlap',
+      detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
     });
   });
 });

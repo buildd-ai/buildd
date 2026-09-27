@@ -6,6 +6,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
+import { isUuid } from '@/lib/uuid';
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -24,6 +25,11 @@ export async function GET(
 
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // A non-UUID can never name an artifact; querying with one throws 22P02 (a 500).
+  if (!isUuid(artifactId)) {
+    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
   }
 
   const artifact = await db.query.artifacts.findFirst({
@@ -83,6 +89,10 @@ export async function PATCH(
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (!isUuid(artifactId)) {
+    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
   }
 
   // Find artifact and verify ownership via worker -> account

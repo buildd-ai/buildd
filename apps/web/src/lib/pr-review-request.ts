@@ -128,7 +128,7 @@ export interface AdoptablePr {
   head?: { sha?: string | null; ref?: string | null } | null;
   base?: { sha?: string | null; ref?: string | null } | null;
   additions?: number | null;
-  user?: { login?: string | null } | null;
+  user?: { login?: string | null; type?: string | null } | null;
 }
 
 /**
@@ -206,6 +206,8 @@ export async function resolveOrAdoptPrOwner(params: {
           headSha: pr.head?.sha ?? null,
           baseBranch: pr.base?.ref ?? null,
           author: pr.user?.login ?? null,
+          // Read by isDependencyBotPrContext — push paths refuse bot branches.
+          authorType: pr.user?.type ?? null,
           adoptedAt: new Date().toISOString(),
         },
       },

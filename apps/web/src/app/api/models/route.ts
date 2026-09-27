@@ -87,7 +87,7 @@ interface RegistryModels {
  */
 async function registryModels(teamId: string): Promise<RegistryModels> {
   try {
-    const tiers = await resolveAllTiers(teamId);
+    const tiers = await resolveAllTiers(teamId, null, null);
     const models = TIER_ORDER.map(tier => {
       const entry = tiers[tier];
       return {

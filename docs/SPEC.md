@@ -338,7 +338,15 @@ the route tree is authoritative.)
 - **Auth:** `auth/[...nextauth]`, `auth/cli`, `auth/device/{code,approve,token}`.
 - **OAuth 2.1 (MCP clients):** `oauth/{authorize,register,token}`,
   `mcp-oauth/[workspace]` (workspace-scoped JWT enforcement).
-- **Accounts:** `accounts`, `accounts/me`, `accounts/[id]`, `.../regenerate-key`.
+- **Accounts:** `accounts`, `accounts/me`, `accounts/[id]`, `.../regenerate-key`,
+  `.../ai-budget` (an app key's daily AI cap, owner/admin).
+- **Model plans for sibling apps** (`docs/design/shared-ai-kit.md` §2): `ai/plan`
+  (tier → model on the app's providers, from the team's registry and chat pools,
+  with an `ok`/`downgrade`/`deny` spend decision and a TTL), `ai/usage`
+  (content-free, identity-free receipts; unknown fields rejected; an optional
+  `kind` of `chat`/`inference`/`decision` is stored as the row's surface, and a
+  Jev `decision` receipt needs no tier). Any-level `bld_`
+  key, team from the key. Code: `apps/web/src/lib/ai/`.
 - **Tasks:** `tasks` (+ `bulk`, `cleanup`, `waiting-input`), `tasks/[id]` (+ `start`,
   `run`, `messages`, `reassign`, `summary`, `error-traces`, `workers`,
   `approve-plan`, `reject-plan`).

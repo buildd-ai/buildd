@@ -95,6 +95,10 @@ cd "$DEMO_ROOT/apps/web"
 BUILD_STAMP=".next/DEMO_BUILD"
 if [ -n "${DEMO_REBUILD:-}" ] || [ ! -f "$BUILD_STAMP" ]; then
   echo "[demo] next build (a few minutes)…"
+  # A rebuild starts from nothing: an incremental build over a branch switch
+  # has served stale CSS (new classes missing), which makes any screenshot
+  # taken for review meaningless.
+  [ -n "${DEMO_REBUILD:-}" ] && rm -rf .next
   "${SERVER_ENV[@]}" "$BUN_BIN" --no-env-file --bun next build >"$DEMO_LOG.build" 2>&1 || {
     echo "[demo] build failed:" >&2; tail -40 "$DEMO_LOG.build" >&2; exit 1; }
   date -u +%FT%TZ >"$BUILD_STAMP"

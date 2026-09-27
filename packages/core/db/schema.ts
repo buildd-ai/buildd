@@ -176,6 +176,13 @@ export const accounts = pgTable('accounts', {
   monthlyCostMonth: text('monthly_cost_month'),
   budgetAlertsSent: jsonb('budget_alerts_sent').default([]).$type<number[]>().notNull(),
 
+  // Daily cap, in USD, on the model spend a sibling app reports under this key
+  // (ai_usage receipts, day in the team's timezone). POST /api/ai/plan answers
+  // `downgrade` from 80% of it and `deny` at 100%. NULL = no buildd-side cap:
+  // the app's own provider-key limit is the hard ceiling
+  // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
+  aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
@@ -2493,11 +2500,11 @@ export const secrets = pgTable('secrets', {
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
-  // A person's own key (inference_key only). NULL = not personal. `accountId`
+  // A person's own key (inference_key, pushover_personal). NULL = not personal. `accountId`
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -3070,6 +3077,66 @@ export const notificationPreferencesRelations = relations(notificationPreference
   team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
+// ── Subscriptions and the delivery ledger (docs/design/subscriptions-and-notifications.md) ──
+//
+// A subscription is "who wants to hear about what". Exactly one owner column is
+// set: a person (owner_user_id), a waiting worker (owner_task_id) or an MCP
+// session (owner_account_id). Never hard-deleted: ending a watch stamps
+// ended_at, so its ledger rows (cascade on delete) survive as the record.
+// Written and read through apps/web/src/lib/subscriptions.ts only.
+export const subscriptions = pgTable('subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // The subject's workspace. Scoping is re-checked against it on every event.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  ownerAccountId: uuid('owner_account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  // Origin conversation: where a chat-created watch reports back.
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
+  subjectKind: text('subject_kind').notNull().$type<'task' | 'pr'>(),
+  // Match key: the task id, or `owner/repo#N` lowercased for a PR.
+  subjectKey: text('subject_key').notNull(),
+  subjectRef: jsonb('subject_ref').notNull().$type<Record<string, unknown>>(),
+  eventTypes: text('event_types').array().notNull(),
+  lifetime: text('lifetime').default('one_shot').notNull().$type<'one_shot' | 'standing'>(),
+  createdVia: text('created_via').notNull().$type<'chat' | 'mcp' | 'worker' | 'settings'>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endReason: text('end_reason').$type<'delivered' | 'cancelled'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  exactlyOneOwner: check('subscriptions_exactly_one_owner', sql`num_nonnulls(${t.ownerUserId}, ${t.ownerTaskId}, ${t.ownerAccountId}) = 1`),
+  subjectIdx: index('subscriptions_subject_idx').on(t.subjectKind, t.subjectKey).where(sql`${t.endedAt} IS NULL`),
+  ownerUserIdx: index('subscriptions_owner_user_idx').on(t.ownerUserId).where(sql`${t.ownerUserId} IS NOT NULL`),
+  ownerTaskIdx: index('subscriptions_owner_task_idx').on(t.ownerTaskId).where(sql`${t.ownerTaskId} IS NOT NULL`),
+  ownerAccountIdx: index('subscriptions_owner_account_idx').on(t.ownerAccountId).where(sql`${t.ownerAccountId} IS NOT NULL`),
+}));
+
+// The delivery ledger, and the inbox. One row per (subscription, event): the
+// unique index is the dedupe, so two emitters that see the same fact (webhook
+// and reconcile sweep) write one row. Every channel reads from here.
+export const notificationDeliveries = pgTable('notification_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  subscriptionId: uuid('subscription_id').references(() => subscriptions.id, { onDelete: 'cascade' }).notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  eventType: text('event_type').notNull(),
+  // Refs and short text only; no prose from a sensitive workspace.
+  payload: jsonb('payload').notNull().$type<Record<string, unknown>>(),
+  urgency: text('urgency').default('normal').notNull().$type<'low' | 'normal' | 'urgent'>(),
+  route: text('route'),
+  status: text('status').default('pending').notNull()
+    .$type<'pending' | 'delivered' | 'read' | 'coalesced' | 'held' | 'dropped' | 'failed'>(),
+  attempts: integer('attempts').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  readAt: timestamp('read_at', { withTimezone: true }),
+}, (t) => ({
+  subscriptionDedupeIdx: uniqueIndex('notification_deliveries_subscription_dedupe_idx').on(t.subscriptionId, t.dedupeKey),
+  pendingIdx: index('notification_deliveries_pending_idx').on(t.subscriptionId, t.createdAt).where(sql`${t.status} = 'pending'`),
+}));
+
 // User feedback on AI-generated content (thumbs up/down + dismiss)
 export const userFeedback = pgTable('user_feedback', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -3418,6 +3485,8 @@ export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
 
 // Model tier registry — maps premium-plus/premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
+// surface = NULL means the row serves agent runs and chat; 'agent' or 'chat'
+// scopes it to one surface and wins over the NULL row at the same scope.
 // See docs/design/model-tiers.md for the resolution chain.
 export const modelTierRegistry = pgTable('model_tier_registry', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -3426,12 +3495,13 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
   provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
+  surface: text('surface').$type<'agent' | 'chat'>(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier),
+  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier, t.surface),
   teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
 }));
 
@@ -3517,6 +3587,75 @@ export const tierPoolChanges = pgTable('tier_pool_changes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   poolCreatedIdx: index('tier_pool_changes_pool_created_idx').on(t.poolId, t.createdAt),
+}));
+
+// Model plans served to sibling apps by POST /api/ai/plan
+// (docs/design/shared-ai-kit.md §2). One row per plan: which model buildd
+// chose for an app account, and the may-spend decision it returned. The model
+// call itself runs in the app; buildd never sees its content. Metadata only:
+// `kind` is the app's free attribution label, no other text is stored.
+export const aiPlans = pgTable('ai_plans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  requestedTier: text('requested_tier').notNull(),
+  // The tier actually served (differs from requestedTier on a downgrade).
+  tier: text('tier').notNull(),
+  surface: text('surface').notNull().$type<'chat' | 'inference'>(),
+  kind: text('kind').notNull(),
+  // NULL on a deny: no model was offered.
+  provider: text('provider'),
+  model: text('model'),
+  source: text('source').notNull().$type<'registry' | 'pool' | 'catalog' | 'default'>(),
+  // Set when the tier's chat pool drew this plan's arm.
+  poolId: uuid('pool_id').references(() => tierPools.id, { onDelete: 'set null' }),
+  armId: uuid('arm_id').references(() => tierPoolArms.id, { onDelete: 'set null' }),
+  action: text('action').notNull().$type<'ok' | 'downgrade' | 'deny'>(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  teamCreatedIdx: index('ai_plans_team_created_idx').on(t.teamId, t.createdAt),
+  accountCreatedIdx: index('ai_plans_account_created_idx').on(t.accountId, t.createdAt),
+}));
+
+// Usage receipts from sibling apps, POST /api/ai/usage. Content-free and
+// identity-free by construction: no prompt, reply, tool output or end-user id
+// column exists, and the route rejects any field outside its metadata schema.
+// Feeds model-choice statistics and the per-account daily AI cap
+// (accounts.aiDailyBudgetUsd).
+export const aiUsage = pgTable('ai_usage', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // The account that reported the receipt (the app's service account).
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  // NULL when the app ran on its own fallback plan (buildd was unreachable).
+  planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
+  // NULL only for a planless Jev decision receipt: Jev has no tier.
+  tier: text('tier'),
+  // chat | inference (the plan's surface) | decision; the receipt's own `kind` wins.
+  surface: text('surface'),
+  // The plan's free attribution label (ai_plans.kind); NULL without a plan.
+  kind: text('kind'),
+  provider: text('provider').notNull(),
+  model: text('model').notNull(),
+  // How the app got the plan it ran on: a fresh plan's source, or 'cached' / 'fallback'.
+  planSource: text('plan_source'),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  cacheReadTokens: integer('cache_read_tokens').notNull().default(0),
+  cacheWriteTokens: integer('cache_write_tokens').notNull().default(0),
+  costUsd: decimal('cost_usd', { precision: 12, scale: 6 }).notNull(),
+  costSource: text('cost_source').notNull().$type<'reported' | 'estimated'>(),
+  latencyMs: integer('latency_ms').notNull(),
+  outcome: text('outcome').notNull().$type<'ok' | 'error' | 'aborted'>(),
+  feedback: text('feedback').$type<'up' | 'down'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  accountCreatedIdx: index('ai_usage_account_created_idx').on(t.accountId, t.createdAt),
+  teamCreatedIdx: index('ai_usage_team_created_idx').on(t.teamId, t.createdAt),
+  planIdx: index('ai_usage_plan_idx').on(t.planId),
 }));
 
 // Workspace migration ledger — one row per (runId, phase). Tracks the destructive

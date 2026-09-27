@@ -243,6 +243,17 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
   });
 
+  it('refuses to dispatch a fix for a dependency-bot PR — a fix commit hijacks the bot branch', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockGithubApi.mockResolvedValue({ ...openPr, user: { login: 'dependabot[bot]', type: 'Bot' } });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain('dependency bot');
+    expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
   it('returns 409 for a draft PR', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
     mockCheckPrIsDraft.mockResolvedValue(true);

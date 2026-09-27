@@ -31,6 +31,8 @@ import { LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -110,6 +112,22 @@ export async function POST(
   const headRepoFullName = pr.head?.repo?.full_name as string | undefined;
   if (headRepoFullName && headRepoFullName.toLowerCase() !== repoFullName.toLowerCase()) {
     return bad('Cannot dispatch a CI fix for a fork PR', 400);
+  }
+
+  // Unlike the automatic loop's budget, this one binds a human click too: a
+  // fix agent's commit hands the branch away from Renovate/Dependabot for good.
+  if (isDependencyBotAuthor(pr.user)) {
+    const reason = dependencyBotPushRefusal(prNumber);
+    fireGateEvent({
+      gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
+      surface: 'POST /api/prs/[prNumber]/retry-ci',
+      outcome: 'rejected',
+      reason,
+      workspaceId,
+      callerOrigin: 'dashboard',
+      detail: { prNumber, repo: repoFullName, author: pr.user?.login ?? null, stage: 'ci_fix' },
+    });
+    return bad(`${reason}. Ask the bot to rebase/retry from the PR instead.`, 409);
   }
 
   const isDraft = await checkPrIsDraft(installationId, repoFullName, prNumber);

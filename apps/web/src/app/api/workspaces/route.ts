@@ -4,12 +4,20 @@ import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/sche
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
+import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
+import { toPublicWorkspace } from '@/lib/workspace-public';
+
+/**
+ * The account fields a workspace listing may carry. The response spreads each
+ * workspace row, so selecting whole account rows here would serialise every
+ * column of every connected account — credentials included — to the caller.
+ */
+const CONNECTED_ACCOUNT_COLUMNS = { id: true, name: true, type: true } as const;
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -30,34 +38,21 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // If API key auth, return workspaces linked to that account + open workspaces
-    // If session auth, return workspaces owned by the user
+    // Both paths list exactly the workspaces the caller can reach
+    // (lib/workspace-access.ts) — the same rule task and mission creation
+    // apply. For an API account that is its own team's open workspaces plus
+    // its explicit links; another team's open workspace never appears.
     let allWorkspaces;
     if (apiAccount) {
-      // For API key auth, get workspace IDs via cache + open workspaces
-      const [permissions, openWorkspaces] = await Promise.all([
-        getAccountWorkspacePermissions(apiAccount.id),
-        db.query.workspaces.findMany({
-          where: eq(workspaces.accessMode, 'open'),
-          orderBy: desc(workspaces.createdAt),
-          columns: { id: true },
-          limit: 100,
-        }),
-      ]);
+      const allIds = await listReachableWorkspaceIds({ account: apiAccount });
 
-      // Merge linked and open IDs, dedupe
-      const linkedIds = permissions.map(p => p.workspaceId);
-      const openIds = openWorkspaces.map(w => w.id);
-      const allIds = [...new Set([...linkedIds, ...openIds])];
-
-      // Batch fetch full workspace records with account relationships
       allWorkspaces = allIds.length > 0
         ? await db.query.workspaces.findMany({
             where: inArray(workspaces.id, allIds),
             orderBy: desc(workspaces.createdAt),
             with: {
               accountWorkspaces: {
-                with: { account: true },
+                with: { account: { columns: CONNECTED_ACCOUNT_COLUMNS } },
               },
             },
           })
@@ -85,7 +80,7 @@ export async function GET(req: NextRequest) {
             with: {
               accountWorkspaces: {
                 with: {
-                  account: true,
+                  account: { columns: CONNECTED_ACCOUNT_COLUMNS },
                 },
               },
             },
@@ -106,8 +101,10 @@ export async function GET(req: NextRequest) {
         (aw) => aw.account?.type === 'user' && aw.canClaim
       );
 
+      // An explicit allowlist, never `...ws`: the row carries
+      // webhook_config.token, a plaintext bearer credential.
       return {
-        ...ws,
+        ...toPublicWorkspace(ws),
         runners: {
           action: hasActionRunner,
           service: hasServiceRunner,
@@ -278,7 +275,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json(workspace);
+    return NextResponse.json(toPublicWorkspace(workspace));
   } catch (error) {
     console.error('Create workspace error:', error);
     return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 });

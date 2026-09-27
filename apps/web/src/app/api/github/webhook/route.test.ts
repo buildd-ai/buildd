@@ -60,6 +60,16 @@ const mockApplyTaskCancelSideEffects = mock(() => Promise.resolve());
 const mockApplyTaskReopenSideEffects = mock(() => Promise.resolve());
 
 // ── Module mocks (must be before route import) ──────────────────────────────
+// Subscriptions ledger: the builders are stood in by tagged objects so a test
+// reads exactly which event the route recorded and with what arguments. The
+// real builders and their dedupe keys are covered in lib/subscriptions.test.ts.
+const mockRecordEvent = mock((_e: any) => Promise.resolve({ recorded: 0 }));
+mock.module('@/lib/subscriptions', () => ({
+  recordEvent: mockRecordEvent,
+  prMergedEvent: (a: any) => ({ type: 'pr.merged', ...a }),
+  prCiFailedEvent: (a: any) => ({ type: 'pr.ci_failed', ...a }),
+  taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
+}));
 mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
   applyTaskReopenSideEffects: mockApplyTaskReopenSideEffects,
@@ -1451,7 +1461,7 @@ describe('POST /api/github/webhook', () => {
     // handleCheckSuiteEvent and handleCheckSuiteFailure's own initial lookup —
     // both miss. resolveOrAdoptPrOwner's findPrOwningWorker is the third miss,
     // then the fourth call is the re-fetch after adoption inserts the rows.
-    function withAdoptablePr(opts: { foreignCommit?: boolean; isFork?: boolean } = {}) {
+    function withAdoptablePr(opts: { foreignCommit?: boolean; isFork?: boolean; user?: { login: string; type: string } } = {}) {
       mockWorkersFindFirst
         .mockReturnValueOnce(null)
         .mockReturnValueOnce(null)
@@ -1496,6 +1506,7 @@ describe('POST /api/github/webhook', () => {
               : { sha: 'abc123', ref: 'release/v1.2.3' },
             base: { sha: 'def456', ref: 'main' },
             draft: false,
+            user: opts.user ?? { login: 'maintainer', type: 'User' },
           });
         }
         return Promise.resolve({ draft: false });
@@ -1564,6 +1575,75 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    // Renovate/Dependabot own their branch: one commit from buildd and the bot
+    // stops rebasing it ("Edited/Blocked"). No adoption, no task, no push.
+    it.each([
+      ['renovate[bot]'],
+      ['dependabot[bot]'],
+    ])('does not adopt a %s PR with failing CI — no task, no push, gate recorded', async (login) => {
+      withAdoptablePr({ user: { login, type: 'Bot' } });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      const pushes = mockGithubApi.mock.calls.filter(
+        ([, , init]: any[]) => init?.method && init.method !== 'GET',
+      );
+      expect(pushes).toEqual([]);
+      const gate = mockFireGateEvent.mock.calls.map(([e]: any[]) => e)
+        .find((e: any) => e.gate === 'dependency_bot_pr');
+      expect(gate).toMatchObject({ outcome: 'rejected', detail: { prNumber: 42, author: login, stage: 'adoption' } });
+    });
+
+    it('still adopts a PR from a bot that is not a dependency bot (buildd-ai[bot] release PR)', async () => {
+      withAdoptablePr({ user: { login: 'buildd-ai[bot]', type: 'Bot' } });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(3);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('records the PR author type on adoption', async () => {
+      withAdoptablePr();
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(insertCalls[0].values.context.adoptedPr).toMatchObject({ author: 'maintainer', authorType: 'User' });
+    });
+
+    it('no CI fix for a dependency-bot PR that an explicit review already adopted', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'adopted-w1',
+        branch: 'renovate/postcss-8.x-lockfile',
+        prNumber: 42,
+        task: {
+          id: 'adopted-t1',
+          title: 'PR #42: chore(deps): update dependency postcss',
+          description: null,
+          workspaceId: 'ws1',
+          missionId: null,
+          context: { adoptedPr: { prNumber: 42, author: 'renovate[bot]', authorType: 'Bot' } },
+          result: null,
+          status: 'completed',
+        },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      mockGithubApi.mockImplementation(() => Promise.resolve({ draft: false }));
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      const gate = mockFireGateEvent.mock.calls.map(([e]: any[]) => e)
+        .find((e: any) => e.gate === 'dependency_bot_pr');
+      expect(gate).toMatchObject({ outcome: 'rejected', taskId: 'adopted-t1', detail: { stage: 'ci_fix' } });
     });
 
     it('does not adopt a PR outside a managed workspace', async () => {
@@ -4960,5 +5040,72 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+});
+
+describe('subscriptions ledger: the webhook records the right event', () => {
+  beforeEach(() => { resetAll(); mockRecordEvent.mockClear(); });
+
+  const recorded = () => mockRecordEvent.mock.calls.map(c => c[0]);
+
+  it('a merged PR records pr.merged for its repo and number, even with no buildd worker', async () => {
+    const res = await POST(createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: 77, merged: true, draft: false,
+        head: { ref: 'feature/x', sha: 'sha-77' }, base: { ref: 'main' },
+        html_url: 'https://github.com/test-org/test-repo/pull/77',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+    expect(res.status).toBe(200);
+    expect(recorded()).toContainEqual({
+      type: 'pr.merged', repoFullName: 'test-org/test-repo', prNumber: 77,
+      url: 'https://github.com/test-org/test-repo/pull/77',
+    });
+  });
+
+  it('a merge that auto-completes the task also records task.completed for that task', async () => {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w1', workspaceId: 'ws1', taskId: 't1', prNumber: 77, mergedAt: null,
+      task: { id: 't1', status: 'in_progress', workspaceId: 'ws1', release: 'false', title: 'T', missionId: null },
+    });
+    await POST(createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: 77, merged: true, draft: false,
+        head: { ref: 'buildd/abc-x', sha: 'sha-77' }, base: { ref: 'main' },
+        html_url: 'https://github.com/test-org/test-repo/pull/77',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+    expect(recorded()).toContainEqual({ type: 'task.completed', taskId: 't1', workerId: 'w1', workspaceId: 'ws1' });
+  });
+
+  it('a closed-unmerged PR records nothing', async () => {
+    await POST(createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: 77, merged: false, draft: false,
+        head: { ref: 'feature/x', sha: 'sha-77' }, base: { ref: 'main' },
+        html_url: 'https://github.com/test-org/test-repo/pull/77',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+    expect(recorded().filter((e: any) => e.type === 'pr.merged')).toEqual([]);
+  });
+
+  it('a failed check suite records pr.ci_failed per PR with the head SHA', async () => {
+    const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    expect(res.status).toBe(200);
+    expect(recorded()).toContainEqual({ type: 'pr.ci_failed', repoFullName: 'test-org/test-repo', prNumber: 42, headSha: 'abc123' });
+  });
+
+  it('a green check suite records no CI failure', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } })));
+    expect(recorded().filter((e: any) => e.type === 'pr.ci_failed')).toEqual([]);
   });
 });

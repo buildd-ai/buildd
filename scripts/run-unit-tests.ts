@@ -18,6 +18,7 @@ const UNIT_TEST_ROOTS = [
   'apps/runner/src/',
   'apps/responder/src/',
   'packages/core/',
+  'packages/ai-kit/',
   'scripts/',
 ] as const;
 
@@ -38,7 +39,8 @@ const SKIP_SENTINEL = 'SKIP';
 
 /**
  * Resolves the files to run: an explicit list when CI names one, otherwise
- * everything discovered.
+ * everything discovered. A named directory selects every discovered file
+ * under it.
  *
  * Non-unit paths are dropped rather than trusted — CI pipes
  * affected-tests.sh output straight in, and an integration or e2e path in that
@@ -48,7 +50,27 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
   if (named.includes(SKIP_SENTINEL)) return [];
   const explicit = named.filter(arg => arg !== ALL_SENTINEL);
   if (explicit.length === 0) return [...discovered];
-  return [...new Set(explicit.filter(isUnitTestFile))].sort();
+  const selected = new Set<string>();
+  for (const arg of explicit) {
+    if (isTestFileName(arg)) {
+      if (isUnitTestFile(arg)) selected.add(arg);
+      continue;
+    }
+    // Anything else is a directory: every discovered file under it. A package's
+    // own `test` script passes its directory (packages/ai-kit), and an empty
+    // match would otherwise exit 0 over nothing, so it throws instead.
+    const prefix = `${arg.replace(/^\.\//, '').replace(/\/+$/, '')}/`;
+    const under = discovered.filter(file => file.startsWith(prefix));
+    if (under.length === 0) {
+      throw new Error(`no unit test files under '${arg}' (is it under UNIT_TEST_ROOTS in scripts/run-unit-tests.ts?)`);
+    }
+    for (const file of under) selected.add(file);
+  }
+  return [...selected].sort();
+}
+
+function isTestFileName(path: string): boolean {
+  return path.endsWith('.test.ts') || path.endsWith('.test.tsx');
 }
 
 async function discoverUnitTests(): Promise<string[]> {
