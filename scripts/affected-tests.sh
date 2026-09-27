@@ -60,7 +60,7 @@ fi
 
 # Check if any shared/core SOURCE files changed — run all tests if so
 # Exclude package.json version bumps (release commits) from triggering full test suite
-SHARED_CHANGES=$(echo "$CHANGED" | grep -E '^(packages/core/|packages/shared/|bunfig\.toml|tests/setup\.ts)' | grep -v 'package\.json$' || true)
+SHARED_CHANGES=$(echo "$CHANGED" | grep -E '^(packages/core/|packages/shared/|packages/ai-kit/|bunfig\.toml|tests/setup\.ts)' | grep -v 'package\.json$' || true)
 if [ -n "$SHARED_CHANGES" ]; then
   log "Shared files changed — running all tests: $(echo "$SHARED_CHANGES" | head -3)"
   echo "ALL"
