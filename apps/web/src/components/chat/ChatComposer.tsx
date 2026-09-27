@@ -94,7 +94,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
-          className={`block max-h-48 min-h-12 w-full resize-none ${compact ? '' : 'md:min-h-[76px]'} bg-transparent px-4 py-3 font-convo text-base md:text-[15.5px] text-text-primary placeholder:text-text-muted focus:outline-none`}
+          className={`block max-h-48 min-h-12 w-full resize-none ${compact ? '' : 'md:min-h-[76px]'} bg-transparent px-4 py-3 font-convo text-base md:text-[15.5px] text-text-primary placeholder:text-text-muted focus:outline-none focus-visible:outline-none`}
         />
         <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1">
           {workspaces.length > 0 && (

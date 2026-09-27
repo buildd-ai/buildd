@@ -64,7 +64,7 @@ export interface ChatConversationProps {
    * through to ChatWorkspace.
    */
   onConversationCreated?: (id: string) => void;
-  canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip'>;
+  canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip' | 'pinOpenLabel'>;
 }
 
 /** A saved message (DTO) → the UIMessage `useChat` holds. Pure. */

@@ -26,12 +26,14 @@ const SQUARE: Record<MiniTone, string> = {
   idle: 'border-[1.5px] border-[var(--fleet-border-mid)]',
 };
 
-export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false }: {
+export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, openLabel = 'Open beside ▸' }: {
   objRef: BuilddObjectRef;
   /** Desktop: dock it in the pane. Phone: open the sheet. */
   onOpen(): void;
   /** The pane already shows this object on desktop: pin on phone only. */
   hideOnDesktop?: boolean;
+  /** The desktop button's words; null hides it (the page behind already is the object). */
+  openLabel?: string | null;
 }) {
   const { view } = useObjectEntry(objRef);
   const [open, setOpen] = useState(true);
@@ -60,9 +62,11 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false }: 
           {tone && mission && <StateChip label={mission.stateLabel} tone={tone} pulse={tone === 'live'} />}
           <span className="flex-1" />
           {mission && <span className="hidden shrink-0 font-mono text-[12px] text-text-muted lg:inline">{missionCountsLine(mission.board)}</span>}
-          <button type="button" data-testid="canvas-pinned-open" onClick={onOpen} className="min-h-9 shrink-0 px-2 font-mono text-[12px] font-semibold text-accent-text hover:underline">
-            Open beside ▸
-          </button>
+          {openLabel && (
+            <button type="button" data-testid="canvas-pinned-open" onClick={onOpen} className="min-h-9 shrink-0 px-2 font-mono text-[12px] font-semibold text-accent-text hover:underline">
+              {openLabel}
+            </button>
+          )}
           {cols.length > 0 && (
             <button
               type="button"

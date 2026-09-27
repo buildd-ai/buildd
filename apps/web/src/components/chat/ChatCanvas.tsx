@@ -137,17 +137,20 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
   const entry = { intent: null, about: scope.about, workspaceId: scope.workspaceId };
   const fullChatHref = conversationId ? conversationHref(conversationId, entry) : scope.about ? askAboutHref(scope.about, scope.workspaceId) : '/app/chat';
   const showFab = enabled && !isOpen && showsAskButton(pathname, true);
+  // Asked about the page you're on: the page behind already is the object.
+  const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
 
   return (
     <CanvasContext.Provider value={enabled ? api : null}>
       {children}
+      {/* Desktop only: on a phone, Chat is a tab and objects carry their own Ask. */}
       {showFab && (
         <button
           type="button"
           data-testid="canvas-ask"
           onClick={() => open()}
           aria-label="Ask about this page"
-          className="fixed bottom-[calc(76px+env(safe-area-inset-bottom))] right-4 z-30 inline-flex min-h-12 items-center gap-2.5 rounded-[999px] border-2 border-[var(--on-accent)] bg-accent pl-4 pr-5 font-convo text-[15px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover md:bottom-6 md:right-6"
+          className="fixed bottom-6 right-6 z-30 hidden min-h-12 items-center gap-2.5 rounded-[999px] border-2 border-[var(--on-accent)] bg-accent pl-4 pr-5 font-convo text-[15px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover md:inline-flex"
         >
           <span aria-hidden="true" className="text-[16px] leading-none">✳</span>
           Ask
@@ -187,7 +190,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
                 focusRef={scope.about ? aboutRef(scope.about) : null}
                 entry={entry}
                 onConversationCreated={setConversationId}
-                canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref }}
+                canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
               />
             ) : (
               <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">

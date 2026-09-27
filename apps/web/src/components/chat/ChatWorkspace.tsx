@@ -92,6 +92,8 @@ export interface ChatWorkspaceProps {
   crumbs?: ReactNode;
   /** A strip under the header (the steering presence strip). */
   strip?: ReactNode;
+  /** The pinned object's desktop button; null hides it. Default "Open beside ▸". */
+  pinOpenLabel?: string | null;
 }
 
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 768px)').matches;
@@ -102,7 +104,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null,
-    variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip,
+    variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel,
   } = props;
   const overlay = variant === 'overlay';
   const [pane, dispatch] = useReducer(paneReducer, INITIAL_PANE, s => (
@@ -293,7 +295,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       {busy && <div data-testid="canvas-scan" aria-hidden="true" className="canvas-scan z-10" />}
       {header}
       {strip}
-      {pin && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} onOpen={() => openObject(pin)} />}
+      {pin && <PinnedObject key={refKey(pin)} objRef={pin} hideOnDesktop={pinInPane} openLabel={pinOpenLabel === undefined ? (overlay ? 'Go to it ▸' : 'Open beside ▸') : pinOpenLabel} onOpen={() => openObject(pin)} />}
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div ref={content} className={`mx-auto px-4 py-6 ${narrow ? 'md:px-6' : 'max-w-[820px] md:px-8'}`}>
           {emptyCanvas}

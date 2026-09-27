@@ -12,6 +12,7 @@ highlight:
   - chat-column
   - canvas-pinned
   - canvas-ask
+  - ask-about-mission
   - chat-canvas-overlay
   - approval-card
 steps:
@@ -45,25 +46,34 @@ steps:
   - id: k4-board-ask
     advance: "12:40"
     goto: /app/missions/{M1}
-    viewports: [desktop, phone]
     waitFor: canvas-ask
-    caption: "Ask floats on every page."
+    caption: "Ask floats on every desktop page; a phone keeps its Chat tab."
 
   - id: k5-board-summoned
     advance: "12:40"
     goto: /app/missions/{M1}
-    viewports: [desktop, phone]
     waitFor: canvas-ask
     click: canvas-ask
-    hold: 1500
-    caption: "Summoned over the Board, about the Board."
+    hold: 4000
+    caption: "Summoned over the Board, about the Board: a peek."
+
+  # A phone has no floating button: the mission's own Ask opens the canvas,
+  # and it takes over the screen.
+  - id: k5-board-summoned-phone
+    advance: "12:40"
+    goto: /app/missions/{M1}
+    viewports: [phone]
+    waitFor: ask-about-mission
+    click: ask-about-mission
+    hold: 4000
+    caption: "On a phone the canvas takes over the screen."
 
   - id: k6-task-summoned
     advance: "12:40"
     goto: /app/tasks/{T7}
     waitFor: canvas-ask
     click: canvas-ask
-    hold: 1500
+    hold: 4000
     caption: "Over a task, about the task."
 
   - id: k7-task-question
