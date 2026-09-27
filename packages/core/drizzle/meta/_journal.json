@@ -1373,6 +1373,13 @@
       "when": 1790533887139,
       "tag": "0197_fair_maestro",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1790536395876,
+      "tag": "0199_awesome_power_pack",
+      "breakpoints": true
     }
   ]
 }

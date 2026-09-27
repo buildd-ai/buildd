@@ -83,13 +83,24 @@ export async function POST(req: NextRequest) {
         eq(workerHeartbeats.accountId, account.id),
         eq(workerHeartbeats.localUiUrl, localUiUrl),
       ),
-      columns: { viewerToken: true },
+      columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
     });
 
     // Generate token on first registration, reuse on subsequent heartbeats
     const viewerToken = existing?.viewerToken || randomBytes(24).toString('base64url');
 
     const sandboxProbeDate = sandboxProbeAt ? new Date(sandboxProbeAt) : null;
+
+    // updateAvailableSince: stamped the moment updateAvailable first becomes
+    // true, cleared the moment it stops being true, held steady while it stays
+    // true across heartbeats — so it measures "since when", not "as of this
+    // beat". Only touched when this heartbeat actually carries the bundle;
+    // see updateSnapshotProvided above for why an omitted bundle must not
+    // wipe out anything.
+    const newUpdateAvailable = (updateAvailable ?? null) as boolean | null;
+    const updateAvailableSince = newUpdateAvailable === true
+      ? (existing?.updateAvailable === true ? existing.updateAvailableSince ?? now : now)
+      : null;
 
     // Atomic upsert using unique index on (accountId, localUiUrl)
     // Only update timestamp and worker count - workspaces resolved on-demand
@@ -110,7 +121,8 @@ export async function POST(req: NextRequest) {
         diskCommit: (diskCommit ?? null) as string | null,
         commitDrift: (commitDrift ?? null) as boolean | null,
         updating: (updating ?? null) as boolean | null,
-        updateAvailable: (updateAvailable ?? null) as boolean | null,
+        updateAvailable: newUpdateAvailable,
+        updateAvailableSince,
         trackedBranch: (trackedBranch ?? null) as string | null,
         lastHeartbeatAt: now,
       })
@@ -132,7 +144,8 @@ export async function POST(req: NextRequest) {
             diskCommit: (diskCommit ?? null) as string | null,
             commitDrift: (commitDrift ?? null) as boolean | null,
             updating: (updating ?? null) as boolean | null,
-            updateAvailable: (updateAvailable ?? null) as boolean | null,
+            updateAvailable: newUpdateAvailable,
+            updateAvailableSince,
             trackedBranch: (trackedBranch ?? null) as string | null,
           } : {}),
           lastHeartbeatAt: now,
