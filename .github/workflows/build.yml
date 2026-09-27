@@ -199,6 +199,17 @@ jobs:
           # passed through and filtered to unit tests.
           bun run scripts/run-unit-tests.ts $TESTS
 
+      # The kit's source imports are extensionless so apps/web (Turbopack) can
+      # consume it from source; its build rewrites them to `.js` for the
+      # published ESM. The apps/web build below proves the first half; this
+      # proves the second on plain Node, which only the tag-triggered publish
+      # workflow checked before.
+      - name: Build @buildd/ai-kit dist and import it on Node
+        run: |
+          cd packages/ai-kit
+          bun run build
+          node scripts/smoke-dist.mjs
+
       - name: Build
         run: cd apps/web && bun run build:only
         env:

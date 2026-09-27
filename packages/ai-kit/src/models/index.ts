@@ -17,11 +17,11 @@
  * ```
  */
 
-export * from './types.js';
+export * from './types';
 export {
   createModelsClient, PlanDeniedError, isPlanDeniedError, DEFAULT_BASE_URL, PLAN_TIMEOUT_MS,
   type ModelsClient, type ModelsClientOptions, type ModelsClientEvent, type UsageStats,
-} from './client.js';
-export { memoryPlanStore, type PlanStore, type StoredPlan } from './store.js';
-export { toWireReceipt, USAGE_RECORD_KEYS, USAGE_TOKEN_KEYS, MAX_USAGE_RECORDS } from './receipt.js';
-export { toCallConfig, PROVIDER_BASE_URLS, type CallConfig, type CallConfigOptions } from './call-config.js';
+} from './client';
+export { memoryPlanStore, type PlanStore, type StoredPlan } from './store';
+export { toWireReceipt, USAGE_RECORD_KEYS, USAGE_TOKEN_KEYS, MAX_USAGE_RECORDS } from './receipt';
+export { toCallConfig, PROVIDER_BASE_URLS, type CallConfig, type CallConfigOptions } from './call-config';

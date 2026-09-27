@@ -3639,8 +3639,11 @@ export const aiUsage = pgTable('ai_usage', {
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
   // NULL when the app ran on its own fallback plan (buildd was unreachable).
   planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
-  tier: text('tier').notNull(),
+  // NULL only for a planless Jev decision receipt: Jev has no tier.
+  tier: text('tier'),
+  // chat | inference (the plan's surface) | decision; the receipt's own `kind` wins.
   surface: text('surface'),
+  // The plan's free attribution label (ai_plans.kind); NULL without a plan.
   kind: text('kind'),
   provider: text('provider').notNull(),
   model: text('model').notNull(),

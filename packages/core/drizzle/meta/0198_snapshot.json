@@ -1,6 +1,6 @@
 {
-  "id": "9a267726-4974-484c-9f61-15454fc42801",
-  "prevId": "a860ab9c-aa52-4452-b3dd-25324145a379",
+  "id": "8017c5a6-e05f-4b8e-83f6-c2d92e5f47f1",
+  "prevId": "9a267726-4974-484c-9f61-15454fc42801",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10964,6 +10964,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::text[]"
+        },
+        "chat_composer_prefs": {
+          "name": "chat_composer_prefs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -11155,6 +11161,19 @@
         },
         "chat_disabled": {
           "name": "chat_disabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "chat_default_tier": {
+          "name": "chat_default_tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chat_cap_new_session_tier": {
+          "name": "chat_cap_new_session_tier",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

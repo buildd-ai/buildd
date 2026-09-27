@@ -52,12 +52,15 @@ export async function GET(req: NextRequest) {
   const missionId = searchParams.get('missionId') || undefined;
   const state = searchParams.get('state') || undefined;
   const limitParam = searchParams.get('limit');
+  const sinceParam = Number(searchParams.get('sinceDays'));
 
   const releaseRows = await listReleasesQuery({
     workspaceId,
     missionId,
     state,
     limit: limitParam ? Number(limitParam) : undefined,
+    ...(Number.isFinite(sinceParam) && sinceParam > 0 ? { sinceDays: sinceParam } : {}),
+    ...(searchParams.get('include') === 'tasks' ? { withTasks: true } : {}),
   });
 
   return NextResponse.json({ releases: releaseRows });

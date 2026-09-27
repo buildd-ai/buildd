@@ -204,7 +204,7 @@ function TaskDockCard({ view, model }: { view: TaskObjectView; model: ReturnType
             {model.badge.label}
           </span>
         </div>
-        <h2 data-testid="dock-task-title" className="mt-2 font-voice text-[22px] leading-[1.2] text-[var(--chat-text)] [overflow-wrap:anywhere]">{view.label || view.title}</h2>
+        <h2 data-testid="dock-task-title" className="mt-2 font-voice text-[22px] leading-[1.2] text-[var(--chat-text)] [overflow-wrap:anywhere]">{model.title}</h2>
       </div>
       <div className="grid grid-cols-2 divide-x divide-[var(--chat-rule)] border-t border-[var(--chat-rule)]">
         <div data-testid="dock-task-tries" className="min-w-0 px-4 py-2.5">

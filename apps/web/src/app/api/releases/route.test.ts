@@ -106,4 +106,12 @@ describe('GET /api/releases', () => {
       limit: 5,
     });
   });
+
+  it('forwards sinceDays and include=tasks', async () => {
+    await GET(makeRequest(`?workspaceId=${WORKSPACE_ID}&sinceDays=7&include=tasks`));
+    expect(mockListReleasesQuery).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID, missionId: undefined, state: undefined, limit: undefined,
+      sinceDays: 7, withTasks: true,
+    });
+  });
 });

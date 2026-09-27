@@ -72,6 +72,30 @@ describe('selectTestFiles', () => {
     expect(selectTestFiles(['ALL'], discovered)).toEqual(discovered);
     expect(selectTestFiles(['SKIP'], discovered)).toEqual([]);
   });
+
+  it('treats a directory argument as a prefix over discovered files', () => {
+    // packages/ai-kit's `test` script passes `packages/ai-kit/`. That used to be
+    // dropped as "not a unit test file" and the run selected nothing, green.
+    expect(selectTestFiles(['apps/web/src/'], discovered))
+      .toEqual(['apps/web/src/lib/a.test.ts', 'apps/web/src/lib/b.test.ts']);
+    expect(selectTestFiles(['packages/core'], discovered)).toEqual(['packages/core/__tests__/c.test.ts']);
+    expect(selectTestFiles(['./packages/core/'], discovered)).toEqual(['packages/core/__tests__/c.test.ts']);
+  });
+
+  it('matches a directory prefix on a path-segment boundary', () => {
+    expect(() => selectTestFiles(['apps/web/src/li'], discovered)).toThrow(/apps\/web\/src\/li/);
+  });
+
+  it('mixes directory and file arguments without duplicates', () => {
+    expect(selectTestFiles(['apps/web/src/lib/', 'apps/web/src/lib/a.test.ts', 'packages/core/__tests__/c.test.ts'], discovered))
+      .toEqual(discovered);
+  });
+
+  it('fails loudly on a directory argument that selects nothing', () => {
+    // An empty selection exits 0 ("No unit test files selected."), so a typo'd
+    // or uncollected directory would otherwise report green over zero tests.
+    expect(() => selectTestFiles(['apps/nope/'], discovered)).toThrow(/apps\/nope/);
+  });
 });
 
 describe('getTestConcurrency', () => {
