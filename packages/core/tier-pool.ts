@@ -183,20 +183,24 @@ export interface PoolDraw {
  * Pick the arm whose cumulative interval holds `u`. `armOrder` fixes the
  * interval order (incumbent first, then challengers by when they joined), so
  * a unit keeps its arm when an unrelated share changes further down the list.
- * Arms with no share take no interval. Null when nothing has a share.
+ * Arms with no share take no interval; any remainder falls to the first
+ * arm. Null when nothing has a share.
  */
 export function pickArm(allocation: Allocation, armOrder: readonly string[], u: number): PoolDraw | null {
   let acc = 0;
-  let last: PoolDraw | null = null;
+  let first: PoolDraw | null = null;
   for (const id of armOrder) {
     const share = allocation[id] ?? 0;
     if (!(share > 0)) continue;
     acc += share;
-    last = { armId: id, propensity: share };
-    if (u < acc) return last;
+    const draw = { armId: id, propensity: share };
+    first ??= draw;
+    if (u < acc) return draw;
   }
-  // Rounding can leave the top of the interval a hair under 1.
-  return last;
+  // Past the live intervals: rounding left the top a hair under 1, or a share
+  // is still on an arm that is no longer live. Either way it falls to the
+  // first arm (the incumbent), never onto a challenger past its cap.
+  return first;
 }
 
 /**

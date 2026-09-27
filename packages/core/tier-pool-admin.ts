@@ -261,8 +261,11 @@ export async function addChallenger(args: {
 }
 
 /**
- * Remove a challenger and hand its share to the incumbent, in one statement:
- * the arm flips to removed only if the pool is still at `expectedVersion`.
+ * Remove a challenger and hand its share to the incumbent, in one statement.
+ * The pool's version compare-and-set runs first and the arm flips only if it
+ * succeeded (`EXISTS (SELECT 1 FROM u)`): the pool row lock orders concurrent
+ * admin writes, so a stale remove changes nothing rather than leaving a
+ * removed arm that still holds a share and has no audit row.
  */
 export async function removeChallenger(args: {
   teamId: string;
@@ -273,19 +276,22 @@ export async function removeChallenger(args: {
   actorUserId: string | null;
 }): Promise<number | null> {
   const result = await db.execute(sql`
-    WITH a AS (
-      UPDATE tier_pool_arms SET status = 'removed', removed_at = now()
-      WHERE id = ${args.armId} AND pool_id = ${args.poolId} AND role = 'challenger' AND status <> 'removed'
-        AND EXISTS (SELECT 1 FROM tier_pools WHERE id = ${args.poolId} AND team_id = ${args.teamId} AND allocation_version = ${args.expectedVersion})
-      RETURNING id, route, model
-    ), prev AS (
-      SELECT allocation, mode, allocation_version FROM tier_pools WHERE id = ${args.poolId}
+    WITH prev AS (
+      SELECT allocation, mode, allocation_version FROM tier_pools WHERE id = ${args.poolId} AND team_id = ${args.teamId}
     ), u AS (
       UPDATE tier_pools
       SET allocation = ${JSON.stringify(args.allocation)}::jsonb, allocation_version = allocation_version + 1, updated_at = now()
       WHERE id = ${args.poolId} AND team_id = ${args.teamId} AND allocation_version = ${args.expectedVersion}
-        AND EXISTS (SELECT 1 FROM a)
+        AND EXISTS (
+          SELECT 1 FROM tier_pool_arms
+          WHERE id = ${args.armId} AND pool_id = ${args.poolId} AND role = 'challenger' AND status <> 'removed'
+        )
       RETURNING allocation, mode, allocation_version
+    ), a AS (
+      UPDATE tier_pool_arms SET status = 'removed', removed_at = now()
+      WHERE id = ${args.armId} AND pool_id = ${args.poolId} AND role = 'challenger' AND status <> 'removed'
+        AND EXISTS (SELECT 1 FROM u)
+      RETURNING id, route, model
     ), log AS (
       INSERT INTO tier_pool_changes (pool_id, kind, before, after, actor_user_id)
       SELECT ${args.poolId}::uuid, 'arm_removed',
