@@ -52,7 +52,7 @@ function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="inline-flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-status-success">
           <span aria-hidden="true" className="inline-block h-2.5 w-2.5 bg-status-success" />
-          Shipped · {hhmm(m.completedAt, timeZone)}
+          Shipped at {hhmm(m.completedAt, timeZone)}
         </span>
         {m.criteria && (
           <span className="border border-border-default px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase text-text-secondary">

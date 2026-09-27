@@ -95,6 +95,7 @@ export async function GET(
         inferenceKeyPolicy: true,
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
+        timezone: true,
       },
     });
 

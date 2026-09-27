@@ -246,7 +246,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
     <SettingsSection title="Agent backends" id="agent-backends">
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
-          One credential covers every workspace in the team. You can narrow it to one workspace{multiTeam ? <> or copy it to all {teamTargets.length} teams you manage</> : null}.
+          One sign-in covers every workspace in the team{multiTeam ? <>, or copy it to all {teamTargets.length} teams you manage</> : null}.
         </p>
 
         {/* Team provider routing toggle (reversible mask over the resolution chain) */}
@@ -404,8 +404,7 @@ function ProviderRoutingToggle({
       <div>
         <h3 className="text-sm font-medium text-text-primary">Provider routing</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Turn a provider on or off for the whole team. Disabling one reroutes its jobs to the other.
-          You can undo it, and it leaves per-workspace and per-role backend settings alone.
+          Turn one off to send its jobs to the other.
         </p>
       </div>
       <div className="space-y-2">
@@ -904,10 +903,6 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     <div className="space-y-3">
       <div>
         <h3 className="text-sm font-medium text-text-primary">Claude</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          Approve in the browser, then paste the short code back here.
-          buildd refreshes tokens on the server; workers never rotate them.
-        </p>
       </div>
 
       <StrandedWorkNotice stat={strand} />
@@ -1288,10 +1283,6 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     <div className="space-y-3">
       <div>
         <h3 className="text-sm font-medium text-text-primary">Codex</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          Paste <code className="bg-surface-3 px-1 rounded text-[11px]">~/.codex/auth.json</code> from a machine
-          where you&apos;ve signed in to Codex.
-        </p>
       </div>
 
       <StrandedWorkNotice stat={strand} />
@@ -1356,12 +1347,12 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
             <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
               onCancel={() => { if (devicePollRef.current) devicePollRef.current.cancelled = true; setDevice(null); }} />
           ) : (
-            <div className="flex items-center gap-3">
+            <div className="space-y-1.5">
               <button onClick={startDeviceLogin} disabled={busy}
                 className="btn btn-primary">
                 Sign in with device code
               </button>
-              <span className="text-xs text-text-muted">Recommended: buildd owns the session, so no pasted file goes stale</span>
+              <p className="text-xs text-text-muted">Recommended. Nothing to paste, nothing to go stale.</p>
             </div>
           ))}
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
@@ -1382,7 +1373,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">Paste auth.json</div>
+        <div className="text-sm font-medium">Paste <code className="font-mono text-[12px]">~/.codex/auth.json</code></div>
         {onCancel && <button onClick={onCancel} className="btn btn-quiet">Cancel</button>}
       </div>
       <textarea

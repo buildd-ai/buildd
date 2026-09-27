@@ -1163,7 +1163,7 @@ function OrphanedPrsBlock({ rows, now }: { rows: OrphanedPrRow[]; now: number })
         buildd couldn&apos;t resolve these against GitHub and stopped retrying. Home hides
         them. None of them is a merge you can make.
       </p>
-      <div className="border border-border rounded-[10px] divide-y divide-border">
+      <div className="border border-border divide-y divide-border">
         {rows.map(row => (
           <div key={row.workerId} className="px-4 py-2.5">
             <div className="flex items-center gap-2 min-w-0">

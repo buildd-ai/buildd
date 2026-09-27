@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, resolveViewports, scrollPlan, stepViewports } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, resolveViewports, scrollPlan, stepViewports } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -91,5 +91,24 @@ describe('clickTargets', () => {
   test('an empty target is an error, not a skipped click', () => {
     expect(() => clickTargets({ click: ['mission-delivery-summary', ''] })).toThrow(/non-empty/);
     expect(() => clickTargets({ click: ' ' })).toThrow(/non-empty/);
+  });
+});
+
+describe('loginUser', () => {
+  const users = [
+    { key: 'u_owner', email: 'owner@example.com', name: 'Owner' },
+    { key: 'u_member', email: 'member@example.com', name: 'Member', _role: 'member' },
+  ];
+  test('defaults to the first user', () => {
+    expect(loginUser(users).key).toBe('u_owner');
+  });
+  test('`as` picks another seeded user, so a storyboard can shoot the member view', () => {
+    expect(loginUser(users, 'u_member').key).toBe('u_member');
+  });
+  test('an unknown `as` fails loudly rather than shooting as the owner', () => {
+    expect(() => loginUser(users, 'u_nobody')).toThrow(/u_nobody/);
+  });
+  test('a story with no users fails', () => {
+    expect(() => loginUser([])).toThrow(/no users/);
   });
 });

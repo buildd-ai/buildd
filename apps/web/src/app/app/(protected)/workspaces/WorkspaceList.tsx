@@ -69,9 +69,9 @@ export default function WorkspaceList({
     if (workspaces.length === 0) {
         return (
             <>
-            <div className="border border-dashed border-border-default rounded-[10px] p-8">
+            <div className="border border-dashed border-border-default p-8">
                 <div className="flex flex-col items-center text-center max-w-sm mx-auto">
-                    <div className="w-12 h-12 rounded-[10px] bg-surface-3 flex items-center justify-center mb-4">
+                    <div className="w-12 h-12 bg-surface-3 flex items-center justify-center mb-4">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
                             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                             <line x1="12" y1="11" x2="12" y2="17" />
@@ -84,7 +84,7 @@ export default function WorkspaceList({
                     </p>
                     <Link
                         href="/app/workspaces/new"
-                        className="px-5 py-2 bg-primary text-white hover:bg-primary-hover rounded-[6px] text-[13px] font-medium"
+                        className="px-5 py-2 bg-primary text-white hover:bg-primary-hover text-[13px] font-medium"
                     >
                         Create Workspace
                     </Link>

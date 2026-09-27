@@ -100,6 +100,17 @@ describe('GET /api/teams/[id] — response columns', () => {
     expect(columns).not.toHaveProperty('criteriaEvaluationStrategy');
     principal = null;
   });
+
+  // Regression (UX review, Settings > Members): the column list left out
+  // timezone, so the Timezone section read "Not set. buildd uses UTC." for a
+  // team with a zone saved, and a save looked lost on the next load.
+  it('returns the team timezone the Timezone section reads', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/team-1'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ timezone: true });
+    principal = null;
+  });
 });
 
 describe('PATCH /api/teams/[id] — chat tier policy', () => {

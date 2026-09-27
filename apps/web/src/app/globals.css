@@ -143,6 +143,12 @@ body {
 }
 ::selection { background: var(--accent); color: #fff; }
 
+/* Native checkboxes and radios take the one accent, not the browser's blue. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
 /* Brutalist form controls — one 2px ink border everywhere, matching .card.
    Ties editor/form pages to the dashboard (single border language). */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),

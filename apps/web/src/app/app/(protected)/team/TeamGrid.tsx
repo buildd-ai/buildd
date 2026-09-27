@@ -232,7 +232,7 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
       </div>
 
       {totalRoles === 0 ? (
-        <div className="border border-dashed border-border-default rounded-[10px] p-8 text-center">
+        <div className="border border-dashed border-border-default p-8 text-center">
           <p className="text-[15px] text-text-secondary mb-3">
             No roles yet. A role sets an agent persona: its model, tools, and who it can delegate to.
           </p>

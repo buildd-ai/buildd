@@ -19,6 +19,7 @@ import type { FleetRunner, FleetSlot, FleetSnapshot } from '@buildd/shared';
 import { SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from '@/components/fleet/slot-lanes-layout';
 import { fleetDisplayRows, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
+import { shortDuration } from '@/lib/mission-list-card';
 import { FleetLanes } from './FleetLanes';
 
 function ago(ms: number, now: number): string {
@@ -77,7 +78,8 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
     );
   }
   const elapsedMs = w.startedAt ? Math.max(0, now - new Date(w.startedAt).getTime()) : null;
-  const mins = elapsedMs != null ? Math.round(elapsedMs / 60_000) : null;
+  // "37m", "5h", "2d": never "2856m".
+  const mins = elapsedMs != null ? shortDuration(elapsedMs) : null;
   // Same minute the lanes chart draws as a "claimed" marker at NOW.
   const justClaimed = elapsedMs == null || elapsedMs < 60_000;
   const href = w.taskId ? missionTaskHref({ missionId: w.missionId, taskId: w.taskId, from: 'home', mode: 'sheet' }) : null;
@@ -89,20 +91,20 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
       </div>
       {w.question ? (
         <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
-          ? Waiting on you{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}m</span>}
+          ? Waiting on you{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
         </div>
       ) : w.progress != null ? (
         <div className="mt-1.5 flex items-center gap-2.5 font-mono text-[11px] text-text-muted">
           <span className="relative h-[3px] w-full max-w-[150px] bg-border-default" aria-hidden="true">
             <span className="absolute inset-y-0 left-0 bg-accent" style={{ width: `${w.progress}%` }} />
           </span>
-          <span className="shrink-0 whitespace-nowrap">{`${Math.round(w.progress)}%`}{mins != null && ` · ${mins}m`}</span>
+          <span className="shrink-0 whitespace-nowrap">{`${Math.round(w.progress)}%`}{mins != null && ` · ${mins}`}</span>
         </div>
       ) : justClaimed ? (
         // Claimed this minute and nothing reported: not "— · 0m" under an empty track.
         <div data-testid="fleet-slot-claimed" className="mt-1 font-mono text-[11px] font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</div>
       ) : mins != null ? (
-        <div className="mt-1 font-mono text-[11px] tabular-nums text-text-muted">{`${mins}m`}</div>
+        <div className="mt-1 font-mono text-[11px] tabular-nums text-text-muted">{mins}</div>
       ) : null}
     </>
   );
