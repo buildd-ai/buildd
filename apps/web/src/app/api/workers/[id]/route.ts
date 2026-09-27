@@ -1453,8 +1453,9 @@ export async function PATCH(
               repoWithInstallation.installation.installationId,
               `/repos/${repoWithInstallation.fullName}/pulls/${prNumber}`,
             );
+            const effectiveLastCommitSha = lastCommitSha ?? worker.lastCommitSha;
             const headShaMatch = Boolean(
-              worker.lastCommitSha && pr?.head?.sha && pr.head.sha === worker.lastCommitSha,
+              effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
               await db.update(workers).set({

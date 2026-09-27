@@ -4110,6 +4110,69 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet?.result?.prNumber).toBe(15);
     });
 
+    it('pr_required + referenced PR is open, head SHA matches the SAME request\'s reported lastCommitSha (not yet persisted on the worker row) → completes and records it', async () => {
+      // The runner's real completion payload is one PATCH carrying
+      // `{ status: 'completed', ...gitStats }`, where gitStats.lastCommitSha is
+      // collected immediately before sending — so the freshly-pushed head SHA
+      // arrives in THIS request's body, not on the worker row fetched at the
+      // top of the handler. Unlike the sibling test above, the mocked worker
+      // row here has no lastCommitSha at all; only the request body does.
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/15', prNumber: 15 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase and fix PR #15',
+        description: 'Push fixes to PR #15\'s branch and request review.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/15') {
+          return Promise.resolve({
+            number: 15,
+            merged: false,
+            html_url: 'https://github.com/org/repo/pull/15',
+            head: { sha: 'fresh-push-sha' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', lastCommitSha: 'fresh-push-sha' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+    });
+
     it('pr_required + referenced PR is open with a different head SHA → still refuses completion', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, lastCommitSha: 'abc123def' });
