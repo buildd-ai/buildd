@@ -21,6 +21,8 @@ interface Props {
   testId?: string;
   /** Filled with the panel element so callers can scope outside-click checks. */
   panelRef?: RefObject<HTMLDivElement | null>;
+  /** Bottom sheet: fixed tall sheet (88% of the screen) whose list scrolls under a pinned search box. */
+  tallSheet?: boolean;
 }
 
 interface Position {
@@ -44,7 +46,7 @@ const PREFERRED_HEIGHT = 320;
  * Phone: the shared BottomSheet (portaled, focus trapped, Escape closes).
  */
 export function AnchoredPopover({
-  open, onClose, anchorRef, sheet, title, children, minWidth = 0, align = 'start', testId, panelRef,
+  open, onClose, anchorRef, sheet, title, children, minWidth = 0, align = 'start', testId, panelRef, tallSheet = false,
 }: Props) {
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = panelRef ?? ownRef;
@@ -101,8 +103,8 @@ export function AnchoredPopover({
 
   if (sheet) {
     return (
-      <BottomSheet open onClose={onClose} title={title} trapFocus flush testId={testId}>
-        <div ref={ref}>{children}</div>
+      <BottomSheet open onClose={onClose} title={title} trapFocus flush testId={testId} height={tallSheet ? 'tall' : 'auto'}>
+        <div ref={ref} className={tallSheet ? 'flex h-full min-h-0 flex-col' : undefined}>{children}</div>
       </BottomSheet>
     );
   }

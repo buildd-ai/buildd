@@ -205,6 +205,7 @@ export function Select<V extends string = string>({
         onClose={() => close(!isMobile)}
         anchorRef={triggerRef}
         sheet={isMobile}
+        tallSheet={withSearch}
         title={title}
         minWidth={menuMinWidth}
         align={align}

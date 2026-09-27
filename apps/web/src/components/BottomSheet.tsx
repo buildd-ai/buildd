@@ -159,7 +159,7 @@ export default function BottomSheet({
         }`}
       >
         {handle}
-        <div className="sticky top-0 flex items-center justify-between px-4 py-3 border-b border-border-default bg-surface-1">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b border-border-default bg-surface-1">
           <h2 className="text-[13px] font-semibold text-text-primary">{title}</h2>
           <button
             type="button"

@@ -60,6 +60,18 @@ describe('phone sheet', () => {
     expect(cls).toContain('text-base');
   });
 
+  it('a searchable Select opens a tall sheet so the search box stays put while the list scrolls', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ value: `z${i}`, label: `Zone ${i}` }));
+    await mount(<Select aria-label="Team timezone" value="z29" options={many} onChange={() => {}} />);
+    await act(async () => { (host.querySelector('[role="combobox"]') as HTMLElement).click(); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.className).toContain('h-[88dvh]');
+    const search = dialog.querySelector('[role="searchbox"]')!;
+    const list = dialog.querySelector('[role="listbox"]')!;
+    expect(list.contains(search)).toBe(false);
+    expect(list.className).toContain('overflow-y-auto');
+  });
+
   it('Combobox opens a sheet with its own search box', async () => {
     await mount(<Combobox aria-label="Model" value="a" options={OPTS} onChange={() => {}} />);
     const t = host.querySelector('[role="combobox"]') as HTMLElement;
