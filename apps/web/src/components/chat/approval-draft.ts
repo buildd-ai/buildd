@@ -127,8 +127,47 @@ export function approvalDraft(part: ChatToolPart): ApprovalDraft {
   return { kind: 'generic', fields, workspaceId };
 }
 
-/** `manage_missions · create` — the tool as the card's verb. */
-export function approvalVerb(part: ChatToolPart): string {
+/** Each write, in words. Keyed `tool` or `tool:action`. */
+const LABELS: Record<string, string> = {
+  'manage_missions:create': 'New mission',
+  'manage_missions:update': 'Change mission',
+  'manage_missions:arm': 'Start mission',
+  'manage_missions:link_task': 'Add task to mission',
+  'manage_missions:unlink_task': 'Remove task from mission',
+  'manage_missions:evaluate': 'Check mission',
+  'manage_missions:delete': 'Delete mission',
+  'manage_initiatives:create': 'New initiative',
+  'manage_initiatives:update': 'Change initiative',
+  'manage_initiatives:link_mission': 'Add mission to initiative',
+  'manage_initiatives:unlink_mission': 'Remove mission from initiative',
+  'manage_initiatives:delete': 'Delete initiative',
+  'manage_workspaces:create': 'New workspace',
+  'manage_workspaces:update': 'Change workspace',
+  'manage_workspaces:create_repo': 'New repository',
+  'manage_workspaces:init': 'Set up workspace',
+  create_task: 'New task',
+  update_task: 'Change task',
+  hold_task: 'Hold task',
+  correct_task_result: 'Correct task result',
+  approve_plan: 'Approve plan',
+  reject_plan: 'Reject plan',
+  send_agent_message: 'Message agent',
+  answer_question: 'Answer agent',
+  create_schedule: 'New schedule',
+  update_schedule: 'Change schedule',
+  pause_schedules: 'Pause schedules',
+  delete_schedule: 'Delete schedule',
+  create_artifact: 'New artifact',
+  trigger_release: 'Start release',
+  memory_delete: 'Delete memory',
+};
+
+/** "New mission": what the card is, never the tool it runs through. */
+export function approvalLabel(part: ChatToolPart): string {
+  const name = toolNameOf(part);
   const a = toolAction(part);
-  return a ? `${toolNameOf(part)} · ${a}` : toolNameOf(part);
+  const known = (a && LABELS[`${name}:${a}`]) || LABELS[name];
+  if (known) return known;
+  const words = name.replace(/_/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
