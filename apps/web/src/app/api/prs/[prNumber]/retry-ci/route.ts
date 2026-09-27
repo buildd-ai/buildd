@@ -29,6 +29,7 @@ import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-dia
 import { buildCIRetryTask, DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import { LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
@@ -131,6 +132,11 @@ export async function POST(
   const failureContext = ciLogs.summary ||
     `CI failing on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
+  // Both the diagnose task and the fix attempt below re-attempt the PR's owner
+  // task, so they carry its backend, role, routing kind and phase (Rule P1-7).
+  // An adopted owner has no role, so neither does its attempt.
+  const identity = await inheritAttemptIdentity(originalTask.id);
+
   // Schema drift is diagnose-only — no override exists in this action either.
   if (isSchemaDriftFailure(ciLogs.failedJobNames)) {
     const diagnoseTask = buildDriftDiagnoseTask({
@@ -154,6 +160,7 @@ export async function POST(
         title: diagnoseTask.title,
         description: diagnoseTask.description,
         parentTaskId: diagnoseTask.parentTaskId,
+        ...identity,
         ciRetryPrNumber: prNumber,
         ciRetryHeadSha: headSha,
         missionId: diagnoseTask.missionId,
@@ -233,6 +240,7 @@ export async function POST(
       title: retryTask.title,
       description: retryTask.description,
       parentTaskId: retryTask.parentTaskId,
+      ...identity,
       ciRetryPrNumber: prNumber,
       ciRetryHeadSha: headSha,
       missionId: retryTask.missionId,

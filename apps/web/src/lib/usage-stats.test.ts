@@ -19,6 +19,7 @@ import {
   serverOf,
   parseWindowMs,
   describeScan,
+  isUnassignedWork,
   BUILT_IN_SERVER,
   UNASSIGNED_ROLE,
   type UsageWorkerRow,
@@ -830,5 +831,20 @@ describe('role histogram — separated from the cost rollup (Rule R3-2)', () => 
     expect(stats.groups).toHaveLength(1);
     expect(stats.groups[0].key).toBe('ws-a');
     expect(stats.groups[0].tasks).toBe(1);
+  });
+});
+
+describe('isUnassignedWork (role-routing §1 row 7)', () => {
+  test('counts a role-less work or attempt task as a routing gap', () => {
+    expect(isUnassignedWork({ roleSlug: null, taskClass: 'work' })).toBe(true);
+    expect(isUnassignedWork({ roleSlug: null, taskClass: 'attempt' })).toBe(true);
+  });
+
+  test('does not count an adopted-PR placeholder or other bookkeeping row', () => {
+    expect(isUnassignedWork({ roleSlug: null, taskClass: 'bookkeeping' })).toBe(false);
+  });
+
+  test('does not count a task that has a role', () => {
+    expect(isUnassignedWork({ roleSlug: 'builder', taskClass: 'work' })).toBe(false);
   });
 });

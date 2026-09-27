@@ -243,6 +243,46 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(mockInsertValues[0].missionId).toBe('mission-42');
   });
 
+  // role-routing §1 row 8: the revised plan dropped the rejected plan's role.
+  it('the revised planning task keeps the rejected plan\'s roleSlug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: null,
+      roleSlug: 'organizer',
+      backend: 'claude',
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: {},
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'Try again' } });
+    await callHandler(POST, request, 'plan-task-1');
+
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0].roleSlug).toBe('organizer');
+  });
+
+  it('a role-less rejected plan stays role-less when revised', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1', mode: 'planning', status: 'completed', workspaceId: 'ws-1',
+      parentTaskId: null, missionId: null, priority: 1, title: 'Plan feature',
+      description: 'Plan it', context: {}, workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'Try again' } });
+    await callHandler(POST, request, 'plan-task-1');
+
+    expect(mockInsertValues[0].roleSlug).toBeNull();
+  });
+
   it('preserves null missionId when task has no mission', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue({

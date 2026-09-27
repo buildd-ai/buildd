@@ -59,6 +59,9 @@ mock.module('@/lib/ci-retry', () => ({
 }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
+const NO_IDENTITY = { roleSlug: null, kind: null, complexity: null, missionPhaseIndex: null, missionPhaseLabel: null };
+const mockInheritAttemptIdentity = mock((_id: string) => Promise.resolve({ ...NO_IDENTITY } as any));
+mock.module('@/lib/attempt-identity', () => ({ inheritAttemptIdentity: mockInheritAttemptIdentity }));
 
 const TASKS_TABLE = { __name: 'tasks' };
 const WORKSPACES_TABLE = { __name: 'workspaces' };
@@ -167,6 +170,8 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     mockTasksValues.mockReset();
     mockTasksReturning.mockReset();
     mockTasksReturning.mockResolvedValue([{ id: 'new-task-1' }]);
+    mockInheritAttemptIdentity.mockReset();
+    mockInheritAttemptIdentity.mockResolvedValue({ ...NO_IDENTITY });
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -275,5 +280,36 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(inserted.title).toContain('[CI Diagnose]');
     expect(inserted.outputRequirement).toBe('artifact_required');
     expect(inserted.title).not.toContain('[CI Retry');
+  });
+
+  // role-routing §1 row 8: both inserts hand-enumerated their columns and
+  // dropped the owner task's role.
+  it('the manual CI retry inherits the owner task\'s roleSlug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockInheritAttemptIdentity.mockResolvedValue({ ...NO_IDENTITY, roleSlug: 'builder', backend: 'codex' });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
+    await POST(req, ctx);
+    expect(mockInheritAttemptIdentity).toHaveBeenCalledWith('t-1');
+    const inserted = mockTasksValues.mock.calls[0][0];
+    expect(inserted.roleSlug).toBe('builder');
+    expect(inserted.backend).toBe('codex');
+  });
+
+  it('the drift diagnose task inherits the owner task\'s roleSlug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockIsSchemaDriftFailure.mockReturnValue(true);
+    mockInheritAttemptIdentity.mockResolvedValue({ ...NO_IDENTITY, roleSlug: 'builder' });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
+    await POST(req, ctx);
+    const inserted = mockTasksValues.mock.calls[0][0];
+    expect(inserted.title).toContain('[CI Diagnose]');
+    expect(inserted.roleSlug).toBe('builder');
+  });
+
+  it('an adopted (role-less) owner gives its attempt no role', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
+    await POST(req, ctx);
+    expect(mockTasksValues.mock.calls[0][0].roleSlug).toBeNull();
   });
 });

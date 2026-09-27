@@ -141,8 +141,8 @@ export interface AdoptablePr {
  * comment, merge policy, and (as of the CI-retry webhook) automatic CI-fix
  * dispatch all see the same worker/task shape for an externally-authored PR.
  *
- * The adopted task is stamped `status: 'completed'` and carries
- * `context.adoptedPr` — the work already exists (the PR is open), so a
+ * The adopted task is stamped `status: 'completed'` and `taskClass:
+ * 'bookkeeping'` (no role), and carries `context.adoptedPr` — the work already exists (the PR is open), so a
  * pending row here would be claimable by a runner and get "redone". Callers
  * that gate on task status (e.g. the CI-retry webhook's terminal-task guard)
  * must check for `context.adoptedPr` and treat it as non-terminal for their
@@ -191,6 +191,11 @@ export async function resolveOrAdoptPrOwner(params: {
       title: `PR #${prNumber}: ${pr.title ?? 'untitled'}`,
       description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
       status: 'completed',
+      // A placeholder that owns the PR, never work: no worker runs it, so it
+      // carries no role and role views skip it. The review it triggers is the
+      // work, and `createReviewerTask` gives that its reviewer role
+      // (role-routing §1 row 7, open decision 8).
+      taskClass: 'bookkeeping',
       priority: 5,
       release: 'false',
       creationSource,

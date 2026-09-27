@@ -577,6 +577,11 @@ export interface TaskScheduleTemplate {
   // time consumes these via tasks.kind / tasks.complexity.
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
   complexity?: 'simple' | 'normal' | 'complex';
+  // The role every task this schedule spawns runs as, stated once. Applied at
+  // fire time only if the slug still resolves to a role in the task's
+  // workspace (docs/design/role-routing.md §3.1); otherwise the task files
+  // role-less.
+  roleSlug?: string;
 }
 
 // Task result/deliverable snapshot - populated when worker completes
