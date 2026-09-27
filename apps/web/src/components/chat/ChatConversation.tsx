@@ -244,6 +244,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
         formFallbackHref={formFallbackHref}
+        entryIntent={entry.intent}
       />
       </TurnFeedbackProvider>
     </ObjectStoreProvider>

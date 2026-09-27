@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Outfit, IBM_Plex_Mono, Fraunces } from 'next/font/google';
+import { Outfit, IBM_Plex_Mono, IBM_Plex_Sans, Fraunces } from 'next/font/google';
 import ThemeProvider from '@/components/ThemeProvider';
 import './globals.css';
 
@@ -13,6 +13,14 @@ const ibmPlexMono = IBM_Plex_Mono({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
   variable: '--font-ibm-plex-mono',
+  display: 'swap',
+});
+
+// Conversation prose in chat (the canvas): the same family as the Mono voice, friendlier to read.
+const ibmPlexSans = IBM_Plex_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  variable: '--font-plex-sans',
   display: 'swap',
 });
 
@@ -35,7 +43,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${fraunces.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${outfit.variable} ${ibmPlexMono.variable} ${ibmPlexSans.variable} ${fraunces.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

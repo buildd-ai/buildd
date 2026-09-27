@@ -290,3 +290,18 @@ export function routedScope(messages: readonly ChatMessage[]): { id: string; nam
   }
   return null;
 }
+
+/**
+ * What the canvas pins at its top (objects/PinnedObject.tsx): the object the
+ * chat was opened about, else the latest mission the conversation touched,
+ * else the latest task. PRs and questions render in the feed only. Pure.
+ */
+export function canvasPin(messages: readonly ChatMessage[], about: BuilddObjectRef | null): BuilddObjectRef | null {
+  if (about) return about;
+  const refs = conversationRefs(messages);
+  for (const kind of ['mission', 'task'] as const) {
+    const hit = [...refs].reverse().find(r => r.kind === kind);
+    if (hit) return hit;
+  }
+  return null;
+}

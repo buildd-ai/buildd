@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { BuilddObjectRef, ChatMessage, ChatToolPart } from './chat-contract';
 import { objectsOf } from './chat-contract';
 import {
-  conversationRefs, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
+  canvasPin, conversationRefs, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
   routedScope, toolResultLine, toolRowState, toolRowView,
 } from './feed-model';
 
@@ -160,5 +160,23 @@ describe('routedScope', () => {
   });
   it('only the latest turn counts', () => {
     expect(routedScope([a({ id: 'w1', name: 'x', source: 'routed' }), a(null)])).toBeNull();
+  });
+});
+
+describe('canvas pin', () => {
+  const withRefs = (...refs: BuilddObjectRef[]) => msg([tool('x', { output: { objects: refs } })]);
+
+  it('the object the chat was opened about wins', () => {
+    expect(canvasPin([withRefs(ref('mission', 'm1'))], ref('task', 't9'))).toEqual(ref('task', 't9'));
+  });
+
+  it('otherwise the latest mission in the conversation, then the latest task', () => {
+    expect(canvasPin([withRefs(ref('mission', 'm1')), withRefs(ref('task', 't1'))], null)).toEqual(ref('mission', 'm1'));
+    expect(canvasPin([withRefs(ref('task', 't1'), ref('pr', 'p1'))], null)).toEqual(ref('task', 't1'));
+  });
+
+  it('PRs and questions alone pin nothing', () => {
+    expect(canvasPin([withRefs(ref('pr', 'p1'), ref('question', 'q1'))], null)).toBeNull();
+    expect(canvasPin([], null)).toBeNull();
   });
 });
