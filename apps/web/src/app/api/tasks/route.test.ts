@@ -31,6 +31,7 @@ const mockTasksUpdateSet = mock(() => ({ where: mockTasksUpdateWhere }));
 const mockTasksUpdate = mock(() => ({ set: mockTasksUpdateSet }));
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
+const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -152,7 +153,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
-      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
+      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
     },
     insert: mockTasksInsert,
     update: mockTasksUpdate,
@@ -202,6 +203,8 @@ mock.module('@buildd/core/db/schema', () => ({
     enabled: 'enabled',
     workspaceId: 'workspaceId',
     connectorRefs: 'connectorRefs',
+    teamId: 'teamId',
+    isRole: 'isRole',
   },
   missions: { id: 'id', teamId: 'teamId' },
 }));
@@ -402,6 +405,8 @@ describe('GET /api/tasks', () => {
 
 describe('POST /api/tasks', () => {
   beforeEach(() => {
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
@@ -3226,6 +3231,45 @@ describe('POST /api/tasks', () => {
       });
       return captured;
     }
+
+    it("names the stated role's floor when it raises the tier", async () => {
+      setupRoutingAuth();
+      captureInsert();
+      mockWorkspaceSkillsFindMany.mockResolvedValue([
+        { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: null },
+      ]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', roleSlug: 'builder' },
+      }));
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.routing.tier).toBe('premium');
+      expect(data.routing.reason).toContain('role "builder" floor premium raised standard → premium');
+    });
+
+    it('says an inferred role will not change the model when a role-less task has candidates', async () => {
+      setupRoutingAuth();
+      captureInsert();
+      mockWorkspaceSkillsFindMany.mockResolvedValue([
+        { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: { routing: { whenToUse: 'Code changes that end in a PR' } } },
+        { slug: 'researcher', model: 'sonnet', workspaceId: null, teamId: 'team-1', metadata: { routing: { whenToUse: 'Investigate without changing code' } } },
+      ]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task' },
+      }));
+
+      const data = await response.json();
+      // The candidates' floors do not leak into a role-less task's preview.
+      expect(data.routing.tier).toBe('standard');
+      expect(data.routing.reason).toContain('an inferred role does not change the model');
+    });
 
     it('echoes a routing preview naming the default when nothing is given', async () => {
       setupRoutingAuth();

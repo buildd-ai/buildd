@@ -221,6 +221,8 @@ When the apply step (§6(c)) writes a role, it also writes `context.routingReaso
 
 Today a role pinned to an exact model id outranks an explicit `tasks.tier` (`claim/route.ts:1554`, `:1585`). The spec (`docs/specs/model-routing-and-tiers.md`, "Claim-time model resolution") records this as the intended order. It contradicts "an explicit caller value must always win", and it matters more once more tasks carry roles. Proposed order: `context.model` → `tasks.tier` → role exact id → matrix + role floor. This is a model-routing change with its own spec update and its own builder task, and it must land before §6(c).
 
+**Landed** (with §4.1's inferred-role guard, §4.2's preview and §3.1's `roleFloorMap` scoping): `packages/core/role-model-routing.ts` holds the shared precedence; the spec section above now records the new order.
+
 #### 4.4 Audit: role `model` values that conflict with the tier registry
 
 Registry today (`manage_model_tiers list`): all four tiers resolve to catalog or team rows. No workspace overrides.
@@ -232,7 +234,7 @@ Registry today (`manage_model_tiers list`): all four tiers resolve to catalog or
 | Existing rows, this team | several | `sonnet` | Same as above: seeded before tier vocabulary. |
 | Existing rows, this team | one team-level custom role | an exact `claude-…` id | **Bypasses the registry** and, until §4.3, outranks an explicit `tasks.tier`. A registry change never reaches it. |
 | Existing rows, this team | `visual-auditor` override | `standard` | Tier vocabulary. No conflict. |
-| Any row | — | `premium-plus` | None today. If set, it silently becomes `premium` (`claim/route.ts:1548` → `mapRouterAlias`). Document it or fix it in §4.3's task. |
+| Any row | — | `premium-plus` | None today. It used to silently become `premium` (`claim/route.ts:1548` → `mapRouterAlias`). **Fixed** in §4.3's task: a `premium-plus` role floor now resolves to the `premium-plus` tier (`roleTierOverride`). |
 
 The per-row detail for this team is in the task's analysis artifact, not here (this repo is public). Recommendation, as its own task and not a precondition for the shadow: migrate seeded `sonnet`/`opus` to `standard`/`premium` (no behaviour change, since they map 1:1), and reconsider whether seeded Builder should floor at `premium` at all. That is a cost decision, so it is Open decision 6.
 
