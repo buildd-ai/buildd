@@ -66,7 +66,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     const { pool, arms } = loaded;
 
     const nextMode = mode ?? pool.mode;
-    if (weightsPatch !== undefined && nextMode === 'explore') {
+    if (body.allocation !== undefined && nextMode === 'explore') {
       return NextResponse.json({ error: 'buildd sets the shares in explore' }, { status: 400 });
     }
 
