@@ -1334,11 +1334,12 @@ export default async function MissionDetailPage({
     </>
   );
   // Orchestrator runs share one task title ("Mission: <title>"); name each
-  // row by what it did instead. Only rows shaped like a planning run get
-  // relabeled — other bookkeeping rows (e.g. a friction report) keep their
-  // own title. Position is by time, not render order.
+  // row by what it did instead. Only planning runs get relabeled (by mode,
+  // never by title prefix: task-class-invariants); other bookkeeping rows
+  // such as a friction report keep their own title. Position is by time.
+  const planningRunIds = new Set(footerTasks.filter(t => t.mode === 'planning').map(t => t.id));
   const orchestratorRunIds = bookkeepingTasks
-    .filter(t => t.title.startsWith('Mission:'))
+    .filter(t => planningRunIds.has(t.id))
     .slice()
     .sort((a, b) => a.taskUpdatedAt.localeCompare(b.taskUpdatedAt))
     .map(t => t.id);
