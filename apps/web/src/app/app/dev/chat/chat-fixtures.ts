@@ -17,7 +17,7 @@ const iso = (min: number) => new Date(at(min)).toISOString();
 
 export const WS = { id: 'ws-billing-web', name: 'billing-web' } as const;
 export const WORKSPACES = [WS, { id: 'ws-marketing-site', name: 'marketing-site' }];
-export const ORGANIZER = { name: 'Organizer', color: '#6366F1' };
+export const ORGANIZER = { name: 'buildd', color: '#6366F1' };
 export const TEAM_NAME = 'Harborline';
 export const VIEWER = 'Maya';
 
@@ -241,7 +241,7 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
         messages: [...explore(), agent('m4', 4, [
           { type: 'text', text: 'Here’s a draft. I won’t file it until you confirm.' },
           call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-1', approved: true } }),
-          { type: 'text', text: 'Filed. The Organizer is planning it now; the card fills in as agents pick up tasks.' },
+          { type: 'text', text: 'Filed. buildd is planning it now; the card fills in as agents pick up tasks.' },
         ], 2400)],
       };
     case 'split':

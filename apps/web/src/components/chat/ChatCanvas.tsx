@@ -81,7 +81,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d: { available: boolean; agent: ChatAgent | null; canManageTeamKeys: boolean }) => {
         if (!live) return;
-        setShell({ agent: d.agent ?? { name: 'Organizer', color: null }, canManageTeamKeys: d.canManageTeamKeys });
+        setShell({ agent: d.agent ?? { name: 'buildd', color: null }, canManageTeamKeys: d.canManageTeamKeys });
       })
       .catch(() => { if (live) setShellError(true); });
     return () => { live = false; };

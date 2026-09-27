@@ -19,18 +19,18 @@ export interface ChatPageContext {
 
 const LIVE = ['running', 'starting', 'waiting_input'];
 
-const DEFAULT_AGENT: ChatAgent = { name: 'Organizer', color: null };
+const DEFAULT_AGENT: ChatAgent = { name: 'buildd', color: null };
 
-/** The Organizer role as the chat's agent: team-level, or on one of these workspaces. */
+/** The Organizer role as the chat's agent: team-level, or on one of these workspaces. Displays as buildd. */
 async function loadOrganizer(teamId: string, wsIds: string[]): Promise<ChatAgent> {
   const role = await db.query.workspaceSkills.findFirst({
     // Roles are team-level (seedDefaultRolesForTeam) or per workspace.
     where: wsIds.length > 0
       ? and(or(eq(workspaceSkills.teamId, teamId), inArray(workspaceSkills.workspaceId, wsIds)), eq(workspaceSkills.slug, 'organizer'))
       : and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.slug, 'organizer')),
-    columns: { name: true, color: true },
+    columns: { color: true },
   }).catch(() => null);
-  return { name: role?.name || DEFAULT_AGENT.name, color: role?.color ?? null };
+  return { name: 'buildd', color: role?.color ?? null };
 }
 
 /** The chat's agent for a team, for the summoned canvas (GET /api/chat/canvas). */
