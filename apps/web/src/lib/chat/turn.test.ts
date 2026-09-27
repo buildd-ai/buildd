@@ -571,6 +571,23 @@ describe('"Allow" for a tool group (docs/design/agent-chat.md → Tools and perm
     expect(apiCalls).toEqual([]);
   });
 
+  it('a new schedule gets a card even with schedules allowed and nothing read', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-s', 'create_schedule', { name: 'nightly', cronExpression: '0 2 * * *', title: 'Rebuild rates', workspaceId: 'ws-1' }), textStream('ok')] as any,
+    });
+    const { turn, apiCalls } = harness({
+      model, allowedGroups: ['schedules'],
+      route: async () => ({ tier: 'standard', allowWrites: true, source: 'decision', area: 'schedules' }),
+      // The preview resolves, so only the always-ask rule stands between the call and a write.
+      api: (method, path) => method === 'GET' && path === '/api/workspaces'
+        ? { workspaces: [{ id: 'ws-1', name: 'billing-web' }] }
+        : { schedule: { id: 'sched-1', name: 'nightly', workspaceId: 'ws-1' } },
+    });
+    await turn(userMsg('rebuild the rates table every night'));
+    expect(lastAssistant().parts.find(p => p.type === 'tool-create_schedule').state).toBe('approval-requested');
+    expect(apiCalls.filter(c => !c.startsWith('GET '))).toEqual([]);
+  });
+
   it('admin-class writes ask even in an allowed group', async () => {
     const model = new MockLanguageModelV4({
       doStream: [toolStream('call-b', 'manage_missions', { ...MISSION_INPUT, costBudgetUsd: 50 }), textStream('ok')] as any,
