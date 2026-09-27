@@ -25,6 +25,17 @@ const BUILDD_MCP = {
   headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
 };
 
+/**
+ * Choice criteria for role inference (docs/design/role-routing.md §2). This
+ * text IS the routing prompt: the model reads nothing else about the role.
+ * whenToUse is 20–300 chars, notFor ≤ 200 chars and names the neighbouring
+ * role. `disabled` keeps a role out of the candidate set on purpose — used for
+ * roles whose tasks are only ever created by a pipeline with the slug set.
+ */
+type DefaultRoleRouting =
+  | { whenToUse: string; notFor?: string }
+  | { disabled: true };
+
 interface DefaultRole {
   slug: string;
   name: string;
@@ -37,6 +48,7 @@ interface DefaultRole {
   canDelegateTo: string[];
   mcpServers: Record<string, unknown>;
   requiredEnvVars: Record<string, string>;
+  routing: DefaultRoleRouting;
 }
 
 export const DEFAULT_ROLES: DefaultRole[] = [
@@ -176,6 +188,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: ['builder', 'researcher', 'writer', 'analyst'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Breaks a goal into ordered tasks with a role each, or reconciles and re-sequences existing tasks. The output is a plan, not the work itself.',
+      notFor: 'Doing any one planned step: code (builder), an investigation (researcher), prose (writer)',
+    },
   },
   {
     slug: 'builder',
@@ -278,6 +294,10 @@ Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decis
     canDelegateTo: ['researcher'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Changes code, config or tests in the repo and ends in a pull request: features, bug fixes, refactors, migrations, dependency bumps, CI fixes.',
+      notFor: 'Investigating without changing code (researcher); prose-only docs (writer); splitting a goal into tasks (organizer)',
+    },
   },
   {
     slug: 'researcher',
@@ -325,6 +345,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: ['builder'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Answers an open question without changing the repo: investigations, comparisons, feasibility checks, how something works or why it failed. The output is a findings report or recommendation.',
+      notFor: 'Fixing what it finds (builder); questions answered by querying data or metrics (analyst); checking code against a spec (spec-validator)',
+    },
   },
   {
     slug: 'writer',
@@ -362,6 +386,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: ['researcher'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Writes or edits prose with no code change: user docs, READMEs, design docs, release notes, changelogs, PR descriptions, announcements.',
+      notFor: 'Code or config changes, even when the title says docs (builder); research whose output is a recommendation (researcher)',
+    },
   },
   {
     slug: 'analyst',
@@ -399,6 +427,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: ['researcher', 'writer'],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Pulls data, metrics or usage numbers by query or API and reports what they show, with the query, sample size and time range.',
+      notFor: 'Building the dashboard or pipeline itself (builder); questions answered from docs or code rather than data (researcher)',
+    },
   },
   {
     slug: 'reviewer',
@@ -470,6 +502,9 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: [] as string[],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    // Not routable: createReviewerTask sets the slug and the verdict
+    // outputSchema. A free-text "review PR #N" goes through request_pr_review.
+    routing: { disabled: true },
   },
   {
     // Mission visual auditor (docs/design/visual-qa-auditor.md). A separate
@@ -601,6 +636,9 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    // Not routable: an EXPLICIT_ROLE_SLUGS entry (role-routing.md §3.2), and
+    // its tasks are created by the surface-audit pipeline with the slug set.
+    routing: { disabled: true },
   },
   {
     slug: 'spec-validator',
@@ -678,8 +716,20 @@ If a near-duplicate exists, update it instead of creating a new entry.
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    routing: {
+      whenToUse: 'Checks shipped code against an existing spec or design doc and reports drift claim by claim: matches, documented but not built, built but not documented, contradicted. Report only.',
+      notFor: 'Open questions with no spec to check against (researcher); fixing the drift it finds (builder)',
+    },
   },
 ];
+
+/**
+ * The `metadata` a seeded role row starts with. Routing text lives in
+ * `metadata.routing` (role-routing.md §2), so it needs no migration.
+ */
+export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string, unknown> {
+  return { routing: { ...role.routing, updatedAt: now.toISOString() } };
+}
 
 
 /**
@@ -702,7 +752,7 @@ export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
       source: 'system',
       enabled: true,
       origin: 'manual' as const,
-      metadata: {},
+      metadata: defaultRoleMetadata(role, now),
       color: role.color,
       model: role.model,
       isRole: role.isRole,
