@@ -55,13 +55,13 @@ export function allowedCount(rows: readonly ChatToolPermissionRow[] | null): num
   return rows ? rows.filter(r => r.mode === 'allow').length : null;
 }
 
-/** The tools cell: `··· 2`, the count of groups on Allow (shown once known, zero included). */
+/** The tools cell: `··· 2` with groups on Allow, just `···` with none. */
 export function ToolsTrigger({ count }: { count: number | null }) {
   return (
     <>
       <span aria-hidden="true" className="font-mono text-[13px] leading-none tracking-[.08em]">···</span>
-      {count !== null && (
-        <span data-testid="composer-tools-count" className={`font-mono text-[12px] ${count > 0 ? 'text-accent-text' : 'text-[var(--chat-dim)]'}`}>{count}</span>
+      {count !== null && count > 0 && (
+        <span data-testid="composer-tools-count" className="font-mono text-[12px] text-accent-text">{count}</span>
       )}
     </>
   );
