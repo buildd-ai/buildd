@@ -120,9 +120,11 @@ route ∈ anthropic | openai | openrouter      -- API keys: chat and quick calls
   part of what the arm measures (latency, price, provider errors). If an arm's
   route has no key for the acting user, the turn serves the incumbent and
   records `served = false`.
-- **Incumbent = the registry row.** The incumbent arm of both pools of a tier
-  is the existing `model_tier_registry` entry, served on each surface's native
-  route. Adding the first challenger **pins the incumbent** if the tier was on
+- **Incumbent = the registry row.** Each pool's incumbent is the
+  `model_tier_registry` entry its surface resolves to, served on that
+  surface's native route. A tier with only a shared row (surface NULL) gives
+  both pools the same incumbent; a split tier gives each pool its own
+  (docs/design/model-tiers.md, "Per-surface rows"). Adding the first challenger **pins the incumbent** if the tier was on
   the catalog's auto pick. A baseline that self-heals to a new model mid-test
   would contaminate every comparison against it.
 - **Pool size: 1 to 4 arms.** Enforced at the write boundary with a

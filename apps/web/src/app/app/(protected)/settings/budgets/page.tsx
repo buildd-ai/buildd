@@ -5,6 +5,7 @@ import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import CapsForm from './CapsForm';
+import { timeZoneLabel } from './timezone-label';
 import { MySpend, PeopleSpend } from './SpendTables';
 import { DEFAULT_CHAT_DAILY_BUDGET_USD, DEFAULT_CHAT_USER_SHARE } from '@/lib/chat/limits';
 import { loadSpendSummary, type SpendSummary } from '@/lib/spend-summary';
@@ -52,7 +53,7 @@ export default async function BudgetsSettingsPage() {
       <section aria-labelledby="my-spend-h">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h2 id="my-spend-h" className="section-label">Your spend</h2>
-          <span className="text-xs text-text-muted">{timeZone}</span>
+          <span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>
         </div>
         {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
       </section>

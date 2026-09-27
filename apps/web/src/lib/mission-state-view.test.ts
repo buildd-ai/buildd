@@ -261,6 +261,54 @@ describe('deriveMissionStateView — awaiting merge', () => {
     if (waiting.kind !== 'merge') throw new Error('unreachable');
     expect(waiting.count).toBe(3);
   });
+
+  // Friction 1dd98bb2: a PR closed on GitHub months ago still read as "waiting
+  // on you to merge 1 open PR #N" — a false headline, since a closed PR cannot
+  // be merged. `pr_closed_unmerged` is a distinct kind precisely so this cannot
+  // silently fall back to reading as a live merge tap.
+  it('reports a PR that closed without merging as pr_closed_unmerged, not merge', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: '1 deliverable task(s) completed but not merged: "Wire the route" (PR #34) · closed unmerged, no supersession recorded',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [
+          { taskId: 'task-c', title: 'Wire the route', prNumber: 34, prUrl: 'https://example.invalid/pr/34', closedUnsuperseded: true },
+        ],
+      },
+    });
+
+    expect(view.kind).toBe('awaiting_merge');
+    const waiting = gated(view);
+    expect(waiting.kind).toBe('pr_closed_unmerged');
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('unreachable');
+    expect(waiting.prNumbers).toEqual([34]);
+    expect(waiting.taskIds).toEqual(['task-c']);
+    expect(view.situation.headline).toContain('closed without merging');
+    expect(view.situation.headline).not.toContain('waiting on you to merge');
+    expect(view.nextAction).toContain('record_pr_supersession');
+  });
+
+  it('keeps the ordinary merge reading when only some of the unmerged PRs are closed', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: '2 deliverable task(s) completed but not merged',
+        awaitingMerge: 2,
+        awaitingMergeDetails: [
+          { taskId: 'task-open', title: 'Add the endpoint', prNumber: 900, prUrl: 'https://example.invalid/pr/900' },
+          { taskId: 'task-closed', title: 'Wire the route', prNumber: 34, prUrl: 'https://example.invalid/pr/34', closedUnsuperseded: true },
+        ],
+      },
+    });
+
+    const waiting = gated(view);
+    expect(waiting.kind).toBe('merge');
+  });
 });
 
 describe('deriveMissionStateView — self-resolving wait', () => {

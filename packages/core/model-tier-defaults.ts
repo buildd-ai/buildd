@@ -19,6 +19,13 @@ export const TIERS: readonly Tier[] = ['premium-plus', 'premium', 'standard', 'b
 // 'openai-codex' is the Codex subscription backend (runner only).
 export type TierProvider = 'anthropic' | 'openai' | 'openai-codex' | 'openrouter';
 
+/**
+ * Who asks for a tier: agent runs (runner credentials) or chat and inference
+ * calls (API keys). A registry row with no surface serves both.
+ */
+export type TierSurface = 'agent' | 'chat';
+export const TIER_SURFACES: readonly TierSurface[] = ['agent', 'chat'];
+
 export interface TierEntry {
   provider: TierProvider;
   model: string;
@@ -31,6 +38,21 @@ export interface TierEntry {
    * hand-maintained fallback applies.
    */
   source?: 'workspace' | 'team' | 'default' | 'catalog';
+  /** Set when the row that served this entry is scoped to one surface. */
+  surface?: TierSurface;
+}
+
+/**
+ * One tier as `GET /api/model-tiers` returns it: the shared (surface-less)
+ * resolution, plus what each surface resolves to. A surface entry carrying
+ * `surface` came from that surface's own row, which means the tier is split.
+ */
+export interface TierEntryWithSurfaces extends TierEntry {
+  bySurface: Record<TierSurface, TierEntry>;
+}
+
+export function isTierSurface(v: unknown): v is TierSurface {
+  return v === 'agent' || v === 'chat';
 }
 
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {

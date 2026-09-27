@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { hasTeamInferenceKey } from '@buildd/core/inference-keys';
 import SettingsPage from '../_components/SettingsPage';
 import ModelFeatures from './ModelFeatures';
@@ -12,10 +11,7 @@ export default async function AiSettingsPage() {
   const hasTeamKey = currentTeam ? await hasTeamInferenceKey(currentTeam.id).catch(() => false) : false;
 
   return (
-    <SettingsPage
-      title="AI features"
-      description={<><Link href="/app/settings/providers" className="underline hover:text-text-primary">Keys</Link> · <Link href="/app/settings/models" className="underline hover:text-text-primary">Model tiers</Link></>}
-    >
+    <SettingsPage title="AI features">
       {currentTeam ? (
         <ModelFeatures teamId={currentTeam.id} canManage={isTeamAdmin} hasTeamKey={hasTeamKey} />
       ) : (

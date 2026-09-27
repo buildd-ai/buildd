@@ -122,3 +122,11 @@ describe('keyboard hints', () => {
     expect(q('[data-testid="composer-key-hints"]')).not.toBeNull();
   });
 });
+
+describe('thread scroll', () => {
+  // Content cut off at the top edge showed as stray glyphs under the header.
+  it('the top edge of the thread fades out', async () => {
+    await render({ messages: fixtures.chatFixture('confirmed').messages });
+    expect(q('[data-testid="chat-scroller"]')!.className).toContain('mask-image');
+  });
+});

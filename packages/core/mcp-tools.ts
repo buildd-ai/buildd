@@ -7,7 +7,7 @@
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
-import { TIERS, type Tier } from './model-tier-defaults';
+import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
@@ -64,6 +64,13 @@ const TASK_KINDS = [
 const TASK_COMPLEXITIES = ['simple', 'normal', 'complex'] as const;
 
 /** Convert named priority levels (e.g. "medium") to integer 0-10. */
+/** manage_model_tiers `surface`: absent means the row that serves both surfaces. */
+function parseTierSurfaceParam(val: unknown): TierSurface | null {
+  if (val == null || val === '') return null;
+  if (isTierSurface(val)) return val;
+  throw new Error('surface must be "agent" or "chat" (omit it for the row that serves both)');
+}
+
 function normalizePriority(val: unknown, fallback = 5): number {
   if (val === undefined || val === null) return fallback;
   if (typeof val === 'number') return Math.max(0, Math.min(10, Math.round(val)));
@@ -165,6 +172,39 @@ function requireFullUuid(id: unknown, paramName: string): string {
     throw new Error(`${paramName} must be a full UUID (e.g. b833be4b-1234-5678-abcd-ef0123456789).${hint}`);
   }
   return id;
+}
+
+/**
+ * Human-readable reply for a claim that returned no workers. The claim route
+ * always computes `diagnostics.reason` (and, for an explicit taskId, the gate
+ * that excluded it as `diagnostics.taskExclusion`); the old reply discarded it
+ * and said "All tasks may be assigned or completed" even with tasks pending.
+ */
+export function describeEmptyClaim(data: any, taskId?: string): string {
+  const d = data?.diagnostics;
+  if (!d?.reason) {
+    return 'Nothing claimed: the server returned no workers and gave no reason.';
+  }
+  const detail: string[] = [];
+  if (d.reason === 'no_slots' && typeof d.activeWorkers === 'number') {
+    detail.push(`${d.activeWorkers}/${d.maxConcurrent ?? '?'} concurrent workers already active for this account`);
+  }
+  if (typeof d.pendingTasks === 'number') detail.push(`${d.pendingTasks} candidate(s)`);
+  if (d.deferrals && Object.keys(d.deferrals).length > 0) {
+    detail.push(`deferred by ${Object.entries(d.deferrals).map(([k, n]) => `${k}=${n}`).join(', ')}`);
+  }
+  if (d.blockedByPr?.prNumber) detail.push(`path overlap with open PR #${d.blockedByPr.prNumber}`);
+  if (data.budgetResetsAt) detail.push(`budget resets at ${data.budgetResetsAt}`);
+
+  const lines = [`Nothing claimed: ${d.reason}${detail.length ? ` (${detail.join('; ')})` : ''}.`];
+  if (taskId) {
+    if (d.taskExclusion) {
+      lines.push(`Task ${taskId} was excluded: ${d.taskExclusion.code}. ${d.taskExclusion.detail}`);
+    } else if (d.reason === 'all_candidates_deferred' || d.reason === 'race_lost') {
+      lines.push(`Task ${taskId} is claimable but was held back this poll (see the reason above); try again shortly.`);
+    }
+  }
+  return lines.join('\n');
 }
 
 // ── Action Lists ─────────────────────────────────────────────────────────────
@@ -406,7 +446,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID) } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override — OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies, a future startAt, mission pacing/concurrency and the workspace cap still apply (force-start from the dashboard to override those). When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
@@ -421,7 +461,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default | "cbm_access"), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5, REQUIRED for cbm_access), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }; cbm_access: { eligibility: { kinds, includeUnkinded }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. cbm_access withholds the codebase graph (codebase-memory MCP, its tools and its prompt steering) from the treatment share of eligible tasks (Claude backend, repo-backed, kind engineering/research/analysis by default, work-class, not reviewers or CBM-opted-out roles; the task is the unit, retries inherit); control runs CBM as usual. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
-    manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
+    manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
@@ -457,7 +497,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
-    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
@@ -1249,7 +1289,10 @@ export async function handleBuilddAction(
       const worker = await api(`/api/workers/${ctx.workerId}`);
       const workerIsActive = ['idle', 'running', 'starting', 'waiting_input'].includes(worker?.status);
       const taskIsActive = ['assigned', 'in_progress'].includes(worker?.task?.status);
-      if (workerIsActive && taskIsActive) {
+      // An explicit taskId naming a different task is a deliberate pickup, not
+      // the "first lifecycle call" this shortcut exists for.
+      const explicitOther = typeof params.taskId === 'string' && params.taskId !== worker?.task?.id;
+      if (workerIsActive && taskIsActive && !explicitOther) {
         return text(
           `Current assignment already active (no new task claimed):\n\n` +
           `**Worker ID:** ${worker.id}\n` +
@@ -1329,7 +1372,7 @@ export async function handleBuilddAction(
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = isTerminalAudit
         ? ''
-        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
+        : `\n\nTo claim a task, call action=claim_task: it auto-assigns the highest-priority pending task, or pass params.taskId to pick up a specific one.`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
@@ -1487,14 +1530,22 @@ export async function handleBuilddAction(
     }
 
     case 'claim_task': {
+      const taskId = params.taskId === undefined || params.taskId === null
+        ? undefined
+        : requireFullUuid(params.taskId, 'taskId');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       const data = await api('/api/workers/claim', {
         method: 'POST',
-        body: JSON.stringify({ maxTasks: params.maxTasks || 1, workspaceId: wsId, runner: 'mcp' }),
+        body: JSON.stringify({
+          maxTasks: params.maxTasks || 1,
+          workspaceId: wsId,
+          runner: 'mcp',
+          ...(taskId ? { taskId } : {}),
+        }),
       });
 
       const workers = data.workers || [];
-      if (workers.length === 0) return text('No tasks available to claim. All tasks may be assigned or completed.');
+      if (workers.length === 0) return text(describeEmptyClaim(data, taskId));
 
       const claimed = workers.map((w: any) =>
         `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch}\n**Description:** ${w.task.description || 'No description'}`
@@ -3790,7 +3841,9 @@ export async function handleBuilddAction(
         const success = g.successRate === null ? 'n/a' : `${Math.round(g.successRate * 100)}%`;
         const gIn = dist(g.perTask?.inputTokens);
         const gCost = dist(g.perTask?.costUsd);
-        const parts = [`${g.tasks} task(s)`, gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded'];
+        const parts = [`${g.tasks} task(s)`];
+        if (typeof g.completed === 'number') parts.push(`${g.completed} completed`);
+        parts.push(gIn ? `${fmtTokens(gIn.median)} median in` : 'no tokens recorded');
         if (gCost) parts.push(`$${gCost.median.toFixed(2)} median`);
         parts.push(`${success} success`);
         return `  ${g.label ?? g.key}: ${parts.join(' · ')}`;
@@ -5190,13 +5243,20 @@ export async function handleBuilddAction(
         const qs = new URLSearchParams();
         if (wsId) qs.set('workspaceId', wsId);
         const data = await api(`/api/model-tiers?${qs}`);
-        const tiers = data as Record<string, { model: string; provider: string; source?: string }>;
+        type ListedEntry = { model: string; provider: string; source?: string; surface?: string };
+        const tiers = data as Record<string, ListedEntry & { bySurface?: Record<string, ListedEntry> }>;
+        const describe = (e: ListedEntry) => `${e.model} (provider: ${e.provider}, source: ${e.source})`;
         return text(
           `Model tier registry (effective):\n\n` +
-          Object.entries(tiers).map(([tier, entry]: [string, any]) =>
-            `  ${tier}: ${entry.model} (provider: ${entry.provider}, source: ${entry.source})`
-          ).join('\n') +
-          `\n\nChange a tier with manage_model_tiers action=set tier=<tier> model=<id>.\n` +
+          Object.entries(tiers).map(([tier, entry]) => {
+            const by = entry.bySurface;
+            const split = by && Object.values(by).some(e => e?.surface);
+            if (!split) return `  ${tier}: ${describe(entry)}`;
+            return `  ${tier}:\n` + Object.entries(by!).map(([s, e]) =>
+              `    ${s}: ${describe(e)}${e.surface ? '' : ' [shared row]'}`
+            ).join('\n');
+          }).join('\n') +
+          `\n\nChange a tier with manage_model_tiers action=set tier=<tier> model=<id> [surface=agent|chat].\n` +
           `A registry update takes effect on the next claim cycle (within 60s cache TTL).\n` +
           `NOTE: For provider='openrouter', the runner-side backend is not yet implemented — dispatch will fail with a clear error.`
         );
@@ -5213,14 +5273,16 @@ export async function handleBuilddAction(
           throw new Error('provider must be "anthropic", "openai", "openai-codex", or "openrouter"');
         }
         if (!model) throw new Error('model is required for set');
+        const surface = parseTierSurfaceParam(params.surface);
 
         const body: Record<string, unknown> = { tier, provider, model };
+        if (surface) body.surface = surface;
         if (wsId) body.workspaceId = wsId;
         if (params.defaultEffort) body.defaultEffort = params.defaultEffort;
         if (typeof params.defaultMaxTurns === 'number') body.defaultMaxTurns = params.defaultMaxTurns;
 
         await api('/api/model-tiers', { method: 'POST', body: JSON.stringify(body) });
-        const scope = wsId ? `workspace ${wsId}` : 'team-wide';
+        const scope = (wsId ? `workspace ${wsId}` : 'team-wide') + (surface ? `, ${surface} only` : ', agent and chat');
         return text(
           `Model tier updated: ${tier} → ${model} (provider: ${provider}, scope: ${scope}).\n` +
           `Takes effect on the next claim cycle (within 60s cache TTL).\n` +
@@ -5233,11 +5295,13 @@ export async function handleBuilddAction(
         if (!tier || !TIERS.includes(tier as Tier)) {
           throw new Error(`tier must be one of ${TIERS.join(', ')}`);
         }
+        const surface = parseTierSurfaceParam(params.surface);
         const qs = new URLSearchParams({ tier });
+        if (surface) qs.set('surface', surface);
         if (wsId) qs.set('workspaceId', wsId);
 
         await api(`/api/model-tiers?${qs}`, { method: 'DELETE' });
-        const scope = wsId ? `workspace override` : `team default`;
+        const scope = (wsId ? `workspace override` : `team default`) + (surface ? ` (${surface})` : '');
         return text(
           `Model tier ${scope} for "${tier}" removed. The resolution chain will now fall back to the next level.`
         );

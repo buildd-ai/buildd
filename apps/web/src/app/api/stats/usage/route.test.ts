@@ -192,6 +192,25 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(mockSkillsFindMany).not.toHaveBeenCalled();
   });
 
+  it('groups by executor from workers.runner, labels both groups, and skips the role lookup', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', runner: 'mcp', task: { id: 'a', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),
+      worker({ taskId: 'b', runner: 'coder-ws-1', inputTokens: 1, task: { id: 'b', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),
+      worker({ taskId: 'c', runner: 'coder-ws-1', inputTokens: 1, task: { id: 'c', status: 'failed', roleSlug: 'builder', parentTaskId: null } }),
+    ]);
+
+    const body = await (await GET(makeRequest({ groupBy: 'executor' }))).json();
+    expect(body.groupBy).toBe('executor');
+    const byKey = Object.fromEntries(body.groups.map((g: any) => [g.key, g]));
+    expect(byKey.interactive).toMatchObject({ label: 'Interactive (MCP session)', tasks: 1, completed: 1 });
+    expect(byKey.runner).toMatchObject({ label: 'Runner', tasks: 2, completed: 1, failed: 1 });
+    expect(mockSkillsFindMany).not.toHaveBeenCalled();
+
+    // The executor comes from the worker row itself, so the scan must select it.
+    const args = mockWorkersFindMany.mock.calls[0][0] as any;
+    expect(args.columns.runner).toBe(true);
+  });
+
   it('charges a retry attempt to its parent task', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({ taskId: 'parent', task: { id: 'parent', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),

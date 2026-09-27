@@ -144,10 +144,16 @@ function Strip({ model }: { model: MissionBoardModel }) {
     <section data-testid="mission-strip" className="mt-4 flex flex-wrap items-stretch border-b border-t-2 border-b-border-default border-t-border-strong">
       <div data-testid="landed-band" className={`${cell} md:border-r`}>
         <SectionLabel>Landed</SectionLabel>
-        <span className="font-mono text-[26px] font-semibold leading-none tracking-[-0.6px] tabular-nums text-text-primary">
-          {model.landed.done}<small className="ml-1 text-[12px] font-medium tracking-normal text-text-muted">{`/${model.landed.total}`}</small>
-        </span>
-        <LandedMeter model={model} variant="strip" />
+        {model.landed.total > 0 ? (
+          <>
+            <span className="font-mono text-[26px] font-semibold leading-none tracking-[-0.6px] tabular-nums text-text-primary">
+              {model.landed.done}<small className="ml-1 text-[12px] font-medium tracking-normal text-text-muted">{`/${model.landed.total}`}</small>
+            </span>
+            <LandedMeter model={model} variant="strip" />
+          </>
+        ) : (
+          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks yet</span>
+        )}
       </div>
       <a href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-band" className={`${cell} min-w-0 flex-wrap md:border-r hover:bg-card-hover`}>
         <SectionLabel>Goal</SectionLabel>

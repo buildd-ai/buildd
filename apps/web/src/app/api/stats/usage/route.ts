@@ -15,7 +15,14 @@ import {
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 
-const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none'];
+const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none', 'executor'];
+
+/** Labels for `groupBy=executor` keys (see `executorOf`). */
+const EXECUTOR_LABELS: Record<string, string> = {
+  interactive: 'Interactive (MCP session)',
+  runner: 'Runner',
+  other: 'Other (system / external / OpenClaw)',
+};
 
 /**
  * GET /api/stats/usage
@@ -26,7 +33,9 @@ const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'none'];
  * Query params:
  *   window    - "24h" | "7d" | "30d" (default "7d")
  *   workspace - workspaceId filter (optional; must be one the caller can see)
- *   groupBy   - "role" | "workspace" | "none" (default "role")
+ *   groupBy   - "role" | "workspace" | "executor" | "none" (default "role").
+ *               "executor" splits workers claimed from an interactive MCP
+ *               session (workers.runner = 'mcp') from runner-claimed ones.
  *
  * The health page's role block answers "did work land". This answers "what did
  * it cost" — median/p90 tokens per task, cost, turns, and which tools agents
@@ -118,6 +127,7 @@ async function groupLabels(
   if (groupBy === 'workspace') {
     return Object.fromEntries(scopedWorkspaces.map(w => [w.id, w.name]));
   }
+  if (groupBy === 'executor') return EXECUTOR_LABELS;
 
   const slugs = keys.filter(k => k !== UNASSIGNED_ROLE);
   if (slugs.length === 0) return {};

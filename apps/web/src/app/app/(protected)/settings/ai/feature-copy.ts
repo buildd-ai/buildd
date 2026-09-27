@@ -8,22 +8,22 @@ import type { FeatureMode } from '@buildd/core/inference-policy';
 export type OverrideValue = 'default' | FeatureMode;
 
 export const OVERRIDE_OPTIONS: { value: OverrideValue; label: string }[] = [
-  { value: 'default', label: 'Default' },
-  { value: 'server', label: 'Server-side' },
+  { value: 'default', label: 'Auto' },
+  { value: 'server', label: 'Server' },
   { value: 'runner', label: 'Runner' },
 ];
 
-/** The default for every server-side feature, from the team's billing model. */
+/** What Auto resolves to for every feature, from the team's billing model. */
 export function defaultLine(hasTeamKey: boolean): string {
-  return hasTeamKey ? 'Default: server-side (team key)' : 'Default: runner (no team key)';
+  return hasTeamKey ? 'Auto: server (team key)' : 'Auto: runner (no team key)';
 }
 
 export function modeLabel(mode: FeatureMode): string {
-  return mode === 'server' ? 'Server-side' : 'Runner';
+  return mode === 'server' ? 'Server' : 'Runner';
 }
 
 /** The state shown on a feature row. */
 export function featureState(r: { mode: FeatureMode; source: 'default' | 'override'; needsKey: boolean }): string {
-  if (r.needsKey) return 'Server-side · needs a team key';
+  if (r.needsKey) return 'Server · needs a team key';
   return r.source === 'override' ? `${modeLabel(r.mode)} · override` : modeLabel(r.mode);
 }
