@@ -108,6 +108,11 @@ export type BookkeepingTask = {
    * these to name the row by what it did instead of the shared mission title. */
   status?: string;
   resultSummary?: string | null;
+  /** tasks.mode: 'planning' rows share one title ("Mission: <title>") and are
+   * named by what they did instead (see orchestratorRunIds in page.tsx) —
+   * checked here, not by sniffing the shared title (banned predicate, see
+   * packages/core/__tests__/task-class-invariants.test.ts). */
+  mode?: 'execution' | 'planning';
 };
 
 export type CondensedTimelineGroups = {

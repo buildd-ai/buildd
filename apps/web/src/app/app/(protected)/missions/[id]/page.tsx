@@ -575,6 +575,7 @@ export default async function MissionDetailPage({
       latestWorker: lw ? { prUrl: lw.prUrl ?? null, mergedAt: lw.mergedAt ? String(lw.mergedAt) : null } : null,
       status: t.status,
       resultSummary: extractRunSummary(digestOf(t.id).result),
+      mode: t.mode,
     };
   });
 
@@ -1336,9 +1337,11 @@ export default async function MissionDetailPage({
   // Orchestrator runs share one task title ("Mission: <title>"); name each
   // row by what it did instead. Only rows shaped like a planning run get
   // relabeled — other bookkeeping rows (e.g. a friction report) keep their
-  // own title. Position is by time, not render order.
+  // own title. Position is by time, not render order. Gated on tasks.mode,
+  // not the shared title text (banned predicate, see
+  // packages/core/__tests__/task-class-invariants.test.ts).
   const orchestratorRunIds = bookkeepingTasks
-    .filter(t => t.title.startsWith('Mission:'))
+    .filter(t => t.mode === 'planning')
     .slice()
     .sort((a, b) => a.taskUpdatedAt.localeCompare(b.taskUpdatedAt))
     .map(t => t.id);
