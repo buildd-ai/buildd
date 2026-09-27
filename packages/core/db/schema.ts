@@ -3413,6 +3413,8 @@ export const externalLinksRelations = relations(externalLinks, ({ one }) => ({
 
 // Model tier registry — maps premium-plus/premium/standard/budget → concrete provider + model per team.
 // workspace_id = NULL means team-wide default; non-NULL is a workspace override.
+// surface = NULL means the row serves agent runs and chat; 'agent' or 'chat'
+// scopes it to one surface and wins over the NULL row at the same scope.
 // See docs/design/model-tiers.md for the resolution chain.
 export const modelTierRegistry = pgTable('model_tier_registry', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -3421,12 +3423,13 @@ export const modelTierRegistry = pgTable('model_tier_registry', {
   tier: text('tier').notNull().$type<'premium-plus' | 'premium' | 'standard' | 'budget'>(),
   provider: text('provider').notNull().$type<'anthropic' | 'openai' | 'openai-codex' | 'openrouter'>(),
   model: text('model').notNull(),
+  surface: text('surface').$type<'agent' | 'chat'>(),
   defaultEffort: text('default_effort').$type<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(),
   defaultMaxTurns: integer('default_max_turns'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
-  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier),
+  uniqueTierPerTeamWorkspace: uniqueIndex('model_tier_registry_unique').on(t.teamId, t.workspaceId, t.tier, t.surface),
   teamIdx: index('model_tier_registry_team_idx').on(t.teamId),
 }));
 

@@ -18,11 +18,13 @@ export async function GET(req: NextRequest) {
   const access = await tierPoolAccess(new URL(req.url).searchParams.get('teamId'), false);
   if (!access.ok) return access.response;
   try {
-    const [tiers, pools, stats] = await Promise.all([
-      resolveAllTiers(access.teamId, null),
+    const [agent, chat, pools, stats] = await Promise.all([
+      resolveAllTiers(access.teamId, null, 'agent'),
+      resolveAllTiers(access.teamId, null, 'chat'),
       listTeamPools(access.teamId),
       loadArmStats(access.teamId),
     ]);
+    const tiers = { agent, chat };
     const body: TierPoolsResponse = { rows: buildTierPoolRows({ tiers, pools, stats }), isAdmin: access.isAdmin };
     return NextResponse.json(body);
   } catch (err) {
@@ -68,7 +70,8 @@ export async function POST(req: NextRequest) {
       if (!cred) return NextResponse.json({ error: `No ${route} key is connected for this team`, code: 'no_key' }, { status: 400 });
     }
 
-    const entry = await resolveTierEntry(tier as Tier, access.teamId, null);
+    // The surface's own row when the tier is split, else the shared row.
+    const entry = await resolveTierEntry(tier as Tier, access.teamId, null, s);
     const baseRoute = incumbentRoute(s, entry.provider);
     if (baseRoute === route && entry.model === modelId) {
       return NextResponse.json({ error: 'That is already the base model', code: 'duplicate' }, { status: 409 });
@@ -95,10 +98,16 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Write the resolved catalog/default pick as the team's registry row. */
+/**
+ * Write the resolved catalog/default pick as the team's shared registry row.
+ * Only reached when neither the surface's row nor the shared row exists.
+ */
 async function pinIncumbent(teamId: string, tier: Tier, provider: string, model: string): Promise<void> {
   const existing = await db.query.modelTierRegistry.findFirst({
-    where: and(eq(modelTierRegistry.teamId, teamId), eq(modelTierRegistry.tier, tier), isNull(modelTierRegistry.workspaceId)),
+    where: and(
+      eq(modelTierRegistry.teamId, teamId), eq(modelTierRegistry.tier, tier),
+      isNull(modelTierRegistry.workspaceId), isNull(modelTierRegistry.surface),
+    ),
     columns: { id: true },
   });
   if (!existing) {

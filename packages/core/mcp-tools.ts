@@ -7,7 +7,7 @@
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
-import { TIERS, type Tier } from './model-tier-defaults';
+import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
@@ -64,6 +64,13 @@ const TASK_KINDS = [
 const TASK_COMPLEXITIES = ['simple', 'normal', 'complex'] as const;
 
 /** Convert named priority levels (e.g. "medium") to integer 0-10. */
+/** manage_model_tiers `surface`: absent means the row that serves both surfaces. */
+function parseTierSurfaceParam(val: unknown): TierSurface | null {
+  if (val == null || val === '') return null;
+  if (isTierSurface(val)) return val;
+  throw new Error('surface must be "agent" or "chat" (omit it for the row that serves both)');
+}
+
 function normalizePriority(val: unknown, fallback = 5): number {
   if (val === undefined || val === null) return fallback;
   if (typeof val === 'number') return Math.max(0, Math.min(10, Math.round(val)));
@@ -421,7 +428,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default | "cbm_access"), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5, REQUIRED for cbm_access), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }; cbm_access: { eligibility: { kinds, includeUnkinded }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. cbm_access withholds the codebase graph (codebase-memory MCP, its tools and its prompt steering) from the treatment share of eligible tasks (Claude backend, repo-backed, kind engineering/research/analysis by default, work-class, not reviewers or CBM-opted-out roles; the task is the unit, retries inherit); control runs CBM as usual. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
-    manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
+    manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
@@ -5190,13 +5197,20 @@ export async function handleBuilddAction(
         const qs = new URLSearchParams();
         if (wsId) qs.set('workspaceId', wsId);
         const data = await api(`/api/model-tiers?${qs}`);
-        const tiers = data as Record<string, { model: string; provider: string; source?: string }>;
+        type ListedEntry = { model: string; provider: string; source?: string; surface?: string };
+        const tiers = data as Record<string, ListedEntry & { bySurface?: Record<string, ListedEntry> }>;
+        const describe = (e: ListedEntry) => `${e.model} (provider: ${e.provider}, source: ${e.source})`;
         return text(
           `Model tier registry (effective):\n\n` +
-          Object.entries(tiers).map(([tier, entry]: [string, any]) =>
-            `  ${tier}: ${entry.model} (provider: ${entry.provider}, source: ${entry.source})`
-          ).join('\n') +
-          `\n\nChange a tier with manage_model_tiers action=set tier=<tier> model=<id>.\n` +
+          Object.entries(tiers).map(([tier, entry]) => {
+            const by = entry.bySurface;
+            const split = by && Object.values(by).some(e => e?.surface);
+            if (!split) return `  ${tier}: ${describe(entry)}`;
+            return `  ${tier}:\n` + Object.entries(by!).map(([s, e]) =>
+              `    ${s}: ${describe(e)}${e.surface ? '' : ' [shared row]'}`
+            ).join('\n');
+          }).join('\n') +
+          `\n\nChange a tier with manage_model_tiers action=set tier=<tier> model=<id> [surface=agent|chat].\n` +
           `A registry update takes effect on the next claim cycle (within 60s cache TTL).\n` +
           `NOTE: For provider='openrouter', the runner-side backend is not yet implemented — dispatch will fail with a clear error.`
         );
@@ -5213,14 +5227,16 @@ export async function handleBuilddAction(
           throw new Error('provider must be "anthropic", "openai", "openai-codex", or "openrouter"');
         }
         if (!model) throw new Error('model is required for set');
+        const surface = parseTierSurfaceParam(params.surface);
 
         const body: Record<string, unknown> = { tier, provider, model };
+        if (surface) body.surface = surface;
         if (wsId) body.workspaceId = wsId;
         if (params.defaultEffort) body.defaultEffort = params.defaultEffort;
         if (typeof params.defaultMaxTurns === 'number') body.defaultMaxTurns = params.defaultMaxTurns;
 
         await api('/api/model-tiers', { method: 'POST', body: JSON.stringify(body) });
-        const scope = wsId ? `workspace ${wsId}` : 'team-wide';
+        const scope = (wsId ? `workspace ${wsId}` : 'team-wide') + (surface ? `, ${surface} only` : ', agent and chat');
         return text(
           `Model tier updated: ${tier} → ${model} (provider: ${provider}, scope: ${scope}).\n` +
           `Takes effect on the next claim cycle (within 60s cache TTL).\n` +
@@ -5233,11 +5249,13 @@ export async function handleBuilddAction(
         if (!tier || !TIERS.includes(tier as Tier)) {
           throw new Error(`tier must be one of ${TIERS.join(', ')}`);
         }
+        const surface = parseTierSurfaceParam(params.surface);
         const qs = new URLSearchParams({ tier });
+        if (surface) qs.set('surface', surface);
         if (wsId) qs.set('workspaceId', wsId);
 
         await api(`/api/model-tiers?${qs}`, { method: 'DELETE' });
-        const scope = wsId ? `workspace override` : `team default`;
+        const scope = (wsId ? `workspace override` : `team default`) + (surface ? ` (${surface})` : '');
         return text(
           `Model tier ${scope} for "${tier}" removed. The resolution chain will now fall back to the next level.`
         );
