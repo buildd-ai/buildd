@@ -6,6 +6,7 @@
 import type { BuilddObjectRef } from './chat-contract';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
+import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
 export type DockMode = 'history' | 'object' | 'needs';
 export interface DockChoice { mode: DockMode; ref: BuilddObjectRef | null }
@@ -47,6 +48,11 @@ export interface DockAction {
 }
 
 export interface TaskDockModel {
+  /**
+   * The card title: the plain sentence the needs-you pulse and every task page
+   * name the task by (taskHeading), never the board's short tile label.
+   */
+  title: string;
   badge: { label: string; tone: DockTone };
   tries: { value: string; segs: DockTone[] };
   turns: number | null;
@@ -89,7 +95,9 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
   const happened: TaskDockModel['happened'] = [...(view.happened ?? [])];
   if (t.tone === 'needs') happened.push({ ts: null, text: t.stopped ? 'Stopped. Waiting on you.' : 'Waiting on you.', needs: true });
 
-  const label = view.label || view.title;
+  const title = taskHeading({ title: view.title, label: view.label || null }, null).heading;
+  // Mid-sentence the heading reads lower-case (an acronym such as CSV keeps its capitals).
+  const label = /^\p{Lu}\p{Ll}/u.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : title;
   const actions: DockAction[] = t.tone !== 'needs'
     ? []
     : t.stopped
@@ -102,7 +110,7 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
           { label: 'Ask about it', primary: !w, kind: 'send', text: `What does ${label} need from me?` },
         ];
 
-  return { badge: { label: t.label, tone: t.tone }, tries: { value: String(runs), segs }, turns: w ? w.turns : null, insight, happened, actions };
+  return { title, badge: { label: t.label, tone: t.tone }, tries: { value: String(runs), segs }, turns: w ? w.turns : null, insight, happened, actions };
 }
 
 export interface AtWorkRow { id: string; label: string; state: string; tone: DockTone }

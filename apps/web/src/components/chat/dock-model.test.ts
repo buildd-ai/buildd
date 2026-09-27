@@ -43,6 +43,32 @@ const view = (over: Partial<TaskObjectView> = {}, worker: Partial<NonNullable<Ta
   now: null, renderedAt: 3, attempts: 2, happened: [{ ts: 1, text: 'Started the change' }], ...over,
 });
 
+describe('taskDockModel title: the sentence the needs-you pulse names the task by', () => {
+  // The board's short label ("Stripe in currency") is a tile label, not a card title.
+  const cases: Array<[string, string, string | null, string]> = [
+    ['stored board label ignored', 'feat(checkout): pay in the presentment currency via Stripe', 'Stripe in currency', 'Pay in the presentment currency via Stripe'],
+    ['conventional prefix stripped', 'fix(receipts): show totals in the buyer currency', null, 'Show totals in the buyer currency'],
+    ['retry bracket stripped', '[builder · after CI #1] fix(billing): round currency per line', null, 'Round currency per line'],
+    ['plain title kept', 'Round per line, or only the total?', null, 'Round per line, or only the total?'],
+  ];
+  for (const [name, title, label, want] of cases) {
+    it(name, () => {
+      expect(taskDockModel(view({ title, label: label ?? '' })).title).toBe(want);
+    });
+  }
+
+  it('matches the pulse row\'s task name for the same task', async () => {
+    const { pulseNeedsYou } = await import('./canvas-empty');
+    const t = { title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe in currency' };
+    expect(taskDockModel(view(t)).title).toBe(pulseNeedsYou([t])[0].title);
+  });
+
+  it('actions name the task by that sentence too', () => {
+    const m = taskDockModel(view({ title: 'feat(checkout): pay in the presentment currency via Stripe', label: 'Stripe in currency', status: 'failed' }, { status: 'failed' }));
+    expect(m.actions[0].text).toBe('Try a fix for pay in the presentment currency via Stripe.');
+  });
+});
+
 describe('taskDockModel', () => {
   it('a task waiting on a question: NEEDS YOU badge, the question as the insight, Answer it first', () => {
     const m = taskDockModel(view({ waitingPrompt: 'Round per line or on the total?' }, { status: 'waiting_input', waiting: true }));
