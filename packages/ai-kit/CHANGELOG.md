@@ -13,6 +13,17 @@ bumps; new optional data parts are minor.
   batched receipts with one retry. `toCallConfig` for OpenRouter / Anthropic /
   OpenAI. Replaces the P0 `/models` placeholder types (`createModelClient`,
   `ModelPlan`, `UsageReport`, `report`): none were implemented or imported.
+- `/decide` (P2 of `docs/design/shared-ai-kit.md`): question builders
+  (`choice`, `score`, `noul`); `decide`, the transport over
+  `@typesafe-ai/sdk` to OpenRouter (never throws, one deadline, retries on
+  408/429/5xx, pinned `JEV_MODEL`); `runDecisionPool` for fan-out;
+  `defineDecision` with `shadow | gated | live` modes, per-question thresholds,
+  `version` and `fingerprint`; `expectDecisionPinned`; `runDecisionEval` /
+  `summarizeDecisionEval`; metadata-only `DecisionReceipt`s and
+  `toModelsUsage` for `/models`' `recordUsage`. buildd's
+  `decisionCall` now uses this transport and these types.
+- Breaking for `/decide` type users: the P0 placeholder `DecisionDefinition`
+  is replaced by `DecisionConfig` / `Decision`.
 
 ## 0.0.1
 
