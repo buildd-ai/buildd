@@ -264,35 +264,41 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // same; only the tablet band (md to lg) keeps the agent / workspace / title crumbs.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
-  const sheetHeader = missionSheet && (
-    <header data-testid="chat-header" data-sheet="mission" className="flex h-12 shrink-0 items-stretch border-b border-[var(--chat-rule)]">
-      <p data-testid="sheet-crumbs" className="flex min-w-0 flex-1 items-center gap-1.5 px-4 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
-        <span className="text-[var(--chat-text)]">Ask</span>
+  // The v3 peek header (docs/design/chat-v3-desktop.md, "Peek"): ASK / what,
+  // FULL SCREEN, close. The mission sheet wears it at every width; any other
+  // summoned canvas wears it on desktop only.
+  const peekHeader = (what: string, ids: { header: string; crumbs: string; full: string; close: string }, cls: string, sheet?: 'mission') => (
+    <header data-testid={ids.header} data-sheet={sheet} className={`h-12 shrink-0 items-stretch border-b border-[var(--chat-rule)] lg:h-14 ${cls}`}>
+      <p data-testid={ids.crumbs} className="flex min-w-0 flex-1 items-center gap-1.5 px-4 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)] lg:px-5">
+        <span className="font-bold text-[var(--chat-text)]">Ask</span>
         <span aria-hidden="true" className="text-[var(--chat-dim)]">/</span>
-        <span className="truncate">This mission</span>
+        <span className="truncate">{what}</span>
       </p>
       {fullChatHref && (
         <Link
           href={fullChatHref}
-          data-testid="canvas-full-chat"
-          className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+          data-testid={ids.full}
+          className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)] lg:px-4"
         >
           Full screen ↗
         </Link>
       )}
       <button
         type="button"
-        data-testid="canvas-close"
+        data-testid={ids.close}
         onClick={onClose}
         aria-label="Close chat"
-        className="grid h-12 w-12 shrink-0 place-items-center border-l border-[var(--chat-rule)] font-mono text-[16px] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+        className="grid w-12 shrink-0 place-items-center border-l border-[var(--chat-rule)] font-mono text-[16px] text-[var(--chat-text)] hover:bg-[var(--chat-raised)] lg:w-14"
       >
         <span aria-hidden="true">✕</span>
       </button>
     </header>
   );
+  const sheetHeader = missionSheet && peekHeader('This mission', { header: 'chat-header', crumbs: 'sheet-crumbs', full: 'canvas-full-chat', close: 'canvas-close' }, 'flex', 'mission');
+  const deskPeekHeader = overlay && !missionSheet && !crumbs
+    && peekHeader(focusRef?.kind === 'task' && !focusOpensSheet ? 'This task' : 'Chat', { header: 'chat-header-peek', crumbs: 'peek-crumbs', full: 'peek-full-chat', close: 'peek-close' }, 'hidden lg:flex');
   const header = sheetHeader || (
-    <header data-testid="chat-header" className="flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7">
+    <header data-testid="chat-header" className={`flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7 ${deskPeekHeader ? 'lg:hidden' : ''}`}>
       {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
@@ -466,11 +472,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-canvas={variant}
       data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] lg:bg-[var(--chat-ground)] ${docked ? 'md:w-[540px] md:shrink-0 lg:w-auto lg:flex-1 lg:shrink' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${overlay ? 'lg:bg-[var(--chat-bar)]' : 'lg:bg-[var(--chat-ground)]'} ${docked ? 'md:w-[540px] md:shrink-0 lg:w-auto lg:flex-1 lg:shrink' : 'flex-1'}`}
     >
       {/* The sea: soft pools behind the phone canvas, coloured by mood. The
           summoned overlay is an opaque sheet and draws none. */}
       {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden lg:block" />}
+      {deskPeekHeader}
       {header}
       {strip}
       {/* 1024 to 1279: the blocker rides in the pinned strip; 1280+ it is docked. */}

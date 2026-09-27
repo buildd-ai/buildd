@@ -172,6 +172,17 @@ describe('presentation', () => {
   });
 });
 
+describe('desktop peek (docs/design/chat-v3-desktop.md)', () => {
+  it('a solid 600px panel, 16px in, a 2px top edge, over a flat dim', async () => {
+    await render();
+    await act(async () => { api!.open(); });
+    await settle();
+    const cls = q('[data-testid="canvas-dialog"]')!.className.split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(['md:inset-y-4', 'md:right-4', 'md:w-[min(600px,calc(100vw-7rem))]', 'lg:border', 'lg:border-t-2', 'lg:border-[var(--chat-rule-strong)]', 'lg:bg-[var(--chat-bar)]', 'lg:shadow-none']));
+    expect(q('[data-testid="canvas-dim"]')!.className).toContain('md:bg-[var(--canvas-dim)]');
+  });
+});
+
 describe('stacking', () => {
   // "Ask about this mission" (AskAboutLink) renders inside the mission page's
   // sticky masthead — a `position: sticky` ancestor that caps anything

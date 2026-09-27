@@ -443,6 +443,26 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="canvas-pinned"]')).not.toBeNull();
   });
 
+  it('desktop peek (docs/design/chat-v3-desktop.md): a 56px header, a solid panel, no sea', async () => {
+    await render(overlay());
+    const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
+    expect(cls(q('[data-testid="chat-header"]'))).toContain('lg:h-14');
+    expect(cls(q('[data-testid="chat-column"]'))).toContain('lg:bg-[var(--chat-bar)]');
+    expect(q('[data-testid="chat-sea"]')).toBeNull();
+  });
+
+  it('desktop peek over any other page: the same v3 header, ASK / CHAT, the old header phone only', async () => {
+    await render({ variant: 'overlay', onClose() {}, fullChatHref: '/app/chat' });
+    const cls = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/);
+    const peek = q('[data-testid="chat-header-peek"]')!;
+    expect(cls(peek)).toEqual(expect.arrayContaining(['hidden', 'lg:flex', 'lg:h-14']));
+    expect(peek.querySelector('[data-testid="peek-crumbs"]')?.textContent).toBe('Ask/Chat');
+    expect(peek.querySelector('[data-testid="peek-full-chat"]')?.getAttribute('href')).toBe('/app/chat');
+    expect(peek.querySelector('[data-testid="peek-close"]')).not.toBeNull();
+    expect(cls(q('[data-testid="chat-header"]'))).toContain('lg:hidden');
+    expect(cls(q('[data-testid="chat-column"]'))).toContain('lg:bg-[var(--chat-bar)]');
+  });
+
   it('the page canvas keeps its own header and switcher', async () => {
     await render();
     expect(q('[data-testid="chat-header"]')?.dataset.sheet).toBeUndefined();
