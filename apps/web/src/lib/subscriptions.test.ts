@@ -361,3 +361,20 @@ describe('listUnpostedForConversation: what the origin conversation still has to
     expect(render(calls[0]).params).toContain(200);
   });
 });
+
+describe('conversationOwnersSql: who the watch-pending flag goes to', () => {
+  const SUB_A = '88888888-8888-4888-8888-888888888888';
+  const SUB_B = '99999999-9999-4999-8999-999999999999';
+  it('is exactly these subscriptions, person owners only, and only watches that post into a conversation', async () => {
+    const { conversationOwnersSql } = await import('./subscriptions');
+    const r = render(conversationOwnersSql([SUB_A, SUB_B]));
+    const q = r.sql.replace(/\s+/g, ' ');
+    expect(q).toContain('select distinct s."owner_user_id" as "userId" from "subscriptions" s');
+    expect(q).toContain('s."id" in ($1::uuid, $2::uuid)');
+    expect(r.params).toEqual([SUB_A, SUB_B]);
+    // Each scoping predicate is load-bearing: an agent-owned watch or one with
+    // no origin conversation has no open tab to wake.
+    expect(q).toContain('s."owner_user_id" is not null');
+    expect(q).toContain('s."conversation_id" is not null');
+  });
+});
