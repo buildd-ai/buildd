@@ -15,7 +15,7 @@
  */
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
-import { requireTestEnv, createTestApi, createCleanup } from '../../../../tests/test-utils';
+import { requireTestEnv, createTestApi, createCleanup, findFixtureWorkspace } from '../../../../tests/test-utils';
 
 const TIMEOUT = 30_000;
 
@@ -29,10 +29,8 @@ describe('Artifact Lifecycle', () => {
   let taskId: string;
 
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
-    console.log(`  Using workspace: ${workspaces[0].name} (${workspaceId})`);
+    workspaceId = await findFixtureWorkspace(api);
+    console.log(`  Using workspace: ${workspaceId}`);
 
     const task = await api('/api/tasks', {
       method: 'POST',
@@ -169,9 +167,7 @@ describe('PR-or-Artifact Enforcement', () => {
   let workerId: string;
 
   beforeAll(async () => {
-    const { workspaces } = await api('/api/workspaces');
-    if (!workspaces.length) throw new Error('No workspaces available for testing');
-    workspaceId = workspaces[0].id;
+    workspaceId = await findFixtureWorkspace(api);
 
     const task = await api('/api/tasks', {
       method: 'POST',
