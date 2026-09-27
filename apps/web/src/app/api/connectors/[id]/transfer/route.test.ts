@@ -74,8 +74,8 @@ const originalNodeEnv = process.env.NODE_ENV;
 
 import { POST } from './route';
 
-const PARAMS = Promise.resolve({ id: 'conn-1' });
-const CONNECTOR = { id: 'conn-1', teamId: 'team-1', name: 'github', url: 'https://mcp.example.com', authMode: 'oauth' as const };
+const PARAMS = Promise.resolve({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+const CONNECTOR = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', teamId: 'team-1', name: 'github', url: 'https://mcp.example.com', authMode: 'oauth' as const };
 
 function makeReq(body?: any) {
   return new NextRequest('http://localhost:3000/api/connectors/conn-1/transfer', {
@@ -180,7 +180,7 @@ describe('POST /api/connectors/[id]/transfer', () => {
     expect(secretsUpdate).toBeDefined();
     expect(secretsUpdate!.set.teamId).toBe('team-2');
     const labelClause = secretsUpdate!.where.args.find((x: any) => x.op === 'inArray');
-    expect(labelClause.b).toEqual(['conn-1', 'conn-1:refresh']);
+    expect(labelClause.b).toEqual(['cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc:refresh']);
 
     // The new owner's share row (now implicit) is deleted; others untouched.
     expect(deleteCalls).toHaveLength(1);

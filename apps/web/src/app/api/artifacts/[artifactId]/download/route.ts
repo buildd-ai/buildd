@@ -6,6 +6,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
+import { isUuid } from '@/lib/uuid';
 
 // GET /api/artifacts/[artifactId]/download - Redirect to presigned download URL
 export async function GET(
@@ -13,6 +14,9 @@ export async function GET(
   { params }: { params: Promise<{ artifactId: string }> }
 ) {
   const { artifactId } = await params;
+  if (!isUuid(artifactId)) {
+    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
+  }
 
   if (!isStorageConfigured()) {
     return NextResponse.json({ error: 'Storage not configured' }, { status: 503 });

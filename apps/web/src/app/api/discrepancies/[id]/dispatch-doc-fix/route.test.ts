@@ -123,52 +123,52 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
 
   it('401s with neither a session nor an API key', async () => {
     currentUser = null;
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(401);
   });
 
   it('403s for a non-admin API key', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-1', level: 'worker' };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(403);
   });
 
   it('404s when the row does not exist', async () => {
     discrepancyRow = null;
-    const res = await POST(req(), { params: params('missing') });
+    const res = await POST(req(), { params: params('00000000-0000-4000-8000-000000000000') });
     expect(res.status).toBe(404);
   });
 
   it('404s when the user lacks access to the row\'s workspace', async () => {
     workspaceAccessResult = null;
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(404);
   });
 
   it('refuses a spec_ahead row — unbuilt work is a build, not a doc fix', async () => {
     discrepancyRow.direction = 'spec_ahead';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
     expect(insertedTasks).toHaveLength(0);
   });
 
   it('refuses a contradicted row — it needs adjudicating before anyone knows which fix applies', async () => {
     discrepancyRow.direction = 'contradicted';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
     expect(insertedTasks).toHaveLength(0);
   });
 
   it('refuses a row that is not open', async () => {
     discrepancyRow.status = 'accepted';
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(409);
     expect(insertedTasks).toHaveLength(0);
   });
 
   it('files exactly ONE docs-only task for the whole spec path and claims every row on it', async () => {
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toMatchObject({ ok: true, dispatched: true, taskId: 'task-new', specPath: SPEC });
@@ -180,7 +180,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   });
 
   it('the dispatched task carries the assertion ids, the spec path as its manifest, and a PR requirement', async () => {
-    await POST(req(), { params: params('d1') });
+    await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const task = insertedTasks[0];
     expect(task.outputRequirement).toBe('pr_required');
     expect(task.pathManifest).toEqual([SPEC]);
@@ -197,7 +197,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   });
 
   it('the dispatched task is a planning task whose plan is optional and never auto-approved', async () => {
-    await POST(req(), { params: params('d1') });
+    await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const task = insertedTasks[0];
     expect(task.mode).toBe('planning');
     expect(task.context.planOptional).toBe(true);
@@ -206,7 +206,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   });
 
   it('the task never touches row status — closure stays mechanical', async () => {
-    await POST(req(), { params: params('d1') });
+    await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const task = insertedTasks[0];
     expect(task.description).toMatch(/Do not close the ledger rows/);
     expect(task.status).toBe('pending'); // the TASK's status, not any row's
@@ -215,7 +215,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   it('double-tap: a live claim on the path returns the existing task and files nothing', async () => {
     groupRows[0].docFixTaskId = 'task-existing';
     claimedTaskRows = [{ id: 'task-existing', status: 'in_progress' }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-existing' });
@@ -228,7 +228,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     // the claim. One doc, one fix.
     groupRows[2].docFixTaskId = 'task-existing';
     claimedTaskRows = [{ id: 'task-existing', status: 'pending' }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-existing' });
     expect(insertedTasks).toHaveLength(0);
@@ -237,7 +237,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   it('a completed doc-fix task still holds the path — the rows are waiting on the checker, not on a second fix', async () => {
     groupRows[0].docFixTaskId = 'task-done';
     claimedTaskRows = [{ id: 'task-done', status: 'completed' }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data.dispatched).toBe(false);
     expect(insertedTasks).toHaveLength(0);
@@ -246,7 +246,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   it('a failed doc-fix task releases the path — the human gets a real dispatch again', async () => {
     groupRows[0].docFixTaskId = 'task-dead';
     claimedTaskRows = [{ id: 'task-dead', status: 'failed' }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data.dispatched).toBe(true);
     expect(insertedTasks).toHaveLength(1);
@@ -263,7 +263,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     }
     claimedTaskRows = [{ id: 'task-stale', status: 'completed' }];
     claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(409);
     const data = await res.json();
     expect(data.dispatched).toBe(false);
@@ -288,7 +288,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
     claimReturn = [{ id: 'd9' }];
 
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.dispatched).toBe(true);
@@ -311,7 +311,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     groupRows[0].lastCheckedAt = new Date('2026-09-01T00:01:00Z'); // one minute after the merge
     claimedTaskRows = [{ id: 'task-just-merged', status: 'completed' }];
     claimedWorkerRows = [{ taskId: 'task-just-merged', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-just-merged' });
     expect(insertedTasks).toHaveLength(0);
@@ -322,7 +322,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     groupRows[0].lastCheckedAt = new Date('2026-08-25T00:00:00Z'); // before the merge below
     claimedTaskRows = [{ id: 'task-fresh', status: 'completed' }];
     claimedWorkerRows = [{ taskId: 'task-fresh', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data.dispatched).toBe(false);
     expect(insertedTasks).toHaveLength(0);
@@ -331,7 +331,7 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
   it('losing the claim race deletes the task it just made and reports the winner — no worker is ever started for it', async () => {
     claimReturn = [];
     refetchedRow = { docFixTaskId: 'task-winner' };
-    const res = await POST(req(), { params: params('d1') });
+    const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     const data = await res.json();
     expect(data).toEqual({ ok: true, dispatched: false, taskId: 'task-winner' });
     expect(deletedTaskIds).toHaveLength(1);
