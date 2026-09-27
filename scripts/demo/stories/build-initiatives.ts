@@ -168,7 +168,7 @@ const story = {
   team: { key: 'team', name: 'Tidewater Labs', slug: 'tidewater-labs', timezone: 'UTC' },
   users: [
     { key: 'u_ines', name: 'Ines Okafor', email: 'ines@tidewater.example' },
-    { key: 'u_marek', name: 'Marek Lind', email: 'marek@tidewater.example' },
+    { key: 'u_marek', name: 'Marek Lind', email: 'marek@tidewater.example', _role: 'member' },
   ],
   accounts: [
     { key: 'acct_fleet', type: 'user', level: 'worker', name: 'tidewater-fleet', authType: 'oauth', maxConcurrentWorkers: 4, apiKey: 'bld_demo_initiatives_not_a_real_key_00', apiKeyPrefix: 'bld_demo' },

@@ -84,7 +84,8 @@ export async function seedStory(db: LocalDb, story: Story, storyName: string, st
   await db.insert(s.teams).values(toRow(team, ids, { id: ids.get(team.key), createdAt: at('-60d') }) as any);
   for (const u of story.users ?? []) {
     await db.insert(s.users).values(toRow(u, ids, { id: ids.get(u.key), timezone: team.timezone ?? null, createdAt: at('-60d') }) as any);
-    await db.insert(s.teamMembers).values({ teamId: ids.get(team.key), userId: ids.get(u.key), role: 'owner' });
+    // `_role` (default owner): a member user lets a storyboard shoot the member view (`as:`).
+    await db.insert(s.teamMembers).values({ teamId: ids.get(team.key), userId: ids.get(u.key), role: u._role ?? 'owner' });
   }
   for (const a of story.accounts ?? []) {
     await db.insert(s.accounts).values(toRow(a, ids, { id: ids.get(a.key), teamId: ids.get(team.key), createdAt: at('-60d') }) as any);

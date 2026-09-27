@@ -93,3 +93,17 @@ export function highlightTargets(step: { highlight?: string[] }, boardDefaults: 
   for (const target of boardDefaults) if (!seen.has(target)) { seen.add(target); out.push({ target, required: false }); }
   return out;
 }
+
+/**
+ * The seeded user the storyboard signs in as: `as` (a story user key) or the
+ * first user. A story user's `_role` sets their team role, so `as` on a member
+ * shoots the member view. An unknown key throws: silently shooting as the
+ * owner would label owner screens "member".
+ */
+export function loginUser<U extends { key: string }>(users: U[] | undefined, as?: string): U {
+  if (!users?.length) throw new Error('[storyboard] the story has no users to sign in as');
+  if (!as) return users[0];
+  const u = users.find((x) => x.key === as);
+  if (!u) throw new Error(`[storyboard] as: "${as}" is not a story user (${users.map((x) => x.key).join(', ')})`);
+  return u;
+}

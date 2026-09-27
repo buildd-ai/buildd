@@ -18,7 +18,8 @@
   {
    "key": "u_marek",
    "name": "Marek Lind",
-   "email": "marek@tidewater.example"
+   "email": "marek@tidewater.example",
+   "_role": "member"
   }
  ],
  "accounts": [
