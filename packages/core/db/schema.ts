@@ -3544,6 +3544,11 @@ export const tierPools = pgTable('tier_pools', {
   allocation: jsonb('allocation').$type<Record<string, number>>().notNull().default({}),
   // Bumped by every allocation write; writes are compare-and-set on it.
   allocationVersion: integer('allocation_version').notNull().default(1),
+  // { [tier_pool_arms.id]: 'off'|'low'|'med'|'high' }. `split` only — the
+  // input `allocation` is derived from it (docs/design/tier-weights.md §1). A
+  // pool created before this shipped has `weights = {}`; see
+  // `packages/core/tier-weights.ts` `backfillWeights`.
+  weights: jsonb('weights').$type<Record<string, 'off' | 'low' | 'med' | 'high'>>().notNull().default({}),
   incumbentFloor: real('incumbent_floor').notNull().default(0.6),
   explorationCap: real('exploration_cap').notNull().default(0.3),
   challengerMin: real('challenger_min').notNull().default(0.05),

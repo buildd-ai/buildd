@@ -4,6 +4,7 @@ import { listPoolChanges, loadPool, writeAllocation } from '@buildd/core/tier-po
 import { enterExploreAllocation } from '@buildd/core/tier-explore';
 import { loadPoolEvidence } from '@buildd/core/tier-pool-daily-source';
 import { invalidateTierPoolCache, orderArms } from '@buildd/core/tier-pool-source';
+import { backfillWeights, isWeightLevel, sharesFromWeights, type Weights } from '@buildd/core/tier-weights';
 import { tierPoolAccess } from '@/lib/tier-pool-access';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -23,11 +24,13 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 }
 
 /**
- * PATCH /api/model-tiers/pools/[id] — set traffic shares, or pin/unpin.
- * Body: { teamId, expectedVersion, allocation?: {armId: share}, mode?: 'pinned' | 'split' | 'explore' }.
+ * PATCH /api/model-tiers/pools/[id] — set weights, or pin/unpin/explore.
+ * Body: { teamId, expectedVersion, weights?: {armId: 'off'|'low'|'med'|'high'}, mode?: 'pinned' | 'split' | 'explore' }.
+ * The server derives the allocation from the weights in split mode
+ * (docs/design/tier-weights.md §1) — an admin never sends a percentage.
  * Choosing explore hands the shares to buildd's daily step (tier-weights §3):
  * the current shares are projected onto each arm's stage bounds, and an
- * explore pool takes no typed allocation.
+ * explore pool takes no typed weights.
  * Compare-and-set on the allocation version: a stale screen gets 409, never
  * a silent overwrite. Every accepted change writes an audit row.
  */
@@ -43,8 +46,18 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (mode !== undefined && mode !== 'pinned' && mode !== 'split' && mode !== 'explore') {
     return NextResponse.json({ error: 'mode must be pinned, split or explore' }, { status: 400 });
   }
-  if (mode === undefined && body.allocation === undefined) {
-    return NextResponse.json({ error: 'allocation or mode is required' }, { status: 400 });
+  if (mode === undefined && body.weights === undefined) {
+    return NextResponse.json({ error: 'weights or mode is required' }, { status: 400 });
+  }
+  let weightsPatch: Weights | undefined;
+  if (body.weights !== undefined) {
+    if (!body.weights || typeof body.weights !== 'object' || Array.isArray(body.weights)) {
+      return NextResponse.json({ error: 'weights must be an object of arm id to level' }, { status: 400 });
+    }
+    for (const [armId, level] of Object.entries(body.weights as Record<string, unknown>)) {
+      if (!isWeightLevel(level)) return NextResponse.json({ error: `weight for arm ${armId} must be off, low, med or high` }, { status: 400 });
+    }
+    weightsPatch = body.weights as Weights;
   }
 
   try {
@@ -58,6 +71,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     }
 
     let allocation = pool.allocation;
+    let nextWeights: Weights | undefined;
     if (mode === 'explore' && pool.mode !== 'explore') {
       const live = orderArms(arms.filter(a => a.status === 'active').map(a => ({ ...a, addedAt: new Date(a.addedAt) })));
       const now = new Date();
@@ -72,25 +86,36 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
           evidence: evidence.get(a.id)!,
         })),
       });
-    } else if (body.allocation !== undefined) {
-      const check = validateAllocation(body.allocation, arms as PoolArmRef[], {
-        incumbentFloor: pool.incumbentFloor, explorationCap: pool.explorationCap,
-      });
+    } else if (weightsPatch !== undefined) {
+      const active = arms.filter(a => a.status === 'active');
+      for (const armId of Object.keys(weightsPatch)) {
+        if (!active.some(a => a.id === armId)) return NextResponse.json({ error: `arm ${armId} is not an active arm of this pool` }, { status: 400 });
+      }
+      const armOrder = active
+        .slice()
+        .sort((a, b) => (a.role === 'incumbent' ? -1 : b.role === 'incumbent' ? 1 : new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime()))
+        .map(a => a.id);
+      const backfilled = backfillWeights(pool.weights ?? {}, active.map(a => ({ id: a.id, share: allocation[a.id] ?? (a.role === 'incumbent' ? 1 : 0) })));
+      nextWeights = { ...backfilled, ...weightsPatch };
+      const shares = sharesFromWeights(nextWeights, armOrder);
+      if (!shares.ok) return NextResponse.json({ error: shares.error }, { status: 400 });
+      const check = validateAllocation(shares.allocation, arms as PoolArmRef[], undefined, { mode: 'split' });
       if (!check.ok) return NextResponse.json({ error: check.error }, { status: 400 });
       allocation = check.allocation;
     }
 
     const version = await writeAllocation({
       teamId: access.teamId, poolId: id, expectedVersion, allocation,
+      ...(nextWeights !== undefined ? { weights: nextWeights } : {}),
       ...(mode ? { mode } : {}),
-      kind: body.allocation !== undefined ? 'allocation' : 'mode',
+      kind: weightsPatch !== undefined ? 'allocation' : 'mode',
       actorUserId: access.userId,
     });
     if (version === null) {
       return NextResponse.json({ error: 'Traffic changed since you loaded this screen. Reload and try again.', code: 'stale' }, { status: 409 });
     }
     invalidateTierPoolCache(access.teamId);
-    return NextResponse.json({ ok: true, allocationVersion: version, allocation, mode: mode ?? pool.mode });
+    return NextResponse.json({ ok: true, allocationVersion: version, allocation, weights: nextWeights ?? pool.weights, mode: mode ?? pool.mode });
   } catch (err) {
     console.error('PATCH /api/model-tiers/pools/[id] error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
