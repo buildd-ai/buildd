@@ -2118,6 +2118,10 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   commitDrift: boolean('commit_drift'),
   updating: boolean('updating'),
   updateAvailable: boolean('update_available'),
+  // Set the moment updateAvailable first flips to true, cleared the moment it
+  // stops being true — so "how long has it been behind" is measured from this
+  // column instead of inferred from boot age or heartbeat cadence.
+  updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.

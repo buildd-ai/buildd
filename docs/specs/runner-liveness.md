@@ -2,12 +2,12 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-25
+last_verified: 2026-09-27
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
 related: [provider-failover, mission-task-lifecycle]
-keywords: [worker_heartbeats, heartbeat_stale_ms, cleanupstaleworkers, waiting_input timeout, buildd_runner_poll_min, viewertoken, runner_commit, runner_version, deployed build sha, current_commit, disk_commit, commit_drift, update_available, tracked_branch, uptodatewithdeployed]
+keywords: [worker_heartbeats, heartbeat_stale_ms, cleanupstaleworkers, waiting_input timeout, buildd_runner_poll_min, viewertoken, runner_commit, runner_version, deployed build sha, current_commit, disk_commit, commit_drift, update_available, update_available_since, tracked_branch, uptodatewithdeployed, list_runners]
 assertions:
   - id: heartbeat-route
     type: route
@@ -100,6 +100,22 @@ systematic — without ever blocking the normal claim path.
   `runnerCommit`/`runnerVersion` above); a bundle that IS sent writes even a
   `null` `currentCommit`/`diskCommit` verbatim — that null is a real fact (the
   disk read failed just now), not "no data".
+- `worker_heartbeats.update_available_since` is server-derived, never sent by
+  the runner: the heartbeat route stamps it the instant `updateAvailable`
+  first becomes `true` (comparing against the row's own prior value, read in
+  the same request), holds it steady across heartbeats while `updateAvailable`
+  stays `true`, and clears it back to `null` the moment `updateAvailable`
+  stops being `true`. Surfaced on `GET /api/workers/active` and the
+  `list_runners` MCP action so "how long has this runner been behind" is a
+  measured timestamp instead of inferred from boot age or heartbeat cadence.
+  Left untouched (not cleared) on a heartbeat that omits the whole
+  update-snapshot bundle, same as the other five columns.
+- The full heartbeat snapshot (capacity, environment, runner build, and the
+  update-snapshot bundle above) is also reachable from any MCP transport via
+  the `list_runners` action (`packages/core/mcp-tools.ts`) — before this it
+  was visible only through `GET /api/workers/active`, which needs an API key
+  no MCP action ever forwarded, so a task doing update/version recon had no
+  way to read it.
 
 **Acceptance criteria**:
 - AC-1: WHEN `POST /api/workers/heartbeat` is called without `localUiUrl` THEN
@@ -126,6 +142,19 @@ systematic — without ever blocking the normal claim path.
   — but ONLY for `trackedBranch === 'main'` (the only branch Vercel deploys
   from). A `dev`-tracking runner, or a heartbeat missing either commit,
   reports `upToDateWithDeployed: null`, never a guess.
+- AC-22: WHEN a heartbeat's update-snapshot bundle carries `updateAvailable:
+  true` AND the stored row's prior `updateAvailable` was not already `true`
+  THEN `updateAvailableSince` is stamped to the current time.
+- AC-23: WHEN consecutive heartbeats both carry `updateAvailable: true` THEN
+  `updateAvailableSince` is left unchanged from its first-stamped value.
+- AC-24: WHEN a heartbeat's bundle carries `updateAvailable: false` (or
+  `null`) THEN `updateAvailableSince` is cleared to `null`.
+- AC-25: The `list_runners` MCP action, reachable from every MCP transport
+  (API-key, OAuth, in-process runner/chat) via `handleBuilddAction`, returns
+  the same per-runner fields as `GET /api/workers/active` — capacity,
+  workspaces, runner build, and the full update-snapshot bundle including
+  `updateAvailableSince` — scoped to whatever workspaces the calling token can
+  already see.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/workers/heartbeat/route.ts`
@@ -136,6 +165,9 @@ systematic — without ever blocking the normal claim path.
   `PKG_VERSION`, `getRunnerUpdateSnapshot`)
 - Shared type: `packages/shared/src/types.ts` — `RunnerUpdateSnapshot`
 - Dashboard surface: `apps/web/src/app/api/workers/active/route.ts`
+- MCP surface: `packages/core/mcp-tools.ts` (`list_runners` action, dispatched
+  through `handleBuilddAction` — reachable from every transport, not just the
+  API-key one)
 
 ---
 

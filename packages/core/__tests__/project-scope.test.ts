@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { normalizeProject, workspaceProjectKey } from '../project-scope';
+import { memoryProjectKey, normalizeProject, workspaceProjectKey } from '../project-scope';
 
 // Fixtures are deliberately generic (`owner/repo`, `__sentinel`, …) rather than
 // real project names: this is a public repository, and the shapes are what the
@@ -110,5 +110,33 @@ describe('workspaceProjectKey', () => {
   it('is null when neither is usable', () => {
     expect(workspaceProjectKey(null, null)).toBeNull();
     expect(workspaceProjectKey(undefined)).toBeNull();
+  });
+});
+
+describe('memoryProjectKey', () => {
+  const ws = { id: 'ws-1', repo: 'https://github.com/Owner/Repo.git', name: 'repo', dataClass: 'standard' };
+
+  it('is the workspace key when no sensitive workspace shares it', () => {
+    expect(memoryProjectKey(ws, [])).toBe('owner/repo');
+    expect(memoryProjectKey(ws, [{ id: 'ws-2', repo: 'owner/other', dataClass: 'sensitive' }])).toBe('owner/repo');
+    expect(memoryProjectKey(ws, [{ id: 'ws-2', repo: 'owner/repo', dataClass: 'standard' }])).toBe('owner/repo');
+  });
+
+  it('is null for a sensitive workspace', () => {
+    expect(memoryProjectKey({ ...ws, dataClass: 'sensitive' }, [])).toBeNull();
+  });
+
+  it('is null when a sensitive workspace in the team resolves to the same key', () => {
+    expect(memoryProjectKey(ws, [{ id: 'ws-2', repo: 'owner/repo', dataClass: 'sensitive' }])).toBeNull();
+    // Name fallback collides too.
+    expect(memoryProjectKey({ id: 'a', repo: null, name: 'ops' }, [{ id: 'b', repo: null, name: 'ops', dataClass: 'sensitive' }])).toBeNull();
+  });
+
+  it('ignores the workspace itself in the team list', () => {
+    expect(memoryProjectKey(ws, [ws])).toBe('owner/repo');
+  });
+
+  it('is null when the workspace has no key', () => {
+    expect(memoryProjectKey({ id: 'x', repo: null, name: null }, [])).toBeNull();
   });
 });

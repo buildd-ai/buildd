@@ -23,7 +23,7 @@ and you should re-run your evals before taking it.
 | `@builddai/ai-kit/chat/react` | UI components (peers `react@^19`, `@ai-sdk/react@^4`) | Types only |
 | `@builddai/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
-| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval (peer `@typesafe-ai/sdk`) | Ready |
+| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
 | `@builddai/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
 
 ## Model plans

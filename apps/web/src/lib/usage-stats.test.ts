@@ -907,3 +907,53 @@ describe('executor histogram (interactive MCP session vs runner)', () => {
     expect(executorOf(undefined)).toBe('runner');
   });
 });
+
+// Friction: sizing the role-less task buckets needed a way to split the
+// `(unassigned)` role group by where those tasks came from (chat, dashboard
+// quick-add, CI/conflict retries, ...), and neither this endpoint nor
+// list_tasks audit mode exposed it — two analysis tasks in a row had to
+// report the split qualitatively instead of with real counts.
+describe('creationSource histogram', () => {
+  test('groups by creationSource with per-group totals', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', creationSource: 'dashboard', inputTokens: 5000 }),
+      row({ taskId: 't2', creationSource: 'dashboard', inputTokens: 3000 }),
+      row({ taskId: 't3', creationSource: 'mcp', inputTokens: 100 }),
+    ], 'creationSource');
+
+    expect(stats.groups.map(g => g.key).sort()).toEqual(['dashboard', 'mcp']);
+    const dashboard = stats.groups.find(g => g.key === 'dashboard')!;
+    expect(dashboard.inputTokens).toBe(8000);
+    expect(dashboard.tasks).toBe(2);
+  });
+
+  test('tasks with no creationSource land in the shared unassigned bucket', () => {
+    const stats = computeUsageStats([row({ taskId: 't1', creationSource: null })], 'creationSource');
+    expect(stats.groups[0].key).toBe(UNASSIGNED_ROLE);
+  });
+
+  test('an attempt with its own creationSource contributes to its own group, same as role', () => {
+    // A CI-retry attempt is filed with creationSource='webhook' even though its
+    // cost still folds into the parent task's bucket (Rule R3-2) — grouping by
+    // each worker's OWN task creationSource is what makes that origin visible
+    // at all, mirroring why the role histogram groups this way.
+    const stats = computeUsageStats([
+      row({ workerId: 'w-parent', taskId: 'task-b', creationSource: 'dashboard', inputTokens: 8000 }),
+      row({
+        workerId: 'w-retry',
+        taskId: 'task-r',
+        parentTaskId: 'task-b',
+        creationSource: 'webhook',
+        inputTokens: 2000,
+      }),
+    ], 'creationSource');
+    expect(stats.groups.map(g => g.key).sort()).toEqual(['dashboard', 'webhook']);
+    const webhook = stats.groups.find(g => g.key === 'webhook')!;
+    expect(webhook.tasks).toBe(1);
+    expect(webhook.inputTokens).toBe(2000);
+
+    // Cost rollup is untouched: one task, full combined cost.
+    expect(stats.totals.tasks).toBe(1);
+    expect(stats.totals.inputTokens).toBe(10000);
+  });
+});
