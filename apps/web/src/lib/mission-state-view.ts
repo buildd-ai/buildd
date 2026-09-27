@@ -186,6 +186,15 @@ export type WaitingOnDescriptor =
       taskIds: string[];
       /** True when the unmerged PR is the mission's own integration PR, not a task PR. */
       missionPr: boolean;
+      /**
+       * Set only when `missionPr` is true. `open` is the ordinary "ask to
+       * merge" reading; `not_opened` and `closed` name a mission PR that does
+       * not exist to merge — "merge the mission PR" is an impossible
+       * instruction for either, so callers must branch on this before
+       * offering that action. Undefined only for a caller that predates this
+       * field and is assumed `open` (the only state it could produce).
+       */
+      missionPrState?: 'open' | 'closed' | 'not_opened';
     }
   /**
    * A completed task's PR closed WITHOUT merging, and nothing recorded that the
@@ -426,11 +435,14 @@ export interface MissionStateInput {
     blockedByPr?: number | null;
   }>;
   /**
-   * The mission's own integration PR, when one is open. `canCompleteMission`
-   * knows a mission PR is unmerged but not where it lives; the URL is what
-   * turns "waiting on you to merge the mission PR" into an affordance.
+   * The mission's own integration PR, when one exists. `canCompleteMission`
+   * knows a mission PR is unmerged but not where it lives or whether it was
+   * ever opened; `state` is what tells `mergeFact` whether there is
+   * anything to merge at all, and the URL is what turns "waiting on you to
+   * merge the mission PR" into an affordance when there is. A caller that
+   * has not loaded the row omits this rather than guessing.
    */
-  missionPr?: { prNumber: number | null; prUrl: string | null } | null;
+  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
   /**
    * Open task PRs, read straight off the worker rows. For a caller that cannot
    * afford a `canCompleteMission` decision per subject — a list page renders
@@ -832,6 +844,48 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   if (completion && isMergeBlockCode(completion.code)) {
     const details = completion.awaitingMergeDetails ?? [];
     const missionPr = completion.code === 'awaiting_mission_pr';
+    // `awaiting_mission_pr` covers three different states of the mission's own
+    // PR (not yet opened / open / closed without merging) behind one code —
+    // only `findMissionPrOwner` knows which, and only the `open` branch of
+    // `canCompleteMission` populates `awaitingMergeDetails`. A caller that
+    // loaded the row passes `input.missionPr.state` directly; one that only
+    // ran the completion gate is assumed `open` when there are details to show
+    // (the only state that produces them) and unknown otherwise — never
+    // assumed open with nothing to point at.
+    const missionPrState = missionPr
+      ? input.missionPr?.state ?? (details.length > 0 ? 'open' : undefined)
+      : undefined;
+
+    // Not yet opened, or closed without merging: there is no PR to merge, so
+    // the ordinary "merge the mission PR" reading below would be an
+    // impossible instruction — the false headline this branch exists to
+    // prevent (mirrors `pr_closed_unmerged` below, for the mission's own PR
+    // instead of a task's).
+    if (missionPr && missionPrState !== 'open') {
+      const prNumber = input.missionPr?.prNumber ?? null;
+      return {
+        kind: 'awaiting_merge',
+        waitingOn: {
+          kind: 'merge',
+          tone: 'warning',
+          label: missionPrState === 'closed'
+            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} was closed without merging, so the work is still only on the integration branch`
+            : 'The mission’s work has landed on its integration branch, but the mission PR has not opened yet',
+          count: 1,
+          prNumbers: missionPrState === 'closed' && prNumber != null ? [prNumber] : [],
+          // No href either way: a closed PR cannot merge, and a not-yet-opened
+          // one has no URL to give. `affordanceFor` reads an empty `prUrls` as
+          // "no button" — the sentence stands alone, which is correct here.
+          prUrls: [],
+          taskIds: [],
+          missionPr: true,
+          missionPrState: missionPrState ?? 'not_opened',
+        },
+        displayState: 'review',
+        source: 'canCompleteMission',
+      };
+    }
+
     // `canCompleteMission` knows the mission PR is unmerged without knowing
     // where it is; the caller passes `missionPr` when it loaded the row, and
     // that is the difference between a sentence and a link.
@@ -878,6 +932,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
         prUrls,
         taskIds: details.map(d => d.taskId),
         missionPr,
+        missionPrState: missionPr ? 'open' : undefined,
       },
       displayState: 'review',
       source: 'canCompleteMission',
@@ -904,9 +959,14 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   // evaluation still holds the task + worker rows that prove a PR is open. Same
   // fact, cheaper source — and it is the difference between a mission card that
   // says "waiting on you to merge the mission PR" and one that says nothing.
-  const openMissionPr = input.missionPr && (input.missionPr.prNumber != null || input.missionPr.prUrl)
-    ? input.missionPr
-    : null;
+  //
+  // Gated on `state === 'open'`, not just "a PR reference exists": this path
+  // has no completion decision to say whether the mission's work is even done
+  // (that gate lives in `canCompleteMission`, not here), so a `not_opened` or
+  // `closed` mission PR must stay silent rather than guess — the same false
+  // "merge the mission PR" headline the completion-based branch above exists
+  // to prevent, and this cheaper path has no evidence to say anything truer.
+  const openMissionPr = input.missionPr?.state === 'open' ? input.missionPr : null;
   const rowPrs = input.unmergedPrs ?? [];
   if (openMissionPr || rowPrs.length > 0) {
     const missionPr = openMissionPr !== null;
@@ -927,6 +987,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
           : rowPrs.map(p => p.prUrl).filter((u): u is string => typeof u === 'string'),
         taskIds: missionPr ? [] : rowPrs.map(p => p.taskId),
         missionPr,
+        missionPrState: missionPr ? 'open' : undefined,
       },
       displayState: 'review',
       source: 'workers.prUrl + workers.mergedAt',
@@ -1267,6 +1328,12 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
           : `${d.titles.length || 'one or more'} tasks failed`;
     case 'merge': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      if (d.missionPr && d.missionPrState === 'closed') {
+        return `mission PR${ref} was closed without merging`;
+      }
+      if (d.missionPr && d.missionPrState === 'not_opened') {
+        return 'the mission’s work has landed on its integration branch, but the mission PR has not opened yet';
+      }
       return d.missionPr
         ? `waiting on you to merge the mission PR${ref}`
         : d.count === 1
@@ -1408,6 +1475,12 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
+      if (waitingOn.missionPr && waitingOn.missionPrState === 'closed') {
+        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
+      }
+      if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
+        return 'Nothing to merge yet. The mission PR opens automatically once every task PR has landed on the integration branch; if it still has not after a while, the opener is stuck and needs investigating.';
+      }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
         : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';

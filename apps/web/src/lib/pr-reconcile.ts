@@ -60,6 +60,7 @@ import {
   evaluateMissionWorkState,
   findMissionPrOwner,
   maybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure,
 } from '@/lib/mission-pr';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
@@ -726,6 +727,12 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
         console.error(
           `[pr-reconcile] mission ${mission.id} work is done but its PR did not open: `
           + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
+        );
+        // console.error alone is a log nobody reading the mission ever sees.
+        // Noteworthy for only the reasons that can recur forever with no
+        // self-correction — see `noteMissionPrOpenFailure`.
+        noteMissionPrOpenFailure(mission.id, opened).catch(e =>
+          console.error(`[pr-reconcile] mission PR failure note failed for ${mission.id}:`, e),
         );
       }
     } catch (err) {

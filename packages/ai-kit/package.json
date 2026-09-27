@@ -1,0 +1,54 @@
+{
+  "name": "@buildd/ai-kit",
+  "version": "0.0.1",
+  "description": "Chat contract, tool permissions, model plans and Jev decisions for apps that use buildd's model economy",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buildd-ai/buildd.git",
+    "directory": "packages/ai-kit"
+  },
+  "homepage": "https://github.com/buildd-ai/buildd/tree/dev/packages/ai-kit#readme",
+  "keywords": [
+    "buildd",
+    "ai",
+    "chat",
+    "ai-sdk",
+    "tool-permissions"
+  ],
+  "exports": {
+    "./models": "./src/models/index.ts",
+    "./decide": "./src/decide/index.ts",
+    "./chat/contract": "./src/chat/contract/index.ts",
+    "./chat/server": "./src/chat/server/index.ts",
+    "./chat/react": "./src/chat/react/index.ts",
+    "./chat/theme.css": "./src/chat/theme.css",
+    "./surfaces": "./src/surfaces/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "type-check": "tsc --noEmit",
+    "test": "cd ../.. && bun run scripts/run-unit-tests.ts packages/ai-kit/"
+  },
+  "peerDependencies": {
+    "@ai-sdk/react": "^4.0.0",
+    "@typesafe-ai/sdk": "0.6.0",
+    "ai": "^7.0.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/react": { "optional": true },
+    "@typesafe-ai/sdk": { "optional": true },
+    "ai": { "optional": true },
+    "react": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.0"
+  }
+}

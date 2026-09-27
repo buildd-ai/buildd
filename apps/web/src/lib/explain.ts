@@ -334,7 +334,15 @@ async function viewForMission(missionId: string): Promise<{
   // The claim loop's durable refusal ledger. Read unconditionally: the whole
   // point is that a task nothing has been allowed to start looks, from every
   // other source, exactly like a task nothing is wrong with.
-  const deferrals = await loadMissionClaimDeferrals(missionId);
+  //
+  // Filtered to tasks still `pending`: `gate_events` never gets a "cleared"
+  // row when a task finally dispatches (see `DEFERRAL_FRESHNESS_MS`'s own
+  // note), so a task that was deferred and then claimed and completed within
+  // the freshness window still reads as stuck by age alone. The row set
+  // already loaded above is the current answer to "did it leave pending" and
+  // costs nothing extra to consult.
+  const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
+  const deferrals = (await loadMissionClaimDeferrals(missionId)).filter(d => pendingTaskIds.has(d.taskId));
 
   // `canCompleteMission` knows the mission PR has not merged; only the task
   // rows know where it is. Supplying it turns "the mission PR has not merged"
@@ -383,8 +391,12 @@ async function viewForMission(missionId: string): Promise<{
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
     deferrals,
-    missionPr: integrationPr && integrationPr.state === 'open'
-      ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+    // `merged` carries no outstanding fact — the mission is on its way to
+    // completing, not waiting on a PR — so it collapses to null same as no PR
+    // at all. `open` / `closed` / `not_opened` are passed through as-is:
+    // `mergeFact` is what turns each into honest text (or none).
+    missionPr: integrationPr && integrationPr.state !== 'merged'
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
       : null,
   };
 

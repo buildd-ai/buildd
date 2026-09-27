@@ -17,6 +17,7 @@ import { resolveInferenceCredential, isInferenceKeyProvider, type InferenceKeySc
 import { priceForModel } from '@buildd/core/model-prices';
 import type { Tier } from '@buildd/core/model-tier-defaults';
 import type { ChatProvider } from '@buildd/shared';
+import { openRouterModelId } from './openrouter-id';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
@@ -38,19 +39,7 @@ export function languageModelFor(provider: ChatProvider, modelId: string, apiKey
   }
 }
 
-/**
- * The OpenRouter slug for a native model id. OpenRouter writes Anthropic
- * versions with a dot and no snapshot date (`claude-haiku-4-5-20251001` ->
- * `anthropic/claude-haiku-4.5`); OpenAI ids keep their own dots.
- */
-export function openRouterModelId(provider: string, modelId: string): string {
-  if (provider === 'openrouter' || modelId.includes('/')) return modelId;
-  if (provider === 'anthropic') {
-    const undated = modelId.replace(/-\d{8}$/, '');
-    return `anthropic/${undated.replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
-  }
-  return `${provider}/${modelId}`;
-}
+export { openRouterModelId };
 
 interface ResolveDeps {
   resolveTierEntry: typeof resolveTierEntry;
