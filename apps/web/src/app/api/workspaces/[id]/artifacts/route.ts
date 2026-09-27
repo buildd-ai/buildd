@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { appBaseUrl } from '@/lib/app-url';
 import { reviewArtifactScope } from '@/lib/artifact-scope';
 import { ARTIFACT_TYPES, isArtifactType } from '@buildd/shared';
+import { isUuid } from '@/lib/uuid';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -50,6 +51,11 @@ export async function GET(
   const missionId = url.searchParams.get('missionId');
   const key = url.searchParams.get('key');
   const type = url.searchParams.get('type');
+
+  // A non-UUID can never name a mission; querying with one throws 22P02 (a 500).
+  if (missionId && !isUuid(missionId)) {
+    return NextResponse.json({ error: `Invalid missionId: expected a UUID, got "${missionId}". Pass the full UUID.` }, { status: 400 });
+  }
   // `review=true` narrows to artifacts deliberately produced for a human to
   // read, using the same rule as the dashboard — see `@/lib/artifact-scope`.
   // Applied in SQL, not after the fact, so `limit` counts matching rows.
