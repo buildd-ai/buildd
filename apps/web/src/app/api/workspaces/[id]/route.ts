@@ -4,12 +4,15 @@ import { workspaces, githubRepos } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, getUserTeamRole } from '@/lib/team-access';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
+
+/** Where a team change goes instead of PATCH: the checked move's dry run. */
+const MOVE_PRECHECK_ENDPOINT = '/api/workspaces/[id]/migrate/precheck';
 
 export async function GET(
   req: NextRequest,
@@ -99,25 +102,31 @@ export async function PATCH(
 
     const body = await req.json();
     const {
-      name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass, teamId,
+      name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass,
       gitConfig, maxConcurrentTasks, connectorAdvisoryMode,
     } = body;
 
-    // Moving the workspace to another team is not an API-key action: the
-    // migrate flow (/api/workspaces/[id]/migrate) owns cross-team moves.
-    if (teamId !== undefined && apiAccount) {
+    // A workspace changes team only through the checked move: POST
+    // /migrate/precheck (dry run, signed token, admin on both teams) then POST
+    // /migrate/execute. PATCH never writes teamId, for any caller or role, and
+    // a body carrying it is refused whole so nothing else in it is applied.
+    if (body && typeof body === 'object' && 'teamId' in body) {
       return NextResponse.json(
-        { error: 'teamId cannot be changed with an API key; use /api/workspaces/[id]/migrate' },
+        {
+          error: 'teamId cannot be changed here. Move a workspace to another team with '
+            + 'POST /api/workspaces/[id]/migrate/precheck, then POST /api/workspaces/[id]/migrate/execute.',
+          moveEndpoint: MOVE_PRECHECK_ENDPOINT,
+        },
         { status: 400 },
       );
     }
 
-    // Merge policy / git config, access mode, data class, the connector claim
-    // gate and the owning team are workspace-admin settings: owner or admin in
-    // the workspace's team for a session (the bar POST /config sets for
+    // Merge policy / git config, access mode, data class and the connector
+    // claim gate are workspace-admin settings: owner or admin in the
+    // workspace's team for a session (the bar POST /config sets for
     // sessions), plus an admin-level API key. Checked before any write so a
     // mixed body is all-or-nothing.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, teamId]
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -128,20 +137,9 @@ export async function PATCH(
       }
     }
 
-    // A session move also needs owner or admin on the target team.
-    if (teamId !== undefined && user) {
-      const targetRole = typeof teamId === 'string' ? await getUserTeamRole(user.id, teamId) : null;
-      if (targetRole !== 'owner' && targetRole !== 'admin') {
-        return NextResponse.json({ error: 'Requires admin on the target team' }, { status: 403 });
-      }
-    }
-
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
-
-    // Authorized above (session admin on both teams; API keys rejected).
-    if (teamId !== undefined) updates.teamId = teamId;
 
     if (name !== undefined) updates.name = name;
     // Accept both "repo" and "repoUrl" for convenience
@@ -164,10 +162,9 @@ export async function PATCH(
         // Link only through an installation that belongs to the workspace's
         // team (see lib/github-installation-access.ts). Otherwise the declared
         // repo is kept but left unlinked.
-        const linkTeamId = (updates.teamId as string | undefined) ?? workspaceTeamId;
         for (const ghRepo of candidates) {
           const ownerTeamIds = await getInstallationOwnerTeamIds(ghRepo.installationId);
-          if (linkTeamId && ownerTeamIds.includes(linkTeamId)) {
+          if (workspaceTeamId && ownerTeamIds.includes(workspaceTeamId)) {
             updates.githubRepoId = ghRepo.id;
             updates.githubInstallationId = ghRepo.installationId;
             break;

@@ -4494,6 +4494,14 @@ export async function handleBuilddAction(
         case 'update': {
           const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
           if (!wsId) throw new Error('workspaceId is required for update');
+          // A workspace changes team only through the checked move; PATCH refuses
+          // teamId, and dropping it here would make the caller think it moved.
+          if ('teamId' in params) {
+            throw new Error(
+              'teamId cannot be changed with update. Move a workspace to another team from the dashboard '
+              + '(Move to team), which runs POST /api/workspaces/[id]/migrate/precheck and then /migrate/execute.',
+            );
+          }
           const body: Record<string, unknown> = {};
           if (params.name !== undefined) body.name = params.name;
           if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
