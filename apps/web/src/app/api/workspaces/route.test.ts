@@ -196,6 +196,72 @@ describe('GET /api/workspaces', () => {
   });
 });
 
+// Evaluates the mocked drizzle predicates above against fixture rows, so the
+// scoping the route asks the db for is what decides the result — a mock that
+// returned rows regardless of WHERE would hide exactly the leak under test.
+function matches(p: any, row: Record<string, unknown>): boolean {
+  if (!p) return true;
+  if (p.type === 'eq') return row[p.field] === p.value;
+  if (p.type === 'inArray') return p.values.includes(row[p.field]);
+  if (p.type === 'and') return p.args.filter(Boolean).every((a: any) => matches(a, row));
+  throw new Error(`unhandled predicate ${p.type}`);
+}
+
+describe('GET /api/workspaces — API-account reach (shared rule)', () => {
+  const FIXTURE = [
+    { id: 'ws-own-open', teamId: 'team-a', accessMode: 'open', name: 'own open', accountWorkspaces: [] },
+    { id: 'ws-own-restricted', teamId: 'team-a', accessMode: 'restricted', name: 'own restricted', accountWorkspaces: [] },
+    { id: 'ws-linked', teamId: 'team-b', accessMode: 'restricted', name: 'linked', accountWorkspaces: [] },
+    { id: 'ws-foreign-open', teamId: 'team-b', accessMode: 'open', name: 'foreign open', accountWorkspaces: [] },
+  ];
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a' });
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-linked', canClaim: true, canCreate: true },
+    ]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockImplementation(async (opts: any) => FIXTURE.filter(r => matches(opts?.where, r)));
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  async function listedIds(): Promise<string[]> {
+    const res = await GET(createMockGetRequest({ Authorization: 'Bearer bld_test' }));
+    expect(res.status).toBe(200);
+    return (await res.json()).workspaces.map((w: any) => w.id).sort();
+  }
+
+  it("lists the account's own team's open workspaces", async () => {
+    expect(await listedIds()).toContain('ws-own-open');
+  });
+
+  it('lists a workspace the account is explicitly linked to, in another team', async () => {
+    expect(await listedIds()).toContain('ws-linked');
+  });
+
+  it("never lists another team's open workspace", async () => {
+    expect(await listedIds()).not.toContain('ws-foreign-open');
+  });
+
+  it('does not list a restricted workspace of its own team without a link', async () => {
+    expect(await listedIds()).toEqual(['ws-linked', 'ws-own-open']);
+  });
+
+  it('never serialises whole account rows for connected accounts', async () => {
+    await listedIds();
+    const byIds = mockWorkspacesFindMany.mock.calls.find((c: any) => c[0]?.with)?.[0] as any;
+    expect(byIds.with.accountWorkspaces.with.account).toEqual({ columns: { id: true, name: true, type: true } });
+  });
+});
+
 describe('POST /api/workspaces', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
