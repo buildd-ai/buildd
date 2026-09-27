@@ -152,6 +152,11 @@ select {
   border-radius: 0 !important;
 }
 
+/* The text field inside a brand Combobox: the wrapper draws the border. */
+input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+  border: 0 !important;
+}
+
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
    unlayered rules beat every layer regardless of specificity, so this wins over

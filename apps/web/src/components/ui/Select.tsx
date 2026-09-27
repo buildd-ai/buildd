@@ -53,10 +53,12 @@ function Chevron({ open }: { open: boolean }) {
 
 export function triggerClasses(size: 'sm' | 'md', open: boolean, disabled: boolean): string {
   return [
-    'w-full min-w-0 flex items-center justify-between gap-2 text-left font-mono border bg-surface-1 text-text-primary transition-colors',
+    'w-full min-w-0 flex items-center justify-between gap-2 text-left font-mono bg-surface-1 text-text-primary transition-colors',
     size === 'sm' ? 'min-h-11 md:min-h-8 px-2 text-base md:text-xs' : 'min-h-11 md:min-h-9 px-3 text-base md:text-[13px]',
-    open ? 'border-primary' : 'border-border-default',
-    disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:border-border-strong',
+    // 2px ink, the same border every form control in the app wears (globals.css).
+    'border-2',
+    open ? 'border-primary' : 'border-border-strong',
+    disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-surface-2',
     'focus-visible:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary-ring',
   ].join(' ');
 }

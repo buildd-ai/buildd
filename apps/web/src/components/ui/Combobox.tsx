@@ -125,7 +125,7 @@ export function Combobox({
 
   const activeId = open && active >= 0 && visible[active] ? optionDomId(listId, active) : undefined;
   const title = sheetTitle ?? ariaLabel ?? placeholder ?? 'Choose';
-  const inputCls = 'min-w-0 flex-1 bg-transparent font-mono text-text-primary placeholder:text-text-muted focus:outline-none';
+  const inputCls = 'min-w-0 flex-1 self-stretch p-0 bg-transparent font-mono text-text-primary placeholder:text-text-muted focus:outline-none';
 
   const list = (
     <ListboxOptions
@@ -179,6 +179,7 @@ export function Combobox({
             placeholder={placeholder}
             spellCheck={false}
             autoComplete="off"
+            data-bare-input=""
             onClick={() => { if (!open) openList(); }}
             onChange={(e) => { setQuery(e.target.value); setActive(e.target.value ? 0 : -1); if (!open) setOpen(true); }}
             onKeyDown={onKey}
