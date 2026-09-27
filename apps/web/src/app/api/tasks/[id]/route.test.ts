@@ -1721,6 +1721,19 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(data.success).toBe(true);
   });
 
+  it('returns 400 with helpful message for an 8-character ID prefix, without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+
+    const request = createMockRequest({ method: 'DELETE' });
+    const response = await callHandler(DELETE, request, 'b833be4b');
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/UUID/);
+    expect(data.error).toMatch(/prefix/);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 400 when trying to delete running task', async () => {
     const mockTask = {
       id: TASK_ID,
