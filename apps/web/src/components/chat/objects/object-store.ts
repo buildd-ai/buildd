@@ -1,17 +1,27 @@
 /**
  * One live copy of each object the conversation references.
  *
- * The inline card and the docked pane for the same ref read the same entry, so
- * they share one fetch and one Pusher subscription and can't show two states.
- * An entry loads on first use, refetches when its realtime channel says the
- * object changed (trailing, at most once per window), and drops its
- * subscription when the last reader unmounts.
+ * The mechanism is the kit's `createObjectStore` (@builddai/ai-kit/chat/react):
+ * the inline card, the pinned strip and the docked pane for the same ref read
+ * the same entry, so they share one fetch and one Pusher subscription and
+ * can't show two states; an entry loads on first use, refetches when its
+ * channel says the object changed (trailing, at most once per window), and
+ * drops its subscription when the last reader unmounts.
  *
- * Realtime reuses the mission page's own policy (`classifyMissionEvent`):
- * progress ticks patch the per-object live store (the Board's notches and
- * action line), structural events refetch.
+ * What stays buildd's is the policy, as the kit's `classify` and `sidecar`:
+ * realtime reuses the mission page's own classifier (`classifyMissionEvent`),
+ * so progress ticks patch the per-object live store (the Board's notches and
+ * action line) and structural events refetch; the sidecar holds that live
+ * store and the ids an event must name to count.
  */
-import { createThrottle, realClock, type Clock } from '@/lib/realtime-throttle';
+import {
+  createObjectStore as createKitObjectStore,
+  type KitClock,
+  type ObjectEntry as KitObjectEntry,
+  type ObjectEventEffect,
+  type ObjectSource as KitObjectSource,
+  type ObjectStore as KitObjectStore,
+} from '@builddai/ai-kit/chat/react';
 import {
   classifyMissionEvent,
   createMissionLiveStore,
@@ -19,8 +29,10 @@ import {
   type MissionLiveStore,
 } from '@/app/app/(protected)/missions/[id]/MissionLiveStore';
 import { VISUAL_REVIEW_EVENT } from '@buildd/shared';
-import { refKey, type BuilddObjectRef } from '../chat-contract';
+import type { BuilddObjectRef } from '../chat-contract';
 import type { ObjectView } from './object-views';
+
+export { OBJECT_REFRESH_WINDOW_MS } from '@builddai/ai-kit/chat/react';
 
 /**
  * Mission-channel events a chat object listens for on top of the mission
@@ -30,47 +42,19 @@ import type { ObjectView } from './object-views';
  */
 export const MISSION_OBJECT_EXTRA_EVENTS = [VISUAL_REVIEW_EVENT, 'worker:artifact'] as const;
 
-export interface ObjectEntry {
-  view: ObjectView | null;
-  error: string | null;
-  loading: boolean;
-}
-
+export type ObjectEntry = KitObjectEntry<ObjectView>;
 /** How objects are fetched and watched. The app uses HTTP + Pusher; fixtures use memory. */
-export interface ObjectSource {
-  load(ref: BuilddObjectRef): Promise<ObjectView>;
-  /**
-   * Listen for this object's realtime events. `emit(event, data)` for each one;
-   * return the unsubscribe. Optional: a source without realtime never refetches.
-   */
-  watch?(ref: BuilddObjectRef, view: ObjectView | null, emit: (event: string, data: unknown) => void): () => void;
+export type ObjectSource = KitObjectSource<BuilddObjectRef, ObjectView>;
+
+/** Per object, beside its view: the live progress overlay and what its events must name. */
+export interface ObjectSidecar {
+  live: MissionLiveStore;
+  ctx: MissionEventContext;
 }
 
-export interface ObjectStore {
-  get(ref: BuilddObjectRef): ObjectEntry;
-  subscribe(ref: BuilddObjectRef, listener: () => void): () => void;
+export interface ObjectStore extends KitObjectStore<BuilddObjectRef, ObjectView, ObjectSidecar> {
   /** The per-object live overlay (worker progress), for the Board's live context. */
   live(ref: BuilddObjectRef): MissionLiveStore;
-  refresh(ref: BuilddObjectRef): void;
-  /** Replace a view in place (an optimistic answer, a fixture step). */
-  set(ref: BuilddObjectRef, view: ObjectView): void;
-}
-
-const IDLE: ObjectEntry = { view: null, error: null, loading: true };
-export const OBJECT_REFRESH_WINDOW_MS = 3_000;
-
-interface Slot {
-  ref: BuilddObjectRef;
-  entry: ObjectEntry;
-  listeners: Set<() => void>;
-  live: MissionLiveStore;
-  inflight: boolean;
-  again: boolean;
-  unwatch: (() => void) | null;
-  /** The watch started before the first load, so it may be missing channels the view names. */
-  watchedBlind: boolean;
-  throttle: { call(): void; cancel(): void } | null;
-  ctx: MissionEventContext;
 }
 
 /** The task ids an object's events are about, so unrelated workspace traffic is ignored. */
@@ -99,118 +83,46 @@ function missionIdOf(ref: BuilddObjectRef, view: ObjectView | null): string {
   return '';
 }
 
-export function createObjectStore(source: ObjectSource, opts: { clock?: Clock; windowMs?: number } = {}): ObjectStore {
-  const slots = new Map<string, Slot>();
-  const clock = opts.clock ?? realClock;
+function syncCtx(s: ObjectSidecar, ref: BuilddObjectRef, v: ObjectView) {
+  s.ctx.missionId = missionIdOf(ref, v);
+  s.ctx.taskIds = new Set(watchedTaskIds(v));
+  // Seed the status baseline from the view, as the mission page does: an
+  // unseen worker's first progress only records a baseline, so without this
+  // the claimed → running change after a load never refetches.
+  if (v.kind === 'mission' && v.workerStatuses) {
+    for (const [id, st] of Object.entries(v.workerStatuses)) s.ctx.lastStatusByWorker.set(id, st);
+  }
+}
 
-  const notify = (s: Slot) => { for (const l of s.listeners) l(); };
+/** What one realtime event does to one object (buildd's mission-event policy). */
+export function classifyObjectEvent(event: string, data: unknown, s: ObjectSidecar): ObjectEventEffect {
+  if (event === VISUAL_REVIEW_EVENT) {
+    // A decision on this mission's screens (the decisions route fires it
+    // with the mission id). The mission page's classifier predates it.
+    const mid = data && typeof data === 'object' ? (data as { missionId?: unknown }).missionId : undefined;
+    if (!s.ctx.missionId || (typeof mid === 'string' && mid !== s.ctx.missionId)) return 'ignore';
+    return 'refresh';
+  }
+  const d = classifyMissionEvent(event, data, s.ctx);
+  if (d.kind === 'ignore') return 'ignore';
+  if (d.patch && d.taskId) s.live.patch(d.taskId, d.patch);
+  return d.kind === 'patch' ? 'patch' : 'refresh';
+}
 
-  const slotFor = (ref: BuilddObjectRef): Slot => {
-    const k = refKey(ref);
-    let s = slots.get(k);
-    if (!s) {
-      s = {
-        ref, entry: IDLE, listeners: new Set(), live: createMissionLiveStore(),
-        inflight: false, again: false, unwatch: null, watchedBlind: false, throttle: null,
-        ctx: { missionId: missionIdOf(ref, null), taskIds: new Set(), lastStatusByWorker: new Map() },
-      };
-      slots.set(k, s);
-    }
-    return s;
-  };
-
-  const syncCtx = (s: Slot) => {
-    const v = s.entry.view;
-    s.ctx.missionId = missionIdOf(s.ref, v);
-    s.ctx.taskIds = new Set(watchedTaskIds(v));
-    // Seed the status baseline from the view, as the mission page does: an
-    // unseen worker's first progress only records a baseline, so without this
-    // the claimed → running change after a load never refetches.
-    if (v?.kind === 'mission' && v.workerStatuses) {
-      for (const [id, st] of Object.entries(v.workerStatuses)) s.ctx.lastStatusByWorker.set(id, st);
-    }
-  };
-
-  // Hoisted: load() re-opens a blind watch once the view is known.
-  // eslint-disable-next-line prefer-const
-  let startWatching: (s: Slot) => void;
-
-  const load = (s: Slot) => {
-    if (s.inflight) { s.again = true; return; }
-    s.inflight = true;
-    source.load(s.ref).then(
-      (view) => {
-        s.entry = { view, error: null, loading: false };
-        s.live.reset();
-        syncCtx(s);
-        if (s.unwatch && s.watchedBlind) {
-          s.unwatch();
-          s.unwatch = null;
-          startWatching(s);
-        }
+export function createObjectStore(source: ObjectSource, opts: { clock?: KitClock; windowMs?: number } = {}): ObjectStore {
+  const store = createKitObjectStore<BuilddObjectRef, ObjectView, ObjectSidecar>(source, {
+    clock: opts.clock,
+    windowMs: opts.windowMs,
+    sidecar: {
+      create: ref => ({ live: createMissionLiveStore(), ctx: { missionId: missionIdOf(ref, null), taskIds: new Set(), lastStatusByWorker: new Map() } }),
+      // A fresh load drops the progress overlay (the view has caught up); an
+      // in-place set (an optimistic answer) keeps it.
+      onView: (s, view, ref, reason) => {
+        if (reason === 'load') s.live.reset();
+        syncCtx(s, ref, view);
       },
-      (err: unknown) => {
-        s.entry = { view: s.entry.view, error: err instanceof Error ? err.message : 'Could not load', loading: false };
-      },
-    ).finally(() => {
-      s.inflight = false;
-      notify(s);
-      if (s.again) { s.again = false; load(s); }
-    });
-  };
-
-  startWatching = (s: Slot) => {
-    if (s.unwatch || !source.watch) return;
-    s.watchedBlind = s.entry.view === null;
-    s.throttle?.cancel();
-    s.throttle = createThrottle(() => load(s), { waitMs: opts.windowMs ?? OBJECT_REFRESH_WINDOW_MS, leading: false }, clock);
-    s.unwatch = source.watch(s.ref, s.entry.view, (event, data) => {
-      if (event === VISUAL_REVIEW_EVENT) {
-        // A decision on this mission's screens (the decisions route fires it
-        // with the mission id). The mission page's classifier predates it.
-        const mid = data && typeof data === 'object' ? (data as { missionId?: unknown }).missionId : undefined;
-        if (!s.ctx.missionId || (typeof mid === 'string' && mid !== s.ctx.missionId)) return;
-        s.throttle?.call();
-        return;
-      }
-      const d = classifyMissionEvent(event, data, s.ctx);
-      if (d.kind === 'ignore') return;
-      if (d.patch && d.taskId) s.live.patch(d.taskId, d.patch);
-      if (d.kind === 'patch') return;
-      s.throttle?.call();
-    });
-  };
-
-  return {
-    get(ref) {
-      return slots.get(refKey(ref))?.entry ?? IDLE;
     },
-    subscribe(ref, listener) {
-      const s = slotFor(ref);
-      s.listeners.add(listener);
-      if (s.entry === IDLE && !s.inflight) load(s);
-      startWatching(s);
-      return () => {
-        s.listeners.delete(listener);
-        if (s.listeners.size === 0) {
-          s.unwatch?.();
-          s.unwatch = null;
-          s.throttle?.cancel();
-          s.throttle = null;
-        }
-      };
-    },
-    live(ref) {
-      return slotFor(ref).live;
-    },
-    refresh(ref) {
-      load(slotFor(ref));
-    },
-    set(ref, view) {
-      const s = slotFor(ref);
-      s.entry = { view, error: null, loading: false };
-      syncCtx(s);
-      notify(s);
-    },
-  };
+    classify: (event, data, { sidecar }) => classifyObjectEvent(event, data, sidecar),
+  });
+  return { ...store, live: ref => store.sidecar(ref).live };
 }

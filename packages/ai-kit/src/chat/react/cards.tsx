@@ -22,7 +22,8 @@ export interface ThinkingPanelProps {
   steps: readonly StepData[];
   /** Open while the turn streams; folded to a summary once it's done. */
   streaming: boolean;
-  title?: string;
+  /** The summary while streaming. Default "Thinking". A node since 0.9.0. */
+  title?: ReactNode;
   className?: string;
 }
 

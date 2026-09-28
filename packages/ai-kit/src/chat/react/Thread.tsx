@@ -5,11 +5,13 @@
  * DB: text, tool rows, approval cards, hand-off cards, steers, events, and the
  * thinking checklist on the streaming assistant message. Every renderer can be
  * replaced per app (`renderText` for markdown, `renderObject` for the app's
- * own object kinds, `renderTool` for a special tool).
+ * own object kinds, `renderTool` for a special tool), and since 0.9.0 an app
+ * can add a header and footer to each message, draw consecutive tool calls as
+ * one group, supply its own checklist and name its own event part.
  */
 import { useMemo, type ReactNode } from 'react';
 import {
-  isEventPart,
+  EVENT_PART_TYPE,
   isHandoffPart,
   isSteerPart,
   isTextPart,
@@ -17,15 +19,27 @@ import {
   isTurnErrorPart,
   latestHandoffs,
   type ChatMessage,
+  type ChatPart,
+  type ChatTextPart,
   type ChatToolPart,
   type EventData,
   type HandoffData,
   type ObjectRef,
+  type StepData,
 } from '@builddai/ai-kit/chat/contract';
 import { ApprovalCard, HandoffCard, ThinkingPanel } from './cards';
 import { isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary } from './model';
 
 export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
+
+/** Where a message sits, for the per-message slots (0.9.0). */
+export interface ThreadMessageContext {
+  /** Its index in `messages`. */
+  index: number;
+  /** It is the assistant message still streaming. */
+  streaming: boolean;
+  messages: readonly ChatMessage[];
+}
 
 export interface ChatThreadProps {
   messages: readonly ChatMessage[];
@@ -34,15 +48,44 @@ export interface ChatThreadProps {
   /** Answer an approval card. Without it, cards render read-only. */
   onApprovalResponse?(approvalId: string, approved: boolean, reason?: string): void;
   onEditApproval?(part: ChatToolPart): void;
-  /** Default: plain text with line breaks kept. Pass a markdown renderer here. */
-  renderText?(text: string, message: ChatMessage): ReactNode;
+  /**
+   * Default: plain text with line breaks kept. Pass a markdown renderer here.
+   * `part` (0.9.0) carries the text part's `state` (`streaming` while it grows).
+   */
+  renderText?(text: string, message: ChatMessage, part: ChatTextPart): ReactNode;
   /** Render one object a tool returned (`ToolResult.objects`). Default: nothing. */
   renderObject?(ref: ObjectRef, part: ChatToolPart): ReactNode;
   /** Replace a tool's row entirely; return undefined to keep the default. */
   renderTool?(part: ChatToolPart, message: ChatMessage): ReactNode | undefined;
+  /**
+   * Draw a run of consecutive tool calls (not approvals, not ones `renderTool`
+   * took) as one node, e.g. "3 tool calls" over their rows (0.9.0). Text,
+   * approvals, hand-offs, steers and errors end a run; parts that render
+   * nothing don't. Without it, each call is its own row.
+   */
+  renderToolGroup?(parts: readonly ChatToolPart[], message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
   /** Replace an event row (`role: 'event'`). */
   renderEvent?(data: EventData, message: ChatMessage): ReactNode;
+  /**
+   * The part type an event message carries (0.9.0). Default `data-event`; an
+   * app with its own (e.g. `data-buildd-event`) names it here, and its data
+   * reaches `renderEvent` as is.
+   */
+  eventPartType?: string;
   renderHandoff?(data: HandoffData): ReactNode;
+  /** Above a message's parts, e.g. the author, avatar and time (0.9.0). Null: nothing. */
+  renderMessageHeader?(message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
+  /** After a message's parts, e.g. feedback thumbs (0.9.0). Null: nothing. */
+  renderMessageFooter?(message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
+  /**
+   * The thinking checklist for an assistant message, when the app derives its
+   * own (0.9.0). Default: the message's `data-step` parts (`thinkingSteps`).
+   * Return an empty list for no panel. While the first chunk is awaited it is
+   * called with an empty assistant message.
+   */
+  steps?(message: ChatMessage, streaming: boolean): readonly StepData[];
+  /** The thinking panel's summary while it streams (0.9.0). Default "Thinking". */
+  thinkingTitle?: ReactNode;
   /** The person's name, for "Approved by …". */
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
@@ -62,9 +105,22 @@ function defaultText(text: string) {
   return <p className="kit-text">{text}</p>;
 }
 
+const PENDING: ChatMessage = { id: 'kit-pending', role: 'assistant', parts: [] };
+
+function eventOf(m: ChatMessage, type: string): EventData | null {
+  const p = m.parts.find(x => x.type === type) as (ChatPart & { data?: Partial<EventData> }) | undefined;
+  const d = p?.data;
+  if (!d || typeof d.event !== 'string' || typeof d.text !== 'string') return null;
+  // The kit's own part must carry its objects; an app's own type is the app's to shape.
+  if (type === EVENT_PART_TYPE && !Array.isArray(d.objects)) return null;
+  return d as EventData;
+}
+
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
-  renderTool, renderEvent, renderHandoff, viewerName = null, empty, error, label = 'Conversation', className,
+  renderTool, renderToolGroup, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
+  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle,
+  viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
   const live = status === 'submitted' || status === 'streaming';
@@ -74,71 +130,118 @@ export function ChatThread({
 
   if (messages.length === 0 && empty) return <div className={`kit-chat${className ? ` ${className}` : ''}`}>{empty}</div>;
 
+  const head = (m: ChatMessage, ctx: ThreadMessageContext) => {
+    const node = renderMessageHeader?.(m, ctx);
+    return node != null && node !== false ? <div className="kit-msg-head">{node}</div> : null;
+  };
+  const foot = (m: ChatMessage, ctx: ThreadMessageContext) => {
+    const node = renderMessageFooter?.(m, ctx);
+    return node != null && node !== false ? <div className="kit-msg-foot">{node}</div> : null;
+  };
+
+  const partsOf = (m: ChatMessage, ctx: ThreadMessageContext): ReactNode[] => {
+    const out: ReactNode[] = [];
+    let group: ChatToolPart[] = [];
+    let groupAt = 0;
+    const flush = () => {
+      if (group.length === 0 || !renderToolGroup) return;
+      const node = renderToolGroup(group, m, ctx);
+      // A group the app draws as nothing (e.g. while a panel says it) leaves no frame.
+      if (node != null && node !== false) out.push(<div key={`${m.id}:g${groupAt}`}>{node}</div>);
+      group = [];
+    };
+    m.parts.forEach((p, i) => {
+      const key = `${m.id}:${i}`;
+      if (isTextPart(p)) {
+        if (p.text.trim()) flush();
+        if (p.text) out.push(<div key={key}>{renderText(p.text, m, p)}</div>);
+        return;
+      }
+      if (isToolPart(p)) {
+        const custom = renderTool?.(p, m);
+        if (custom !== undefined) { flush(); out.push(<div key={key}>{custom}</div>); return; }
+        if (isApprovalPart(p)) {
+          flush();
+          out.push(onApprovalResponse
+            ? <ApprovalCard key={key} part={p} onRespond={onApprovalResponse} onEdit={onEditApproval} approverName={viewerName} />
+            : <ApprovalCard key={key} part={p} onRespond={() => {}} approverName={viewerName} />);
+          return;
+        }
+        if (renderToolGroup) {
+          if (group.length === 0) groupAt = i;
+          group.push(p);
+          return;
+        }
+        const state = toolRowState(p);
+        const summary = toolSummary(p);
+        const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
+        out.push(
+          <div key={key}>
+            <div className="kit-tool" data-state={state} data-tool-call-id={p.toolCallId}>
+              <span aria-hidden="true">{state === 'done' ? '✓' : state === 'failed' ? '!' : '·'}</span>
+              <span>{toolRowLabel(p, m.parts)}</span>
+              {summary && <span className="kit-tool-summary">· {summary}</span>}
+            </div>
+            {renderObject && Array.isArray(objects) && objects.map((o, j) => <div key={`${o.kind}:${o.id}:${j}`}>{renderObject(o, p)}</div>)}
+          </div>,
+        );
+        return;
+      }
+      if (isHandoffPart(p)) {
+        flush();
+        const data = handoffs.get(p.data.taskId) ?? p.data;
+        out.push(<div key={key}>{renderHandoff ? renderHandoff(data) : <HandoffCard data={data} />}</div>);
+        return;
+      }
+      if (isTurnErrorPart(p)) {
+        flush();
+        out.push(<div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>);
+        return;
+      }
+      if (isSteerPart(p)) {
+        flush();
+        out.push(
+          <p key={key} className="kit-steer-note" data-steer-state={p.data.state}>
+            {p.data.state === 'deferred' ? 'Sending next: ' : 'You added: '}{p.data.text}
+          </p>,
+        );
+      }
+    });
+    flush();
+    return out;
+  };
+
   return (
     <div className={`kit-chat kit-thread${className ? ` ${className}` : ''}`} role="log" aria-label={label} aria-live="polite" aria-busy={live || undefined} data-testid="kit-thread">
-      {messages.map(m => {
+      {messages.map((m, index) => {
         if (m.role === 'system') return null;
         if (m.role === 'event') {
-          const ev = m.parts.find(isEventPart);
+          const ev = eventOf(m, eventPartType);
           if (!ev) return null;
+          const ctx: ThreadMessageContext = { index, streaming: false, messages };
           return (
             <div key={m.id} className="kit-msg" data-role="event" data-message-id={m.id}>
-              {renderEvent ? renderEvent(ev.data, m) : <p className="kit-event">{ev.data.text}</p>}
+              {head(m, ctx)}
+              {renderEvent ? renderEvent(ev, m) : <p className="kit-event">{ev.text}</p>}
+              {foot(m, ctx)}
             </div>
           );
         }
         const streaming = live && m === lastAssistant && m === messages.at(-1);
-        const steps = m.role === 'assistant' ? thinkingSteps(m.parts, streaming) : [];
+        const ctx: ThreadMessageContext = { index, streaming, messages };
+        const steps = m.role === 'assistant' ? (stepsOf ? stepsOf(m, streaming) : thinkingSteps(m.parts, streaming)) : [];
         return (
           <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined}>
-            {m.role === 'assistant' && <ThinkingPanel steps={steps} streaming={streaming} />}
-            {m.parts.map((p, i) => {
-              const key = `${m.id}:${i}`;
-              if (isTextPart(p)) return p.text ? <div key={key}>{renderText(p.text, m)}</div> : null;
-              if (isToolPart(p)) {
-                const custom = renderTool?.(p, m);
-                if (custom !== undefined) return <div key={key}>{custom}</div>;
-                if (isApprovalPart(p)) {
-                  return onApprovalResponse
-                    ? <ApprovalCard key={key} part={p} onRespond={onApprovalResponse} onEdit={onEditApproval} approverName={viewerName} />
-                    : <ApprovalCard key={key} part={p} onRespond={() => {}} approverName={viewerName} />;
-                }
-                const state = toolRowState(p);
-                const summary = toolSummary(p);
-                const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
-                return (
-                  <div key={key}>
-                    <div className="kit-tool" data-state={state} data-tool-call-id={p.toolCallId}>
-                      <span aria-hidden="true">{state === 'done' ? '✓' : state === 'failed' ? '!' : '·'}</span>
-                      <span>{toolRowLabel(p, m.parts)}</span>
-                      {summary && <span className="kit-tool-summary">· {summary}</span>}
-                    </div>
-                    {renderObject && Array.isArray(objects) && objects.map((o, j) => <div key={`${o.kind}:${o.id}:${j}`}>{renderObject(o, p)}</div>)}
-                  </div>
-                );
-              }
-              if (isHandoffPart(p)) {
-                const data = handoffs.get(p.data.taskId) ?? p.data;
-                return <div key={key}>{renderHandoff ? renderHandoff(data) : <HandoffCard data={data} />}</div>;
-              }
-              if (isTurnErrorPart(p)) {
-                return <div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>;
-              }
-              if (isSteerPart(p)) {
-                return (
-                  <p key={key} className="kit-steer-note" data-steer-state={p.data.state}>
-                    {p.data.state === 'deferred' ? 'Sending next: ' : 'You added: '}{p.data.text}
-                  </p>
-                );
-              }
-              return null;
-            })}
+            {head(m, ctx)}
+            {m.role === 'assistant' && <ThinkingPanel steps={steps} streaming={streaming} title={thinkingTitle} />}
+            {partsOf(m, ctx)}
+            {foot(m, ctx)}
           </div>
         );
       })}
       {waitingForFirstChunk && (
         <div className="kit-msg" data-role="assistant" data-streaming>
-          <ThinkingPanel steps={thinkingSteps([], true)} streaming />
+          <ThinkingPanel steps={stepsOf ? stepsOf(PENDING, true) : thinkingSteps([], true)} streaming title={thinkingTitle} />
         </div>
       )}
       {error && !lastHasTurnError && <div className="kit-error" role="alert">{error}</div>}

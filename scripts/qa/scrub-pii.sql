@@ -410,6 +410,10 @@ UPDATE worker_error_traces SET
   source = pg_temp.qa_str(source);
 
 UPDATE worker_terminal_records SET
+  -- Free text: recordSessionTerminal() runs normalizeErrorSignature() over a
+  -- raw exit cause (worker.error, a gate-refusal reason, ...) which strips
+  -- ids/urls/timestamps/paths/numbers but not identifying words, so this is
+  -- NOT the workers.exit_cause enum despite the shared column name.
   exit_cause = pg_temp.qa_str(exit_cause),
   detail = pg_temp.qa_json(detail);
 

@@ -307,6 +307,46 @@ describe('mission pane', () => {
   });
 });
 
+describe('the thread is the kit\'s', () => {
+  it('a log of kit message frames; buildd draws the header, the parts and the events inside', async () => {
+    await render(fixtures.chatFixture('watch').messages as Msgs);
+    const log = q('[data-testid="kit-thread"]')!;
+    expect(log.getAttribute('role')).toBe('log');
+    expect(log.classList.contains('buildd-thread')).toBe(true);
+    // A lifecycle event (data-buildd-event) is an event frame with buildd's avatar header and notice.
+    const ev = qa('.kit-msg[data-role="event"]')[0];
+    expect(ev.querySelector('.kit-msg-head')?.textContent).toContain(fixtures.ORGANIZER.name);
+    expect(ev.querySelector('[data-testid="watch-notice"]')).not.toBeNull();
+    // The person's message: meta above, bubble, and the kit's text is not used.
+    const user = qa('.kit-msg[data-role="user"]')[0];
+    expect(user.querySelector('[data-testid="feed-user-bubble"]')).not.toBeNull();
+    expect(user.querySelector('.kit-text')).toBeNull();
+    // Tool calls are buildd's rows, never the kit's default row.
+    expect(q('.kit-tool')).toBeNull();
+  });
+
+  it('the thumbs are the kit\'s, under a settled answer, through buildd\'s provider', async () => {
+    const { TurnFeedbackProvider } = await import('./TurnFeedback');
+    const msgs = fixtures.chatFixture('confirmed').messages as Msgs;
+    const ids = msgs.filter(m => m.role === 'assistant').map(m => m.id);
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={{ load: async () => { throw new Error('Not found'); } }}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <TurnFeedbackProvider messageIds={ids} pendingId={null} initial={{ [ids[0]]: { signal: 'down', reason: 'too_slow' } }}>
+              <ChatFeed messages={msgs} agent={fixtures.ORGANIZER} />
+            </TurnFeedbackProvider>
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+    const thumbs = qa('.kit-msg-foot [data-testid="kit-feedback"]');
+    expect(thumbs).toHaveLength(ids.length);
+    expect(thumbs[0].dataset.vote).toBe('down');
+    expect(thumbs[0].textContent).toContain('Too slow');
+  });
+});
+
 describe('a fired watch', () => {
   it('renders as a square notice: the sentence in Newsreader, mono chrome, a link, plain words', async () => {
     await render(fixtures.chatFixture('watch').messages as Msgs);

@@ -3,13 +3,14 @@
  * thing it shows, what a task card in it says, and who is at work on a mission.
  * Pure, so the panel and its tests agree.
  */
+import { dockChoice as kitDockChoice, type DockChoice as KitDockChoice, type DockMode as KitDockMode } from '@builddai/ai-kit/chat/react';
 import type { BuilddObjectRef } from './chat-contract';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
 
-export type DockMode = 'history' | 'object' | 'needs';
-export interface DockChoice { mode: DockMode; ref: BuilddObjectRef | null }
+export type DockMode = KitDockMode;
+export type DockChoice = KitDockChoice<BuilddObjectRef>;
 
 /** This session's closed needs-you dock: the task id it was showing. */
 export const NEEDS_DOCK_CLOSED_KEY = 'buildd-chat-needs-dock-closed';
@@ -17,6 +18,7 @@ export const NEEDS_DOCK_CLOSED_KEY = 'buildd-chat-needs-dock-closed';
 /**
  * History when it was asked for, else the object the chat is about, else the
  * task that needs you (unless it was closed this session). Null: no panel.
+ * The kit's `dockChoice`.
  */
 export function dockChoice(input: {
   historyOpen: boolean;
@@ -24,10 +26,7 @@ export function dockChoice(input: {
   needsRef: BuilddObjectRef | null;
   needsClosedId: string | null;
 }): DockChoice | null {
-  if (input.historyOpen) return { mode: 'history', ref: null };
-  if (input.focus) return { mode: 'object', ref: input.focus };
-  if (input.needsRef && input.needsRef.id !== input.needsClosedId) return { mode: 'needs', ref: input.needsRef };
-  return null;
+  return kitDockChoice<BuilddObjectRef>(input);
 }
 
 /** The first task that needs you, as the ref the dock loads. */
