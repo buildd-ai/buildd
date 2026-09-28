@@ -8,7 +8,7 @@ domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
-verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
+verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, apps/web/src/app/api/mcp/route.group-tools.test.ts, packages/core/__tests__/mcp-tool-groups.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -28,12 +28,48 @@ assertions:
 ---
 # MCP Action Contracts
 
-**Capability statement**: The buildd MCP server at `/api/mcp` MUST expose four
-tools over the Streamable HTTP MCP transport — `buildd` (task + admin actions),
-`recall` and `learn` (knowledge read/write), and `buildd_memory` (deprecated,
-routed for compatibility) — authenticate every request with a Bearer API key, and
+**Capability statement**: The buildd MCP server at `/api/mcp` MUST serve the
+`buildd` actions over the Streamable HTTP MCP transport — as one tool per action
+group (`buildd_<group>`) or, on the legacy surface, the one `buildd` tool — plus
+`recall` and `learn` (knowledge read/write) and `buildd_memory` (deprecated,
+routed for compatibility); authenticate every request with a Bearer API key; and
 return the correct action result or a structured `isError: true` response for
 every supported action.
+
+---
+
+## Tool listing — group tools
+
+**Invariants**:
+- Every `buildd` action belongs to exactly one group (`ACTION_AREA` /
+  `mcpGroupOf`); chat's tool groups come from the same table.
+- `tools/list` on the `groups` surface lists `buildd_<group>` for each group the
+  token level has an action in; its `action` enum is those actions plus `help`.
+  `buildd` is not listed there but MUST stay callable with the same routing.
+- The `legacy` surface lists `buildd` as before and is the default for every
+  session. `?tools=groups` opts in to the groups surface. The server flag
+  `BUILDD_MCP_TOOL_SURFACE=groups` moves sessions without `?worker=` to groups;
+  runner worker sessions stay legacy. `?tools=legacy|groups` overrides either way.
+- A wrong-group action the token level may not call MUST get the same
+  not-available-at-your-level error as `help`, not a pointer to a tool the
+  level is not shown.
+- A group tool called with another group's action MUST return a one-line
+  `isError: true` naming the right tool, and run nothing. Its own actions run
+  exactly as on `buildd`, including level refusals.
+- `help` with `params.action` returns that action's long parameter docs.
+
+**Acceptance criteria**:
+- AC-21: GIVEN a trigger token WHEN tools/list is called with `?tools=groups` THEN the group tools
+  are exactly `buildd_tasks`, `buildd_work`, `buildd_artifacts`,
+  `buildd_schedules`.
+- AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the
+  result is `isError: true` naming `buildd_runners`.
+- AC-23: WHEN `buildd` is called with any action THEN it dispatches as before.
+
+**Code surface**:
+- Registry: `packages/core/mcp-tool-groups.ts` — `ACTION_AREA`, `mcpGroupOf`
+- Listing and routing: `apps/web/src/app/api/mcp/tools.ts` — `listMcpTools`,
+  `routeGroupToolCall`, `mcpToolSurfaceFor`
 
 ---
 

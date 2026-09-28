@@ -3,8 +3,9 @@
  *
  * - `chat`: chat v3's tool set (lib/chat/tools.ts buildChatTools), with its
  *   per-turn group gating (turn.ts turnGroups) and instructions.
- * - `mcp`: what `/api/mcp` advertises to an admin-level agent (the `buildd`
- *   mega-tool plus recall / learn).
+ * - `mcp`: what `/api/mcp` advertises to an admin-level agent: the
+ *   `buildd_<group>` tools plus recall / learn (or, with `legacy`, the one
+ *   `buildd` mega-tool it listed before).
  *
  * A tool is described as { name, description, inputSchema } exactly as the
  * model receives it, so static sizes and the proxy share one source.
@@ -14,7 +15,8 @@ import { buildChatTools, CORE_GROUPS, FALLBACK_GROUPS, needsApproval, toolNamesF
 import { ALL_CHAT_TOOL_SPECS, opSpec, TOOL_GROUPS, type ToolGroup } from '../../../src/lib/chat/registry';
 import { CHAT_INSTRUCTIONS } from '../../../src/lib/chat/instructions';
 import { renderChatContextBlock } from '../../../src/lib/chat/context-block';
-import { listMcpTools } from '../../../src/app/api/mcp/tools';
+import { listMcpTools, mcpServerInstructions, type McpToolSurface } from '../../../src/app/api/mcp/tools';
+import { mcpGroupOfToolName } from '@buildd/core/mcp-tool-groups';
 
 export type Surface = 'chat' | 'mcp';
 
@@ -40,8 +42,8 @@ export function chatToolDefs(opts: { allowWrites?: boolean; canAdmin?: boolean }
   });
 }
 
-export function mcpToolDefs(): ToolDef[] {
-  return (listMcpTools({ accountLevel: 'admin', isSensitive: false }) as Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>)
+export function mcpToolDefs(surface: McpToolSurface = 'groups'): ToolDef[] {
+  return (listMcpTools({ accountLevel: 'admin', isSensitive: false, surface }) as Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>)
     .map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
 }
 
@@ -96,8 +98,9 @@ export function isWrite(surface: Surface, tool: string, input: Record<string, un
   if (surface === 'chat') return needsApproval(tool, input);
   if (tool === 'recall') return false;
   if (tool === 'learn') return true;
-  if (tool !== 'buildd') return true;
+  if (tool !== 'buildd' && !mcpGroupOfToolName(tool)) return true;
   const action = String(input.action ?? '');
+  if (action === 'help' && tool !== 'buildd') return false;
   const params = (input.params && typeof input.params === 'object' ? input.params : {}) as Record<string, unknown>;
   if (!ALL_CHAT_TOOL_SPECS[action]) return true;
   const s = opSpec(action, params);
@@ -105,8 +108,4 @@ export function isWrite(surface: Surface, tool: string, input: Record<string, un
 }
 
 /** `/api/mcp`'s server `instructions` at admin level (route.ts), sent on initialize. */
-export const MCP_SERVER_INSTRUCTIONS = `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.
-
-**Token level:** admin — gates which \`buildd\` actions you can call (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
-
-**Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`;
+export const MCP_SERVER_INSTRUCTIONS = mcpServerInstructions('admin', 'groups');

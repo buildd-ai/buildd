@@ -20,6 +20,8 @@ import { builddKey, estTokens } from './env';
 import { callRemoteTool, httpApi } from './remote';
 import { buildChatTools } from '../../../src/lib/chat/tools';
 import { resolveTaskRef } from '../../../src/lib/chat/targets';
+import { routeGroupToolCall } from '../../../src/app/api/mcp/tools';
+import { mcpGroupOfToolName } from '@buildd/core/mcp-tool-groups';
 
 const surface = (process.env.CHAT_EVAL_SURFACE ?? 'chat') as Surface;
 const tools: ToolDef[] = JSON.parse(readFileSync(process.env.CHAT_EVAL_TOOLS!, 'utf8'));
@@ -75,6 +77,16 @@ async function execute(name: string, input: Record<string, unknown>): Promise<{ 
     const failed = typeof result.data === 'string' && result.data.startsWith('Error:');
     // dataChars: the part that is text; the rest is the objects array and summary.
     return { text: JSON.stringify(result), isError: failed, write: false, dataChars: String(result.data ?? '').length };
+  }
+  // Group tools answer help and wrong-group calls exactly as /api/mcp does,
+  // and forward an action of their group to the one-tool `buildd`, which any
+  // deployed server has.
+  const group = mcpGroupOfToolName(name);
+  if (group) {
+    const routed = routeGroupToolCall(group, input, 'admin');
+    if (routed.kind === 'reply') return { text: routed.text, isError: routed.isError, write: false };
+    const out = await callRemoteTool('buildd', { action: routed.action, params: routed.params });
+    return { text: out.text, isError: out.isError, write: false };
   }
   const out = await callRemoteTool(name, input);
   return { text: out.text, isError: out.isError, write: false };

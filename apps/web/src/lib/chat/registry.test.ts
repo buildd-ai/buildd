@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { allActions } from '@buildd/core/mcp-tools';
+import { ACTION_AREA } from '@buildd/core/mcp-tool-groups';
 import { CHAT_APPROVAL_TOOLS, CHAT_READ_OPS, CHAT_READ_TOOLS } from '@buildd/shared';
 import { CHAT_ROUTES, matchChatRoute } from './in-process-api';
 import {
@@ -24,6 +25,14 @@ describe('classification covers the whole MCP buildd surface', () => {
   it('nothing is classified that MCP doesn\'t have (a rename fails here)', () => {
     const extra = [...Object.keys(CHAT_TOOL_SPECS), ...Object.keys(NOT_IN_CHAT)].filter(a => !(allActions as readonly string[]).includes(a));
     expect(extra).toEqual([]);
+  });
+
+  it('an MCP-backed chat tool takes its group from the shared action registry', () => {
+    for (const [action, spec] of Object.entries(CHAT_TOOL_SPECS)) {
+      expect(spec.group).toBe(ACTION_AREA[action as keyof typeof ACTION_AREA] as typeof spec.group);
+    }
+    // Worker-lifecycle actions (area `work`) are never chat tools.
+    for (const [action, area] of Object.entries(ACTION_AREA)) if (area === 'work') expect(action in CHAT_TOOL_SPECS).toBe(false);
   });
 
   it('chat-native tools don\'t shadow an MCP action', () => {

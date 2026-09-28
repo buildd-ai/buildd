@@ -1,6 +1,6 @@
 ---
 name: buildd-mcp-consumer
-description: "Use whenever the buildd MCP tools (`buildd`, `recall`, `learn`) are available and you're about to act on a buildd task or file one — task coordination workflow: claiming, working, and completing tasks; deciding between a hard block and a flagged assumption; reporting friction; and which branch a task's PR should target."
+description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one — task coordination workflow: claiming, working, and completing tasks; deciding between a hard block and a flagged assumption; reporting friction; and which branch a task's PR should target."
 author: buildd
 ---
 
@@ -9,6 +9,22 @@ author: buildd
 You have the buildd MCP server mounted. This skill is the procedure for using
 it — the connector's `instructions` only tell you your token level and that
 this skill exists; everything about *how* to work a task lives here.
+
+## Tools
+
+Most sessions list one tool, `buildd`, that takes `{ action, params }` for
+every action; below, `buildd action=X` means exactly that call.
+
+A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
+one tool per area instead: `buildd_work` (your own task: claim, progress,
+notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
+`buildd_prs`, `buildd_runners` (explain, errors, failures, usage, runners),
+`buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
+`{ action, params }`, lists its actions with their params, and has action
+`help` (`params={ action }`) for one action's full docs. There,
+`buildd action=X` means: call X on the group tool that lists it (a wrong group
+tells you the right one). In a client that defers MCP tools, load only the
+group you need, e.g. `select:mcp__buildd__buildd_work`.
 
 ## Task Lifecycle
 
