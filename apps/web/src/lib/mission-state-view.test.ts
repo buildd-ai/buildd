@@ -678,3 +678,58 @@ describe('deriveMissionStateView — visual review', () => {
     expect(view.outstanding).toHaveLength(0);
   });
 });
+
+// ─── executor='local' (task 09ed6675) ────────────────────────────────────────
+describe('deriveMissionStateView — local executor', () => {
+  const open = [{ id: 't1', status: 'pending', title: 'Build it' }, { id: 't2', status: 'pending', title: 'Test it' }];
+  const local: MissionStateInput = { ...base, executor: 'local', health: 'STALLED', openTasks: open };
+
+  it('queued tasks with no runner read as waiting for the local session, not a stall', () => {
+    const view = deriveMissionStateView(local);
+    expect(view.kind).toBe('running');
+    expect(view.displayState).toBe('local');
+    expect(view.chip.label).toBe('LOCAL');
+    expect(view.waitingOn).toBeNull();
+    expect(view.situation.headline).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(view.situation.headline).not.toMatch(/no live worker/);
+    expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
+    // The same input on runners is the genuine stall.
+    expect(deriveMissionStateView({ ...local, executor: 'runner' }).displayState).toBe('stalled');
+  });
+
+  it('between claims (a row past pending, nothing live) it reads as running in a local session', () => {
+    const view = deriveMissionStateView({ ...local, openTasks: [{ id: 't1', status: 'in_progress' }, { id: 't2', status: 'pending' }] });
+    expect(view.chip.label).toBe('LOCAL');
+    expect(view.situation.headline).toBe('Running in a local session. 2 tasks are still open.');
+  });
+
+  it('a single queued task: waiting for a local session to claim it', () => {
+    const view = deriveMissionStateView({ ...local, openTasks: [open[0]] });
+    expect(view.situation.headline).toBe('Waiting for a local session to claim the open task.');
+  });
+
+  it('a task fact on a local mission advises claiming, not dispatching', () => {
+    const view = deriveMissionStateView(local);
+    const task = view.outstanding.find(f => f.kind === 'task');
+    expect(task).toBeDefined();
+    expect(nextActionFor(task!)).toContain('claim_task');
+    expect(nextActionFor(task!)).not.toMatch(/Dispatch a worker/);
+  });
+
+  it('the session\'s own claimed worker keeps the LOCAL chip', () => {
+    const view = deriveMissionStateView({ ...local, activeAgents: 1, health: 'NOMINAL' });
+    expect(view.chip.label).toBe('LOCAL');
+    expect(view.situation.headline).toStartWith('Running in a local session (1 agent)');
+  });
+
+  it('held beats local', () => {
+    const view = deriveMissionStateView({ ...local, isHeld: true });
+    expect(view.kind).toBe('held');
+    expect(view.chip.label).toBe('HELD');
+  });
+
+  it('a failed task still reads as failing on a local mission', () => {
+    const view = deriveMissionStateView({ ...local, health: 'FAILING', failedTasks: [{ id: 't3', title: 'Broke' }] });
+    expect(view.kind).toBe('failing');
+  });
+});

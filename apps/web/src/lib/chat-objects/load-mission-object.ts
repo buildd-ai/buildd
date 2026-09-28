@@ -110,6 +110,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   const displayState = deriveMissionDisplayState({
     status: mission.status,
     isHeld: m.isHeld === true,
+    executor: m.executor ?? null,
     orchestrationMode: (mission.orchestrationMode as string | null) ?? 'auto',
     activeAgents,
     health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil } as any, (mission.tasks || []) as any),

@@ -346,6 +346,7 @@ export default async function RoleProfilePage({
                       nextRunAt: (mission.schedule as any)?.nextRunAt || null,
                       orchestrationMode: mission.orchestrationMode ?? null,
                       isHeld: mission.isHeld ?? false,
+                      executor: (mission as { executor?: string | null }).executor ?? null,
                       criteriaEscalatedAt: mission.criteriaEscalatedAt,
                       hasPendingDeliverableWork: hasPendingDeliverableWork(mission.tasks ?? []),
                     });

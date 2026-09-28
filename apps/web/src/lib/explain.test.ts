@@ -321,6 +321,36 @@ describe('explainMission', () => {
 // ─── Task scope ───────────────────────────────────────────────────────────────
 
 describe('explainTask', () => {
+  // executor='local' (task 09ed6675): a queued task in a local mission is the
+  // person's session's to claim — never "stalled, dispatch a worker".
+  it('a pending task in a local mission is waiting for a local session to claim it', async () => {
+    missionRow = { id: 'mission-1', executor: 'local', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.chip.label).toBe('LOCAL');
+    expect(answer.situation.headline).toBe('Waiting for a local session to claim the open task.');
+    expect(answer.situation.headline).not.toMatch(/stall/i);
+    expect(answer.situation.nextAction ?? '').toContain('claim_task');
+    expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('waiting for a local session to claim it');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('no live worker');
+  });
+
+  it('the same pending task in a runner mission still reads as a stall', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.chip.label).not.toBe('LOCAL');
+    expect(answer.situation.headline).not.toContain('local session');
+  });
+
+  it('a held local mission is not read as local (held wins)', async () => {
+    missionRow = { id: 'mission-1', executor: 'local', isHeld: true };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.chip.label).not.toBe('LOCAL');
+  });
+
   it('reports a completed task with an unmerged PR as awaiting merge', async () => {
     taskRows = [
       task({

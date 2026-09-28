@@ -296,6 +296,7 @@ const updateMission: Builder = async (input, env) => {
     changes.push({ label, before: clip(m[k]), after: clip(input[k]) });
   }
   if (input.startMode !== undefined) changes.push({ label: 'Start', before: m.isHeld ? 'held' : 'armed', after: String(input.startMode) });
+  if (input.executor !== undefined) changes.push({ label: 'Runs in', before: m.executor === 'local' ? 'a local session' : 'runners', after: input.executor === 'local' ? 'a local session' : 'runners' });
   // Add or remove criteria against the mission's CURRENT list, so a change
   // never drops a criterion the model couldn't see in full.
   const add = listOf(input.addGoalCriteria).filter((c): c is Obj => !!c && typeof c === 'object');
@@ -320,7 +321,7 @@ const updateMission: Builder = async (input, env) => {
     input: { ...input, missionId: m.id },
     preview: {
       v: 1, verb,
-      target: { kind: 'mission', id: m.id, label: String(m.title), detail: m.isHeld ? 'held' : m.status, workspaceId: m.workspaceId ?? null },
+      target: { kind: 'mission', id: m.id, label: String(m.title), detail: m.isHeld ? 'held' : m.executor === 'local' ? 'local' : m.status, workspaceId: m.workspaceId ?? null },
       changes,
       ...(input.startMode === 'held' || input.status === 'paused' ? { note: 'No new tasks are claimed until it\'s resumed; running agents finish their current step.' } : {}),
       fingerprint: fingerprint(m.id, changes, { status: m.status, held: m.isHeld }),

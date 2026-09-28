@@ -145,7 +145,8 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         goalCriteria: z.array(criterion).max(12).optional().describe('create: the criteria. update: REPLACES the list; prefer addGoalCriteria / removeGoalCriteria.'),
         addGoalCriteria: z.array(criterion).max(12).optional().describe('update: criteria to add to the current list.'),
         removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
-        startMode: z.enum(['armed', 'held']).optional().describe('update: "held" stops its tasks being claimed; arm releases it.'),
+        startMode: z.enum(['armed', 'held']).optional().describe('update: "held" pauses it — no task is claimed by anyone until armed. Not for work someone runs locally; use executor.'),
+        executor: z.enum(['runner', 'local']).optional().describe('create / update: "local" when a person runs its tasks from their own session (runners leave them alone; the session claims each one). "runner" (default) for background runners.'),
         priority: z.number().int().min(0).max(10).optional(),
       }).catchall(z.unknown());
     case 'create_task':
@@ -274,7 +275,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
 const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
-  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, or holds it (startMode "held"). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
+  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), or sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
   create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',

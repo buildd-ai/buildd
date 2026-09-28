@@ -301,6 +301,9 @@ export function buildMissionListCard(
     if (kind === 'done') return { label: 'Done', tone: 'success' };
     if (kind === 'held') return { label: 'Held', tone: 'warning' };
     if (needsYou) return { label: 'Needs you', tone: 'warning' };
+    // A local mission is active work run from a person's session: LOCAL, in
+    // the running tone — never Held, and never Stalled for want of a runner.
+    if (kind === 'active' && row.executor === 'local') return { label: 'Local', tone: 'accent' };
     if (summary.liveWorkers > 0) return { label: 'Running', tone: 'accent' };
     if (kind === 'recurring') return { label: 'Idle', tone: 'muted' };
     if (kind === 'scheduled') return { label: 'Scheduled', tone: 'muted' };

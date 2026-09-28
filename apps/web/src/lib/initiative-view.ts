@@ -166,6 +166,8 @@ export function targetDateLabel(
 }
 
 const isDone = (m: InitiativeMissionInput) => m.kind === 'done';
+/** A status word for work in flight — a local session's mission is running work too. */
+const isRunningLabel = (label: string) => label === 'Running' || label === 'In CI' || label === 'Local';
 const needsYou = (m: InitiativeMissionInput) => !isDone(m) && (m.question != null || m.ask != null || m.statusLabel === 'Needs you');
 const isHeld = (m: InitiativeMissionInput) => !isDone(m) && m.kind === 'held';
 
@@ -178,7 +180,7 @@ function askVerb(label: string): string {
 function missionRank(m: InitiativeMissionInput): number {
   if (needsYou(m)) return 0;
   if (isHeld(m)) return 1;
-  if (m.statusLabel === 'Running' || m.statusLabel === 'In CI') return 2;
+  if (isRunningLabel(m.statusLabel)) return 2;
   if (isDone(m)) return 4;
   return 3;
 }
@@ -205,7 +207,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
     missionId: m.id,
     title: m.title,
     href: m.href,
-    state: isDone(m) ? 'done' : needsYou(m) ? 'needs_you' : isHeld(m) ? 'held' : m.statusLabel === 'Running' || m.statusLabel === 'In CI' ? 'running' : 'waiting',
+    state: isDone(m) ? 'done' : needsYou(m) ? 'needs_you' : isHeld(m) ? 'held' : isRunningLabel(m.statusLabel) ? 'running' : 'waiting',
     fill: isDone(m) ? 1 : m.total > 0 ? Math.max(0, Math.min(1, m.done / m.total)) : 0,
   }));
 
