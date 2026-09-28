@@ -4,6 +4,34 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.9.0 — 2026-09-28
+
+The thread slots an app with its own feed needs, found moving buildd's
+conversation onto `ChatThread`. Minor: every addition is optional; without
+them the thread renders the same markup as on 0.8.0 (checked against the 0.8
+component, and pinned in `thread-slots.dom.test.tsx`).
+
+- `/chat/react` `ChatThread`:
+  - `renderMessageHeader(message, ctx)` / `renderMessageFooter(message, ctx)`:
+    a node above and after a message's parts (`.kit-msg-head` /
+    `.kit-msg-foot`, only when not null). `ctx` is `{ index, streaming,
+    messages }` (`ThreadMessageContext`, exported).
+  - `renderToolGroup(parts, message, ctx)`: each run of consecutive tool
+    calls as one node. Text, approvals, hand-offs, steers and turn errors end
+    a run; parts that render nothing don't. `renderTool` still wins; a group
+    drawn as null leaves no frame.
+  - `steps(message, streaming)`: the app's own checklist (an empty list: no
+    panel), also for the pending turn; `thinkingTitle` for its summary.
+  - `eventPartType`: an app's own event part (e.g. `data-buildd-event`),
+    passed to `renderEvent` as is.
+  - `renderText(text, message, part)`: the text part (its `streaming` state).
+- `ThinkingPanel` `title` takes a node.
+- `ChatComposer` `inputId`: the message box's id, for a focus shortcut.
+- `/chat/styles.css`: the approval card's fold toggle keeps its mono face
+  inside a thread (`button.kit-fold-toggle`; it lost to `.kit-chat button`).
+- `KIT_VERSION` is `0.9.0` (pinned decision versions read `…|kit-0.9.0`;
+  fingerprints unchanged).
+
 ## 0.8.0 — 2026-09-28
 
 The approval, empty-state, tier and menu slots buildd's own chat needed.

@@ -296,7 +296,6 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
   const busy = status === 'submitted' || status === 'streaming';
-  const lastIsUser = messages[messages.length - 1]?.role === 'user';
   // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
   // "Mission sheet"). An opaque sheet with a context card; the title shows once.
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
@@ -522,7 +521,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && (
             <div data-testid="chat-empty-state" className={historyOpen ? 'lg:hidden' : 'hidden md:block lg:hidden'}>{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
+          <ChatFeed messages={messages} agent={agent} status={status} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>

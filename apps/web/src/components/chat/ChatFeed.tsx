@@ -3,22 +3,39 @@
 /**
  * The conversation: your messages on the right, the agent's answers on the
  * left as prose, tool rows, approval cards and live objects, in the order the
- * parts arrived. Conversation is soft (Plex Sans, tinted bubbles, no frames)
- * on desktop; on a phone the person's message is a raised square block and the
- * turn in flight is the Thinking panel (thinking-model.ts). Fleet objects stay
- * hard and square (docs/design/chat-canvas.md).
+ * parts arrived. The list is the kit's `ChatThread` (@builddai/ai-kit/chat/react);
+ * everything drawn inside it is buildd's, through the thread's slots:
+ *
+ * - `renderText`: markdown in the voice face (a caret trails the streaming
+ *   paragraph); a person's message is their bubble.
+ * - `renderMessageHeader`: who and when (the agent's avatar, the author).
+ * - `renderToolGroup` / `renderTool`: consecutive calls under one header
+ *   (ToolCallRows), approvals as buildd's card, each followed by the objects
+ *   its writes returned (feed-model.ts `feedSegments`).
+ * - `renderMessageFooter`: the reads' objects after the answer (answer
+ *   first), the collapsed "Also read" row, the thumbs, or a message's tag.
+ * - `eventPartType` / `renderEvent`: lifecycle events (`data-buildd-event`)
+ *   as their line or a fired watch's notice, with their objects.
+ * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel
+ *   (thinking-model.ts), steps in plain words, never a tool's name.
+ *
+ * Conversation is soft on desktop; on a phone the person's message is a
+ * raised square block. Fleet objects stay hard and square
+ * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo } from 'react';
+import { ChatThread, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
+import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
-import { isTextPart, messageMeta, type ChatMessage } from './chat-contract';
-import { eventRefsShownLater, feedSegments, type FeedSegment } from './feed-model';
+import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
+import { eventRefsShownLater, feedSegments, isApprovalPart, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
-import TurnFeedback from './TurnFeedback';
-import { intentTag, thinkingSteps, type ThinkingStep } from './thinking-model';
+import { intentTag, thinkingSteps } from './thinking-model';
 import WatchNotice from './WatchNotice';
+import TurnFeedback from './TurnFeedback';
 import { visualPhaseTone, type VisualReviewTone } from '@/components/visual-review/VisualReviewLine';
 import { VISUAL_REVIEW_PHASES, type VisualReviewPhase } from '@buildd/shared';
 
@@ -40,40 +57,6 @@ export function AgentAvatar({ agent, size = 'md' }: { agent: ChatAgent; size?: '
       {isBuildd ? '✳' : agent.name.charAt(0).toUpperCase()}
     </span>
   );
-}
-
-function Segment({ seg }: { seg: FeedSegment }) {
-  switch (seg.kind) {
-    case 'text':
-      return (
-        // Buildd speaks in the voice face, finished or thinking (docs/design/chat-v3-desktop.md, thinking frame).
-        <div data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)] lg:max-w-[640px]">
-          {/* While streaming, a solid block caret trails the last paragraph (inline, not a new line). */}
-          <MarkdownContent
-            content={seg.text}
-            images="link"
-            className={`!text-[17px] !leading-[1.45] !text-[var(--chat-text)] [&_code]:!bg-[var(--convo-me)] ${seg.streaming ? 'stream-caret' : ''}`}
-          />
-        </div>
-      );
-    case 'tools':
-      return <ToolCallGroup calls={seg.calls} />;
-    case 'approval':
-      return <ApprovalCard part={seg.part} />;
-    case 'objects':
-      return <ObjectsSegment refs={seg.refs} />;
-    case 'more':
-      return <MoreObjects refs={seg.refs} />;
-    case 'watch':
-      return <WatchNotice text={seg.text} notice={seg.notice} />;
-    case 'event':
-      return (
-        <div data-testid="feed-event" data-event={seg.event} data-tone={eventTone(seg) ?? undefined} className="flex items-start gap-2 font-mono text-[12px] text-text-secondary">
-          <span aria-hidden="true" className={`mt-[5px] h-2 w-2 shrink-0 ${eventDotClass(seg)}`} />
-          <span className="min-w-0 [overflow-wrap:anywhere]">{seg.text}</span>
-        </div>
-      );
-  }
 }
 
 const TONE_DOT: Record<VisualReviewTone, string> = {
@@ -99,6 +82,26 @@ export function eventDotClass(seg: Extract<FeedSegment, { kind: 'event' }>): str
   return seg.event === 'mission_failed' ? 'bg-status-error' : seg.event === 'question' ? 'bg-status-warning' : seg.event === 'mission_completed' ? 'bg-status-success' : 'bg-accent';
 }
 
+/** What an event message draws: its line (or a fired watch's notice) and the objects it names. */
+function EventSegments({ segs }: { segs: readonly FeedSegment[] }) {
+  return (
+    <>
+      {segs.map(s => {
+        if (s.kind === 'watch') return <WatchNotice key={s.key} text={s.text} notice={s.notice} />;
+        if (s.kind === 'objects') return <ObjectsSegment key={s.key} refs={s.refs} />;
+        if (s.kind === 'more') return <MoreObjects key={s.key} refs={s.refs} />;
+        if (s.kind !== 'event') return null;
+        return (
+          <div key={s.key} data-testid="feed-event" data-event={s.event} data-tone={eventTone(s) ?? undefined} className="flex items-start gap-2 font-mono text-[12px] text-text-secondary">
+            <span aria-hidden="true" className={`mt-[5px] h-2 w-2 shrink-0 ${eventDotClass(s)}`} />
+            <span className="min-w-0 [overflow-wrap:anywhere]">{s.text}</span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /**
  * The tiny tag under a message: where the reply went. Tapping it opens the
  * composer's scope. It carries its own ground chip: small text straight on the
@@ -117,145 +120,162 @@ function IntentTag({ label }: { label: string }) {
   );
 }
 
-const UserMessage = memo(function UserMessage({ m, tag }: { m: ChatMessage; tag: string | null }) {
-  const meta = messageMeta(m);
-  const text = m.parts.filter(isTextPart).map(p => p.text).join('\n');
+/**
+ * The person's message. Phone: a raised square block with an offset shadow, in
+ * the voice face. Desktop keeps the soft tinted bubble.
+ */
+const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
-    <div data-testid="feed-message" data-role="user" className="flex flex-col items-end gap-1">
-      <div className="flex items-center gap-2 px-1 font-mono text-[11px] text-text-muted">
-        {meta.authorName && <span className="text-text-secondary">{meta.authorName}</span>}
-        {meta.createdAt && <ZonedTime value={meta.createdAt} format="time" />}
-      </div>
-      {/* Phone: a raised square block with an offset shadow, in the voice face.
-          Desktop keeps the soft tinted bubble. */}
-      <div data-testid="feed-user-bubble" className="max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none lg:max-w-[590px] lg:rounded-none lg:border lg:bg-[var(--chat-raised)] lg:py-3 lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif] lg:text-[17px] lg:leading-[1.4] lg:text-[var(--chat-text)] lg:shadow-[3px_3px_0_0_var(--chat-rule)]">
-        {text}
-      </div>
-      {tag && <IntentTag label={tag} />}
+    <div data-testid="feed-user-bubble" className="ml-auto w-fit max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none lg:max-w-[590px] lg:rounded-none lg:border lg:bg-[var(--chat-raised)] lg:py-3 lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif] lg:text-[17px] lg:leading-[1.4] lg:text-[var(--chat-text)] lg:shadow-[3px_3px_0_0_var(--chat-rule)]">
+      {text}
     </div>
   );
 });
 
-function StepMark({ state }: { state: ThinkingStep['state'] }) {
-  if (state === 'pending') return <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 border border-[var(--chat-dim)]" />;
-  return <span aria-hidden="true" className={`h-2.5 w-2.5 shrink-0 ${state === 'active' ? 'step-active bg-[var(--mood-thinking)]' : 'bg-[var(--mood-thinking-done)]'}`} />;
-}
-
-const STEP_TEXT: Record<ThinkingStep['state'], string> = {
-  done: 'text-[var(--chat-muted)]',
-  active: 'text-[var(--mood-thinking-text)]',
-  pending: 'text-[var(--chat-dim)]',
-};
-
-/**
- * The turn in flight (docs/design/chat-canvas.md, "Thinking"): a square panel
- * with a plain blue left rule, BUILDD / THINKING and three ticking squares,
- * the steps in plain words, then what the agent is saying. No glow here; the
- * surface's one glow is the composer sweep.
- */
-function ThinkingPanel({ m, agent }: { m: ChatMessage | null; agent: ChatAgent }) {
-  const parts = m?.parts ?? [];
-  const steps = thinkingSteps(parts);
-  const segs = feedSegments(parts).filter(s => s.kind !== 'tools');
+/** Buildd speaks in the voice face, finished or thinking (docs/design/chat-v3-desktop.md, thinking frame). */
+function AgentText({ text, streaming }: { text: string; streaming: boolean }) {
   return (
-    <div data-testid="feed-message" data-role="assistant" data-live="true">
-      <section
-        data-testid="thinking-panel"
-        aria-label={`${agent.name} is thinking`}
-        aria-busy="true"
-        className="border border-[var(--chat-rule)] border-l-2 border-l-[var(--mood-thinking-rule)] bg-[var(--chat-panel)] px-4 pb-4 pt-3"
-      >
-        <div className="flex items-center gap-3 font-mono text-[11px] font-semibold uppercase tracking-[.16em]">
-          <span className="text-[var(--mood-needs)]">buildd</span>
-          <span className="text-[var(--mood-thinking-label)]">thinking</span>
-          <span aria-hidden="true" className="flex gap-[3px]">
-            <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-            <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-            <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
-          </span>
-        </div>
-        <ol aria-label="Steps" className="mt-3 flex flex-col gap-2">
-          {steps.map(st => (
-            <li key={st.key} data-testid="thinking-step" data-state={st.state} className={`flex items-center gap-3 font-mono text-[13px] ${STEP_TEXT[st.state]}`}>
-              <StepMark state={st.state} />
-              <span className="min-w-0">{st.label}</span>
-            </li>
-          ))}
-        </ol>
-        {segs.length > 0 && (
-          <div className="mt-3 flex flex-col gap-3.5">
-            {segs.map(s => s.kind === 'text'
-              ? (
-                <div key={s.key} data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)]">
-                  <MarkdownContent
-                    content={s.text}
-                    images="link"
-                    className={`!text-[17px] !leading-[1.45] !text-[var(--chat-text)] [&_code]:!bg-[var(--convo-me)] ${s.streaming ? 'stream-caret' : ''}`}
-                  />
-                </div>
-              )
-              : <Segment key={s.key} seg={s} />)}
-          </div>
-        )}
-      </section>
+    <div data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)] lg:max-w-[640px]">
+      {/* While streaming, a solid block caret trails the last paragraph (inline, not a new line). */}
+      <MarkdownContent
+        content={text}
+        images="link"
+        className={`!text-[17px] !leading-[1.45] !text-[var(--chat-text)] [&_code]:!bg-[var(--convo-me)] ${streaming ? 'stream-caret' : ''}`}
+      />
     </div>
   );
 }
 
-function AssistantMessage({ m, agent, hideEventRefs }: { m: ChatMessage; agent: ChatAgent; hideEventRefs?: ReadonlySet<string> }) {
-  const meta = messageMeta(m);
-  const segs = feedSegments(m.parts, { hideEventRefs });
-  if (segs.length === 0) return null;
-  return (
-    <div data-testid="feed-message" data-role="assistant" className="flex gap-3">
-      <AgentAvatar agent={agent} size="sm" />
-      <div className="flex min-w-0 flex-1 flex-col gap-3.5">
-        <div className="flex min-h-7 items-center gap-2 font-mono text-[11.5px] text-text-muted">
-          <span className="font-semibold text-text-secondary">{agent.name}</span>
-          {meta.createdAt && <ZonedTime value={meta.createdAt} format="time" />}
-          {meta.durationMs != null && <span>{`· ${(meta.durationMs / 1000).toFixed(1)}s`}</span>}
-        </div>
-        {segs.map(s => <Segment key={s.key} seg={s} />)}
-        {m.role === 'assistant' && <TurnFeedback messageId={m.id} />}
-      </div>
-    </div>
-  );
+/** BUILDD / THINKING and three ticking squares: the panel's title while a turn streams. */
+const THINKING_TITLE = (
+  <span className="buildd-thinking-title">
+    <span className="text-[var(--mood-needs)]">buildd</span>
+    <span className="text-[var(--mood-thinking-label)]">thinking</span>
+    <span aria-hidden="true" className="flex gap-[3px]">
+      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
+      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
+      <span className="thinking-tick h-1 w-1 bg-[var(--mood-thinking)]" />
+    </span>
+  </span>
+);
+
+/** The steps of the turn in flight (thinking-model.ts); a settled turn shows no panel. */
+function liveSteps(m: KitMessage, streaming: boolean): StepData[] {
+  if (!streaming) return [];
+  return thinkingSteps(m.parts).map(s => ({ id: s.key, label: s.label, state: s.state }));
 }
 
 export default function ChatFeed({
   messages,
   agent,
-  thinking = false,
-  live = false,
+  status = 'ready',
   error,
 }: {
   messages: readonly ChatMessage[];
   agent: ChatAgent;
-  /** Submitted, nothing streamed yet. */
-  thinking?: boolean;
-  /** A turn is in flight: the latest assistant turn draws as the Thinking panel. */
-  live?: boolean;
+  /**
+   * The turn's status (`useChat`). `submitted` with the person's message last
+   * shows the Thinking panel on its own; `submitted` / `streaming` draw the
+   * latest assistant turn as the panel.
+   */
+  status?: ChatStatus;
   error?: string | null;
 }) {
-  const last = messages[messages.length - 1];
-  const liveId = live && last && last.role === 'assistant' ? last.id : null;
   const hidden = useMemo(() => eventRefsShownLater(messages), [messages]);
+  // One segment plan per message and render (feed-model.ts): which objects
+  // follow which calls, which wait for the end of the answer.
+  const plans = new Map<string, FeedSegment[]>();
+  const planOf = (m: ChatMessage) => {
+    let p = plans.get(m.id);
+    if (!p) { p = feedSegments(m.parts, { hideEventRefs: hidden.get(m.id) }); plans.set(m.id, p); }
+    return p;
+  };
+  const objectsAfter = (m: ChatMessage, callIds: readonly string[]) => planOf(m)
+    .filter((s): s is Extract<FeedSegment, { kind: 'objects' }> => s.kind === 'objects' && callIds.some(id => s.key === `obj-${id}`))
+    .map(s => <ObjectsSegment key={s.key} refs={s.refs} />);
+
+  const header = (km: KitMessage, ctx: ThreadMessageContext) => {
+    const m = km as ChatMessage;
+    const meta = messageMeta(m);
+    if (m.role === 'user') {
+      return (
+        <div data-testid="feed-message-meta" className="ml-auto flex items-center gap-2 px-1 font-mono text-[11px] text-text-muted">
+          {meta.authorName && <span className="text-text-secondary">{meta.authorName}</span>}
+          {meta.createdAt && <ZonedTime value={meta.createdAt} format="time" />}
+        </div>
+      );
+    }
+    if (ctx.streaming) return null;
+    return (
+      <>
+        <AgentAvatar agent={agent} size="sm" />
+        <div className="flex min-h-7 items-center gap-2 font-mono text-[11.5px] text-text-muted">
+          <span className="font-semibold text-text-secondary">{agent.name}</span>
+          {meta.createdAt && <ZonedTime value={meta.createdAt} format="time" />}
+          {meta.durationMs != null && <span>{`· ${(meta.durationMs / 1000).toFixed(1)}s`}</span>}
+        </div>
+      </>
+    );
+  };
+
+  const footer = (km: KitMessage, ctx: ThreadMessageContext) => {
+    const m = km as ChatMessage;
+    if (m.role === 'user') {
+      const tag = intentTag(messages, ctx.index);
+      return tag ? <IntentTag label={tag.label} /> : null;
+    }
+    if (m.role !== 'assistant') return null;
+    // Answer first: what the reads returned comes after the reply.
+    const tail = planOf(m).filter(s => (s.kind === 'objects' && s.key === 'obj-featured') || s.kind === 'more');
+    return (
+      <>
+        {tail.map(s => (s.kind === 'more' ? <MoreObjects key={s.key} refs={s.refs} /> : s.kind === 'objects' ? <ObjectsSegment key={s.key} refs={s.refs} /> : null))}
+        <TurnFeedback messageId={m.id} />
+      </>
+    );
+  };
+
   return (
-    <div data-testid="chat-feed" className="flex flex-col gap-7">
-      {messages.map((m, i) => m.role === 'user'
-        ? <UserMessage key={m.id} m={m} tag={intentTag(messages, i)?.label ?? null} />
-        : m.id === liveId ? <ThinkingPanel key={m.id} m={m} agent={agent} />
-        : m.role === 'assistant' || m.role === 'event' ? <AssistantMessage key={m.id} m={m} agent={agent} hideEventRefs={hidden.get(m.id)} /> : null)}
-      {thinking && (
-        <div data-testid="feed-thinking">
-          <ThinkingPanel m={null} agent={agent} />
-        </div>
-      )}
-      {error && (
-        <div role="alert" data-testid="feed-error" className="rounded-[12px] bg-[var(--fleet-err-soft)] px-4 py-3 font-convo text-[14px] text-status-error">
-          {error}
-        </div>
-      )}
+    <div data-testid="chat-feed">
+      <ChatThread
+        className="buildd-thread"
+        messages={messages as readonly KitMessage[]}
+        status={status}
+        error={error || undefined}
+        label="Conversation"
+        eventPartType={CHAT_EVENT_PART_TYPE}
+        renderText={(text: string, km: KitMessage, part: ChatTextPart) => {
+          if (!text.trim()) return null;
+          if (km.role === 'user') return <UserBubble text={text} />;
+          return <AgentText text={text} streaming={part.state === 'streaming'} />;
+        }}
+        renderTool={(part: ChatToolPart, km: KitMessage) => {
+          // Approvals (asked, answered, or decided) are buildd's card, then what the write filed.
+          if (!isApprovalPart(part) && !part.approval && part.state !== 'output-denied') return undefined;
+          return (
+            <>
+              <ApprovalCard part={part} />
+              {objectsAfter(km as ChatMessage, [part.toolCallId])}
+            </>
+          );
+        }}
+        renderToolGroup={(parts: readonly ChatToolPart[], km: KitMessage, ctx: ThreadMessageContext) => {
+          // While the turn streams, the panel's steps say what the calls are doing.
+          if (ctx.streaming) return null;
+          return (
+            <>
+              <ToolCallGroup calls={parts.filter(isToolPart)} />
+              {objectsAfter(km as ChatMessage, [parts[0].toolCallId])}
+            </>
+          );
+        }}
+        renderEvent={(_data, km: KitMessage) => <EventSegments segs={planOf(km as ChatMessage)} />}
+        renderMessageHeader={header}
+        renderMessageFooter={footer}
+        steps={liveSteps}
+        thinkingTitle={THINKING_TITLE}
+      />
     </div>
   );
 }
+

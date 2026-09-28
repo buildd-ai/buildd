@@ -84,7 +84,7 @@ describe('Ask button', () => {
     expect(q('[data-testid="chat-column"]')?.dataset.canvas).toBe('overlay');
     // The mission sheet: the context card stands in for the pinned strip until the first message.
     expect(q('[data-testid="mission-context-card"]')).not.toBeNull();
-    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+    expect(q('.buildd-pinned')).toBeNull();
     // The Ask button steps aside while the canvas is up.
     expect(q('[data-testid="canvas-ask"]')).toBeNull();
   });
