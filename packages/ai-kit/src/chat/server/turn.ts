@@ -27,6 +27,7 @@ import {
   isToolPart,
   STEER_PART_TYPE,
   STEP_PART_TYPE,
+  TURN_ERROR_PART_TYPE,
   toolNameOf,
   type ApprovalPreview,
   type ChatMessage,
@@ -38,13 +39,16 @@ import {
   type HandoffData,
   type StepData,
   type SteerData,
+  type TurnErrorData,
 } from '@builddai/ai-kit/chat/contract';
+import { classifyTurnError } from './errors';
 import { contentInContext, toolOutputInHistory, ToolGroupsError, type ToolGroups } from './permissions';
 import { approvalRequestsIn, previewMatches, reconcileApprovals, type ApprovalRequestRow } from './approvals';
 import type { ChatStore, StoredMessage } from './store';
 import { DEFAULT_MAX_STEERS_PER_TURN, MAX_STEER_TEXT, steerInstruction, type SteerQueue } from './steering';
 import { handoffOf } from './handoff';
 import type { ReadyTurnModel, TurnModel } from './model';
+import { titleConversation, type TitleLimits, type TitleResult, type TitleRuleContext } from './title';
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +63,13 @@ export const DEFAULT_TURN_LIMITS = {
   storedLimit: 500,
   /** Longest user message accepted. */
   maxUserText: 8_000,
+  /**
+   * Output tokens per model step (`maxOutputTokens`). Without a cap OpenRouter
+   * reserves the model's whole output window (often 100k+ tokens) against the
+   * key, and a key with a daily or credit limit refuses every call. A chat
+   * answer plus a tool call fits in a few thousand. `0` sends no cap.
+   */
+  maxOutputTokens: 4_096,
 } as const;
 
 export type TurnLimits = { [K in keyof typeof DEFAULT_TURN_LIMITS]: number };
@@ -131,6 +142,33 @@ export interface TurnUsageRecord<X = unknown> {
   continuation: boolean;
 }
 
+/**
+ * Conversation titles (`./title`), off unless set: after a new question's turn
+ * is saved, the app's rules, the built-in rule, then `model`.
+ */
+export interface ChatTitleOptions<X = unknown> {
+  /** Whether this conversation still needs an automatic title (none yet, and the person never named it). */
+  needed: (ctx: TurnContext<X>) => boolean | Promise<boolean>;
+  /** Store the title. The app's write must not replace a title the person set meanwhile. */
+  save: (args: TitleResult & { conversationId: string; ctx: TurnContext<X> }) => void | Promise<void>;
+  /** App rules, before the built-in one (e.g. the name of the object the chat is about). */
+  rules?: (ctx: TitleRuleContext<X>) => string | null | Promise<string | null>;
+  /** Skip the built-in first-message rule. */
+  skipBuiltInRule?: boolean;
+  /**
+   * The model step: `modelFromPlan({ models, key, create, tier: 'budget', kind: 'chat_title' })`.
+   * Omit for rules only. A refusal (no key, denied plan) skips the step and goes to `onError`.
+   */
+  model?: (ctx: TurnContext<X>) => TurnModel | Promise<TurnModel>;
+  limits?: Partial<TitleLimits>;
+  instructions?: string;
+  /**
+   * Schedule the work after the response, e.g. Next's `after`. Default: started
+   * without awaiting, which a serverless platform may cut off when the response ends.
+   */
+  later?: (fn: () => Promise<void>) => void;
+}
+
 export interface ChatTurnOptions<G extends string = string, X = unknown> {
   /** `defineToolGroups(...)`. Every tool the turn registers must be declared here. */
   toolGroups: ToolGroups<G>;
@@ -167,10 +205,12 @@ export interface ChatTurnOptions<G extends string = string, X = unknown> {
   steering?: { queue: SteerQueue; maxPerTurn?: number };
   /** The app's own usage record, awaited after the turn is saved (Cue's `ai_usage` ledger). */
   onUsage?: (record: TurnUsageRecord<X>) => void | Promise<void>;
+  /** Automatic conversation titles. Off unless set. */
+  title?: ChatTitleOptions<X>;
   /** Every `data-step` the turn emits, for logs and telemetry. */
   onStep?: (step: StepData, ctx: TurnContext<X>) => void;
   /** Every absorbed failure (persistence, receipts, hooks). The turn itself never throws from these. */
-  onError?: (error: unknown, where: 'persist' | 'usage' | 'receipt' | 'stream' | 'steer') => void;
+  onError?: (error: unknown, where: 'persist' | 'usage' | 'receipt' | 'stream' | 'steer' | 'title') => void;
   /** Extra fields for the assistant message's metadata (e.g. the routed scope). */
   metadata?: (ctx: TurnContext<X> & { model: ReadyTurnModel }) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Extra response headers. */
@@ -290,9 +330,30 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     try { opts.onError?.(e, where); } catch { /* never let a logger break a turn */ }
   };
 
+  const makeTitle = async (t: ChatTitleOptions<X>, ctx: TurnContext<X>, messages: readonly { role: string; parts: readonly unknown[] }[]) => {
+    const onError = report('title');
+    if (!(await t.needed(ctx))) return;
+    const result = await titleConversation({
+      messages: messages as never,
+      extra: ctx.extra,
+      rules: t.rules,
+      skipBuiltInRule: t.skipBuiltInRule,
+      limits: t.limits,
+      instructions: t.instructions,
+      onError,
+      model: t.model ? async () => {
+        const m = await t.model!(ctx);
+        if (m.ok) return { model: m.model, plan: m.plan, recordUsage: m.recordUsage };
+        onError(new Error(`title model refused: ${m.reason}`));
+        return null;
+      } : null,
+    });
+    if (result) await t.save({ ...result, conversationId: ctx.conversationId, ctx });
+  };
+
   const callClass = (tool: string, input: unknown): string | undefined => {
     const t = groups.tool(tool);
-    return t ? (t.effectiveClass ? t.effectiveClass(input) : t.class) : undefined;
+    return t ? (t.deferred ? 'deferred' : t.effectiveClass ? t.effectiveClass(input) : t.class) : undefined;
   };
 
   const run = async (args: RunTurnArgs<X>): Promise<Response> => {
@@ -313,6 +374,13 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       continuing = last;
     }
     const ctx: TurnContext<X> = { userId, conversationId, text, continuing, stored, body, extra: args.extra as X };
+    const scheduleTitle = (t: ChatTitleOptions<X>, messages: readonly { role: string; parts: readonly unknown[] }[]) => {
+      const work = () => makeTitle(t, ctx, messages).catch(report('title'));
+      try {
+        if (t.later) t.later(work);
+        else void work();
+      } catch (e) { report('title')(e); }
+    };
 
     // 1. Refuse before any spend.
     if (opts.admit) {
@@ -529,6 +597,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       messages: modelMessages,
       tools,
       ...(activeTools ? { activeTools } : {}),
+      ...(limits.maxOutputTokens > 0 ? { maxOutputTokens: limits.maxOutputTokens } : {}),
       stopWhen: ai.isStepCount(limits.maxSteps),
       abortSignal: signal,
       toolApproval: toolApproval as never,
@@ -538,6 +607,14 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
 
     const toolNames = new Map<string, string>();
     const handoffs: HandoffData[] = [];
+    // A provider failure, in words: the stream's errorText and a saved data-turn-error part.
+    let turnError: TurnErrorData | null = null;
+    let turnErrorWritten = false;
+    const streamFailure = (e: unknown): string => {
+      report('stream')(e);
+      turnError ??= classifyTurnError(e);
+      return turnError.message;
+    };
     const persist = async ({ responseMessage, isContinuation, isAborted }: { responseMessage: UIMessage; isContinuation: boolean; isAborted: boolean }) => {
       const parts = [...(responseMessage.parts as ChatPart[])];
       if (isAborted) parts.push({ type: 'text', text: STOPPED_NOTE });
@@ -605,24 +682,32 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
           });
         } catch (e) { report('usage')(e); }
       }
+      if (opts.title && !isContinuation && text) scheduleTitle(opts.title, [...stored, message, { role: 'assistant', parts }]);
     };
 
     const stream = ai.createUIMessageStream({
       originalMessages: uiMessages,
       generateId: genId,
-      onError: (e) => { report('stream')(e); return 'The turn failed.'; },
+      onError: streamFailure,
       execute: async ({ writer }) => {
+        const writeTurnError = () => {
+          if (!turnError || turnErrorWritten) return;
+          turnErrorWritten = true;
+          writer.write({ type: TURN_ERROR_PART_TYPE, id: 'turn-error', data: turnError } as never);
+        };
         const ui = ai.toUIMessageStream({
           stream: result.stream,
           tools,
           sendFinish: false,
           messageMetadata: ({ part }: { part: { type: string } }) => (part.type === 'start' ? turnMetadata : undefined),
-          onError: (e: unknown) => { report('stream')(e); return 'The turn failed.'; },
+          onError: streamFailure,
         } as never) as ReadableStream<UIMessageChunk>;
         const reader = ui.getReader();
         for (;;) {
           const { done, value: chunk } = await reader.read();
           if (done) break;
+          // The typed part goes before the error chunk, so it is in the saved message.
+          if (chunk.type === 'error') writeTurnError();
           writer.write(chunk as never);
           if (chunk.type === 'start' && !writeChunk) {
             // Steps emitted before the message started (a tool factory's step()) go right after it.

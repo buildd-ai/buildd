@@ -62,7 +62,7 @@ export async function loadInitiativeCards(opts: {
     orderBy: [desc(missions.priority), desc(missions.createdAt)],
     columns: MISSION_BASE_COLUMNS,
     with: {
-      schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true } },
+      schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
       tasks: {
         columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
         orderBy: (t: any, { desc: d }: any) => [d(t.updatedAt)],

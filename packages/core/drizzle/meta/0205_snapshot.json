@@ -1,5 +1,5 @@
 {
-  "id": "06586fe1-2b9f-4fee-ad5f-55d7f7f93997",
+  "id": "6cefeb53-7fd3-4d47-b4a8-80dcd5bb417d",
   "prevId": "64894e6c-6385-41d8-9ae7-deef01cd24e1",
   "version": "7",
   "dialect": "postgresql",
@@ -5223,19 +5223,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "superseded_by": {
-          "name": "superseded_by",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "index_failures": {
-          "name": "index_failures",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5325,157 +5312,6 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.memory_uses": {
-      "name": "memory_uses",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "worker_id": {
-          "name": "worker_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "chunk_id": {
-          "name": "chunk_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "memory_id": {
-          "name": "memory_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "caller": {
-          "name": "caller",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "via": {
-          "name": "via",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rank": {
-          "name": "rank",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "score": {
-          "name": "score",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "gated_by": {
-          "name": "gated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "memory_uses_memory_idx": {
-          "name": "memory_uses_memory_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "memory_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "memory_uses_task_idx": {
-          "name": "memory_uses_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "memory_uses_created_idx": {
-          "name": "memory_uses_created_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -12336,6 +12172,280 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.visual_shot_reviews": {
+      "name": "visual_shot_reviews",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "mission_id": {
+          "name": "mission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_task_id": {
+          "name": "audit_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "round": {
+          "name": "round",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cell_key": {
+          "name": "cell_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "viewport": {
+          "name": "viewport",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_verdict": {
+          "name": "agent_verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision": {
+          "name": "decision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "relation": {
+          "name": "relation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fix_task_id": {
+          "name": "fix_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_fix_task_id": {
+          "name": "cancelled_fix_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewer_user_id": {
+          "name": "reviewer_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewer_label": {
+          "name": "reviewer_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_at": {
+          "name": "superseded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "visual_shot_reviews_mission_idx": {
+          "name": "visual_shot_reviews_mission_idx",
+          "columns": [
+            {
+              "expression": "mission_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "superseded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "visual_shot_reviews_artifact_idx": {
+          "name": "visual_shot_reviews_artifact_idx",
+          "columns": [
+            {
+              "expression": "artifact_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "visual_shot_reviews_one_active_per_artifact": {
+          "name": "visual_shot_reviews_one_active_per_artifact",
+          "columns": [
+            {
+              "expression": "artifact_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "superseded_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "visual_shot_reviews_mission_id_missions_id_fk": {
+          "name": "visual_shot_reviews_mission_id_missions_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "missions",
+          "columnsFrom": [
+            "mission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_workspace_id_workspaces_id_fk": {
+          "name": "visual_shot_reviews_workspace_id_workspaces_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_artifact_id_artifacts_id_fk": {
+          "name": "visual_shot_reviews_artifact_id_artifacts_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "artifacts",
+          "columnsFrom": [
+            "artifact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_audit_task_id_tasks_id_fk": {
+          "name": "visual_shot_reviews_audit_task_id_tasks_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "audit_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_fix_task_id_tasks_id_fk": {
+          "name": "visual_shot_reviews_fix_task_id_tasks_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "fix_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_cancelled_fix_task_id_tasks_id_fk": {
+          "name": "visual_shot_reviews_cancelled_fix_task_id_tasks_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "cancelled_fix_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "visual_shot_reviews_reviewer_user_id_users_id_fk": {
+          "name": "visual_shot_reviews_reviewer_user_id_users_id_fk",
+          "tableFrom": "visual_shot_reviews",
+          "tableTo": "users",
+          "columnsFrom": [
+            "reviewer_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

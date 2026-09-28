@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import { chatSetupCopy } from './ChatSetupCard';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ChatSetupCard, { chatSetupCopy } from './ChatSetupCard';
+
+describe('ChatSetupCard', () => {
+  it('the title is a heading on the kit card, the body under it, the fix as a link', () => {
+    const html = renderToStaticMarkup(createElement(ChatSetupCard, { reason: 'no_key', canManage: true }));
+    expect(html).toMatch(/<h3[^>]*data-testid="kit-setup-title"[^>]*>Connect a model provider<\/h3><p class="kit-note">Chat is where/);
+    expect(html).toContain('href="/app/settings/providers"');
+  });
+});
 
 describe('chatSetupCopy', () => {
   it('admin, no key: connect a provider (not "turn on chat")', () => {

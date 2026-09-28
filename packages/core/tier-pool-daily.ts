@@ -11,6 +11,7 @@
  */
 import { findSuccessor, findCatalogEntry, decayMultiplier } from './model-succession';
 import type { CatalogEntry, CatalogTier } from './model-catalog';
+import { chatModelVerdict } from './chat-model-eligibility';
 import { popularityFor, type RankingsView, type ViewScores } from './openrouter-rankings';
 import {
   EMPTY_EVIDENCE,
@@ -107,6 +108,8 @@ export function planPoolDay(args: {
   for (const a of live) {
     const s = findSuccessor({ arm: a, tier: pool.tier, catalog, now: nowS, popularity: id => popularity(id)?.pctile ?? null });
     if (!s) continue;
+    // A chat pool never proposes a successor that can't serve chat (chat-model-eligibility).
+    if (pool.surface === 'chat' && !chatModelVerdict('openrouter', s.openRouterId, catalog).ok) continue;
     const inPool = live.find(x => x.id !== a.id && x.route === a.route && catalogId(x.model) === s.id);
     const base = { signal: 'succession', armId: a.id, model: a.model, successor: s.id, route: a.route };
     if (pool.mode === 'split' || !inPool) {

@@ -70,6 +70,9 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/missions/:id/notes', methods: ['POST'], load: () => import('@/app/api/missions/[id]/notes/route'), reach: byMission },
   { pattern: '/api/missions/:id/link', methods: ['POST'], load: () => import('@/app/api/missions/[id]/link/route'), reach: byMission },
   { pattern: '/api/missions/:id/artifacts', methods: ['POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
+  // The visual review read (get_visual_review). GET only: the decisions routes
+  // under it are never listed here, so no assistant tool can reach them.
+  { pattern: '/api/missions/:id/visual-review', methods: ['GET'], load: () => import('@/app/api/missions/[id]/visual-review/route'), reach: byMission },
   { pattern: '/api/initiatives', methods: ['GET', 'POST'], load: () => import('@/app/api/initiatives/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/initiatives/:id', methods: ['GET', 'PATCH', 'DELETE'], load: () => import('@/app/api/initiatives/[id]/route'), reach: { path: path(['id', 'initiative']), ...ROWS } },
   { pattern: '/api/initiatives/:id/artifacts', methods: ['GET', 'POST'], load: () => import('@/app/api/initiatives/[id]/artifacts/route'), reach: { path: path(['id', 'initiative']), ...ROWS } },

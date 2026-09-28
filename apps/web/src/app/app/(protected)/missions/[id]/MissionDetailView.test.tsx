@@ -8,11 +8,9 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
 import MissionDetailView, { mastheadBack, parseMissionOrigin } from './MissionDetailView';
-import MissionDelivery from './MissionDelivery';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { MISSION_ROW_SCROLL_MARGIN_CLASS } from '@/components/missions/MissionTaskRow';
-import { buildDeliverySteps } from '@/lib/mission-delivery';
 import { buildPulseSegments, PULSE_FOLD_THRESHOLD, type MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { groupTasksByPhase } from '@/lib/flight-strip-nav';
 import { foldMissionDeliverables } from '@/lib/mission-pulse';
@@ -39,14 +37,8 @@ function renderMission(tasks: MissionFeedTaskInput[], description?: ReactNode) {
       back={{ label: 'Home', href: '/app/home' }}
       description={description}
       situation={<MissionSituationBlock missionId="mission-1" situation={situation as any} because={[]} />}
-      delivery={
-        <MissionDelivery
-          steps={buildDeliverySteps({
-            missionStatus: 'active', totalTasks: 15, completedTasks: 6, awaitingMerge: 0, integrationPr: null,
-            criteria: { total: 0, passed: null, overall: null }, mergedAt: [], release: null, budget: null,
-          })}
-        />
-      }
+      // The Delivery stepper (MissionDelivery) is retired; the slot keeps its place.
+      delivery={<div data-testid="mission-delivery" />}
       feed={{ tasks, now: FIXTURE_NOW }}
       footer={<div data-testid="footer-marker" />}
     />,

@@ -113,8 +113,18 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
+  ne: (field: any, value: any) => ({ field, value, type: 'ne' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings: [...strings], values, type: 'sql' }),
 }));
+
+/** Every ne(field, value) predicate nested anywhere in a where clause. */
+function nes(where: any): Array<{ field: string; value: any }> {
+  if (!where || typeof where !== 'object') return [];
+  if (where.type === 'ne') return [{ field: where.field, value: where.value }];
+  if (where.type === 'and') return where.args.flatMap(nes);
+  return [];
+}
 
 mock.module('@buildd/core/db/schema', () => ({
   workers: workersTable,
@@ -400,6 +410,10 @@ describe('POST /api/tasks/cleanup', () => {
     expect(capturedSetData.claimedBy).toBeNull();
     expect(capturedSetData.claimedAt).toBeNull();
     expect(capturedSetData.expiresAt).toBeNull();
+    // A requeue ends the claim, so a force claim's audit is removed with it.
+    expect(capturedSetData.context.type).toBe('sql');
+    expect(capturedSetData.context.strings.join('')).toContain(' - ');
+    expect(capturedSetData.context.values).toContain('forceClaim');
   });
 
   it('marks task failed (not pending) once worker failures hit the retry cap', async () => {
@@ -611,6 +625,42 @@ describe('POST /api/tasks/cleanup', () => {
 
     expect(res.status).toBe(200);
     expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'pending_merge');
+  });
+});
+
+// Friction 92866723: an interactive (MCP-claimed) worker has no runner. The
+// 1h stalled rule and the runner-heartbeat rule both judge runner evidence, so
+// neither may touch it; cleanupStaleWorkers owns its 2h MCP-silence TTL.
+describe('POST /api/tasks/cleanup: interactive MCP workers', () => {
+  beforeEach(() => {
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockWorkersFindMany, mockTasksFindMany,
+      mockHeartbeatsFindMany, mockCleanupStaleWorkers, mockCleanupStuckWaitingInput, mockHeartbeatsDelete] as any[]) m.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-a']);
+    mockAccountsFindMany.mockResolvedValue([{ id: 'account-1' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockHeartbeatsFindMany.mockResolvedValue([]);
+    mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
+    mockHeartbeatsDelete.mockReturnValue({ where: mock(() => ({ returning: mock(() => []) })) });
+  });
+
+  it('the 1h stalled-worker rule excludes interactive workers', async () => {
+    await POST(createMockRequest());
+    const stalledWhere = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
+    expect(nes(stalledWhere)).toContainEqual({ field: 'workers.runner', value: 'mcp' });
+  });
+
+  it('a stale runner heartbeat does not fail the account\'s interactive workers', async () => {
+    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'account-1' }]);
+    await POST(createMockRequest());
+    // calls: stalled running, active account ids, heartbeat orphans
+    const orphanWhere = (mockWorkersFindMany.mock.calls[2] as any[])[0].where;
+    expect(inArrays(orphanWhere)).toContainEqual({ field: 'workers.accountId', values: ['account-1'] });
+    expect(nes(orphanWhere)).toContainEqual({ field: 'workers.runner', value: 'mcp' });
   });
 });
 

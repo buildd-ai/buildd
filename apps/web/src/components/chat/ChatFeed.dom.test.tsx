@@ -38,7 +38,7 @@ afterEach(() => {
   container.remove();
 });
 
-async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureViews>[0] = 'split') {
+async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureViews>[0] = 'split', extra: Record<string, unknown> = {}) {
   const views = fixtures.fixtureViews(state);
   const source = { load: async (r: { kind: string; id: string }) => { const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v; } };
   const actions = {
@@ -46,6 +46,7 @@ async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureV
     respondToApproval: (id: string, ok: boolean) => { calls.push([id, ok]); },
     answerQuestion: async (i: { workerId: string; message: string }) => { answers.push(i); },
     viewerName: 'Maya',
+    ...extra,
   };
   await act(async () => {
     root.render(
@@ -81,36 +82,60 @@ describe('approval card', () => {
     expect(card?.textContent).not.toContain('manage_missions');
     expect(card?.textContent).not.toContain('not filed');
     expect(card?.textContent).not.toContain('files through');
-    await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
-    await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
+    // The kit's card, with buildd's labels.
+    const confirm = q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement;
+    expect(card?.querySelector('.buildd-approval')).not.toBeNull();
+    expect(confirm.textContent).toBe('Confirm & file');
+    await act(async () => { confirm.click(); });
+    await act(async () => { confirm.click(); });
     expect(calls).toEqual([['approval-1', true]]);
-    expect((q('[data-testid="approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(confirm.textContent).toBe('Filing…');
+    expect(q('[data-testid="approval-card"]')?.dataset.state).toBe('deciding');
+    expect((q('[data-testid="kit-approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('the head names the write and its workspace; the draft is the card body', async () => {
+    await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { workspaceName: (id: string) => (id === fixtures.WS.id ? fixtures.WS.name : null) });
+    const head = q('[data-testid="approval-card"] .kit-card-head')!;
+    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Needs your OK');
+    expect(head.querySelector('.kit-card-tag')?.textContent).toBe('New mission');
+    expect(head.querySelector('[data-testid="approval-workspace"]')?.textContent).toBe(fixtures.WS.name);
+    expect(q('[data-testid="approval-card"] .kit-card-title')?.textContent).toBe('Multi-currency invoices');
+    expect(q('[data-testid="approval-card"] .kit-approval-body')?.textContent).toContain('their own currency');
   });
 
   // On a phone the full draft was taller than the viewport: Confirm was in view
   // but the header and Discard were not. Details fold behind a toggle there.
   it('phone: details fold behind "Show details"; header and all actions stay in the card', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
-    const details = q('[data-testid="approval-details"]')!;
-    const toggle = q('[data-testid="approval-details-toggle"]') as HTMLButtonElement;
-    expect(details.className).toContain('hidden');
-    expect(details.className).toContain('md:block');
-    expect(toggle.className).toContain('md:hidden');
+    // The kit's fold: the toggle and the folded block show below 640px only (styles.css).
+    const details = q('[data-testid="kit-approval-details"]')!;
+    const toggle = q('[data-testid="kit-approval-fold"]') as HTMLButtonElement;
+    expect(details.classList.contains('kit-fold')).toBe(true);
+    expect(details.dataset.open).toBeUndefined();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.textContent).toContain('Show details');
-    expect(q('[data-testid="approval-draft-title"]')).not.toBeNull();
-    expect(details.contains(q('[data-testid="approval-draft-title"]'))).toBe(false);
+    expect(toggle.textContent).toContain('4 criteria · constraints · plan');
+    const title = q('[data-testid="approval-card"] .kit-card-title')!;
+    expect(details.contains(title)).toBe(false);
     expect(details.contains(q('[data-testid="approval-draft-criteria"]'))).toBe(true);
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain('Hide details');
-    expect(q('[data-testid="approval-details"]')!.className.split(/\s+/)).not.toContain('hidden');
-    for (const id of ['approval-confirm', 'approval-edit', 'approval-deny']) expect(q(`[data-testid="${id}"]`)).not.toBeNull();
+    expect(details.dataset.open).toBe('true');
+    for (const id of ['kit-approval-confirm', 'kit-approval-edit', 'kit-approval-deny']) expect(q(`[data-testid="${id}"]`)).not.toBeNull();
+  });
+
+  it('Edit prefills a change to the draft', async () => {
+    const prefills: string[] = [];
+    await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { prefillComposer: (t: string) => { prefills.push(t); } });
+    await act(async () => { (q('[data-testid="kit-approval-edit"]') as HTMLButtonElement).click(); });
+    expect(prefills).toEqual(['Change the draft "Multi-currency invoices": ']);
   });
 
   it('Discard answers false', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
-    await act(async () => { q('[data-testid="approval-deny"]')!.click(); });
+    await act(async () => { q('[data-testid="kit-approval-deny"]')!.click(); });
     expect(calls).toEqual([['approval-1', false]]);
   });
 
@@ -118,16 +143,52 @@ describe('approval card', () => {
     await render(fixtures.chatFixture('denied').messages as Msgs);
     expect(q('[data-testid="approval-card"]')?.dataset.state).toBe('denied');
     expect(q('[data-testid="approval-card"]')?.textContent).toContain('nothing filed');
-    expect(q('[data-testid="approval-confirm"]')).toBeNull();
+    // One line, the kit's settled row, headed by what the write was.
+    const row = q('[data-testid="approval-card"] .kit-approval-row')!;
+    expect(row.querySelector('.kit-card-title')?.textContent).toBe('New mission');
+    expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
     expect(q('[data-kind="mission"]')).toBeNull();
   });
 
   it('once filed, the card is its tool row and the live mission renders under it', async () => {
     await render(fixtures.chatFixture('confirmed').messages as Msgs, 'confirmed');
-    expect(q('[data-testid="approval-confirm"]')).toBeNull();
+    expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
     const row = qa('[data-testid="tool-call-row"]').find(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'));
     expect(row?.dataset.state).toBe('done');
     expect(q('[data-testid="object-card"][data-kind="mission"]')?.textContent).toContain('Multi-currency invoices');
+  });
+});
+
+// A change to something that exists (here a watch on a PR) carries the
+// server's before → after preview, and its card is the kit's ApprovalCard.
+describe('approval card: a previewed change is the kit card', () => {
+  it('shows the preview headline and each change, then echoes the approval id once', async () => {
+    await render(fixtures.chatFixture('watch').messages as Msgs, 'watch');
+    const card = q('[data-testid="approval-card"]')!;
+    expect(card.dataset.kind).toBe('preview');
+    expect(card.dataset.state).toBe('awaiting');
+    const kit = card.querySelector('[data-testid="kit-approval"]') as HTMLElement;
+    expect(kit.className).toContain('buildd-approval');
+    expect(kit.textContent).toContain('Watch: PR #421 (billing-web)');
+    expect(kit.querySelectorAll('.kit-change')).toHaveLength(3);
+    // On a phone the changes fold behind "Show details · 3 changes"; the head names the write.
+    expect(kit.querySelector('[data-testid="kit-approval-fold"]')?.textContent).toContain('3 changes');
+    expect(kit.querySelector('.kit-card-tag')?.textContent).toBe('Tell me when');
+    const confirm = () => card.querySelector('[data-testid="kit-approval-confirm"]') as HTMLButtonElement;
+    await act(async () => { confirm().click(); });
+    await act(async () => { confirm().click(); });
+    expect(calls).toEqual([['approval-watch', true]]);
+    expect(q('[data-testid="approval-card"]')!.dataset.state).toBe('deciding');
+    expect((card.querySelector('[data-testid="kit-approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('Discard answers false; Edit prefills a change request', async () => {
+    const prefills: string[] = [];
+    await render(fixtures.chatFixture('watch').messages as Msgs, 'watch', { prefillComposer: (t: string) => { prefills.push(t); } });
+    await act(async () => { (q('[data-testid="kit-approval-edit"]') as HTMLButtonElement).click(); });
+    expect(prefills).toEqual(['Change it: ']);
+    await act(async () => { (q('[data-testid="kit-approval-deny"]') as HTMLButtonElement).click(); });
+    expect(calls).toEqual([['approval-watch', false]]);
   });
 });
 
@@ -243,6 +304,46 @@ describe('mission pane', () => {
       });
       expect(q('[data-testid="mission-board"]')?.dataset.compact).toBe('true');
     }
+  });
+});
+
+describe('the thread is the kit\'s', () => {
+  it('a log of kit message frames; buildd draws the header, the parts and the events inside', async () => {
+    await render(fixtures.chatFixture('watch').messages as Msgs);
+    const log = q('[data-testid="kit-thread"]')!;
+    expect(log.getAttribute('role')).toBe('log');
+    expect(log.classList.contains('buildd-thread')).toBe(true);
+    // A lifecycle event (data-buildd-event) is an event frame with buildd's avatar header and notice.
+    const ev = qa('.kit-msg[data-role="event"]')[0];
+    expect(ev.querySelector('.kit-msg-head')?.textContent).toContain(fixtures.ORGANIZER.name);
+    expect(ev.querySelector('[data-testid="watch-notice"]')).not.toBeNull();
+    // The person's message: meta above, bubble, and the kit's text is not used.
+    const user = qa('.kit-msg[data-role="user"]')[0];
+    expect(user.querySelector('[data-testid="feed-user-bubble"]')).not.toBeNull();
+    expect(user.querySelector('.kit-text')).toBeNull();
+    // Tool calls are buildd's rows, never the kit's default row.
+    expect(q('.kit-tool')).toBeNull();
+  });
+
+  it('the thumbs are the kit\'s, under a settled answer, through buildd\'s provider', async () => {
+    const { TurnFeedbackProvider } = await import('./TurnFeedback');
+    const msgs = fixtures.chatFixture('confirmed').messages as Msgs;
+    const ids = msgs.filter(m => m.role === 'assistant').map(m => m.id);
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={{ load: async () => { throw new Error('Not found'); } }}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <TurnFeedbackProvider messageIds={ids} pendingId={null} initial={{ [ids[0]]: { signal: 'down', reason: 'too_slow' } }}>
+              <ChatFeed messages={msgs} agent={fixtures.ORGANIZER} />
+            </TurnFeedbackProvider>
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+    const thumbs = qa('.kit-msg-foot [data-testid="kit-feedback"]');
+    expect(thumbs).toHaveLength(ids.length);
+    expect(thumbs[0].dataset.vote).toBe('down');
+    expect(thumbs[0].textContent).toContain('Too slow');
   });
 });
 

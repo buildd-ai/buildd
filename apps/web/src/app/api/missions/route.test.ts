@@ -18,6 +18,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockMissionsFindMany = mock(() => [] as any[]);
+const mockMissionsCount = mock(() => Promise.resolve(0));
 const mockInitiativesFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 // accountWorkspaces lookups made by the real workspace-access resolver.
@@ -111,6 +112,7 @@ mock.module('@buildd/core/db', () => ({
       return mockMissionsInsert();
     },
     update: () => mockMissionsUpdate(),
+    $count: (...args: any[]) => (mockMissionsCount as any)(...args),
   },
 }));
 
@@ -121,6 +123,8 @@ mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  ilike: (field: any, value: any) => ({ field, value, type: 'ilike' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings: [...strings], values, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -885,6 +889,50 @@ describe('GET /api/missions', () => {
     const args = mockMissionsFindMany.mock.calls[0][0];
     expect(args.limit).toBeUndefined();
     expect(args.where.type).toBe('inArray');
+  });
+
+  it('q filters by title substring, ranks the exact title first, then sort=recent orders by latest activity', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?q=Memory&sort=recent&limit=5'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.where).toContainEqual({ field: undefined, value: '%Memory%', type: 'ilike' });
+    expect(args.orderBy[0].field.type).toBe('sql');
+    expect(args.orderBy[0].field.strings[0]).toBe('lower(');
+    expect(args.orderBy[1].field.strings[0]).toBe('coalesce(greatest(');
+  });
+
+  it('sort=recent without q has no exact-title ranking', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?sort=recent'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.orderBy[0].field.strings[0]).toBe('coalesce(greatest(');
+  });
+
+  it('default order is still priority first (the dashboard relies on it)', async () => {
+    await GET(new NextRequest('http://localhost/api/missions'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.orderBy[0]).toEqual({ field: undefined, type: 'desc' });
+    expect(args.orderBy[0].field?.type).not.toBe('sql');
+  });
+
+  it('a capped list reports total so callers can say "showing N of M"', async () => {
+    mockMissionsCount.mockReset();
+    mockMissionsCount.mockResolvedValue(42);
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'm-1', title: 'A', status: 'active', tasks: [], schedule: null, createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:00.000Z') },
+    ]);
+    const res = await GET(new NextRequest('http://localhost/api/missions?limit=1'));
+    const body = await res.json();
+    expect(body.total).toBe(42);
+    // Counted over the same predicate as the page.
+    const [, countWhere] = mockMissionsCount.mock.calls[0] as any[];
+    expect(countWhere).toEqual(mockMissionsFindMany.mock.calls[0][0].where);
+  });
+
+  it('an uncapped list skips the count query', async () => {
+    mockMissionsCount.mockReset();
+    const res = await GET(new NextRequest('http://localhost/api/missions'));
+    const body = await res.json();
+    expect(mockMissionsCount).not.toHaveBeenCalled();
+    expect(body.total).toBe(0);
   });
 
   it('returns null deferral fields when schedule has no deferral', async () => {

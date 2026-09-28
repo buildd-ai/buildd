@@ -107,6 +107,8 @@ export interface MissionCardScheduleRow {
   lastDeferralReason?: string | null;
   lastDeferredAt?: DateLike;
   maxConcurrentFromSchedule?: number | null;
+  /** Only `context.heartbeat` is read: a heartbeat schedule is not a recurring cadence. */
+  taskTemplate?: { context?: Record<string, unknown> | null } | null;
 }
 
 export interface MissionCardRow {

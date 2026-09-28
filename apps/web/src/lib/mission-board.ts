@@ -874,3 +874,17 @@ export function concurrencyBins(bars: readonly Pick<MissionLaneBar, 'start' | 'e
     return bars.filter(x => x.start < b && (x.end ?? to) > a).length;
   });
 }
+
+/**
+ * The band's Needs-you number: the waiting tasks, plus the screens the visual
+ * audit wants a human to judge (docs/design/visual-qa-human-review.md, "Where
+ * it shows"), plus one for an open round-cap question. The auditor's own
+ * question parks its worker, so it is already a waiting task and not added.
+ */
+export function boardNeedsYouCount(
+  model: Pick<MissionBoardModel, 'needsYou'>,
+  visual: { summary: { awaitingHuman: number }; needsYou?: { reason: string } | null } | null | undefined,
+): number {
+  if (!visual) return model.needsYou.length;
+  return model.needsYou.length + visual.summary.awaitingHuman + (visual.needsYou?.reason === 'round_cap' ? 1 : 0);
+}

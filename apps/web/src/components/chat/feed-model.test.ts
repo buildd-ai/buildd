@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { BuilddObjectRef, ChatMessage, ChatToolPart } from './chat-contract';
 import { objectsOf } from './chat-contract';
 import {
-  canvasPin, conversationRefs, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
+  canvasPin, conversationRefs, eventRefsShownLater, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
   routedScope, toolResultLine, toolRowState, toolRowView,
 } from './feed-model';
 
@@ -62,6 +62,19 @@ describe('tool rows', () => {
 });
 
 describe('feedSegments', () => {
+  it('a visual_review event renders its line, its tone data, then the mission it is about', () => {
+    const visual = { phase: 'needs_you', round: 1, ok: 11, issues: 2, unsure: 1, awaitingHuman: 1 };
+    const segs = feedSegments([
+      { type: 'data-buildd-event', data: { event: 'visual_review', objects: [ref('mission', 'm1')], text: 'Round 1 done: 11 ok, 2 issues, 1 unsure. 1 needs you.', visual } },
+    ]);
+    expect(segs.map(s => s.kind)).toEqual(['event', 'objects']);
+    const ev = segs[0];
+    expect(ev.kind === 'event' && ev.event).toBe('visual_review');
+    expect(ev.kind === 'event' && ev.visual).toEqual(visual);
+    const objs = segs[1];
+    expect(objs.kind === 'objects' && objs.refs.map(r => `${r.kind}:${r.id}`)).toEqual(['mission:m1']);
+  });
+
   it('groups consecutive calls across step-start parts and renders their objects after the group', () => {
     const segs = feedSegments([
       { type: 'step-start' },
@@ -156,6 +169,27 @@ describe('feedSegments', () => {
   it('summarises a group', () => {
     expect(toolGroupSummary([tool('list_tasks'), tool('get_task', { state: 'input-available' })]))
       .toEqual({ count: 2, readOnly: true, running: 1, failed: 0 });
+  });
+});
+
+describe('visual review event runs', () => {
+  const ev = (id: string): ChatMessage => ({ id, role: 'event', parts: [{ type: 'data-buildd-event', data: { event: 'visual_review', objects: [ref('mission', 'm1')], text: `line ${id}` } }] });
+  it('each event keeps its line; the mission card shows only on the newest message naming it', () => {
+    const msgs = [ev('e1'), ev('e2'), ev('e3')];
+    const hidden = eventRefsShownLater(msgs);
+    expect(hidden.get('e1')?.has('mission:m1')).toBe(true);
+    expect(hidden.get('e2')?.has('mission:m1')).toBe(true);
+    expect(hidden.has('e3')).toBe(false);
+    const segs = feedSegments(msgs[0].parts, { hideEventRefs: hidden.get('e1') });
+    expect(segs.map(s => s.kind)).toEqual(['event']);
+  });
+
+  it('a later assistant card for the same mission hides the event card too; other events are untouched', () => {
+    const plan: ChatMessage = { id: 'p', role: 'event', parts: [{ type: 'data-buildd-event', data: { event: 'plan_ready', objects: [ref('mission', 'm1')], text: 'Plan ready' } }] };
+    const reply = msg([tool('get_visual_review', { output: { data: 'x', objects: [ref('mission', 'm1')] } })]);
+    const hidden = eventRefsShownLater([plan, ev('e1'), reply]);
+    expect(hidden.has('p')).toBe(false);
+    expect(hidden.get('e1')?.has('mission:m1')).toBe(true);
   });
 });
 

@@ -33,3 +33,7 @@ scripts/demo/out/
 # Local labelled examples for scripts/decision-benchmark.ts. Real task text;
 # never commit it (this repo is public).
 .decision-data/
+
+# Local chat/MCP eval data (apps/web/scripts/chat-eval): real questions and
+# transcripts. Never commit it (this repo is public).
+.eval-data/

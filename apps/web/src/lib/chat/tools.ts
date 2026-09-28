@@ -17,6 +17,7 @@ import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import {
   buildParamsDescription, handleBuilddAction, handleLearnAction, handleRecallAction, recallToolDefinition, learnToolDefinition,
+  CORPORA, MEMORY_TYPES,
   type ActionContext, type ApiFn,
 } from '@buildd/core/mcp-tools';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
@@ -28,6 +29,7 @@ import { renderStandingRulesForTask, withStandingRules, type StandingRule } from
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
+import { runGetVisualReview } from './visual-review-tool';
 import { ACTIVE_WINDOW_DAYS, splitByActivity, type WorkspaceActivity } from './workspace-activity';
 import {
   ALL_CHAT_TOOL_SPECS, CHAT_TOOL_SPECS, isExposed, opSpec, opsOf, SELF_SCOPED_ALLOWLIST,
@@ -128,11 +130,13 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         workspaceId: ws,
       });
     case 'get_task':
-      return z.object({ taskId: z.string().describe('Full task UUID') });
+      return z.object({ taskId: z.string().describe('The task: its id, 8-character short id, or the words the user used.') });
     case 'manage_missions':
       return z.object({
         action: z.enum(ops!),
-        missionId: z.string().optional(),
+        missionId: z.string().optional().describe('The mission: its id, or its title for get / update.'),
+        query: z.string().optional().describe('list / get: title substring.'),
+        taskId: z.string().optional().describe('link_task / unlink_task: the task.'),
         workspaceId: ws,
         status: z.string().optional().describe('list: default "open" (not completed or archived); "all" for history'),
         limit: z.number().int().min(1).max(100).optional().describe('list: default 20'),
@@ -141,6 +145,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         goalCriteria: z.array(criterion).max(12).optional().describe('create: the criteria. update: REPLACES the list; prefer addGoalCriteria / removeGoalCriteria.'),
         addGoalCriteria: z.array(criterion).max(12).optional().describe('update: criteria to add to the current list.'),
         removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
+        startMode: z.enum(['armed', 'held']).optional().describe('update: "held" stops its tasks being claimed; arm releases it.'),
         priority: z.number().int().min(0).max(10).optional(),
       }).catchall(z.unknown());
     case 'create_task':
@@ -189,6 +194,30 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       });
     case 'list_watches':
       return z.object({});
+    case 'recall': {
+      const corpus = z.enum(CORPORA);
+      return z.object({
+        query: z.string().optional().describe('The task title, error text or concept to look up. Required unless id is given.'),
+        scope: z.union([corpus, z.array(corpus).min(1)]).optional().describe('Corpus, or a list for fused results. Default memory.'),
+        type: z.enum(MEMORY_TYPES).optional().describe('memory corpus only: filter by memory type.'),
+        files: z.array(z.string()).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+        id: z.string().optional().describe('Fetch one memory by id; other fields ignored.'),
+        workspaceId: ws,
+      });
+    }
+    case 'learn':
+      return z.object({
+        type: z.enum(MEMORY_TYPES),
+        title: z.string().max(200),
+        content: z.string().max(8000),
+        files: z.array(z.string()).optional(),
+        tags: z.array(z.string()).optional(),
+        supersedes: z.array(z.string()).optional().describe('Memory ids this replaces.'),
+        workspaceId: ws,
+      });
+    case 'get_visual_review':
+      return z.object({ missionId: z.string().describe('The mission\'s full id: the docked mission, or one a tool returned.') });
     case 'list_schedules':
       return z.object({
         workspaceId: ws,
@@ -233,6 +262,24 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
+  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
+};
+
+/**
+ * Tools whose chat schema is hand-typed (explicitSchema): the schema carries
+ * the params, so the description says only what the tool is for. The MCP
+ * params dump would repeat the schema and list worker-only fields chat never
+ * sets, and the model reads it on every step of every turn.
+ */
+const CHAT_DESCRIPTIONS: Record<string, string> = {
+  list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
+  get_task: 'One task: its fields, loop state, latest workers and artifacts.',
+  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, or holds it (startMode "held"). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
+  create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
+  send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
+  list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
+  trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
+  list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };
 
 /** Steering tools whose taskId may be words; said in their description so the model doesn't hunt for ids. */
@@ -242,10 +289,16 @@ function description(action: string, ops: string[] | null): string {
   if (NATIVE_DESCRIPTIONS[action]) return NATIVE_DESCRIPTIONS[action].slice(0, 1500);
   const opsLine = ops ? `\nAvailable from chat: action = ${ops.join(' | ')}.` : '';
   const refLine = TASK_REF_TOOLS.has(action) ? `\nFrom chat, ${TASK_REF}` : '';
-  const writeLine = ENABLED_WRITE_OPS.has(action) || (ops ?? []).some(op => ENABLED_WRITE_OPS.has(`${action}.${op}`))
-    ? '\nWrites show the user an approval card with exactly what changes; nothing happens until they confirm.'
-    : '';
-  return `${buildParamsDescription([action]).slice(0, 1500)}${opsLine}${refLine}${writeLine}`;
+  // Approval cards and workspace names are said once, in CHAT_INSTRUCTIONS.
+  return `${CHAT_DESCRIPTIONS[action] ?? paramsText(action)}${opsLine}${refLine}`;
+}
+
+/** The MCP params text for one action, without the preamble and the per-tool workspace note. */
+function paramsText(action: string): string {
+  return buildParamsDescription([action])
+    .replace(/^Action-specific parameters\. By action:\n- /, '')
+    .replace(/\n\nNote: workspaceId accepts[\s\S]*$/, '')
+    .slice(0, 1500);
 }
 
 export interface ChatToolDeps {
@@ -464,6 +517,7 @@ async function runAction(
   if (action === 'watch') return runWatch(api, input, deps.conversationId ?? null);
   if (action === 'unwatch') return runUnwatch(api, input);
   if (action === 'list_watches') return runListWatches(api);
+  if (action === 'get_visual_review') return runGetVisualReview(api, input);
   return handle(api, action, input, deps.ctx);
 }
 

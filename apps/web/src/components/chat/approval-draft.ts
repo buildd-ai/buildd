@@ -1,11 +1,27 @@
 /**
  * What an approval card shows for a proposed write. Pure: reads the tool input
  * the model proposed and never invents a field the input doesn't carry.
+ *
+ * The preview and field drafts, and the label lookup, are the kit's
+ * (`approvalDraft` / `approvalLabel` from @builddai/ai-kit/chat/react). buildd
+ * adds one richer draft through the kit's `custom` hook, a new mission with
+ * its goal, done-when criteria, constraints and plan, and its own words for
+ * each write (LABELS).
  */
-import { approvalChangeLine, approvalHeadline, parseApprovalPreview, type GoalCriterion } from '@buildd/shared';
+import type { GoalCriterion } from '@buildd/shared';
+import {
+  approvalDraft as kitApprovalDraft,
+  approvalLabel as kitApprovalLabel,
+  firstParagraph,
+  toolAction,
+  toolInput,
+  type ApprovalDraft as KitApprovalDraft,
+} from '@builddai/ai-kit/chat/react';
 import { criterionLabel } from '@/lib/goal-criterion-label';
 import { toolNameOf, type ChatToolPart } from './chat-contract';
-import { toolAction } from './feed-model';
+
+export { firstParagraph };
+export type { GenericDraft, PreviewDraft } from '@builddai/ai-kit/chat/react';
 
 export interface DraftCriterion {
   label: string;
@@ -25,25 +41,7 @@ export interface MissionDraft {
   workspaceId: string | null;
 }
 
-export interface GenericDraft {
-  kind: 'generic';
-  fields: Array<{ key: string; value: string }>;
-  workspaceId: string | null;
-}
-
-/** A write on an existing object: the server's before → after preview. */
-export interface PreviewDraft {
-  kind: 'preview';
-  /** "Hold task: checkout · Stripe in currency (running on dune)" */
-  headline: string;
-  changes: Array<{ label: string; before: string | null; after: string | null; line: string }>;
-  note: string | null;
-  /** Admin writes: type this to confirm. */
-  confirmText: string | null;
-  workspaceId: string | null;
-}
-
-export type ApprovalDraft = MissionDraft | GenericDraft | PreviewDraft;
+export type ApprovalDraft = KitApprovalDraft<MissionDraft>;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
@@ -74,13 +72,6 @@ function missionPlan(input: Record<string, unknown>): string | null {
   return bits.join(' · ');
 }
 
-/** First paragraph of a markdown description as plain text. */
-export function firstParagraph(md: string | null): string | null {
-  if (!md) return null;
-  const p = md.split(/\n\s*\n/)[0].replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
-  return p || null;
-}
-
 /** Lines under a "Constraints" heading in the description, if the model wrote one. */
 function constraintsFrom(md: string | null): string | null {
   if (!md) return null;
@@ -90,41 +81,28 @@ function constraintsFrom(md: string | null): string | null {
   return text || null;
 }
 
+/** A new mission's draft, or null for every other write. */
+function missionDraft(part: ChatToolPart): MissionDraft | null {
+  if (toolNameOf(part) !== 'manage_missions' || toolAction(part) !== 'create') return null;
+  const input = toolInput(part);
+  const description = str(input.description);
+  const criteria = Array.isArray(input.goalCriteria)
+    ? input.goalCriteria.filter(isCriterion).map(c => ({ label: criterionLabel(c), hint: criterionHint(c) }))
+    : [];
+  return {
+    kind: 'mission',
+    title: str(input.title) ?? 'Untitled mission',
+    goal: firstParagraph(description),
+    criteria,
+    constraints: constraintsFrom(description),
+    plan: missionPlan(input),
+    workspaceId: str(input.workspaceId),
+  };
+}
+
+/** A new mission's draft, else the server's preview, else the input's fields. */
 export function approvalDraft(part: ChatToolPart): ApprovalDraft {
-  const input = (part.input && typeof part.input === 'object' ? part.input : {}) as Record<string, unknown>;
-  const workspaceId = str(input.workspaceId);
-  if (toolNameOf(part) === 'manage_missions' && toolAction(part) === 'create') {
-    const description = str(input.description);
-    const criteria = Array.isArray(input.goalCriteria)
-      ? input.goalCriteria.filter(isCriterion).map(c => ({ label: criterionLabel(c), hint: criterionHint(c) }))
-      : [];
-    return {
-      kind: 'mission',
-      title: str(input.title) ?? 'Untitled mission',
-      goal: firstParagraph(description),
-      criteria,
-      constraints: constraintsFrom(description),
-      plan: missionPlan(input),
-      workspaceId,
-    };
-  }
-  // Every other write carries the server's preview: what changes, from state.
-  const preview = parseApprovalPreview(part.approval?.requestReason);
-  if (preview) {
-    return {
-      kind: 'preview',
-      headline: approvalHeadline(preview),
-      changes: preview.changes.map(c => ({ ...c, line: approvalChangeLine(c) })),
-      note: preview.note ?? null,
-      confirmText: preview.confirmText ?? null,
-      workspaceId: preview.target.workspaceId ?? workspaceId,
-    };
-  }
-  const fields = Object.entries(input)
-    .filter(([k]) => k !== 'action' && k !== 'workspaceId')
-    .map(([key, v]) => ({ key, value: typeof v === 'string' ? v : JSON.stringify(v) }))
-    .filter(f => f.value && f.value !== 'null');
-  return { kind: 'generic', fields, workspaceId };
+  return kitApprovalDraft(part, { custom: missionDraft });
 }
 
 /** Each write, in words. Keyed `tool` or `tool:action`. */
@@ -166,10 +144,5 @@ const LABELS: Record<string, string> = {
 
 /** "New mission": what the card is, never the tool it runs through. */
 export function approvalLabel(part: ChatToolPart): string {
-  const name = toolNameOf(part);
-  const a = toolAction(part);
-  const known = (a && LABELS[`${name}:${a}`]) || LABELS[name];
-  if (known) return known;
-  const words = name.replace(/_/g, ' ').trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
+  return kitApprovalLabel(part, LABELS);
 }

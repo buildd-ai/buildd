@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const REPO = join(import.meta.dir, '../../../../../../../..');
@@ -70,7 +70,7 @@ describe('S3 retirements', () => {
   });
 
   it('the Delivery glyph colours have one definition, shared by every step row', () => {
-    for (const file of ['MissionDelivery.tsx', 'MissionReleaseSection.tsx']) {
+    for (const file of ['MissionScreensRow.tsx', 'MissionReleaseSection.tsx']) {
       const src = readFileSync(join(import.meta.dir, file), 'utf8');
       expect(src).not.toMatch(/const STATE_TEXT\b/);
       expect(src).toContain('DELIVERY_STATE_TEXT');
@@ -90,5 +90,48 @@ describe('S3 retirements', () => {
     expect(src.split('<MissionDescription').length - 1).toBe(1);
     // Settings' editor no longer receives the description (or re-renders the title).
     expect(src).not.toMatch(/<MissionInlineEdit[^>]*initialDescription/);
+  });
+});
+
+describe('Visual review retirements (docs/design/visual-qa-human-review.md, "Where it shows")', () => {
+  const RETIRED = ['MissionDelivery', 'BoardVisualShots', 'VisualReviewLightbox', 'VisualReviewStrip'];
+
+  it('the replaced components are gone from the mission folder', () => {
+    for (const name of [...RETIRED, 'visual-review-parts']) {
+      expect(existsSync(join(import.meta.dir, `${name}.tsx`))).toBe(false);
+    }
+    expect(existsSync(join(import.meta.dir, 'MissionDelivery.test.tsx'))).toBe(false);
+    expect(existsSync(join(import.meta.dir, 'VisualReviewStrip.test.tsx'))).toBe(false);
+  });
+
+  it('nothing imports them', () => {
+    for (const name of RETIRED) {
+      expect(grep(['-E', `from ['"][^'"]*/${name}['"]`])).toEqual([]);
+    }
+    expect(grep(['-F', 'visual-review-parts'])).toEqual([]);
+  });
+
+  it('the page passes the model whenever an audit exists: no shots-only guard', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(src).toContain('loadVisualReview(');
+    expect(src).not.toMatch(/visualRun\.length\s*>\s*0/);
+    expect(src).not.toMatch(/run\.length\s*>\s*0/);
+    // The Board, Lanes and Feed all get the one model.
+    expect(src).toMatch(/<MissionBoard [^>]*visual=\{boardVisual\}/);
+    expect(src).toMatch(/<MissionLanes [^>]*visual=\{boardVisual\}/);
+    expect(src.match(/visual=\{boardVisual\}/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+  });
+
+  it('the footer renders the Screens row next to Shipped, inside the review provider', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(src).toContain('<MissionScreensRow missionId={id} step={visualStep} />');
+    expect(src.indexOf('<MissionReleaseSection')).toBeLessThan(src.indexOf('<MissionScreensRow'));
+    expect(src).toContain('<MissionVisualReviewProvider missionId={id} visual={boardVisual}>');
+  });
+
+  it('the Settings sheet carries the auto-audit switch, read from the mission row', () => {
+    const src = readFileSync(PAGE, 'utf8');
+    expect(src).toContain('<MissionVisualReviewSetting');
+    expect(src).toMatch(/autoSurfaceAudit/);
   });
 });

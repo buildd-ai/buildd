@@ -497,7 +497,7 @@ export default async function HomePage({
                 columns: MISSION_CARD_TASK_COLUMNS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
-              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true } },
+              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
@@ -545,7 +545,7 @@ export default async function HomePage({
           // last 12h), held missions for the Needs-you stack, and the one that
           // just shipped. Same list-card model the missions list uses.
           const recentMs = 12 * 3_600_000;
-          const recurringIds = allMissions.filter(m => (m.schedule as any)?.cronExpression && m.status !== 'completed').map(m => m.id);
+          const recurringIds = allMissions.filter(m => (m.schedule as any)?.cronExpression && (m.schedule as any)?.taskTemplate?.context?.heartbeat !== true && m.status !== 'completed').map(m => m.id);
           const lastTickSummary = new Map<string, string>();
           if (recurringIds.length > 0) {
             const tickRows = await db

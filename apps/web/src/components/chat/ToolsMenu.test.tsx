@@ -1,37 +1,33 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ToolRows, ToolsTrigger, allowedCount } from './ToolsMenu';
+import { ToolsMenu as KitToolsMenu, ToolRows } from '@builddai/ai-kit/chat/react';
+import ToolsMenu from './ToolsMenu';
 import { TierDetail } from './TierSwitch';
 
+const rows = [
+  { key: 'tasks', label: 'Tasks', mode: 'allow' as const, locked: false },
+  { key: 'admin', label: 'Admin', mode: 'ask' as const, locked: true },
+  { key: 'secrets', label: 'Secrets', mode: 'never' as const, locked: true },
+];
+
 describe('tools cell', () => {
-  it('counts the groups on Allow', () => {
-    expect(allowedCount(null)).toBeNull();
-    expect(allowedCount([
-      { key: 'tasks', label: 'Tasks', mode: 'allow', locked: false },
-      { key: 'prs', label: 'PRs', mode: 'allow', locked: false },
-      { key: 'missions', label: 'Missions', mode: 'ask', locked: false },
-    ])).toBe(2);
+  it('is the kit menu in a composer cell, the trigger just the dots', () => {
+    const html = renderToStaticMarkup(<ToolsMenu teamId="t1" />);
+    expect(html).toContain('data-testid="composer-tools"');
+    expect(html).toContain('buildd-menu-cell');
+    const trigger = html.slice(html.indexOf('data-testid="kit-tools-trigger"'), html.indexOf('</button>'));
+    expect(trigger.replace(/<[^>]*>/g, '').replace(/^[^>]*>/, '')).toBe('···');
   });
 
-  it('shows the count beside the dots only when something is allowed', () => {
-    const two = renderToStaticMarkup(<ToolsTrigger count={2} />);
-    expect(two).toContain('···');
-    expect(two).toMatch(/data-testid="composer-tools-count"[^>]*>2</);
-    for (const count of [0, null]) {
-      const html = renderToStaticMarkup(<ToolsTrigger count={count} />);
-      expect(html).toContain('···');
-      expect(html).not.toContain('composer-tools-count');
-    }
+  it('never shows an Allow count, even with a group allowed', () => {
+    const html = renderToStaticMarkup(<KitToolsMenu rows={rows} onChange={() => {}} />);
+    const trigger = html.slice(html.indexOf('data-testid="kit-tools-trigger"'), html.indexOf('</button>'));
+    expect(trigger).not.toMatch(/\d/);
+    expect(html).toContain('aria-label="Tools"');
   });
 });
 
-describe('ToolRows', () => {
-  const rows = [
-    { key: 'tasks', label: 'Tasks', mode: 'allow' as const, locked: false },
-    { key: 'admin', label: 'Admin', mode: 'ask' as const, locked: true },
-    { key: 'secrets', label: 'Secrets', mode: 'never' as const, locked: true },
-  ];
-
+describe('ToolRows (the kit\'s, as buildd shows them)', () => {
   it('switchable rows get Ask first / Allow with the current one pressed; locked rows get a label only', () => {
     const html = renderToStaticMarkup(<ToolRows rows={rows} onChange={() => {}} />);
     expect(html).toMatch(/data-group="tasks"[\s\S]*aria-pressed="true"[^>]*>Allow</);

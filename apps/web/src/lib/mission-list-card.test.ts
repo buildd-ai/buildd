@@ -137,6 +137,21 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.recurring!.nextMins).toBe(9);
   });
 
+  it('a heartbeat schedule is plumbing, not a recurring mission', () => {
+    const heartbeat = { id: 's1', cronExpression: '*/30 * * * *', nextRunAt: new Date(NOW + 21 * 60_000), taskTemplate: { context: { heartbeat: true } } };
+    const idle = build({ id: 'm3h', title: 'Ship the thing', status: 'active', schedule: heartbeat, tasks: [task('api', { roleSlug: 'builder' })] });
+    expect(idle.kind).toBe('scheduled');
+    expect(idle.recurring).toBeNull();
+
+    const live = build({
+      id: 'm3l', title: 'Ship the thing', status: 'active', schedule: heartbeat,
+      tasks: [task('api', { status: 'in_progress', roleSlug: 'builder', workers: [{ status: 'running', startedAt: new Date(NOW - 60_000) }] })],
+    });
+    expect(live.kind).toBe('active');
+    expect(live.status.label).toBe('Running');
+    expect(live.recurring).toBeNull();
+  });
+
   it('a held mission is Held, with its ready work', () => {
     const row: ListMissionRow = {
       id: 'm4', title: 'Spec first', status: 'paused', isHeld: true,

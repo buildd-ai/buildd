@@ -8,8 +8,9 @@
  * agent, so every field is validated here and a malformed shot is dropped
  * rather than rendered half-empty.
  */
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import type { DeliveryVisual } from './mission-delivery';
+import { buildVisualReviewModel, type VisualReviewTaskInput } from './visual-review-model';
 
 /**
  * The role an auditor task runs as. Only screenshots written by a worker on a
@@ -284,6 +285,11 @@ interface TaskLike {
 export const BOOT_FAILURE_QUESTION_PREFIX = 'App did not boot';
 const BOOT_FAILURE_RE = /^\s*app did not boot\b/i;
 
+/** A question prompt is the boot-failure question (BOOT_FAILURE_QUESTION_PREFIX). */
+export function isBootFailurePrompt(prompt: string): boolean {
+  return BOOT_FAILURE_RE.test(prompt);
+}
+
 /** Task states in which a boot-failure question no longer holds anything. */
 const RESOLVED_TASK_STATUSES = ['completed', 'cancelled'];
 
@@ -314,42 +320,53 @@ export function auditBootFailed(tasks: readonly TaskLike[]): boolean {
 }
 
 /**
- * The mission page's Visual review: the latest run and its Delivery summary,
- * or null when the step should not show. It shows once there are shots, or
- * while a visual-auditor task is still open (the `todo` / "–" state). A
- * finished auditor task with no shots, or a pre-auditor `[surface audit]`
- * running as a builder, holds nothing to wait for. A boot failure
- * (`auditBootFailed`) always shows, as the step's one `blocked` state.
+ * The mission page's Visual review, as a thin adapter over the cell matrix
+ * (`buildVisualReviewModel`, docs/design/visual-qa-human-review.md): the
+ * current shot of every cell (a round-1 cell a later round did not re-shoot
+ * stays), its Delivery summary, and the audit task the Board puts the shots
+ * under. Null when the model's phase is `off`: no shots and no open
+ * visual-auditor task. A completed or cancelled auditor task with no shots,
+ * or a pre-auditor `[surface audit]` running as a builder, holds nothing to
+ * wait for. A failed audit shows (phase `failed`), and so does a boot failure.
  *
  * `shotRows` are expected to be the auditor-scoped rows from
- * `missionVisualShotsWhere`.
+ * `missionVisualShotsWhere` (visual-review-load.ts).
  */
 export function missionVisualReview<T extends TaskLike>(
   shotRows: readonly ArtifactRowLike[],
   tasks: readonly T[],
   opts: {
     /**
-     * The audit task's required routes (`auditRequiredRoutes`), so the step
-     * can show n/m coverage. Called for the task whose worker wrote the run;
-     * absent, or no such task loaded, leaves coverage unknown.
+     * An audit task's required routes (`auditRequiredRoutes`), so the step
+     * can show n/m coverage. Absent, or no loaded task wrote the shots,
+     * leaves coverage unknown.
      */
     requiredRoutesOf?: (task: T) => readonly string[];
+    missionId?: string;
+    now?: number;
   } = {},
-): { run: VisualShot[]; summary: DeliveryVisual; taskId: string | null } | null {
-  const run = withVariants(selectLatestRun(toVisualShots(shotRows)));
-  const openAudit = tasks.some(
-    t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status),
-  );
-  const bootFailed = auditBootFailed(tasks);
-  if (run.length === 0 && !openAudit && !bootFailed) return null;
-  const runWorker = run[0]?.workerId ?? null;
-  const runTask = runWorker
-    ? tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && (t.workers ?? []).some(w => w.id === runWorker))
-    : undefined;
-  const coverage = runTask && opts.requiredRoutesOf ? requiredCoverage(run, opts.requiredRoutesOf(runTask)) : null;
-  // The task the run belongs to, else the one open audit, so the Board can
-  // put the shots under that task's tile.
-  const auditTask = runTask
-    ?? (run.length === 0 ? tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status)) : undefined);
-  return { run, summary: summarizeVisualRun(run, { ...(coverage ?? {}), bootFailed }), taskId: auditTask?.id ?? null };
+): { run: VisualShot[]; summary: DeliveryVisual; taskId: string | null; model: VisualReviewModel } | null {
+  const model = buildVisualReviewModel({
+    missionId: opts.missionId ?? '',
+    shots: shotRows,
+    tasks: tasks as unknown as readonly VisualReviewTaskInput[],
+    requiredRoutesOf: opts.requiredRoutesOf as unknown as ((t: VisualReviewTaskInput) => readonly string[]) | undefined,
+    now: opts.now ?? Date.now(),
+  });
+  if (model.phase === 'off') return null;
+  const run: VisualShot[] = model.cells
+    .map(c => c.current.shot)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  const s = model.summary;
+  const summary = summarizeVisualRun(run, {
+    ...(s.required != null ? { required: s.required, covered: s.covered } : {}),
+    bootFailed: s.bootFailed === true,
+  });
+  // The task that wrote the newest current shot, else the one open audit, so
+  // the Board can put the shots under that task's tile.
+  const newest = run[run.length - 1];
+  const openAudit = tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status));
+  const taskId = (newest && 'auditTaskId' in newest ? (newest as { auditTaskId: string | null }).auditTaskId : null)
+    ?? (run.length === 0 ? openAudit?.id ?? null : null);
+  return { run, summary, taskId, model };
 }

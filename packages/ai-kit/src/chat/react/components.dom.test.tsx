@@ -51,12 +51,12 @@ const rows = [
 ];
 
 describe('ToolsMenu', () => {
-  it('shows ··· N for groups on Allow, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
+  it('is a plain "Tools" ··· trigger, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
     const changes: string[] = [];
     await render(h(kit.ToolsMenu, { rows, onChange: (k: string, m: string) => changes.push(`${k}:${m}`) }));
-    expect($('[data-testid="kit-tools-count"]')!.textContent).toBe('1');
     const trigger = $('[data-testid="kit-tools-trigger"]')!;
-    expect(trigger.getAttribute('aria-label')).toBe('Tools, 1 allowed without asking');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
+    expect(trigger.textContent).toBe('···');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     await click(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
@@ -76,9 +76,43 @@ describe('ToolsMenu', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('shows just ··· with nothing on Allow', async () => {
-    await render(h(kit.ToolsMenu, { rows: rows.map(r => ({ ...r, mode: r.mode === 'allow' ? 'ask' : r.mode })), onChange() {} }));
+  it('on a phone: a bottom sheet portaled to <body> with the --kit-* values from where it opened; the scrim closes it', async () => {
+    const realMatch = window.matchMedia;
+    (window as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: q.includes('max-width: 639px'), media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      const changes: string[] = [];
+      await render(h(kit.ToolsMenu, { rows, onChange: (k: string, m: string) => changes.push(`${k}:${m}`) }));
+      // (Set on the menu itself: happy-dom's computed style doesn't inherit custom properties; browsers do.)
+      $('[data-testid="kit-tools"]')!.style.setProperty('--kit-bg', 'rebeccapurple');
+      $('[data-testid="kit-tools"]')!.style.setProperty('--kit-sheet-bottom-offset', '64px');
+      await click($('[data-testid="kit-tools-trigger"]'));
+      expect($('[data-testid="kit-tools-panel"]')).toBeNull(); // not inside the composer
+      const layer = document.querySelector<HTMLElement>('body > [data-testid="kit-tools-sheet"]')!;
+      expect(layer).not.toBeNull();
+      expect(layer.classList.contains('kit-chat')).toBe(true);
+      expect(layer.style.getPropertyValue('--kit-bg')).toBe('rebeccapurple');
+      expect(layer.style.getPropertyValue('--kit-sheet-bottom-offset')).toBe('64px');
+      const panel = layer.querySelector('[data-testid="kit-tools-panel"]')!;
+      expect(panel.getAttribute('data-sheet')).toBe('true');
+      // A click inside the sheet is not "outside".
+      await click([...panel.querySelectorAll('[data-group="email"] button')].find(b => b.textContent === 'Allow')!);
+      expect(changes).toEqual(['email:allow']);
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).not.toBeNull();
+      await act(async () => { layer.querySelector('.kit-sheet-scrim')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).toBeNull();
+    } finally {
+      (window as { matchMedia: unknown }).matchMedia = realMatch;
+    }
+  });
+
+  it('carries no Allow count, however many groups are on Allow', async () => {
+    const allAllowed = rows.map(r => (r.locked ? r : { ...r, mode: 'allow' as const }));
+    await render(h(kit.ToolsMenu, { rows: allAllowed, onChange() {} }));
     expect($('[data-testid="kit-tools-count"]')).toBeNull();
+    expect($('.kit-badge')).toBeNull();
+    const trigger = $('[data-testid="kit-tools-trigger"]')!;
+    expect(trigger.textContent).toBe('···');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
   });
 });
 
@@ -105,6 +139,28 @@ describe('ScopePicker and TierPicker', () => {
     expect($$('.kit-option-meta').map(e => e.textContent)).toContain('$0.001');
     await click([...$$('[role="radio"]')].find(b => b.textContent!.startsWith('Premium'))!);
     expect(picked).toEqual(['premium']);
+  });
+
+  it('tier with a policy: no Auto, the app names, only offered rows, meta kept', async () => {
+    const picked: Array<string | null> = [];
+    const policy = kit.defineTierPolicy({ defaultTier: 'budget', auto: false, labels: { budget: 'Economy', standard: 'Balanced', premium: 'Best' } });
+    const options = [{ tier: 'budget', price: 'Haiku' }, { tier: 'standard' }, { tier: 'premium' }, { tier: 'premium-plus' }];
+    await render(h(kit.TierPicker, { value: 'budget', last: 'standard', policy, options, onChange: (v: string | null) => picked.push(v) }));
+    const trigger = $('[data-testid="kit-tier-trigger"]')!;
+    expect(trigger.textContent).toContain('Economy');
+    expect(trigger.getAttribute('aria-label')).toBe('Model tier: Economy');
+    await click(trigger);
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['EconomyHaiku', 'Balanced', 'Best']);
+    await click([...$$('[role="radio"]')].find(b => b.textContent === 'Best')!);
+    expect(picked).toEqual(['premium']);
+  });
+
+  it('tier with a policy and no options lists the policy tiers', async () => {
+    const policy = kit.defineTierPolicy({ offer: ['budget', 'standard'], labels: { budget: 'Economy' }, autoLabel: 'Pick for me' });
+    await render(h(kit.TierPicker, { value: null, policy, onChange() {} }));
+    expect($('[data-testid="kit-tier-trigger"]')!.textContent).toContain('Pick for me');
+    await click($('[data-testid="kit-tier-trigger"]'));
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['Pick for mepicks per turn', 'Economy', 'Standard']);
   });
 });
 
@@ -274,6 +330,19 @@ describe('ChatThread', () => {
     expect($$('.kit-step').map(s => [s.textContent, s.getAttribute('data-state')])).toEqual([['Checking the calendar(in progress)', 'active']]);
   });
 
+  it('renders a turn error in place and does not repeat the request error under it', async () => {
+    const message = 'The AI provider refused this turn: the key is out of credit or over its spending limit.';
+    const msgs = [
+      { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'a', role: 'assistant', parts: [{ type: 'data-turn-error', id: 'turn-error', data: { code: 'insufficient_credit', message, status: 402 } }] },
+    ];
+    await render(h(kit.ChatThread, { messages: msgs, status: 'error', error: message }));
+    const alerts = $$('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].getAttribute('data-turn-error')).toBe('insufficient_credit');
+    expect(alerts[0].textContent).toBe(message);
+  });
+
   it('shows the empty state with no messages', async () => {
     await render(h(kit.ChatThread, { messages: [], empty: h(kit.ChatEmpty, { name: 'Sam', chips: [], onChip() {} }) }));
     expect($('[data-testid="kit-empty"]')).not.toBeNull();
@@ -313,5 +382,104 @@ describe('useComposerState (shared new-chat composer)', () => {
     await click([...$$('#home [role="radio"]')].find(b => b.textContent === 'home')!);
     expect($('#home .scope')!.textContent).toBe('w1');
     expect(saves).toEqual([{ scope: 'w1' }]);
+  });
+});
+
+// ── 0.6.1: menu placement and sheet close, tier footer and Auto line, setup title ──
+
+const phone = () => {
+  const real = window.matchMedia;
+  (window as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: q.includes('max-width: 639px'), media: q, addEventListener() {}, removeEventListener() {} });
+  return () => { (window as { matchMedia: unknown }).matchMedia = real; };
+};
+
+describe('Menu placement (0.6.1)', () => {
+  it('opens up by default, down when asked', async () => {
+    await render(h(kit.Menu, { label: 'M', trigger: 'm', testId: 'm' }, 'x'));
+    await click($('[data-testid="m-trigger"]'));
+    expect($('[data-testid="m"]')!.dataset.placement).toBe('up');
+    await render(h(kit.Menu, { label: 'N', trigger: 'n', testId: 'n', placement: 'down' }, 'x'));
+    await click($('[data-testid="n-trigger"]'));
+    expect($('[data-testid="n"]')!.dataset.placement).toBe('down');
+  });
+
+  it('auto: down with room below, up at the bottom of the screen', () => {
+    expect(kit.menuDropSide({ top: 800, bottom: 848 }, 900)).toBe('up');
+    expect(kit.menuDropSide({ top: 120, bottom: 168 }, 900)).toBe('down');
+    expect(kit.menuDropSide({ top: 100, bottom: 700 }, 900)).toBe('down');
+  });
+
+  it('auto measures the trigger when it opens', async () => {
+    await render(h(kit.Menu, { label: 'A', trigger: 'a', testId: 'a', placement: 'auto' }, 'x'));
+    // happy-dom lays nothing out: a zero rect near the top has room below.
+    await click($('[data-testid="a-trigger"]'));
+    expect($('[data-testid="a"]')!.dataset.placement).toBe('down');
+  });
+});
+
+describe('Menu sheet close (0.6.1)', () => {
+  it('off by default: the phone sheet has no close button', async () => {
+    const restore = phone();
+    try {
+      await render(h(kit.ToolsMenu, { rows, onChange() {} }));
+      await click($('[data-testid="kit-tools-trigger"]'));
+      expect(document.querySelector('[data-testid="kit-tools-close"]')).toBeNull();
+      expect(document.querySelector('[data-testid="kit-tools-panel"] .kit-menu-title')?.textContent).toBe('Tools');
+    } finally { restore(); }
+  });
+
+  it('sheetClose: a × beside the title closes the sheet', async () => {
+    const restore = phone();
+    try {
+      await render(h(kit.ToolsMenu, { rows, onChange() {}, sheetClose: true }));
+      await click($('[data-testid="kit-tools-trigger"]'));
+      const close = document.querySelector<HTMLButtonElement>('[data-testid="kit-tools-close"]')!;
+      expect(close.getAttribute('aria-label')).toBe('Close');
+      expect(close.closest('.kit-sheet-head')?.querySelector('.kit-menu-title')?.textContent).toBe('Tools');
+      await click(close);
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).toBeNull();
+    } finally { restore(); }
+  });
+
+  it('sheetClose does nothing to the wide-screen popover', async () => {
+    await render(h(kit.ToolsMenu, { rows, onChange() {}, sheetClose: true }));
+    await click($('[data-testid="kit-tools-trigger"]'));
+    expect($('[data-testid="kit-tools-panel"]')).not.toBeNull();
+    expect($('[data-testid="kit-tools-close"]')).toBeNull();
+  });
+});
+
+describe('TierPicker footer and Auto line (0.6.1)', () => {
+  it('shows the footer under the options and the app\'s Auto line', async () => {
+    await render(h(kit.TierPicker, { value: null, onChange() {}, autoMeta: 'Routed per message', footer: 'This chat: $0.04' }));
+    await click($('[data-testid="kit-tier-trigger"]'));
+    const panel = $('[data-testid="kit-tier-panel"]')!;
+    expect(panel.querySelector('[role="radio"] .kit-option-meta')!.textContent).toBe('Routed per message');
+    const footer = panel.querySelector('[data-testid="kit-tier-footer"]')!;
+    expect(footer.textContent).toBe('This chat: $0.04');
+    expect(footer.previousElementSibling?.getAttribute('role')).toBe('radiogroup');
+  });
+
+  it('without them: "picks per turn" and no footer, as before', async () => {
+    await render(h(kit.TierPicker, { value: null, onChange() {} }));
+    await click($('[data-testid="kit-tier-trigger"]'));
+    expect($('[data-testid="kit-tier-panel"] [role="radio"] .kit-option-meta')!.textContent).toBe('picks per turn');
+    expect($('[data-testid="kit-tier-footer"]')).toBeNull();
+  });
+});
+
+describe('ChatSetupCard title (0.6.1)', () => {
+  it('is a heading between the eyebrow and the message', async () => {
+    await render(h(kit.ChatSetupCard, { reason: 'no_key', title: 'Connect a model provider', message: 'It starts once the team has a key.' }));
+    const t = $('[data-testid="kit-setup-title"]')!;
+    expect(t.tagName).toBe('H3');
+    expect(t.textContent).toBe('Connect a model provider');
+    expect(t.previousElementSibling?.className).toBe('kit-eyebrow');
+    expect(t.nextElementSibling?.textContent).toBe('It starts once the team has a key.');
+  });
+
+  it('no title: no heading', async () => {
+    await render(h(kit.ChatSetupCard, { reason: 'no_key', message: 'm' }));
+    expect($('[data-testid="kit-setup-title"]')).toBeNull();
   });
 });

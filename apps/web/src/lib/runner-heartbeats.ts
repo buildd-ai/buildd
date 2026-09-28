@@ -1,10 +1,13 @@
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, workerHeartbeats, workers } from '@buildd/core/db/schema';
-import { and, desc, gt, inArray } from 'drizzle-orm';
+import { accountWorkspaces, accounts, workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
+import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach';
+import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
   mountAllowlistEnforcedFrom,
   selectRelevantRunnerAccounts,
+  RUNNER_ONLINE_WINDOW_MS,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
@@ -123,5 +126,53 @@ export async function loadRunnerHeartbeats(workerRows: readonly RunnerWorkerLike
     }));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fresh heartbeats for `browserRunnerOnline` (visual-audit-runner.ts), with
+ * `workspaceIds` resolved per account by the claim rule
+ * (`accountReachesWorkspace` with `canClaim`): a claim link, or an open
+ * workspace of the account's own team. The stored `workspace_ids` column is
+ * deprecated and always empty, so it is never read.
+ *
+ * Two reads, and only when the visual review model asks (a claimable audit
+ * pending past NO_BROWSER_RUNNER_AFTER_MS). Best-effort: on failure it
+ * returns null, which the model reads as "unknown" and never as "no runner".
+ */
+export async function loadBrowserRunnerHeartbeats(
+  workspace: { id: string } & ReachWorkspace,
+  now: number,
+): Promise<BrowserRunnerHeartbeat[] | null> {
+  try {
+    const cutoff = new Date(now - RUNNER_ONLINE_WINDOW_MS);
+    const hbs = await db
+      .select({
+        accountId: workerHeartbeats.accountId,
+        lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+        environment: workerHeartbeats.environment,
+        accountTeamId: accounts.teamId,
+      })
+      .from(workerHeartbeats)
+      .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
+      .where(gt(workerHeartbeats.lastHeartbeatAt, cutoff));
+    if (hbs.length === 0) return [];
+    const accountIds = [...new Set(hbs.map(h => h.accountId))];
+    const links = await db
+      .select({ accountId: accountWorkspaces.accountId, canClaim: accountWorkspaces.canClaim, canCreate: accountWorkspaces.canCreate })
+      .from(accountWorkspaces)
+      .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id)));
+    const linkOf = new Map(links.map(l => [l.accountId, l]));
+    return hbs.map(h => ({
+      accountId: h.accountId,
+      lastHeartbeatAt: h.lastHeartbeatAt,
+      environment: (h.environment as { envKeys?: string[] } | null) ?? null,
+      workspaceIds: accountReachesWorkspace({ teamId: h.accountTeamId }, workspace, linkOf.get(h.accountId) ?? null, 'canClaim')
+        ? [workspace.id]
+        : [],
+    }));
+  } catch (err) {
+    console.error('[visual-review] browser runner lookup failed:', err);
+    return null;
   }
 }

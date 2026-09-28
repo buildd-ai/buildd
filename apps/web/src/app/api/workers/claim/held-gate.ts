@@ -1,13 +1,14 @@
 import { sql, eq, and, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
+import { BYPASS_HELD_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 
 /**
  * Context key set by /api/tasks/[id]/start when forceOverride=true and the task
  * has a missionId. The claim route reads this flag to bypass the held gate for
  * a single force-started task even when its parent mission is held.
  */
-export const BYPASS_HELD_GATE_KEY = 'bypassHeldGate' as const;
+export { BYPASS_HELD_GATE_KEY };
 
 /**
  * Held-mission gate for the claim route.
@@ -23,9 +24,13 @@ export const BYPASS_HELD_GATE_KEY = 'bypassHeldGate' as const;
  * a single task even when the parent mission is held.
  */
 export function missionNotHeld(): SQL {
+  // The bypass arm is coalesced so the whole expression is two-valued: a bare
+  // `context->>'bypassHeldGate' = 'true'` is NULL when the key is absent, which
+  // made a held mission's gate NULL rather than FALSE and the explicit-claim
+  // probe unable to name it (friction cad81659).
   return sql`(
     ${tasks.missionId} IS NULL
-    OR ${tasks.context}->>'bypassHeldGate' = 'true'
+    OR ${bypassFlagCondition(tasks.context, BYPASS_HELD_GATE_KEY)}
     OR NOT EXISTS (
       SELECT 1 FROM ${missions} m
       WHERE m.id = ${tasks.missionId}

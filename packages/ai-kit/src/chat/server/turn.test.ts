@@ -5,7 +5,7 @@
  * hand-off, thinking steps, abort, usage receipts, and steering.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { tool } from 'ai';
+import { APICallError, tool } from 'ai';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';
 import {
@@ -103,7 +103,7 @@ const preview = (tool: string, input: Record<string, unknown>): PreviewOutcome =
 
 const plan = { planId: 'plan-1', planSource: 'registry', requestedTier: 'standard', tier: 'standard', surface: 'chat', kind: 'chat_turn', provider: 'openrouter', model: 'vendor/model-x', effort: null, limits: { maxTurns: null }, price: { inputPerMTok: 1, outputPerMTok: 2, cacheReadPerMTok: 0, cacheWritePerMTok: 0 }, budget: null, expiresAt: new Date(0).toISOString() } as const;
 
-function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: string[]; deny?: boolean; steering?: ReturnType<typeof memorySteerQueue>; turnMs?: number; tools?: Record<string, unknown> }) {
+function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: string[]; deny?: boolean; steering?: ReturnType<typeof memorySteerQueue>; turnMs?: number; tools?: Record<string, unknown>; limits?: Record<string, number>; title?: unknown }) {
   const planned: unknown[] = [];
   const models = {
     plan: async (req: unknown) => { planned.push(req); if (o.deny) throw new PlanDeniedError({ ...plan, budget: { action: 'deny', reason: 'daily_cap_reached' } } as never); return plan as any; },
@@ -125,7 +125,8 @@ function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: s
     preview: (t, i) => preview(t, i),
     onUsage: r => { ledger.push(r); },
     ...(o.steering ? { steering: { queue: o.steering } } : {}),
-    ...(o.turnMs ? { limits: { turnMs: o.turnMs } } : {}),
+    ...(o.title ? { title: o.title as any } : {}),
+    ...(o.turnMs || o.limits ? { limits: { ...(o.turnMs ? { turnMs: o.turnMs } : {}), ...o.limits } } : {}),
   });
   const send = async (message: unknown, signal?: AbortSignal) => {
     const res = await turn.run({ body: { message }, userId: 'u-1', conversationId: 'c-1', ...(signal ? { signal } : {}) });
@@ -503,5 +504,96 @@ describe('steering (behind a flag)', () => {
     expect((await turn.steer({ conversationId: 'c-1', userId: 'u-1', text: '  ' })).status).toBe(400);
     expect((await turn.steer({ conversationId: 'c-1', userId: 'u-1', text: 'x'.repeat(2001) })).status).toBe(400);
     expect((await turn.steer({ conversationId: 'c-1', userId: 'u-1', text: 'ok' })).status).toBe(202);
+  });
+});
+
+describe('output cap', () => {
+  it('caps every model step at 4,096 output tokens by default', async () => {
+    const model = mockModel(toolStream(['c1', 'search_notes', {}]), textStream('One note.'));
+    const { send } = harness({ model });
+    await send(userMsg('what notes?'));
+    expect(model.doStreamCalls).toHaveLength(2);
+    for (const c of model.doStreamCalls) expect(c.maxOutputTokens).toBe(4096);
+  });
+
+  it('limits.maxOutputTokens overrides it, and 0 sends no cap', async () => {
+    const a = mockModel(textStream('hi'));
+    await harness({ model: a, limits: { maxOutputTokens: 1000 } }).send(userMsg('hi'));
+    expect(a.doStreamCalls[0].maxOutputTokens).toBe(1000);
+    const b = mockModel(textStream('hi'));
+    await harness({ model: b, limits: { maxOutputTokens: 0 } }).send(userMsg('hi'));
+    expect(b.doStreamCalls[0].maxOutputTokens).toBeUndefined();
+  });
+});
+
+describe('provider failures are typed and readable', () => {
+  const failing = (err: unknown) => new MockLanguageModelV4({ doStream: async () => { throw err; } } as any);
+  const apiError = (statusCode: number, body: string) => new APICallError({
+    message: body, url: 'https://openrouter.ai/api/v1/chat/completions', requestBodyValues: {}, statusCode, responseBody: JSON.stringify({ error: { message: body, code: statusCode } }), isRetryable: false,
+  });
+
+  it('an out-of-credit key ⇒ data-turn-error insufficient_credit, the same words as errorText, saved with the message', async () => {
+    const { send } = harness({ model: failing(apiError(402, 'This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 25714.')) });
+    const { res, text } = await send(userMsg('hi'));
+    expect(res.status).toBe(200);
+    const chunks = sse(text);
+    const part = chunks.find(c => c.type === 'data-turn-error');
+    expect(part.data).toMatchObject({ code: 'insufficient_credit', status: 402 });
+    expect(part.data.message).toContain('out of credit');
+    const err = chunks.find(c => c.type === 'error');
+    expect(err.errorText).toBe(part.data.message);
+    expect(chunks.indexOf(part)).toBeLessThan(chunks.indexOf(err));
+    expect(partsOf('data-turn-error')[0].data.code).toBe('insufficient_credit');
+    expect(receipts.at(-1)).toMatchObject({ outcome: 'error' });
+  });
+
+  it('a rejected key ⇒ invalid_key; anything else ⇒ failed with the old words', async () => {
+    const a = sse((await harness({ model: failing(apiError(401, 'No auth credentials found')) }).send(userMsg('hi'))).text);
+    expect(a.find(c => c.type === 'data-turn-error').data.code).toBe('invalid_key');
+    const b = sse((await harness({ model: failing(new Error('socket hang up')) }).send(userMsg('hi'))).text);
+    expect(b.find(c => c.type === 'data-turn-error').data).toMatchObject({ code: 'failed', message: 'The turn failed.' });
+    expect(b.find(c => c.type === 'error').errorText).toBe('The turn failed.');
+  });
+});
+
+describe('conversation titles (opt-in)', () => {
+  const titles: Array<{ title: string; source: string }> = [];
+  beforeEach(() => { titles.length = 0; });
+  const titleOpts = (extra: Record<string, unknown> = {}) => ({
+    needed: () => titles.length === 0,
+    save: ({ title, source }: { title: string; source: string }) => { titles.push({ title, source }); },
+    ...extra,
+  });
+
+  it('off by default: no title hook, no title', async () => {
+    const { send } = harness({ model: mockModel(textStream('Hi.')) });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toEqual([]);
+  });
+
+  it('titles a new question after the turn is saved, by rule, without a model call', async () => {
+    const { send } = harness({ model: mockModel(textStream('It waits on review.')), title: titleOpts() });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toEqual([{ title: 'Why is the release stuck?', source: 'rule' }]);
+  });
+
+  it('uses the app\'s title model for a long message, through `later`', async () => {
+    const titleModel = new MockLanguageModelV4({ doGenerate: async () => ({ content: [{ type: 'text', text: 'Export failures' }], finishReason: { unified: 'stop', raw: 'stop' }, usage, warnings: [] }) as never });
+    const scheduled: Array<() => Promise<void>> = [];
+    const { send } = harness({
+      model: mockModel(textStream('Looking.')),
+      title: titleOpts({ model: async () => ({ ok: true, model: titleModel, plan: { ...plan, tier: 'budget' } }), later: (fn: () => Promise<void>) => { scheduled.push(fn); } }),
+    });
+    await send(userMsg('I need help figuring out why the nightly export keeps failing after the schema change'));
+    expect(titles).toEqual([]);
+    await Promise.all(scheduled.map(fn => fn()));
+    expect(titles).toEqual([{ title: 'Export failures', source: 'model' }]);
+  });
+
+  it('skips when `needed` says no (the person named it)', async () => {
+    titles.push({ title: 'Named by the person', source: 'user' });
+    const { send } = harness({ model: mockModel(textStream('Hi.'), textStream('Hi.')), title: titleOpts() });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toHaveLength(1);
   });
 });

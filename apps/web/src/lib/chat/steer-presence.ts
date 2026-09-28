@@ -12,11 +12,8 @@
 import { formatAge } from '@/lib/mission-board';
 import { resolveRunnerDisplay, type RunnerHeartbeatLike, type RunnerWorkerLike } from '@/lib/runner-display';
 
-/** "Builder @ atlas / rates service" — falls back gracefully with no role or no runner yet. */
-export function steerTitle(roleName: string | null, runnerName: string | null, taskLabel: string): string {
-  const who = [roleName ?? 'Agent', runnerName ? `@ ${runnerName}` : null].filter(Boolean).join(' ');
-  return `${who} / ${taskLabel}`;
-}
+/** "Builder @ atlas / rates service": the kit's words, so every app titles a steer alike. */
+export { steerTitle } from '@builddai/ai-kit/chat/react';
 
 export interface SteerPresence {
   runnerLabel: string | null;

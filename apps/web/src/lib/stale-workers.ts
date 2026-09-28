@@ -1,12 +1,14 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
-import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
+import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import {
   ANSWER_PATH_REASONS,
@@ -163,7 +165,8 @@ async function resolveStaleTask(
             claimedAt: null,
             startAt,
             context: {
-              ...ctx,
+              // A requeue ends the claim, so its force audit goes with it.
+              ...withoutForceClaim(ctx),
               ...(staleWorker?.branch
                 ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
                 : {}),
@@ -315,7 +318,7 @@ async function resolveStaleTask(
             claimedAt: null,
             startAt,
             context: {
-              ...existingCtx,
+              ...withoutForceClaim(existingCtx),
               ...(staleWorker?.branch
                 ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
                 : {}),
@@ -452,6 +455,7 @@ export function neverStartedTeamScope(accountId: string, idleStaleThreshold: Dat
     )
     AND ${workers.status} = 'idle'
     AND ${workers.startedAt} IS NULL
+    AND ${workers.runner} <> ${INTERACTIVE_WORKER_RUNNER}
     AND ${workers.updatedAt} < ${idleStaleThreshold}`;
 }
 
@@ -475,6 +479,10 @@ export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date) {
     eq(workers.accountId, accountId),
     inArray(workers.status, [...LIVE_WORKER_STATUSES]),
     lt(workers.updatedAt, heartbeatCutoff),
+    // An interactive (MCP-claimed) worker has no runner, so no runner heartbeat
+    // ever vouches for it; this rule would read every one as orphaned. Its
+    // liveness is MCP activity, judged by the interactive arm of staleWorkerScope.
+    runnerWorkerOnly(),
   );
 }
 
@@ -486,8 +494,21 @@ export function heartbeatFreshnessScope(accountId: string, heartbeatCutoff: Date
   );
 }
 
-export async function cleanupStaleWorkers(accountId: string) {
-  // 1. Auto-expire stale workers:
+/**
+ * Every worker row the reaper's section 1 expires for `accountId`, as one WHERE.
+ * Exported so the scope test can render it: which arm carries which account
+ * scope, and that every runner rule skips interactive workers, is only
+ * observable in the SQL.
+ *
+ *  - Runner rules (generic staleness, idle, silent start, never started) judge
+ *    liveness by runner evidence: a session start, synced tokens, a state-change
+ *    sync. An interactive worker (runner = 'mcp') produces none of that, so each
+ *    of these arms excludes it; without that the idle rule reaped live
+ *    interactive work five minutes after claim_task (friction 92866723).
+ *  - The interactive arm reaps an interactive worker only after
+ *    INTERACTIVE_WORKER_IDLE_TTL_MS with no MCP activity at all.
+ */
+export function staleWorkerScope(accountId: string, now: Date = new Date()) {
   //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
   //      timeout + grace). This must NOT be tightened independently: the runner
   //      keeps a worker alive through long silent tool calls, and `updatedAt`
@@ -504,49 +525,59 @@ export async function cleanupStaleWorkers(accountId: string) {
   //      $0 spend is not in a legitimate long tool call, so the toolInFlight
   //      reasoning behind the longer threshold does not apply here.
   const SILENT_START_THRESHOLD_MS = 10 * 60 * 1000;
-  const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
-  const idleStaleThreshold = new Date(Date.now() - IDLE_STALE_THRESHOLD_MS);
-  const silentStartThreshold = new Date(Date.now() - SILENT_START_THRESHOLD_MS);
+  const staleThreshold = new Date(now.getTime() - STALE_THRESHOLD_MS);
+  const idleStaleThreshold = new Date(now.getTime() - IDLE_STALE_THRESHOLD_MS);
+  const silentStartThreshold = new Date(now.getTime() - SILENT_START_THRESHOLD_MS);
 
-  const staleWorkers = await db.query.workers.findMany({
-    // Each arm carries its own account scope explicitly rather than sharing one
-    // hoisted `eq(workers.accountId, accountId)`, so the scoping of every
-    // individual rule is readable at the rule — which matters now that exactly
-    // one of them (the never-started arm) is deliberately team-scoped and the
-    // rest are deliberately not.
-    where: or(
-      // Generic staleness: a worker that did real work, then went quiet.
-      and(
-        eq(workers.accountId, accountId),
-        inArray(workers.status, ['running', 'starting']),
-        lt(workers.updatedAt, staleThreshold),
-      ),
-      // Plain idle rule. Account-scoped, and NOT narrowed by `started_at IS
-      // NULL` — which is precisely why it cannot be widened to the team.
-      and(
-        eq(workers.accountId, accountId),
-        eq(workers.status, 'idle'),
-        lt(workers.updatedAt, idleStaleThreshold),
-      ),
-      // Silent-start rule, expressed in SQL so the shorter clock is applied by
-      // the DB rather than by post-filtering the generic stale window.
-      // costUsd is never written on this path (only the terminal PATCH prices a
-      // worker) so it alone can't discriminate "dead" from "spent real tokens
-      // but wasn't priced yet" — inputTokens/outputTokens are live-synced by the
-      // runner's periodic progress reports and close that gap.
-      and(
-        eq(workers.accountId, accountId),
-        sql`${workers.status} IN ('running', 'starting')
-            AND ${workers.startedAt} IS NOT NULL
-            AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}
-            AND COALESCE(${workers.costUsd}, 0) = 0
-            AND COALESCE(${workers.inputTokens}, 0) = 0
-            AND COALESCE(${workers.outputTokens}, 0) = 0
-            AND ${workers.updatedAt} < ${silentStartThreshold}`,
-      ),
-      // The one team-scoped arm, strictly narrower than the idle rule above.
-      neverStartedTeamScope(accountId, idleStaleThreshold),
+  // Each arm carries its own account scope explicitly rather than sharing one
+  // hoisted `eq(workers.accountId, accountId)`, so the scoping of every
+  // individual rule is readable at the rule — which matters now that exactly
+  // one of them (the never-started arm) is deliberately team-scoped and the
+  // rest are deliberately not.
+  return or(
+    // Generic staleness: a worker that did real work, then went quiet.
+    and(
+      eq(workers.accountId, accountId),
+      inArray(workers.status, ['running', 'starting']),
+      lt(workers.updatedAt, staleThreshold),
+      runnerWorkerOnly(),
     ),
+    // Plain idle rule. Account-scoped, and NOT narrowed by `started_at IS
+    // NULL` — which is precisely why it cannot be widened to the team.
+    and(
+      eq(workers.accountId, accountId),
+      eq(workers.status, 'idle'),
+      lt(workers.updatedAt, idleStaleThreshold),
+      runnerWorkerOnly(),
+    ),
+    // Silent-start rule, expressed in SQL so the shorter clock is applied by
+    // the DB rather than by post-filtering the generic stale window.
+    // costUsd is never written on this path (only the terminal PATCH prices a
+    // worker) so it alone can't discriminate "dead" from "spent real tokens
+    // but wasn't priced yet" — inputTokens/outputTokens are live-synced by the
+    // runner's periodic progress reports and close that gap.
+    and(
+      eq(workers.accountId, accountId),
+      sql`${workers.status} IN ('running', 'starting')
+          AND ${workers.startedAt} IS NOT NULL
+          AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}
+          AND COALESCE(${workers.costUsd}, 0) = 0
+          AND COALESCE(${workers.inputTokens}, 0) = 0
+          AND COALESCE(${workers.outputTokens}, 0) = 0
+          AND ${workers.updatedAt} < ${silentStartThreshold}`,
+      runnerWorkerOnly(),
+    ),
+    // The one team-scoped arm, strictly narrower than the idle rule above.
+    neverStartedTeamScope(accountId, idleStaleThreshold),
+    // Interactive workers: reaped on MCP silence alone, after a long TTL.
+    interactiveAbandonedScope(accountId, now),
+  );
+}
+
+export async function cleanupStaleWorkers(accountId: string) {
+  // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
+  const staleWorkers = await db.query.workers.findMany({
+    where: staleWorkerScope(accountId),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
@@ -558,6 +589,8 @@ export async function cleanupStaleWorkers(accountId: string) {
       accountId: true,
       // Shadow-mode only: compared against the legacy verdict, never acted on.
       leaseExpiresAt: true,
+      // Interactive workers are booked under their own error text.
+      runner: true,
     },
   });
 
@@ -1209,4 +1242,66 @@ export async function cleanupUnresumedAnswers(
   }
 
   return { degraded };
+}
+
+// ── Visual audits waiting on a browser runner ────────────────────────────────
+
+/**
+ * Pending visual audits old enough to be `no_browser_runner`
+ * (docs/design/visual-qa-human-review.md, "Runner availability") on a
+ * mission filed from chat, not yet announced there, whose dependencies are
+ * all done. The model still decides the phase (the claimable window, no
+ * browser heartbeat); this only keeps the candidates few.
+ */
+/** Mirrors NO_BROWSER_RUNNER_AFTER_MS (lib/visual-review-model.ts); a test holds them equal. */
+export const STALLED_VISUAL_AUDIT_AFTER_MS = 10 * 60 * 1000;
+
+export function stalledVisualAuditCandidatesWhere(now: Date, missionsTable: typeof import('@buildd/core/db/schema').missions) {
+  return and(
+    eq(tasks.roleSlug, VISUAL_AUDITOR_ROLE_SLUG),
+    eq(tasks.status, 'pending'),
+    lt(tasks.createdAt, new Date(now.getTime() - STALLED_VISUAL_AUDIT_AFTER_MS)),
+    isNotNull(missionsTable.conversationId),
+    sql`(${tasks.context} -> 'visualQa' ->> 'stallNotifiedAt') is null`,
+    // Dependencies all done (claimableSince's DEP_DONE; a missing row counts
+    // as done there too): an audit still waiting on its build is not a
+    // candidate, so a long build phase does not hold a slot in the window.
+    sql`not exists (select 1 from "tasks" "dep" where "dep"."id"::text in (select jsonb_array_elements_text(case when jsonb_typeof(${tasks.dependsOn}) = 'array' then ${tasks.dependsOn} else '[]'::jsonb end)) and "dep"."status" not in ('completed', 'cancelled'))`,
+  )!;
+}
+
+/**
+ * Tell a chat-filed mission's conversation, once per audit, that its visual
+ * audit is waiting with no browser runner online. Runs from the stale-worker
+ * sweep (no new cron). Display only: nothing is cancelled. The once-only mark
+ * is the atomic `context.visualQa.stallNotifiedAt` claim in
+ * postVisualReviewEvent. Returns how many were posted.
+ */
+export async function notifyStalledVisualAudits(now = new Date(), limit = 20): Promise<number> {
+  const { missions } = await import('@buildd/core/db/schema');
+  const rows = await db
+    .select({ taskId: tasks.id, missionId: missions.id, workspaceId: missions.workspaceId })
+    .from(tasks)
+    .innerJoin(missions, eq(missions.id, tasks.missionId))
+    .where(stalledVisualAuditCandidatesWhere(now, missions))
+    // Oldest first: a candidate that keeps failing the phase check (a runner
+    // is online) is announced or aged out in order, never pinning the window.
+    .orderBy(asc(tasks.createdAt))
+    .limit(limit);
+  if (rows.length === 0) return 0;
+  const [{ loadVisualReview }, { postVisualReviewEvent }] = await Promise.all([
+    import('@/lib/visual-review-load'),
+    import('@/lib/chat/mission-events'),
+  ]);
+  let posted = 0;
+  for (const r of rows) {
+    try {
+      const model = await loadVisualReview({ id: r.missionId, workspaceId: r.workspaceId ?? null }, { now: now.getTime() });
+      if (model.phase !== 'no_browser_runner' || model.audit?.id !== r.taskId) continue;
+      if (await postVisualReviewEvent({ missionId: r.missionId, moment: 'no_browser_runner', model, auditTaskId: r.taskId })) posted += 1;
+    } catch (e) {
+      console.warn('[stale-workers] visual audit stall check failed:', e instanceof Error ? e.message : e);
+    }
+  }
+  return posted;
 }

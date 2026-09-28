@@ -26,6 +26,7 @@ export type InferenceCapability =
   | 'visual_qa'
   | 'task_classification'
   | 'mission_summary'
+  | 'heartbeat_triage'
   | 'task_category'
   | 'chat';
 
@@ -63,6 +64,13 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'Answers questions about a mission and condenses long note threads.',
     costHint: '~$0.005 per request',
   },
+  heartbeat_triage: {
+    id: 'heartbeat_triage',
+    kind: 'server_feature',
+    label: 'Heartbeat triage',
+    description: 'Checks whether a mission check-in needs the organizer before starting a runner.',
+    costHint: '~$0.0001 per check-in (OpenRouter key)',
+  },
   task_classification: {
     id: 'task_classification',
     kind: 'built_in',
@@ -89,7 +97,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
 export const ALL_INFERENCE_CAPABILITIES = Object.keys(INFERENCE_CAPABILITIES) as InferenceCapability[];
 
 /** The features with a runner path. Overrides may name any of them. */
-export const SERVER_FEATURES = ['criteria_grading', 'visual_qa', 'mission_summary'] as const;
+export const SERVER_FEATURES = ['criteria_grading', 'visual_qa', 'mission_summary', 'heartbeat_triage'] as const;
 export type ServerFeature = typeof SERVER_FEATURES[number];
 
 /**
@@ -98,7 +106,7 @@ export type ServerFeature = typeof SERVER_FEATURES[number];
  * QA judgment and mission summaries have ids (and stored overrides survive) but
  * nothing calls them yet; add one here in the PR that wires its call site.
  */
-export const LIVE_SERVER_FEATURES: readonly ServerFeature[] = ['criteria_grading'];
+export const LIVE_SERVER_FEATURES: readonly ServerFeature[] = ['criteria_grading', 'heartbeat_triage'];
 
 /** Where a server-side feature runs. */
 export type FeatureMode = 'server' | 'runner';

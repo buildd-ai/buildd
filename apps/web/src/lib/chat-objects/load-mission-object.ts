@@ -11,7 +11,7 @@ import { db } from '@buildd/core/db';
 import { missions, workspaceSkills, missionNotes } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 import { deriveMissionDisplayState, deriveTaskHealthSignal, getMissionStateChip } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -19,6 +19,8 @@ import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { MISSION_DETAIL_WITH } from '@/app/app/(protected)/missions/[id]/mission-page-query';
 import type { MissionObjectView } from '@/components/chat/objects/object-views';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { loadVisualReview } from '@/lib/visual-review-load';
 
 /** The description's first paragraph as plain text — the mission page's `goalLine`. */
 export function missionGoalLine(description: string | null | undefined): string | null {
@@ -36,7 +38,11 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   const taskIds = (mission.tasks || []).map(t => t.id);
   const now = Date.now();
 
-  const [roles, humanSteeringNotes, runnerHeartbeats, fleetCapacity] = await Promise.all([
+  // The visual review (docs/design/visual-qa-human-review.md, Chat), through
+  // the one auditor-scoped loader. No audit task on the mission: no query.
+  const hasAudit = (mission.tasks ?? []).some(t => (t as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG);
+
+  const [roles, humanSteeringNotes, runnerHeartbeats, fleetCapacity, visual] = await Promise.all([
     (async () => {
       const wsIds = await getUserWorkspaceIds(userId);
       if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
@@ -60,6 +66,16 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
     (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(userId), now }))()
       .catch(() => null),
+    // The GET route's rule too: the mission's workspace must be reachable, so
+    // no card lists shots whose images would 403.
+    (async () => {
+      if (!hasAudit) return null;
+      if (mission.workspaceId && (await verifyWorkspaceAccess(userId, mission.workspaceId)) === null) return null;
+      return loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null }, { now });
+    })().catch((e) => {
+      console.warn('[chat-objects] visual review not loaded:', e instanceof Error ? e.message : e);
+      return null;
+    }),
   ]);
 
   const allTasks = (mission.tasks || []).slice().sort(
@@ -115,6 +131,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     workspaceName: (mission as any).workspace?.name ?? null,
     conversationId: (m.conversationId as string | null | undefined) ?? null,
     board,
+    visual,
     taskIds,
     workerStatuses: Object.fromEntries((mission.tasks ?? []).flatMap(t => (t.workers ?? []).map(w => [w.id, w.status] as const))),
     renderedAt: now,

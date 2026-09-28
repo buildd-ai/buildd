@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, workspaces, accounts } from '@buildd/core/db/schema';
-import { eq, and, lt, inArray } from 'drizzle-orm';
+import { eq, and, lt, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -11,6 +11,8 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
+import { runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -82,6 +84,8 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
       claimedAt: null,
       expiresAt: null,
       updatedAt: now,
+      // A requeue ends the claim, so a force claim's audit goes with it.
+      context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
     })
     .where(eq(tasks.id, taskId));
   return 'pending' as const;
@@ -160,12 +164,17 @@ export async function POST(req: NextRequest) {
   let stalledWorkers = 0;
   let orphanedTasks = 0;
 
-  // 1. Workers stuck in running/starting with no update for > 1 hour
+  // 1. Workers stuck in running/starting with no update for > 1 hour.
+  // Runner workers only: an interactive (MCP-claimed) worker's updatedAt moves
+  // on MCP activity, not runner syncs, and it has its own longer TTL in
+  // cleanupStaleWorkers (step 3). One hour of a person's local agent working
+  // without an MCP call is normal (friction 92866723).
   const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
     where: and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
-      lt(workers.updatedAt, oneHourAgo)
+      lt(workers.updatedAt, oneHourAgo),
+      runnerWorkerOnly(),
     ),
     columns: { id: true, taskId: true },
   });
@@ -336,11 +345,15 @@ export async function POST(req: NextRequest) {
   if (staleHeartbeats.length > 0) {
     const staleAccountIds = staleHeartbeats.map(hb => hb.accountId);
 
-    // Find active workers belonging to accounts with stale heartbeats
+    // Find active workers belonging to accounts with stale heartbeats. A
+    // runner heartbeat only vouches for that runner's workers; an interactive
+    // (MCP-claimed) worker on the same account has no runner and must not die
+    // because the account's runner went offline.
     const orphanedWorkers = await db.query.workers.findMany({
       where: and(
         inArray(workers.accountId, staleAccountIds),
         inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+        runnerWorkerOnly(),
       ),
       columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
     });

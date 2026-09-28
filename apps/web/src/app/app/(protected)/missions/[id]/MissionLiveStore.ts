@@ -13,8 +13,8 @@
  *   per {@link MISSION_REFRESH_WINDOW_MS} per tab: `task:created`,
  *   `task:claimed`, `worker:completed`, `worker:failed`,
  *   `task:children_completed`, `worker:artifact` (a new record: the Records
- *   sheet, the row's `Records · N`, Delivery), `mission:note_posted`,
- *   `mission:completion_decision`.
+ *   sheet, the row's `Records · N`, Delivery, an audit shot), `mission:note_posted`,
+ *   `mission:completion_decision`, `mission:visual_review` (a human decision).
  * - Two kinds of `worker:progress` are structural too, because they change
  *   which group a row is in: a worker **status change** (running →
  *   waiting_input moves a row into NEEDS YOU), and the status-less `{taskId}`
@@ -181,6 +181,7 @@ export function classifyMissionEvent(event: string, data: unknown, ctx: MissionE
     }
     case 'mission:note_posted':
     case 'mission:completion_decision':
+    case 'mission:visual_review':
       return { kind: 'refresh' };
     case 'worker:progress': {
       if (!ours(taskId)) return { kind: 'ignore' };

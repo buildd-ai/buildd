@@ -199,6 +199,15 @@ describe('AC-17 with a mocked Pusher', () => {
     expect(routerCalls).toEqual(['refresh']);
   });
 
+  it('an audit shot and a human decision, both on the mission channel, refresh the page (thumbnails stream in)', () => {
+    render(ids(3), 1);
+    act(() => emit(`mission-${M}`, 'worker:artifact', { artifact: { id: 'shot-1', workerId: 'w-audit', missionId: M } }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    act(() => emit(`mission-${M}`, 'mission:visual_review', { missionId: M }));
+    clock.advance(MISSION_REFRESH_WINDOW_MS);
+    expect(routerCalls).toEqual(['refresh', 'refresh']);
+  });
+
   it('never calls router.push or router.replace', () => {
     render(ids(3), 1);
     act(() => emit(workspace, 'worker:progress', { taskId: 't2' }));

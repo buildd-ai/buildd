@@ -11,6 +11,12 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/chat' });
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+/** buildd's look for the kit's composer and thread lives in globals.css, not in class names. */
+const GLOBALS = readFileSync(join(import.meta.dir, '..', '..', 'app', 'globals.css'), 'utf8');
+const ruleOf = (selector: string, from = 0) => { const i = GLOBALS.indexOf(`${selector} {`, from); return i < 0 ? '' : GLOBALS.slice(i, GLOBALS.indexOf('}', i)); };
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -87,15 +93,17 @@ describe('thinking', () => {
   it('while busy the composer invites steering and send becomes Stop', async () => {
     await render({ messages: msgs(), status: 'streaming', onStop() {} });
     expect(placeholder()).toBe('Steer while I think…');
-    expect(q('[data-testid="composer-stop"]')).not.toBeNull();
-    expect(q('[data-testid="composer-send"]')).toBeNull();
+    expect(q('[data-testid="kit-stop"]')).not.toBeNull();
+    expect(q('[data-testid="kit-send"]')).toBeNull();
   });
 
   it('the streaming turn is the Thinking panel: plain steps, no tool names, one active step', async () => {
     await render({ messages: msgs(), status: 'streaming' });
-    const panel = q('[data-testid="thinking-panel"]');
+    // The streaming message is the panel: the kit's checklist, then what the agent says.
+    const panel = q('.buildd-thread .kit-msg[data-streaming]');
     expect(panel).not.toBeNull();
-    const steps = qa('[data-testid="thinking-step"]');
+    expect(panel!.querySelector('[data-testid="kit-thinking"] .buildd-thinking-title')?.textContent).toBe('builddthinking');
+    const steps = qa('.buildd-thread .kit-step');
     expect(steps.map(s => s.dataset.state)).toEqual(['done', 'active']);
     expect(panel!.textContent).not.toMatch(/manage_missions|recall\b/);
     expect(q('[data-testid="tool-call-row"]')).toBeNull();
@@ -109,22 +117,22 @@ describe('thinking', () => {
 
   it('send is the Stop block for the whole turn, even where nothing can stop it yet', async () => {
     await render({ messages: msgs(), status: 'streaming' });
-    const stop = q('[data-testid="composer-stop"]') as HTMLButtonElement | null;
+    const stop = q('[data-testid="kit-stop"]') as HTMLButtonElement | null;
     expect(stop).not.toBeNull();
     expect(stop!.disabled).toBe(true);
-    expect(q('[data-testid="composer-send"]')).toBeNull();
+    expect(q('[data-testid="kit-send"]')).toBeNull();
     expect(q('[data-testid="composer-sweep"]')).not.toBeNull();
   });
 
   it('once the turn lands it reads as the normal feed again', async () => {
     await render({ messages: msgs(), status: 'ready' });
-    expect(q('[data-testid="thinking-panel"]')).toBeNull();
+    expect(q('[data-testid="kit-thinking"]')).toBeNull();
     expect(q('[data-testid="tool-call-row"]')).not.toBeNull();
   });
 
   it('submitted, nothing streamed: the panel says it is reading the question', async () => {
     await render({ messages: msgs().slice(0, 1), status: 'submitted' });
-    expect(qa('[data-testid="thinking-step"]').map(s => s.textContent)).toEqual(['Reading your question']);
+    expect(qa('.buildd-thread .kit-step').map(s => s.children[1]?.textContent)).toEqual(['Reading your question']);
   });
 });
 
@@ -135,11 +143,15 @@ describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the co
       await render({ pulse });
       const canvas = q('[data-testid="canvas-empty"]')!;
       expect(canvas.dataset.layout).toBe('anchored');
-      expect(cls(canvas)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:flex-1', 'max-md:flex-col']));
-      const gap = q('[data-testid="canvas-sea-gap"]')!;
-      expect(cls(gap)).toContain('max-md:flex-1');
-      expect(gap.nextElementSibling?.getAttribute('data-testid')).toBe('canvas-suggestions');
-      expect(q('[data-testid="canvas-suggestions"]')?.nextElementSibling).toBeNull();
+      expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'max-md:flex-1']));
+      // The kit's box fills the column; its rows header is pushed to the
+      // bottom (margin-top: auto, globals.css), and the rows are last.
+      const box = canvas.querySelector('.kit-empty')!;
+      expect(cls(box)).toEqual(expect.arrayContaining(['buildd-empty', 'buildd-empty-anchor-phone', 'flex', 'flex-col', 'max-md:flex-1']));
+      const head = box.querySelector('.kit-chips-head')!;
+      expect(head.contains(q('[data-testid="canvas-suggestions"]'))).toBe(true);
+      expect(head.nextElementSibling?.classList.contains('kit-chips')).toBe(true);
+      expect(head.nextElementSibling?.nextElementSibling).toBeNull();
       expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:min-h-full', 'max-md:flex-col']));
     });
   }
@@ -174,16 +186,18 @@ describe('contrast over the sea (AA)', () => {
 
   it('send stays a solid copper block with a dark arrow when the box is empty: disabled is not dimmed', async () => {
     await render({ pulse: { needsYou: [], live: 0 } });
-    const send = q('[data-testid="composer-send"]')!;
+    const send = q('[data-testid="kit-send"]')!;
     expect(send.getAttribute('aria-disabled')).toBe('true');
-    expect(cls(send).filter(c => /opacity|brightness/.test(c) && !c.includes('hover:'))).toEqual([]);
-    expect(cls(send)).toContain('bg-[var(--mood-needs-fill)]');
-    expect(cls(send)).toContain('text-[var(--on-mood-needs)]');
+    const rule = ruleOf('.buildd-composer .kit-send');
+    expect(rule).toContain('background: var(--mood-needs-fill)');
+    expect(rule).toContain('color: var(--on-mood-needs)');
+    // Nothing dims it: only a hover brightens an enabled one.
+    expect(GLOBALS).not.toMatch(/\.buildd-composer \.kit-send\[aria-disabled[^{]*\{[^}]*(opacity|brightness)/);
   });
 
   it('an empty send does nothing', async () => {
     await render({ pulse: { needsYou: [], live: 0 } });
-    await act(async () => { q('[data-testid="composer-send"]')!.click(); });
+    await act(async () => { q('[data-testid="kit-send"]')!.click(); });
     expect(sent).toEqual([]);
   });
 
@@ -196,9 +210,15 @@ describe('contrast over the sea (AA)', () => {
 
   it('the composer top rule is the strong rule (copper only when something needs you), focused or not, on a phone', async () => {
     await render({ pulse: { needsYou: [], live: 0 } });
-    const form = cls(q('[data-testid="chat-composer"] form'));
-    expect(form).toContain('border-t-[var(--chat-rule-strong)]');
-    expect(form.filter(c => c.startsWith('focus-within:border-t'))).toEqual([]);
+    expect(q('[data-testid="chat-composer"] .buildd-composer > form.kit-composer')).not.toBeNull();
+    expect(ruleOf('.buildd-composer > .kit-composer')).toContain('border-top: 2px solid var(--chat-rule-strong)');
+    expect(ruleOf('.buildd-composer > .kit-composer[data-mood="needs"]')).toContain('var(--mood-needs)');
+    // The focus rule turns the text colour only from 768px: never on a phone.
+    const focus = GLOBALS.indexOf('.buildd-composer > .kit-composer:not([data-mood="needs"]):focus-within');
+    const md = GLOBALS.indexOf('@media (min-width: 768px) {\n    .buildd-composer > .kit-composer { border-left');
+    expect(md).toBeGreaterThan(0);
+    expect(focus).toBeGreaterThan(md);
+    expect(focus).toBeLessThan(GLOBALS.indexOf('@media (min-width: 1024px)', md));
   });
 });
 
@@ -244,15 +264,18 @@ describe('sea', () => {
 });
 
 describe('empty canvas', () => {
-  const labels = () => qa('[data-testid="canvas-suggestion-label"]').map(c => c.textContent);
+  // The picked rows are the kit's ChatEmpty chips (rows variant); tone `needs` draws one copper.
+  const chips = () => qa('[data-testid="canvas-empty"] .kit-chip');
+  const labels = () => chips().map(c => c.textContent);
+  const copper = (c: HTMLElement) => c.dataset.tone === 'needs';
   const placeholder = () => (q('#chat-composer-input') as HTMLTextAreaElement).placeholder;
 
   it('without a pulse: greets by name, claims no mood, and offers no needs-you prompt', async () => {
     await render();
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Hi Maya, what are we working on?');
-    expect(q('[data-testid="canvas-mood-dot"]')).toBeNull();
+    expect(q('[data-testid="canvas-empty"] .kit-mood-dot')).toBeNull();
     expect(labels()).toEqual(["What's running right now?", 'Start something new']);
-    await act(async () => { qa('[data-testid="canvas-suggestion"]')[0].click(); });
+    await act(async () => { chips()[0].click(); });
     expect(sent).toEqual(["What's running right now?"]);
   });
 
@@ -261,8 +284,8 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('calm');
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('All quiet.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('nothing blocked');
-    expect(qa('[data-testid="canvas-suggestion"]')).toHaveLength(2);
-    expect(qa('[data-testid="canvas-suggestion"][data-tone="needs"]')).toHaveLength(0);
+    expect(chips()).toHaveLength(2);
+    expect(chips().filter(copper)).toHaveLength(0);
     expect(placeholder()).toBe('Start something new…');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('calm');
   });
@@ -272,9 +295,13 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
-    const rows = qa('[data-testid="canvas-suggestion"]');
+    // The overline leads with the needs square; the header reads before the rows.
+    expect(q('[data-testid="canvas-empty"] .kit-empty-overline .kit-mood-dot')?.getAttribute('data-mood')).toBe('needs');
+    expect(q('[data-testid="canvas-empty"] .kit-chips-head')?.nextElementSibling?.classList.contains('kit-chips')).toBe(true);
+    const rows = chips();
     expect(rows).toHaveLength(2);
-    expect(rows[0].dataset.tone).toBe('needs');
+    expect(copper(rows[0])).toBe(true);
+    expect(copper(rows[1])).toBe(false);
     expect(placeholder()).toBe('Answer the waiting question');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('needs');
     await act(async () => { rows[0].click(); });
@@ -283,7 +310,7 @@ describe('empty canvas', () => {
 
   it('a starter fills the box instead of sending', async () => {
     await render({ pulse: { needsYou: [], live: 0 } });
-    const starter = qa('[data-testid="canvas-suggestion"]').find(c => c.textContent?.includes('Start something new'))!;
+    const starter = chips().find(c => c.textContent?.includes('Start something new'))!;
     await act(async () => { starter.click(); });
     expect(sent).toEqual([]);
     expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe('I want to build ');
@@ -367,7 +394,7 @@ describe('phone chrome (v3 frames)', () => {
 describe('pinned object', () => {
   it('the mission the chat is about pins as a compact board', async () => {
     await render({ focusRef: fixtures.missionRef, focusOpensSheet: false, initialPaneClosed: true });
-    const pin = q('[data-testid="canvas-pinned"]');
+    const pin = q('.buildd-pinned');
     expect(pin?.dataset.kind).toBe('mission');
     expect(qa('[data-testid="canvas-mini-row"]').length).toBeGreaterThan(0);
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Ask anything about');
@@ -375,7 +402,7 @@ describe('pinned object', () => {
 
   it('no object in the conversation: nothing pinned', async () => {
     await render();
-    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+    expect(q('.buildd-pinned')).toBeNull();
   });
 });
 
@@ -394,7 +421,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="canvas-full-chat"]')?.textContent).toBe('Full screen ↗');
     expect(q('[data-testid="canvas-full-chat"]')?.getAttribute('href')).toBe('/app/chat?about=mission');
     expect(q('[data-testid="canvas-close"]')).not.toBeNull();
-    expect(q('[data-testid="canvas-pinned"]')).toBeNull();
+    expect(q('.buildd-pinned')).toBeNull();
     expect(q('[data-testid="canvas-empty"]')).toBeNull();
     expect(q('[data-testid="mission-context-title"]')?.textContent).toBe('Multi-currency invoices');
     expect(count(container.textContent ?? '', 'Multi-currency invoices')).toBe(1);
@@ -440,7 +467,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
   it('after the first message the card gives way to the pinned strip', async () => {
     await render(overlay({ messages: fixtures.chatFixture('streaming').messages, status: 'ready' }));
     expect(q('[data-testid="mission-context-card"]')).toBeNull();
-    expect(q('[data-testid="canvas-pinned"]')).not.toBeNull();
+    expect(q('.buildd-pinned')).not.toBeNull();
   });
 
   it('desktop peek (docs/design/chat-v3-desktop.md): a 56px header, a solid panel, no sea', async () => {
@@ -515,10 +542,9 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
   it('the picked panel sits just above the composer, as on a phone', async () => {
     await render({ pulse: calm });
     const canvas = q('[data-testid="canvas-empty"]')!;
-    expect(cls(canvas)).toEqual(expect.arrayContaining(['lg:flex', 'lg:flex-1', 'lg:flex-col', 'lg:mb-0']));
+    expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'lg:flex-1', 'lg:mb-0']));
     expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['lg:flex', 'lg:min-h-full', 'lg:flex-col']));
-    expect(cls(q('[data-testid="canvas-sea-gap"]'))).toContain('lg:flex-1');
-    expect(cls(q('[data-testid="canvas-suggestions"]'))).toContain('lg:mt-0');
+    expect(cls(canvas.querySelector('.kit-empty'))).toEqual(expect.arrayContaining(['buildd-empty-anchor-desk', 'lg:flex-1']));
   });
 
   it('header: `CHAT / new` left and `HISTORY →` right, over the opaque bar; no agent crumbs, no + New chat', async () => {
@@ -553,9 +579,11 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
 
   it('the composer holds its edge over the sea: 1px border, 4px offset shadow, cells 64 / 88 / 64', async () => {
     await render({ pulse: calm, workspaceId: null, teamId: 'team-1' });
-    const form = cls(q('[data-testid="chat-composer"] form'));
-    expect(form).toEqual(expect.arrayContaining(['md:border-x', 'md:border-b', 'lg:shadow-[4px_4px_0_0_var(--chat-rule)]']));
-    expect(cls(q('[data-testid="composer-send"]'))).toContain('lg:w-16');
+    expect(q('[data-testid="kit-send"]')).not.toBeNull();
+    const lg = GLOBALS.indexOf('.buildd-composer > .kit-composer { box-shadow: 4px 4px 0 0 var(--chat-rule); }');
+    expect(lg).toBeGreaterThan(GLOBALS.lastIndexOf('@media (min-width: 1024px)', lg) - 1);
+    expect(GLOBALS.slice(lg, lg + 200)).toContain('.buildd-composer .kit-send, .buildd-composer .kit-stop { width: 64px; }');
+    expect(GLOBALS).toContain('.buildd-composer > .kit-composer { border-left: 1px solid var(--chat-rule); border-right: 1px solid var(--chat-rule); border-bottom: 1px solid var(--chat-rule); }');
     expect(cls(q('[data-testid="composer-tools-cell"]'))).toContain('lg:w-16');
     // The scope cell reads `@ all` as on the frame.
     expect(cls(q('[data-testid="scope-chip-short"]'))).toContain('lg:inline');
@@ -636,7 +664,7 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
 
   it('below 1280px the blocker shows in the pinned strip instead', async () => {
     await render({ pulse: needs }, { views });
-    const pin = q('[data-testid="canvas-pinned"][data-kind="task"]')!;
+    const pin = q('.buildd-pinned[data-kind="task"]')!;
     expect(cls(pin)).toEqual(expect.arrayContaining(['hidden', 'lg:block', 'xl:hidden']));
   });
 

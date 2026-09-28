@@ -1,7 +1,9 @@
 /**
- * Thumbs on an assistant turn, mounted (happy-dom): a thumbs-down records at
- * once and opens the five reasons; Send records the reason label; the same
- * thumb again toggles off; a still-streaming turn shows no thumbs.
+ * Thumbs on an assistant turn, mounted (happy-dom): the kit's thumbs over
+ * buildd's /api/feedback transport and reasons. A thumbs-down records at once
+ * and opens the five reasons; Send records the reason label; the same thumb
+ * again toggles off; a still-streaming turn shows no thumbs; a failed post
+ * rolls the vote back; saved votes load from the route.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -28,7 +30,7 @@ beforeEach(() => {
     return new Response(JSON.stringify({ feedback: {} }), { status: 200 });
   };
   // Desktop: the reasons open as a popover.
-  (window as any).matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  (window as any).matchMedia = (q: string) => ({ matches: !q.includes('max-width'), addEventListener() {}, removeEventListener() {} });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -50,43 +52,66 @@ const click = async (el: Element | null) => { await act(async () => { (el as HTM
 describe('TurnFeedback', () => {
   it('a thumbs-up records at once', async () => {
     await mount();
-    await click(q('turn-feedback-up'));
+    await click(q('kit-feedback-up'));
     expect(posts).toEqual([{ entityType: 'conversation_message', entityId: MSG, signal: 'up' }]);
-    expect(q('turn-feedback')!.dataset.vote).toBe('up');
+    expect(q('kit-feedback')!.dataset.vote).toBe('up');
   });
 
   it('a thumbs-down records, offers the five reasons, and Send records the label', async () => {
     await mount();
-    await click(q('turn-feedback-down'));
+    await click(q('kit-feedback-down'));
     expect(posts[0]).toEqual({ entityType: 'conversation_message', entityId: MSG, signal: 'down' });
-    const reasons = [...container.querySelectorAll('[data-testid="turn-feedback-reason"]')].map(e => e.textContent);
+    const reasons = [...container.querySelectorAll('[data-testid="kit-feedback-reason"]')].map(e => e.textContent);
     expect(reasons).toEqual(['Wrong answer', 'Wrong action', 'Made something up', 'Ignored what I said', 'Too slow']);
     await click(container.querySelector('[data-reason="made_up"]'));
-    await click(q('turn-feedback-send'));
+    await click(q('kit-feedback-send'));
     expect(posts[1]).toEqual({ entityType: 'conversation_message', entityId: MSG, signal: 'down', reason: 'made_up' });
-    expect(q('turn-feedback-sheet')).toBeNull();
-    expect(q('turn-feedback')!.dataset.reason).toBe('made_up');
+    expect(q('kit-feedback-sheet')).toBeNull();
+    expect(q('kit-feedback')!.dataset.reason).toBe('made_up');
   });
 
   it('Skip closes without a reason', async () => {
     await mount();
-    await click(q('turn-feedback-down'));
-    await click(q('turn-feedback-skip'));
+    await click(q('kit-feedback-down'));
+    await click(q('kit-feedback-skip'));
     expect(posts).toHaveLength(1);
-    expect(q('turn-feedback-sheet')).toBeNull();
-    expect(q('turn-feedback')!.dataset.vote).toBe('down');
+    expect(q('kit-feedback-sheet')).toBeNull();
+    expect(q('kit-feedback')!.dataset.vote).toBe('down');
   });
 
   it('the same thumb again toggles it off', async () => {
     await mount();
-    await click(q('turn-feedback-up'));
-    await click(q('turn-feedback-up'));
+    await click(q('kit-feedback-up'));
+    await click(q('kit-feedback-up'));
     expect(posts).toHaveLength(2);
-    expect(q('turn-feedback')!.dataset.vote).toBe('');
+    expect(q('kit-feedback')!.dataset.vote).toBe('');
   });
 
   it('a turn still streaming has no thumbs', async () => {
     await mount(MSG);
-    expect(q('turn-feedback')).toBeNull();
+    expect(q('kit-feedback')).toBeNull();
+  });
+
+  it('a vote the route refuses rolls back', async () => {
+    (globalThis as any).fetch = async () => new Response('no', { status: 500 });
+    await mount();
+    await click(q('kit-feedback-up'));
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(q('kit-feedback')!.dataset.vote).toBe('');
+  });
+
+  it('saved votes load from the route, reason included', async () => {
+    const gets: string[] = [];
+    (globalThis as any).fetch = async (url: string) => {
+      gets.push(url);
+      return new Response(JSON.stringify({ feedback: { [MSG]: 'down' }, reasons: { [MSG]: 'too_slow' } }), { status: 200 });
+    };
+    await act(async () => {
+      root.render(createElement(TurnFeedbackProvider, { messageIds: [MSG], pendingId: null }, createElement(TurnFeedback, { messageId: MSG })));
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(gets[0]).toContain(`entityIds=${MSG}`);
+    expect(q('kit-feedback')!.dataset.vote).toBe('down');
+    expect(q('kit-feedback')!.textContent).toContain('Too slow');
   });
 });

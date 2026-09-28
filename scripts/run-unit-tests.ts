@@ -13,6 +13,7 @@ import { join } from 'path';
 // deliberate exclusion, so this cannot rot again.
 const UNIT_TEST_ROOTS = [
   'apps/web/src/',
+  'apps/web/scripts/',
   'apps/runner/__tests__/unit/',
   'apps/runner/__tests__/standalone/',
   'apps/runner/src/',
