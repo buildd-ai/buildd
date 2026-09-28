@@ -140,6 +140,28 @@ describe('ScopePicker and TierPicker', () => {
     await click([...$$('[role="radio"]')].find(b => b.textContent!.startsWith('Premium'))!);
     expect(picked).toEqual(['premium']);
   });
+
+  it('tier with a policy: no Auto, the app names, only offered rows, meta kept', async () => {
+    const picked: Array<string | null> = [];
+    const policy = kit.defineTierPolicy({ defaultTier: 'budget', auto: false, labels: { budget: 'Economy', standard: 'Balanced', premium: 'Best' } });
+    const options = [{ tier: 'budget', price: 'Haiku' }, { tier: 'standard' }, { tier: 'premium' }, { tier: 'premium-plus' }];
+    await render(h(kit.TierPicker, { value: 'budget', last: 'standard', policy, options, onChange: (v: string | null) => picked.push(v) }));
+    const trigger = $('[data-testid="kit-tier-trigger"]')!;
+    expect(trigger.textContent).toContain('Economy');
+    expect(trigger.getAttribute('aria-label')).toBe('Model tier: Economy');
+    await click(trigger);
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['EconomyHaiku', 'Balanced', 'Best']);
+    await click([...$$('[role="radio"]')].find(b => b.textContent === 'Best')!);
+    expect(picked).toEqual(['premium']);
+  });
+
+  it('tier with a policy and no options lists the policy tiers', async () => {
+    const policy = kit.defineTierPolicy({ offer: ['budget', 'standard'], labels: { budget: 'Economy' }, autoLabel: 'Pick for me' });
+    await render(h(kit.TierPicker, { value: null, policy, onChange() {} }));
+    expect($('[data-testid="kit-tier-trigger"]')!.textContent).toContain('Pick for me');
+    await click($('[data-testid="kit-tier-trigger"]'));
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['Pick for mepicks per turn', 'Economy', 'Standard']);
+  });
 });
 
 describe('ChatComposer', () => {

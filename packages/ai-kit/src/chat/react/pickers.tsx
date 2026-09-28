@@ -7,7 +7,7 @@
  * and the fetches (e.g. `GET`/`PATCH` from `createPermissionsApi`).
  */
 import type { ReactNode } from 'react';
-import type { ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
+import type { TierPolicy, ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
 import { Menu, MenuOption } from './Menu';
 import { tierLabel } from './model';
 
@@ -132,22 +132,39 @@ export interface TierPickerProps {
   onChange(tier: string | null): void;
   /** The tier the latest turn ran on, shown as "Auto · Standard". */
   last?: string | null;
+  /**
+   * The rows, in order. With `policy`, rows it doesn't offer are dropped and a
+   * row without a `label` takes the policy's name. Default: the policy's
+   * tiers, else Budget / Standard / Premium.
+   */
   options?: readonly TierOption[];
+  /**
+   * The app's tier policy (`defineTierPolicy`): which tiers, their names, and
+   * whether Auto is offered. Without it the picker is as before.
+   */
+  policy?: TierPolicy;
+  /** Offer Auto. Default: the policy's `auto`, else true. */
+  auto?: boolean;
   title?: string;
   className?: string;
 }
 
 const DEFAULT_TIERS: TierOption[] = [{ tier: 'budget' }, { tier: 'standard' }, { tier: 'premium' }];
 
-export function TierPicker({ value, onChange, last = null, options = DEFAULT_TIERS, title = 'Model tier', className }: TierPickerProps) {
-  const labels = Object.fromEntries(options.filter(o => o.label).map(o => [o.tier, o.label!]));
-  const shown = tierLabel(value, last, labels);
+export function TierPicker({ value, onChange, last = null, options, policy, auto, title = 'Model tier', className }: TierPickerProps) {
+  const rows = options
+    ? (policy ? options.filter(o => policy.isOffered(o.tier)) : options)
+    : policy ? policy.options() : DEFAULT_TIERS;
+  const labels: Record<string, string> = Object.fromEntries(rows.map(o => [o.tier, o.label ?? (policy ? policy.label(o.tier) : undefined)]).filter(([, l]) => l));
+  const offerAuto = auto ?? policy?.auto ?? true;
+  const autoLabel = policy?.autoLabel ?? 'Auto';
+  const shown = tierLabel(value, offerAuto ? last : null, labels, autoLabel);
   return (
     <Menu label={`${title}: ${shown}`} title={title} align="end" className={className} testId="kit-tier" trigger={<><span>{shown}</span><span aria-hidden="true">▾</span></>}>
       {close => (
         <div role="radiogroup" aria-label={title}>
-          <MenuOption checked={value === null} onSelect={() => { onChange(null); close(); }} meta="picks per turn">Auto</MenuOption>
-          {options.map(o => (
+          {offerAuto && <MenuOption checked={value === null} onSelect={() => { onChange(null); close(); }} meta="picks per turn">{autoLabel}</MenuOption>}
+          {rows.map(o => (
             <MenuOption key={o.tier} checked={value === o.tier} meta={o.price} onSelect={() => { onChange(o.tier); close(); }}>
               {tierLabel(o.tier, null, labels)}
             </MenuOption>

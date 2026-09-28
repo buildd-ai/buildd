@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.5.0
+npm i -E @builddai/ai-kit@0.6.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -264,7 +264,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
-| `<TierPicker value onChange last? options?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta |
+| `<TierPicker value onChange last? options? policy? auto?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
 | `<ApprovalCard part onRespond onEdit? approverName?>` | before → after from the server preview; typed confirm for `confirmText` |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
@@ -306,6 +306,38 @@ const c = useComposerState(composer, teamId, { scopes: spaces, pageScope: search
 - The seed loads once per key and never overwrites a field the person already changed (`applyComposerSeed`). `setScope` / `setTier` remember the choice through `save`; the draft stays in memory.
 - `useComposerState(store, key, { scopes?, pageScope? })` → `{ draft, scope, tier, seeded, setDraft, setScope, setTier }`. `pageScope` (an object's workspace, a query param) wins until the person picks another; a remembered scope not in `scopes` reads as all.
 - An existing conversation keeps its own pin: hold its state yourself, and also call `composer.setScope` / `setTier` from its pickers if that choice should be the next new chat's default.
+
+**Per-app tiers (0.6.0): default, names, which are offered.** One `defineTierPolicy` object (from `/chat/contract`, so the server can use it too) says what an app offers. Nothing changes without one: Auto stays first and the default, then Budget / Standard / Premium.
+
+```ts
+import { defineTierPolicy } from '@builddai/ai-kit/chat/contract';
+export const tiers = defineTierPolicy({
+  offer: ['budget', 'standard', 'premium'],               // no premium-plus
+  defaultTier: 'budget',                                   // null = Auto
+  labels: { budget: 'Economy', standard: 'Balanced', premium: 'Best' },
+  auto: false,                                             // hide Auto
+});
+
+// client: the person's last pick, remembered by the app (e.g. server-side, per user)
+export const composer = createComposerStore({
+  tiers,
+  prefs: tierPrefs({
+    load: () => fetch('/api/chat/prefs').then(r => r.json()).then(b => b.tier),   // Tier | null
+    save: tier => fetch('/api/chat/prefs', { method: 'PATCH', body: JSON.stringify({ tier }) }).then(() => {}),
+    peek: () => localStorage.getItem('chat-tier'),                                // optional first paint
+  }),
+});
+<TierPicker policy={tiers} value={c.tier} onChange={c.setTier} options={pricedRows} />
+
+// server: validate, then resolve saved → default
+if (body.tier !== undefined && !tiers.accepts(body.tier)) return new Response('bad tier', { status: 400 });
+const tier = tiers.resolve(body.tier, await savedTier(userId)) ?? 'standard';   // null only when Auto is offered
+```
+
+- Precedence: the person's saved choice → the app's `defaultTier` → the kit default (Auto). A saved tier the app no longer offers reads as the default; `setTier` ignores a tier the policy doesn't accept (reported to `onError`).
+- `policy`: `{ offer, defaultTier, auto, autoLabel, label(t), isOffered(t), accepts(t), resolve(...candidates), options(meta?) }`.
+- `tierPrefs({ load, save, peek? })` turns a tier-only adapter into a `ComposerPrefsAdapter`. Any `ComposerPrefsAdapter` may also have `peek(key)`: a synchronous seed for the first paint, which `load`'s answer replaces unless the person picked meanwhile.
+- `store.initial` is the unseeded snapshot (tier = the app default), also the server render's snapshot.
 
 **Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
 

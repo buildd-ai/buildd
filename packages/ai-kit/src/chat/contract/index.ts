@@ -498,3 +498,10 @@ export function applyTurnVote<R extends string>(
   else next[messageId] = { signal, reason };
   return next;
 }
+
+// ── Tier policy (0.6.0) ───────────────────────────────────────────────────────
+
+export {
+  CHAT_TIERS, defineTierPolicy, defaultTierName, isChatTier,
+  type ChatTier, type TierPolicy, type TierPolicyOptions,
+} from './tiers';
