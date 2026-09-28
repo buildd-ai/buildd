@@ -28,6 +28,7 @@ import { checkChatLimits } from '@/lib/chat/limits';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
+import { handleTopicVerdict } from '@/lib/chat/retitle';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
@@ -204,7 +205,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       linkMission: missionId => linkMissionToConversation(missionId, conv.id, conv.teamId),
       linkedMissionId: () => linkedMissionFor(conv.id, conv.teamId),
       later: fn => after(fn),
-      autoTitle: (c, messages) => autoTitleConversation(c, messages, user.id),
+      autoTitle: (c, messages, _model, about) => autoTitleConversation(c, messages, user.id, { about }),
+      retitle: (c, messages, topic) => handleTopicVerdict(c, messages, topic, user.id),
       // Standing rules: the caller's own, loaded every turn; a card when a message states one.
       directives: {
         load: () => loadStandingRules(r.caller.user.id),
