@@ -1110,7 +1110,7 @@ async function buildHeartbeatContext(mission: {
     | null;
   // Query mission state in parallel
   const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
-    // Last 3 heartbeat results
+    // Last 3 completed runs (the "Prior organizer runs" section)
     db.query.tasks.findMany({
       where: and(
         eq(tasks.missionId, mission.id),
@@ -1168,13 +1168,6 @@ async function buildHeartbeatContext(mission: {
     }),
   ]);
 
-  // Extract prior heartbeat statuses for stall detection
-  const priorStatuses = priorHeartbeats.map(t => {
-    const result = t.result as Record<string, unknown> | null;
-    const so = result?.structuredOutput as Record<string, unknown> | undefined;
-    return (so?.status as string) || 'unknown';
-  });
-
   // Non-auto-generated artifacts (actual deliverables, not heartbeat/mission summaries)
   const deliverableArtifacts = missionArtifacts.filter(a =>
     !a.key?.startsWith('heartbeat-') && !a.key?.startsWith('mission-')
@@ -1191,7 +1184,6 @@ async function buildHeartbeatContext(mission: {
     artifacts: deliverableArtifacts.map(a => ({ type: a.type, key: a.key })),
     hasWorkspace: !!mission.workspaceId,
     prCount: tasksWithPRs.length,
-    priorHeartbeatStatuses: priorStatuses,
   };
   const phase = detectMissionPhase(phaseData);
 
@@ -1242,9 +1234,11 @@ async function buildHeartbeatContext(mission: {
   // on roleSlug — see apps/runner/src/prompt-builder.ts. Rendering it here
   // AND there would duplicate it in every prompt; keep it to exactly one path.
 
-  // Prior heartbeats — read only operational count fields (no content-bearing strings)
+  // Prior organizer runs — read only operational count fields (no
+  // content-bearing strings). Kept so the organizer can see what the last runs
+  // did and not repeat itself; it no longer drives phase detection.
   if (priorHeartbeats.length > 0) {
-    descParts.push('\n## Prior Heartbeats');
+    descParts.push('\n## Prior organizer runs');
     for (const t of priorHeartbeats) {
       const result = t.result as Record<string, unknown> | null;
       const so = result?.structuredOutput as Record<string, unknown> | undefined;
