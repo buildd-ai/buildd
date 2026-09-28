@@ -108,6 +108,7 @@ import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thre
 export type MissionStateSource =
   | 'mission.status'
   | 'mission.startMode'
+  | 'mission.executor'
   | 'mission.criteriaEscalatedAt'
   | 'workers.live'
   | 'deriveTaskHealthSignal'
@@ -165,6 +166,11 @@ export type WaitingOnDescriptor =
        * "a worker has it" — the two read very differently to someone waiting.
        */
       attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean };
+      /**
+       * The mission runs in a local session (`executor: 'local'`): the open rows
+       * are the session's to claim, so "dispatch a worker" is the wrong advice.
+       */
+      local?: true;
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -396,6 +402,12 @@ export interface MissionStateInput {
   status: string;
   /** Start gate not released (`startMode === 'held'`). */
   isHeld: boolean;
+  /**
+   * `missions.executor`. 'local': a person runs the tasks from their own
+   * session, so open rows with no runner on them are that session's work, not
+   * a stall. Held still outranks it.
+   */
+  executor?: 'runner' | 'local' | string | null;
   /** `missions.orchestrationMode`. */
   orchestrationMode?: string | null;
   /** Live workers on this mission's tasks. */
@@ -683,8 +695,9 @@ function resolve(input: MissionStateInput): Resolution {
 
   // 5. A live worker is observable ground truth. Everything below this line is
   //    an inference about a mission where nothing is currently executing.
+  //    A local mission's live worker is the session's own claim: LOCAL, same tone.
   if (activeAgents > 0) {
-    return { kind: 'running', waitingOn: null, displayState: 'running', source: 'workers.live' };
+    return { kind: 'running', waitingOn: null, displayState: isLocal(input) ? 'local' : 'running', source: 'workers.live' };
   }
 
   // 6. A deliverable failed. `infra_stalled` (retries exhausted on
@@ -746,6 +759,15 @@ function resolve(input: MissionStateInput): Resolution {
     };
   }
 
+  // 8½. A local-executor mission: open rows with no runner on them are the
+  //     person's session working through them, between claims. That is active
+  //     work, never the stall rule 9 would report ("dispatch a worker" is the
+  //     one thing it must not say). Below failures and merges, which still
+  //     need the owner whoever runs the tasks.
+  if (isLocal(input) && openTaskFact(input, true)) {
+    return { kind: 'running', waitingOn: null, displayState: 'local', source: 'mission.executor' };
+  }
+
   // 9. Open deliverable rows with nothing live on them, and no wait explaining
   //    it. This is the genuine stall, and the only task-level `blocked`.
   const open = openTaskFact(input, false);
@@ -780,6 +802,11 @@ function resolve(input: MissionStateInput): Resolution {
     displayState: input.progress !== undefined && input.progress >= 100 ? 'review' : 'active',
     source: 'mission.status',
   };
+}
+
+/** The mission's tasks are run from a person's local session. */
+function isLocal(input: MissionStateInput): boolean {
+  return input.executor === 'local';
 }
 
 // ─── Fact builders ────────────────────────────────────────────────────────────
@@ -1080,6 +1107,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       count: pendingCount,
       taskIds: citedIds,
       byStatus,
+      ...(isLocal(input) ? { local: true as const } : {}),
     },
     displayState: live ? 'running' : 'stalled',
     source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
@@ -1315,7 +1343,9 @@ interface OutstandingEntry {
 function collectOutstanding(input: MissionStateInput, resolved: Resolution): OutstandingEntry[] {
   if (resolved.kind === 'complete') return [];
 
-  const live = input.activeAgents > 0;
+  // A local session between claims is still working: its open rows read as
+  // work in flight, never as "no live worker".
+  const live = input.activeAgents > 0 || resolved.source === 'mission.executor';
   const candidates: Array<OutstandingEntry | null> = [
     resolved.waitingOn ? { fact: resolved.waitingOn, source: resolved.source } : null,
     entry(deferralFact(input), 'gateEvents.claimLoopDeferral'),
@@ -1471,7 +1501,9 @@ function deriveSituation(
     // Every source that could contradict this was consulted and had nothing to
     // say. Say THAT, rather than falling back to a row of buttons.
     const headline = resolved.kind === 'running'
-      ? `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
+      ? isLocal(input)
+        ? `${localLead(input)}. Nothing else outstanding.`
+        : `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
       : 'Nothing to do. No source reports outstanding work.';
     return {
       headline,
@@ -1484,8 +1516,13 @@ function deriveSituation(
   }
 
   const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
+  // A local session that has claimed nothing yet: the lead already says what
+  // the open-task fact would ("1 task is still open"), so it stands alone.
+  const localWaiting = isLocal(input) && focus.kind === 'task' && focus.local && localAwaitingClaim(input);
   const headline = resolved.kind === 'running'
-    ? `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
+    ? isLocal(input)
+      ? localWaiting ? `${localLead(input)}.` : `${localLead(input)}. ${capitalize(phrase)}.`
+      : `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
     : `${capitalize(phrase)}.`;
 
   return {
@@ -1496,6 +1533,29 @@ function deriveSituation(
     alsoOutstanding,
     derivedFrom: lead.source,
   };
+}
+
+/** Every open row is still `pending` and nothing is live: the session has yet to claim one. */
+function localAwaitingClaim(input: MissionStateInput): boolean {
+  const open = input.openTasks ?? [];
+  return input.activeAgents === 0 && open.length > 0 && open.every(t => t.status === 'pending');
+}
+
+/**
+ * The lead of a local mission's headline. "Running in a local session" while
+ * the session holds a claim (or a row is past `pending`); "Waiting for a local
+ * session to claim …" when nothing has been claimed — the honest answer for a
+ * queued task, and never "stalled" or "dispatch a worker".
+ */
+function localLead(input: MissionStateInput): string {
+  if (input.activeAgents > 0) return `Running in a local session (${countAgents(input.activeAgents)})`;
+  if (localAwaitingClaim(input)) {
+    const n = (input.openTasks ?? []).length;
+    return n === 1
+      ? 'Waiting for a local session to claim the open task'
+      : `Waiting for a local session to claim its ${n} open tasks`;
+  }
+  return 'Running in a local session';
 }
 
 function countAgents(n: number): string {
@@ -1516,6 +1576,9 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         return waitingOn.attempt.claimed
           ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
           : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
+      }
+      if (waitingOn.local) {
+        return 'Nothing to dispatch: this mission runs in a local session. Claim the open task(s) from it with claim_task {taskId}, or cancel them if you no longer want the work.';
       }
       return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':

@@ -9,6 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
 import { parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
+import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
+import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
 import { getTeamExperiment } from '@/lib/experiments-store';
@@ -35,6 +37,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     policyVersion = n;
   }
 
+  // Heartbeat triage is measured per mission, over its own look rows, not per task.
+  if (row.kind === HEARTBEAT_TRIAGE_EXPERIMENT_KIND) {
+    const readout = await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config));
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+  }
   const { minSamplePerArm } = parseModelRoutingConfig(row.config);
   const readout = await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm });
   return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });

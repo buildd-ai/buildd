@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-25
+last_verified: 2026-09-28
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -336,6 +336,7 @@ stalled a whole workspace.
 | `deferred_start` | time (`startAt`) | policy, forceable |
 | `dep_missing` / `dep_failed` / `unmerged_dep_pr` | upstream terminal state | policy, forceable |
 | `mission_held` | arming the mission | policy, forceable |
+| `mission_local` | a verified interactive session's explicit claim, or `executor: 'runner'` | policy, forceable |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
 | `subject_dead` | never (terminal) | policy, forceable |¹
 | `workspace_cap_reached` | drain | policy, forceable |
@@ -399,6 +400,32 @@ credential here does not reintroduce the removed capability gate.
 Two entries appear in the hard-gate table above rather than here, because the
 claim loop counts them but `/start` also rejects on them: `subject_dead`
 (terminal) and `workspace_cap` / `workspace_cap_reached`.
+
+**Local-executor missions** (`missions.executor = 'local'`, default
+`'runner'`). A person runs the mission's tasks from their own interactive
+session (Claude Code plus local subagents). The executor is orthogonal to the
+hold:
+
+- **LX-1**: runners never auto-claim a local mission's task — the
+  `missionNotLocal()` predicate in `held-gate.ts` excludes it from every claim
+  that is not a verified interactive session's explicit `claim_task {taskId}`.
+- **LX-2**: that explicit claim (`verifyInteractiveSession` marker + `taskId`)
+  is admitted and produces a normal tracked worker (runner `mcp`), so the task
+  ends with a worker, PR link and cost like any other. A runner's or an
+  unverified caller's explicit claim is refused and the exclusion probe names
+  it: `mission_local`, "This mission runs in a local session".
+- **LX-3**: held wins. `missionNotHeld()` still applies to the interactive
+  claim; a held local mission is paused for everyone and reads HELD.
+- **LX-4**: force-start keeps working. `/start` without `forceOverride` returns
+  `422 mission_local`; with it, `bypassHeldGate` is written and lifts this gate
+  as well as the hold. An admin `claim_task force: true` lifts it too.
+- **LX-5**: display. A local mission is active work: chip `LOCAL`, list status
+  `Local`, grouped with running missions, never HELD / "arm to start" and never
+  STALLED / "dispatch a worker". A queued task reads "Waiting for a local
+  session to claim …", and `/api/cron/queue-stall` does not report it.
+
+Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
+pause: it also blocks the interactive claim, so it was never a fit for that.
 
 **Acceptance criteria**:
 - AC-CG-1: GIVEN a task excluded by any gate WHEN `/start` is called without

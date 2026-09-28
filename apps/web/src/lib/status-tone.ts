@@ -54,7 +54,8 @@ export const STATUS_TONE_EDGE: Record<StatusTone, string> = {
 /** A mission's display state → its tone. */
 export function missionStateTone(state: MissionDisplayState): StatusTone {
   switch (state) {
-    case 'running': return 'accent';
+    case 'running':
+    case 'local': return 'accent';
     case 'review':
     case 'complete': return 'success';
     case 'held':

@@ -44,6 +44,14 @@ describe('visibility', () => {
 });
 
 describe('parseCreateExperiment', () => {
+  it('heartbeat_triage: accepted, gets its own default config, and has NO implicit share', () => {
+    const noShare = parseCreateExperiment({ key: 'triage-skip', title: 'Triage skips', kind: 'heartbeat_triage' });
+    expect(!noShare.ok && noShare.error).toContain('treatmentFraction is required');
+    const r = parseCreateExperiment({ key: 'triage-skip', title: 'Triage skips', kind: 'heartbeat_triage', treatmentFraction: 0.3 });
+    expect(r.ok && r.value.kind).toBe('heartbeat_triage');
+    expect(r.ok && (r.value.config as any)).toMatchObject({ arms: { control: 'shadow', treatment: 'skip_on_confident_wait' }, waitMinConfidence: 0.9 });
+  });
+
   it('cbm_access: accepted, gets its own default config, and has NO implicit share', () => {
     const noShare = parseCreateExperiment({ key: 'cbm-value', title: 'CBM value', kind: 'cbm_access' });
     expect(noShare.ok).toBe(false);

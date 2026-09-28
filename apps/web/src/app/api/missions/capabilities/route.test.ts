@@ -8,7 +8,7 @@ describe('GET /api/missions/capabilities', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       version: 1,
-      capabilities: ['startMode', 'pacing'],
+      capabilities: ['startMode', 'pacing', 'executor'],
     });
   });
 });

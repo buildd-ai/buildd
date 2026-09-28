@@ -163,6 +163,46 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.held).toMatchObject({ ready: 1, roles: ['writer'] });
   });
 
+  // executor='local' (task 09ed6675): the tasks run in a person's session.
+  it('a local mission with queued work reads as Local, running in a local session — not Held, not Stalled', () => {
+    const row: ListMissionRow = {
+      id: 'm7', title: 'Run it here', status: 'active', executor: 'local',
+      tasks: [task('a', { roleSlug: 'builder' }), task('b', { roleSlug: 'builder' })],
+    };
+    const summary = summarizeMissionForCard(row, { now: NOW });
+    const card = build(row);
+    expect(card.kind).toBe('active');
+    expect(card.status).toEqual({ label: 'Local', tone: 'accent' });
+    expect(card.held).toBeNull();
+    expect(card.sentence).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(card.sentence).not.toMatch(/no live worker|stall/i);
+    expect(summary.group).toBe('running');
+    expect(summary.state.chip.label).toBe('LOCAL');
+    // The same mission on runners is the genuine stall.
+    const runnerCard = build({ ...row, id: 'm8', executor: 'runner' });
+    expect(runnerCard.status.label).toBe('Stalled');
+  });
+
+  it('a local mission the session has claimed is still Local, with its live worker', () => {
+    const row: ListMissionRow = {
+      id: 'm9', title: 'Run it here', status: 'active', executor: 'local',
+      tasks: [task('a', { status: 'in_progress', workers: [{ status: 'running', startedAt: new Date(NOW - 60_000) }] }), task('b')],
+    };
+    const card = build(row);
+    expect(card.status.label).toBe('Local');
+    expect(card.live.count).toBe(1);
+  });
+
+  it('held beats local: a held local mission is Held', () => {
+    const row: ListMissionRow = {
+      id: 'm10', title: 'Paused local', status: 'active', executor: 'local', isHeld: true,
+      tasks: [task('a')],
+    };
+    const card = build(row);
+    expect(card.kind).toBe('held');
+    expect(card.status).toEqual({ label: 'Held', tone: 'warning' });
+  });
+
   it('a completed mission is a done row with PRs, fixes and duration', () => {
     const row: ListMissionRow = {
       id: 'm5', title: 'Shipped', status: 'completed',

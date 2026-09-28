@@ -50,7 +50,7 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { missionNotHeld, taskNotHeld } from './held-gate';
+import { missionNotHeld, missionNotLocal, taskNotHeld } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
@@ -537,6 +537,16 @@ export async function POST(req: NextRequest) {
     explicitTaskGates.missionHeld = missionNotHeld();
     claimableConditions.push(explicitTaskGates.missionHeld);
   }
+  // A mission with executor='local' is run from a person's own session: runners
+  // never auto-claim its tasks. A verified interactive session naming the task
+  // (claim_task {taskId}) is exactly that session, so the gate is not applied to
+  // it and it gets a normal tracked worker. The held gate above still applies to
+  // it — held is the pause and wins over the executor. Force claims and the
+  // dashboard force-start (context.bypassHeldGate) lift it.
+  if (!forceClaim && !(taskId && interactiveSession)) {
+    explicitTaskGates.missionLocal = missionNotLocal();
+    claimableConditions.push(explicitTaskGates.missionLocal);
+  }
   // A single task held by a person (PATCH { held: true }) waits for resume.
   explicitTaskGates.taskHeld = taskNotHeld();
   claimableConditions.push(explicitTaskGates.taskHeld);
@@ -645,6 +655,7 @@ export async function POST(req: NextRequest) {
       gates: {
         deps: depsGate(),
         missionHeld: missionNotHeld(),
+        missionLocal: missionNotLocal(),
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,

@@ -60,6 +60,7 @@ export interface SiblingMission {
   title: string;
   status: string;
   isHeld: boolean;
+  executor?: string | null;
   pacingMode: string;
   progress: number;
 }
@@ -188,6 +189,7 @@ function renderSiblingMissions(siblings: SiblingMission[]): string {
   for (const m of siblings.slice(0, 5)) {
     let line = `[${m.progress}%] ${m.title} · ${m.status} · ${m.pacingMode}`;
     if (m.isHeld) line += ' [HELD]';
+    else if (m.executor === 'local') line += ' [LOCAL — runs in a local session]';
     lines.push(line);
   }
   return cap(lines.join('\n'), BUDGET_SIBLING_MISSIONS);
@@ -310,6 +312,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           title: missions.title,
           status: missions.status,
           isHeld: missions.isHeld,
+          executor: missions.executor,
           pacingMode: missions.pacingMode,
           completedTasks: sql<number>`COUNT(${tasks.id}) FILTER (WHERE ${tasks.status} = 'completed')::int`,
           totalTasks: sql<number>`COUNT(${tasks.id}) FILTER (WHERE ${tasks.status} != 'cancelled')::int`,
@@ -326,6 +329,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           missions.title,
           missions.status,
           missions.isHeld,
+          missions.executor,
           missions.pacingMode,
         )
         .limit(5);
@@ -335,6 +339,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
         title: r.title,
         status: r.status,
         isHeld: r.isHeld,
+        executor: r.executor,
         pacingMode: r.pacingMode,
         progress: r.totalTasks > 0
           ? Math.round((r.completedTasks / r.totalTasks) * 100)

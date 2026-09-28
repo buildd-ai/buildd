@@ -63,6 +63,10 @@ describe('gateHeartbeatTriage', () => {
     expect(gateHeartbeatTriage(base)).toEqual({ skip: true, reason: null });
   });
 
+  it('an experiment may raise the wait threshold', () => {
+    expect(gateHeartbeatTriage({ ...base, confidence: 0.95, waitMinConfidence: 0.97 }).reason).toBe('low_confidence');
+  });
+
   it('dispatches on act, low confidence, a stale organizer or in shadow', () => {
     expect(gateHeartbeatTriage({ ...base, pick: 'act' }).reason).toBe('act');
     expect(gateHeartbeatTriage({ ...base, confidence: WAIT_MIN_CONFIDENCE - 0.01 }).reason).toBe('low_confidence');
@@ -93,9 +97,9 @@ describe('triageHeartbeat', () => {
   });
 
   it('records a confident wait as a skip only when applying', async () => {
-    const applied = await triageHeartbeat(input, { decide: answer('wait', 0.97), now: () => NOW, apply: true });
+    const applied = await triageHeartbeat({ ...input, apply: true }, { decide: answer('wait', 0.97), now: () => NOW });
     expect(applied).toMatchObject({ v: HEARTBEAT_TRIAGE_PROMPT_VERSION, pick: 'wait', confidence: 0.97, skipped: true });
-    const shadow = await triageHeartbeat(input, { decide: answer('wait', 0.97), now: () => NOW, apply: false });
+    const shadow = await triageHeartbeat(input, { decide: answer('wait', 0.97), now: () => NOW });
     expect(shadow).toMatchObject({ pick: 'wait', skipped: false, reason: 'shadow' });
   });
 

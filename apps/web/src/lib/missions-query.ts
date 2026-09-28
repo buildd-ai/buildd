@@ -15,7 +15,7 @@ export const COMPLETED_MISSIONS_PAGE_SIZE = 20;
 export const MISSION_BASE_COLUMNS = {
   id: true, title: true, description: true, status: true, teamId: true, workspaceId: true,
   orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true,
-  mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true,
+  mergePolicy: true, startAt: true, isHeld: true, executor: true, initiativeId: true, priority: true,
   goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true,
   updatedAt: true, criteriaEscalatedAt: true, completedAt: true, workingBranch: true,
   integrationBranchEnabled: true,

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.249.0",
+  "version": "0.250.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -83,6 +83,10 @@
     "./model-quality": "./model-quality.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
+    "./heartbeat-triage-experiment": "./heartbeat-triage-experiment.ts",
+    "./heartbeat-triage-experiment-source": "./heartbeat-triage-experiment-source.ts",
+    "./heartbeat-triage-readout": "./heartbeat-triage-readout.ts",
+    "./heartbeat-triage-readout-source": "./heartbeat-triage-readout-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
     "./experiment-readout-source": "./experiment-readout-source.ts",
     "./task-path-inference": "./task-path-inference.ts",
