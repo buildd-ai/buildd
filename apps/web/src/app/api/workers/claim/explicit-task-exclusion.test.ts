@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
+import { tasks } from '@buildd/core/db/schema';
 import { sql, type SQL } from 'drizzle-orm';
 
 /**
@@ -17,7 +18,11 @@ import { sql, type SQL } from 'drizzle-orm';
 
 let selectCalls: Array<{ fields: Record<string, unknown>; where: SQL | undefined }> = [];
 let selectResult: any[] = [];
+/** Per-call results, consumed in order; falls back to selectResult when empty. */
+let selectQueue: any[][] = [];
 let selectThrows = false;
+/** 1-based select call number that throws, or null. */
+let selectThrowOnCall: number | null = null;
 let updateCalls: Array<{ set: any; where: SQL | undefined }> = [];
 
 mock.module('@buildd/core/db', () => ({
@@ -29,8 +34,8 @@ mock.module('@buildd/core/db', () => ({
         from: () => chain,
         where: (w: SQL) => { call.where = w; return chain; },
         limit: async () => {
-          if (selectThrows) throw new Error('db down');
-          return selectResult;
+          if (selectThrows || selectCalls.length === selectThrowOnCall) throw new Error('db down');
+          return selectQueue.length > 0 ? selectQueue.shift()! : selectResult;
         },
       };
       return chain;
@@ -50,6 +55,7 @@ mock.module('@buildd/core/db', () => ({
 
 import {
   classifyExplicitTaskExclusion,
+  describeBlockingDependencies,
   diagnoseExplicitTaskExclusion,
   explicitTaskScope,
   stampLastClaimAttempt,
@@ -91,7 +97,7 @@ describe('classifyExplicitTaskExclusion', () => {
     const future = new Date(NOW.getTime() + 60_000);
     const past = new Date(NOW.getTime() - 60_000);
     expect(classifyExplicitTaskExclusion(probe({ claimedBy: 'acct', expiresAt: future }), NOW).code).toBe('already_claimed');
-    expect(classifyExplicitTaskExclusion(probe({ claimedBy: 'acct', expiresAt: past }), NOW).code).toBe('unknown');
+    expect(classifyExplicitTaskExclusion(probe({ claimedBy: 'acct', expiresAt: past }), NOW).code).not.toBe('already_claimed');
   });
 
   it('a future startAt → deferred with the timestamp', () => {
@@ -100,10 +106,11 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.detail).toContain('2026-09-28T00:00:00.000Z');
   });
 
-  it('a held mission → mission_held, and points at the dashboard force-start', () => {
+  it('a held mission → mission_held, and points at the override', () => {
     const r = classifyExplicitTaskExclusion(probe({ gates: { missionHeld: false } }), NOW);
     expect(r.code).toBe('mission_held');
-    expect(r.detail).toMatch(/force-start/i);
+    expect(r.detail).toMatch(/Start with override/);
+    expect(r.detail).toMatch(/Arm the mission/);
   });
 
   it('each failing gate maps to its own code', () => {
@@ -127,9 +134,46 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(classifyExplicitTaskExclusion(probe({ gates: { taskHeld: false, missionHeld: false } }), NOW).code).toBe('task_held');
   });
 
-  it('every gate passing but still excluded → unknown, never a guess', () => {
+  // Friction cad81659: the fallback said "Excluded by a claim filter this
+  // diagnosis does not cover." With the probe two-valued, every WHERE condition
+  // is classified, so passing all of them means the row changed underneath.
+  it('every gate passing → state_changed, and names that as the reason', () => {
     const r = classifyExplicitTaskExclusion(probe({ gates: { missionHeld: true, deps: true } }), NOW);
-    expect(r.code).toBe('unknown');
+    expect(r.code).toBe('state_changed');
+    expect(r.detail).not.toMatch(/does not cover/);
+    expect(r.detail).toMatch(/retry/i);
+  });
+
+  it('a NULL gate is a failed gate (the claim WHERE excludes NULL exactly like FALSE)', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { deps: null as any } }), NOW);
+    expect(r.code).toBe('deps_blocked');
+  });
+
+  it('the overridable gates point at force: true on claim_task', () => {
+    for (const gate of ['missionHeld', 'deps', 'subject', 'workspaceCap'] as const) {
+      expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).detail).toContain('force: true');
+    }
+    expect(classifyExplicitTaskExclusion(probe({ startAt: new Date(NOW.getTime() + 60_000) }), NOW).detail).toContain('force: true');
+  });
+});
+
+describe('describeBlockingDependencies', () => {
+  it('names a missing dependency', () => {
+    const d = describeBlockingDependencies(null, ['gone-1234-5678'], []);
+    expect(d).toContain('gone-123');
+    expect(d).toMatch(/not found/);
+  });
+
+  it('only calls an edge inferred when both manifests declare overlapping concrete paths', () => {
+    const inferred = describeBlockingDependencies(['a.ts'], ['d1'], [
+      { id: 'd1', title: 'T', status: 'in_progress', pathManifest: ['a.ts'], satisfied: false, openPrNumber: null },
+    ]);
+    expect(inferred).toMatch(/pathManifest/);
+    const declared = describeBlockingDependencies(['a.ts'], ['d1'], [
+      { id: 'd1', title: 'T', status: 'in_progress', pathManifest: ['b.ts'], satisfied: false, openPrNumber: null },
+    ]);
+    expect(declared).not.toMatch(/pathManifest/);
+    expect(declared).toContain('in_progress');
   });
 });
 
@@ -146,7 +190,9 @@ describe('diagnoseExplicitTaskExclusion', () => {
   beforeEach(() => {
     selectCalls = [];
     selectResult = [];
+    selectQueue = [];
     selectThrows = false;
+    selectThrowOnCall = null;
   });
 
   it('scopes the probe query and selects each supplied gate as a column', async () => {
@@ -166,6 +212,70 @@ describe('diagnoseExplicitTaskExclusion', () => {
     const where = render(selectCalls[0].where!);
     expect(where.sql).toContain('"tasks"."id" = $1');
     expect(where.sql).toContain('"tasks"."workspace_id" in ($2)');
+  });
+
+  it('coalesces every gate column to FALSE so a NULL predicate is still named', async () => {
+    selectResult = [{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false }];
+    await diagnoseExplicitTaskExclusion({
+      taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`x IS NULL` }, now: NOW,
+    });
+    const col = render(selectCalls[0].fields.g_deps as SQL).sql;
+    expect(col).toBe('COALESCE((x IS NULL), false)');
+  });
+
+  it('a NULL gate value in the row reads as failed, not as "not evaluated"', async () => {
+    selectResult = [{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: null }];
+    const r = await diagnoseExplicitTaskExclusion({
+      taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`true` }, now: NOW,
+    });
+    expect(r?.code).toBe('deps_blocked');
+  });
+
+  // Case (a)/(b) of friction cad81659: POST /api/tasks adds a dependsOn edge
+  // to every in-flight task whose pathManifest overlaps. The caller never
+  // declared it, so "a dependency is not satisfied" read as wrong; the reply
+  // must name the dependency, its state, and where the edge came from.
+  it('deps_blocked names each unsatisfied dependency and flags inferred overlap edges', async () => {
+    selectQueue = [
+      [{
+        status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false,
+        dependsOn: ['dep-aaaa1111-0000', 'dep-bbbb2222-0000'], pathManifest: ['apps/web/src/a.ts'],
+      }],
+      [
+        { id: 'dep-aaaa1111-0000', title: 'Upstream A', status: 'completed', pathManifest: ['apps/web/src/a.ts'], satisfied: false, openPrNumber: 41 },
+        { id: 'dep-bbbb2222-0000', title: 'Upstream B', status: 'cancelled', pathManifest: null, satisfied: true, openPrNumber: null },
+      ],
+    ];
+    const r = await diagnoseExplicitTaskExclusion({
+      taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`false` }, now: NOW,
+    });
+    expect(r?.code).toBe('deps_blocked');
+    expect(r?.detail).toContain('dep-aaaa');
+    expect(r?.detail).toContain('Upstream A');
+    expect(r?.detail).toContain('PR #41');
+    expect(r?.detail).toMatch(/pathManifest/);
+    expect(r?.detail).not.toContain('Upstream B');
+    expect(r?.detail).toContain('force: true');
+    // The dependency lookup is scoped to the ids on this task.
+    const depWhere = render(selectCalls[1].where!);
+    expect(depWhere.params).toEqual(['dep-aaaa1111-0000', 'dep-bbbb2222-0000']);
+    // Correlated to the dependency row: a bare "id" in a select field would bind
+    // to the subquery's own table and silently read the wrong rows.
+    // Rendered as a real select (a field rendered alone is always qualified).
+    const selectSql = new QueryBuilder().select(selectCalls[1].fields as any).from(tasks).toSQL().sql;
+    expect(selectSql).not.toMatch(/w\.task_id = "id"|t2\.id = "id"/);
+    expect(selectSql).toContain('w.task_id = "tasks"."id"');
+    expect(selectSql).toContain('t2.id = "tasks"."id"');
+  });
+
+  it('a failed dependency lookup still returns deps_blocked', async () => {
+    selectQueue = [[{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false, dependsOn: ['d1'], pathManifest: null }]];
+    selectThrowOnCall = 2;
+    const r = await diagnoseExplicitTaskExclusion({
+      taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`false` }, now: NOW,
+    });
+    expect(r?.code).toBe('deps_blocked');
+    expect(selectCalls).toHaveLength(2);
   });
 
   it('a task outside the caller\'s workspaces reads as not_found (no cross-tenant detail)', async () => {

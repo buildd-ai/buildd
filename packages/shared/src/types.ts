@@ -1248,6 +1248,15 @@ export interface ClaimTasksInput {
    * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
    */
   runnerFeatures?: string[];
+  /**
+   * Admin-only, and only with `taskId`: claim that one task past the gates a
+   * person may override, the MCP equivalent of the dashboard's "Start with
+   * override". Skips dependencies, a held mission, a dead subject, a future
+   * startAt, the mission budget, concurrency and pacing gates, path overlap and
+   * the workspace cap. Never skips a live worker, a person's hold on the task,
+   * role/runner routing, provider walls or account limits. Ignored otherwise.
+   */
+  forceOverride?: boolean;
 }
 
 export type ClaimDiagnosticReason =
@@ -1265,8 +1274,12 @@ export type ClaimDiagnosticReason =
   | 'path_overlap_blocked';
 
 /**
- * Which gate excluded an explicitly requested task (claim with `taskId`) from
- * the claim query. See apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts.
+ * Which gate excluded an explicitly requested task (claim with `taskId`). The
+ * SQL-level codes come from the probe in
+ * apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts; the
+ * dispatch-loop codes are the `deferrals` keys, set when the named task itself
+ * was the one deferred. There is deliberately no "unknown": every exclusion
+ * names its filter (friction cad81659).
  */
 export type ClaimTaskExclusionCode =
   | 'not_found'
@@ -1283,7 +1296,15 @@ export type ClaimTaskExclusionCode =
   | 'runner_cooldown'
   | 'workspace_cap'
   | 'path_overlap'
-  | 'unknown';
+  /** Codex task and this caller can run neither Codex nor its credential. */
+  | 'capability_mismatch'
+  /** Pinned to a project the workspace does not have; the task was failed. */
+  | 'workspace_mismatch'
+  /** The account filled its concurrent-worker limit before this task's insert. */
+  | 'account_cap'
+  /** Every filter passes on re-check: the task changed between query and probe. Retry. */
+  | 'state_changed'
+  | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;

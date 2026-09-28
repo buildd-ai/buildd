@@ -6667,3 +6667,119 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 });
+
+// ── Friction cad81659: explicit claims name every filter; admins can force ────
+describe('explicit taskId claims (organizer workflow)', () => {
+  function account(level: 'admin' | 'worker' = 'admin') {
+    return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1', level };
+  }
+  function task(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'task-1', workspaceId: 'ws-1', title: 'Build it', backend: 'claude', dependsOn: [],
+      pathManifest: null, context: {}, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+      ...overrides,
+    };
+  }
+  function claim(body: Record<string, unknown>) {
+    return POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { taskId: 'task-1', ...body } }));
+  }
+  /** The gate names the route handed to the SQL-exclusion probe. */
+  function probedGates(): string[] {
+    const opts = mockDiagnoseExplicitTaskExclusion.mock.calls.at(-1)![0] as { gates: Record<string, unknown> };
+    return Object.keys(opts.gates).sort();
+  }
+
+  beforeEach(() => {
+    for (const m of [mockAuthenticateApiKey, mockGetAccountWorkspacePermissions, mockWorkersFindMany, mockWorkspacesFindMany,
+      mockTasksFindMany, mockMissionsFindMany, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
+      mockGetActiveClaimsByWorkspace] as any[]) m.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHasCodexCredential.mockResolvedValue(false);
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValue(null);
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+  });
+
+  it('a mission-concurrency deferral of the named task names itself with the counts', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A' })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['a.ts'], category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.taskExclusion.code).toBe('mission_concurrent');
+    expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
+  });
+
+  it('a Codex task the caller cannot run names capability_mismatch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ backend: 'codex' })]);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.diagnostics.reason).toBe('capability_mismatch');
+    expect(data.diagnostics.taskExclusion.code).toBe('capability_mismatch');
+  });
+
+  it('an interactive (mcp) explicit claim is not held by the per-runner cooldown; a runner still is', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' });
+    expect(probedGates()).not.toContain('runnerCooldown');
+    await claim({ runner: 'runner-7' });
+    expect(probedGates()).toContain('runnerCooldown');
+  });
+
+  it('force: an admin explicit claim drops the overridable SQL gates, keeps the rest', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    await claim({ runner: 'mcp', forceOverride: true });
+    const gates = probedGates();
+    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceCap']) expect(gates).not.toContain(g);
+    for (const g of ['activeWorker', 'taskHeld']) expect(gates).toContain(g);
+  });
+
+  it('force is ignored for a non-admin token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+    await claim({ runner: 'mcp', forceOverride: true });
+    expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+  });
+
+  it('force: an admin explicit claim is not deferred by path overlap or the mission cap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'] })])
+      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['a.ts'] }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['b.ts'], category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('without force the same claim is deferred and names path_overlap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([task({ pathManifest: ['a.ts'] })])
+      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['a.ts'] }]);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
+    expect(data.diagnostics.taskExclusion.detail).toContain('#7');
+  });
+});
