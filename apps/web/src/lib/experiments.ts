@@ -27,12 +27,13 @@ import type {
   UpdateExperimentInput,
 } from '@buildd/shared';
 import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
+import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
 export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ['draft', 'running', 'paused', 'concluded'];
 export const EXPERIMENT_VISIBILITIES: readonly ExperimentVisibility[] = ['admins', 'team'];
-export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access'] as const satisfies readonly ExperimentKind[];
+export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access', 'heartbeat_triage'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
 export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {
@@ -121,6 +122,10 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
   if (kind === 'cbm_access' && b.treatmentFraction === undefined) {
     return { ok: false, status: 400, error: 'treatmentFraction is required for kind cbm_access (the share of eligible tasks that run WITHOUT CBM, e.g. 0.2)' };
   }
+  // Same rule: skipping organizer cycles is the intervention, so its share is named.
+  if (kind === 'heartbeat_triage' && b.treatmentFraction === undefined) {
+    return { ok: false, status: 400, error: 'treatmentFraction is required for kind heartbeat_triage (the share of missions whose confident waits skip the organizer, e.g. 0.3)' };
+  }
   const fraction = b.treatmentFraction ?? 0.5;
   if (!validFraction(fraction)) return { ok: false, status: 400, error: 'treatmentFraction must be a number strictly between 0 and 1' };
 
@@ -138,7 +143,9 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
       kind: kind as ExperimentKind,
       treatmentFraction: fraction,
       config: (b.config as Record<string, unknown> | undefined)
-        ?? (kind === 'cbm_access' ? defaultCbmAccessConfig() : defaultModelRoutingConfig()),
+        ?? (kind === 'cbm_access' ? defaultCbmAccessConfig()
+          : kind === 'heartbeat_triage' ? defaultHeartbeatTriageConfig()
+          : defaultModelRoutingConfig()),
       visibility,
     },
   };

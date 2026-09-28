@@ -196,6 +196,12 @@ mock.module('@/lib/heartbeat-triage', () => ({
   loadHeartbeatTriageFacts: mockTriageFacts,
   formatTriageLog: () => '[heartbeat-triage] test',
 }));
+const mockResolveTriageArm = mock(() => Promise.resolve(null as any));
+const mockRecordTriageLook = mock((_look: any) => Promise.resolve());
+mock.module('@buildd/core/heartbeat-triage-experiment-source', () => ({
+  resolveHeartbeatTriageArm: mockResolveTriageArm,
+  recordHeartbeatTriageLook: mockRecordTriageLook,
+}));
 
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
 mock.module('@/lib/mission-completion', () => ({
@@ -304,6 +310,10 @@ describe('GET /api/cron/schedules', () => {
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
     mockTriage.mockReset();
     mockTriage.mockResolvedValue(shadowTriage as any);
+    mockResolveTriageArm.mockReset();
+    mockResolveTriageArm.mockResolvedValue(null);
+    mockRecordTriageLook.mockReset();
+    mockRecordTriageLook.mockResolvedValue(undefined);
     mockApplyCriteriaRearm.mockReset();
     mockApplyCriteriaRearm.mockResolvedValue({
       action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
@@ -850,7 +860,7 @@ describe('GET /api/cron/schedules', () => {
     }
     const mission = { id: 'mission-1', workspaceId: 'ws-1', teamId: 'team-1', status: 'active' };
 
-    it('dispatches the organizer with the look recorded on the task (shadow)', async () => {
+    it('outside an experiment: shadow, the look recorded against the dispatched task and kept off its context', async () => {
       const { buildMissionContext } = await import('@/lib/mission-context');
       (buildMissionContext as ReturnType<typeof mock>).mockResolvedValue({ description: 'heartbeat context', context: {} });
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
@@ -860,9 +870,24 @@ describe('GET /api/cron/schedules', () => {
       const body = await res.json();
 
       expect(mockTriage).toHaveBeenCalledTimes(1);
-      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', description: 'heartbeat context' });
-      expect(tasksInsertValues?.context?.heartbeatTriage).toEqual(shadowTriage);
+      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', description: 'heartbeat context', apply: false });
+      expect(tasksInsertValues?.context?.heartbeatTriage).toBeUndefined();
+      expect(mockRecordTriageLook).toHaveBeenCalledTimes(1);
+      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ missionId: 'mission-1', taskId: 'task-1', arm: null, pick: 'act', skipped: false });
       expect(body.triageHeartbeatSkips).toBe(0);
+    });
+
+    it('in the treatment arm: triage may apply, with the experiment\'s threshold', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      const arm = { experimentId: 'exp-1', policyVersion: 1, arm: 'treatment', propensity: 0.3, apply: true, waitMinConfidence: 0.95 };
+      mockResolveTriageArm.mockResolvedValue(arm);
+
+      await GET(makeRequest());
+
+      expect(mockResolveTriageArm).toHaveBeenCalledWith('team-1', 'mission-1');
+      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ apply: true, waitMinConfidence: 0.95 });
+      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ arm });
     });
 
     it('skips the organizer on an applied wait, restoring the no-change hash', async () => {
@@ -879,6 +904,7 @@ describe('GET /api/cron/schedules', () => {
       const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_triage_wait');
       expect(deferral?.set?.lastHeartbeatStateHash).toBe('sk-prev');
       expect(deferral?.set?.nextRunAt).toBeInstanceOf(Date);
+      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ missionId: 'mission-1', taskId: null, skipped: true, pick: 'wait' });
     });
 
     it('never triages a criteria re-arm', async () => {

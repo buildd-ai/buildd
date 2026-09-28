@@ -14,7 +14,8 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
-import { triageHeartbeat, loadHeartbeatTriageFacts, formatTriageLog } from '@/lib/heartbeat-triage';
+import { triageHeartbeat, loadHeartbeatTriageFacts, formatTriageLog, type HeartbeatTriageRecord } from '@/lib/heartbeat-triage';
+import { resolveHeartbeatTriageArm, recordHeartbeatTriageLook } from '@buildd/core/heartbeat-triage-experiment-source';
 import {
   evaluateHeartbeatCircuitBreaker,
   tripHeartbeatCircuitBreaker,
@@ -783,16 +784,25 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // condensed copy of the context the organizer is about to get and says
         // whether this cycle needs it. A criteria re-arm is never triaged: it is
         // already one deduped wake per verdict shape.
+        // A skip needs the mission in the treatment arm of the team's running
+        // heartbeat_triage experiment; anything else is shadow.
+        let triageLook: { record: HeartbeatTriageRecord; arm: Awaited<ReturnType<typeof resolveHeartbeatTriageArm>> } | null = null;
         if (isHeartbeat && linkedMission?.teamId && !criteriaRearmContext && taskDescription) {
-          const facts = await loadHeartbeatTriageFacts(schedule.id, linkedMission.workspaceId ?? null)
-            .catch(() => ({ lastOrganizerAt: null, dataClass: null }));
+          const [facts, arm] = await Promise.all([
+            loadHeartbeatTriageFacts(schedule.id, linkedMission.workspaceId ?? null)
+              .catch(() => ({ lastOrganizerAt: null, dataClass: null })),
+            resolveHeartbeatTriageArm(linkedMission.teamId, linkedMission.id),
+          ]);
           const triage = await triageHeartbeat({
             teamId: linkedMission.teamId,
             workspaceId: linkedMission.workspaceId ?? null,
             description: taskDescription,
             ...facts,
+            apply: arm?.apply ?? false,
+            waitMinConfidence: arm?.waitMinConfidence,
           });
           console.log(formatTriageLog(linkedMission.id, triage));
+          triageLook = { record: triage, arm };
           if (triage.skipped) {
             // Restore the no-change hash the prepass just wrote, so the next
             // tick triages this state again instead of reading "no change".
@@ -808,13 +818,15 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               'nothing for the organizer to act on this cycle',
               computeNextRunAt(schedule.cronExpression, schedule.timezone) ?? now,
             ).catch(e => console.error(`[heartbeat-triage] failed to record wait note for mission ${linkedMission.id}:`, e));
+            await recordHeartbeatTriageLook(toTriageLook(linkedMission.id, schedule.id, null, triageLook));
             llmHeartbeatInvocations--;
             triageHeartbeatSkips++;
             skipped++;
             continue;
           }
-          // Shadow gold: the organizer's outcome on this same state grades the pick.
-          taskContext.heartbeatTriage = triage;
+          // The look is recorded once the organizer task exists (below), so its
+          // outcome on this same state grades the pick. Not on the task's
+          // context: the organizer reads that, and must not see the pick.
         }
 
         // Promote outputSchema from context to top-level column so the runner can read it
@@ -924,6 +936,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           );
           skipped++;
           continue;
+        }
+
+        if (triageLook && linkedMission) {
+          await recordHeartbeatTriageLook(toTriageLook(linkedMission.id, schedule.id, task.id, triageLook));
         }
 
         // Track seat consumption for this cron run
@@ -1082,4 +1098,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     console.error('Cron schedules error:', error);
     return NextResponse.json({ error: 'Internal error' }, { status: 500 });
   }
+}
+
+/** A triage look as its `heartbeat_triage_looks` row. */
+function toTriageLook(
+  missionId: string,
+  scheduleId: string,
+  taskId: string | null,
+  look: { record: HeartbeatTriageRecord; arm: Awaited<ReturnType<typeof resolveHeartbeatTriageArm>> },
+) {
+  const r = look.record;
+  return {
+    missionId, scheduleId, taskId, arm: look.arm, promptVersion: r.v, model: r.model ?? null,
+    pick: r.pick, confidence: r.confidence, skipped: r.skipped, reason: r.reason,
+  };
 }

@@ -10,12 +10,14 @@
  *   - `wait`: nothing for the organizer to do this cycle;
  *   - `act`: the organizer must do something now.
  *
- * Only a confident `wait` changes anything, and only when applying is on
- * (`TRIAGE_APPLY`): the cycle is deferred to the schedule's next slot instead
- * of dispatching. `act`, low confidence, a failed call, no key, a sensitive
- * workspace or a stale organizer all dispatch exactly as before. Every look is
- * recorded (on the dispatched task's context, or in the log for a skip), so
- * the organizer's own outcome on the same state becomes the benchmark's gold.
+ * Only a confident `wait` changes anything, and only for a mission in the
+ * treatment arm of the team's running `heartbeat_triage` experiment
+ * (@buildd/core/heartbeat-triage-experiment): the cycle is deferred to the
+ * schedule's next slot instead of dispatching. Outside an experiment, or in
+ * its control arm, triage is shadow. `act`, low confidence, a failed call, no
+ * key, a sensitive workspace or a stale organizer all dispatch as before.
+ * Every look is a `heartbeat_triage_looks` row carrying the organizer task it
+ * dispatched, so the organizer's own outcome on the same state grades it.
  *
  * Guards on a skip:
  *   - the no-change hash is restored, so the next tick triages again rather
@@ -32,15 +34,10 @@ import type { ChoiceQuestion, DecisionResult, decisionCall } from '@buildd/core/
 
 export const TRIAGE_TIMEOUT_MS = 4_000;
 export const TRIAGE_LOG_PREFIX = '[heartbeat-triage]';
-/** A `wait` below this confidence dispatches the organizer. */
+/** A `wait` below this confidence dispatches the organizer (an experiment's config may raise it). */
 export const WAIT_MIN_CONFIDENCE = 0.9;
 /** The organizer runs regardless when its last cycle is older than this. */
 export const TRIAGE_MAX_WAIT_MS = 3 * 60 * 60_000;
-/**
- * Whether a confident `wait` skips the organizer. Off: every look is recorded
- * and nothing is skipped (shadow). Flip once the benchmark supports the gate.
- */
-export const TRIAGE_APPLY = false;
 /** Bump when the question, a definition or the state shape changes; re-run the benchmark. */
 export const HEARTBEAT_TRIAGE_PROMPT_VERSION = 'ht1';
 
@@ -117,6 +114,8 @@ export function heartbeatTriagePromptHash(): string {
 
 export interface HeartbeatTriageRecord {
   v: string;
+  /** The model that answered (a team's decision model may not be Jev). */
+  model?: string | null;
   pick: TriageLabel | null;
   confidence: number | null;
   /** True when this look skipped the organizer. */
@@ -135,12 +134,14 @@ export interface GateInput {
   /** When the organizer last ran for this schedule. Null: never. */
   lastOrganizerAt: Date | null;
   now: Date;
+  /** Default WAIT_MIN_CONFIDENCE. */
+  waitMinConfidence?: number;
 }
 
 /** Skip the organizer this cycle? Pure. */
 export function gateHeartbeatTriage(g: GateInput): { skip: boolean; reason: HeartbeatTriageRecord['reason'] } {
   if (g.pick !== 'wait') return { skip: false, reason: 'act' };
-  if (g.confidence < WAIT_MIN_CONFIDENCE) return { skip: false, reason: 'low_confidence' };
+  if (g.confidence < (g.waitMinConfidence ?? WAIT_MIN_CONFIDENCE)) return { skip: false, reason: 'low_confidence' };
   if (!g.lastOrganizerAt || g.now.getTime() - g.lastOrganizerAt.getTime() > TRIAGE_MAX_WAIT_MS) {
     return { skip: false, reason: 'stale_organizer' };
   }
@@ -156,6 +157,9 @@ export interface TriageInput {
   lastOrganizerAt: Date | null;
   /** `workspaces.dataClass`. Sensitive workspaces never send content out. */
   dataClass?: string | null;
+  /** The mission is in the treatment arm: a confident wait may skip. Default false (shadow). */
+  apply?: boolean;
+  waitMinConfidence?: number;
 }
 
 type DecideFn = typeof decisionCall<typeof HEARTBEAT_TRIAGE_QUESTIONS>;
@@ -163,7 +167,7 @@ type DecideFn = typeof decisionCall<typeof HEARTBEAT_TRIAGE_QUESTIONS>;
 /** Decide one cycle. Never throws; any failure dispatches the organizer. */
 export async function triageHeartbeat(
   input: TriageInput,
-  deps: { decide?: DecideFn; now?: () => Date; apply?: boolean } = {},
+  deps: { decide?: DecideFn; now?: () => Date } = {},
 ): Promise<HeartbeatTriageRecord> {
   const now = (deps.now ?? (() => new Date()))();
   const base = { v: HEARTBEAT_TRIAGE_PROMPT_VERSION, at: now.toISOString() };
@@ -190,10 +194,11 @@ export async function triageHeartbeat(
   const answer = result.answers.next;
   const gate = gateHeartbeatTriage({
     pick: answer.choice, confidence: answer.confidence,
-    apply: deps.apply ?? TRIAGE_APPLY, lastOrganizerAt: input.lastOrganizerAt, now,
+    apply: input.apply ?? false, lastOrganizerAt: input.lastOrganizerAt, now,
+    waitMinConfidence: input.waitMinConfidence,
   });
   return {
-    ...base, pick: answer.choice, confidence: answer.confidence,
+    ...base, model: result.model, pick: answer.choice, confidence: answer.confidence,
     skipped: gate.skip, reason: gate.reason, latencyMs: result.latencyMs,
   };
 }
