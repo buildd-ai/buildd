@@ -103,7 +103,7 @@ const preview = (tool: string, input: Record<string, unknown>): PreviewOutcome =
 
 const plan = { planId: 'plan-1', planSource: 'registry', requestedTier: 'standard', tier: 'standard', surface: 'chat', kind: 'chat_turn', provider: 'openrouter', model: 'vendor/model-x', effort: null, limits: { maxTurns: null }, price: { inputPerMTok: 1, outputPerMTok: 2, cacheReadPerMTok: 0, cacheWritePerMTok: 0 }, budget: null, expiresAt: new Date(0).toISOString() } as const;
 
-function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: string[]; deny?: boolean; steering?: ReturnType<typeof memorySteerQueue>; turnMs?: number; tools?: Record<string, unknown>; limits?: Record<string, number> }) {
+function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: string[]; deny?: boolean; steering?: ReturnType<typeof memorySteerQueue>; turnMs?: number; tools?: Record<string, unknown>; limits?: Record<string, number>; title?: unknown }) {
   const planned: unknown[] = [];
   const models = {
     plan: async (req: unknown) => { planned.push(req); if (o.deny) throw new PlanDeniedError({ ...plan, budget: { action: 'deny', reason: 'daily_cap_reached' } } as never); return plan as any; },
@@ -125,6 +125,7 @@ function harness(o: { model: MockLanguageModelV4; key?: string | null; allow?: s
     preview: (t, i) => preview(t, i),
     onUsage: r => { ledger.push(r); },
     ...(o.steering ? { steering: { queue: o.steering } } : {}),
+    ...(o.title ? { title: o.title as any } : {}),
     ...(o.turnMs || o.limits ? { limits: { ...(o.turnMs ? { turnMs: o.turnMs } : {}), ...o.limits } } : {}),
   });
   const send = async (message: unknown, signal?: AbortSignal) => {
@@ -552,5 +553,47 @@ describe('provider failures are typed and readable', () => {
     const b = sse((await harness({ model: failing(new Error('socket hang up')) }).send(userMsg('hi'))).text);
     expect(b.find(c => c.type === 'data-turn-error').data).toMatchObject({ code: 'failed', message: 'The turn failed.' });
     expect(b.find(c => c.type === 'error').errorText).toBe('The turn failed.');
+  });
+});
+
+describe('conversation titles (opt-in)', () => {
+  const titles: Array<{ title: string; source: string }> = [];
+  beforeEach(() => { titles.length = 0; });
+  const titleOpts = (extra: Record<string, unknown> = {}) => ({
+    needed: () => titles.length === 0,
+    save: ({ title, source }: { title: string; source: string }) => { titles.push({ title, source }); },
+    ...extra,
+  });
+
+  it('off by default: no title hook, no title', async () => {
+    const { send } = harness({ model: mockModel(textStream('Hi.')) });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toEqual([]);
+  });
+
+  it('titles a new question after the turn is saved, by rule, without a model call', async () => {
+    const { send } = harness({ model: mockModel(textStream('It waits on review.')), title: titleOpts() });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toEqual([{ title: 'Why is the release stuck?', source: 'rule' }]);
+  });
+
+  it('uses the app\'s title model for a long message, through `later`', async () => {
+    const titleModel = new MockLanguageModelV4({ doGenerate: async () => ({ content: [{ type: 'text', text: 'Export failures' }], finishReason: { unified: 'stop', raw: 'stop' }, usage, warnings: [] }) as never });
+    const scheduled: Array<() => Promise<void>> = [];
+    const { send } = harness({
+      model: mockModel(textStream('Looking.')),
+      title: titleOpts({ model: async () => ({ ok: true, model: titleModel, plan: { ...plan, tier: 'budget' } }), later: (fn: () => Promise<void>) => { scheduled.push(fn); } }),
+    });
+    await send(userMsg('I need help figuring out why the nightly export keeps failing after the schema change'));
+    expect(titles).toEqual([]);
+    await Promise.all(scheduled.map(fn => fn()));
+    expect(titles).toEqual([{ title: 'Export failures', source: 'model' }]);
+  });
+
+  it('skips when `needed` says no (the person named it)', async () => {
+    titles.push({ title: 'Named by the person', source: 'user' });
+    const { send } = harness({ model: mockModel(textStream('Hi.'), textStream('Hi.')), title: titleOpts() });
+    await send(userMsg('why is the release stuck?'));
+    expect(titles).toHaveLength(1);
   });
 });

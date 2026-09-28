@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.3.1
+npm i -E @builddai/ai-kit@0.4.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -180,6 +180,22 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 **Usage.** Each request sends one content-free receipt to the plan's `recordUsage` (`/models`: plan id, model, provider, tier, `kind: 'chat'`, tokens, the provider-reported cost when OpenRouter returns it, latency, outcome) and awaits `onUsage` with the full record (cost estimated from the plan's price when the provider reports none). A continuation after an approval is its own receipt (`continuation: true`); the saved message's `usage` is summed. Call `models.flush()` in `after()` / `waitUntil` on serverless.
 
 **Steering (flag).** With `steering: { queue }`, `turn.steer(...)` queues text against the conversation; the running turn injects it at the next step boundary (`prepareStep`) and streams a `data-steer` part (`applied`). Up to `maxPerTurn` (3) apply; the rest, and any that arrive after the last step, come back `deferred` and `useKitChat` sends them as the next message. A steer never extends `turnMs`, and only the turn owner's steers apply. `memorySteerQueue()` is single-process; on serverless use a shared queue (KV list, DB table) since the steer request and the turn usually hit different instances.
+
+**Titles (opt-in).** Pass `title` and the runner names the conversation after a new question's turn is saved. Cheapest step first: your `rules` (e.g. the name of the object the chat was opened about), then the built-in rule (a first message of 2–7 words on one line, filler like "can you" dropped, is its own title), then one call on `model`. Leave `model` out for rules only.
+
+```ts
+createChatTurn({
+  // ...
+  title: {
+    needed: ({ conversationId }) => db.untitled(conversationId),        // none yet, and the person never named it
+    save: ({ conversationId, title }) => db.setAutoTitle(conversationId, title), // must not replace a person's title
+    model: modelFromPlan({ models, key, create, tier: 'budget', kind: 'chat_title' }),
+    later: fn => after(fn),                                               // Next; default is fire-and-forget
+  },
+});
+```
+
+The model step caps output at 512 tokens, not ~30: budget models often reason first, and a small cap is spent on the reasoning, leaving empty text. An empty answer, a refused plan or a failed call goes to `onError(e, 'title')`, and the conversation keeps no title so the next turn tries again. Its receipt is `kind: 'inference'`. `titleConversation(...)` is the same pipeline for apps with their own turn loop; `ruleTitle` and `normalizeTitle` are exported.
 
 ### Persistence: `ChatStore`
 
