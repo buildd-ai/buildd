@@ -85,6 +85,10 @@ export function surfaceAuditTitle(missionTitle: string, round = 1): string {
  */
 export const MAX_SURFACE_AUDIT_ROUNDS = 2;
 
+/** Title of the one open mission question posted when the last automatic round still finds an issue. */
+export const SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE =
+  `Visual review: issues remain after ${MAX_SURFACE_AUDIT_ROUNDS} audit rounds`;
+
 /** Title prefix of the fix task the auditor files per issue. */
 export const SURFACE_FIX_TITLE_PREFIX = '[surface fix] ';
 

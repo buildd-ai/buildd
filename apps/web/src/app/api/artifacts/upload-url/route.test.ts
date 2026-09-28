@@ -30,6 +30,13 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockTriggerEvent = mock(async (..._args: unknown[]) => {});
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { mission: (id: string) => `mission-${id}`, workspace: (id: string) => `workspace-${id}` },
+  events: {},
+}));
+
 mock.module('@/lib/storage', () => ({
   isStorageConfigured: () => true,
   generateSizedUploadUrl: mockGenerateSizedUploadUrl,
@@ -377,6 +384,27 @@ describe('POST /api/artifacts/upload-url', () => {
         workerOnTask(MISSION, null);
         await POST(req(validBody({ type: 'screenshot' })));
         expect(mockInsertValues.mock.calls[0][0].storageKey).toBe(`artifacts/ws-1/${UUID}/report.pdf`);
+      });
+
+      // docs/design/visual-qa-human-review.md, "Realtime": thumbnails stream in
+      // through the mission page's existing worker:artifact refresh.
+      it('fires worker:artifact on the mission channel for an audit shot', async () => {
+        mockTriggerEvent.mockClear();
+        workerOnTask(MISSION, 'visual-auditor');
+        await POST(req(validBody({ type: 'screenshot', filename: 'tasks-mobile.png', mimeType: 'image/png' })));
+        expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+        expect(mockTriggerEvent).toHaveBeenCalledWith(`mission-${MISSION}`, 'worker:artifact', {
+          artifact: { id: UUID, workerId: 'worker-1', missionId: MISSION },
+        });
+      });
+
+      it('fires nothing for an upload outside the qa/ area', async () => {
+        mockTriggerEvent.mockClear();
+        workerOnTask(MISSION, 'builder');
+        await POST(req(validBody({ type: 'screenshot' })));
+        workerOnTask(MISSION, 'visual-auditor');
+        await POST(req(validBody({ type: 'report' })));
+        expect(mockTriggerEvent).not.toHaveBeenCalled();
       });
 
       it('ignores a roleSlug or storageKey sent in the body', async () => {

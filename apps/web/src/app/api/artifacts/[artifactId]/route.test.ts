@@ -9,6 +9,15 @@ const mockVerifyWorkspaceAccess = mock(async () => null as any);
 
 // What the PATCH UPDATE ... RETURNING hands back; per-test overridable.
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
+// What the PATCH handed to UPDATE ... SET.
+let lastSet: Record<string, unknown> | null = null;
+const mockTriggerEvent = mock(async (..._args: unknown[]) => {});
+
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { mission: (id: string) => `mission-${id}`, workspace: (id: string) => `workspace-${id}` },
+  events: {},
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -29,7 +38,7 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findFirst: mockArtifactsFindFirst },
     },
     update: () => ({
-      set: mock(() => ({
+      set: mock((fields: Record<string, unknown>) => (lastSet = fields, {
         where: mock(() => ({
           returning: mock(() => [updatedRow]),
         })),
@@ -479,5 +488,79 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
     const req = createMockPatchRequest({ content: 'Corrected summary' }, 'bld_test');
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(403);
+  });
+
+  // docs/design/visual-qa-human-review.md, "PATCH integrity fix": the auditor
+  // prompt sends update_artifact {metadata: {qa: {fixTaskId}}}. A wholesale
+  // replace erased route/viewport/finding and dropped the shot from the
+  // evidence check and the strip.
+  describe('metadata merge', () => {
+    const shotRow = {
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      type: 'screenshot',
+      storageKey: 'qa/ws-1/artifact-1/tasks-mobile.png',
+      metadata: {
+        qa: { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'Header overflows.', verdict: 'issue' },
+        filename: 'tasks-mobile.png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+      },
+      worker: { accountId: 'account-1' },
+    };
+
+    beforeEach(() => {
+      lastSet = null;
+      mockTriggerEvent.mockClear();
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockArtifactsFindFirst.mockResolvedValue(shotRow);
+    });
+
+    it('deep-merges metadata.qa: a qa.fixTaskId update keeps route, viewport, finding and filename', async () => {
+      const res = await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(lastSet!.metadata).toEqual({
+        qa: { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'Header overflows.', verdict: 'issue', fixTaskId: 'fix-1' },
+        filename: 'tasks-mobile.png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+      });
+    });
+
+    it('shallow-merges top-level keys: a new key is added, a sent key replaces', async () => {
+      await PATCH(createMockPatchRequest({ metadata: { note: 'x', filename: 'renamed.png' } }, 'bld_test'), { params: mockParams });
+      expect(lastSet!.metadata).toMatchObject({ note: 'x', filename: 'renamed.png', mimeType: 'image/png' });
+      expect((lastSet!.metadata as any).qa.route).toBe('/app/tasks');
+    });
+
+    it('merges onto an artifact with no metadata yet', async () => {
+      mockArtifactsFindFirst.mockResolvedValue({ ...shotRow, metadata: null });
+      await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+      expect(lastSet!.metadata).toEqual({ qa: { fixTaskId: 'fix-1' } });
+    });
+
+    it('leaves metadata alone when the body sends none', async () => {
+      await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
+      expect(lastSet).not.toHaveProperty('metadata');
+    });
+
+    it('rejects metadata that is not an object', async () => {
+      const res = await PATCH(createMockPatchRequest({ metadata: ['a'] }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect(lastSet).toBeNull();
+    });
+
+    it('fires worker:artifact on the mission channel for a qa/ audit shot', async () => {
+      await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+      expect(mockTriggerEvent).toHaveBeenCalledWith('mission-mission-1', 'worker:artifact', { artifact: { id: 'artifact-1', workerId: 'worker-1', missionId: 'mission-1' } });
+    });
+
+    it('fires nothing for a non-audit artifact', async () => {
+      mockArtifactsFindFirst.mockResolvedValue({ ...shotRow, storageKey: 'artifacts/ws-1/artifact-1/report.pdf', type: 'file' });
+      await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+    });
   });
 });

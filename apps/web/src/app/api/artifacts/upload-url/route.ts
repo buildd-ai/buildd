@@ -8,6 +8,7 @@ import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
 import { buildArtifactKey, buildAuditScreenshotKey } from '@/lib/storage-keys';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
+import { triggerEvent, channels } from '@/lib/pusher';
 
 /**
  * Ceiling for a single artifact upload, enforced in the signature.
@@ -196,6 +197,17 @@ export async function POST(req: NextRequest) {
     .returning();
 
   const uploadUrl = await generateSizedUploadUrl(storageKey, mimeType, sizeBytes);
+
+  // An audit shot joined the mission (docs/design/visual-qa-human-review.md,
+  // "Realtime"): the mission page refreshes on worker:artifact, so thumbnails
+  // stream in while the auditor works. qa/ uploads only; a thin payload with
+  // no share token. The PUT may still be in flight when a client refetches,
+  // which the thumbnail's expired-tile fallback covers.
+  if (isAuditShot && artifactMissionId) {
+    await triggerEvent(channels.mission(artifactMissionId), 'worker:artifact', {
+      artifact: { id: artifact.id, workerId, missionId: artifactMissionId },
+    });
+  }
 
   // The credentialed download path (API key / session, scoped to the artifact's
   // tenant) is the only way to read this back until someone shares it.

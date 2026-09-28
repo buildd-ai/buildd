@@ -20,10 +20,8 @@
  *
  * Pure: no `db` import. The page runs the queries.
  */
-import { sql, eq, and, type SQL } from 'drizzle-orm';
-import { artifacts, tasks } from '@buildd/core/db/schema';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
-import { ArtifactType } from '@buildd/shared';
+import { sql, eq, type SQL } from 'drizzle-orm';
+import { tasks } from '@buildd/core/db/schema';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -144,47 +142,15 @@ export const MISSION_DETAIL_WITH = {
 
 // ── The visual review shots ─────────────────────────────────────────────────
 
-/**
- * Audit screenshots for the Visual review step (docs/design/visual-qa-auditor.md,
- * "Where the screenshots show"). A dedicated query, because the with-tree above
- * keeps five artifacts per worker and would cut a 40-shot run to five. Keyed on
- * `artifacts.mission_id`, which upload-url sets for an auditor's uploads.
- */
-export const MISSION_VISUAL_SHOT_COLUMNS = {
-  id: true,
-  workerId: true,
-  // The filename by default: the caption's variant when two shots share a
-  // route and viewport (`withVariants`).
-  title: true,
-  type: true,
-  metadata: true,
-  createdAt: true,
-} as const;
-
-/** Newest first: 40 shots a run (20 routes × 2 viewports) × up to three runs. */
-export const MISSION_VISUAL_SHOTS_LIMIT = 120;
-
-/** Newest first. With the limit above, ascending would keep the oldest runs and cut the newest. */
-export const MISSION_VISUAL_SHOTS_ORDER = (
-  a: { createdAt: typeof artifacts.createdAt },
-  { desc }: { desc: (c: typeof artifacts.createdAt) => SQL },
-) => [desc(a.createdAt)];
-
-/**
- * Only the auditor's shots are evidence. Any worker on the mission can upload
- * a screenshot with a hand-made `metadata.qa`, so the rows are limited to
- * workers of this mission's `visual-auditor` tasks.
- */
-export const missionVisualShotsWhere = (missionId: string): SQL =>
-  and(
-    eq(artifacts.missionId, missionId),
-    eq(artifacts.type, ArtifactType.SCREENSHOT),
-    sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
-    // Plain aliased identifiers, not workers/tasks column objects: the
-    // relational query maps every column in a raw `where` onto the queried
-    // table, which turned `workers.id` into `"artifacts"."id"`.
-    sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
-  )!;
+// The one scoping rule for audit shots lives with the visual review's other
+// queries (docs/design/visual-qa-human-review.md, "Read"); re-exported so this
+// module's shape stays one import for the page.
+export {
+  MISSION_VISUAL_SHOT_COLUMNS,
+  MISSION_VISUAL_SHOTS_LIMIT,
+  MISSION_VISUAL_SHOTS_ORDER,
+  missionVisualShotsWhere,
+} from '@/lib/visual-review-query';
 
 // ── The digest query ─────────────────────────────────────────────────────────
 

@@ -7,6 +7,26 @@ import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { isAuditStorageKey } from '@/lib/storage-keys';
+import { triggerEvent, channels } from '@/lib/pusher';
+
+type Json = Record<string, unknown>;
+const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * PATCH metadata semantics (docs/design/visual-qa-human-review.md, "PATCH
+ * integrity fix"): top-level keys shallow-merge onto the stored metadata, and
+ * `qa` deep-merges one level, so update_artifact {metadata: {qa: {fixTaskId}}}
+ * keeps the shot's route, viewport, finding and the upload's filename. A
+ * wholesale replace used to erase them, and the shot silently dropped out of
+ * the evidence check and the strip.
+ */
+function mergeArtifactMetadata(stored: unknown, patch: Json): Json {
+  const base = isObject(stored) ? stored : {};
+  const merged: Json = { ...base, ...patch };
+  if (isObject(patch.qa) && isObject(base.qa)) merged.qa = { ...base.qa, ...patch.qa };
+  return merged;
+}
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -120,6 +140,9 @@ export async function PATCH(
 
   const body = await req.json();
   const { title, content, metadata } = body;
+  if (metadata !== undefined && !isObject(metadata)) {
+    return NextResponse.json({ error: 'metadata must be an object' }, { status: 400 });
+  }
 
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date(),
@@ -127,13 +150,22 @@ export async function PATCH(
 
   if (title !== undefined) updateFields.title = title;
   if (content !== undefined) updateFields.content = content;
-  if (metadata !== undefined) updateFields.metadata = metadata;
+  if (metadata !== undefined) updateFields.metadata = mergeArtifactMetadata(artifact.metadata, metadata);
 
   const [updated] = await db
     .update(artifacts)
     .set(updateFields)
     .where(eq(artifacts.id, artifactId))
     .returning();
+
+  // An audit shot changed (a fix link, a re-labelled finding): the mission
+  // page refreshes on worker:artifact, so its thumbnails follow. Thin payload,
+  // no share token; qa/ shots only, so ordinary edits stay quiet.
+  if (artifact.missionId && isAuditStorageKey(artifact.storageKey)) {
+    await triggerEvent(channels.mission(artifact.missionId), 'worker:artifact', {
+      artifact: { id: artifact.id, workerId: artifact.workerId ?? null, missionId: artifact.missionId },
+    });
+  }
 
   const shareUrl = updated.shareToken && updated.visibility === 'public'
     ? `${appBaseUrl()}/share/${updated.shareToken}`

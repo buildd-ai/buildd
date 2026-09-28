@@ -13,6 +13,8 @@
 import { countDistinctPrs } from '@buildd/core/pr-shipped';
 import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './mission-integration-pr';
 import type { ReleaseState } from './release-state';
+import type { VisualReviewModel } from '@buildd/shared';
+import { describeVisualPhase } from './visual-review-model';
 
 export type DeliveryStepKey = 'integrated' | 'verified' | 'visual' | 'shipped' | 'budget';
 export type DeliveryStepState = 'done' | 'partial' | 'todo' | 'blocked';
@@ -69,6 +71,12 @@ export interface DeliveryInput {
    * `[surface audit]` and no audit screenshots, which hides the step.
    */
   visual?: DeliveryVisual | null;
+  /**
+   * The visual review model's phase (`missionVisualReview(...).model`), so the
+   * step can say "no browser runner", "stalled" or "capturing 3 of 8" instead
+   * of a bare "waiting". Absent: the verdict counts alone decide the step.
+   */
+  visualPhase?: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> | null;
   /**
    * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
    * per merge. Empty when nothing of the mission is on trunk yet.
@@ -170,7 +178,7 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
     });
   }
 
-  if (input.visual) steps.push(visualStep(input.visual));
+  if (input.visual) steps.push(visualStep(input.visual, input.visualPhase ?? null));
 
   // D6: the Shipped step is this mission's fact. The workspace queue depth
   // never decides it: only this mission's merges, read against the release
@@ -197,11 +205,21 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
  * the open question is what holds the mission. Only a boot failure blocks,
  * because then nobody looked at anything, and that must be loud.
  */
-function visualStep(v: DeliveryVisual): DeliveryStep {
+function visualStep(v: DeliveryVisual, model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> | null): DeliveryStep {
   const base = { key: 'visual' as const, label: DELIVERY_STEP_LABEL.visual };
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
-  if (v.bootFailed) {
+  if (v.bootFailed || model?.phase === 'boot_failed') {
     return { ...base, state: 'blocked', value: 'boot', detail: 'the app did not boot for the visual audit' };
+  }
+  // The phases the counts cannot express. Copy comes from the model, the one
+  // place phase copy is written (describeVisualPhase).
+  if (model?.phase === 'no_browser_runner' || model?.phase === 'stalled') {
+    const copy = describeVisualPhase(model);
+    return { ...base, state: 'blocked', value: model.phase === 'stalled' ? 'stalled' : 'no runner', detail: copy.detail };
+  }
+  if (model?.phase === 'capturing') {
+    const { captured = 0, expected = null } = model.progress ?? {};
+    return { ...base, state: 'partial', value: expected != null ? `${captured}/${expected}` : String(captured), detail: describeVisualPhase(model).label };
   }
   if (v.shots === 0) {
     return { ...base, state: 'todo', value: '–', detail: 'waiting for the visual audit' };
