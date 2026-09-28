@@ -4,6 +4,7 @@ import { eq, and, or, desc, sql } from 'drizzle-orm';
 import { recalculateOverall, criterionFingerprint } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 
 /**
  * `description` (prose) goal criteria under the `runner` grader: one read-only
@@ -365,6 +366,8 @@ async function dispatchProseEvalTask(opts: {
   const marker: ProseEvalContext = { missionId: mission.id, criterionIndex, fingerprint };
   const title = `${VERIFY_TASK_TITLE_PREFIX} ${text.trim()}`.slice(0, 200);
   const description = buildVerifierPrompt(mission, text, evidence);
+  // A judgment, not a change (role-routing §1 row 9, §3.1): Researcher if resolvable.
+  const roleSlug = await pickEffectiveRole(mission.workspaceId, ['researcher']);
 
   const [task] = await db
     .insert(tasks)
@@ -382,6 +385,7 @@ async function dispatchProseEvalTask(opts: {
       // pending count above zero and block the completion its verdict gates.
       taskClass: 'bookkeeping',
       creationSource: 'orchestrator',
+      roleSlug,
       // Same contract as a command verification task: a judgment, not a PR.
       outputRequirement: 'none',
       outputSchema: PROSE_EVAL_OUTPUT_SCHEMA as unknown as Record<string, unknown>,

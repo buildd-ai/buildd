@@ -29,7 +29,7 @@ const originalNodeEnv = process.env.NODE_ENV;
 
 import { POST } from './route';
 
-const ctx = { params: Promise.resolve({ id: 'acct-1' }) };
+const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
 const req = () => new NextRequest('http://localhost:3000/api/accounts/acct-1/regenerate-key', { method: 'POST' });
 
 describe('POST /api/accounts/[id]/regenerate-key — team owners and admins only', () => {
@@ -41,7 +41,7 @@ describe('POST /api/accounts/[id]/regenerate-key — team owners and admins only
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockGetUserTeamRole.mockReset();
     mockAccountsFindFirst.mockReset();
-    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', apiKey: 'old-hash' });
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'old-hash' });
     mockUpdateSet.mockClear();
     mockInvalidate.mockClear();
   });
@@ -66,7 +66,7 @@ describe('POST /api/accounts/[id]/regenerate-key — team owners and admins only
 
   it("checks the caller's role on the account's own team", async () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1', 'team-2']);
-    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-2', apiKey: 'old-hash' });
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-2', apiKey: 'old-hash' });
     mockGetUserTeamRole.mockImplementation(async (_u: string, teamId: string) =>
       teamId === 'team-2' ? 'member' : 'owner');
     const res = await POST(req(), ctx);

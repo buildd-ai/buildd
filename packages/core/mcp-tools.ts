@@ -12,7 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { workspaceProjectKey } from './project-scope';
+import { normalizeProject, workspaceProjectKey } from './project-scope';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -46,6 +46,15 @@ import type {
  * exists for, and the truncation marker always reports how much was cut.
  */
 const GET_PR_BODY_PREVIEW_CHARS = 2000;
+
+/**
+ * `hint` values from the worker completion route (apps/web/src/app/api/workers/[id]/route.ts)
+ * that name a real MCP action to call next, as opposed to a gate-identifying
+ * slug like `handoff_required` or `organizer_did_not_report` that has no
+ * corresponding tool. Only these get the "Please use `<hint>`" retry
+ * instruction in complete_task's 400 handling below.
+ */
+const RETRY_HINT_ACTIONS = new Set(['create_pr', 'create_artifact']);
 
 const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
@@ -431,7 +440,7 @@ export const learnToolDefinition = {
       },
       scope: {
         type: "string" as const,
-        description: "Project/monorepo scope for this memory.",
+        description: "Omit. Memories are always filed under the calling workspace's project; naming any other project is refused.",
       },
       supersedes: {
         type: "array" as const,
@@ -457,8 +466,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID) } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override — OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies, a future startAt, mission pacing/concurrency and the workspace cap still apply (force-start from the dashboard to override those). When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
-    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
+    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
@@ -477,7 +486,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
-    create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
+    create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
@@ -532,8 +541,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
 
 export function buildMemoryDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    context: '{ project? } — get markdown-formatted memory context for agent injection',
-    search: '{ query?, type?, files? (array), project?, limit?, offset? }',
+    context: '{ project? } — get markdown-formatted memory context for agent injection. Memory is scoped to the calling workspace; naming another project is refused.',
+    search: '{ query?, type?, files? (array), project? (must be the calling workspace\'s own), limit?, offset? }',
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
@@ -975,9 +984,9 @@ export function renderReleaseList(
     const when = r.deployedAt ? `deployed ${stamp(r.deployedAt)}` : `created ${stamp(r.createdAt)}`;
     const head = [r.version ?? 'unversioned', state, when, r.headSha ? String(r.headSha).slice(0, 7) : null]
       .filter(Boolean).join(' · ');
-    const shipped: Array<{ title: string | null; prNumber: number | null }> = r.tasks ?? [];
+    const shipped: Array<{ title: string | null; prNumber: number | null; missionTitle?: string | null }> = r.tasks ?? [];
     const lines = shipped.slice(0, MAX_TASKS)
-      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}`);
+      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}${t.missionTitle ? ` (mission: ${t.missionTitle})` : ''}`);
     if (shipped.length > MAX_TASKS) lines.push(`    - …and ${shipped.length - MAX_TASKS} more (get_release)`);
     return [`- ${head} (id ${r.id})`, ...lines].join('\n');
   }).join('\n');
@@ -1686,6 +1695,7 @@ export async function handleBuilddAction(
         if (typeof params.kind === 'string') progressBody.kind = params.kind;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
         if (typeof params.outputTokens === 'number') progressBody.outputTokens = params.outputTokens;
+        if (typeof params.costUsd === 'number') progressBody.costUsd = params.costUsd;
         if (params.lastCommitSha) progressBody.lastCommitSha = params.lastCommitSha;
         if (typeof params.commitCount === 'number') progressBody.commitCount = params.commitCount;
         if (typeof params.filesChanged === 'number') progressBody.filesChanged = params.filesChanged;
@@ -1779,6 +1789,14 @@ export async function handleBuilddAction(
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
             ...(params.discardEdits ? { discardEdits: params.discardEdits } : {}),
+            // Self-reported usage: the only way an interactive MCP session (no
+            // runner watching the process to measure tokens/cost) can attribute
+            // its own consumption. Same fields update_progress accepts; both go
+            // through the ordinary PATCH path (plain overwrite, not the
+            // metricsOnly-gated monotonic raise() in route.ts).
+            ...(typeof params.inputTokens === 'number' ? { inputTokens: params.inputTokens } : {}),
+            ...(typeof params.outputTokens === 'number' ? { outputTokens: params.outputTokens } : {}),
+            ...(typeof params.costUsd === 'number' ? { costUsd: params.costUsd } : {}),
           }),
         });
       } catch (err: unknown) {
@@ -1793,7 +1811,17 @@ export async function handleBuilddAction(
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
               if (parsed.hint) {
-                return errorResult(`**Cannot complete task:** ${parsed.error}\n\nPlease use \`${parsed.hint}\` before calling complete_task again.`);
+                // `hint` is a gate slug, not always a callable action — only
+                // some values (create_pr, create_artifact) name a real tool to
+                // retry with. For the rest, `parsed.error` already spells out
+                // the actual fix (e.g. the structuredOutput field to set), so
+                // don't invent a "use `<hint>`" instruction pointing at a tool
+                // that doesn't exist.
+                const hintNames = String(parsed.hint).split(' or ').map(h => h.trim());
+                const retryLine = hintNames.every(h => RETRY_HINT_ACTIONS.has(h))
+                  ? `Please use \`${parsed.hint}\` before calling complete_task again.`
+                  : 'Address this, then call complete_task again.';
+                return errorResult(`**Cannot complete task:** ${parsed.error}\n\n${retryLine}`);
               }
             }
           } catch { /* fall through to generic error */ }
@@ -2723,6 +2751,10 @@ export async function handleBuilddAction(
 
       if (params.skillSlugs && Array.isArray(params.skillSlugs) && params.skillSlugs.length > 0) {
         taskTemplate.context = { skillSlugs: params.skillSlugs };
+      }
+
+      if (typeof params.roleSlug === 'string' && params.roleSlug.trim()) {
+        taskTemplate.roleSlug = params.roleSlug.trim();
       }
 
       if (params.trigger && typeof params.trigger === 'object') {
@@ -5548,6 +5580,51 @@ type MemoryActionCtx = {
   isSensitive?: boolean;
 };
 
+// ── Memory project scoping ───────────────────────────────────────────────────
+//
+// Invariant: memory surfaced to an agent comes only from the requesting
+// workspace, never from a sensitive one. The store and the `{teamId}:memory`
+// namespace are team-wide; the only thing separating one workspace's memories
+// from another's is the project key, and `ctx.project` is that key as the
+// server resolved it for this connection. Callers never choose it: a project
+// named in params is refused, and no key means no memory.
+
+const NO_MEMORY_SCOPE = 'no memory scope for this workspace';
+
+/** The caller's own project key, or an error when the caller named another one or has none. */
+function ownMemoryProject(ctx: MemoryActionCtx, requested?: unknown): { project: string } | { error: string } {
+  const own = normalizeProject(ctx.project);
+  if (!own) return { error: NO_MEMORY_SCOPE };
+  if (typeof requested === 'string' && requested.trim() !== '' && normalizeProject(requested) !== own) {
+    return { error: `project "${requested}" is not this workspace's — memory is scoped to the calling workspace` };
+  }
+  return { project: own };
+}
+
+/** Whether a stored memory belongs to the caller's workspace. */
+function isOwnMemory(m: { project?: string | null }, ctx: MemoryActionCtx): boolean {
+  const own = normalizeProject(ctx.project);
+  return !!own && normalizeProject(m.project) === own;
+}
+
+/**
+ * Narrow `{teamId}:memory` hits to the caller's project. Chunk metadata is not
+ * trusted for this (older chunks carry no project); the memories table is.
+ * A hit with no backing memory row is dropped.
+ */
+async function ownMemoryHits(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  hits: QueryResult[],
+): Promise<QueryResult[]> {
+  const own = normalizeProject(ctx.project);
+  if (!own || !mc || hits.length === 0) return [];
+  const memoryIdOf = (r: QueryResult) => (typeof r.metadata?.memoryId === 'string' ? r.metadata.memoryId : r.id);
+  const { memories } = await mc.batch(hits.map(memoryIdOf));
+  const allowed = new Set(memories.filter(m => normalizeProject(m.project) === own).map(m => m.id));
+  return hits.filter(r => allowed.has(memoryIdOf(r)));
+}
+
 /**
  * Extracts implementation anchors from spec chunks for two-hop code retrieval.
  * Captures file paths, route paths, camelCase symbols, and PascalCase types —
@@ -5686,7 +5763,8 @@ function formatCorpusFailures(failures: CorpusFailure[]): string {
  */
 async function fanOutCorpora(
   ks: KnowledgeStore,
-  ctx: { isSensitive?: boolean; workspaceId?: string; teamId?: string },
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
@@ -5694,12 +5772,22 @@ async function fanOutCorpora(
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
       if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      if (c === 'memory' && !normalizeProject(ctx.project)) {
+        failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
+        return [];
+      }
       const ns = knowledgeNamespace(ctx, c);
       if (!ns) {
         failures.push({ corpus: c, reason: (c === 'memory' || c === 'initiative') ? 'teamId required' : 'workspaceId required' });
         return [];
       }
       try {
+        // The memory namespace is team-wide: over-fetch, then keep the caller's project.
+        if (c === 'memory') {
+          const raw = await ks.query(ns, { ...opts, topK: Math.min(opts.topK * 5, 100) });
+          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
+          return own.slice(0, opts.topK);
+        }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
@@ -5728,6 +5816,8 @@ export async function handleRecallAction(
   if (params.id) {
     const data = await memoryClient.get(params.id as string);
     const m = data.memory;
+    // Same message as a miss, so a foreign id is not confirmed to exist.
+    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,
@@ -5773,7 +5863,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5807,6 +5897,9 @@ export async function handleRecallAction(
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
   }
+  if (scope === 'memory' && !normalizeProject(ctx.project)) {
+    return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
+  }
 
   // Resolve namespace — namespace resolution is internal to the server.
   const ns = knowledgeNamespace(ctx, scope);
@@ -5825,10 +5918,16 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+  const raw = await ks.query(ns, {
+    text: query,
+    mode,
+    topK: scope === 'memory' ? Math.min(fetchTopK * 5, 100) : fetchTopK,
+  });
 
   // Exclude superseded entries by default, apply type/files filters, then the caller limit.
   let results = raw.filter(r => r.isCurrent !== false);
+  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
   if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
   results = results.slice(0, limit);
 
@@ -5868,6 +5967,10 @@ export async function handleLearnAction(
   if (ctx.isSensitive) {
     return errorResult('workspace is sensitive — memory writes disabled');
   }
+  // Written under the caller's own project key only — a memory filed under
+  // another workspace's key would surface there.
+  const learnScope = ownMemoryProject(ctx, params.scope);
+  if ('error' in learnScope) return errorResult(learnScope.error);
 
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
@@ -5908,7 +6011,7 @@ export async function handleLearnAction(
     type: params.type as string,
     title: params.title as string,
     content: params.content as string,
-    project: (params.scope as string) || ctx.project || undefined,
+    project: learnScope.project,
     tags: params.tags as string[] | undefined,
     files: params.files as string[] | undefined,
     source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
@@ -5926,7 +6029,7 @@ export async function handleLearnAction(
       lexicalText,
       sourceType: 'memory',
       sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files },
+      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
       ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
     }]).catch(() => undefined);
     if (upsertRes) learnSuperseded = upsertRes.superseded;
@@ -5999,17 +6102,20 @@ export async function handleMemoryAction(
   switch (action) {
     case 'context': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
-      const project = (params.project as string) || ctx.project;
-      const data = await mc.getContext(project);
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
+      const data = await mc.getContext(scoped.project);
       return text(data.markdown || '(No memories yet)');
     }
 
     case 'search': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
+      const scoped = ownMemoryProject(ctx, params.project);
+      if ('error' in scoped) return errorResult(scoped.error);
       const data = await mc.search({
         query: params.query as string | undefined,
         type: params.type as string | undefined,
-        project: (params.project as string) || ctx.project,
+        project: scoped.project,
         files: params.files as string[] | undefined,
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
@@ -6054,6 +6160,9 @@ export async function handleMemoryAction(
         throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
       }
 
+      const saveScope = ownMemoryProject(ctx, params.project);
+      if ('error' in saveScope) return errorResult(saveScope.error);
+
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
@@ -6061,7 +6170,7 @@ export async function handleMemoryAction(
         type: params.type as string,
         title: params.title as string,
         content: params.content as string,
-        project: (params.project as string) || ctx.project || undefined,
+        project: saveScope.project,
         tags: params.tags as string[] | undefined,
         files: params.files as string[] | undefined,
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
@@ -6112,6 +6221,7 @@ export async function handleMemoryAction(
       if (!params.id) throw new Error('id is required');
       const data = await mc.get(params.id as string);
       const m = data.memory;
+      if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
       const meta = [
         `Type: ${m.type}`,
         m.project && `Project: ${m.project}`,
@@ -6140,6 +6250,12 @@ export async function handleMemoryAction(
 
       const updateSupersedes = parseSupersedesParam(params.supersedes);
       if (updateSupersedes.error) throw new Error(updateSupersedes.error);
+
+      // Only the caller's own memories, and never moved to another project key.
+      const updateScope = ownMemoryProject(ctx, params.project);
+      if ('error' in updateScope) return errorResult(updateScope.error);
+      const existing = await mc.get(params.id as string);
+      if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
       const data = await mc.update(params.id as string, updateFields);
 
@@ -6209,7 +6325,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6261,6 +6377,9 @@ export async function handleMemoryAction(
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
       }
+      if (corpus === 'memory' && !normalizeProject(ctx.project)) {
+        throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);
+      }
 
       const ns = knowledgeNamespace(ctx, corpus);
 
@@ -6273,11 +6392,15 @@ export async function handleMemoryAction(
       // Reranker passed here too: without it this fallback ranked by age decay
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
-      const results = await ks.query(ns, {
+      // The memory namespace is team-wide, so over-fetch and keep the caller's project.
+      const queried = await ks.query(ns, {
         text: params.query as string,
         mode,
-        topK,
+        topK: corpus === 'memory' ? Math.min(topK * 5, 100) : topK,
       });
+      const results = corpus === 'memory'
+        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
+        : queried;
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

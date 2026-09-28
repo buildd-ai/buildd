@@ -54,6 +54,20 @@ describe('buildFleetSnapshot', () => {
     expect(atlas.slots[1].worker).toBeNull();
   });
 
+  it('never gives an adopted PR\'s placeholder worker a slot or a role-less bar', () => {
+    // role-routing §1 row 7: the adopted row is bookkeeping with no role. Its
+    // worker ran on no buildd runner, so it must not surface as a `?` agent.
+    const adopted = worker('adopted', 'external', {
+      status: 'completed', startedAt: null, completedAt: null, prNumber: 77,
+      task: { id: 't-adopted', title: 'PR #77: bump deps', roleSlug: null, missionId: null, taskClass: 'bookkeeping' },
+    });
+    const s = buildFleetSnapshot([hb('h1', 'http://atlas.local:8766')], [adopted], { now: NOW });
+    const bars = s.runners.flatMap(r => r.slots.flatMap(sl => sl.lane.bars));
+    expect(s.runners.map(r => r.name)).toEqual(['atlas']);
+    expect(bars).toHaveLength(0);
+    expect(s.runners[0].slots.every(sl => sl.worker === null && sl.last === null)).toBe(true);
+  });
+
   it('an idle slot remembers its last run', () => {
     const idle = buildFleetSnapshot(
       [hb('h1', 'http://atlas.local:8766')],

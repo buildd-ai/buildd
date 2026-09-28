@@ -10,14 +10,16 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MAX_POOL_ARMS, routesFor, type ArmRoute, type ArmStats, type PoolSurface } from '@buildd/core/tier-pool';
+import { WEIGHT_LEVELS, type WeightLevel } from '@buildd/core/tier-weights';
 import type { CatalogModel } from '@/lib/tier-mapping';
 import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
-import { ARM_ROUTE_SPECS, withKeyStatus, type PickerValue } from '@/lib/model-picker';
+import { ARM_ROUTE_SPECS, pickerKey, withKeyStatus, type PickerValue } from '@/lib/model-picker';
 import {
   ROUTE_LABEL,
   costLabel,
   isVirtualCost,
   pct,
+  suggestWeightFor,
   winLabel,
   type PoolArmView,
   type TierPoolRowView,
@@ -169,17 +171,34 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
   const [panel, setPanel] = useState<'details' | null>(null);
   const [adding, setAdding] = useState(false);
   const [addErr, setAddErr] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ picks: PickerValue[]; weights: Record<string, WeightLevel> } | null>(null);
   const routes = useMemo(() => withKeyStatus(routesFor(row.surface).map((r) => ARM_ROUTE_SPECS[r]), keys ?? null), [row.surface, keys]);
   const locked = useMemo<PickerValue[]>(() => row.arms.map((a) => ({ route: a.route, model: a.model })), [row.arms]);
+  const incumbent = row.arms.find((a) => a.role === 'incumbent') ?? null;
+
+  // Picking a model previews its cost-aware suggested weight; nothing is added until confirmed.
+  function preview(picked: PickerValue[]) {
+    const incumbentValue: PickerValue | null = incumbent ? { route: incumbent.route, model: incumbent.model } : null;
+    setPending({
+      picks: picked,
+      weights: Object.fromEntries(picked.map((p) => [
+        pickerKey(p),
+        incumbentValue ? suggestWeightFor(p, incumbentValue, models, routes, row.tier) : 'low',
+      ])),
+    });
+  }
 
   // Each new arm is its own audited change, added in the order the admin ranked them.
-  async function addArms(picked: PickerValue[]) {
+  async function confirmAdd() {
+    if (!pending) return;
     setAdding(true); setAddErr(null);
-    for (const p of picked) {
-      const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route: p.route, model: p.model }) });
+    for (const p of pending.picks) {
+      const weight = pending.weights[pickerKey(p)];
+      const r = await send('/api/model-tiers/pools', { method: 'POST', body: JSON.stringify({ teamId, tier: row.tier, surface: row.surface, route: p.route, model: p.model, weight }) });
       if (!r.ok) { setAddErr(`${p.model}: ${r.error ?? 'Could not add'}`); break; }
     }
     setAdding(false);
+    setPending(null);
     setPanel('details');
     await onChanged();
   }
@@ -207,8 +226,8 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
               value={[]}
               max={MAX_POOL_ARMS}
               currentLabel="in pool"
-              onChange={addArms}
-              disabled={adding}
+              onChange={preview}
+              disabled={adding || !!pending}
               testId="pool-add-toggle"
               triggerClassName="font-mono font-semibold text-accent-text hover:underline disabled:opacity-60"
               triggerLabel={adding ? 'Adding…' : '+ Add model'}
@@ -222,6 +241,23 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
         </div>
       </div>
       {addErr && <p role="alert" className="mt-2 text-xs text-status-error">{addErr}</p>}
+      {pending && (
+        <div className="mt-2 border-2 border-border-strong bg-surface-1 p-3" data-testid="pool-add-preview">
+          {pending.picks.map((p) => (
+            <div key={pickerKey(p)} className="flex items-center gap-2 py-1 font-mono text-[12.5px]" data-testid="pool-add-preview-row">
+              <span className="min-w-0 flex-1 truncate text-text-primary">{p.model}</span>
+              <WeightControl value={pending.weights[pickerKey(p)]} disabled={adding}
+                onChange={(v) => setPending((cur) => cur && ({ ...cur, weights: { ...cur.weights, [pickerKey(p)]: v } }))} />
+            </div>
+          ))}
+          <div className="mt-2 flex gap-2">
+            <button type="button" className="btn btn-primary h-8" disabled={adding} onClick={confirmAdd} data-testid="pool-add-confirm">
+              {adding ? 'Adding…' : `Add ${pending.picks.length} model${pending.picks.length === 1 ? '' : 's'}`}
+            </button>
+            <button type="button" className="btn h-8" disabled={adding} onClick={() => setPending(null)} data-testid="pool-add-cancel">Cancel</button>
+          </div>
+        </div>
+      )}
       {panel === 'details' && row.poolId && <Details row={row} teamId={teamId} isAdmin={isAdmin} onChanged={onChanged} />}
     </div>
   );
@@ -236,9 +272,23 @@ const CHANGE_LABEL: Record<string, string> = {
   freeze: 'Frozen', unfreeze: 'Unfrozen', promotion: 'Promoted',
 };
 
+function WeightControl({ value, disabled, onChange }: { value: WeightLevel; disabled: boolean; onChange: (v: WeightLevel) => void }) {
+  return (
+    <span className="inline-flex border border-border-default" role="group" aria-label="weight" data-testid="pool-weight">
+      {WEIGHT_LEVELS.map(level => (
+        <button key={level} type="button" disabled={disabled} aria-pressed={value === level}
+          className={`px-2 py-1 font-mono text-[11px] uppercase tracking-[1px] ${value === level ? 'bg-accent text-accent-contrast' : 'text-text-secondary hover:bg-surface-2'} disabled:opacity-70`}
+          onClick={() => onChange(level)} data-testid={`pool-weight-${level}`}>
+          {level}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 function Details({ row, teamId, isAdmin, onChanged }: { row: TierPoolRowView; teamId: string; isAdmin: boolean; onChanged: () => Promise<void> }) {
   const live = row.arms.filter(a => a.id);
-  const [draft, setDraft] = useState<Record<string, string>>(() => Object.fromEntries(live.map(a => [a.id!, String(Math.round(a.share * 100))])));
+  const [draft, setDraft] = useState<Record<string, WeightLevel>>(() => Object.fromEntries(live.map(a => [a.id!, a.weight])));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [changes, setChanges] = useState<ChangeView[]>([]);
@@ -250,11 +300,11 @@ function Details({ row, teamId, isAdmin, onChanged }: { row: TierPoolRowView; te
   }, [row.poolId, teamId]);
   useEffect(() => { void loadChanges(); }, [loadChanges, row.allocationVersion]);
   useEffect(() => {
-    setDraft(Object.fromEntries(row.arms.filter(a => a.id).map(a => [a.id!, String(Math.round(a.share * 100))])));
+    setDraft(Object.fromEntries(row.arms.filter(a => a.id).map(a => [a.id!, a.weight])));
   }, [row]);
 
-  const total = live.reduce((s, a) => s + (Number(draft[a.id!]) || 0), 0);
-  const dirty = live.some(a => Number(draft[a.id!]) !== Math.round(a.share * 100));
+  const dirty = live.some(a => draft[a.id!] !== a.weight);
+  const allOff = live.every(a => draft[a.id!] === 'off');
 
   async function run(p: Promise<{ ok: boolean; error?: string }>) {
     setBusy(true); setErr(null);
@@ -266,9 +316,9 @@ function Details({ row, teamId, isAdmin, onChanged }: { row: TierPoolRowView; te
   const patch = (body: Record<string, unknown>) => run(send(`/api/model-tiers/pools/${row.poolId}`, {
     method: 'PATCH', body: JSON.stringify({ teamId, expectedVersion: row.allocationVersion, ...body }),
   }));
-  const applyShares = () => patch({
+  const applyWeights = () => patch({
     mode: 'split',
-    allocation: Object.fromEntries(live.map(a => [a.id!, (Number(draft[a.id!]) || 0) / 100])),
+    weights: Object.fromEntries(live.map(a => [a.id!, draft[a.id!]])),
   });
   const remove = (armId: string) => run(send(`/api/model-tiers/pools/${row.poolId}/arms/${armId}?teamId=${teamId}&expectedVersion=${row.allocationVersion}`, { method: 'DELETE' }));
 
@@ -279,23 +329,17 @@ function Details({ row, teamId, isAdmin, onChanged }: { row: TierPoolRowView; te
         {live.map(a => (
           <div key={a.id} className="flex items-center gap-2 py-1 font-mono text-[12.5px]">
             <span className="min-w-0 flex-1 truncate text-text-primary">{a.model}{a.role === 'incumbent' ? ' (base)' : ''}</span>
-            <input type="number" min={0} max={100} step={1} inputMode="numeric" aria-label={`Share for ${a.model}`}
-              value={draft[a.id!] ?? ''} disabled={!isAdmin || busy}
-              onChange={e => setDraft(d => ({ ...d, [a.id!]: e.target.value }))}
-              className="h-8 w-16 border border-border-default bg-surface-1 px-2 text-right tabular-nums outline-none focus:border-primary disabled:opacity-70"
-              data-testid="pool-share-input" />
-            <span className="text-text-muted">%</span>
+            <WeightControl value={draft[a.id!] ?? 'off'} disabled={!isAdmin || busy}
+              onChange={v => setDraft(d => ({ ...d, [a.id!]: v }))} />
+            <span className="w-9 text-right tabular-nums text-text-muted">{pct(a.share)}</span>
             {isAdmin && a.role === 'challenger' && (
               <button type="button" className="text-[11.5px] text-text-muted hover:text-status-error" disabled={busy} onClick={() => remove(a.id!)} data-testid="pool-remove">Remove</button>
             )}
           </div>
         ))}
-        <p className={`mt-1 font-mono text-[11.5px] ${total === 100 ? 'text-text-muted' : 'text-status-error'}`}>
-          {`Total ${total}% · base keeps at least ${pct(row.incumbentFloor)} · others at most ${pct(row.explorationCap)}`}
-        </p>
         {isAdmin && (
           <div className="mt-2 flex flex-wrap gap-2">
-            {dirty && <button type="button" className="btn btn-primary h-8" disabled={busy || total !== 100} onClick={applyShares} data-testid="pool-apply">Apply traffic</button>}
+            {dirty && <button type="button" className="btn btn-primary h-8" disabled={busy || allOff} onClick={applyWeights} data-testid="pool-apply">Apply traffic</button>}
             {row.mode === 'split'
               ? <button type="button" className="btn h-8" disabled={busy} onClick={() => patch({ mode: 'pinned' })} data-testid="pool-pin">Pin to base</button>
               : <button type="button" className="btn h-8" disabled={busy} onClick={() => patch({ mode: 'split' })} data-testid="pool-unpin">Unpin</button>}

@@ -71,3 +71,16 @@ describe('create_schedule timezone passthrough', () => {
     expect(body.timezone).toBe('UTC');
   });
 });
+
+// role-routing §1 row 11: a schedule states its role once, on the template.
+describe('create_schedule roleSlug passthrough', () => {
+  it('writes roleSlug onto the task template', async () => {
+    const body = await capturePostBody({ ...BASE, roleSlug: 'researcher' });
+    expect((body.taskTemplate as Record<string, unknown>).roleSlug).toBe('researcher');
+  });
+
+  it('leaves the template role-less when the caller gave none', async () => {
+    const body = await capturePostBody({ ...BASE });
+    expect('roleSlug' in (body.taskTemplate as Record<string, unknown>)).toBe(false);
+  });
+});

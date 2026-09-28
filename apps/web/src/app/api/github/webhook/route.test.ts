@@ -1711,6 +1711,22 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
 
+    // role-routing §1 row 8: the diagnose insert dropped the owner's role.
+    it('the drift diagnose task inherits the owner task\'s roleSlug', async () => {
+      withDriftFailure();
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        opts?.columns?.roleSlug
+          ? { backend: 'claude', roleSlug: 'builder', kind: 'engineering', complexity: null, missionPhaseIndex: null, missionPhaseLabel: null }
+          : null,
+      );
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].values.title).toContain('[CI Diagnose]');
+      expect(insertCalls[0].values.roleSlug).toBe('builder');
+    });
+
     it('is diagnose-only even for a just-adopted (unowned) PR', async () => {
       mockWorkersFindFirst
         .mockReturnValueOnce(null)
@@ -1764,6 +1780,12 @@ describe('POST /api/github/webhook', () => {
       const diagnoseInsert = insertCalls[2].values;
       expect(diagnoseInsert.title).toContain('[CI Diagnose]');
       expect(diagnoseInsert.outputRequirement).toBe('artifact_required');
+      // role-routing §1 row 7 (open decision 8): the adopted placeholder is
+      // bookkeeping and carries no role — it is never work a role picks up.
+      const adoptedInsert = insertCalls[0].values;
+      expect(adoptedInsert.context.adoptedPr.prNumber).toBe(42);
+      expect(adoptedInsert.taskClass).toBe('bookkeeping');
+      expect(adoptedInsert.roleSlug).toBeUndefined();
     });
   });
 
@@ -3649,6 +3671,10 @@ describe('POST /api/github/webhook', () => {
         headSha: NEW_SHA,
         reviewerRole: 'reviewer',
         originalTaskId: 'task-1',
+        // baseRef must reach buildDeltaReviewerContext, or it falls back to
+        // the weaker pulls/files bound, which misattributes base-history
+        // churn (like an already-merged migration) to this PR — see PR #2907.
+        baseRef: 'dev',
         priorVerdict: { headSha: OLD_SHA, verdict: 'request-changes' },
       });
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);

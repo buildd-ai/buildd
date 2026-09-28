@@ -27,6 +27,16 @@ export const BUILT_IN_SERVER = 'built-in';
 /** Group key for tasks with no `roleSlug` (also reused for a missing `creationSource`). */
 export const UNASSIGNED_ROLE = '(unassigned)';
 
+/**
+ * A task that is a role-routing gap: no `roleSlug`, and not bookkeeping. A
+ * bookkeeping row (an adopted PR's placeholder, an orchestrator slot) is not
+ * work a role picks up, so its missing role is not a gap
+ * (docs/design/role-routing.md §1 row 7).
+ */
+export function isUnassignedWork(t: { roleSlug?: string | null; taskClass?: string | null }): boolean {
+  return !t.roleSlug && t.taskClass !== 'bookkeeping';
+}
+
 export interface UsageWorkerRow {
   workerId: string;
   /**

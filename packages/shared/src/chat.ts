@@ -163,6 +163,12 @@ export interface PrObjectRef extends BuilddObjectRefBase {
   url: string;
   /** The task whose worker opened the PR, when known. */
   taskId?: string;
+  /** Grouping hints for a list of PRs: the task's mission, and its scope chip ("fx"). */
+  missionId?: string | null;
+  missionTitle?: string | null;
+  area?: string | null;
+  /** The task's category (feature, bug, chore…), for grouping PRs outside a mission. */
+  category?: string | null;
 }
 
 /**
@@ -551,6 +557,27 @@ export interface GetChatTiersResponse {
   pinned: ChatTierName | null;
   /** What this conversation has cost so far (turns plus routing calls), USD. */
   conversationCostUsd: number | null;
+}
+
+// ── Composer prefs ────────────────────────────────────────────────────────────
+
+/**
+ * `GET /api/chat/composer?teamId=` — what a new conversation's composer starts
+ * with in this team: the caller's last workspace and tier, the tier already
+ * capped by the team's policy. `workspaceId` is undefined when the caller never
+ * picked one (the page's own default applies); null = all workspaces.
+ */
+export interface GetComposerPrefsResponse {
+  workspaceId?: string | null;
+  /** The tier to start at (null = auto), after the team's cap. */
+  tier: ChatTierName | null;
+}
+
+/** `PATCH /api/chat/composer` — remember a choice. Absent keys are left as they were. */
+export interface UpdateComposerPrefsRequest {
+  teamId?: string;
+  workspaceId?: string | null;
+  tier?: ChatTierName | null;
 }
 
 // ── Tool permissions ──────────────────────────────────────────────────────────

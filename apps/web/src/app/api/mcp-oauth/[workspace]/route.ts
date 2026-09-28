@@ -44,7 +44,7 @@ import {
   type ActionContext,
 } from '@buildd/core/mcp-tools';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
-import { workspaceProjectKey } from '@buildd/core/project-scope';
+import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIssuer } from '@/lib/oauth/config';
@@ -288,8 +288,9 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const api = createApi(jwt);
   const isSensitive = (ws.dataClass as string) === 'sensitive';
   // Same project key /api/mcp resolves, so `learn` writes land in the same
-  // scope from either transport instead of unscoped.
-  const project = workspaceProjectKey(ws.repo, ws.name) ?? undefined;
+  // scope from either transport. None (memory closed) for a sensitive
+  // workspace or one whose key a sensitive workspace in the team shares.
+  const project = (await resolveMemoryProjectKey(ws.id)) ?? undefined;
   const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project);
 
   const transport = new WebStandardStreamableHTTPServerTransport({

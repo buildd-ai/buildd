@@ -91,6 +91,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: (task: Row) => { dispatchedTasks.push(task); return Promise.resolve(); },
 }));
 mock.module('@/lib/github', () => ({ githubApi: () => Promise.resolve({}) }));
+// The doc-fix dispatch picks a role (role-routing §1 row 9); none resolves here.
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async () => null,
+  resolveEffectiveRoleSlugs: async () => new Set<string>(),
+}));
 
 const { requestRecheckForMergedDocFix, sweepSpecDiscrepancyRechecks } = await import('./spec-recheck');
 const { DOC_FIX_RECHECK_GRACE_MS, DOC_FIX_AUTOMATION_BUDGET_MS } = await import('./action-queue');

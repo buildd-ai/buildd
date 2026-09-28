@@ -29,6 +29,7 @@ import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
 import { sweepAbandonedPathClaims } from './maintenance/path-claims';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 
 const MAX_SCHEDULES_PER_RUN = 50;
@@ -811,6 +812,20 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // a failure and never pays for the lookup.
         await assertScheduleSkillsAvailable(taskWorkspaceId, template.context);
 
+        // The template's role, if it still names a role this workspace has.
+        // A stale slug files the task role-less rather than stranding it at
+        // claim (role-routing §1 row 11, §3.1).
+        const templateRole = template.roleSlug
+          && (await resolveEffectiveRoleSlugs(taskWorkspaceId)).has(template.roleSlug)
+          ? template.roleSlug
+          : null;
+        if (template.roleSlug && !templateRole) {
+          console.warn(
+            `[cron-schedules] schedule ${schedule.id} (${schedule.name}): template roleSlug ` +
+            `"${template.roleSlug}" does not resolve in workspace ${taskWorkspaceId} — filing role-less`,
+          );
+        }
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -836,6 +851,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             kind: cadence.kind,
             complexity: cadence.complexity,
             classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',
+            ...(templateRole ? { roleSlug: templateRole } : {}),
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
             ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),

@@ -22,6 +22,8 @@ const TEAM_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 const mockVerifyAccessToken = mock(() => Promise.resolve({ workspace_id: WORKSPACE_ID } as any));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
+// The team's sensitive workspaces, as the memory project-key resolver reads them.
+const mockWorkspacesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockGetMemoryStoreForTeam = mock(() => Promise.resolve({} as any));
 
 const mockHandleRecallAction = mock(() =>
@@ -40,9 +42,9 @@ mock.module('@/lib/api-auth', () => ({
 }));
 
 mock.module('@buildd/core/db', () => ({
-  db: { query: { workspaces: { findFirst: mockWorkspacesFindFirst } } },
+  db: { query: { workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany } } },
 }));
-mock.module('@buildd/core/db/schema', () => ({ workspaces: { id: 'id' } }));
+mock.module('@buildd/core/db/schema', () => ({ workspaces: { id: 'id', teamId: 'team_id', dataClass: 'data_class' } }));
 
 mock.module('@buildd/core/knowledge-store', () => ({
   PgVectorStore: class {},
@@ -106,6 +108,7 @@ describe('mcp-oauth route: recall / learn registration', () => {
     mockHandleRecallAction.mockClear();
     mockHandleLearnAction.mockClear();
     mockGetMemoryStoreForTeam.mockImplementation(() => Promise.resolve({} as any));
+    mockWorkspacesFindMany.mockImplementation(() => Promise.resolve([]));
     setWorkspace('standard');
   });
 
@@ -138,6 +141,15 @@ describe('mcp-oauth route: recall / learn registration', () => {
     expect(ctx.project).toBe('owner/repo');
     expect(ctx.workspaceId).toBe(WORKSPACE_ID);
     expect(ctx.teamId).toBe(TEAM_ID);
+  });
+
+  it('passes no project key when a sensitive workspace in the team shares it', async () => {
+    mockWorkspacesFindMany.mockImplementation(() =>
+      Promise.resolve([{ id: 'sensitive-ws', repo: 'https://github.com/Owner/Repo.git', name: 'other', dataClass: 'sensitive' }]),
+    );
+    await callTool('recall', { query: 'anything' });
+    const ctx = mockHandleRecallAction.mock.calls[0][2] as any;
+    expect(ctx.project).toBeUndefined();
   });
 
   it('still reports genuinely unknown tools', async () => {

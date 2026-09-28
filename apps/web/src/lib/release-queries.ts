@@ -10,7 +10,7 @@
  * OAuth MCP transport (see mcp-tools.ts handleBuilddAction cases).
  */
 import { db } from '@buildd/core/db';
-import { releases, releaseTasks, tasks } from '@buildd/core/db/schema';
+import { githubRepos, missions, releases, releaseTasks, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, desc } from 'drizzle-orm';
 
 export interface ListReleasesParams {
@@ -25,7 +25,15 @@ export interface ListReleasesParams {
   withTasks?: boolean;
 }
 
-export interface ReleaseShippedTask { title: string | null; prNumber: number | null }
+export interface ReleaseShippedTask {
+  taskId: string | null;
+  title: string | null;
+  prNumber: number | null;
+  label: string | null;
+  category: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
+}
 
 export async function listReleasesQuery(params: ListReleasesParams) {
   const limit = Math.min(Math.max(1, Math.floor(params.limit ?? 10)), 50);
@@ -64,18 +72,32 @@ export async function listReleasesQuery(params: ListReleasesParams) {
     .limit(limit);
   if (!params.withTasks || rows.length === 0) return rows;
 
-  const edges = await db
-    .select({ releaseId: releaseTasks.releaseId, title: tasks.title, prNumber: releaseTasks.prNumber })
-    .from(releaseTasks)
-    .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
-    .where(inArray(releaseTasks.releaseId, rows.map(r => r.id)));
+  const [edges, [repoRow]] = await Promise.all([
+    db
+      .select({
+        releaseId: releaseTasks.releaseId, taskId: releaseTasks.taskId, prNumber: releaseTasks.prNumber,
+        title: tasks.title, label: tasks.label, category: tasks.category, missionId: tasks.missionId, missionTitle: missions.title,
+      })
+      .from(releaseTasks)
+      .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
+      .leftJoin(missions, eq(tasks.missionId, missions.id))
+      .where(inArray(releaseTasks.releaseId, rows.map(r => r.id))),
+    // The repo the PR numbers belong to, so a reader can link and group them.
+    db
+      .select({ fullName: githubRepos.fullName })
+      .from(workspaces)
+      .innerJoin(githubRepos, eq(workspaces.githubRepoId, githubRepos.id))
+      .where(eq(workspaces.id, params.workspaceId))
+      .limit(1),
+  ]);
   const byRelease = new Map<string, ReleaseShippedTask[]>();
-  for (const e of edges) {
-    const list = byRelease.get(e.releaseId) ?? [];
-    list.push({ title: e.title, prNumber: e.prNumber });
-    byRelease.set(e.releaseId, list);
+  for (const { releaseId, ...e } of edges) {
+    const list = byRelease.get(releaseId) ?? [];
+    list.push(e);
+    byRelease.set(releaseId, list);
   }
-  return rows.map(r => ({ ...r, tasks: byRelease.get(r.id) ?? [] }));
+  const repo = repoRow?.fullName ?? null;
+  return rows.map(r => ({ ...r, repo, tasks: byRelease.get(r.id) ?? [] }));
 }
 
 export interface ReleaseTaskEdge {

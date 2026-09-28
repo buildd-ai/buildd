@@ -4,6 +4,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
@@ -284,6 +285,8 @@ async function dispatchWorkerEvalTask(opts: {
 
   const title = `${EVAL_TASK_TITLE_PREFIX} ${mission.title}`.slice(0, 200);
   const description = buildEvalPrompt(mission, criteria);
+  // Read-only verification (role-routing §1 row 9, §3.1): Researcher if resolvable.
+  const roleSlug = await pickEffectiveRole(mission.workspaceId, ['researcher']);
 
   const [task] = await db
     .insert(tasks)
@@ -299,6 +302,7 @@ async function dispatchWorkerEvalTask(opts: {
       // mission's pending count above zero and block the completion its verdict gates.
       taskClass: 'bookkeeping',
       creationSource: 'orchestrator',
+      roleSlug,
       outputRequirement: 'none',
       tier: 'budget',
       outputSchema: WORKER_EVAL_OUTPUT_SCHEMA as unknown as Record<string, unknown>,

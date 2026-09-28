@@ -1,4 +1,4 @@
-import type { NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { canCallerAdminTeam, getUserTeamIds, type TeamScopeCaller } from '@/lib/team-access';
 import { handleAccountAiBudgetPatch, type AccountBudgetDeps } from '@/lib/ai/account-budget';
+import { isUuid } from '@/lib/uuid';
 
 const deps: AccountBudgetDeps = {
   async caller(req) {
@@ -33,5 +34,8 @@ const deps: AccountBudgetDeps = {
 // The cap POST /api/ai/plan reads for this account (docs/design/shared-ai-kit.md §2).
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid account id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   return handleAccountAiBudgetPatch(req, id, deps);
 }

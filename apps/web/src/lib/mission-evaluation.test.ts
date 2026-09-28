@@ -7,6 +7,7 @@ let taskFindFirstResult: any = null;
 let insertReturningResult: any[] = [];
 let updateCalls: any[] = [];
 let workspaceFindFirstResult: any = null;
+const insertedValues: any[] = [];
 
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
@@ -40,9 +41,10 @@ mock.module('@buildd/core/db', () => ({
       },
     },
     insert: () => ({
-      values: () => ({
-        returning: () => Promise.resolve(insertReturningResult),
-      }),
+      values: (v: any) => {
+        insertedValues.push(v);
+        return { returning: () => Promise.resolve(insertReturningResult) };
+      },
     }),
     update: () => ({
       set: (data: any) => {
@@ -82,6 +84,17 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
+// Roles effective for the mission's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
 import {
   buildEvaluationContext,
   spawnEvaluationTask,
@@ -95,6 +108,9 @@ function resetAll() {
   insertReturningResult = [];
   updateCalls = [];
   workspaceFindFirstResult = null;
+  insertedValues.length = 0;
+  effectiveRoles = new Set();
+  pickRoleCalls.length = 0;
   mockDispatchNewTask.mockReset();
   mockDispatchNewTask.mockImplementation(() => Promise.resolve());
   mockTriggerEvent.mockReset();
@@ -334,5 +350,39 @@ describe('mission-evaluation', () => {
       expect(result.action).toBe('kept_active');
       expect(result.verdict!.verdict).toBe('blocked');
     });
+  });
+});
+
+// ── Role (role-routing §1 row 9) ──────────────────────────────────────────────
+
+describe('spawnEvaluationTask — role', () => {
+  beforeEach(resetAll);
+
+  function givenActiveMission() {
+    missionFindFirstResult = {
+      id: 'm1', title: 'Build App', workspaceId: 'w1',
+      lastEvaluationTaskId: null, status: 'active',
+    };
+    tasksFindManyResult = [
+      { id: 't1', title: 'Setup', status: 'completed', mode: 'execution', result: { summary: 'Done' }, createdAt: new Date(), updatedAt: new Date() },
+    ];
+    insertReturningResult = [{ id: 'eval-task-new', workspaceId: 'w1' }];
+    workspaceFindFirstResult = { id: 'w1', name: 'Test' };
+  }
+
+  it('runs the evaluation as the Organizer when the workspace has the role', async () => {
+    givenActiveMission();
+    effectiveRoles = new Set(['organizer', 'builder']);
+    await spawnEvaluationTask('m1', 'pt1');
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'w1', candidates: ['organizer'] }]);
+    expect(insertedValues[0].roleSlug).toBe('organizer');
+    expect(insertedValues[0].taskClass).toBe('bookkeeping');
+  });
+
+  it('files it role-less when the workspace has no Organizer', async () => {
+    givenActiveMission();
+    effectiveRoles = new Set(['builder']);
+    await spawnEvaluationTask('m1', 'pt1');
+    expect(insertedValues[0].roleSlug).toBeNull();
   });
 });

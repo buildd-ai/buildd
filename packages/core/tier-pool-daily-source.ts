@@ -26,6 +26,7 @@ import { MAX_POOL_ARMS, agentUnitSeverity, chatTurnSeverity, type Allocation } f
 import { writeAllocation } from './tier-pool-admin';
 import { planPoolDay, type DailyAction, type DailyPool, type DailyPoolArm } from './tier-pool-daily';
 import { invalidateTierPoolCache, orderArms } from './tier-pool-source';
+import type { Weights } from './tier-weights';
 
 export const TIER_POOLS_JOB = 'tier-pools';
 export const ALLOCATE_AFTER_UTC_HOUR = 6;
@@ -47,6 +48,7 @@ export async function loadDailyPools(): Promise<DailyPool[]> {
     mode: tierPools.mode,
     allocation: tierPools.allocation,
     allocationVersion: tierPools.allocationVersion,
+    weights: tierPools.weights,
     autoChallenger: tierPools.autoChallenger,
     policyVersion: experiments.policyVersion,
   })
@@ -79,6 +81,7 @@ export async function loadDailyPools(): Promise<DailyPool[]> {
     policyVersion: r.policyVersion ?? 1,
     allocation: (r.allocation ?? {}) as Allocation,
     allocationVersion: r.allocationVersion,
+    weights: (r.weights ?? {}) as Weights,
     autoChallenger: r.autoChallenger,
     arms: orderArms(arms.filter(a => a.poolId === r.id).map(a => ({
       ...a, addedAt: new Date(a.addedAt), stats: (a.stats ?? {}) as Record<string, unknown>,
@@ -217,7 +220,7 @@ async function execute(pool: DailyPool, actions: DailyAction[], out: PoolDayOutc
     if (a.type === 'allocate') {
       const v = await writeAllocation({
         teamId: pool.teamId, poolId: pool.id, expectedVersion: pool.allocationVersion,
-        allocation: a.allocation, kind: 'allocation', actorUserId: null, actorSystem: a.actorSystem, evidence: a.evidence,
+        allocation: a.allocation, weights: a.weights, kind: 'allocation', actorUserId: null, actorSystem: a.actorSystem, evidence: a.evidence,
       });
       if (v === null) out.stale = true;
       else { out.written = true; out.actorSystem = a.actorSystem; }

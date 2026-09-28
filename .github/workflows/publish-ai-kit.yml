@@ -99,6 +99,10 @@ jobs:
         working-directory: packages/ai-kit
         run: node scripts/smoke-dist.mjs
 
+      - name: Install the packed tarball into a clean consumer project
+        working-directory: packages/ai-kit
+        run: node scripts/smoke-consumer.mjs
+
       - name: Publish (dry run)
         if: github.ref_type != 'tag' && inputs.publish != true
         working-directory: packages/ai-kit/dist
