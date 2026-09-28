@@ -29,6 +29,8 @@ import {
   visualReviewWorkersQuery,
   visualShotReviewsQuery,
   visualShotsQuery,
+  WORKSPACE_AWAITING_MISSIONS_LIMIT,
+  workspaceAwaitingMissionsQuery,
 } from './visual-review-query';
 
 const iso = (d: Date | string | null | undefined): string | null =>
@@ -139,4 +141,37 @@ export async function loadVisualReview(
     ),
     now,
   });
+}
+
+export interface WorkspaceAwaitingMission {
+  id: string;
+  title: string;
+  status: string;
+  phase: VisualReviewModel['phase'];
+  /** Current screens the agent was unsure about that no human has decided. */
+  awaitingHuman: number;
+}
+
+/**
+ * A workspace's missions with screens awaiting a human decision, each with
+ * its exact count from its own model. Candidates come from
+ * `workspaceAwaitingMissionsQuery` (newest first, the caller's teams only);
+ * `more` says candidates past the limit were not checked.
+ *
+ * Authorization is the caller's: GET /api/workspaces/[id]/visual-review.
+ */
+export async function loadWorkspaceAwaitingReview(
+  workspaceId: string,
+  teamIds: readonly string[],
+  opts: { now?: number } = {},
+): Promise<{ missions: WorkspaceAwaitingMission[]; more: boolean }> {
+  if (teamIds.length === 0) return { missions: [], more: false };
+  const rows = await workspaceAwaitingMissionsQuery(db, workspaceId, teamIds) as Array<{ id: string; title: string; status: string; workspaceId: string | null }>;
+  const more = rows.length > WORKSPACE_AWAITING_MISSIONS_LIMIT;
+  const candidates = rows.slice(0, WORKSPACE_AWAITING_MISSIONS_LIMIT);
+  const models = await Promise.all(candidates.map(m => loadVisualReview({ id: m.id, workspaceId: m.workspaceId }, opts)));
+  const missions = candidates
+    .map((m, i) => ({ id: m.id, title: m.title, status: m.status, phase: models[i].phase, awaitingHuman: models[i].summary.awaitingHuman }))
+    .filter(m => m.awaitingHuman > 0);
+  return { missions, more };
 }

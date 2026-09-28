@@ -151,10 +151,17 @@ systematic — without ever blocking the normal claim path.
   `null`) THEN `updateAvailableSince` is cleared to `null`.
 - AC-25: The `list_runners` MCP action, reachable from every MCP transport
   (API-key, OAuth, in-process runner/chat) via `handleBuilddAction`, returns
-  the same per-runner fields as `GET /api/workers/active` — capacity,
-  workspaces, runner build, and the full update-snapshot bundle including
-  `updateAvailableSince` — scoped to whatever workspaces the calling token can
-  already see.
+  the same per-runner fields as `GET /api/workers/active` — slots as
+  "a busy of b slots", workspaces, runner build, and the full update-snapshot
+  bundle including `updateAvailableSince` — scoped to whatever workspaces the
+  calling token can already see.
+- AC-26: Each runner row carries `browser` (its heartbeat `envKeys` include
+  `browser`), printed by `list_runners` as `browser: yes/no`. WHEN
+  `workspaceId` is given (`GET /api/workers/active?workspaceId=`, 404 for a
+  workspace the caller cannot see) THEN the response adds
+  `browserRunnerOnline` by `browserRunnerOnline`'s claim rule (null when the
+  lookup failed) and `list_runners` leads with "Browser-capable runner online
+  for <ws>: yes/no/unknown", listing only that workspace's runners.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/workers/heartbeat/route.ts`
@@ -167,7 +174,7 @@ systematic — without ever blocking the normal claim path.
 - Dashboard surface: `apps/web/src/app/api/workers/active/route.ts`
 - MCP surface: `packages/core/mcp-tools.ts` (`list_runners` action, dispatched
   through `handleBuilddAction` — reachable from every transport, not just the
-  API-key one)
+  API-key one; text in `packages/core/mcp-visual-review.ts`)
 
 ---
 

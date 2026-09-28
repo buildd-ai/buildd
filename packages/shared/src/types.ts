@@ -1915,6 +1915,8 @@ export interface VisualReviewAuditTask {
   createdAt: string | null;
   /** `result.errorType`, e.g. `infra_stalled`. */
   errorType: string | null;
+  /** Why it ended as it did, when known: the task's result summary, else its newest worker's error. */
+  why?: string | null;
 }
 
 /**
@@ -1939,6 +1941,8 @@ export interface VisualReviewModel {
   progress: { captured: number; expected: number | null } | null;
   /** The latest visual-auditor task (highest round, newest). */
   audit: VisualReviewAuditTask | null;
+  /** Every visual-auditor task of the mission, cancelled and failed ones too: round, then oldest first. */
+  audits?: VisualReviewAuditTask[];
   /** For `boot_failed`: the parked worker and its question. */
   bootFailure: { taskId: string; workerId: string; prompt: string } | null;
   /** The round-cap question note is open. */
