@@ -1658,7 +1658,18 @@ export async function PATCH(
       // base can misreport as "nothing happened" (see collectGitStats in
       // apps/runner/src/git-operations.ts), so they must not be the only gate
       // for this outcome.
-      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
+      //
+      // A non-empty, object-shaped structuredOutput is a confirmed outcome in
+      // its own right: a session with an outputSchema delivers its result as
+      // the SDK's structured output and never calls complete_task, so the
+      // runner's end-of-session PATCH can still carry a fallback-tagged summary
+      // alongside a complete, valid result. Treating that as "never reported"
+      // 400'd payloads holding complete plans.
+      const hasStructuredOutcome = !!body.structuredOutput
+        && typeof body.structuredOutput === 'object'
+        && !Array.isArray(body.structuredOutput)
+        && Object.keys(body.structuredOutput as Record<string, unknown>).length > 0;
+      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback' && !hasStructuredOutcome;
 
       // A bookkeeping task's only confirmed outcome is a real complete_task
       // call — it has no PR/artifact to fall back on, so a fallback-provenance
@@ -2804,8 +2815,9 @@ export async function PATCH(
       const workerDeliveredSomething = expectsStructuredPlan
         ? workerHasPR || (await hasDeliverableArtifact())
         : false;
-      // A session that never produced a turn (≤2 turns, no tokens, $0 — the
-      // reaper's silent_start shape) did not break either contract below: it
+      // A session that never produced a turn (≤2 turns — or any turn count
+      // with an empty terminal usage record — no tokens, $0: the reaper's
+      // silent_start shape) did not break either contract below: it
       // never got to write a plan or a verdict, prose or otherwise. Evaluated on
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
@@ -2818,6 +2830,9 @@ export async function PATCH(
           costUsd: (updates.costUsd as string | undefined) ?? worker.costUsd,
           inputTokens: (updates.inputTokens as number | undefined) ?? worker.inputTokens,
           outputTokens: (updates.outputTokens as number | undefined) ?? worker.outputTokens,
+          // Terminal usage record (merged over the row's): lets a many-turn
+          // session that never billed a model token count as silent_start.
+          resultMeta: (updates.resultMeta ?? worker.resultMeta) as Parameters<typeof isSilentStartShape>[0]['resultMeta'],
         });
       const planningContractViolation = (
         status === 'completed' &&

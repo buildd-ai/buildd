@@ -249,16 +249,31 @@ export function classifyStaleExit(worker: {
 }
 
 /**
- * A session that streamed nothing: at most SILENT_START_MAX_TURNS turns, $0,
- * and no tokens in either direction. Shared by the reaper (classifyStaleExit)
- * and the PATCH route's contract guards, which must not book a session that
- * never produced a turn as the agent breaking its output contract.
+ * A session that streamed nothing: $0, no tokens in either direction, and
+ * either at most SILENT_START_MAX_TURNS turns or — when the terminal
+ * resultMeta is in hand — no model usage at all. Shared by the reaper
+ * (classifyStaleExit) and the PATCH route's contract guards, which must not
+ * book a session that never produced a turn as the agent breaking its output
+ * contract.
+ *
+ * Why resultMeta lifts the turn cap: a session that ran a single shell command
+ * and died (Codex-shaped) can count many turns while the model never billed a
+ * token. Turn count is a proxy; the terminal usage record is the evidence.
+ * Empty `modelUsage` alone is NOT that evidence — it is empty on every
+ * seat/OAuth session, where cost is also $0 — so `totalUsage` and the synced
+ * token columns must be zero too. Without resultMeta (the reaper's kill path)
+ * the turn cap stays, since there is no terminal usage record to consult.
  */
 export function isSilentStartShape(worker: {
   turns?: number | null;
   costUsd?: string | number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  resultMeta?: {
+    modelUsage?: Record<string, unknown> | null;
+    totalUsage?: { inputTokens?: number | null; outputTokens?: number | null } | null;
+    totalCostUsd?: number | null;
+  } | null;
 }): boolean {
   const turns = worker.turns ?? 0;
   const rawCost = worker.costUsd;
@@ -271,7 +286,28 @@ export function isSilentStartShape(worker: {
   // by the runner's periodic progress reports regardless of terminal state, so
   // they are the signal that actually discriminates "did something" from "dead".
   const tokensUsed = (worker.inputTokens ?? 0) > 0 || (worker.outputTokens ?? 0) > 0;
-  return turns <= SILENT_START_MAX_TURNS && spent <= 0 && !tokensUsed;
+  if (spent > 0 || tokensUsed) return false;
+  if (turns <= SILENT_START_MAX_TURNS) return true;
+  return hasNoModelUsage(worker.resultMeta);
+}
+
+function positive(n: unknown): boolean {
+  return typeof n === 'number' && Number.isFinite(n) && n > 0;
+}
+
+/** True only for a terminal resultMeta that records no model usage whatsoever. */
+function hasNoModelUsage(meta: Parameters<typeof isSilentStartShape>[0]['resultMeta']): boolean {
+  if (!meta || typeof meta !== 'object') return false;
+  if (positive(meta.totalCostUsd)) return false;
+  const totals = meta.totalUsage;
+  if (totals && (positive(totals.inputTokens) || positive(totals.outputTokens))) return false;
+  const usage = meta.modelUsage;
+  if (usage == null || typeof usage !== 'object') return false;
+  return Object.values(usage).every((entry) => {
+    if (!entry || typeof entry !== 'object') return true;
+    const e = entry as Record<string, unknown>;
+    return !positive(e.inputTokens) && !positive(e.outputTokens) && !positive(e.costUSD);
+  });
 }
 
 /**

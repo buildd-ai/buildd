@@ -311,6 +311,68 @@ describe('computeHeartbeatPlanningBackoff', () => {
     expect(r.resumeAt!.getTime()).toBe(minutesAgo(30).getTime() + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
   });
 
+  // A provider budget/rate-limit wall, or a completion the gate refused even
+  // though it carried a valid structured result, is not the organizer failing
+  // to plan — it must not push a mission into backoff.
+  it('a streak of budget-limited failures does not activate the backoff', () => {
+    const budget = (id: string, m: number) => ({ ...failedCycle(id, m), exitCause: 'budget_limited' });
+    const r = computeHeartbeatPlanningBackoff(
+      [budget('t-4', 10), budget('t-3', 30), budget('t-2', 60), budget('t-1', 90)],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(false);
+    expect(r.streak).toBe(0);
+  });
+
+  it('a budget-attributed error (no exitCause recorded) is not counted either', () => {
+    const walled = (id: string, m: number) => ({ ...failedCycle(id, m), error: 'You have hit your weekly limit · resets Mon' });
+    const r = computeHeartbeatPlanningBackoff(
+      [walled('t-3', 30), walled('t-2', 60), walled('t-1', 90)],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(false);
+  });
+
+  it('a gate-rejected completion that carried a valid structured result is not counted', () => {
+    const rejected = (id: string, m: number) => ({
+      ...failedCycle(id, m),
+      exitCause: 'output_unmet',
+      rejectedStructuredOutput: { status: 'ok', plan: [{ title: 'x' }] },
+    });
+    const r = computeHeartbeatPlanningBackoff(
+      [rejected('t-3', 30), rejected('t-2', 60), rejected('t-1', 90)],
+      new Date(NOW_MS),
+    );
+    expect(r.active).toBe(false);
+    // An empty rejected result is a real "no outcome" failure and still counts.
+    const empty = computeHeartbeatPlanningBackoff(
+      [
+        { ...failedCycle('t-3', 30), exitCause: 'output_unmet', rejectedStructuredOutput: {} },
+        { ...failedCycle('t-2', 60), exitCause: 'output_unmet', rejectedStructuredOutput: null },
+        failedCycle('t-1', 90),
+      ],
+      new Date(NOW_MS),
+    );
+    expect(empty.active).toBe(true);
+  });
+
+  it('real planning failures still activate it, with budget failures in between neither counted nor breaking the streak', () => {
+    const r = computeHeartbeatPlanningBackoff(
+      [
+        { ...failedCycle('t-5', 10), exitCause: 'budget_limited' },
+        { ...failedCycle('t-4', 30), exitCause: 'code_failure' },
+        { ...failedCycle('t-3', 60), exitCause: 'budget_limited' },
+        { ...failedCycle('t-2', 90), exitCause: 'code_failure' },
+        { ...failedCycle('t-1', 120), exitCause: 'code_failure' },
+      ],
+      new Date(NOW_MS),
+    );
+    expect(r.streak).toBe(3);
+    expect(r.active).toBe(true);
+    // Anchored on the newest counted failure, not the budget wall after it.
+    expect(r.resumeAt!.getTime()).toBe(minutesAgo(30).getTime() + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
+  });
+
   it('lets a cycle through once the backoff window has elapsed', () => {
     const r = computeHeartbeatPlanningBackoff(
       [failedCycle('t-3', 24 * 60), failedCycle('t-2', 25 * 60), failedCycle('t-1', 26 * 60)],
@@ -353,6 +415,18 @@ describe('evaluateHeartbeatPlanningBackoff', () => {
     expect(r.active).toBe(true);
     expect(r.streak).toBe(HEARTBEAT_PLANNING_BACKOFF_THRESHOLD);
     expect(r.resumeAt!.getTime()).toBe(now - 60_000 + HEARTBEAT_PLANNING_BACKOFF_BASE_MS);
+  });
+
+  it("does not count cycles whose latest worker was budget-limited or gate-rejected a valid structured result", async () => {
+    const now = Date.now();
+    recentTaskRows = [
+      { ...workerFailedCycle('t-3', 60_000, now), workers: [{ completedAt: new Date(now - 60_000), exitCause: 'budget_limited', error: null, rejectedCompletionPayload: null }] },
+      { ...workerFailedCycle('t-2', 31 * 60_000, now), workers: [{ completedAt: new Date(now - 31 * 60_000), exitCause: 'output_unmet', error: null, rejectedCompletionPayload: { reason: 'bookkeeping_no_report', structuredOutput: { plan: [] , status: 'ok' } } }] },
+      { ...workerFailedCycle('t-1', 61 * 60_000, now), workers: [{ completedAt: new Date(now - 61 * 60_000), exitCause: null, error: "You've hit your session limit · resets 3am (UTC)", rejectedCompletionPayload: null }] },
+    ] as any;
+    const r = await evaluateHeartbeatPlanningBackoff({ missionId: 'm-1', scheduleId: 's-1', heartbeatBreakerTrippedAt: null }, new Date(now));
+    expect(r.active).toBe(false);
+    expect(r.streak).toBe(0);
   });
 
   it('floors the window at heartbeatBreakerTrippedAt, so a re-armed mission starts fresh', async () => {
