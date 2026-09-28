@@ -14,6 +14,7 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
+import { triageHeartbeat, loadHeartbeatTriageFacts, formatTriageLog } from '@/lib/heartbeat-triage';
 import {
   evaluateHeartbeatCircuitBreaker,
   tripHeartbeatCircuitBreaker,
@@ -144,6 +145,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   let triggerChecks = 0;
   let deterministicHeartbeatSkips = 0;
   let llmHeartbeatInvocations = 0;
+  let triageHeartbeatSkips = 0;
   let criteriaRearmInvocations = 0;
 
   try {
@@ -777,6 +779,44 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           }
         }
 
+        // Heartbeat triage (lib/heartbeat-triage.ts): a decision model reads a
+        // condensed copy of the context the organizer is about to get and says
+        // whether this cycle needs it. A criteria re-arm is never triaged: it is
+        // already one deduped wake per verdict shape.
+        if (isHeartbeat && linkedMission?.teamId && !criteriaRearmContext && taskDescription) {
+          const facts = await loadHeartbeatTriageFacts(schedule.id, linkedMission.workspaceId ?? null)
+            .catch(() => ({ lastOrganizerAt: null, dataClass: null }));
+          const triage = await triageHeartbeat({
+            teamId: linkedMission.teamId,
+            workspaceId: linkedMission.workspaceId ?? null,
+            description: taskDescription,
+            ...facts,
+          });
+          console.log(formatTriageLog(linkedMission.id, triage));
+          if (triage.skipped) {
+            // Restore the no-change hash the prepass just wrote, so the next
+            // tick triages this state again instead of reading "no change".
+            await db.update(taskSchedules).set({
+              nextRunAt: computeNextRunAt(schedule.cronExpression, schedule.timezone),
+              lastHeartbeatStateHash: schedule.lastHeartbeatStateHash ?? null,
+              lastDeferralReason: 'heartbeat_triage_wait',
+              lastDeferredAt: now,
+              updatedAt: now,
+            }).where(eq(taskSchedules.id, schedule.id));
+            await recordHeartbeatWaitNote(
+              linkedMission.id,
+              'nothing for the organizer to act on this cycle',
+              computeNextRunAt(schedule.cronExpression, schedule.timezone) ?? now,
+            ).catch(e => console.error(`[heartbeat-triage] failed to record wait note for mission ${linkedMission.id}:`, e));
+            llmHeartbeatInvocations--;
+            triageHeartbeatSkips++;
+            skipped++;
+            continue;
+          }
+          // Shadow gold: the organizer's outcome on this same state grades the pick.
+          taskContext.heartbeatTriage = triage;
+        }
+
         // Promote outputSchema from context to top-level column so the runner can read it
         const outputSchema = taskContext.outputSchema as Record<string, unknown> | undefined;
 
@@ -1030,6 +1070,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       heartbeatOrphans,
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
+      triageHeartbeatSkips,
       criteriaRearmInvocations,
       healthWatcher,
       archivedMissions,

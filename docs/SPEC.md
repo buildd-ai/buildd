@@ -270,7 +270,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 |---|---|---|
 | Runs | in the web app, seconds | on the team's runner, minutes to hours |
 | Shape | one call or a short streaming turn; no repo, no shell | Claude Code (Agent SDK) or Codex harness, worktree + tools |
-| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
+| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check, heartbeat triage | all engineering/research tasks, planning, prose-criteria grading fallback |
 | Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | `oauth_token` / `claude_credential` (Claude subscription), `anthropic_api_key`, `codex_credential` (ChatGPT/Codex auth.json) or runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter` |
 | Billing | metered per token | seat/session window (virtual cost) or per token |
 | Code | `inference-client.ts` (`inferenceCall`), `decision-client.ts`, `apps/web/src/lib/chat/` | `apps/runner/src/backends/` |
@@ -294,8 +294,12 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     point still shows, its page says who can fix it, and the mission form stays.
   - *Built-in* decision calls (`task_category`, `task_classification`):
     no toggle; they run whenever a key resolves.
-  - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
-    declared with no call site and not shown in Settings): default by billing
+  - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
+    `mission_summary` declared with no call site and not shown in Settings).
+    `heartbeat_triage` asks a decision model (OpenRouter) whether a heartbeat
+    cycle needs the organizer before a runner is dispatched; it records every
+    look and skips nothing until applying is switched on
+    (`docs/design/heartbeat-triage.md`). All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
     overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
     CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.
