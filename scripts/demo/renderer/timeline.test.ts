@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
+import { burstAt, burstEnd, fleetAt, focus, maskAt, spotAt, fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
 
 const img = (src: string, at = 0) => ({ src, at, width: 2880, height: 1620 });
 const shot = (id: string, dur: number, extra: Partial<Shot> = {}): Shot => ({ id, layout: 'screen', dur, images: [img(`${id}.png`)], ...extra });
@@ -114,7 +114,7 @@ describe('captions and taps', () => {
   test('sound cues sit on the cut clock, sorted', () => {
     const c = cut([shot('a', 4, { keys: [1, 1.5] }), shot('b', 4, { taps: [{ at: 2, x: 0, y: 0 }], chime: 3 })]);
     expect(soundCues(c)).toEqual([
-      { type: 'key', at: 1 }, { type: 'key', at: 1.5 }, { type: 'click', at: 6 }, { type: 'chime', at: 7 },
+      { type: 'key', at: 1 }, { type: 'key', at: 1.5 }, { type: 'tap', at: 6 }, { type: 'chime', at: 7 },
     ]);
   });
 });
@@ -124,4 +124,73 @@ test('the closing fade covers only the last seconds, and never a loop', () => {
   expect(fadeOutAt(c, 3)).toBe(0);
   expect(fadeOutAt(c, 4.5)).toBe(1);
   expect(fadeOutAt({ ...c, loop: true }, 3.9)).toBe(0);
+});
+
+const R = (x: number, y: number, w = 0.1, h = 0.1) => ({ x, y, w, h });
+
+describe('spotAt', () => {
+  const keys = [{ at: 1, rects: [R(0.1, 0.1)], dim: 0.65 }, { at: 3, rects: [R(0.5, 0.5)], dim: 0.65 }, { at: 5, rects: [R(0, 0), R(0.5, 0)], dim: 0.65 }];
+  test('off before the first key, then eases in', () => {
+    expect(spotAt(keys, 0.5).dim).toBe(0);
+    expect(spotAt(keys, 1.3).dim).toBeGreaterThan(0);
+    expect(spotAt(keys, 2).dim).toBe(0.65);
+  });
+  test('same count: the hole glides between keys', () => {
+    const mid = spotAt(keys, 3.3).rects[0];
+    expect(mid.x).toBeGreaterThan(0.1);
+    expect(mid.x).toBeLessThan(0.5);
+    expect(spotAt(keys, 4).rects[0]).toEqual(R(0.5, 0.5));
+  });
+  test('a different count dips the dim through zero instead of popping', () => {
+    expect(spotAt(keys, 5.3).dim).toBeLessThan(0.1);
+    expect(spotAt(keys, 6).rects).toHaveLength(2);
+  });
+});
+
+describe('maskAt', () => {
+  test('covers until its time, then fades', () => {
+    const m = { rect: R(0, 0), until: 2 };
+    expect(maskAt(m, 1)).toEqual({ opacity: 1, left: 0 });
+    expect(maskAt(m, 2.2).opacity).toBeLessThan(1);
+    expect(maskAt(m, 3).opacity).toBe(0);
+  });
+  test('a wipe keeps it opaque and eats it from the left', () => {
+    const m = { rect: R(0, 0), until: 2, wipe: 1 };
+    expect(maskAt(m, 2.5)).toMatchObject({ opacity: 1 });
+    expect(maskAt(m, 2.5).left).toBeCloseTo(0.5, 5);
+    expect(maskAt(m, 3.1).opacity).toBe(0);
+  });
+  test('with `from`, it appears then, and with no `until` it stays to the end', () => {
+    const m = { rect: R(0, 0), from: 1 };
+    expect(maskAt(m, 0.5).opacity).toBe(0);
+    expect(maskAt(m, 4, 5).opacity).toBe(1);
+  });
+});
+
+describe('burst and fleet', () => {
+  const b = { origin: { x: 0.5, y: 0.1 }, tiles: [R(0, 0), R(0.3, 0), R(0.6, 0)], from: 0.5, stagger: 0.2, dur: 1 };
+  test('tiles leave in turn and all have landed by burstEnd', () => {
+    expect(burstAt(b, 0, 0.5)).toBe(0);
+    expect(burstAt(b, 0, 1)).toBeGreaterThan(burstAt(b, 2, 1));
+    expect(burstEnd(b)).toBeCloseTo(1.9, 5);
+    for (let i = 0; i < 3; i++) expect(burstAt(b, i, burstEnd(b))).toBe(1);
+  });
+  test('the abstract fleet lights live slots one at a time and counts them', () => {
+    const f = { runners: [{ name: 'a', sub: '', slots: [{ label: 'x', color: '#000' }, null] }, { name: 'b', sub: '', slots: [{ label: 'y', color: '#000' }, { label: 'z', color: '#000' }] }], from: 1, stagger: 0.5, grow: 0.8, total: 4 };
+    expect(fleetAt(f, 0.5)).toEqual({ bars: [0, 0, 0], live: 0 });
+    expect(fleetAt(f, 1.6).live).toBe(2);
+    expect(fleetAt(f, 5)).toEqual({ bars: [1, 1, 1], live: 3 });
+  });
+  test('sound: a burst patters on every third tile, and each fleet bar plucks', () => {
+    const c = cut([shot('board', 5, { burst: b }), shot('fleet', 5, { fleet: { runners: [{ name: 'a', sub: '', slots: [{ label: 'x', color: '#000' }] }], from: 1, stagger: 0.5, grow: 0.8, total: 2 } })]);
+    const plucks = soundCues(c).filter((q) => q.type === 'pluck');
+    expect(plucks.map((p) => p.at)).toEqual([1.5, 6]);
+  });
+});
+
+test('focus frames a rect and never zooms out past fit-width', () => {
+  const k = focus(R(0.25, 0.25, 0.5, 0.2), { width: 2880, height: 1620 }, { width: 1920, height: 1080 }, 1);
+  expect(k.cx).toBeCloseTo(0.5, 6);
+  expect(k.zoom).toBeCloseTo(2, 6);
+  expect(focus(R(0, 0, 1, 1), { width: 2880, height: 1620 }, { width: 1920, height: 1080 }).zoom).toBe(1);
 });

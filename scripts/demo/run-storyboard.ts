@@ -28,6 +28,10 @@
  *       hold: 500                     # ms to settle after load (default 400)
  *       reducedMotion: true           # optional: shoot with prefers-reduced-motion: reduce (board-level default too)
  *       record: { ms: 8000, advanceTo: "14:30", ticks: 6 }   # optional webm: live replay via Pusher
+ *       highlightText: ["Keep the public API"]   # optional: boxes of these phrases (each line's rect, plus the
+ *                                     # enclosing block's) → manifest texts[<vp-theme>]
+ *       reseedPerTheme: true          # optional: re-seed + replay to this step's t before each theme, for steps
+ *                                     # whose click writes (a saved rule, an answer) so every theme sees it fresh
  *       type: { into: 'textarea', text: "…", frames: 24 }   # optional: type into a field (never sent), one
  *                                     # still per frame as <step>-type-NN[-viewport]-<theme>.png (00 = empty), before the shot
  *
@@ -48,7 +52,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typingPrefixes, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -68,6 +72,8 @@ type Step = {
   reducedMotion?: boolean;
   record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
   type?: { into: string; text: string; frames?: number };
+  highlightText?: string[];
+  reseedPerTheme?: boolean;
 };
 type Storyboard = {
   story?: string;
@@ -291,6 +297,13 @@ async function main() {
       for (const theme of themes) {
         const key = captureKey(vpName, theme);
         const page = await pageFor(vpName, theme);
+        if (step.reseedPerTheme) {
+          // The click writes; start each theme from the same untouched state.
+          const t = state.appliedT;
+          await seedStory(db, story, storyName, storyAbs);
+          await advanceTo(db, t, { quiet: true });
+          state = await loadState(db);
+        }
         // Re-anchor "story now" to the wall clock before every capture, so a
         // shot taken 30s after its step's advance still reads t (not t+30s).
         await advanceTo(db, state.appliedT, { quiet: true });
@@ -314,6 +327,7 @@ async function main() {
         }
         if (step.fullPage) await unclip(page);
         entry.highlights[key] = await boxes(page, step);
+        if (step.highlightText?.length) (entry.texts ??= {})[key] = await page.evaluate(textBoxes, step.highlightText);
         if (step.shot !== false) {
           const file = captureFile(step.id, vpName, theme);
           await page.screenshot({ path: join(outDir, file), fullPage: step.fullPage ?? false, animations: 'disabled' });
