@@ -51,6 +51,20 @@ mock.module('@buildd/core/report-ops', () => ({
   reportOps: mockReportOps,
 }));
 
+let pruneResult: any = { deleted: 4, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+const mockPrune = mock(async (_opts?: any) => {
+  if (pruneResult instanceof Error) throw pruneResult;
+  return pruneResult;
+});
+const mockPruneDecisions = mock(async (_opts?: any) => {
+  if (pruneResult instanceof Error) throw pruneResult;
+  return { deleted: 2, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+});
+mock.module('@buildd/core/memory-uses-retention', () => ({
+  pruneMemoryUses: mockPrune,
+  pruneMemoryDecisions: mockPruneDecisions,
+}));
+
 const { POST } = await import('./route');
 
 const CRON_SECRET = 'test-cron-secret';
@@ -130,6 +144,39 @@ describe('POST /api/cron/memory-digest-guardrail', () => {
     await POST(makeRequest());
     const call = mockReportOps.mock.calls[0][0];
     expect(call.detail).toContain('7 shipped-arm task(s)');
+  });
+
+  it('prunes expired memory_uses rows once per run and reports it', async () => {
+    mockPrune.mockClear();
+    pruneResult = { deleted: 4, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+    const res = await POST(makeRequest());
+    expect(mockPrune).toHaveBeenCalledTimes(1);
+    expect((await res.json()).memoryUsesPruned).toEqual(pruneResult);
+  });
+
+  it('prunes expired memory_decisions rows in the same run', async () => {
+    mockPruneDecisions.mockClear();
+    pruneResult = { deleted: 4, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+    const res = await POST(makeRequest());
+    expect(mockPruneDecisions).toHaveBeenCalledTimes(1);
+    expect((await res.json()).memoryDecisionsPruned).toMatchObject({ deleted: 2 });
+  });
+
+  it('a failed prune never fails the guardrail run', async () => {
+    mockPrune.mockClear();
+    pruneResult = new Error('memory_uses missing');
+    verdict = quietVerdict({ alarm: true });
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    expect(mockReportOps).toHaveBeenCalledTimes(1);
+    expect((await res.json()).memoryUsesPruned).toEqual({ error: 'memory_uses missing' });
+    pruneResult = { deleted: 0, cutoff: '', batchFull: false };
+  });
+
+  it('does not prune on an unauthorized request', async () => {
+    mockPrune.mockClear();
+    await POST(makeRequest(null));
+    expect(mockPrune).not.toHaveBeenCalled();
   });
 
   it('loads the shipped-arm window and passes it straight to the evaluator', async () => {

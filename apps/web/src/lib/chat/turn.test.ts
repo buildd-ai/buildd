@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any }) {
+function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any; directives?: any }) {
   const apiCalls: string[] = [];
   const resolveCalls: any[] = [];
   const poolRecords: Array<{ draw: any; messageId: string }> = [];
@@ -110,6 +110,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     decide,
     linkMission: async (id: string) => { linked.push(id); },
     ...(opts.scopeFor ? { scopeFor: opts.scopeFor } : {}),
+    ...(opts.directives ? { directives: opts.directives } : {}),
   };
   const turn = async (message: any, extra: Record<string, unknown> = {}) => {
     const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: opts.workspace === undefined ? { id: 'ws-1', name: 'billing-web' } : opts.workspace, workspaces: opts.workspaces, user: opts.user ?? user, body: { message, ...extra } as any, deps });
@@ -171,6 +172,75 @@ describe('a read-only question', () => {
     expect(prompt).toContain('2026-09-27T10:30:00+13:00');
     expect(prompt).toContain('Pacific/Auckland');
     expect(prompt).toContain('conv-1');
+  });
+});
+
+describe('standing rules (docs/design/memory-done-right.md, Chat)', () => {
+  const rules = [
+    { text: 'Always open PRs as drafts', workspaceId: null, createdAt: new Date('2026-09-02') },
+    { text: 'Run the billing smoke test first', workspaceId: 'ws-1', createdAt: new Date('2026-09-03') },
+    { text: 'Use pnpm here', workspaceId: 'ws-other', createdAt: new Date('2026-09-04') },
+  ];
+
+  it('loads the person\'s rules into the instructions, this workspace\'s and everywhere, never another workspace\'s', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, directives: { load: async () => rules } });
+    await turn(userMsg('hello'));
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('standing rules');
+    expect(prompt).toContain('- Run the billing smoke test first (this workspace only)');
+    expect(prompt).toContain('- Always open PRs as drafts');
+    expect(prompt).not.toContain('Use pnpm here');
+    expect(prompt.indexOf('billing smoke')).toBeLessThan(prompt.indexOf('open PRs as drafts'));
+  });
+
+  it('no rules, or a failed load: no block, and the turn still runs', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, directives: { load: async () => { throw new Error('db down'); } } });
+    const { res } = await turn(userMsg('hello'));
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).not.toContain('standing rules');
+  });
+
+  it('a stated rule: the card streams before finish and is saved on the reply', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Noted.') as any });
+    const judged: any[] = [];
+    const { turn } = harness({
+      model,
+      directives: {
+        load: async () => [],
+        judge: async (input: any) => { judged.push(input); return { tier: { choice: 'directive', confidence: 0.95 }, scope: { choice: 'workspace', confidence: 0.9 } }; },
+      },
+    });
+    const { text } = await turn(userMsg('From now on, run the billing smoke test before a PR.'));
+    expect(judged[0]).toMatchObject({ workspace: { id: 'ws-1', name: 'billing-web' }, rule: true });
+    const cardAt = text.indexOf('data-buildd-directive');
+    expect(cardAt).toBeGreaterThan(-1);
+    expect(cardAt).toBeLessThan(text.lastIndexOf('"type":"finish"'));
+    const part = lastAssistant().parts.find((p: any) => p.type === 'data-buildd-directive');
+    expect(part.data).toEqual({
+      conversationId: 'conv-1', text: 'From now on, run the billing smoke test before a PR.',
+      suggestedScope: 'workspace', workspace: { id: 'ws-1', name: 'billing-web' }, source: 'jev',
+    });
+  });
+
+  it('a turn refused for no key never asks Jev about a rule', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('x') as any });
+    let asked = 0;
+    const { turn } = harness({ key: false, model, directives: { load: async () => [], judge: async () => { asked++; return null; } } });
+    const { res } = await turn(userMsg('Always open PRs as drafts.'));
+    expect(res.status).toBe(409);
+    expect(asked).toBe(0);
+  });
+
+  it('an ordinary message: no card, and Jev is not asked', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Two tasks.') as any });
+    let asked = 0;
+    const { turn } = harness({ model, directives: { load: async () => [], judge: async () => { asked++; return null; } } });
+    const { text } = await turn(userMsg('What is running?'));
+    expect(asked).toBe(0);
+    expect(text).not.toContain('data-buildd-directive');
+    expect(lastAssistant().parts.some((p: any) => p.type === 'data-buildd-directive')).toBe(false);
   });
 });
 

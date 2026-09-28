@@ -9,7 +9,7 @@
 
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, aiPlans, aiUsage, teams } from '@buildd/core/db/schema';
-import { and, eq, gte, inArray, sum } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql, sum, type SQL } from 'drizzle-orm';
 import { resolveTierEntry } from '@buildd/core/model-tier-registry';
 import { drawChatPoolArm } from '@buildd/core/tier-pool-source';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
@@ -91,7 +91,7 @@ export const planDeps: PlanDeps = {
     const [spent] = await db
       .select({ total: sum(aiUsage.costUsd) })
       .from(aiUsage)
-      .where(and(eq(aiUsage.accountId, account.id), gte(aiUsage.createdAt, dayStart)));
+      .where(accountDaySpendWhere(account.id, dayStart));
     return { dailyCapUsd: toUsd(acct?.aiDailyBudgetUsd), spentTodayUsd: toUsd(spent?.total) ?? 0 };
   },
 
@@ -102,6 +102,21 @@ export const planDeps: PlanDeps = {
   now: () => new Date(),
   newId: () => crypto.randomUUID(),
 };
+
+/**
+ * The rows an account's daily sibling-app budget counts: its own ai_usage
+ * since the start of the team's day, minus buildd's own decision receipts
+ * (surface 'decision': memory use labels, directive calls). Those are
+ * buildd-internal spend attributed to the account for audit, not model calls
+ * the account's app made, so they must not eat its budget.
+ */
+export function accountDaySpendWhere(accountId: string, dayStart: Date): SQL | undefined {
+  return and(
+    eq(aiUsage.accountId, accountId),
+    gte(aiUsage.createdAt, dayStart),
+    sql`${aiUsage.surface} IS DISTINCT FROM 'decision'`,
+  );
+}
 
 export const usageDeps: UsageDeps = {
   authenticate,

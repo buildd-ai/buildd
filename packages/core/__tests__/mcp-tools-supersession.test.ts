@@ -31,10 +31,12 @@ function sqlText(q: any): string {
 
 // Entity-resolver driver: exact-match SELECTs resolve to a fixed entity id,
 // entity INSERT..RETURNING yields ids, everything else returns no rows.
+const executedSql: string[] = [];
 mock.module('../db/index', () => ({
   db: {
     execute: (q: unknown) => {
       const text = sqlText(q);
+      executedSql.push(text);
       if (text.includes('SELECT id FROM knowledge_entities')) {
         return Promise.resolve({ rows: [{ id: 'ent-defines-1' }] });
       }
@@ -135,6 +137,9 @@ function mockMemoryClient(): any {
     async save(input: any) { return { memory: mem(input) }; },
     async update(_id: string, fields: any) { return { memory: mem(fields) }; },
     async delete() {},
+    // Explicit supersedes are narrowed to the caller's project by row lookup;
+    // here every id is one of the caller's own memories.
+    async batch(ids: string[]) { return { memories: ids.map(id => mem({ id })) }; },
   };
 }
 
@@ -233,23 +238,36 @@ describe('entity-keyed supersession wiring', () => {
     expect(store.supersessionCalls).toHaveLength(0);
   });
 
-  it('memory save calls markSupersededByEntities in the team memory namespace', async () => {
+  // Invariant: a memory write only ever supersedes the caller's own project
+  // memories. Entity-keyed supersession runs over the whole team namespace,
+  // so it is off for the memory corpus; explicit supersedes (narrowed to the
+  // caller's project) and the near-duplicate check remain.
+  it('memory save and update never run entity-keyed supersession over the team namespace', async () => {
     const store = makeStore();
-    await handleMemoryAction(
+    const entities = [{ kind: 'concept', ref: 'budget reset', role: 'defines' }];
+    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y', entities }, memoryCtx(store));
+    await handleMemoryAction(mockMemoryClient(), 'update', { id: 'mem-1', content: 'Z', entities }, memoryCtx(store));
+
+    expect(store.upserts).toHaveLength(2);
+    expect(store.supersessionCalls).toHaveLength(0);
+  });
+
+  it('memory entity binding is skipped when the mirror failed', async () => {
+    const store = makeStore();
+    store.upsert = async () => { throw new Error('index down'); };
+    const warn = console.warn;
+    console.warn = () => {};
+    executedSql.length = 0;
+    const res = await handleMemoryAction(
       mockMemoryClient(),
       'save',
-      {
-        type: 'gotcha',
-        title: 'X',
-        content: 'Y',
-        entities: [{ kind: 'concept', ref: 'budget reset', role: 'defines' }],
-      },
+      { type: 'gotcha', title: 'X', content: 'Y', entities: [{ kind: 'concept', ref: 'budget reset', role: 'defines' }] },
       memoryCtx(store),
     );
+    console.warn = warn;
 
-    expect(store.supersessionCalls).toHaveLength(1);
-    expect(store.supersessionCalls[0].namespace).toBe(`${TEAM}:memory`);
-    expect(store.supersessionCalls[0].newSourceId).toBe('mem-1');
+    expect(res.isError).toBeFalsy();
+    expect(executedSql.filter(t => t.includes('knowledge_entities') || t.includes('chunk_entities'))).toEqual([]);
   });
 });
 

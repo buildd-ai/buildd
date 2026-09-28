@@ -475,6 +475,14 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     expect(mockGetMemoryStoreForTeam).toHaveBeenCalledWith(CLAIMED_WS);
   });
 
+  it('hands actions the after()-backed memory ledger writer', async () => {
+    workspaceIs('standard');
+    const { afterResponseMemoryLedger } = await import('@/lib/memory-ledger');
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(ctx.memoryLedger).toBe(afterResponseMemoryLedger);
+  });
+
   it("withholds the memory client when a sensitive workspace in the team shares the claimed workspace's project key", async () => {
     workspaceIs('standard');
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'sensitive-ws', repo: null, name: 'ws', dataClass: 'sensitive' }]);

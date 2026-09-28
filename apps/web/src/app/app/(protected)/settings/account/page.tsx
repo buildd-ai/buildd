@@ -2,6 +2,7 @@ import Link from 'next/link';
 import SignOutButton from './SignOutButton';
 import PersonalProviderKeys from './PersonalProviderKeys';
 import KeyboardHintsSetting from './KeyboardHintsSetting';
+import StandingRulesSection from './StandingRulesSection';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { getInitials } from './initials';
@@ -36,6 +37,9 @@ export default async function AccountSettingsPage() {
       </section>
 
       <KeyboardHintsSetting initial={user.showKeyboardHints === true} />
+
+      {/* The rules chat loads into every one of your turns; yours only. */}
+      <StandingRulesSection />
 
       {/* What chat uses for you (links to Model providers); your own key only when the team's policy allows it. */}
       <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />

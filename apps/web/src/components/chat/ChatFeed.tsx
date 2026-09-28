@@ -35,6 +35,7 @@ import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
 import { intentTag, thinkingSteps } from './thinking-model';
 import WatchNotice from './WatchNotice';
+import DirectiveCards from './DirectiveCard';
 import TurnFeedback from './TurnFeedback';
 import { visualPhaseTone, type VisualReviewTone } from '@/components/visual-review/VisualReviewLine';
 import { VISUAL_REVIEW_PHASES, type VisualReviewPhase } from '@buildd/shared';
@@ -230,6 +231,8 @@ export default function ChatFeed({
     return (
       <>
         {tail.map(s => (s.kind === 'more' ? <MoreObjects key={s.key} refs={s.refs} /> : s.kind === 'objects' ? <ObjectsSegment key={s.key} refs={s.refs} /> : null))}
+        {/* A standing rule the person just stated, offered for one-tap saving. */}
+        <DirectiveCards parts={m.parts} messageId={m.id} />
         <TurnFeedback messageId={m.id} />
       </>
     );

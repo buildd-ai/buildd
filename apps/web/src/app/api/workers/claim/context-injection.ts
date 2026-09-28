@@ -36,6 +36,13 @@ import {
   type TaskAreaPrediction,
 } from '@buildd/core/task-area-prediction-source';
 import { PgVectorStore, getVoyageEmbedder } from '@buildd/core/knowledge-store';
+import { memoryScopeFor } from '@buildd/core/memory-hit-scope';
+import {
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  MEMORY_INDEX_CONTEXT_KEY,
+  type MemoryIndexEntry,
+} from '@buildd/core/memory-claim-index';
 import { buildSubjectPriorWork } from './subject-prior-work';
 import { CLAIM_FANOUT_CONCURRENCY, mapWithConcurrency } from './concurrency-limit';
 
@@ -307,6 +314,14 @@ export async function attachKnowledgeContext(
   // one Voyage embed+rerank round trip at a time. Capped for the same reason
   // as predictTaskAreas' batch — see ./concurrency-limit.
   await mapWithConcurrency(claimedWorkers, CLAIM_FANOUT_CONCURRENCY, async (cw) => {
+    // task.context is client-writable jsonb, so a memoryIndex already on it is
+    // not the claim route's and must not reach the runner or the claim_task
+    // reply as if it were. Cleared on every claim, set again below only when
+    // the flag is on.
+    const ctxObj = (cw.task as any)?.context;
+    if (ctxObj && typeof ctxObj === 'object' && MEMORY_INDEX_CONTEXT_KEY in ctxObj) {
+      delete ctxObj[MEMORY_INDEX_CONTEXT_KEY];
+    }
     const task = claimedTasks.find(t => t.id === cw.taskId);
     if (!task) return;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
@@ -330,6 +345,24 @@ export async function attachKnowledgeContext(
       missionId: (task as any).missionId ?? null,
     };
 
+    // Resolved once for both the recipe and the fan-out below. Each used to
+    // resolve it itself, so a recipe that came back empty paid for the two
+    // workspace lookups twice on the claim path.
+    const memoryScope = teamId && !sensitive
+      ? await memoryScopeFor(undefined, task.workspaceId, teamId)
+      : null;
+
+    // Index injection (@buildd/core/memory-claim-index), per workspace flag.
+    // Off: no option is passed and the block is what it always was. On: the
+    // entries the block showed are mirrored onto the claim response's
+    // task.context (never the tasks row), where the runner and the claim_task
+    // reply read them to dedupe against and to charge the same budget.
+    const wsGitConfig = (task as any).workspace?.gitConfig;
+    let indexEntries: MemoryIndexEntry[] = [];
+    const memoryIndex = isMemoryIndexEnabled(wsGitConfig)
+      ? { budgetTokens: memoryIndexTokenBudget(wsGitConfig), onEntries: (e: MemoryIndexEntry[]) => { indexEntries = e; } }
+      : undefined;
+
     let parts: string[] = [];
     let recipeAssembly: ContextAssembly | null = null;
     if (recipe) {
@@ -341,7 +374,7 @@ export async function attachKnowledgeContext(
         teamId,
         trigger,
         chain,
-        opts: { sensitive, excludedSourceIds: handoffExcludedSources },
+        opts: { sensitive, excludedSourceIds: handoffExcludedSources, memoryScope, ...(memoryIndex ? { memoryIndex } : {}) },
       });
       parts = clustered;
       recipeAssembly = assembly;
@@ -361,7 +394,19 @@ export async function attachKnowledgeContext(
         sensitive,
         paths,
         excludedSourceIds: handoffExcludedSources,
+        memoryScope,
+        caller: 'claim_context',
+        attribution: { taskId: task.id, workerId: cw.id },
+        ...(memoryIndex ? { memoryIndex } : {}),
       });
+    }
+
+    if (memoryIndex) {
+      const taskObj = cw.task as any;
+      if (taskObj) {
+        taskObj.context = taskObj.context ?? {};
+        taskObj.context[MEMORY_INDEX_CONTEXT_KEY] = indexEntries;
+      }
     }
 
     // One record per claim, always — the recipe's when it served the request,

@@ -13,7 +13,9 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { updateMemory } from '@buildd/core/memory-write';
+import { buildNamespace } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { normalizeProject } from '@buildd/core/project-scope';
 import type { MemoryStore } from '@buildd/core/memory-store';
@@ -94,13 +96,13 @@ export async function PATCH(
     if (typeof body.project === 'string' && body.project.trim() !== '' && normalizeProject(body.project) !== own) {
       return NextResponse.json({ error: 'project must be this workspace\'s own' }, { status: 400 });
     }
-    const data = await memClient.update(memoryId, {
+    const data = await updateMemory(memClient, memoryId, {
       type: body.type,
       title: body.title,
       content: body.content,
       files: body.files,
       tags: body.tags || body.concepts,
-    });
+    }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:update' });
     return NextResponse.json({ memory: data.memory, observation: data.memory });
   } catch (err) {
     console.error('Memory service error:', err);
@@ -130,6 +132,10 @@ export async function DELETE(
   try {
     if (!(await ownMemoryKey(memClient, id, memoryId))) return notFound();
     await memClient.delete(memoryId);
+    // Drop the index chunk too, so recall stops returning a deleted memory.
+    await getMemoryIndexStore().delete(buildNamespace(memClient.teamId, 'memory'), [memoryId]).catch(err =>
+      console.warn(`[memory-index-delete-failed] memory=${memoryId}`, err),
+    );
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error('Memory service error:', err);

@@ -342,3 +342,31 @@ describe('retrieveTaskMemory — predicted area (step 2)', () => {
     expect(s.calls).toHaveLength(1);
   });
 });
+
+describe('retrieveTaskMemory: attribution for the memory use ledger', () => {
+  test('every search carries the task and worker, and results are unchanged', async () => {
+    const seen: unknown[] = [];
+    const s: ObservationSearcher = {
+      async searchObservations(_ws, query, _limit, files, attribution) {
+        seen.push({ query, files: files ?? null, attribution });
+        return files?.length ? [] : [mem('t')];
+      },
+    };
+    const r = await retrieveTaskMemory(s, task({ taskId: 'task-1', workerId: 'worker-1' }));
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(r.results.map(m => m.id)).toEqual(['t']);
+    expect(seen).toEqual([
+      { query: '', files: ['apps/runner/src/index.ts'], attribution: { taskId: 'task-1', workerId: 'worker-1' } },
+      { query: 'Do the thing properly', files: null, attribution: { taskId: 'task-1', workerId: 'worker-1' } },
+    ]);
+  });
+
+  test('no task or worker means no attribution argument', async () => {
+    const seen: unknown[] = [];
+    const s: ObservationSearcher = {
+      async searchObservations(_ws, _q, _l, _f, attribution) { seen.push(attribution); return []; },
+    };
+    await retrieveTaskMemory(s, task());
+    expect(seen.every(a => a === undefined)).toBe(true);
+  });
+});

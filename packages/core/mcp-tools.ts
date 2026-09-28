@@ -14,6 +14,7 @@ import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldI
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
+import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -163,6 +164,13 @@ export interface ActionContext {
   // task claim_task just claimed): the store is that workspace's team's, and
   // null when it is sensitive or cannot be resolved.
   getMemoryClient?: (workspaceId?: string) => Promise<MemoryStore | null>;
+  // Where memory reads record their use (memory_uses). The web routes pass an
+  // after()-backed writer so the write outlives the response; omitted, reads
+  // fire and forget.
+  memoryLedger?: MemoryLedgerWriter;
+  // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
+  // web routes inject one; omitted (the runner), learn keeps today's rules.
+  memoryDecider?: MemoryDecider;
 }
 
 export type ToolResult = {
@@ -404,7 +412,11 @@ export const recallToolDefinition = {
       },
       id: {
         type: "string" as const,
-        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored. Accepts the full ID or the 8-char short ID a memory index line shows (m:1a2b3c4d).",
+      },
+      includeCandidates: {
+        type: "boolean" as const,
+        description: "Also return unverified candidate memories (not yet promoted). Default false.",
       },
     },
   },
@@ -536,7 +548,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
@@ -1249,7 +1261,10 @@ async function checkWriteFence(
  * excluded: path-keyed supersession already covers them, and defines-sets from
  * regex extraction are too weak there to key replacement on.
  */
-const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['memory', 'task', 'plan', 'artifact']);
+// Not 'memory': that namespace is team-wide, and entity-keyed supersession
+// would flip other projects' memories. Memory supersession goes only through
+// explicit `supersedes` narrowed to the caller's project (ownSupersedes).
+const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['task', 'plan', 'artifact']);
 
 /**
  * Validate an agent-supplied `supersedes` param.
@@ -1684,29 +1699,47 @@ export async function handleBuilddAction(
       try {
         const claimedTask = workers[0]?.task;
         const claimedWs = claimedTask?.workspace;
-        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive'
-          ? workspaceProjectKey(claimedWs.repo, claimedWs.name)
+        // The key is memoryProjectKey's, the same rule every other memory read
+        // uses: it also closes a key shared with a sensitive workspace in the
+        // team, which the payload alone cannot show. retrieveMemory resolves it
+        // from the workspace itself and searches nothing when there is none.
+        const claimedWsId = claimedTask?.workspaceId ?? claimedWs?.id;
+        const memClient = claimedWs && claimedWs.dataClass !== 'sensitive' && claimedWsId
+          && claimedTask?.title && ctx.getMemoryClient
+          ? await ctx.getMemoryClient(claimedWsId)
           : null;
-        const memClient = memProject && claimedTask?.title && ctx.getMemoryClient
-          ? await ctx.getMemoryClient(claimedTask.workspaceId ?? claimedWs.id)
-          : null;
-        if (memClient && memProject) {
-          const searchData = await memClient.search({
-            query: claimedTask.title,
-            project: memProject,
-            limit: 5,
+        if (memClient) {
+          const indexOn = isMemoryIndexEnabled(claimedWs.gitConfig);
+          const { memories, commitLedger } = await retrieveMemory<any>({
+            strategy: 'store-search',
+            searcher: memClient,
+            search: { query: claimedTask.title, limit: 5 },
+            scope: { teamId: claimedWs.teamId, workspaceId: claimedWsId },
+            caller: 'claim_task_reply',
+            attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
+            ledger: ctx.memoryLedger,
+            // Index mode holds the ledger until the budget has decided what shows.
+            ...(indexOn ? { deferLedger: true } : {}),
           });
-          const results = searchData.results || [];
-          if (results.length > 0) {
-            const batchData = await memClient.batch(results.map(r => r.id));
-            const memories = batchData.memories || [];
-            if (memories.length > 0) {
-              const memoryLines = memories.map((m: any) => {
-                const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
-                return `- **[${m.type}] ${m.title}**: ${truncContent}`;
-              });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
-            }
+          if (indexOn) {
+            // Index injection (see ./memory-claim-index): the claim route's entries
+            // first, since this reply is the only place an MCP agent sees
+            // them, then this search's, deduped, under one budget.
+            const entries: MemoryIndexEntry[] = [
+              ...readMemoryIndexEntries(claimedTask.context),
+              ...memories.map((m: any) => ({ id: String(m.id), type: String(m.type ?? 'memory'), title: String(m.title ?? ''), why: 'title' as const })),
+            ];
+            const index = buildMemoryIndex(entries, { budgetTokens: memoryIndexTokenBudget(claimedWs.gitConfig) });
+            // Shown here, or already shown by the claim-time block (a dedupe, not a drop).
+            const shownIds = new Set(index.shown.map(e => e.id));
+            commitLedger(h => (shownIds.has(h.memoryId) ? null : 'char_budget'));
+            if (index.lines.length > 0) memorySection = `\n\n## Relevant Memory\n${index.lines.join('\n')}`;
+          } else if (memories.length > 0) {
+            const memoryLines = memories.map((m: any) => {
+              const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+              return `- **[${m.type}] ${m.title}**: ${truncContent}`;
+            });
+            memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
           }
         }
       } catch {
@@ -2791,7 +2824,10 @@ export async function handleBuilddAction(
         wsId,
         ctx.teamId,
         ctx.knowledgeStore,
-        { paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined },
+        {
+          paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined,
+          ledger: ctx.memoryLedger,
+        },
       ).catch(() => '');
 
       const routingLine = task.routing
@@ -4349,6 +4385,7 @@ export async function handleBuilddAction(
             data.workspaceId ?? null,
             data.teamId ?? ctx.teamId ?? null,
             ctx.knowledgeStore,
+            { ledger: ctx.memoryLedger },
           ).catch(() => '');
 
           return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
@@ -5502,7 +5539,26 @@ import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, Upsert
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
-import { keepOwnProjectMemoryHits, memoryOverfetchTopK } from './memory-hit-scope';
+import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
+import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import { memoryStateOf, pullMemoryStates, type MemoryProvenance } from './memory-candidates';
+import {
+  buildMemoryIndex,
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  parseMemoryIdRef,
+  readMemoryIndexEntries,
+  type MemoryIndexEntry,
+} from './memory-claim-index';
+import {
+  fallbackLearnJudgement,
+  FALLBACK_UPDATE_JUDGEMENT,
+  KEEP_NOT_DURABLE_TAG,
+  type LearnJudgement,
+  type MemoryDecider,
+  type MemoryDecisionType,
+  type UpdateJudgement,
+} from './memory-decisions';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5629,6 +5685,8 @@ function formatKnowledgeResult(
 type MemoryActionCtx = {
   project?: string;
   workerId?: string;
+  /** The caller's task, when known; attributes ledger rows. */
+  taskId?: string;
   workspaceId?: string;
   teamId?: string;
   knowledgeStore?: KnowledgeStore;
@@ -5636,7 +5694,125 @@ type MemoryActionCtx = {
   api?: ApiFn;
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
+  /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
+  memoryLedger?: MemoryLedgerWriter;
+  /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
+  memoryDecider?: MemoryDecider;
+  /**
+   * Whether new writes land as candidates (workspace flag
+   * `memoryCandidateWrites`). Omitted: read from the workspace, off on any
+   * failure. See ./memory-candidates.
+   */
+  memoryCandidateWrites?: boolean;
+  /** Where this write came from. Omitted: a `learn` by the caller's task. */
+  memoryProvenance?: MemoryProvenance;
+  /**
+   * Any near-duplicate (the conflict band and up) means "already known":
+   * write nothing, supersede nothing. For background extraction, which must
+   * never replace a memory an agent wrote.
+   */
+  memoryDedupeOnly?: boolean;
 };
+
+/** Whether this write lands as a candidate. Never throws; off on any doubt. */
+async function candidateWritesOn(ctx: MemoryActionCtx): Promise<boolean> {
+  if (typeof ctx.memoryCandidateWrites === 'boolean') return ctx.memoryCandidateWrites;
+  // Unit tests never reach a database through a default.
+  if (!ctx.workspaceId || process.env.NODE_ENV === 'test') return false;
+  try {
+    const { resolveMemoryCandidateWrites } = await import('./memory-scope');
+    return await resolveMemoryCandidateWrites(ctx.workspaceId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lifecycle fields for a new row. Empty (so the row is active, exactly as
+ * before) unless the workspace flag is on.
+ */
+async function candidateWriteFields(ctx: MemoryActionCtx): Promise<{
+  state?: 'candidate'; sourceKind?: MemoryProvenance['kind']; sourceId?: string; external?: boolean;
+}> {
+  if (!(await candidateWritesOn(ctx))) return {};
+  const prov = ctx.memoryProvenance;
+  const sourceId = prov?.id ?? ctx.taskId ?? undefined;
+  return {
+    state: 'candidate',
+    sourceKind: prov?.kind ?? 'learn',
+    ...(sourceId ? { sourceId } : {}),
+    ...(prov?.external ? { external: true } : {}),
+  };
+}
+
+/**
+ * Where a candidate write's supersedes go. An ACTIVE target is deferred to
+ * the candidate's `pendingSupersedes` and superseded only when the candidate
+ * is promoted, so a candidate never hides an active memory from push. Any
+ * other state is superseded now. Not a candidate write: everything now, as
+ * before. A failed lookup defers everything (never hide on a doubt).
+ */
+async function splitSupersedes(
+  mc: MemoryStore,
+  ids: string[] | undefined,
+  candidate: boolean,
+): Promise<{ now: string[] | undefined; pending: string[]; rows: Map<string, MemoryRecordShape> }> {
+  const rows = new Map<string, MemoryRecordShape>();
+  if (!ids || ids.length === 0) return { now: ids, pending: [], rows };
+  if (!candidate) return { now: ids, pending: [], rows };
+  try {
+    for (const m of (await mc.batch(ids)).memories as MemoryRecordShape[]) rows.set(m.id, m);
+  } catch {
+    return { now: undefined, pending: [...ids], rows };
+  }
+  const now = ids.filter(id => rows.has(id) && memoryStateOf(rows.get(id)!) !== 'active');
+  const pending = ids.filter(id => !now.includes(id));
+  return { now: now.length > 0 ? now : undefined, pending, rows };
+}
+
+/**
+ * The corroboration link: set ONLY for the automatic near-duplicate match,
+ * when that row is an own-project, non-external candidate or active memory
+ * from another episode. Promotion re-checks all of it (and that the tasks
+ * differ) in SQL; this only refuses what it can already see.
+ */
+function corroborationLink(
+  match: MemoryRecordShape | undefined,
+  lifecycle: Awaited<ReturnType<typeof candidateWriteFields>>,
+  ctx: MemoryActionCtx,
+): string | undefined {
+  if (!match || lifecycle.state !== 'candidate' || lifecycle.sourceKind !== 'learn' || lifecycle.external) return undefined;
+  if (!isOwnMemory(match, ctx) || match.external) return undefined;
+  const st = memoryStateOf(match);
+  if (st !== 'candidate' && st !== 'active') return undefined;
+  if (lifecycle.sourceId && match.sourceId && lifecycle.sourceId === match.sourceId) return undefined;
+  return match.id;
+}
+
+const CANDIDATE_NOTE = ' | saved as a candidate: recall with includeCandidates=true finds it; it is shown at claim time once its task\'s PR merges or another task records the same lesson';
+
+/**
+ * Start the keep/type judgement for a write. Bounded by the decider's own
+ * deadline (5s) and never rejects; no decider, no team or a sensitive
+ * workspace is today's behaviour.
+ */
+function judgeMemoryWrite(ctx: MemoryActionCtx, title: string, content: string, type: MemoryDecisionType): Promise<LearnJudgement> {
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return Promise.resolve(fallbackLearnJudgement(type));
+  return ctx.memoryDecider
+    .judgeLearn({ scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null }, title, content, type })
+    .catch(() => fallbackLearnJudgement(type));
+}
+
+/** Reply suffix for what the keep/type decisions changed. Empty when nothing did. */
+function learnJudgementNote(j: LearnJudgement): string {
+  const parts: string[] = [];
+  if (j.type.overridden) parts.push(`type set to ${j.type.type}`);
+  if (j.keep.flag) parts.push(`tagged ${KEEP_NOT_DURABLE_TAG}: reads as a task summary, not a durable lesson`);
+  return parts.length ? ` | ${parts.join(' | ')}` : '';
+}
+
+const unionStrings = (...lists: Array<readonly string[] | null | undefined>): string[] =>
+  [...new Set(lists.flatMap(l => l ?? []).filter((v): v is string => typeof v === 'string'))];
 
 // ── Memory project scoping ───────────────────────────────────────────────────
 //
@@ -5677,6 +5853,28 @@ async function ownMemoryHits<T extends { id: string; metadata?: Record<string, u
 ): Promise<T[]> {
   if (!mc) return [];
   return keepOwnProjectMemoryHits(hits, { project: ctx.project ?? null, lookup: ids => mc.batch(ids) });
+}
+
+/** The caller's memory scope for retrieveMemory, or null (no memory) with no store. */
+function ownMemoryScope(mc: MemoryStore | null, ctx: MemoryActionCtx): MemoryHitScope | null {
+  return mc ? { project: ctx.project ?? null, lookup: ids => mc.batch(ids) } : null;
+}
+
+/**
+ * Narrow explicit `supersedes` ids to the caller's own project memories, by the
+ * same rule as reads. The index flips whatever ids it is given across the whole
+ * team namespace, so a foreign id and a missing id must both drop out here, and
+ * identically: the superseded count in the reply then says nothing about ids
+ * outside the caller's project. A failed lookup supersedes nothing.
+ */
+async function ownSupersedes(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  ids: string[] | undefined,
+): Promise<string[] | undefined> {
+  if (!ids || ids.length === 0) return undefined;
+  const own = await ownMemoryHits(mc, ctx, ids.map(id => ({ id }))).catch(() => []);
+  return own.length > 0 ? own.map(h => h.id) : undefined;
 }
 
 /**
@@ -5821,6 +6019,8 @@ async function fanOutCorpora(
   ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+  caller: Extract<MemoryCaller, 'recall' | 'query_knowledge'>,
+  memoryOpts: { includeCandidates?: boolean } = {},
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
@@ -5838,9 +6038,19 @@ async function fanOutCorpora(
       try {
         // The memory namespace is team-wide: over-fetch, then keep the caller's project.
         if (c === 'memory') {
-          const raw = await ks.query(ns, { ...opts, topK: memoryOverfetchTopK(opts.topK) });
-          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
-          return own.slice(0, opts.topK);
+          return (await retrieveMemory({
+            query: opts.text,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(mc, ctx) },
+            caller,
+            budget: { topK: opts.topK },
+            store: ks,
+            mode: opts.mode,
+            excludeSuperseded: true,
+            ...(memoryOpts.includeCandidates ? { includeCandidates: true } : {}),
+            attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
+            onError: 'throw',
+          })).results;
         }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
@@ -5866,18 +6076,47 @@ export async function handleRecallAction(
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
-  // id present → direct fetch, all other params ignored.
+  // id present → direct fetch, all other params ignored. Accepts a full id or
+  // the claim-time index's 8-char short id (`m:<id>` too); see ./memory-claim-index.
   if (params.id) {
-    const data = await memoryClient.get(params.id as string);
-    const m = data.memory;
+    const notFound = () => errorResult(`Memory not found: ${params.id}`);
+    // Memory is off for a sensitive workspace; say so the way a miss does.
+    if (ctx.isSensitive) return notFound();
+    const ref = parseMemoryIdRef(params.id);
+    let m: Awaited<ReturnType<MemoryStore['get']>>['memory'] | null | undefined;
+    if (ref?.kind === 'prefix') {
+      // Resolved inside the caller's own project, so a prefix can never reach
+      // another workspace's memory, and a foreign one reads as a miss.
+      const own = normalizeProject(ctx.project);
+      if (!own || typeof memoryClient.findByIdPrefix !== 'function') return notFound();
+      const rows = await memoryClient.findByIdPrefix(ref.value, own, 2).catch(() => []);
+      if (rows.length > 1) {
+        return errorResult(`Memory id ${params.id} matches more than one memory; pass more characters or the full id`);
+      }
+      m = rows[0];
+    } else {
+      // A miss throws in the store; a foreign row is returned and refused
+      // below. Both end as the same message.
+      m = (await memoryClient.get(ref ? ref.value : params.id as string).catch(() => null))?.memory;
+    }
     // Same message as a miss, so a foreign id is not confirmed to exist.
-    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
+    if (!m || !isOwnMemory(m, ctx)) return notFound();
+    recordMemoryPulls({
+      memoryIds: [m.id],
+      teamId: ctx.teamId,
+      workspaceId: ctx.workspaceId,
+      caller: 'recall',
+      attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
+    });
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,
       m.tags?.length && `Tags: ${m.tags.join(', ')}`,
       m.files?.length && `Files: ${m.files.join(', ')}`,
       m.source && `Source: ${m.source}`,
+      memoryStateOf(m) !== 'active' && `State: ${memoryStateOf(m)}`,
+      m.reverifyFlaggedAt && `Re-verify: files it names changed since it was written${m.reverifyRef ? ` (${m.reverifyRef})` : ''}`,
     ].filter(Boolean).join('\n');
     return text(`# ${m.title}\n\n${meta}\n\n${m.content}`);
   }
@@ -5904,6 +6143,7 @@ export async function handleRecallAction(
 
   const limit = Math.min((params.limit as number) || 10, 50);
   const query = params.query as string;
+  const includeCandidates = params.includeCandidates === true;
   // Filtering happens after retrieval, so over-fetch when a filter is active —
   // otherwise a topK=limit fetch can come back entirely filtered out even when
   // enough matching chunks exist further down the ranking.
@@ -5917,7 +6157,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5972,18 +6212,31 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-  const raw = await ks.query(ns, {
-    text: query,
-    mode,
-    topK: scope === 'memory' ? memoryOverfetchTopK(fetchTopK) : fetchTopK,
-  });
-
-  // Exclude superseded entries by default, apply type/files filters, then the caller limit.
-  let results = raw.filter(r => r.isCurrent !== false);
-  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
-  if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
-  results = results.slice(0, limit);
+  // Exclude superseded entries by default, apply type/files filters, then the
+  // caller limit. Memory goes through the one door, which over-fetches the
+  // team-wide namespace and keeps the caller's project.
+  let results: QueryResult[];
+  if (scope === 'memory') {
+    results = (await retrieveMemory({
+      query,
+      scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+      caller: 'recall',
+      budget: { topK: limit, candidates: fetchTopK },
+      store: ks,
+      mode,
+      excludeSuperseded: true,
+      ...(includeCandidates ? { includeCandidates: true } : {}),
+      filter: isFiltered ? r => matchesRecallFilters(r, filterParams) : undefined,
+      attribution: { workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
+      onError: 'throw',
+    })).results;
+  } else {
+    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    results = raw.filter(r => r.isCurrent !== false);
+    if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
+    results = results.slice(0, limit);
+  }
 
   if (results.length === 0) {
     if (scope === 'code' || scope === 'docs') {
@@ -6029,74 +6282,202 @@ export async function handleLearnAction(
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
 
+  const title = params.title as string;
+  const content = params.content as string;
+  const callerType = params.type as MemoryDecisionType;
+  // Jev's keep/type judgement runs alongside the near-duplicate check, inside
+  // its own 5s deadline, and falls back to the caller's type on any failure.
+  const judging = judgeMemoryWrite(ctx, title, content, callerType);
+
   // Dedupe check — embed the candidate and compare cosine similarity against the
   // team memory namespace. Skip when the caller already supplied explicit supersedes
   // (they've resolved the conflict) or when the store lacks nearDupeCheck.
   const THRESH_AUTO     = 0.94;
   const THRESH_CONFLICT = 0.88;
+  // Set when Jev resolved the 0.88 to 0.94 band into a write (ADD or SUPERSEDE).
+  let bandDecision: UpdateJudgement | null = null;
+  // The automatic (> THRESH_AUTO) match: the only source of a corroboration link.
+  let autoMatchId: string | null = null;
 
   if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
     const ns = buildNamespace(ctx.teamId, 'memory');
-    const embedText = `${params.title as string}\n\n${params.content as string}`;
+    const embedText = `${title}\n\n${content}`;
     // The namespace is team-wide: over-fetch, then keep the caller's project, so
     // another workspace's memory is neither quoted back nor auto-superseded.
     const nearest = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, memoryOverfetchTopK(5)).catch(() => []);
     const candidates = (await ownMemoryHits(memoryClient, ctx, nearest).catch(() => [])).slice(0, 5);
 
     const top = candidates[0];
+    if (ctx.memoryDedupeOnly && top && top.similarity >= THRESH_CONFLICT) {
+      (await judging).record(null);
+      return text(`Memory already recorded: ID: ${top.id} (similarity: ${top.similarity.toFixed(3)}) | nothing written`);
+    }
     if (top && top.similarity > THRESH_AUTO) {
       // Auto-supersede: fold the best match into the supersedes list so the
       // upsert marks it as not-current. The caller gets back superseded: 1.
       supersedesParam.ids = [top.id];
+      autoMatchId = top.id;
     } else {
       const conflicts = candidates.filter(c => c.similarity >= THRESH_CONFLICT);
       if (conflicts.length > 0) {
-        const list = conflicts
-          .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
-          .join('\n\n');
-        const ids = JSON.stringify(conflicts.map(c => c.id));
-        return text(
-          `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
-          `or modify the content to make the distinction clear.\n\n${list}\n\n` +
-          `To replace: re-call learn with supersedes: ${ids}`,
-        );
+        // The band: ask Jev whether this is new (ADD), a refinement (UPDATE),
+        // a replacement (SUPERSEDE) or a repeat (NOOP) of the closest match.
+        // Below its threshold (or on any failure) the reply is today's conflict.
+        const band = await resolveNearDuplicateBand(memoryClient, ctx, { title, content, type: callerType }, conflicts[0]);
+        if (band.action === 'SUPERSEDE') {
+          supersedesParam.ids = [conflicts[0].id];
+          bandDecision = band.judgement;
+        } else if (band.action === 'ADD') {
+          bandDecision = band.judgement;
+        } else if (band.action === 'NOOP' && band.existing) {
+          band.judgement.record(band.existing.id, true);
+          (await judging).record(null);
+          return text(
+            `Memory already recorded: "${band.existing.title}" (${band.existing.type})\nID: ${band.existing.id}` +
+            ` | nothing new to add (decision: NOOP). To replace it anyway, re-call learn with supersedes: ${JSON.stringify([band.existing.id])}`,
+          );
+        } else if (band.action === 'UPDATE' && band.existing) {
+          // A merge is a new row, never an overwrite: the new row carries the
+          // existing text plus the incoming text, and the old row is only
+          // superseded (reversible, still readable by id).
+          const existing = band.existing;
+          const judgement = await judging;
+          const mergeSupersedes = await ownSupersedes(memoryClient, ctx, [existing.id]);
+          // External text never merges into a row: the merged row would carry
+          // it under the caller's provenance. Refuse, as the conflict reply.
+          if (!mergeSupersedes || existing.external) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            return text(`Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement.\n\n- ID: ${existing.id}`);
+          }
+          let merged: Awaited<ReturnType<typeof saveMemory>>;
+          const mergeLifecycle = await candidateWriteFields(ctx);
+          const mergeSplit = await splitSupersedes(memoryClient, mergeSupersedes, mergeLifecycle.state === 'candidate');
+          try {
+            merged = await saveMemory(memoryClient, {
+              ...mergeLifecycle,
+              ...(mergeSplit.pending.length ? { pendingSupersedes: mergeSplit.pending } : {}),
+              type: existing.type,
+              title,
+              content: mergeMemoryContent(existing.content, content),
+              project: learnScope.project,
+              tags: unionStrings(existing.tags, params.tags as string[] | undefined, judgement.addTags),
+              files: unionStrings(existing.files, params.files as string[] | undefined),
+              source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: mergeSplit.now });
+          } catch (err) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            throw err;
+          }
+          band.judgement.record(merged.memory.id, true);
+          judgement.record(merged.memory.id);
+          return text(
+            `Memory saved: "${merged.memory.title}" (${merged.memory.type})\nID: ${merged.memory.id}` +
+            ` | merged with near-duplicate ${existing.id}, which is superseded (decision: UPDATE) | superseded: ${merged.superseded}` +
+            (mergeLifecycle.state ? CANDIDATE_NOTE : ''),
+          );
+        } else {
+          band.judgement.record(null, false);
+          (await judging).record(null);
+          const list = conflicts
+            .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
+            .join('\n\n');
+          const ids = JSON.stringify(conflicts.map(c => c.id));
+          return text(
+            `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
+            `or modify the content to make the distinction clear.\n\n${list}\n\n` +
+            `To replace: re-call learn with supersedes: ${ids}`,
+          );
+        }
       }
     }
   }
 
-  const data = await memoryClient.save({
-    type: params.type as string,
-    title: params.title as string,
-    content: params.content as string,
-    project: learnScope.project,
-    tags: params.tags as string[] | undefined,
-    files: params.files as string[] | undefined,
-    source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-  });
+  // Explicit ids are narrowed to the caller's own project before they reach the
+  // team-wide index (auto-supersede ids above already were).
+  const learnSupersedes = await ownSupersedes(memoryClient, ctx, supersedesParam.ids);
+  const judgement = await judging;
+  const lifecycle = await candidateWriteFields(ctx);
+  const split = await splitSupersedes(memoryClient, learnSupersedes, lifecycle.state === 'candidate');
+  const corroboratedBy = autoMatchId && lifecycle.state === 'candidate'
+    ? corroborationLink(split.rows.get(autoMatchId), lifecycle, ctx)
+    : undefined;
 
-  // Mirror into KnowledgeStore for hybrid retrieval (team-scoped).
-  let learnSuperseded = 0;
-  if (ctx.teamId && ctx.knowledgeStore) {
-    const m = data.memory;
-    const ns = buildNamespace(ctx.teamId, 'memory');
-    const lexicalText = `${m.title}\n\n${m.content}`;
-    const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-      id: m.id,
-      content: m.content,
-      lexicalText,
-      sourceType: 'memory',
-      sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-      ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
-    }]).catch(() => undefined);
-    if (upsertRes) learnSuperseded = upsertRes.superseded;
+  // Saved and mirrored through the one write helper; a failed mirror is
+  // recorded there and picked up by the reconcile pass. A "not durable"
+  // verdict only adds a tag: nothing is dropped.
+  let saved: Awaited<ReturnType<typeof saveMemory>>;
+  try {
+    saved = await saveMemory(memoryClient, {
+      ...lifecycle,
+      ...(split.pending.length ? { pendingSupersedes: split.pending } : {}),
+      ...(corroboratedBy ? { corroboratedBy } : {}),
+      type: judgement.type.type,
+      title,
+      content,
+      project: learnScope.project,
+      tags: judgement.addTags.length ? unionStrings(params.tags as string[] | undefined, judgement.addTags) : params.tags as string[] | undefined,
+      files: params.files as string[] | undefined,
+      source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+    }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: split.now });
+  } catch (err) {
+    judgement.record(null);
+    bandDecision?.record(null, false);
+    throw err;
   }
+  judgement.record(saved.memory.id);
+  bandDecision?.record(saved.memory.id, true);
+  const data = { memory: saved.memory };
+  const learnSuperseded = saved.superseded;
 
   const supersededStr = supersedesParam.ids !== undefined
     ? ` | superseded: ${learnSuperseded}`
     : '';
-  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}`);
+  const pendingStr = split.pending.length ? ` | replaces ${split.pending.length} active memory(s) once promoted` : '';
+  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}${pendingStr}${learnJudgementNote(judgement)}${lifecycle.state ? CANDIDATE_NOTE : ''}`);
 }
+
+/**
+ * Jev's verdict on the 0.88 to 0.94 near-duplicate band, against the closest
+ * match. The match came from `ownMemoryHits`, and the row is re-read here and
+ * re-checked as the caller's own before anything can act on it. No decider,
+ * no row, or a verdict below threshold: `action: null` (the conflict reply).
+ */
+async function resolveNearDuplicateBand(
+  mc: MemoryStore,
+  ctx: MemoryActionCtx,
+  incoming: { title: string; content: string; type: string },
+  match: { id: string; content: string },
+): Promise<{ action: UpdateJudgement['action']; judgement: UpdateJudgement; existing: MemoryRecordShape | null }> {
+  const none = { action: null, judgement: FALLBACK_UPDATE_JUDGEMENT, existing: null };
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return none;
+  const existing = await mc.get(match.id).then(r => r.memory as MemoryRecordShape).catch(() => null);
+  if (!existing || !isOwnMemory(existing, ctx)) return none;
+  const judgement = await ctx.memoryDecider.judgeUpdate({
+    scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null },
+    incoming,
+    existing: { id: existing.id, title: existing.title, content: existing.content || match.content, type: existing.type },
+  }).catch(() => FALLBACK_UPDATE_JUDGEMENT);
+  return { action: judgement.action, judgement, existing };
+}
+
+/**
+ * The text of a merged memory: the existing memory, then what the new write
+ * adds. No generative merge here; the superseded original stays readable.
+ */
+function mergeMemoryContent(existing: string, incoming: string): string {
+  const a = (existing ?? '').trim();
+  const b = (incoming ?? '').trim();
+  if (!a) return b;
+  if (!b || a.includes(b)) return a;
+  return `${a}\n\nUpdate:\n${b}`;
+}
+
+type MemoryRecordShape = {
+  id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[];
+  state?: string | null; sourceKind?: string | null; sourceId?: string | null; external?: boolean;
+};
 
 /** Log prefix for deprecated `buildd_memory` dispatches — grep prod logs for this. */
 export const BUILDD_MEMORY_DEPRECATION_TAG = '[buildd_memory-deprecated]';
@@ -6174,6 +6555,8 @@ export async function handleMemoryAction(
         type: params.type as string | undefined,
         project: scoped.project,
         files: params.files as string[] | undefined,
+        // A pull: active memories, and candidates when asked for.
+        states: pullMemoryStates(params.includeCandidates === true),
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
       });
@@ -6223,37 +6606,38 @@ export async function handleMemoryAction(
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
-      const data = await mc.save({
-        type: params.type as string,
-        title: params.title as string,
-        content: params.content as string,
-        project: saveScope.project,
-        tags: params.tags as string[] | undefined,
-        files: params.files as string[] | undefined,
-        source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
-      });
+      // Same keep/type judgement as learn (bounded, fails open to the caller's type).
+      const saveJudging = judgeMemoryWrite(ctx, params.title as string, params.content as string, params.type as MemoryDecisionType);
+      const saveIds = await ownSupersedes(mc, ctx, saveSupersedes.ids);
+      const saveJudgement = await saveJudging;
+      const saveLifecycle = await candidateWriteFields(ctx);
+      const saveSplit = await splitSupersedes(mc, saveIds, saveLifecycle.state === 'candidate');
+      let saved: Awaited<ReturnType<typeof saveMemory>>;
+      try {
+        saved = await saveMemory(mc, {
+          ...saveLifecycle,
+          ...(saveSplit.pending.length ? { pendingSupersedes: saveSplit.pending } : {}),
+          type: saveJudgement.type.type,
+          title: params.title as string,
+          content: params.content as string,
+          project: saveScope.project,
+          tags: saveJudgement.addTags.length ? unionStrings(params.tags as string[] | undefined, saveJudgement.addTags) : params.tags as string[] | undefined,
+          files: params.files as string[] | undefined,
+          source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
+        }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveSplit.now });
+      } catch (err) {
+        saveJudgement.record(null);
+        throw err;
+      }
+      saveJudgement.record(saved.memory.id);
+      const data = { memory: saved.memory };
+      const memSuperseded = saved.superseded;
 
-      // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
-      // belong to a team, not a workspace).
       let memEntityBinding: EntityBinding | null = null;
-      let memSuperseded = 0;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      // Entity refs bind to the chunk, so only once the chunk exists.
+      if (ctx.teamId && ctx.knowledgeStore && saved.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        // Best-effort — don't fail the memory save if indexing fails
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(saveSupersedes.ids && saveSupersedes.ids.length > 0 ? { supersedes: saveSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) memSuperseded = upsertRes.superseded;
-
         // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
         memEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
@@ -6270,7 +6654,7 @@ export async function handleMemoryAction(
         ? ` | ${memEntityBinding.bound} entities bound${memEntityBinding.ambiguous.length > 0 ? `, ${memEntityBinding.ambiguous.length} ambiguous` : ''}`
         : '';
       const saveSupersededStr = saveSupersedes.ids !== undefined ? ` | superseded: ${memSuperseded}` : '';
-      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}`);
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}${learnJudgementNote(saveJudgement)}`);
     }
 
     case 'get': {
@@ -6314,27 +6698,17 @@ export async function handleMemoryAction(
       const existing = await mc.get(params.id as string);
       if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
-      const data = await mc.update(params.id as string, updateFields);
+      const updateIds = await ownSupersedes(mc, ctx, updateSupersedes.ids);
+      const updated = await updateMemory(mc, params.id as string, updateFields, {
+        teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:update', supersedes: updateIds,
+      });
+      const data = { memory: updated.memory };
+      const updateSuperseded = updated.superseded;
 
-      // Mirror update into KnowledgeStore (team-scoped)
       let updateEntityBinding: EntityBinding | null = null;
-      let updateSuperseded = 0;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      if (ctx.teamId && ctx.knowledgeStore && updated.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(updateSupersedes.ids && updateSupersedes.ids.length > 0 ? { supersedes: updateSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) updateSuperseded = upsertRes.superseded;
-
         // Layer 2: re-bind entity refs on update
         updateEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
@@ -6392,7 +6766,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK }, 'query_knowledge');
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6460,14 +6834,19 @@ export async function handleMemoryAction(
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
       // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-      const queried = await ks.query(ns, {
-        text: params.query as string,
-        mode,
-        topK: corpus === 'memory' ? memoryOverfetchTopK(topK) : topK,
-      });
       const results = corpus === 'memory'
-        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
-        : queried;
+        ? (await retrieveMemory({
+            query: params.query as string,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+            caller: 'query_knowledge',
+            budget: { topK },
+            store: ks,
+            mode,
+            attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
+            onError: 'throw',
+          })).results
+        : await ks.query(ns, { text: params.query as string, mode, topK });
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {
@@ -6595,7 +6974,7 @@ export async function handleMemoryAction(
       const decayedLines = decayed.map(d =>
         `- ${d.sourceId} [${d.corpus}]${d.sourceTs ? ` ts: ${d.sourceTs.toISOString()}` : ''} hits: ${d.hitCount}\n  > ${d.preview}`
       ).join('\n');
-      return text(`Found ${decayed.length} decayed zero-hit chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
+      return text(`Found ${decayed.length} decayed unused chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
     }
 
     default:

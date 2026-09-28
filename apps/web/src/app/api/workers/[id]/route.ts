@@ -58,6 +58,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
+import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -609,7 +610,7 @@ export async function PATCH(
   const wsForSensitivity = worker.workspaceId
     ? await db.query.workspaces.findFirst({
         where: eq(workspaces.id, worker.workspaceId),
-        columns: { dataClass: true, teamId: true },
+        columns: { dataClass: true, teamId: true, gitConfig: true },
       })
     : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
@@ -3783,6 +3784,22 @@ export async function PATCH(
       shipped: workerHasPR,
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
+  }
+
+  // Memory use labels (Jev, docs/design/memory-done-right.md): did the final
+  // summary act on each memory this task was shown? Writes memory_uses.outcome
+  // after the response, at most a bounded handful of calls, never on the claim
+  // path. Only on the transition into completed, and only for a standard
+  // workspace by the shared predicate (either sensitivity marker, or a missing
+  // workspace, skips): a sensitive summary is never sent out.
+  if (worker.taskId && shouldLabelMemoryUses({
+    status,
+    previousStatus: worker.status,
+    taskId: worker.taskId,
+    workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
+    serverRefusal: isServerRefusal,
+  })) {
+    scheduleMemoryUseLabels({ taskId: worker.taskId, accountId: account.id, summary: typeof body.summary === 'string' ? body.summary : null });
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.
