@@ -28,6 +28,12 @@ export interface SweepOptions {
   categorize?: typeof categorizeTask;
 }
 
+/** Tasks no look has been recorded for (the backfill's dry run). */
+export async function countPendingTaskCategories(): Promise<number> {
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(tasks).where(isNull(tasks.categoryDecision));
+  return n;
+}
+
 export type SweepCounts = Record<CategorizeResult['outcome'], number> & { looked: number };
 
 export async function sweepTaskCategories(opts: SweepOptions = {}): Promise<SweepCounts> {
