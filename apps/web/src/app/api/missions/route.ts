@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -202,6 +202,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid startMode: must be "armed" or "held"` }, { status: 400 });
     }
     const effectiveIsHeld = startMode === 'held';
+
+    // Who executes the tasks: background runners (default) or a person's local
+    // session. Orthogonal to startMode — held still pauses a local mission.
+    if (executor !== undefined && executor !== 'runner' && executor !== 'local') {
+      return NextResponse.json({ error: 'Invalid executor: must be "runner" or "local"' }, { status: 400 });
+    }
 
     if (!title) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -353,6 +359,7 @@ export async function POST(req: NextRequest) {
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
         isHeld: effectiveIsHeld,
+        ...(executor ? { executor } : {}),
         integrationBranchEnabled,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),

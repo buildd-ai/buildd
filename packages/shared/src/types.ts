@@ -304,6 +304,14 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
+/**
+ * Who executes a mission's tasks. 'runner' (default): background runners
+ * auto-claim them. 'local': a person runs them from their own interactive
+ * session (explicit claim_task {taskId}); runners never auto-claim. Orthogonal
+ * to the held pause, which wins over both.
+ */
+export type MissionExecutor = 'runner' | 'local';
+
 export interface Mission {
   id: string;
   teamId: string;
@@ -318,6 +326,8 @@ export interface Mission {
   createdByUserId: string | null;
   requiresReview: boolean;
   mergePolicy?: MergePolicy | null;
+  isHeld?: boolean;
+  executor?: MissionExecutor;
   startAt?: Date | null;
   startResolution?: 'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null;
   createdAt: Date;
@@ -1293,6 +1303,7 @@ export type ClaimTaskExclusionCode =
   | 'active_worker'
   | 'task_held'
   | 'mission_held'
+  | 'mission_local'
   | 'deps_blocked'
   | 'subject_dead'
   | 'runner_preference'

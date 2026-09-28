@@ -119,6 +119,7 @@ describe('classifyExplicitTaskExclusion', () => {
       ['activeWorker', 'active_worker'],
       ['taskHeld', 'task_held'],
       ['missionHeld', 'mission_held'],
+      ['missionLocal', 'mission_local'],
       ['deps', 'deps_blocked'],
       ['subject', 'subject_dead'],
       ['runnerPreference', 'runner_preference'],
@@ -129,6 +130,18 @@ describe('classifyExplicitTaskExclusion', () => {
     for (const [gate, code] of cases) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).code).toBe(code as any);
     }
+  });
+
+  it('a local-executor mission → mission_local, naming the local session and how to claim', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { missionLocal: false } }), NOW);
+    expect(r.code).toBe('mission_local');
+    expect(r.detail).toContain('This mission runs in a local session');
+    expect(r.detail).toContain('claim_task {taskId}');
+    expect(r.detail).toMatch(/Start with override/);
+  });
+
+  it('a held mission outranks the local executor (held is the pause)', () => {
+    expect(classifyExplicitTaskExclusion(probe({ gates: { missionHeld: false, missionLocal: false } }), NOW).code).toBe('mission_held');
   });
 
   it('a person hold outranks the mission hold (resume is the fix, not arming)', () => {

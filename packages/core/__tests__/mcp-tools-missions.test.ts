@@ -696,3 +696,56 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     expect(text).toContain('malformed criterion');
   });
 });
+
+// executor='local' (task 09ed6675): orthogonal to startMode, shown on read.
+describe('manage_missions — executor', () => {
+  const MISSION_ID = '00000000-0000-0000-0000-0000000000aa';
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+  const run = (params: Record<string, unknown>) =>
+    handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', params, createMockContext());
+
+  it('create: preflights the executor capability and forwards executor', async () => {
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', priority: 0, executor: 'local', isHeld: false });
+    const res = await run({ action: 'create', title: 'Local', executor: 'local' });
+    expect(mockApi.mock.calls[0][0]).toBe('/api/missions/capabilities');
+    expect(JSON.parse(mockApi.mock.calls[1][1].body)).toMatchObject({ executor: 'local' });
+    expect(JSON.parse(mockApi.mock.calls[1][1].body).startMode).toBeUndefined();
+    const out = res.content[0].text;
+    expect(out).toContain('Executor: local');
+    expect(out).toContain('claim_task');
+    expect(out).not.toContain('held');
+  });
+
+  it('create: fails closed against an API without executor support', async () => {
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing'] });
+    await expect(run({ action: 'create', title: 'Local', executor: 'local' }))
+      .rejects.toThrow('does not support required mission controls: executor');
+    expect(mockApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('update: forwards executor and reports LOCAL, not HELD', async () => {
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', executor: 'local', isHeld: false });
+    const res = await run({ action: 'update', missionId: MISSION_ID, executor: 'local' });
+    const patch = mockApi.mock.calls.find((c: any[]) => c[1]?.method === 'PATCH');
+    expect(JSON.parse(patch![1].body)).toMatchObject({ executor: 'local' });
+    expect(res.content[0].text).toContain('[LOCAL');
+    expect(res.content[0].text).not.toContain('HELD');
+  });
+
+  it('get: shows the executor', async () => {
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', progress: 0, completedTasks: 0, totalTasks: 1, executor: 'local', isHeld: false, tasks: [] });
+    const out = (await run({ action: 'get', missionId: MISSION_ID })).content[0].text;
+    expect(out).toContain('[LOCAL]');
+    expect(out).toContain('Executor: local');
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'R', status: 'active', progress: 0, completedTasks: 0, totalTasks: 0, isHeld: false, tasks: [] });
+    expect((await run({ action: 'get', missionId: MISSION_ID })).content[0].text).toContain('Executor: runner');
+  });
+
+  it('list: marks local missions', async () => {
+    mockApi.mockResolvedValueOnce({ missions: [{ id: MISSION_ID, title: 'Local', status: 'active', progress: 0, completedTasks: 0, totalTasks: 1, executor: 'local' }], total: 1 });
+    expect((await run({ action: 'list' })).content[0].text).toContain('**Local** [active] [LOCAL]');
+  });
+});

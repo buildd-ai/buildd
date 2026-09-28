@@ -220,7 +220,7 @@ export async function PATCH(
       integrationBranchEnabled, branchStrategy,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
-      startMode, arm, actorWorkerId } = body;
+      startMode, arm, executor, actorWorkerId } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -269,6 +269,10 @@ export async function PATCH(
 
     if (startMode !== undefined && startMode !== 'armed' && startMode !== 'held') {
       return NextResponse.json({ error: 'startMode must be "armed" or "held"' }, { status: 400 });
+    }
+
+    if (executor !== undefined && executor !== 'runner' && executor !== 'local') {
+      return NextResponse.json({ error: 'executor must be "runner" or "local"' }, { status: 400 });
     }
 
     if (dependsOnMission !== undefined) {
@@ -490,6 +494,9 @@ export async function PATCH(
     } else if (startMode !== undefined) {
       updateData.isHeld = startMode === 'held';
     }
+    // executor: who claims the tasks — runners, or a person's local session.
+    // Independent of isHeld: arming does not change it, and held still pauses.
+    if (executor !== undefined) updateData.executor = executor;
 
     if (goalCriteria !== undefined) {
       if (goalCriteria !== null) {
@@ -791,6 +798,7 @@ export async function PATCH(
     const CONFIG_FIELDS: { key: keyof typeof updateData; label: string; format?: (v: unknown) => string }[] = [
       { key: 'orchestrationMode', label: 'orchestrationMode' },
       { key: 'isHeld', label: 'startMode', format: v => (v ? 'held' : 'armed') },
+      { key: 'executor', label: 'executor' },
       { key: 'pacingMode', label: 'pacingMode' },
       { key: 'pacingMaxPerHour', label: 'pacingMaxPerHour' },
       { key: 'priority', label: 'priority' },

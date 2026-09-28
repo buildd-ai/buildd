@@ -950,6 +950,12 @@ export const missions = pgTable('missions', {
   // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
   // (which controls organizer initiative) — held is purely about worker claim eligibility.
   isHeld: boolean('is_held').default(false).notNull(),
+  // Who executes the mission's tasks. 'runner' (default): background runners
+  // auto-claim them. 'local': a person runs them from their own interactive
+  // session — runners never auto-claim, but a verified interactive session may
+  // claim_task {taskId} explicitly and gets a normal tracked worker. Orthogonal
+  // to isHeld: held is a pure pause and wins over both.
+  executor: text('executor').default('runner').notNull().$type<'runner' | 'local'>(),
   // Earliest time autonomous orchestration may begin. Deferred missions remain
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),

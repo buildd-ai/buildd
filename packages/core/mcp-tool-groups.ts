@@ -313,7 +313,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  manage_missions: '{action: list|create|get|update|arm|delete|link_task|unlink_task|evaluate|get_criteria_state, missionId?, title?, query?, description?, workspaceId?, initiativeId?, status?, limit?, taskId?, priority?, goalCriteria?, startMode?, maxConcurrentTasks?, costBudgetUsd?, branchStrategy?, …}',
+  manage_missions: '{action: list|create|get|update|arm|delete|link_task|unlink_task|evaluate|get_criteria_state, missionId?, title?, query?, description?, workspaceId?, initiativeId?, status?, limit?, taskId?, priority?, goalCriteria?, startMode?, executor?, maxConcurrentTasks?, costBudgetUsd?, branchStrategy?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */
