@@ -6,7 +6,8 @@
  * (`&review=1` with `visual` opens the review deck: the sheet on a phone, the pane on desktop)
  * (`&mood=calm|needs` for the empty canvas's mood)
  * and `&aside=member|operator`, `&setup=no_key&admin=1`,
- * `&hints=1` (keyboard hints on), `&pane=closed`, `&about=mission` (opened from
+ * `&hints=1` (keyboard hints on), `&controls=1` (the composer's tools menu and
+ * tier switch, on fixture rows and prices), `&pane=closed`, `&about=mission` (opened from
  * "Ask about this mission": the mission pinned in the canvas).
  * Confirm, Discard and the question options work against the fixture.
  */
@@ -25,7 +26,46 @@ import { isToolPart } from '@/components/chat/chat-contract';
 import {
   CHAT_FIXTURE_STATES, ORGANIZER, TEAM_NAME, VIEWER, WORKSPACES, WS, chatFixture, fixtureViews, isChatFixtureState,
   missionRef, questionRef, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
+  FIXTURE_TIERS, FIXTURE_TOOL_ROWS,
 } from './chat-fixtures';
+import type { ChatTierName } from '@buildd/shared';
+
+/**
+ * `&controls=1`: the composer's tools menu and tier switch, served by a
+ * stand-in for their two routes (fixture rows and prices, no network). It goes
+ * in during the first render, before the controls' effects fetch, and stays for
+ * the tab: this is a dev fixture, and restoring on unmount would drop it under
+ * Strict Mode's remount while the controls refetch.
+ */
+const STAND_IN = Symbol.for('buildd.dev-chat.fetch-stand-in');
+
+function installFixtureControls(): boolean {
+  if (typeof window === 'undefined' || new URLSearchParams(window.location.search).get('controls') !== '1') return false;
+  const w = window as typeof window & { [STAND_IN]?: true };
+  if (w[STAND_IN]) return true;
+  const real = window.fetch.bind(window);
+  let rows = FIXTURE_TOOL_ROWS;
+  const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith('/api/chat/tiers')) return json(FIXTURE_TIERS);
+    if (url.startsWith('/api/chat/permissions')) {
+      if (init?.method === 'PATCH') {
+        const { group, mode } = JSON.parse(String(init.body)) as { group: string; mode: 'ask' | 'allow' };
+        rows = rows.map(r => (r.key === group ? { ...r, mode } : r));
+      }
+      return json({ rows });
+    }
+    return real(input, init);
+  }) as typeof fetch;
+  w[STAND_IN] = true;
+  return true;
+}
+
+function useFixtureControls(): boolean {
+  const [on] = useState(installFixtureControls);
+  return on;
+}
 
 function useParams() {
   const [p, setP] = useState<URLSearchParams | null>(null);
@@ -47,6 +87,8 @@ function approve(messages: ChatMessage[], approvalId: string, approved: boolean)
 }
 
 export default function DevChatPage() {
+  const controls = useFixtureControls();
+  const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(null);
   const params = useParams();
   const raw = params?.get('state');
   const state: ChatFixtureState = isChatFixtureState(raw) ? raw : 'propose';
@@ -132,6 +174,9 @@ export default function DevChatPage() {
           teamName={TEAM_NAME}
           agent={ORGANIZER}
           tier="standard"
+          teamId={controls ? 'fixture-team' : null}
+          pinnedTier={pinnedTier}
+          onTierChange={controls ? setPinnedTier : undefined}
           workspaces={WORKSPACES}
           workspaceId={WS.id}
           onWorkspaceChange={() => {}}
