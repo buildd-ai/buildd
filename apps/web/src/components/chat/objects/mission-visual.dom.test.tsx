@@ -129,7 +129,30 @@ describe('review on desktop: the deck takes the pane', () => {
     expect((store.get(fixtures.missionRef).view as any).visual.summary.awaitingHuman).toBe(0);
     expect(q('[data-testid="deck-toast"]')).not.toBeNull();
 
-    await click(q('[data-testid="deck-close"]'));
+    // One close icon: the dock header's. The deck's own boxed close is
+    // hidden; the header says Review and offers a labelled way back.
+    expect(q('[data-testid="chat-visual-deck"]')!.className).toContain('[&_[data-testid=deck-close]]:hidden');
+    expect(q('[data-testid="chat-dock-crumbs"]')!.textContent).toMatch(/Mission.*Review/);
+    const back = q('[data-testid="dock-review-back"]');
+    expect(back!.textContent).toBe('Back to mission');
+    await click(back);
+    expect(q('[data-testid="visual-review-deck"]')).toBeNull();
+    expect(q('[data-testid="chat-dock"] [data-testid="mission-context-card"]')).not.toBeNull();
+    expect(q('[data-testid="dock-review-back"]')).toBeNull();
+  });
+
+  it('closing the dock mid-review ends the review: reopening the mission shows the mission', async () => {
+    desktop = true;
+    await render();
+    await click(qa('[data-testid="mission-card-review"]')[0]);
+    expect(q('[data-testid="chat-dock"]')!.dataset.wide).toBe('true');
+    await click(q('[data-testid="dock-close"]'));
+    expect(q('[data-testid="visual-review-deck"]')).toBeNull();
+    // Open the same mission beside again (the card's own open).
+    await click(qa('[data-testid="object-open"]')[0] ?? null);
+    expect(q('[data-testid="chat-dock"]')).not.toBeNull();
+    expect(q('[data-testid="chat-dock"]')!.dataset.wide).toBeUndefined();
+    expect(q('[data-testid="chat-dock"] [data-testid="mission-context-card"]')).not.toBeNull();
     expect(q('[data-testid="visual-review-deck"]')).toBeNull();
   });
 
@@ -160,13 +183,28 @@ describe('review on a phone: the deck takes the sheet', () => {
     const sheet = q('[data-testid="chat-object-sheet"]');
     expect(sheet).not.toBeNull();
     expect(qa('[data-testid="visual-review-deck"]')).toHaveLength(1);
-    // The sheet's own close ends the review: no second close inside it.
-    expect(sheet!.querySelector('[data-testid="deck-close"]')).toBeNull();
+    // The sheet's own close ends the review: the deck's header close is hidden.
+    expect(sheet!.querySelector('[data-testid="chat-visual-deck"]')!.className).toContain('[&_[data-testid=deck-close]]:hidden');
     const deck = sheet!.querySelector('[data-testid="visual-review-deck"]') as HTMLElement | null;
     expect(deck).not.toBeNull();
     expect(deck!.dataset.layout).toBe('sheet');
     expect(qa('[role="dialog"]').filter(d => d !== sheet && sheet!.contains(d))).toEqual([]);
     expect(sheet!.textContent).toContain('Review screens');
+  });
+
+  it('deciding the last screen offers Done, which goes back to the mission (no dead end)', async () => {
+    desktop = false;
+    await render();
+    await click(qa('[data-testid="mission-card-review"]')[0]);
+    await click(q('[data-testid="chat-object-sheet"] [data-testid="deck-looks-right"]'));
+    // Walk to the end of the queue.
+    for (let i = 0; i < 20 && !q('[data-testid="deck-end"]'); i++) await click(q('[data-testid="chat-object-sheet"] [data-testid="deck-next"]'));
+    expect(q('[data-testid="deck-end"]')).not.toBeNull();
+    const done = q('[data-testid="chat-object-sheet"] [data-testid="deck-done"]');
+    expect(done).not.toBeNull();
+    await click(done);
+    expect(q('[data-testid="visual-review-deck"]')).toBeNull();
+    expect(q('[data-testid="chat-object-sheet"] [data-testid="object-pane"][data-kind="mission"]')).not.toBeNull();
   });
 
   it('opens on arrival for the fixture deep link', async () => {
@@ -177,14 +215,14 @@ describe('review on a phone: the deck takes the sheet', () => {
 });
 
 describe('the pinned strip', () => {
-  it('shows the Line and the "N to review" chip, which opens the deck', async () => {
+  it('shows the Line and the "Review N" chip, which opens the deck', async () => {
     desktop = false;
     await render({ focusRef: fixtures.missionRef, focusOpensSheet: false });
     const strip = q('[data-testid="canvas-pinned-visual"]');
     expect(strip).not.toBeNull();
     expect(strip!.querySelector('[data-testid="visual-review-line"]')).not.toBeNull();
     const chip = q('[data-testid="canvas-pinned-visual-chip"]');
-    expect(chip!.textContent).toBe('1 to review');
+    expect(chip!.textContent).toBe('Review 1');
     await click(chip);
     expect(q('[data-testid="chat-object-sheet"] [data-testid="visual-review-deck"]')).not.toBeNull();
   });

@@ -53,9 +53,9 @@ describe('missionCountsLine', () => {
 });
 
 describe('the pinned visual review chip', () => {
-  it('"N to review" when unsure screens wait on you', () => {
+  it('"Review N" (the action, the card button\'s words) when unsure screens wait on you', () => {
     const m = buildVisualReviewFixtureModel('needs_you');
-    expect(pinnedVisualChip(m)).toEqual({ label: `${m.summary.awaitingHuman} to review`, tone: 'needs' });
+    expect(pinnedVisualChip(m)).toEqual({ label: `Review ${m.summary.awaitingHuman}`, tone: 'needs' });
   });
 
   it('red for no browser runner', () => {
@@ -71,7 +71,8 @@ describe('the pinned visual review chip', () => {
   it('shows at phone width: never hidden below a breakpoint, and a real tap target', () => {
     const html = renderToStaticMarkup(createElement(PinnedVisualChip, { model: buildVisualReviewFixtureModel('needs_you'), onReview: () => {} }));
     expect(html).toContain('data-testid="canvas-pinned-visual-chip"');
-    expect(html).toMatch(/1 to review/);
+    expect(html).toMatch(/Review 1/);
+    expect(html).not.toMatch(/to review/);
     expect(html).not.toMatch(/class="[^"]*\bhidden\b/);
     expect(html).toMatch(/min-h-(9|10|11)/);
     expect(html).toContain('text-accent-text');

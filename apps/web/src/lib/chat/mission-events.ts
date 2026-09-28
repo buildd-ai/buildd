@@ -19,6 +19,7 @@ import {
   type ChatEventKind,
   type VisualReviewModel,
 } from '@buildd/shared';
+import { surfaceAuditRound } from '@buildd/core/surface-audit';
 import { insertMessage, pingConversation } from './store';
 import {
   VISUAL_REVIEW_MOMENT_KEYS, roundMomentFor, visualReviewEventData, visualReviewEventText,
@@ -35,7 +36,7 @@ function missionObjectRef(mission: { id: string; title: string; workspaceId: str
 async function conversationForTask(taskId: string) {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, title: true, missionId: true, workspaceId: true, result: true, roleSlug: true },
+    columns: { id: true, title: true, missionId: true, workspaceId: true, result: true, roleSlug: true, context: true },
   });
   if (!task?.missionId) return null;
   const mission = await db.query.missions.findFirst({
@@ -90,7 +91,7 @@ export async function postTaskCompletedEvent(input: { taskId: string }) {
     if (!found) return;
     // A visual audit round finished: its verdict counts (or the all-clear).
     if ((found.task as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG) {
-      await postVisualAuditRoundEvent({ taskId: found.task.id, missionId: found.mission.id });
+      await postVisualAuditRoundEvent({ taskId: found.task.id, missionId: found.mission.id, round: surfaceAuditRound(found.task) });
       return;
     }
     const n = planLength(found.task.result);
@@ -149,6 +150,8 @@ export async function postVisualReviewEvent(input: {
   auditTaskId?: string | null;
   fixes?: number;
   routes?: readonly string[];
+  /** The round being reported, when it is not the model's latest audit. */
+  round?: number;
 }): Promise<boolean> {
   try {
     const mission = await db.query.missions.findFirst({
@@ -167,7 +170,7 @@ export async function postVisualReviewEvent(input: {
       event: 'visual_review',
       objects: [missionObjectRef(mission)],
       text: visualReviewEventText(input.moment, model, input),
-      visual: visualReviewEventData(input.moment, model),
+      visual: visualReviewEventData(input.moment, model, input),
     });
     return true;
   } catch (e) {
@@ -179,8 +182,13 @@ export async function postVisualReviewEvent(input: {
 /**
  * A visual-auditor task finished: post its round (or the all-clear). The
  * model is read after the task row settled, so the phase is the new one.
+ *
+ * The auditor files its `[surface fix]` tasks while its round is still in
+ * progress, and each one opens a pending next round. So a later audit that is
+ * only `pending` is expected here: the round still posts, named by its own
+ * number. Only a later round that has already started makes this news stale.
  */
-export async function postVisualAuditRoundEvent(input: { taskId: string; missionId: string }): Promise<boolean> {
+export async function postVisualAuditRoundEvent(input: { taskId: string; missionId: string; round?: number }): Promise<boolean> {
   try {
     const mission = await db.query.missions.findFirst({
       where: eq(missions.id, input.missionId),
@@ -189,9 +197,11 @@ export async function postVisualAuditRoundEvent(input: { taskId: string; mission
     if (!mission?.conversationId) return false;
     const { loadVisualReview } = await import('@/lib/visual-review-load');
     const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null });
-    // A later round already exists (a fix opened it): this round's news is stale.
-    if (model.audit && model.audit.id !== input.taskId) return false;
-    return postVisualReviewEvent({ missionId: input.missionId, moment: roundMomentFor(model), model, auditTaskId: input.taskId });
+    if (model.audit && model.audit.id !== input.taskId && model.audit.status !== 'pending') return false;
+    return postVisualReviewEvent({
+      missionId: input.missionId, moment: roundMomentFor(model), model, auditTaskId: input.taskId,
+      round: input.round,
+    });
   } catch (e) {
     console.warn('[chat] visual round event not posted:', e);
     return false;

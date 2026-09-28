@@ -93,16 +93,25 @@ export function MissionVisualRow({ objRef, visual, tray = false, className = '' 
   );
 }
 
+/** Hides the deck's boxed header close where the surface around it already has one. */
+const HIDE_DECK_HEADER_CLOSE = '[&_[data-testid=deck-close]]:hidden';
+
 /**
  * The deck inline in the pane or the sheet (`layout="sheet"`: never a Dialog
- * stacked inside the chat's BottomSheet).
+ * stacked inside the chat's BottomSheet). Closing it (Done at the end of the
+ * queue, Escape, the header close) goes back to the mission, always: the end
+ * of the queue is never a dead end.
  */
-export function ChatVisualDeck({ objRef, view, startKey, closable = true }: {
+export function ChatVisualDeck({ objRef, view, startKey, showHeaderClose = true }: {
   objRef: BuilddObjectRef;
   view: MissionObjectView & { visual: VisualReviewModel };
   startKey: string | null;
-  /** Show the deck's own close (back to the mission). Off in the phone sheet, whose own close ends the review. */
-  closable?: boolean;
+  /**
+   * Show the deck's own boxed close in its header. Off where the surface has
+   * its own (the phone sheet's close, the dock header), so there is exactly
+   * one close icon on screen.
+   */
+  showHeaderClose?: boolean;
 }) {
   const actions = useChatActions();
   const store = useObjectStore();
@@ -145,7 +154,7 @@ export function ChatVisualDeck({ objRef, view, startKey, closable = true }: {
   }, [vr, setVisual, store, objRef]);
 
   return (
-    <div data-testid="chat-visual-deck" data-ref={refKey(objRef)}>
+    <div data-testid="chat-visual-deck" data-ref={refKey(objRef)} className={showHeaderClose ? '' : HIDE_DECK_HEADER_CLOSE}>
       <VisualReviewDeck
         key={startKey ?? ''}
         layout="sheet"
@@ -153,7 +162,7 @@ export function ChatVisualDeck({ objRef, view, startKey, closable = true }: {
         startKey={startKey}
         onDecide={decide}
         onUndo={undo}
-        onClose={closable ? actions.closeVisualReview : undefined}
+        onClose={actions.closeVisualReview}
         fixTaskHref={taskId => taskPageHref({ taskId, missionId })}
       />
     </div>

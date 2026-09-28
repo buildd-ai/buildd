@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { and } from 'drizzle-orm';
-import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
+import { buildVisualReviewFixtureModel, visualReviewFixtureInput } from '@/lib/visual-review-model.fixtures';
+import { buildVisualReviewModel } from '@/lib/visual-review-model';
 
 let task: any = null;
 let mission: any = null;
@@ -206,15 +207,34 @@ describe('a visual audit round finishing (from the worker PATCH)', () => {
   });
 
   it('a clean round is the all-clear', async () => {
-    task = { ...task, id: 'fixture-audit-2', roleSlug: 'visual-auditor' };
+    task = { ...task, id: 'fixture-audit-2', roleSlug: 'visual-auditor', context: { surfaceAuditRound: 2 } };
     loadedModel = buildVisualReviewFixtureModel('reviewed');
     await postTaskCompletedEvent({ taskId: 'fixture-audit-2' });
     expect(posted[0].parts[0].data.text).toMatch(/^All clear after round 2/);
     expect(new PgDialect().sqlToQuery(claims[0].where).params).toEqual(['fixture-audit-2', 'clearNotifiedAt']);
   });
 
-  it('an older round finishing after a newer one opened posts nothing', async () => {
-    task = { ...task, id: 'fixture-audit-1', roleSlug: 'visual-auditor' };
+  it('round 1 finishing with issues posts even though its fixes already opened a pending round 2', async () => {
+    // The auditor files its [surface fix] tasks while round 1 is in progress,
+    // which inserts a pending round-2 audit before round 1 completes.
+    const input = visualReviewFixtureInput('fixing');
+    input.shots = input.shots.filter(s => s.taskId === 'fixture-audit-1');
+    input.tasks = input.tasks
+      .filter(t => t.id !== 'fixture-fix-2')
+      .map(t => t.id === 'fixture-audit-2' ? { ...t, status: 'pending', workers: [] }
+        : t.id === 'fixture-fix-1' ? { ...t, status: 'in_progress' } : t);
+    loadedModel = buildVisualReviewModel(input);
+    expect(loadedModel.audit.id).toBe('fixture-audit-2');
+    task = { ...task, id: 'fixture-audit-1', roleSlug: 'visual-auditor', context: {} };
+    await postTaskCompletedEvent({ taskId: 'fixture-audit-1' });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].parts[0].data.text).toMatch(/^Round 1 done: /);
+    expect(posted[0].parts[0].data.visual.round).toBe(1);
+    expect(new PgDialect().sqlToQuery(claims[0].where).params).toEqual(['fixture-audit-1', 'roundNotifiedAt']);
+  });
+
+  it('an older round finishing after a newer one already started posts nothing', async () => {
+    task = { ...task, id: 'fixture-audit-1', roleSlug: 'visual-auditor', context: {} };
     loadedModel = buildVisualReviewFixtureModel('reviewed');
     await postTaskCompletedEvent({ taskId: 'fixture-audit-1' });
     expect(posted).toHaveLength(0);

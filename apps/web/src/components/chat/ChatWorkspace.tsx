@@ -236,7 +236,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else if (dock.mode === 'needs' && dock.ref) {
       setNeedsClosedId(dock.ref.id);
       try { window.sessionStorage.setItem(NEEDS_DOCK_CLOSED_KEY, dock.ref.id); } catch { /* private mode */ }
-    } else dispatch({ type: 'close' });
+    } else {
+      // Closing the panel mid-review ends the review, so the next open of
+      // the same mission shows the mission, not the deck again.
+      setVisualReview(null);
+      dispatch({ type: 'close' });
+    }
   };
 
   const actions: ChatActions = useMemo(() => ({
@@ -604,7 +609,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {popOut && (
           <a href={popOut} target="_blank" rel="noreferrer" data-testid="pane-popout" className="inline-flex min-h-9 items-center border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Pop out ↗</a>
         )}
-        <button type="button" data-testid="pane-close" onClick={() => dispatch({ type: 'close' })} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
+        <button type="button" data-testid="pane-close" onClick={() => { setVisualReview(null); dispatch({ type: 'close' }); }} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ObjectPane key={refKey(focus)} objRef={focus} />

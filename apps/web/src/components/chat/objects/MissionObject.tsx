@@ -188,7 +188,7 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
     return (
       <MissionLiveContext.Provider value={store.live(objRef)}>
         <div data-testid="object-pane" data-kind="mission" data-reviewing="true">
-          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} closable={variant === 'pane'} />
+          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} showHeaderClose={variant === 'pane'} />
         </div>
       </MissionLiveContext.Provider>
     );

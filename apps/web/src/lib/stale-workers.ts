@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
-import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -1216,8 +1216,8 @@ export async function cleanupUnresumedAnswers(
 /**
  * Pending visual audits old enough to be `no_browser_runner`
  * (docs/design/visual-qa-human-review.md, "Runner availability") on a
- * mission filed from chat, not yet announced there. Deliberately loose: the
- * model decides the phase (dependencies done, the claimable window, no
+ * mission filed from chat, not yet announced there, whose dependencies are
+ * all done. The model still decides the phase (the claimable window, no
  * browser heartbeat); this only keeps the candidates few.
  */
 /** Mirrors NO_BROWSER_RUNNER_AFTER_MS (lib/visual-review-model.ts); a test holds them equal. */
@@ -1230,6 +1230,10 @@ export function stalledVisualAuditCandidatesWhere(now: Date, missionsTable: type
     lt(tasks.createdAt, new Date(now.getTime() - STALLED_VISUAL_AUDIT_AFTER_MS)),
     isNotNull(missionsTable.conversationId),
     sql`(${tasks.context} -> 'visualQa' ->> 'stallNotifiedAt') is null`,
+    // Dependencies all done (claimableSince's DEP_DONE; a missing row counts
+    // as done there too): an audit still waiting on its build is not a
+    // candidate, so a long build phase does not hold a slot in the window.
+    sql`not exists (select 1 from "tasks" "dep" where "dep"."id"::text in (select jsonb_array_elements_text(case when jsonb_typeof(${tasks.dependsOn}) = 'array' then ${tasks.dependsOn} else '[]'::jsonb end)) and "dep"."status" not in ('completed', 'cancelled'))`,
   )!;
 }
 
@@ -1247,6 +1251,9 @@ export async function notifyStalledVisualAudits(now = new Date(), limit = 20): P
     .from(tasks)
     .innerJoin(missions, eq(missions.id, tasks.missionId))
     .where(stalledVisualAuditCandidatesWhere(now, missions))
+    // Oldest first: a candidate that keeps failing the phase check (a runner
+    // is online) is announced or aged out in order, never pinning the window.
+    .orderBy(asc(tasks.createdAt))
     .limit(limit);
   if (rows.length === 0) return 0;
   const [{ loadVisualReview }, { postVisualReviewEvent }] = await Promise.all([

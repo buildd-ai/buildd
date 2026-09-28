@@ -60,6 +60,10 @@ export interface ChatDockProps {
 }
 
 export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpen, wide = false }: ChatDockProps) {
+  const actions = useChatActions();
+  // `wide` is the review deck in the panel: the header says so and carries the
+  // one way back to the mission (the deck's own boxed close is hidden).
+  const reviewing = wide && mode === 'object';
   const lead = mode === 'history' ? 'History' : mode === 'needs' ? 'Needs you' : 'About';
   const open = objRef ? popOutHref(objRef) : null;
   return (
@@ -81,7 +85,23 @@ export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpe
               <span className="truncate">{kindWord(objRef)}</span>
             </>
           )}
+          {reviewing && (
+            <>
+              <span aria-hidden="true" className="text-[var(--chat-dim)]">/</span>
+              <span className="truncate">Review</span>
+            </>
+          )}
         </p>
+        {reviewing && (
+          <button
+            type="button"
+            data-testid="dock-review-back"
+            onClick={actions.closeVisualReview}
+            className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-4 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]"
+          >
+            Back to mission
+          </button>
+        )}
         {open && (
           /^https?:/.test(open)
             ? <a href={open} target="_blank" rel="noreferrer" data-testid="dock-open" className="inline-flex shrink-0 items-center border-l border-[var(--chat-rule)] px-4 font-mono text-[11px] uppercase tracking-[.14em] text-[var(--chat-text)] hover:bg-[var(--chat-raised)]">Open ↗</a>
@@ -121,7 +141,7 @@ function MissionDock({ objRef }: { objRef: BuilddObjectRef }) {
   const r = actions.visualReview;
   const reviewing = r && r.surface === 'dock' && refKey(r.ref) === refKey(objRef) ? r : null;
   if (reviewing && view?.kind === 'mission' && view.visual && view.visual.cells.length > 0) {
-    return <ChatVisualDeck objRef={objRef} view={{ ...view, visual: view.visual }} startKey={reviewing.startKey} />;
+    return <ChatVisualDeck objRef={objRef} view={{ ...view, visual: view.visual }} startKey={reviewing.startKey} showHeaderClose={false} />;
   }
   return (
     <>

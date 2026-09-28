@@ -56,9 +56,9 @@ export function roundMomentFor(model: VisualReviewModel): 'round_done' | 'all_cl
 export function visualReviewEventText(
   moment: VisualReviewMoment,
   model: VisualReviewModel,
-  extra: { fixes?: number; routes?: readonly string[] } = {},
+  extra: { fixes?: number; routes?: readonly string[]; round?: number } = {},
 ): string {
-  const round = model.audit?.round ?? 1;
+  const round = extra.round ?? model.audit?.round ?? 1;
   const counts = countsLine(model);
   switch (moment) {
     case 'no_browser_runner':
@@ -83,11 +83,11 @@ export function visualReviewEventText(
 }
 
 /** The structured half of the event, for the row's tone and the card. */
-export function visualReviewEventData(moment: VisualReviewMoment, model: VisualReviewModel): ChatVisualReviewEvent {
+export function visualReviewEventData(moment: VisualReviewMoment, model: VisualReviewModel, extra: { round?: number } = {}): ChatVisualReviewEvent {
   const c = effectiveCounts(model);
   return {
     phase: moment === 'no_browser_runner' ? 'no_browser_runner' : model.phase,
-    round: model.audit?.round ?? 1,
+    round: extra.round ?? model.audit?.round ?? 1,
     ok: c.ok,
     issues: c.issues,
     unsure: c.unsure,

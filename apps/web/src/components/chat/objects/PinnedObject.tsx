@@ -46,7 +46,8 @@ export function pinnedObjectTitle(objRef: BuilddObjectRef, view: ObjectView | nu
 }
 
 /**
- * The strip's visual review chip: "N to review" while unsure screens wait on
+ * The strip's visual review chip: the action, "Review N" (the card button's
+ * words; the Line beside it already says how many wait), while screens wait on
  * you, red "No browser runner" while the audit cannot start. Null otherwise
  * (the Line beside it says the rest).
  */
@@ -54,7 +55,7 @@ export function pinnedVisualChip(visual: VisualReviewModel | null | undefined): 
   if (!visual) return null;
   if (visual.phase === 'no_browser_runner') return { label: 'No browser runner', tone: 'bad' };
   const n = visual.summary.awaitingHuman;
-  return n > 0 ? { label: `${n} to review`, tone: 'needs' } : null;
+  return n > 0 ? { label: `Review ${n}`, tone: 'needs' } : null;
 }
 
 const CHIP_TONE = {

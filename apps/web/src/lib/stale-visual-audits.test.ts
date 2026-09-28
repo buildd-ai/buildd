@@ -13,12 +13,16 @@ import { NO_BROWSER_RUNNER_AFTER_MS } from '@/lib/visual-review-model';
 let rows: Array<{ taskId: string; missionId: string; workspaceId: string | null }> = [];
 let where: unknown = null;
 let limitN = 0;
+let orderBy: unknown = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     select: () => ({
       from: () => ({
         innerJoin: () => ({
-          where: (w: unknown) => { where = w; return { limit: async (n: number) => { limitN = n; return rows; } }; },
+          where: (w: unknown) => {
+            where = w;
+            return { orderBy: (o: unknown) => { orderBy = o; return { limit: async (n: number) => { limitN = n; return rows; } }; } };
+          },
         }),
       }),
     }),
@@ -58,6 +62,17 @@ describe('notifyStalledVisualAudits', () => {
     expect(q.sql).toContain(`("tasks"."context" -> 'visualQa' ->> 'stallNotifiedAt') is null`);
     expect(q.params.slice(0, 2)).toEqual(['visual-auditor', 'pending']);
     expect(q.params[2]).toBe(new Date(NOW.getTime() - NO_BROWSER_RUNNER_AFTER_MS).toISOString());
+  });
+
+  it('candidates: only audits whose dependencies are all done (completed or cancelled), so a build phase holds no slot', () => {
+    const q = new PgDialect().sqlToQuery(stalledVisualAuditCandidatesWhere(NOW, missions));
+    expect(q.sql).toMatch(/not exists \(select 1 from "tasks" "dep" where "dep"\."id"::text in \(select jsonb_array_elements_text\(case when jsonb_typeof\("tasks"\."depends_on"\) = 'array' then "tasks"\."depends_on" else '\[\]'::jsonb end\)\) and "dep"\."status" not in \('completed', 'cancelled'\)\)/);
+  });
+
+  it('oldest candidates first, so a candidate that keeps failing the phase check cannot hold the window', async () => {
+    await notifyStalledVisualAudits(NOW);
+    const q = new PgDialect().sqlToQuery(orderBy as any);
+    expect(q.sql).toBe('"tasks"."created_at" asc');
   });
 
   it('posts once per stalled audit, through the deduped chat event', async () => {
