@@ -5,7 +5,7 @@
  * phone sheet render refs through. A ref with no renderer yet (schedule,
  * artifact, directive arrive in P2) shows its `fallbackText`.
  */
-import type { ComponentType } from 'react';
+import { useState, type ComponentType } from 'react';
 import type { BuilddObjectRef } from '../chat-contract';
 import { MissionCard, MissionPane } from './MissionObject';
 import { PrPane, PrRow } from './PrObject';
@@ -14,6 +14,7 @@ import { TaskCard, TaskPane } from './TaskObject';
 import { useObjectEntry } from './ObjectStoreProvider';
 import { isRenderableKind, type ObjectView, type RenderableKind } from './object-views';
 import { ObjectPlaceholder } from './parts';
+import { prClusters } from './pr-clusters';
 
 type ViewOf<K extends RenderableKind> = Extract<ObjectView, { kind: K }>;
 
@@ -87,15 +88,73 @@ export function ObjectsSegment({ refs }: { refs: readonly BuilddObjectRef[] }) {
   return (
     <div data-testid="feed-objects" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
       {objectRuns(refs).map(run => run.kind === 'prs' ? (
-        <div key={`prs-${run.refs[0].id}`} data-testid="pr-list" className="border-2 border-border-strong bg-card divide-y divide-border-default">
-          <div className="flex items-center gap-2 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[2px] text-text-muted">
-            <span aria-hidden="true" className="h-2.5 w-2.5 bg-accent" />
-            {`${run.refs.length} pull requests`}
-          </div>
-          {run.refs.map(r => <PrListItem key={r.id} objRef={r} />)}
-        </div>
+        <PrList key={`prs-${run.refs[0].id}`} refs={run.refs} />
       ) : (
         <ObjectCard key={`${run.refs[0].kind}-${run.refs[0].id}`} objRef={run.refs[0]} />
+      ))}
+    </div>
+  );
+}
+
+const KIND_NOUN: Record<string, [string, string]> = {
+  task: ['task', 'tasks'], mission: ['mission', 'missions'], pr: ['pull request', 'pull requests'], question: ['question', 'questions'],
+};
+
+/** "8 tasks · 8 missions": what the collapsed row holds, most common kind first. */
+export function moreLabel(refs: readonly BuilddObjectRef[]): string {
+  const counts = new Map<string, number>();
+  for (const r of refs) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${(KIND_NOUN[k] ?? [k, `${k}s`])[n === 1 ? 0 : 1]}`).join(' · ');
+}
+
+/**
+ * The rest of what a turn's list reads returned (feed-model.ts `more`): one
+ * collapsed row after the answer. Cards mount only when opened, so a long list
+ * neither pushes the reply off a phone screen nor loads live state unasked.
+ */
+export function MoreObjects({ refs }: { refs: readonly BuilddObjectRef[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid="feed-more-objects" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        className="flex min-h-11 md:min-h-9 w-full items-center gap-2 border border-[var(--chat-rule)] bg-[var(--chat-surface)] px-3.5 font-mono text-[11.5px] text-text-muted hover:text-text-primary"
+      >
+        <span className="font-semibold text-text-secondary">Also read</span>
+        <span>{`· ${moreLabel(refs)}`}</span>
+        <span aria-hidden="true" className={`ml-auto transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+      </button>
+      {open && <ObjectsSegment refs={refs} />}
+    </div>
+  );
+}
+
+/**
+ * A run of PRs as one list, clustered by mission, then category, then area
+ * (pr-clusters.ts). One group names itself in the header; several get a
+ * sub-heading each.
+ */
+function PrList({ refs }: { refs: readonly BuilddObjectRef[] }) {
+  const clusters = prClusters(refs);
+  const single = clusters.length === 1 ? clusters[0] : null;
+  const heading = `${refs.length} pull requests${single && single.key !== 'other' ? ` · ${single.label}` : ''}`;
+  return (
+    <div data-testid="pr-list" className="border-2 border-border-strong bg-card divide-y divide-border-default">
+      <div className="flex items-center gap-2 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[2px] text-text-muted">
+        <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 bg-accent" />
+        <span className="min-w-0 truncate">{heading}</span>
+      </div>
+      {single ? single.refs.map(r => <PrListItem key={r.id} objRef={r} />) : clusters.map(c => (
+        <div key={c.key} data-testid="pr-cluster" className="divide-y divide-border-default">
+          <div className="flex items-baseline gap-2 bg-surface-2 px-4 py-1.5 font-mono text-[11px] text-text-secondary">
+            <span className="min-w-0 truncate font-semibold">{c.label}</span>
+            <span className="ml-auto shrink-0 text-text-muted">{c.refs.length}</span>
+          </div>
+          {c.refs.map(r => <PrListItem key={r.id} objRef={r} />)}
+        </div>
       ))}
     </div>
   );

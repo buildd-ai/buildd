@@ -51,6 +51,30 @@ describe('a filed task', () => {
   });
 });
 
+describe('releases', () => {
+  const rel = (id: string, tasks: unknown[], repo: string | null = 'acme/web') =>
+    ({ id, workspaceId: 'ws', repo, tasks });
+
+  it('each shipped PR becomes a PR ref carrying its mission and area for clustering', () => {
+    const refs = refsFromCall(call('GET', '/api/releases', { releases: [rel('r1', [
+      { taskId: 't1', prNumber: 12, title: 'fix(fx): rates cache', label: null, category: 'bug', missionId: 'm1', missionTitle: 'Multi-currency' },
+      { taskId: 't2', prNumber: null, title: 'untracked', label: null, missionId: null, missionTitle: null },
+    ])] }));
+    expect(refs).toEqual([{
+      kind: 'pr', id: 'acme/web#12', workspaceId: 'ws', repo: 'acme/web', prNumber: 12, url: 'https://github.com/acme/web/pull/12',
+      taskId: 't1', title: 'fix(fx): rates cache', missionId: 'm1', missionTitle: 'Multi-currency', area: 'fx', category: 'bug',
+      fallbackText: 'PR acme/web#12: fix(fx): rates cache',
+    }]);
+    expect(refs.every(isBuilddObjectRef)).toBe(true);
+  });
+
+  it('no repo, no PR refs; a week of PRs is not cut to the card cap', () => {
+    expect(refsFromCall(call('GET', '/api/releases', { releases: [rel('r1', [{ prNumber: 1, title: 'x' }], null)] }))).toEqual([]);
+    const many = Array.from({ length: 20 }, (_, i) => ({ taskId: `t${i}`, prNumber: i + 1, title: `PR ${i}` }));
+    expect(refsFromCalls([call('GET', '/api/releases', { releases: [rel('r1', many)] })])).toHaveLength(20);
+  });
+});
+
 describe('refsFromCalls', () => {
   it('dedupes by kind and id across calls', () => {
     const refs = refsFromCalls([

@@ -59,7 +59,7 @@ describe('list_releases dispatch', () => {
     mockApi.mockResolvedValueOnce({ releases: [{
       id: RELEASE_ID, version: 'v1.2.0', state: 'healthy', headSha: 'abcdef1234567890',
       deployedAt: '2026-09-27T17:07:33.934Z', createdAt: '2026-09-27T17:07:34.025Z', failureReason: null,
-      tasks: [{ title: 'Fix login', prNumber: 12 }, { title: 'Faster claim', prNumber: null }],
+      tasks: [{ title: 'Fix login', prNumber: 12, missionTitle: 'Auth' }, { title: 'Faster claim', prNumber: null }],
     }, {
       id: 'r2', version: null, state: 'degraded', headSha: '1111111222', deployedAt: null,
       createdAt: '2026-09-26T10:00:00.000Z', failureReason: 'health check returned HTTP 502', tasks: [],
@@ -67,7 +67,7 @@ describe('list_releases dispatch', () => {
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_releases', {}, ctx());
     const out = res.content[0].text;
     expect(out).toContain(`- v1.2.0 · healthy · deployed 2026-09-27 17:07Z · abcdef1 (id ${RELEASE_ID})`);
-    expect(out).toContain('    - #12 Fix login');
+    expect(out).toContain('    - #12 Fix login (mission: Auth)');
     expect(out).toContain('    - Faster claim');
     expect(out).toContain('degraded (health check returned HTTP 502)');
     expect(out).not.toContain('"archetype"');

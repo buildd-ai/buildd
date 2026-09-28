@@ -145,31 +145,61 @@ export type FeedSegment =
   | { kind: 'event'; key: string; event: ChatEventData['event']; text: string }
   /** A watch the person set fired: its own notice card, not a status line. */
   | { kind: 'watch'; key: string; text: string; notice: NonNullable<ChatEventData['watch']> }
-  | { kind: 'objects'; key: string; refs: BuilddObjectRef[] };
+  | { kind: 'objects'; key: string; refs: BuilddObjectRef[] }
+  /** The rest of what the turn's list reads returned: one collapsed row, cards mount on open. */
+  | { kind: 'more'; key: string; refs: BuilddObjectRef[] };
 
 /** A part that asks for, or has had, a human decision renders as the approval card itself. */
 export function isApprovalPart(part: ChatToolPart): boolean {
   return part.state === 'approval-requested' || part.approval !== undefined;
 }
 
+/** Titles shorter than this are too generic to match in prose ("recon", "fix"). */
+const MIN_TITLE_MATCH = 12;
+
+/** Does the reply name this object: its id, its 8-character short id, or its title? */
+export function textNames(text: string, r: BuilddObjectRef): boolean {
+  if (!text) return false;
+  if (text.includes(r.id) || (r.id.length > 8 && text.includes(r.id.slice(0, 8)))) return true;
+  const title = r.title?.trim();
+  return !!title && title.length >= MIN_TITLE_MATCH && text.toLowerCase().includes(title.toLowerCase());
+}
+
 /**
  * Message parts → what the feed draws, in order. Consecutive calls group under
- * one header; `step-start` and other non-visual parts don't break a group. The
- * objects a group returned render as cards right after it, once per object.
+ * one header; `step-start` and other non-visual parts don't break a group.
+ *
+ * Answer first: a read's objects render after the reply, and as cards only the
+ * ones the turn is about — an object fetched on its own (a get), one the reply
+ * names, or a PR (PRs stack as one compact list). The rest of what a list
+ * returned folds into one collapsed row, so "what's running?" isn't sixteen
+ * cards ahead of a one-line answer. Objects from writes, approvals and events
+ * render where they happen.
  */
 export function feedSegments(parts: readonly ChatPart[]): FeedSegment[] {
   const out: FeedSegment[] = [];
   let group: ChatToolPart[] = [];
   const shown = new Set<string>();
+  const reply = parts.filter(isTextPart).map(p => p.text).join('\n');
+  const featured: BuilddObjectRef[] = [];
+  const rest: BuilddObjectRef[] = [];
 
+  const take = (r: BuilddObjectRef, into: BuilddObjectRef[]) => {
+    const k = refKey(r);
+    if (shown.has(k)) return;
+    shown.add(k);
+    into.push(r);
+  };
   const pushObjects = (calls: ChatToolPart[], key: string) => {
     const refs: BuilddObjectRef[] = [];
     for (const c of calls) {
-      for (const r of objectsOf(c)) {
-        const k = refKey(r);
-        if (shown.has(k)) continue;
-        shown.add(k);
-        refs.push(r);
+      const objs = objectsOf(c);
+      if (isReadTool(c)) {
+        for (const r of objs) {
+          if (objs.length === 1 || r.kind === 'pr' || textNames(reply, r)) take(r, featured);
+        }
+      } else {
+        for (const r of objs) take(r, refs);
       }
     }
     if (refs.length > 0) out.push({ kind: 'objects', key: `obj-${key}`, refs });
@@ -212,6 +242,13 @@ export function feedSegments(parts: readonly ChatPart[]): FeedSegment[] {
     }
   });
   flush();
+  if (featured.length > 0) out.push({ kind: 'objects', key: 'obj-featured', refs: featured });
+  // Second pass: list objects not featured, and not shown by a later get or write.
+  for (const p of parts) {
+    if (!isToolPart(p) || isApprovalPart(p) || !isReadTool(p)) continue;
+    for (const r of objectsOf(p)) take(r, rest);
+  }
+  if (rest.length > 0) out.push({ kind: 'more', key: 'obj-more', refs: rest });
   return out;
 }
 
@@ -237,13 +274,18 @@ export function toolGroupSummary(calls: readonly ChatToolPart[]): ToolGroupSumma
 /** Kinds that have a full view worth docking. */
 const PANE_KINDS: ReadonlySet<string> = new Set(['mission', 'task', 'pr', 'question']);
 
-/** Every object ref in the conversation, oldest first, each once (its latest mention wins the order). */
+/**
+ * Every object the feed shows as a card, oldest first, each once (its latest
+ * mention wins the order). What a list read returned without the answer
+ * naming it (the collapsed "Also read" row) is left out, so the tail of a
+ * broad list never drives the pin or the pane.
+ */
 export function conversationRefs(messages: readonly ChatMessage[]): BuilddObjectRef[] {
   const order = new Map<string, BuilddObjectRef>();
   for (const m of messages) {
-    for (const p of m.parts) {
-      const refs = isToolPart(p) ? objectsOf(p) : isEventPart(p) ? eventObjects(p.data) : [];
-      for (const r of refs) {
+    for (const seg of feedSegments(m.parts)) {
+      if (seg.kind !== 'objects') continue;
+      for (const r of seg.refs) {
         const k = refKey(r);
         order.delete(k);
         order.set(k, r);
