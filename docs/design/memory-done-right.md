@@ -65,18 +65,18 @@ Chat gets two tiers: **directives** (user-stated rules, always loaded, small, ed
 
 ### Where Jev helps
 
-Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never writes prose. That fits the decision points above, and each one ships **shadow first** (log the verdict, act on the current rule) per [decision-calls.md](decision-calls.md), then an offline benchmark against the ledger, then a confidence-gated apply:
+Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never writes prose. Each decision is **confidence-gated and fails open** to the current rule (5s deadline, low confidence, error). Shadow is reserved for the two decisions whose mistakes are invisible or spread: the relevance gate (a hidden memory leaves no trace) and promotion (one bad promotion reaches every agent). Those log verdicts until the use ledger can grade them, then switch on. The rest go live with the first release, because a wrong answer is visible, confirmed by a human, or reversible:
 
-| Decision | Jev question | Replaces |
-|---|---|---|
-| Worth keeping | yes/no: durable lesson, not a task summary? | nothing (today every `learn` lands) |
-| Type | choice: gotcha / pattern / decision / discovery / architecture | caller's guess |
-| Update | choice: ADD / UPDATE / SUPERSEDE / NOOP given the top similar | 0.88 to 0.94 "retry with supersedes" |
-| Relevance gate | yes/no per hit: does this change what the agent should do on this task? | fixed 0.45 floor |
-| Use label | yes/no: does the summary act on this memory? | nothing |
-| Chat tier | choice: directive / knowledge / neither | nothing |
-| Directive scope | choice: everywhere / this workspace | user picks from scratch |
-| Promote | yes/no over assembled evidence, inside hard floors | deterministic rule |
+| Decision | Jev question | Replaces | Mode |
+|---|---|---|---|
+| Worth keeping | yes/no: durable lesson, not a task summary? | nothing (today every `learn` lands) | live: "no" writes a candidate, never drops |
+| Type | choice: gotcha / pattern / decision / discovery / architecture | caller's guess | live |
+| Update | choice: ADD / UPDATE / SUPERSEDE / NOOP given the top similar | 0.88 to 0.94 "retry with supersedes" | live in the 0.88 to 0.94 band; supersede invalidates, reversible |
+| Relevance gate | yes/no per hit: does this change what the agent should do on this task? | fixed 0.45 floor | shadow |
+| Use label | yes/no: does the summary act on this memory? | nothing | live (measurement), spot-checked |
+| Chat tier | choice: directive / knowledge / neither | nothing | live: proposes a card the user confirms |
+| Directive scope | choice: everywhere / this workspace | user picks from scratch | live: preselects, user confirms |
+| Promote | yes/no over assembled evidence, inside hard floors | deterministic rule | shadow; deterministic rule decides meanwhile |
 
 Not Jev: reflection and extraction of text. Those need a generating model and run as background runner tasks on the team's seat.
 
@@ -87,7 +87,7 @@ Load-bearing first.
 1. **Correctness.** Project filter on every memory read (in flight as a security fix); mirror dashboard and feedback-digest writes; surface mirror failures instead of swallowing them; stop pushes from counting as hits.
 2. **One door + ledger.** `retrieveMemory` in `packages/core`, `memory_uses` table, migrate all read paths, keep the current rules as defaults so output is unchanged until an option flips.
 3. **Index injection** behind a flag, compared on the ledger's use rate and the existing `eval-retrieval.ts` golden set.
-4. **Jev in shadow** for the decisions above; readout from the ledger.
+4. **Jev decisions**: live where the table says live, shadow for relevance and promotion; readout from the ledger.
 5. **Candidate state, promotion, validity, failed-task and review extraction.**
 6. **Reflection job and chat directives.**
 7. **Graduation to skills.**
@@ -105,7 +105,7 @@ Defaults stay no-ops: steps 2 to 4 change nothing an agent sees until a flag fli
 1. **Claim push:** index injection (type, title, id per line); bodies pulled with `recall`.
 2. **Promotion:** automatic, judged by Jev inside hard floors; deterministic rule while Jev is in shadow.
 3. **Directives:** user-level everywhere by default; Jev suggests workspace scope.
-4. **Jev:** every decision ships shadow first, benchmarked on the use ledger, switched on one at a time.
+4. **Jev:** live now for keep, type, update, use label, chat tier and directive scope (confidence-gated, fail open); shadow for relevance gate and promotion until the ledger grades them.
 
 ## Open questions
 
