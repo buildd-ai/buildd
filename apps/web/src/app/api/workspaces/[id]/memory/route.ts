@@ -8,13 +8,13 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, accounts } from '@buildd/core/db/schema';
+import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
-import { workspaceProjectKey } from '@buildd/core/project-scope';
+import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -47,17 +47,13 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
 }
 
 /**
- * Canonical project scope key for this workspace. `workspaces.repo` is itself
- * inconsistent (mostly full URLs, at least one bare `owner/repo`), so it is
- * reduced to the same canonical form the memories rows carry — otherwise the
- * list scoped a URL against short-form rows and returned nothing.
+ * The workspace's memory project key, by the rule every memory read uses
+ * (memoryProjectKey): null for a sensitive workspace, or one whose key is
+ * shared with a sensitive workspace in the team. The store is team-wide, so
+ * this key is the only thing keeping the dashboard inside the workspace.
  */
-async function getWorkspaceProject(id: string): Promise<string | undefined> {
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
-    columns: { repo: true, name: true },
-  });
-  return workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
+async function getWorkspaceProject(id: string): Promise<string | null> {
+  return resolveMemoryProjectKey(id);
 }
 
 export async function GET(
@@ -80,6 +76,10 @@ export async function GET(
   }
 
   const project = await getWorkspaceProject(id);
+  // No key means no memory: never fall back to a team-wide list.
+  if (!project) {
+    return NextResponse.json({ memories: [], total: 0 });
+  }
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
   const type = searchParams.get('type') || undefined;
@@ -137,14 +137,19 @@ export async function POST(
   }
 
   const body = await req.json();
+  // Filed under this workspace's key only (a project named in the body is
+  // ignored); a workspace with no key gets no memory writes.
   const project = await getWorkspaceProject(id);
+  if (!project) {
+    return NextResponse.json({ error: 'Memory is disabled for this workspace' }, { status: 403 });
+  }
 
   try {
     const data = await memClient.save({
       type: body.type,
       title: body.title,
       content: body.content,
-      project: project || undefined,
+      project,
       tags: body.tags || body.concepts || [],
       files: body.files || [],
       source: body.source || 'dashboard',
