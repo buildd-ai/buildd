@@ -5,13 +5,20 @@
  *
  * Captions: short, plain, present tense. No "X, not Y", no em dashes.
  */
-import type { Cut, Shot, ShotImage } from './timeline';
+import type { Cut, Rect, Shot, ShotImage } from './timeline';
 
 /** Looks up a captured still by storyboard step id (and viewport) and returns it sized. */
 export type Stills = {
   img: (step: string, viewport?: 'desktop' | 'phone', at?: number) => ShotImage;
   /** The typing frames of a `type:` step. */
   typing: (step: string) => ShotImage[];
+  /** Element boxes the storyboard recorded (its `highlight` targets), as fractions of the step's still. */
+  boxes: (step: string, target: string, viewport?: 'desktop' | 'phone') => Rect[];
+  box: (step: string, target: string, index?: number, viewport?: 'desktop' | 'phone') => Rect;
+  /** Boxes with their recorded attributes (data-status/state/kind, text). */
+  boxAttrs: (step: string, target: string, viewport?: 'desktop' | 'phone') => Array<{ rect: Rect; status?: string; state?: string; kind?: string; text?: string }>;
+  /** A `highlightText` phrase: one rect per line, and its enclosing block. */
+  text: (step: string, phrase: string, viewport?: 'desktop' | 'phone') => { rects: Rect[]; block: Rect };
 };
 
 const FRAME = { width: 1920, height: 1080, fps: 30 };
