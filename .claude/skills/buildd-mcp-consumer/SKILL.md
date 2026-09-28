@@ -12,17 +12,19 @@ this skill exists; everything about *how* to work a task lives here.
 
 ## Tools
 
-Actions come in group tools, one per area: `buildd_work` (your own task:
-claim, progress, notes, artifacts, PR, complete), `buildd_tasks`,
-`buildd_missions`, `buildd_prs`, `buildd_runners` (explain, errors, failures,
-usage, runners), `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each
-takes `{ action, params }` and lists its actions with their params; action
-`help` with `params={ action }` returns one action's full docs. Below,
+Most sessions list one tool, `buildd`, that takes `{ action, params }` for
+every action; below, `buildd action=X` means exactly that call.
+
+A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
+one tool per area instead: `buildd_work` (your own task: claim, progress,
+notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
+`buildd_prs`, `buildd_runners` (explain, errors, failures, usage, runners),
+`buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
+`{ action, params }`, lists its actions with their params, and has action
+`help` (`params={ action }`) for one action's full docs. There,
 `buildd action=X` means: call X on the group tool that lists it (a wrong group
-tells you the right one). In a Claude Code client that defers MCP tools, load
-only the group you need, e.g. `select:mcp__buildd__buildd_work`. Sessions that
-still list the single `buildd` tool (runner-launched workers) call it the same
-way: `buildd action=X`.
+tells you the right one). In a client that defers MCP tools, load only the
+group you need, e.g. `select:mcp__buildd__buildd_work`.
 
 ## Task Lifecycle
 

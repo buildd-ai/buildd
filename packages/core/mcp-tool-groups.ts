@@ -149,17 +149,91 @@ export function actionsOfGroup(group: McpToolGroup): BuilddAction[] {
   return allActions.filter(a => mcpGroupOf(a) === group);
 }
 
-/** What each group tool is for: the first line of its description. */
-export const MCP_GROUP_PURPOSE: Record<McpToolGroup, string> = {
-  missions: 'Missions (goals with completion criteria that group tasks), initiatives, visual review and the spec discrepancy ledger.',
-  tasks: 'Find, read, file and steer tasks; approve or reject plans.',
-  work: 'Your own task as a worker: claim, report progress, post notes and events, write artifacts, open the PR, complete.',
-  prs: 'Pull requests, reviews and releases.',
-  runners: 'Why something is stuck, errors and failure patterns, budget and usage, runners and connectors; message a running agent.',
-  artifacts: 'Reports, analyses and other artifacts.',
-  schedules: 'Recurring schedules and what they fired.',
-  admin: 'Workspace config, skills and roles, secrets, experiments, model tiers, watched projects, releases, knowledge maintenance.',
+/**
+ * What each group tool is for: the first line of its description, built from
+ * fragments tagged with the actions they describe. A level that reaches only
+ * part of a group sees only the fragments it can act on, so the purpose never
+ * advertises an action the caller cannot call.
+ */
+export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; parts: { text: string; actions: BuilddAction[] }[] }> = {
+  missions: {
+    parts: [
+      { text: 'missions (goals with completion criteria that group tasks)', actions: ['manage_missions', 'link_tracker'] },
+      { text: 'initiatives', actions: ['manage_initiatives'] },
+      { text: 'visual review', actions: ['get_visual_review'] },
+      { text: 'the spec discrepancy ledger', actions: ['list_discrepancies', 'get_discrepancy', 'adjudicate_discrepancy', 'promote_discrepancy', 'spec_compare'] },
+    ],
+  },
+  tasks: {
+    parts: [
+      { text: 'find and read tasks', actions: ['list_tasks', 'get_task', 'get_task_messages'] },
+      { text: 'file tasks', actions: ['create_task'] },
+      { text: 'edit, steer or cancel them', actions: ['update_task', 'correct_task_result'] },
+      { text: 'approve or reject plans', actions: ['approve_plan', 'reject_plan'] },
+    ],
+  },
+  work: {
+    lead: 'Your own task as a worker: ',
+    parts: [
+      { text: 'claim', actions: ['claim_task'] },
+      { text: 'report progress', actions: ['update_progress'] },
+      { text: 'post notes', actions: ['post_note'] },
+      { text: 'record events', actions: ['emit_event', 'query_events'] },
+      { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
+      { text: 'open the PR', actions: ['create_pr', 'record_pr_supersession'] },
+      { text: 'suggest a schedule change', actions: ['suggest_schedule_update'] },
+      { text: 'complete', actions: ['complete_task'] },
+    ],
+  },
+  prs: {
+    parts: [
+      { text: 'pull requests', actions: ['get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
+      { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
+    ],
+  },
+  runners: {
+    parts: [
+      { text: 'why something is stuck', actions: ['explain'] },
+      { text: 'errors and failure patterns', actions: ['get_error_traces', 'get_failure_analytics'] },
+      { text: 'budget and usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
+      { text: 'runners and connectors', actions: ['list_runners', 'list_connectors'] },
+      { text: 'message a running agent', actions: ['send_agent_message'] },
+    ],
+  },
+  artifacts: {
+    parts: [
+      { text: 'reports, analyses and other artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
+    ],
+  },
+  schedules: {
+    parts: [
+      { text: 'recurring schedules and what they fired', actions: ['list_schedules', 'trace_schedule'] },
+      { text: 'create, edit, pause or delete them', actions: ['create_schedule', 'update_schedule', 'pause_schedules', 'delete_schedule'] },
+    ],
+  },
+  admin: {
+    parts: [
+      { text: 'workspace config', actions: ['manage_workspaces'] },
+      { text: 'skills and roles', actions: ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill'] },
+      { text: 'secrets', actions: ['manage_secrets'] },
+      { text: 'experiments', actions: ['manage_experiments'] },
+      { text: 'model tiers', actions: ['manage_model_tiers'] },
+      { text: 'watched projects', actions: ['manage_watched_projects'] },
+      { text: 'releases', actions: ['trigger_release'] },
+      { text: 'knowledge maintenance', actions: ['consolidate_knowledge', 'memory_delete'] },
+    ],
+  },
 };
+
+/** The purpose line of `group` for the actions actually listed. */
+export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[]): string {
+  const listed = new Set(actions);
+  const { lead, parts } = MCP_GROUP_PURPOSE_PARTS[group];
+  const text = parts.filter(p => p.actions.some(a => listed.has(a))).map(p => p.text).join(', ');
+  const line = lead ? `${lead}${text}` : text;
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}.`;
+}
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {

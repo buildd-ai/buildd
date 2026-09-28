@@ -37,19 +37,19 @@ describe('listMcpTools — token level gating', () => {
 
   it('groups surface: does not list buildd', () => {
     for (const accountLevel of LEVELS) {
-      expect(toolNames({ accountLevel, isSensitive: false })).not.toContain('buildd');
+      expect(toolNames({ accountLevel, isSensitive: false, surface: 'groups' })).not.toContain('buildd');
     }
   });
 
   it('withholds worker coordination tools from trigger tokens', () => {
-    const names = toolNames({ accountLevel: 'trigger', isSensitive: false });
+    const names = toolNames({ accountLevel: 'trigger', isSensitive: false, surface: 'groups' });
     expect(names).not.toContain('check_path_claim');
     expect(names).not.toContain('send_worker_message');
   });
 
   it('exposes worker coordination tools to worker and admin tokens', () => {
     for (const accountLevel of ['worker', 'admin'] as McpAccountLevel[]) {
-      const names = toolNames({ accountLevel, isSensitive: false });
+      const names = toolNames({ accountLevel, isSensitive: false, surface: 'groups' });
       expect(names).toContain('check_path_claim');
       expect(names).toContain('send_worker_message');
     }
@@ -110,7 +110,7 @@ describe('listMcpTools — sensitive workspace gating', () => {
   it('exposes knowledge tools for a standard workspace', () => {
     const names = toolNames({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' });
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
-    const groups = toolNames({ accountLevel: 'worker', isSensitive: false });
+    const groups = toolNames({ accountLevel: 'worker', isSensitive: false, surface: 'groups' });
     expect(groups).toContain('recall');
     expect(groups).toContain('learn');
     // Deprecated: callable, no longer listed on the groups surface.
@@ -119,7 +119,7 @@ describe('listMcpTools — sensitive workspace gating', () => {
 
   it('still exposes task coordination tools for a sensitive workspace', () => {
     // The data class gates knowledge, not the ability to do the work.
-    const names = toolNames({ accountLevel: 'worker', isSensitive: true });
+    const names = toolNames({ accountLevel: 'worker', isSensitive: true, surface: 'groups' });
     expect(names).toContain('buildd_work');
     expect(toolNames({ accountLevel: 'worker', isSensitive: true, surface: 'legacy' })).toContain('buildd');
     expect(names).toContain('check_path_claim');
@@ -128,7 +128,7 @@ describe('listMcpTools — sensitive workspace gating', () => {
 });
 
 describe('listMcpTools — group tools', () => {
-  const groupTools = (accountLevel: McpAccountLevel) => tools({ accountLevel, isSensitive: false }).filter(t => t.name.startsWith('buildd_') && t.name !== 'buildd_memory');
+  const groupTools = (accountLevel: McpAccountLevel) => tools({ accountLevel, isSensitive: false, surface: 'groups' }).filter(t => t.name.startsWith('buildd_') && t.name !== 'buildd_memory');
 
   it('lists one tool per group the level reaches', () => {
     expect(groupTools('admin').map(t => t.name)).toEqual(MCP_TOOL_GROUPS.map(mcpGroupToolName));
@@ -152,6 +152,29 @@ describe('listMcpTools — group tools', () => {
         }
       }
     }
+  });
+
+  it('a partial group describes only what the level can use', () => {
+    const byName = (level: McpAccountLevel, name: string) => groupTools(level).find(t => t.name === name)!;
+    const purpose = (level: McpAccountLevel, name: string) => byName(level, name).description.split('\n')[0];
+    // Worker level reaches only the discrepancy ledger in missions.
+    const missions = purpose('worker', 'buildd_missions');
+    expect(missions).toContain('discrepancy');
+    expect(missions.toLowerCase()).not.toContain('missions (');
+    expect(missions).not.toContain('initiatives');
+    expect(missions).not.toContain('visual review');
+    expect(byName('worker', 'buildd_missions').description).not.toContain('manage_missions');
+    // ...and only experiments in admin.
+    const admin = purpose('worker', 'buildd_admin');
+    expect(admin).toContain('xperiments');
+    for (const w of ['orkspace', 'skills', 'secrets', 'model tiers']) expect(admin).not.toContain(w);
+    // Trigger work is not a claim/complete lifecycle.
+    const work = purpose('trigger', 'buildd_work');
+    expect(work).not.toContain('claim');
+    expect(work).not.toContain('complete');
+    // Full level keeps the full purpose.
+    expect(purpose('admin', 'buildd_missions')).toContain('initiatives');
+    expect(purpose('admin', 'buildd_missions')).toContain('visual review');
   });
 
   it('every action the level may call is reachable through exactly one listed group', () => {
@@ -197,6 +220,21 @@ describe('routeGroupToolCall', () => {
     expect(r.text.includes('\n')).toBe(false);
   });
 
+  it('does not point a caller at a group tool its level cannot call', () => {
+    // manage_missions lives in buildd_missions, which a trigger token is not shown.
+    const r = routeGroupToolCall('tasks', { action: 'manage_missions' }, 'trigger');
+    expect(r.kind).toBe('reply');
+    if (r.kind !== 'reply') return;
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('"manage_missions" is not available at your token level (trigger).');
+    expect(r.text).not.toContain('buildd_missions');
+  });
+
+  it('a wrong-group action the level may call still names its tool', () => {
+    const r = routeGroupToolCall('missions', { action: 'list_tasks' }, 'trigger');
+    expect(r.kind === 'reply' && r.text.includes('buildd_tasks')).toBe(true);
+  });
+
   it('refuses an unknown action, listing the group', () => {
     const r = routeGroupToolCall('prs', { action: 'nope' }, 'admin');
     expect(r.kind === 'reply' && r.isError && r.text.includes('get_pr')).toBe(true);
@@ -234,12 +272,26 @@ describe('routeGroupToolCall', () => {
 });
 
 describe('surface choice and instructions', () => {
-  it('worker sessions keep the legacy surface unless asked', () => {
+  it('legacy is the default for every session; groups is opt-in', () => {
+    expect(mcpToolSurfaceFor({})).toBe('legacy');
     expect(mcpToolSurfaceFor({ workerParam: 'w' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups' })).toBe('groups');
-    expect(mcpToolSurfaceFor({})).toBe('groups');
+    expect(mcpToolSurfaceFor({ toolsParam: 'bogus' })).toBe('legacy');
     expect(mcpToolSurfaceFor({ toolsParam: 'legacy' })).toBe('legacy');
-    expect(mcpToolSurfaceFor({ toolsParam: 'bogus' })).toBe('groups');
+    expect(mcpToolSurfaceFor({ toolsParam: 'groups' })).toBe('groups');
+    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups' })).toBe('groups');
+  });
+
+  it('the server default flag moves non-worker sessions to groups, never runner workers', () => {
+    expect(mcpToolSurfaceFor({ serverDefault: 'groups' })).toBe('groups');
+    expect(mcpToolSurfaceFor({ serverDefault: 'groups', workerParam: 'w' })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ serverDefault: 'groups', toolsParam: 'legacy' })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ serverDefault: 'bogus' })).toBe('legacy');
+  });
+
+  it('listMcpTools and the instructions default to legacy', () => {
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).toContain('buildd');
+    expect(toolNames({ accountLevel: 'admin', isSensitive: false })).not.toContain('buildd_tasks');
+    expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'legacy'));
   });
 
   it('groups instructions name the reachable group tools and help', () => {
@@ -248,6 +300,14 @@ describe('surface choice and instructions', () => {
     expect(t).toContain('help');
     expect(t).toContain('tasks');
     expect(t).not.toContain('runners');
+  });
+
+  it('groups instructions map "buildd action=X" to the group tool, and never offer the unlisted buildd', () => {
+    const t = mcpServerInstructions('admin', 'groups');
+    expect(t).toContain('`buildd action=X`');
+    expect(t).toContain('group tool that lists it');
+    expect(t).not.toContain('still callable');
+    expect(t).not.toMatch(/`buildd` \(any action\)/);
   });
 
   it('legacy instructions are unchanged', () => {

@@ -7,7 +7,7 @@ import { describe, it, expect } from 'bun:test';
 import { allActions } from '../mcp-tools';
 import {
   ACTION_AREA, ACTION_SUMMARY, MCP_TOOL_GROUPS, actionHelp, actionSignature, actionsOfGroup, derivedSignature,
-  mcpGroupOf, mcpGroupOfToolName, mcpGroupToolName, SIGNATURE_OVERRIDE_ACTIONS,
+  mcpGroupOf, mcpGroupOfToolName, mcpGroupToolName, mcpGroupPurpose, MCP_GROUP_PURPOSE_PARTS, SIGNATURE_OVERRIDE_ACTIONS,
 } from '../mcp-tool-groups';
 
 const names = (sig: string) =>
@@ -84,6 +84,24 @@ describe('short text', () => {
     expect(actionSignature('get_task')).toBe('{taskId, include?}');
     expect(actionSignature('manage_secrets')).toContain('action: list|set|delete');
     expect(actionSignature('explain')).toContain('taskId?|missionId?');
+  });
+});
+
+describe('group purpose', () => {
+  it('each purpose fragment covers only actions of its group, and every action is covered exactly once', () => {
+    for (const g of MCP_TOOL_GROUPS) {
+      const covered = MCP_GROUP_PURPOSE_PARTS[g].parts.flatMap(p => p.actions);
+      expect([...covered].sort(), g).toEqual([...actionsOfGroup(g)].sort());
+    }
+  });
+
+  it('keeps only the fragments whose actions are listed', () => {
+    expect(mcpGroupPurpose('missions', ['list_discrepancies'])).toBe('The spec discrepancy ledger.');
+    const full = mcpGroupPurpose('missions', actionsOfGroup('missions'));
+    expect(full).toContain('initiatives');
+    expect(full).toContain('visual review');
+    expect(full.endsWith('.')).toBe(true);
+    expect(mcpGroupPurpose('work', ['emit_event'])).toBe('Your own task as a worker: record events.');
   });
 });
 

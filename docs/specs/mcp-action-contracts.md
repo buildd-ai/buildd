@@ -46,15 +46,20 @@ every supported action.
 - `tools/list` on the `groups` surface lists `buildd_<group>` for each group the
   token level has an action in; its `action` enum is those actions plus `help`.
   `buildd` is not listed there but MUST stay callable with the same routing.
-- The `legacy` surface lists `buildd` as before. A session with `?worker=` gets
-  it unless `?tools=groups`; `?tools=legacy|groups` overrides either way.
+- The `legacy` surface lists `buildd` as before and is the default for every
+  session. `?tools=groups` opts in to the groups surface. The server flag
+  `BUILDD_MCP_TOOL_SURFACE=groups` moves sessions without `?worker=` to groups;
+  runner worker sessions stay legacy. `?tools=legacy|groups` overrides either way.
+- A wrong-group action the token level may not call MUST get the same
+  not-available-at-your-level error as `help`, not a pointer to a tool the
+  level is not shown.
 - A group tool called with another group's action MUST return a one-line
   `isError: true` naming the right tool, and run nothing. Its own actions run
   exactly as on `buildd`, including level refusals.
 - `help` with `params.action` returns that action's long parameter docs.
 
 **Acceptance criteria**:
-- AC-21: GIVEN a trigger token WHEN tools/list is called THEN the group tools
+- AC-21: GIVEN a trigger token WHEN tools/list is called with `?tools=groups` THEN the group tools
   are exactly `buildd_tasks`, `buildd_work`, `buildd_artifacts`,
   `buildd_schedules`.
 - AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the

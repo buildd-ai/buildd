@@ -7,14 +7,16 @@
  * a server or issuing a request.
  *
  * Invariants encoded here:
- * - `groups` surface (the default): one tool per action group
+ * - `groups` surface (opt-in, `?tools=groups`): one tool per action group
  *   (`buildd_<group>`, @buildd/core/mcp-tool-groups), each narrowed to the
  *   actions the caller's level may call plus `help`. A level with no action in
  *   a group does not see that group. The one-tool `buildd` is not listed but
  *   stays callable (route.ts), so prompts that say "buildd action=..." work.
- * - `legacy` surface: the one `buildd` tool, as before, for sessions whose
- *   client keys on its name (runner-launched workers: pr-detection, the tool
- *   histogram and role allowedTools all match `mcp__buildd__buildd`).
+ * - `legacy` surface (the default): the one `buildd` tool, as before. Every
+ *   session gets it unless it opts in, so existing `mcp__buildd__buildd`
+ *   allow-rules and `select:mcp__buildd__buildd` keep resolving. Runner
+ *   workers (`?worker=`) stay legacy even under the server default flag:
+ *   pr-detection, the tool histogram and role allowedTools match the name.
  * - `check_path_claim` / `send_worker_message` are worker/admin only. Trigger
  *   tokens never run agent work, so they never need either.
  * - Sensitive workspaces do not expose the knowledge/memory tools at all.
@@ -34,7 +36,7 @@ import {
   buildMemoryDescription,
 } from "@buildd/core/mcp-tools";
 import {
-  MCP_GROUP_PURPOSE,
+  mcpGroupPurpose,
   MCP_TOOL_GROUPS,
   ACTION_SUMMARY,
   actionHelp,
@@ -55,18 +57,19 @@ export interface ListMcpToolsOptions {
   accountLevel: McpAccountLevel;
   /** Workspace data class is `sensitive` (fail-closed when unknown). */
   isSensitive: boolean;
-  /** Default `groups`. */
+  /** Default `legacy`. */
   surface?: McpToolSurface;
 }
 
 /**
- * Which surface a session gets. `?tools=groups|legacy` wins; otherwise a
- * runner-launched worker session (`?worker=`) keeps `legacy`, since the runner
- * matches the `mcp__buildd__buildd` tool name, and everything else gets groups.
+ * Which surface a session gets. `?tools=groups|legacy` wins. Otherwise
+ * `legacy`, unless the server default (`BUILDD_MCP_TOOL_SURFACE=groups`) says
+ * groups, which never applies to a runner-launched worker session
+ * (`?worker=`): the runner matches the `mcp__buildd__buildd` tool name.
  */
-export function mcpToolSurfaceFor(opts: { toolsParam?: string | null; workerParam?: string | null }): McpToolSurface {
+export function mcpToolSurfaceFor(opts: { toolsParam?: string | null; workerParam?: string | null; serverDefault?: string | null }): McpToolSurface {
   if (opts.toolsParam === 'groups' || opts.toolsParam === 'legacy') return opts.toolsParam;
-  return opts.workerParam ? 'legacy' : 'groups';
+  return opts.serverDefault === 'groups' && !opts.workerParam ? 'groups' : 'legacy';
 }
 
 /** Actions exposed in the `buildd` tool schema for a given token level. */
@@ -94,7 +97,7 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
   lines.push(`- ${HELP_ACTION} {action}: full docs for one action`);
   return {
     name: mcpGroupToolName(group),
-    description: `${MCP_GROUP_PURPOSE[group]}\n${lines.join('\n')}`,
+    description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -146,15 +149,18 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
     return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel).join(', ')}, ${HELP_ACTION}.` };
   }
   if (home !== group) {
+    if (!actionsForLevel(accountLevel).includes(action)) {
+      return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
+    }
     return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
   }
   return { kind: 'dispatch', action, params };
 }
 
 /** The server `instructions` block sent on initialize. */
-export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'groups'): string {
+export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy'): string {
   const tools = surface === 'groups'
-    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. The one-tool \`buildd\` (any action) is still callable. \`buildd_memory\` is deprecated.`
+    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
     : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
   const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
   return `Buildd is a task coordination system for AI coding agents. ${tools}
@@ -192,7 +198,7 @@ function legacyBuilddTool(filteredActions: string[]): object {
   };
 }
 
-export function listMcpTools({ accountLevel, isSensitive, surface = 'groups' }: ListMcpToolsOptions): object[] {
+export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy' }: ListMcpToolsOptions): object[] {
   const tools: object[] = surface === 'legacy'
     ? [legacyBuilddTool(actionsForLevel(accountLevel))]
     : MCP_TOOL_GROUPS

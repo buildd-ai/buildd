@@ -147,7 +147,7 @@ describe('MCP tool gating — workspace data class', () => {
     const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
     // The groups surface lists recall/learn; deprecated buildd_memory is callable, not listed.
-    const groups = await listTools(`?workspace=${WORKSPACE_ID}`);
+    const groups = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
     expect(groups).toContain('recall');
     expect(groups).toContain('learn');
   });
@@ -176,7 +176,7 @@ describe('MCP tool gating — workspace data class', () => {
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    expect(names).toContain('buildd_tasks');
+    expect(names).toContain('buildd');
   });
 
   it('refuses a knowledge tool call in a sensitive workspace even if it was somehow invoked', async () => {

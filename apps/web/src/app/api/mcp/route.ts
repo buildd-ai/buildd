@@ -167,7 +167,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups') {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy') {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -990,7 +990,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
-  const toolSurface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get("tools"), workerParam });
+  const toolSurface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get("tools"), workerParam, serverDefault: process.env.BUILDD_MCP_TOOL_SURFACE });
   const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
