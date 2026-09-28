@@ -778,6 +778,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             taskDescription = missionContext.description;
             Object.assign(taskContext, missionContext.context);
           }
+          // Every organizer task records what started it (OrganizerTriggerSource
+          // in lib/mission-run.ts). buildMissionContext reads the value above
+          // but does not echo it into the context it returns.
+          taskContext.triggerSource = 'cron';
         }
 
         // Heartbeat triage (lib/heartbeat-triage.ts): a decision model reads a

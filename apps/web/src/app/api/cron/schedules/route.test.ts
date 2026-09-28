@@ -1273,6 +1273,8 @@ describe('GET /api/cron/schedules', () => {
     // Identifies this tick so a same-tick auto-retry (mission-loop.ts) collides
     // on the unique index instead of dispatching a second worker.
     expect(tasksInsertValues.heartbeatTickAnchor).toMatch(/^sched-1:\d{4}-\d{2}-\d{2}T/);
+    // Every organizer task records what started it; the mission timeline reads it.
+    expect(tasksInsertValues.context.triggerSource).toBe('cron');
   });
 
   // A bare (non-mission) schedule with no explicit mode still defaults to
@@ -1301,6 +1303,8 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues.outputRequirement).toBeUndefined();
     // No mission means no retry loop can race it — the anchor is unnecessary.
     expect(tasksInsertValues.heartbeatTickAnchor).toBeUndefined();
+    // Not an organizer task: no trigger source to stamp.
+    expect(tasksInsertValues.context.triggerSource).toBeUndefined();
   });
 
   it('should record lastDeferralReason=concurrent_cap when maxConcurrentFromSchedule is hit', async () => {

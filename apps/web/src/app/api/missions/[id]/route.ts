@@ -23,6 +23,7 @@ import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -830,6 +831,18 @@ export async function PATCH(
         actor,
         collapseKey: `config:${actor.kind}:${actor.id ?? 'none'}`,
       }).catch(e => console.error('[missions/patch] Failed to emit config-change note:', e));
+    }
+
+    // Resuming a paused mission, or raising the budget of an exhausted one, used
+    // to only re-enable the schedule — the next step waited for the heartbeat,
+    // or forever without one. Wake the organizer now; wakeMission itself skips
+    // a manual, held or dependency-blocked mission.
+    if (
+      updated?.status === 'active' &&
+      (existing.status === 'paused' || existing.status === 'budget_exhausted')
+    ) {
+      const liftedByBudget = existing.status === 'budget_exhausted' && costBudgetUsd != null && status !== 'active';
+      wakeMissionAfterResponse(id, liftedByBudget ? 'budget_raised' : 'resumed');
     }
 
     return NextResponse.json(updated);

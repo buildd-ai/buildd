@@ -8,6 +8,7 @@ import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-co
 import { postMissionFeedEvent, systemActor, type FeedActor } from '@/lib/mission-feed';
 import { evaluateMissionOpenPrGate } from '@/lib/mission-run';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
+import type { MissionWakeReason } from '@/lib/mission-wake';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -21,22 +22,38 @@ export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceed
  * Evaluate whether a mission should start another planning cycle after
  * an aggregation task (or zero-child planning task) completes.
  *
- * Runs a guard chain: status → heartbeat → idempotency → completion → depth → stall.
- * If all guards pass, calls runMission() with incremented cycle context.
+ * Runs a guard chain: status → manual → dependency → idempotency → completion →
+ * depth → stall → open-PR. If all guards pass, calls runMission() with an
+ * incremented cycle context and `triggerSource: 'event'`.
+ *
+ * Heartbeat missions go through the same chain: events plan every auto mission,
+ * and the hourly heartbeat is the backstop (docs/design/event-driven-mission-replanning.md).
+ *
+ * `opts.wakeReason` is the `wakeMission` entry (lib/mission-wake.ts): there is no
+ * completed task, the chain is fresh, and the organizer task is stamped
+ * `triggerSource: 'wake:<reason>'`.
  *
  * This function is fire-and-forget from the caller — errors are logged, not thrown.
  */
 type RunMissionFn = (id: string, opts?: RunMissionOptions) => Promise<RunMissionResult>;
 type SpawnEvaluationFn = (missionId: string, completedTaskId: string) => Promise<string | null>;
 
+export interface RetriggerOptions {
+  /** Set by wakeMission: an external event, not a task completion, is re-planning. */
+  wakeReason?: MissionWakeReason;
+}
+
 export async function maybeRetriggerMission(
   missionId: string,
-  completedPlanningTaskId: string,
+  /** The task whose terminal state triggered this. Null only for a wake. */
+  completedPlanningTaskId: string | null,
   /** Injected for testing — defaults to the real runMission */
   _runMission?: RunMissionFn,
   /** Injected for testing — defaults to the real spawnEvaluationTask */
   _spawnEvaluation?: SpawnEvaluationFn,
+  opts?: RetriggerOptions,
 ): Promise<{ action: LoopAction }> {
+  const wakeReason = opts?.wakeReason;
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -65,7 +82,8 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // 2. Detect heartbeat — skip retrigger later, but still allow completion
+  // 2. Detect heartbeat — only names the completion path now; heartbeat
+  //    missions re-plan on events like every other auto mission.
   let isHeartbeat = false;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
@@ -76,17 +94,24 @@ export async function maybeRetriggerMission(
     isHeartbeat = ctx?.heartbeat === true;
   }
 
-  // 3. Idempotency — atomic debounce via updatedAt timestamp
+  // 3. Idempotency — atomic debounce via updatedAt timestamp.
+  //    A wake skips the debounce window: every wake site has just written the
+  //    mission row itself (dependencyMetAt, status, a budget), so the window
+  //    would swallow every wake. It still stamps updatedAt, so a task
+  //    completion racing it is debounced, and a concurrent planning insert is
+  //    deduped by tasks_active_planning_per_mission inside runMission.
   const debounceThreshold = new Date(Date.now() - DEBOUNCE_MS);
   const [claimed] = await db
     .update(missions)
     .set({ updatedAt: new Date() })
     .where(
-      and(
-        eq(missions.id, missionId),
-        eq(missions.status, 'active'),
-        sql`${missions.updatedAt} < ${debounceThreshold}`
-      )
+      wakeReason
+        ? and(eq(missions.id, missionId), eq(missions.status, 'active'))
+        : and(
+            eq(missions.id, missionId),
+            eq(missions.status, 'active'),
+            sql`${missions.updatedAt} < ${debounceThreshold}`
+          )
     )
     .returning({ id: missions.id });
 
@@ -94,11 +119,14 @@ export async function maybeRetriggerMission(
     return { action: 'skipped' };
   }
 
-  // Read the completed planning task to get cycle context
-  const planningTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, completedPlanningTaskId),
-    columns: { context: true, result: true },
-  });
+  // Read the completed planning task to get cycle context. A wake has none and
+  // starts a fresh chain at cycle 1.
+  const planningTask = completedPlanningTaskId && !wakeReason
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, completedPlanningTaskId),
+        columns: { context: true, result: true },
+      })
+    : null;
 
   const taskContext = (planningTask?.context || {}) as Record<string, unknown>;
   const taskResult = (planningTask?.result || {}) as Record<string, unknown>;
@@ -107,9 +135,10 @@ export async function maybeRetriggerMission(
 
   // 4. Completion detection — intercept missionComplete signal
   const structuredOutput = taskResult.structuredOutput as Record<string, unknown> | undefined;
+  // (Only reachable with a task: a wake reads none, so its result is empty.)
   if (
-    taskResult.missionComplete === true ||
-    structuredOutput?.missionComplete === true
+    completedPlanningTaskId &&
+    (taskResult.missionComplete === true || structuredOutput?.missionComplete === true)
   ) {
     // `missionComplete=true` is a PROPOSAL, whoever made it.
     //
@@ -128,8 +157,9 @@ export async function maybeRetriggerMission(
 
     if (proposal.completed) return { action: 'completed' };
 
-    // Refused. A heartbeat mission has no retrigger of its own (cron drives it),
-    // so the refusal — with its surfaced reason — is the outcome.
+    // Refused. A heartbeat organizer's proposal is not escalated to an
+    // evaluation task: the refusal — with its surfaced reason — is the outcome,
+    // and the next task completion (or the backstop) re-plans.
     if (isHeartbeat) return { action: 'completion_blocked' };
 
     // Non-heartbeat: work is genuinely unfinished or unverified. If the blocker is
@@ -169,11 +199,6 @@ export async function maybeRetriggerMission(
 
   // Work is done but unverified — do not retrigger planning, and do not close.
   if (isCriteriaBlockCode(dormancy.decision.code)) return { action: 'completion_blocked' };
-
-  // 6. Heartbeat missions don't self-retrigger — cron handles next cycle
-  if (isHeartbeat) {
-    return { action: 'skipped' };
-  }
 
   // 7. Depth guard — max cycles per trigger chain
   const chainTaskCount = await db
@@ -226,7 +251,13 @@ export async function maybeRetriggerMission(
 
   // 8. Stall detection — 2 consecutive COMPLETED cycles with zero non-aggregation children
   //    (Failed tasks are infrastructure issues, not planning stalls — handled separately)
-  const recentPlanningTasks = await db.query.tasks.findMany({
+  //
+  //    Not applied to a wake. The guard stops a self-sustaining loop of empty
+  //    cycles; a wake is one external event (the owner wrote, a dependency
+  //    cleared), which is exactly what should get a stalled mission another
+  //    look. It cannot loop: the cycle it starts completes through the normal
+  //    path, where this guard applies again.
+  const recentPlanningTasks = wakeReason ? [] : await db.query.tasks.findMany({
     where: and(
       eq(tasks.missionId, missionId),
       eq(tasks.mode, 'planning'),
@@ -292,17 +323,22 @@ export async function maybeRetriggerMission(
   }
 
   // 9. All guards pass — retrigger
-  const nextCycle: CycleContext = {
-    cycleNumber: currentCycle + 1,
-    triggerChainId,
-    triggerSource: 'retrigger',
-  };
+  const nextCycle: CycleContext = wakeReason
+    ? { cycleNumber: 1, triggerChainId, triggerSource: `wake:${wakeReason}` }
+    : { cycleNumber: currentCycle + 1, triggerChainId, triggerSource: 'event' };
 
   const run = _runMission ?? (await import('@/lib/mission-run')).runMission;
-  await run(missionId, {
+  const runResult = await run(missionId, {
     cycleContext: nextCycle,
     ...(stuckPlanningFeedback ? { stuckPlanningFeedback } : {}),
   });
+
+  // Deduped: a planning task is already in flight (a cron cycle or another
+  // event won the tasks_active_planning_per_mission race). That cycle covers
+  // this event; announcing a second cycle start would be false.
+  if (runResult?.deduped) {
+    return { action: 'skipped' };
+  }
 
   await triggerEvent(
     channels.mission(missionId),

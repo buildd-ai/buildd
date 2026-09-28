@@ -67,6 +67,14 @@ mock.module('@/lib/criteria-escalation', () => ({
 const mockEnsureMissionIntegrationBranch = mock(() =>
   Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true })
 );
+// wakeMission's own gating (manual / held / blocked) is covered in
+// lib/mission-wake.test.ts; here only when the route asks for a wake.
+const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
+  wakeMissionAfterResponse: mockWakeMissionAfterResponse,
+}));
+
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
 }));
@@ -182,6 +190,7 @@ describe('PATCH /api/missions/[id]', () => {
     escalateCriteriaFailureCalls = [];
     mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
+    mockWakeMissionAfterResponse.mockClear();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -637,6 +646,52 @@ describe('PATCH /api/missions/[id]', () => {
     expect(deletedTables).not.toContain('taskSchedules');
   });
 
+  // ── Wake on resume / budget raise (event-driven replanning §2) ──────────
+  const MID = '11111111-1111-4111-8111-111111111111';
+  function existingWithStatus(status: string, extra: Record<string, unknown> = {}) {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1',
+      scheduleId: 'sched-1', priority: 0, status, ...extra,
+    });
+  }
+  function patch(body: Record<string, unknown>) {
+    return PATCH(
+      new NextRequest(`http://localhost/api/missions/${MID}`, { method: 'PATCH', body: JSON.stringify(body) }),
+      { params: makeParams(MID) },
+    );
+  }
+
+  it('wakes the mission when a paused mission is resumed', async () => {
+    existingWithStatus('paused');
+    const res = await patch({ status: 'active' });
+    expect(res.status).toBe(200);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith(MID, 'resumed');
+  });
+
+  it('wakes the mission with budget_raised when a budget raise lifts budget_exhausted', async () => {
+    existingWithStatus('budget_exhausted', { costBudgetUsd: '10' });
+    const res = await patch({ costBudgetUsd: 20 });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('active');
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith(MID, 'budget_raised');
+  });
+
+  it('does not wake when the budget change leaves the mission exhausted', async () => {
+    existingWithStatus('budget_exhausted', { costBudgetUsd: '10' });
+    await patch({ costBudgetUsd: 5 });
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not wake on pausing, or on an edit to an already-active mission', async () => {
+    existingWithStatus('active');
+    await patch({ status: 'paused' });
+    await patch({ status: 'active' });
+    await patch({ priority: 3 });
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
   it('rejects PATCH goalCriteria item without type field', async () => {
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
@@ -966,6 +1021,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     escalateCriteriaFailureCalls = [];
     mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
+    mockWakeMissionAfterResponse.mockClear();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
