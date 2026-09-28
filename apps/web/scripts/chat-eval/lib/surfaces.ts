@@ -73,7 +73,7 @@ export function chatSystemPrompt(args: {
   return `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
     now: args.now ?? new Date(),
     timeZone: args.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
-    conversationId: '00000000-0000-4000-8000-000000000000',
+    conversationId: crypto.randomUUID(),
     workspace: args.workspace ? { ...args.workspace, source: 'pinned' } : null,
     ...(args.workspace ? {} : { workspaces: args.workspaces.map(w => ({ ...w, lastActiveAt: new Date().toISOString() })) }),
     user: { name: null, teamRole: 'owner', isOperator: true },

@@ -57,7 +57,7 @@ function cmdStatic() {
   const chat = chatToolDefs();
   const mcp = mcpToolDefs();
   const sum = (ds: ToolDef[]) => ds.reduce((s, d) => s + estTokens(JSON.stringify({ name: d.name, description: d.description, input_schema: d.inputSchema })), 0);
-  const prompt = chatSystemPrompt({ workspace: null, workspaces: [{ id: '00000000-0000-4000-8000-000000000001', name: 'example' }] });
+  const prompt = chatSystemPrompt({ workspace: null, workspaces: [{ id: crypto.randomUUID(), name: 'example' }] });
 
   console.log('Estimated tokens (≈3.6 chars/token; `probe` gives exact numbers)\n');
   console.log(`chat instructions + context block   ${lpad(estTokens(prompt), 6)}`);
@@ -89,7 +89,7 @@ function proxyServer(surface: Surface, toolsFile: string, logFile: string, qid: 
 async function cmdProbe() {
   const model = arg(argv, 'model') ?? 'haiku';
   const chat = chatToolDefs();
-  const prompt = chatSystemPrompt({ workspace: null, workspaces: [{ id: '00000000-0000-4000-8000-000000000001', name: 'example' }] });
+  const prompt = chatSystemPrompt({ workspace: null, workspaces: [{ id: crypto.randomUUID(), name: 'example' }] });
   const dir = dataPath('probe', 'x');
   const variants: Array<{ label: string; surface: Surface; system: string; tools: ToolDef[] | null }> = [
     { label: 'no tools, one-line system prompt', surface: 'chat', system: 'Reply OK.', tools: null },
