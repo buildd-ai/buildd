@@ -8,6 +8,7 @@ import { allActions } from '../mcp-tools';
 import {
   ACTION_AREA, ACTION_SUMMARY, MCP_TOOL_GROUPS, actionHelp, actionSignature, actionsOfGroup, derivedSignature,
   mcpGroupOf, mcpGroupOfToolName, mcpGroupToolName, mcpGroupPurpose, MCP_GROUP_PURPOSE_PARTS, SIGNATURE_OVERRIDE_ACTIONS,
+  MCP_GROUP_PARAMS, mcpGroupParamsSchema,
 } from '../mcp-tool-groups';
 
 const names = (sig: string) =>
@@ -115,5 +116,79 @@ describe('help', () => {
 
   it('is null for an unknown action', () => {
     expect(actionHelp('nope')).toBeNull();
+  });
+});
+
+describe('typed params', () => {
+  type Prop = { type?: string; description?: string; enum?: string[]; items?: { type?: string; properties?: Record<string, unknown> } };
+  const props = (g: Parameters<typeof mcpGroupParamsSchema>[0], actions: readonly string[]) =>
+    (mcpGroupParamsSchema(g, actions).properties ?? {}) as Record<string, Prop>;
+
+  it('every field is tagged only with actions of its group, and each one names it in its long docs', () => {
+    for (const g of MCP_TOOL_GROUPS) {
+      for (const f of MCP_GROUP_PARAMS[g]) {
+        expect(f.actions.length, `${g}.${f.name}`).toBeGreaterThan(0);
+        for (const a of f.actions) {
+          expect(mcpGroupOf(a), `${g}.${f.name} tags ${a}`).toBe(g);
+          if (f.name === 'action') continue;
+          expect(new RegExp(`\\b${f.name}\\b`).test(actionHelp(a)!), `${a} docs do not name ${f.name}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('every field has a type and one short description', () => {
+    for (const g of MCP_TOOL_GROUPS) {
+      for (const [name, p] of Object.entries(props(g, actionsOfGroup(g)))) {
+        expect(typeof p.type, `${g}.${name}`).toBe('string');
+        expect(p.description?.length ?? 0, `${g}.${name}`).toBeGreaterThan(3);
+        expect(p.description!.length, `${g}.${name}: ${p.description}`).toBeLessThanOrEqual(170);
+      }
+    }
+  });
+
+  it('missions: the fields a mission question needs, typed', () => {
+    const p = props('missions', actionsOfGroup('missions'));
+    for (const n of ['action', 'missionId', 'missionTitle', 'title', 'query', 'workspaceId', 'status', 'priority', 'awaitingOnly', 'goalCriteria']) {
+      expect(p[n], n).toBeDefined();
+    }
+    expect(p.autoSurfaceAudit?.type).toBe('boolean');
+    expect(p.autoSurfaceAudit!.description!.toLowerCase()).toContain('visual');
+    expect(p.autoVerify?.type).toBe('boolean');
+    expect(p.awaitingOnly?.type).toBe('boolean');
+    expect(p.priority?.type).toBe('number');
+    expect(p.startMode?.enum).toEqual(['armed', 'held']);
+    expect(p.goalCriteria?.type).toBe('array');
+    expect(p.goalCriteria?.items?.type).toBe('object');
+    expect(JSON.stringify(p.goalCriteria?.items)).toContain('all_prs_merged');
+    for (const sub of ['list', 'get', 'update', 'create', 'arm', 'evaluate']) expect(p.action.description).toContain(sub);
+    // Q2: get_visual_review with only a workspace lists what waits on you.
+    expect(p.workspaceId.description).toMatch(/get_visual_review/);
+    expect(p.workspaceId.description).toMatch(/awaiting your review/);
+    // A title stands in for missionId, and the field says so.
+    expect(p.missionId.description!.toLowerCase()).toContain('title');
+  });
+
+  it('runners, tasks: the common fields', () => {
+    const r = props('runners', actionsOfGroup('runners'));
+    expect(r.workspaceId.description!.toLowerCase()).toContain('browser');
+    const t = props('tasks', actionsOfGroup('tasks'));
+    for (const n of ['taskId', 'workspaceId', 'status', 'limit', 'include', 'title', 'priority']) expect(t[n], n).toBeDefined();
+    expect(t.include?.type).toBe('array');
+    expect(t.status.description).toContain('cancelled');
+  });
+
+  it('a level that lists part of a group gets only the fields its actions take', () => {
+    const p = props('missions', ['list_discrepancies', 'get_discrepancy']);
+    expect(p.missionTitle).toBeUndefined();
+    expect(p.autoSurfaceAudit).toBeUndefined();
+    expect(p.workspaceId?.description ?? '').not.toContain('get_visual_review');
+    expect(p.action?.description ?? '').not.toContain('manage_missions');
+  });
+
+  it('the schema is an open object: fields not typed still pass through', () => {
+    const s = mcpGroupParamsSchema('missions', actionsOfGroup('missions')) as { type: string; additionalProperties?: unknown };
+    expect(s.type).toBe('object');
+    expect(s.additionalProperties).not.toBe(false);
   });
 });
