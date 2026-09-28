@@ -148,6 +148,7 @@ export const CHAT_TOOL_SPECS = withAreas({
 
   // ── PRs, reviews, releases ──
   get_pr: one(read('GET /api/github/pr')),
+  list_prs: one(read('GET /api/prs')),
   get_pr_review: one(read('GET /api/github/pr/review')),
   merge_pr: one(deferred(`${KEY_ONLY} (and needs the green-CI + merge-safety gate from the design)`)),
   close_pr: one(deferred(KEY_ONLY)),

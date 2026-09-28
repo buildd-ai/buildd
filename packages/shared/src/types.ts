@@ -2754,3 +2754,35 @@ export interface FleetSnapshot {
   /** Timeline window, epoch ms. */
   window: { from: number; to: number };
 }
+
+// ── GET /api/prs (list_prs) ─────────────────────────────────────────────────
+
+/** Which PRs `GET /api/prs` lists. There is deliberately no `closed`. */
+export type PrListState = 'open' | 'attention' | 'conflict' | 'ci_failed' | 'merged';
+
+/** One PR, collapsed from all the workers that share it (apps/web/src/lib/pr-list.ts). */
+export interface PrListItem {
+  workerId: string;
+  prNumber: number | null;
+  prUrl: string;
+  status: string | null;
+  mergedAt: string | null;
+  lastCheckedAt: string | null;
+  conflictDetectedAt: string | null;
+  startedAt: string | null;
+  workspaceId: string;
+  workspaceName: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
+}
+
+export interface ListPrsResponse {
+  state: PrListState;
+  /** How many workspaces the list covered. */
+  workspaceCount: number;
+  /** merged only: the window. */
+  sinceDays?: number;
+  prs: PrListItem[];
+}

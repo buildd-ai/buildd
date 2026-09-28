@@ -229,7 +229,7 @@ describe('descriptions of tools with a typed chat schema', () => {
   // The model reads these on every step of every turn. The MCP params dump
   // (cut at 1500 chars) repeated the schema and listed worker-only fields
   // chat never sets, or refuses (context, parentTaskId).
-  const TYPED = ['list_tasks', 'get_task', 'manage_missions', 'create_task', 'send_agent_message', 'list_schedules', 'trace_schedule', 'list_artifacts'];
+  const TYPED = ['list_tasks', 'get_task', 'list_prs', 'get_pr', 'manage_missions', 'create_task', 'send_agent_message', 'list_schedules', 'trace_schedule', 'list_artifacts'];
 
   it('are written for chat, not the MCP params dump', () => {
     const { tools } = setup();
@@ -262,5 +262,38 @@ describe('boilerplate said once, not per tool', () => {
       expect({ name, preamble: d.includes('Action-specific parameters') }).toEqual({ name, preamble: false });
       expect({ name, card: d.includes('Writes show the user an approval card') }).toEqual({ name, card: false });
     }
+  });
+});
+
+describe('PR reads', () => {
+  it('list_prs is a read in the prs group, and closed is not a state it takes', () => {
+    const { tools } = setup({ allowWrites: false });
+    const schema = (tools.list_prs as any).inputSchema;
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ state: 'attention', workspaceId: 'dispatch-family' }).success).toBe(true);
+    expect(schema.safeParse({ state: 'closed' }).success).toBe(false);
+  });
+
+  it('get_pr tells the model to pass the workspace: one number can exist in several repos', () => {
+    const { tools } = setup();
+    const d = (tools.get_pr as any).description as string;
+    expect(d).toContain('workspaceId');
+    expect((tools.get_pr as any).inputSchema.safeParse({ prNumber: 12, workspaceId: 'ws' }).success).toBe(true);
+    expect((tools.get_pr as any).inputSchema.safeParse({ prNumber: '#12' }).success).toBe(true);
+  });
+});
+
+describe('get_pr in a pinned conversation', () => {
+  it('uses the conversation workspace when the model names none', async () => {
+    const seen: any[] = [];
+    const tools = buildChatTools({
+      ctx: { workspaceId: 'ws-pinned', getWorkspaceId: async () => 'ws-pinned', getLevel: async () => 'admin' } as any,
+      allowWrites: false, authorizedToolCallIds: new Set(),
+      handle: (async (_api: any, action: string, input: any) => { seen.push({ action, input }); return { content: [{ type: 'text', text: 'ok' }] }; }) as any,
+      makeApi: () => (async () => ({})) as any,
+    });
+    await (tools.get_pr as any).execute({ prNumber: 12 }, { toolCallId: 'c1', messages: [] });
+    await (tools.get_pr as any).execute({ prNumber: 13, workspaceId: 'ws-other' }, { toolCallId: 'c2', messages: [] });
+    expect(seen.map(s => s.input.workspaceId)).toEqual(['ws-pinned', 'ws-other']);
   });
 });

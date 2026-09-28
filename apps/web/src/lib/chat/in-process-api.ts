@@ -92,6 +92,10 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/connectors/mounted', methods: ['GET'], load: () => import('@/app/api/connectors/mounted/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
 
   // ── PRs and releases ──
+  {
+    pattern: '/api/prs', methods: ['GET'], load: () => import('@/app/api/prs/route'),
+    reach: { unpinned: 'lists the caller\'s PRs; every row carries its workspaceId and is filtered', ...ROWS },
+  },
   { pattern: '/api/github/pr', methods: ['GET'], load: () => import('@/app/api/github/pr/route'), reach: { pinTeam: true, requireQuery: ['workerId', 'workspaceId'], ...ROWS } },
   { pattern: '/api/github/pr/review', methods: ['GET'], load: () => import('@/app/api/github/pr/review/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/releases', methods: ['GET'], load: () => import('@/app/api/releases/route'), reach: { requireQuery: ['workspaceId', 'missionId'], ...ROWS } },
