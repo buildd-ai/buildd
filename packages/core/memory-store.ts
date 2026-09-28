@@ -18,6 +18,7 @@ import { normalizeMemoryFileScope } from './memory-file-scope';
 import { tokenizeMemoryQuery } from './memory-query-tokens';
 import { tokenMatchScoreSql } from './memory-query-tokens-sql';
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
+import { MEMORY_CONTEXT_LIMIT, renderMemoryContext } from './memory-context';
 import {
   memoryStateOf,
   MEMORY_REVIEW_FROM,
@@ -161,20 +162,9 @@ export class MemoryStore {
         inArray(memories.state, [...PUSH_MEMORY_STATES]),
       ),
       orderBy: [desc(memories.updatedAt), desc(memories.id)],
-      limit: 20,
+      limit: MEMORY_CONTEXT_LIMIT,
     });
-
-    if (rows.length === 0) return { markdown: '', count: 0 };
-
-    const lines = rows.map(m => {
-      const meta = [
-        m.type,
-        m.tags?.length ? m.tags.join(', ') : null,
-      ].filter(Boolean).join(' · ');
-      return `## [${meta}] ${m.title}\n${m.content}`;
-    });
-
-    return { markdown: lines.join('\n\n---\n\n'), count: rows.length };
+    return renderMemoryContext(rows);
   }
 
   /**

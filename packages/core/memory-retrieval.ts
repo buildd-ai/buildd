@@ -5,7 +5,8 @@
  * `retrieveMemory`: `recall` and `query_knowledge` (pulls), and the claim-time
  * "Related prior work" block, the claim recipe block, mission planning,
  * authoring-time prior work, the `claim_task` "Relevant Memory" reply and the
- * runner's `## Workspace Memory` search (pushes). See
+ * runner's `## Workspace Memory` search (pushes), and the deprecated
+ * `buildd_memory` search and context (pulls, until that tool goes). See
  * docs/design/memory-done-right.md.
  *
  * What it owns, so no caller re-implements it:
@@ -54,7 +55,9 @@ export type MemoryCaller =
   | 'mission_planning'
   | 'authoring_prior_work'
   | 'claim_task_reply'
-  | 'runner_workspace_memory';
+  | 'runner_workspace_memory'
+  | 'buildd_memory_search'
+  | 'buildd_memory_context';
 
 export type MemoryVia = 'push' | 'pull';
 
@@ -68,6 +71,8 @@ export const MEMORY_CALLER_VIA: Record<MemoryCaller, MemoryVia> = {
   authoring_prior_work: 'push',
   claim_task_reply: 'push',
   runner_workspace_memory: 'push',
+  buildd_memory_search: 'pull',
+  buildd_memory_context: 'pull',
 };
 
 /** Why a retrieved hit was held back. Stored in `memory_uses.gated_by`. */
@@ -469,8 +474,12 @@ export interface RetrieveStoreMemoryInput {
    * workspace's own key, resolved here, whatever the caller put in it.
    */
   search: MemoryStoreSearchParams;
-  /** `workspaceId` decides the project; without one there is no memory. */
-  scope: { teamId: string | null | undefined; workspaceId?: string | null };
+  /**
+   * `workspaceId` decides the project; without one there is no memory.
+   * `project` is that workspace's key already resolved (the MCP session
+   * resolves it once): used as is, never looked up. `null`: no memory.
+   */
+  scope: { teamId: string | null | undefined; workspaceId?: string | null; project?: string | null };
   caller: MemoryCaller;
   attribution?: MemoryAttribution;
   ledger?: MemoryLedgerWriter | false;
@@ -618,7 +627,9 @@ async function retrieveStoreMemory(
   // (memoryProjectKey), never from the caller's search params: the store is
   // team-wide, and a search with no project, or another project, would read
   // other workspaces' memory. No key means no memory and no search.
-  const project = await resolveStoreProject(input.scope.workspaceId);
+  const project = input.scope.project !== undefined
+    ? input.scope.project
+    : await resolveStoreProject(input.scope.workspaceId);
   if (!project) return { ...empty, unavailable: true };
 
   const searchData = await input.searcher.search({
