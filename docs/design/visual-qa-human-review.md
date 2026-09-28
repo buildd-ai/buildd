@@ -1,11 +1,14 @@
 ---
 status: partially
-# Slice 1 (model, scoped loader, GET route) and slice 2 (the decisions route,
-# rounds, the shadow completion hold) have shipped. Slices 3-5 (the review
-# component family, mission-page wiring, chat integration) have not, so this
-# assertion set includes one deliberately-failing symbol from slice 3 —
-# review-deck-component — to keep the derived status honestly `partial`
-# instead of `implemented`.
+# Slice 1 (model, scoped loader, GET route), slice 2 (the decisions route,
+# rounds, the shadow completion hold) and slice 3 (the review component
+# family) have shipped. Slices 4-5 (mission-page wiring, chat integration)
+# have not, so this assertion set includes one deliberately-failing
+# symbol_reachable from slice 4 — mission-page-tray-wiring — to keep the
+# derived status honestly `partial` instead of `implemented`.
+# review-deck-component genuinely shipped in slice 3 (PR that built
+# apps/web/src/components/visual-review/) — suppressed below (skip_until)
+# rather than left to promote a doc that is still partial overall.
 assertions:
   - id: "cell-matrix-model"
     type: "symbol"
@@ -29,6 +32,12 @@ assertions:
     type: "symbol"
     name: "VisualReviewDeck"
     path: "apps/web/src/components/visual-review/VisualReviewDeck.tsx"
+    skip_until: "2026-12-19"
+    skip_reason: "VisualReviewDeck genuinely shipped (slice 3, the review component family) — this isn't a false positive — but the doc must stay 'partially' until mission-page-tray-wiring (slice 4) ships, so this assertion will pass forever under a non-terminal status. mission-page-tray-wiring is the assertion that tracks real remaining progress."
+  - id: "mission-page-tray-wiring"
+    type: "symbol_reachable"
+    symbol: "VisualReviewTray"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
 ---
 
 # Visual QA: human review loop
