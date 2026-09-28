@@ -334,6 +334,40 @@ describe('buildConflictRetryTask', () => {
       expect(result!.pathManifest).toBeNull();
     });
   });
+
+  describe('migrationCollision flavor', () => {
+    const collision = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 };
+
+    it('titles and describes the task as a migration collision, not a merge conflict', () => {
+      const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
+      expect(result).not.toBeNull();
+      expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
+      expect(result!.description).toContain('migration-number collision with open PR #100');
+      expect(result!.description).toContain('0093_safe.sql');
+      expect(result!.description).toContain('0093_other.sql');
+      expect(result!.description).not.toContain('merge conflicts with the base branch');
+    });
+
+    it('sets errorType to migration_collision in failureContext', () => {
+      const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
+      expect((result!.context.failureContext as any).errorType).toBe('migration_collision');
+    });
+
+    it('still honors the iteration cap like a normal conflict retry', () => {
+      const input = makeInput({
+        migrationCollision: collision,
+        originalTask: {
+          id: 'task-abc',
+          title: 'feat: add dark mode',
+          description: null,
+          workspaceId: 'ws-1',
+          context: { conflictIteration: 3 },
+          missionId: null,
+        },
+      });
+      expect(buildConflictRetryTask(input)).toBeNull();
+    });
+  });
 });
 
 // ── dispatchConflictRetry ─────────────────────────────────────────────────────
@@ -487,6 +521,18 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.subjectHeadSha).toBe('sha-abc123');
     expect(capturedInsertValues.subjectBranch).toBe('buildd/task-id-some-feature');
     expect(capturedInsertValues.subjectDedupeScope).toBe('active');
+  });
+
+  it('dispatches a migration-collision-flavored task through the same dedup/cap machinery', async () => {
+    const collision = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 };
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, migrationCollision: collision });
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues).not.toBeNull();
+    expect(capturedInsertValues.title).toBe('[builder · migration collision #1] feat: some feature');
+    expect(capturedInsertValues.description).toContain('migration-number collision with open PR #100');
+    expect(capturedInsertValues.conflictRetryPrNumber).toBe(99);
+    expect(capturedInsertValues.conflictRetryHeadSha).toBe('sha-abc123');
   });
 
   it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {

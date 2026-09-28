@@ -30,6 +30,7 @@ deciding whether to step in, so every rule below comes down to two things:
 | reviewing | `reviewing` | Reviewing / Re-reviewing · after fix N of M | spinner |
 | changes requested, fix not claimed | `review_changes_requested` | ○ Fix N of M queued · waiting for a worker | none |
 | CI red, fix not claimed | `ci_fixing` | ○ CI fix N of M queued · waiting for a worker | none |
+| migration-number collision, fix not claimed | `migration_collision_fixing` | ○ Migration slot conflict · fix N of M queued · waiting for a worker | none |
 | worker claimed the fix | `fix_started` | Fixing · fix N of M | spinner |
 | fix pushed | `changes_pushed` | ○ Pushed `abc1234` · waiting on checks | none |
 | approved, auto-merge pending | `review_approved` | ✓ Approved · merging once checks pass | none |
