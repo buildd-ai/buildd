@@ -76,4 +76,61 @@ describe('correct_task_result', () => {
     const body = JSON.parse(opts.body);
     expect(body.correctedBy).toBe(`worker:${WORKER_ID}`);
   });
+
+  describe('attaching a PR', () => {
+    it('requires a summary, a prUrl or a prNumber', async () => {
+      const mockApi = mock() as unknown as ApiFn;
+      await expect(
+        handleBuilddAction(mockApi, 'correct_task_result', { taskId: TASK_ID }, ctx()),
+      ).rejects.toThrow(/summary|prUrl/);
+    });
+
+    it('POSTs prUrl to attach-pr and skips the summary PATCH when no summary is given', async () => {
+      const mockApi = mock(async () => ({
+        ok: true,
+        taskId: TASK_ID,
+        title: 'Closed by hand',
+        alreadyAttached: false,
+        workerId: WORKER_ID,
+        prNumber: 17,
+        prUrl: 'https://github.com/acme/widgets/pull/17',
+        prState: 'merged',
+      })) as unknown as ApiFn;
+
+      const result = await handleBuilddAction(
+        mockApi,
+        'correct_task_result',
+        { taskId: TASK_ID, prUrl: 'https://github.com/acme/widgets/pull/17' },
+        ctx(),
+      );
+
+      const calls = (mockApi as ReturnType<typeof mock>).mock.calls;
+      expect(calls).toHaveLength(1);
+      const [endpoint, opts] = calls[0];
+      expect(endpoint).toBe(`/api/tasks/${TASK_ID}/attach-pr`);
+      expect(opts.method).toBe('POST');
+      expect(JSON.parse(opts.body)).toEqual({ prUrl: 'https://github.com/acme/widgets/pull/17' });
+      expect(result.content[0].text).toContain('PR #17');
+      expect(result.content[0].text).toContain('merged');
+    });
+
+    it('attaches the PR first, then corrects the summary', async () => {
+      const mockApi = mock(async (endpoint: string) => endpoint.endsWith('/attach-pr')
+        ? { ok: true, taskId: TASK_ID, title: 't', alreadyAttached: true, workerId: WORKER_ID, prNumber: 17, prUrl: 'u', prState: 'open' }
+        : { id: TASK_ID, title: 't', result: { summary: 'Shipped in #17' } }) as unknown as ApiFn;
+
+      const result = await handleBuilddAction(
+        mockApi,
+        'correct_task_result',
+        { taskId: TASK_ID, prNumber: 17, summary: 'Shipped in #17' },
+        ctx(),
+      );
+
+      const calls = (mockApi as ReturnType<typeof mock>).mock.calls;
+      expect(calls.map((c: unknown[]) => c[0])).toEqual([`/api/tasks/${TASK_ID}/attach-pr`, `/api/tasks/${TASK_ID}`]);
+      expect(JSON.parse(calls[0][1].body)).toEqual({ prNumber: 17 });
+      expect(result.content[0].text).toContain('already attached');
+      expect(result.content[0].text).toContain('Shipped in #17');
+    });
+  });
 });
