@@ -13,6 +13,9 @@ npm i -E @builddai/ai-kit@0.9.0
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
 and you should re-run your evals before taking it.
+Releases publish on merge: a version bump landing on buildd's `dev` branch goes
+to npm with provenance and is tagged `ai-kit-v<version>`. See
+[CHANGELOG.md](./CHANGELOG.md).
 
 ## Entry points
 

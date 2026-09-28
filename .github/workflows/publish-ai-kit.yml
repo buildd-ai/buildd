@@ -3,15 +3,36 @@ name: Publish @builddai/ai-kit
 # Publishes packages/ai-kit to public npm as @builddai/ai-kit, with provenance,
 # through npm trusted publishing (GitHub OIDC). No npm token is stored
 # anywhere: npm trusts this repo + this workflow file, configured once on the
-# package's npmjs.com settings page (Settings → Trusted publisher).
+# package's npmjs.com settings page (Settings → Trusted publisher). That trust
+# is per workflow FILE, which is why the auto-release lives here rather than in
+# a separate workflow that calls this one.
 #
 # Release: bump `version` in packages/ai-kit/package.json (exact semver,
 # independent of buildd's release version, which scripts/release.sh never
-# touches here) and add a CHANGELOG entry, merge, then push a matching tag:
+# touches here), add a `## <version>` CHANGELOG entry and bump `KIT_VERSION` in
+# src/decide/index.ts, and merge to dev. Merging publishes; there is no manual
+# step:
+#
+#   plan    — on a push to dev that changes package.json, compares `version`
+#             with the pre-push tip (`github.event.before`, else HEAD^). No
+#             change, a tag `ai-kit-v<version>` that already exists, or the
+#             version already on npm ⇒ green no-op.
+#   publish — the checks below, then `npm publish --provenance`.
+#   tag     — only after a successful publish, tags the commit
+#             `ai-kit-v<version>`. Tagging after publishing means a failed
+#             publish leaves no tag, so re-running the run retries it.
+#
+# The tag is pushed with GITHUB_TOKEN, which deliberately does NOT re-trigger
+# this workflow's tag path (the publish already happened in this run).
+#
+# Pushing a tag by hand still works and is the fallback for a version the
+# auto path skipped:
 #
 #   git tag ai-kit-v0.1.0 origin/dev && git push origin ai-kit-v0.1.0
 #
-# The tag must equal `ai-kit-v<version>` or the job fails before publishing.
+# The tag must equal `ai-kit-v<version>`, and CHANGELOG.md must have a
+# `## <version>` heading, or the job fails before publishing. An already
+# published version is skipped, never republished.
 # `workflow_dispatch` runs the same checks and a `npm publish --dry-run`
 # unless `publish` is ticked (then only from a matching tag ref).
 #
@@ -20,6 +41,9 @@ name: Publish @builddai/ai-kit
 
 on:
   push:
+    branches: [dev]
+    # Path filters apply to the branch push only; tag pushes always run.
+    paths: ['packages/ai-kit/package.json']
     tags: ['ai-kit-v*']
   workflow_dispatch:
     inputs:
@@ -36,7 +60,79 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      # No `${{ }}` in the script: scripts/publish-ai-kit-workflow.test.ts
+      # runs it verbatim against scratch repositories.
+      - name: Decide whether this push releases the kit
+        id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          PKG=packages/ai-kit/package.json
+          version_at() {
+            git show "$1:$PKG" 2>/dev/null \
+              | node -e 'try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).version ?? "")) } catch {}' \
+              || true
+          }
+
+          VERSION=$(node -p "require('./$PKG').version")
+          TAG="ai-kit-v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Compare with the tip before this push, so a push of several
+          # commits whose bump isn't the last one still counts.
+          BASE=""
+          if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            git cat-file -e "${BEFORE}^{commit}" 2>/dev/null \
+              || git fetch --no-tags --depth=1 origin "$BEFORE" 2>/dev/null \
+              || true
+            if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then BASE="$BEFORE"; fi
+          fi
+          if [ -z "$BASE" ] && git rev-parse -q --verify HEAD^ >/dev/null; then
+            BASE=HEAD^
+          fi
+          PREVIOUS=""
+          if [ -n "$BASE" ]; then PREVIOUS=$(version_at "$BASE"); fi
+
+          if [ "$VERSION" = "$PREVIOUS" ]; then
+            echo "::notice::packages/ai-kit version unchanged ($VERSION); nothing to release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::packages/ai-kit version '$VERSION' is not exact semver (no ranges, no pre-release tags)."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::Tag $TAG already exists; its tag push owns the publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(npm view "@builddai/ai-kit@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@builddai/ai-kit@$VERSION is already on npm; nothing to release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::packages/ai-kit ${PREVIOUS:-<none>} → $VERSION: publishing and tagging $TAG."
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: plan
+    # Tag push / dispatch: plan is skipped. Dev push: only when plan says so.
+    if: ${{ !cancelled() && (needs.plan.result == 'skipped' || needs.plan.outputs.publish == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,8 +159,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # No `${{ }}` in the script (inputs arrive through env), so
+      # scripts/publish-ai-kit-workflow.test.ts can run it verbatim.
       - name: Check the tag matches the package version
         id: version
+        env:
+          # Set on the auto-release path (push to dev); empty otherwise.
+          PLANNED_TAG: ${{ needs.plan.outputs.tag }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./packages/ai-kit/package.json').version")
@@ -73,15 +175,31 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            if [ "${GITHUB_REF_NAME}" != "ai-kit-v${VERSION}" ]; then
-              echo "::error::Tag ${GITHUB_REF_NAME} does not match packages/ai-kit version ${VERSION} (expected ai-kit-v${VERSION})."
-              exit 1
-            fi
-          elif [ "${{ inputs.publish }}" = "true" ]; then
-            echo "::error::A real publish must run on an ai-kit-v* tag, not ${GITHUB_REF_NAME}."
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ -n "${PLANNED_TAG:-}" ]; then
+            TAG="$PLANNED_TAG"
+          elif [ "${DISPATCH_PUBLISH:-}" = "true" ]; then
+            echo "::error::A real publish must run on an ai-kit-v* tag, not ${GITHUB_REF_NAME:-this ref}."
+            exit 1
+          else
+            TAG=""
+          fi
+          if [ -n "$TAG" ] && [ "$TAG" != "ai-kit-v${VERSION}" ]; then
+            echo "::error::Tag ${TAG} does not match packages/ai-kit version ${VERSION} (expected ai-kit-v${VERSION})."
             exit 1
           fi
+
+          # A release without its changelog entry is not a release. The
+          # KIT_VERSION ↔ package.json match is asserted by define.test.ts,
+          # which the Test step below runs.
+          if ! grep -Eq "^## ${VERSION//./\\.}([[:space:]]|$)" packages/ai-kit/CHANGELOG.md; then
+            echo "::error::packages/ai-kit/CHANGELOG.md has no '## ${VERSION}' heading. Add the entry before releasing."
+            exit 1
+          fi
+
+          if [ -n "$TAG" ]; then echo "real=true" >> "$GITHUB_OUTPUT"; else echo "real=false" >> "$GITHUB_OUTPUT"; fi
 
       - name: Type check
         working-directory: packages/ai-kit
@@ -104,17 +222,45 @@ jobs:
         run: node scripts/smoke-consumer.mjs
 
       - name: Publish (dry run)
-        if: github.ref_type != 'tag' && inputs.publish != true
+        if: steps.version.outputs.real != 'true'
         working-directory: packages/ai-kit/dist
         run: npm publish --dry-run --access public
 
       - name: Publish to npm with provenance
-        if: github.ref_type == 'tag' || inputs.publish == true
+        if: steps.version.outputs.real == 'true'
         working-directory: packages/ai-kit/dist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if npm view "@builddai/ai-kit@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
-            echo "::notice::@builddai/ai-kit@${{ steps.version.outputs.version }} is already on npm; nothing to publish."
+          if [ "$(npm view "@builddai/ai-kit@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@builddai/ai-kit@${VERSION} is already on npm; nothing to publish."
             exit 0
           fi
           npm publish --provenance --access public
+
+  tag:
+    needs: [plan, publish]
+    if: needs.plan.outputs.publish == 'true' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the published commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${GITHUB_SHA}" >/dev/null; then
+            echo "::notice::Tagged ${GITHUB_SHA} as ${TAG}."
+            exit 0
+          fi
+          # Already there (a re-run, or a hand-pushed tag): fine only if it
+          # points at this commit.
+          EXISTING=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
+          if [ "$EXISTING" != "$GITHUB_SHA" ]; then
+            echo "::error::${TAG} already points at ${EXISTING}, not the published commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          echo "::notice::${TAG} already points at ${GITHUB_SHA}."
