@@ -12,13 +12,20 @@
 
 import { db } from './db';
 import { memories } from './db/schema';
-import { eq, and, inArray, or, ilike, desc, isNull, sql, count as dbCount } from 'drizzle-orm';
+import { eq, and, inArray, or, ilike, desc, isNull, isNotNull, sql, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
 import { normalizeMemoryFileScope } from './memory-file-scope';
 import { tokenizeMemoryQuery } from './memory-query-tokens';
 import { tokenMatchScoreSql } from './memory-query-tokens-sql';
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
-import { memoryStateOf, PUSH_MEMORY_STATES, type MemoryState, type MemorySourceKind } from './memory-candidates';
+import {
+  memoryStateOf,
+  MEMORY_REVIEW_FROM,
+  PUSH_MEMORY_STATES,
+  type MemoryReviewAction,
+  type MemoryState,
+  type MemorySourceKind,
+} from './memory-candidates';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -59,7 +66,16 @@ export interface MemorySearchResult {
   tags?: string[];
   files?: string[];
   state?: MemoryState;
+  supersededBy?: string | null;
+  reverifyFlaggedAt?: string | null;
+  reverifyRef?: string | null;
   createdAt: string;
+}
+
+/** Result of a review transition: the row after it, and rows its promotion superseded. */
+export interface MemoryTransitionResult {
+  memory: MemoryRecord;
+  supersededIds: string[];
 }
 
 export interface SaveMemoryInput {
@@ -175,6 +191,10 @@ export class MemoryStore {
     files?: string[];
     /** Only these lifecycle states. Omitted: every state (the dashboard list). */
     states?: readonly MemoryState[];
+    /** Also list rows recorded as replaced. Default false: only the dashboard asks. */
+    includeSuperseded?: boolean;
+    /** Only rows a merged PR flagged for re-verification. */
+    reverifyFlagged?: boolean;
     limit?: number;
     offset?: number;
   } = {}): Promise<{ results: MemorySearchResult[]; total: number; limit: number; offset: number }> {
@@ -183,8 +203,11 @@ export class MemoryStore {
 
     // A memory recorded as replaced (`superseded_by`) is not served: the
     // replacement is. Its row stays for history and for the index's own
-    // supersession, and `get`/`batch` by id still reach it.
-    const conditions = [eq(memories.teamId, this.teamId), isNull(memories.supersededBy)];
+    // supersession, and `get`/`batch` by id still reach it. The dashboard
+    // opts in to see it, labelled as superseded.
+    const conditions = [eq(memories.teamId, this.teamId)];
+    if (!params.includeSuperseded) conditions.push(isNull(memories.supersededBy));
+    if (params.reverifyFlagged) conditions.push(isNotNull(memories.reverifyFlaggedAt));
 
     if (params.type) {
       conditions.push(eq(memories.type, params.type as MemoryRecord['type']));
@@ -285,6 +308,9 @@ export class MemoryStore {
       tags: m.tags,
       files: m.files,
       state: memoryStateOf(m),
+      supersededBy: m.supersededBy ?? null,
+      reverifyFlaggedAt: m.reverifyFlaggedAt ? m.reverifyFlaggedAt.toISOString() : null,
+      reverifyRef: m.reverifyRef ?? null,
       createdAt: m.createdAt.toISOString(),
     }));
 
@@ -393,6 +419,71 @@ export class MemoryStore {
       .where(and(eq(memories.teamId, this.teamId), inArray(memories.id, targets)))
       .returning({ id: memories.id });
     return rows.length;
+  }
+
+  /**
+   * Apply a human review action (see MEMORY_REVIEW_ACTIONS) to one memory in
+   * this team and `project`. One atomic UPDATE whose WHERE re-checks the
+   * allowed starting states, so a row that moved since the page loaded, sits
+   * under another project, or was superseded is left alone: null means
+   * nothing changed.
+   *
+   * A promotion also applies the row's deferred supersedes, as the automatic
+   * pass does: same team and project only, then clears the list.
+   */
+  async transition(id: string, project: string, action: MemoryReviewAction): Promise<MemoryTransitionResult | null> {
+    const scope = normalizeProject(project);
+    if (!scope) return null;
+    const now = new Date();
+    const set: Partial<typeof memories.$inferInsert> = { updatedAt: now };
+    if (action === 'promote') {
+      set.state = 'active';
+      set.validFrom = now;
+    } else if (action === 'dismiss') {
+      set.state = 'invalidated';
+      set.invalidatedAt = now;
+      // A retired row is no longer anything to re-check.
+      set.reverifyFlaggedAt = null;
+      set.reverifyRef = null;
+    } else {
+      set.reverifyFlaggedAt = null;
+      set.reverifyRef = null;
+    }
+
+    const [row] = await db.update(memories)
+      .set(set)
+      .where(and(
+        eq(memories.id, id),
+        eq(memories.teamId, this.teamId),
+        eq(memories.project, scope),
+        isNull(memories.supersededBy),
+        inArray(memories.state, [...MEMORY_REVIEW_FROM[action]]),
+        ...(action === 'reverified' ? [isNotNull(memories.reverifyFlaggedAt)] : []),
+      ))
+      .returning();
+    if (!row) return null;
+
+    let supersededIds: string[] = [];
+    const pending = (row.pendingSupersedes ?? []).filter(p => p && p !== row.id);
+    if (action === 'promote' && pending.length > 0) {
+      const replaced = await db.update(memories)
+        .set({ supersededBy: row.id, invalidatedAt: sql`COALESCE(${memories.invalidatedAt}, now())`, updatedAt: now })
+        .where(and(
+          eq(memories.teamId, this.teamId),
+          eq(memories.project, scope),
+          inArray(memories.id, pending),
+          sql`${memories.id} <> ${row.id}`,
+          isNull(memories.supersededBy),
+        ))
+        .returning({ id: memories.id });
+      supersededIds = replaced.map(r => r.id);
+      const [cleared] = await db.update(memories)
+        .set({ pendingSupersedes: [] })
+        .where(and(eq(memories.id, row.id), eq(memories.teamId, this.teamId)))
+        .returning();
+      return { memory: toRecord(cleared ?? row), supersededIds };
+    }
+    return { memory: toRecord(row), supersededIds };
   }
 
   /** Delete a memory. */
