@@ -5606,14 +5606,15 @@ export async function handleBuilddAction(
 
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
-import { MemoryStore } from './memory-store';
+import { MemoryStore, type MemoryRecord } from './memory-store';
+import { MEMORY_CONTEXT_LIMIT, renderMemoryContext } from './memory-context';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
-import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
-import { memoryStateOf, pullMemoryStates, type MemoryProvenance } from './memory-candidates';
+import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter, type MemoryStoreSearcher } from './memory-retrieval';
+import { memoryStateOf, type MemoryProvenance } from './memory-candidates';
 import {
   buildMemoryIndex,
   isMemoryIndexEnabled,
@@ -6614,37 +6615,54 @@ export async function handleMemoryAction(
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const scoped = ownMemoryProject(ctx, params.project);
       if ('error' in scoped) return errorResult(scoped.error);
-      const data = await mc.getContext(scoped.project);
-      return text(data.markdown || '(No memories yet)');
+      // The same rows getContext reads (the newest active memories), through
+      // the door so the use ledger records what the agent was shown.
+      const { memories } = await retrieveMemory<MemoryRecord>({
+        strategy: 'store-search',
+        searcher: mc,
+        search: { limit: MEMORY_CONTEXT_LIMIT },
+        scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, project: scoped.project },
+        caller: 'buildd_memory_context',
+        attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+        ledger: ctx.memoryLedger,
+      });
+      return text(renderMemoryContext(memories).markdown || '(No memories yet)');
     }
 
     case 'search': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const scoped = ownMemoryProject(ctx, params.project);
       if ('error' in scoped) return errorResult(scoped.error);
-      const data = await mc.search({
-        query: params.query as string | undefined,
-        type: params.type as string | undefined,
-        project: scoped.project,
-        files: params.files as string[] | undefined,
+      // Through the door, so the use ledger records each memory returned. A
+      // failed hydration still answers with the search's summary rows.
+      let searched: { results: any[]; total: number } = { results: [], total: 0 };
+      const searcher: MemoryStoreSearcher = {
+        search: async (p) => (searched = await mc.search(p)),
+        batch: async (ids) => {
+          try { return await mc.batch(ids); } catch { return { memories: [] }; }
+        },
+      };
+      const { memories: fetched } = await retrieveMemory<any>({
+        strategy: 'store-search',
+        searcher,
+        search: {
+          query: params.query as string | undefined,
+          type: params.type as string | undefined,
+          files: params.files as string[] | undefined,
+          limit: Math.min((params.limit as number) || 10, 50),
+          offset: params.offset as number | undefined,
+        },
+        scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, project: scoped.project },
+        caller: 'buildd_memory_search',
         // A pull: active memories, and candidates when asked for.
-        states: pullMemoryStates(params.includeCandidates === true),
-        limit: Math.min((params.limit as number) || 10, 50),
-        offset: params.offset as number | undefined,
+        includeCandidates: params.includeCandidates === true,
+        attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+        ledger: ctx.memoryLedger,
       });
+      const data = searched;
 
       if (!data.results || data.results.length === 0) {
         return text(`No memories found${params.query ? ` matching "${params.query}"` : ''}. Use \`learn\` to record memories.`);
-      }
-
-      // Fetch full content
-      const ids = data.results.map(r => r.id);
-      let fetched: any[] = [];
-      try {
-        const batchData = await mc.batch(ids);
-        fetched = batchData.memories || [];
-      } catch {
-        fetched = [];
       }
 
       if (fetched.length > 0) {

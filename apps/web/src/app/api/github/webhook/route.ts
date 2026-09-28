@@ -80,6 +80,7 @@ import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-ver
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
+import { recordPrReverts } from '@/lib/pr-reverts';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -131,6 +132,10 @@ export async function POST(req: NextRequest) {
 
       case 'workflow_run':
         await handleWorkflowRunEvent(data);
+        break;
+
+      case 'push':
+        await handlePushEvent(data);
         break;
 
       case 'ping':
@@ -627,6 +632,7 @@ async function handlePullRequestEvent(event: {
   pull_request: {
     number: number;
     title?: string;
+    body?: string | null;
     merged: boolean;
     draft?: boolean;
     merge_commit_sha?: string | null;
@@ -922,6 +928,17 @@ async function handlePullRequestEvent(event: {
     }
   } catch (err) {
     console.error('[knowledge-ingest] enqueue failed (non-fatal):', err);
+  }
+
+  // Revert ledger: a merged PR whose title/body reverts another PR (or a
+  // commit) holds that PR's candidate memories back from promotion.
+  if (pr.merged) {
+    await recordPrReverts({
+      repoFullName: repository.full_name,
+      revertedBy: `pr#${pr.number}`,
+      revertingPrNumber: pr.number,
+      text: [pr.title, pr.body].filter(Boolean).join('\n'),
+    }).catch(err => console.error(`[webhook] recordPrReverts failed for PR #${pr.number} on ${repository.full_name}:`, err));
   }
 
   // Dark-check detection: track required checks that consistently report
@@ -2691,6 +2708,33 @@ async function handleReleasePrCiFailure(
  * Fires for ALL workflows, not just release ones — the runId lookup makes this
  * naturally idempotent and O(1): if no task carries that runId we no-op.
  */
+/** A branch is the repo's default one; unknown (no default in the payload) counts as yes. */
+function isDefaultBranch(branch: string | null | undefined, defaultBranch: string | undefined): boolean {
+  if (!branch) return false;
+  return !defaultBranch || branch === defaultBranch;
+}
+
+/**
+ * `push`: commit messages on the default branch go to the revert ledger (a
+ * `git revert` of a merge commit names its sha). Inert unless the GitHub App
+ * subscribes to push events; the push-triggered workflow_run covers the head
+ * commit either way.
+ */
+async function handlePushEvent(event: {
+  ref?: string;
+  repository?: { full_name?: string; default_branch?: string };
+  commits?: Array<{ id?: string; message?: string }>;
+}): Promise<void> {
+  const repo = event.repository?.full_name;
+  const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
+  if (!repo || !isDefaultBranch(branch, event.repository?.default_branch)) return;
+  for (const c of event.commits ?? []) {
+    if (!c.id || !c.message) continue;
+    await recordPrReverts({ repoFullName: repo, revertedBy: c.id, text: c.message })
+      .catch(err => console.error(`[webhook] recordPrReverts failed for ${c.id} on ${repo}:`, err));
+  }
+}
+
 async function handleWorkflowRunEvent(event: {
   action: string;
   workflow_run: {
@@ -2703,13 +2747,26 @@ async function handleWorkflowRunEvent(event: {
     head_sha: string;
     event?: string;
     path?: string;
+    head_commit?: { id?: string; message?: string } | null;
     repository: { full_name: string };
   };
+  repository?: { full_name: string; default_branch?: string };
   installation?: { id: number };
 }): Promise<void> {
   if (event.action !== 'completed') return;
 
   const run = event.workflow_run;
+
+  // Revert ledger: CI runs on every push to the default branch, so its head
+  // commit is how a revert pushed there (directly, or as a squashed revert PR)
+  // reaches us without a push-event subscription.
+  if (run.event === 'push' && run.head_commit?.message && isDefaultBranch(run.head_branch, event.repository?.default_branch)) {
+    await recordPrReverts({
+      repoFullName: run.repository.full_name,
+      revertedBy: run.head_commit.id ?? run.head_sha,
+      text: run.head_commit.message,
+    }).catch(err => console.error(`[webhook] recordPrReverts failed for run ${run.id}:`, err));
+  }
 
   // Find the task whose releaseResult.runId matches this workflow run.
   //

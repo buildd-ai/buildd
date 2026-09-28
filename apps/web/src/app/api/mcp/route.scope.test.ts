@@ -7,7 +7,7 @@
  * runs, so "does not exist" and "not yours" look the same.
  */
 
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import * as realMcpTools from '@buildd/core/mcp-tools';
 
@@ -230,11 +230,57 @@ describe('/api/mcp signs the interactive session marker on internal API calls', 
       const api = (mockHandleBuilddAction.mock.calls[0] as any[])[0];
       await api('/api/workers/claim', { method: 'POST', body: '{}' });
       const { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } = await import('@/lib/interactive-session');
-      expect(verifyInteractiveSession(seen[0][INTERACTIVE_SESSION_HEADER], ACCOUNT_ID)).toEqual({ userId: null });
+      expect(verifyInteractiveSession(seen[0][INTERACTIVE_SESSION_HEADER], ACCOUNT_ID)).toEqual({ userId: null, sessionKey: null });
       expect(verifyInteractiveSession(seen[0][INTERACTIVE_SESSION_HEADER], 'someone-else')).toBeNull();
     } finally {
       globalThis.fetch = realFetch;
       if (saved === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = saved;
     }
+  });
+});
+
+// Review of #3072: a bld_ key has no session user, so every session on the key
+// kept every other session's interactive claims alive. The route hands each
+// client an Mcp-Session-Id; an echoed one scopes the touch and the marker.
+describe('/api/mcp session id keys interactive liveness per session', () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    mockTouchInteractiveWorkers.mockClear();
+    saved = process.env.AUTH_SECRET;
+    process.env.AUTH_SECRET = 'scope-test-secret';
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = saved;
+  });
+
+  const call = (sessionId?: string) => POST(new Request(`http://localhost/api/mcp?workspace=${OWN_WS}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer bld_test',
+      ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'recall', arguments: { query: 'x' } } }),
+  }));
+
+  it('a request without one gets one to echo, and is keyless itself', async () => {
+    const res = await call();
+    const { verifyMcpSessionId } = await import('@/lib/interactive-session');
+    expect(verifyMcpSessionId(res.headers.get('mcp-session-id'), ACCOUNT_ID)).toBeTruthy();
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ sessionKey: null });
+  });
+
+  it('an echoed id scopes the touch to that session, and is handed back unchanged', async () => {
+    const { mintMcpSessionId, verifyMcpSessionId } = await import('@/lib/interactive-session');
+    const id = mintMcpSessionId(ACCOUNT_ID)!;
+    const res = await call(id);
+    expect(res.headers.get('mcp-session-id')).toBe(id);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ accountId: ACCOUNT_ID, sessionKey: verifyMcpSessionId(id, ACCOUNT_ID) });
+  });
+
+  it("another account's id is not this session", async () => {
+    const { mintMcpSessionId } = await import('@/lib/interactive-session');
+    const res = await call(mintMcpSessionId('someone-else')!);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ sessionKey: null });
+    expect(res.headers.get('mcp-session-id')).not.toBeNull();
   });
 });
