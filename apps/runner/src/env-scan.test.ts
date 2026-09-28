@@ -17,6 +17,7 @@ mock.module('fs', () => ({
 }));
 
 import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
+import { resetBrowserCapabilityCache } from './browser-capability';
 
 describe('checkBwrapSupport', () => {
   let originalDisableSandbox: string | undefined;
@@ -120,47 +121,35 @@ describe('checkBwrapSupport', () => {
   });
 });
 
+// Detection details (headless shell, launch probe, re-scan) are covered in
+// browser-capability.test.ts; these guard the env-scan wiring.
+const HTML = '<html><head></head><body></body></html>';
+
 describe('checkBrowserCapability', () => {
   beforeEach(() => {
+    resetBrowserCapabilityCache();
     mockExecSync.mockReset();
     mockExistsSync.mockReset();
-    mockExistsSync.mockImplementation(() => false); // no Playwright cache by default
+    mockExistsSync.mockImplementation(() => false); // no Playwright dirs by default
   });
 
-  it('returns true when system chromium binary is found and functional', () => {
+  it('returns true when system chromium is on PATH and passes the launch probe', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which chromium') return Buffer.from('/usr/bin/chromium\n');
-      if (cmd === 'chromium --version') return Buffer.from('Chromium 120.0.0\n');
+      if (cmd.startsWith("'/usr/bin/chromium'") && cmd.includes('--dump-dom')) return Buffer.from(HTML);
       throw new Error('not found');
     });
 
     expect(checkBrowserCapability()).toBe(true);
   });
 
-  it('returns true when google-chrome binary is found', () => {
+  it('returns true when a Playwright chromium binary is found and launches', () => {
+    const bin = '/home/user/.cache/ms-playwright/chromium-1234/chrome-linux/chrome';
+    mockExistsSync.mockImplementation((path: string) => typeof path === 'string' && path.includes('ms-playwright'));
     mockExecSync.mockImplementation((cmd: string) => {
-      if (cmd === 'which chromium') throw new Error('not found');
-      if (cmd === 'which chromium-browser') throw new Error('not found');
-      if (cmd === 'which google-chrome') return Buffer.from('/usr/bin/google-chrome\n');
-      if (cmd === 'google-chrome --version') return Buffer.from('Google Chrome 120.0.0\n');
-      throw new Error('not found');
-    });
-
-    expect(checkBrowserCapability()).toBe(true);
-  });
-
-  it('returns true when Playwright chromium binary is found in cache', () => {
-    mockExistsSync.mockImplementation((path: string) => {
-      // Simulate playwright cache directory existing
-      return typeof path === 'string' && path.includes('ms-playwright');
-    });
-    mockExecSync.mockImplementation((cmd: string) => {
-      // No system chromium
-      if (typeof cmd === 'string' && cmd.startsWith('which ')) throw new Error('not found');
-      // find returns a path
-      if (typeof cmd === 'string' && cmd.includes('find') && cmd.includes('ms-playwright')) {
-        return Buffer.from('/home/user/.cache/ms-playwright/chromium-1234/chrome-linux/chrome\n');
-      }
+      if (cmd.startsWith('which ')) throw new Error('not found');
+      if (cmd.startsWith('find ') && cmd.includes('ms-playwright')) return Buffer.from(`${bin}\n`);
+      if (cmd.startsWith(`'${bin}'`) && cmd.includes('--dump-dom')) return Buffer.from(HTML);
       throw new Error('not found');
     });
 
@@ -173,11 +162,10 @@ describe('checkBrowserCapability', () => {
     expect(checkBrowserCapability()).toBe(false);
   });
 
-  it('returns false when chromium is on PATH but version output does not match', () => {
+  it('returns false when chromium is on PATH but does not launch', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which chromium') return Buffer.from('/usr/bin/chromium\n');
-      if (cmd === 'chromium --version') return Buffer.from('something else entirely\n');
-      throw new Error('not found');
+      throw Object.assign(new Error('failed'), { status: 1, stderr: Buffer.from('snap stub') });
     });
 
     expect(checkBrowserCapability()).toBe(false);
@@ -186,6 +174,7 @@ describe('checkBrowserCapability', () => {
 
 describe('scanEnvironment', () => {
   beforeEach(() => {
+    resetBrowserCapabilityCache();
     mockExecSync.mockReset();
     mockReadFileSync.mockReset();
     mockExistsSync.mockReset();
@@ -220,7 +209,7 @@ describe('scanEnvironment', () => {
   it('includes "browser" in envKeys when headless Chromium is available', () => {
     mockExecSync.mockImplementation((cmd: string) => {
       if (cmd === 'which chromium') return Buffer.from('/usr/bin/chromium\n');
-      if (cmd === 'chromium --version') return Buffer.from('Chromium 120.0.0\n');
+      if (cmd.startsWith("'/usr/bin/chromium'") && cmd.includes('--dump-dom')) return Buffer.from(HTML);
       throw new Error('not found');
     });
 

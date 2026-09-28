@@ -50,6 +50,7 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -681,6 +682,7 @@ export class WorkerManager {
   private consecutiveAuthFailures = 0;
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  private browserScanInterval?: Timer;
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
@@ -806,6 +808,15 @@ export class WorkerManager {
         this.environment = scanEnvironment();
       } catch { /* non-fatal */ }
     }, 30 * 60_000);
+    // Browser-only re-scan, cheaper and more frequent: a Chromium installed
+    // after startup (or one that disappears) reaches the next heartbeat's
+    // envKeys without a restart. Launch probes are cached per path.
+    this.browserScanInterval = setInterval(() => {
+      try {
+        this.environment = rescanBrowserCapability(this.environment);
+      } catch { /* non-fatal */ }
+    }, BROWSER_RESCAN_INTERVAL_MS);
+    this.browserScanInterval.unref?.();
 
     // Runner-executed full knowledge-ingest jobs (KM v2 spec §3.3, A2).
     // Opt-out via KNOWLEDGE_INGEST_JOBS=0; polls only on idle heartbeat ticks.
@@ -6391,6 +6402,10 @@ export class WorkerManager {
     }
     if (this.diskPersistInterval) {
       clearInterval(this.diskPersistInterval);
+    }
+    if (this.browserScanInterval) {
+      clearInterval(this.browserScanInterval);
+      this.browserScanInterval = undefined;
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);
