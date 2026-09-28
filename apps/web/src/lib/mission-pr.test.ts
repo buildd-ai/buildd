@@ -759,6 +759,67 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
   });
 
+  it('adopts a mission PR a human already merged when the branch is gone', async () => {
+    // The stuck state: someone opened the integration → trunk PR by hand and
+    // merged it, the branch was deleted, and buildd — which only ever adopted
+    // OPEN PRs — had no owner row. The compare 404ed, the answer was
+    // `no_commits`, and the mission read "mission PR not opened" forever while
+    // its work was already on trunk.
+    landedWork();
+    githubThrows['/compare/'] = 'GitHub API error: 404 Not Found';
+    githubResponses['/pulls?state=closed'] = [
+      { number: 70, html_url: 'pr-70', merged_at: null, base: { ref: 'dev' } },
+      { number: 71, html_url: 'pr-71', merged_at: '2026-09-27T10:00:00Z', base: { ref: 'dev' } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 71, prUrl: 'pr-71', created: false, merged: true });
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    // The owner row records the merge, so every surface reads "merged".
+    const stamped = updates.find(u => u.setValues?.prNumber === 71)?.setValues;
+    expect(stamped?.prLifecycleStatus).toBe('merged');
+    expect(stamped?.mergedAt).toEqual(new Date('2026-09-27T10:00:00Z'));
+    expect(inserts.some(i => i.values?.taskClass === 'bookkeeping')).toBe(true);
+  });
+
+  it('adopts a merged mission PR when the branch still exists but has nothing ahead', async () => {
+    landedWork();
+    githubResponses['/compare/'] = { ahead_by: 0 };
+    githubResponses['/pulls?state=closed'] = [
+      { number: 72, html_url: 'pr-72', merged_at: '2026-09-27T10:00:00Z', base: { ref: 'dev' } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 72, prUrl: 'pr-72', created: false, merged: true });
+  });
+
+  it('does not adopt a PR that was closed without merging', async () => {
+    landedWork();
+    githubThrows['/compare/'] = 'GitHub API error: 404 Not Found';
+    githubResponses['/pulls?state=closed'] = [
+      { number: 70, html_url: 'pr-70', merged_at: null, base: { ref: 'dev' } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(inserts).toEqual([]);
+  });
+
+  it('does not look for a merged PR to adopt when the mission already has one recorded', async () => {
+    landedWork();
+    taskRowsForMission.push(ownerTask());
+    workerRowsByTask['t-own'] = [worker({ taskId: 't-own', id: 'w-own', prUrl: 'pr-42', prNumber: 42, mergedAt: T0 })];
+    githubThrows['/compare/'] = 'GitHub API error: 404 Not Found';
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.path.includes('state=closed'))).toBe(false);
+  });
+
   it('refuses while the mission’s work is incomplete', async () => {
     taskRowsForMission = [workTask('t-1', 'in_progress')];
     const r = await openMissionIntegrationPr(MISSION_ID);
