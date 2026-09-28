@@ -17,10 +17,27 @@ describe('ciLifecycleFromSuites', () => {
 
   // Seen on a real PR: an app (Vercel) opens a suite that stays queued with no
   // runs, so the PR read "CI running" for two weeks while Actions had failed.
-  it('a suite with no runs carries no verdict and never holds a PR in running', () => {
+  it('a queued suite with no runs cannot hide a failure', () => {
     expect(ciLifecycleFromSuites([suite('queued', null, 0), suite('completed', 'failure', 25)])).toBe('ci_failed');
-    expect(ciLifecycleFromSuites([suite('queued', null, 0), suite('completed', 'success', 5)])).toBe('ci_green');
+  });
+
+  // Found in review: an Actions run held behind a concurrency group is also queued
+  // with no runs yet, so an empty suite can't prove the PR green.
+  it('but it cannot prove green either', () => {
+    expect(ciLifecycleFromSuites([suite('queued', null, 0), suite('completed', 'success', 5)])).toBe('ci_running');
+  });
+
+  it('only empty queued suites: no verdict, the stored state stands', () => {
     expect(ciLifecycleFromSuites([suite('queued', null, 0)])).toBeNull();
+  });
+
+  // A workflow file that fails to parse fails before any job exists.
+  it('a completed suite counts whatever its run count', () => {
+    expect(ciLifecycleFromSuites([suite('completed', 'failure', 0), suite('completed', 'success', 5)])).toBe('ci_failed');
+  });
+
+  it('a real suite still running is running, even beside a failure', () => {
+    expect(ciLifecycleFromSuites([suite('in_progress', null, 3), suite('completed', 'failure', 2)])).toBe('ci_running');
   });
 
   it('a suite without a run count is taken at its word', () => {

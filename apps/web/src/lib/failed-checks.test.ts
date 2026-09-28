@@ -10,13 +10,14 @@ describe('failedChecks', () => {
       .toEqual([{ name: 'build', conclusion: 'failure', url: 'https://gh/runs/1' }]);
   });
 
-  // A re-run is a new check run with the same name.
-  it('a check that failed and then passed on a re-run is not failing', () => {
-    expect(failedChecks([run(1, 'build', 'failure'), run(5, 'build', 'success')])).toEqual([]);
+  // Found in review: job names repeat across workflows, and the check-runs
+  // endpoint already returns only the latest attempt of each re-run.
+  it('two workflows with a job of the same name: the failing one is still reported', () => {
+    expect(failedChecks([run(1, 'test', 'failure'), run(5, 'test', 'success')]).map(c => c.url)).toEqual(['https://gh/runs/1']);
   });
 
-  it('a check still running on its re-run is not failing yet', () => {
-    expect(failedChecks([run(1, 'build', 'failure'), run(5, 'build', null, 'in_progress')])).toEqual([]);
+  it('a check still running is not failing', () => {
+    expect(failedChecks([run(5, 'build', null, 'in_progress')])).toEqual([]);
   });
 
   it('timed out, cancelled and action required count as failing', () => {
