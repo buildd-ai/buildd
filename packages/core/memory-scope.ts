@@ -8,6 +8,7 @@ import { workspaces } from './db/schema';
 import { memoryProjectKey } from './project-scope';
 import { MemoryStore } from './memory-store';
 import type { MemoryHitScope } from './memory-hit-scope';
+import { isMemoryCandidateWritesEnabled } from './memory-candidates';
 
 type ScopeRow = { id: string; teamId: string; repo: string | null; name: string; dataClass: string | null };
 
@@ -97,5 +98,22 @@ export async function resolveMemoryHitScope(
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether the workspace flag `memoryCandidateWrites` is on. Off for an
+ * unknown workspace or a failed lookup, so a doubt keeps today's behaviour.
+ */
+export async function resolveMemoryCandidateWrites(workspaceId: string | null | undefined): Promise<boolean> {
+  if (!workspaceId) return false;
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { gitConfig: true },
+    });
+    return isMemoryCandidateWritesEnabled(ws?.gitConfig);
+  } catch {
+    return false;
   }
 }

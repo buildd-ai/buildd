@@ -55,6 +55,8 @@
     "./memory-store": "./memory-store.ts",
     "./memory-write": "./memory-write.ts",
     "./memory-index-reconcile": "./memory-index-reconcile.ts",
+    "./memory-lifecycle": "./memory-lifecycle.ts",
+    "./memory-candidates": "./memory-candidates.ts",
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",

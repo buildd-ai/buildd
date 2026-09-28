@@ -1433,8 +1433,15 @@
     {
       "idx": 207,
       "version": "7",
-      "when": 1790601099703,
-      "tag": "0207_majestic_vanisher",
+      "when": 1790602617135,
+      "tag": "0207_steep_catseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1790613184294,
+      "tag": "0208_clear_the_fury",
       "breakpoints": true
     }
   ]

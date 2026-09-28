@@ -208,6 +208,21 @@ describe('GET: listed under the workspace memory key only', () => {
     expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({ project: OWN, query: 'auth' });
   });
 
+  it('the plain list serves active memories unless states are asked for', async () => {
+    await list();
+    expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({ project: OWN, states: ['active'] });
+  });
+
+  it('the plain list honours explicit ?states= (the dashboard), dropping unknown values', async () => {
+    await list('?states=candidate,active,bogus&states=expired');
+    expect((memClient.search.mock.calls[0] as any[])[0].states).toEqual(['candidate', 'active', 'expired']);
+  });
+
+  it('only unknown ?states= falls back to active', async () => {
+    await list('?states=bogus');
+    expect((memClient.search.mock.calls[0] as any[])[0].states).toEqual(['active']);
+  });
+
   it('a workspace with no key lists nothing and never searches the team store', async () => {
     workspaceKey = null;
     const res = await list();

@@ -277,6 +277,13 @@ export interface WorkspaceGitConfig {
   memoryIndexInjection?: boolean;
   memoryIndexTokenBudget?: number;   // estimated tokens (chars/4); default 800
 
+  // New `learn` / `buildd_memory save` writes land as candidates (not pushed at
+  // claim, recallable with includeCandidates) and are promoted by the
+  // lifecycle pass; failed tasks and changes-requested reviews are extracted
+  // into candidates. Absent / false = today's behaviour.
+  // See packages/core/memory-candidates.ts.
+  memoryCandidateWrites?: boolean;
+
   // Default agent backend for tasks in this workspace, when neither the task
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
@@ -2735,6 +2742,11 @@ export const chatDirectives = pgTable('chat_directives', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   userCreatedIdx: index('chat_directives_user_created_idx').on(t.userId, t.createdAt),
+  // One copy of a rule per person and scope, race-free: a double tap, a card
+  // answered on two devices, or an edit into an existing rule hits this and
+  // the write is a no-op (ON CONFLICT DO NOTHING). NULLS NOT DISTINCT makes
+  // two "everywhere" copies (workspace_id NULL) collide too.
+  userScopeTextUnique: unique('chat_directives_user_scope_text_unique').on(t.userId, t.workspaceId, t.text).nullsNotDistinct(),
 }));
 
 export type ChatDirectiveRow = typeof chatDirectives.$inferSelect;
@@ -4075,12 +4087,61 @@ export const memories = pgTable('memories', {
   // Consecutive failed reconcile attempts to mirror this row into the index.
   // Rows past the cap drop out of reconcile so they cannot block the backlog.
   indexFailures: integer('index_failures').notNull().default(0),
+  // Lifecycle (docs/design/memory-done-right.md, "Write: candidates, then
+  // promotion"; packages/core/memory-candidates.ts). Every row written before
+  // this existed is 'active', and writes stay 'active' unless the workspace
+  // flag `memoryCandidateWrites` is on. Only 'active' is pushed at claim time;
+  // 'candidate' is served to a pull that asks for it; 'expired' and
+  // 'invalidated' are readable by id only. Nothing moves a row out of the
+  // table: expiry and invalidation are state changes, reversible.
+  // Supersession stays `superseded_by` (who replaced it) + `invalidated_at`
+  // (when); 'invalidated' is for an invalidation with no replacement.
+  state: text('state').notNull().default('active').$type<'candidate' | 'active' | 'expired' | 'invalidated'>(),
+  // Provenance: which episode proposed it. source_id is the task id for
+  // learn / failed_task, the review_feedback row id for review.
+  sourceKind: text('source_kind').$type<'learn' | 'failed_task' | 'review' | 'chat' | 'digest' | 'dashboard'>(),
+  sourceId: text('source_id'),
+  // Derived from content outside the team (external PR comments, issue text).
+  // Hard floor: never auto-promoted.
+  external: boolean('external').notNull().default(false),
+  // When the row became active by promotion. Null for rows active from birth.
+  validFrom: timestamp('valid_from', { withTimezone: true }),
+  // When it stopped being current (superseded or invalidated).
+  invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  // A merged PR touched one of its anchored `files` since it was written.
+  // A flag for re-verification, never a demotion.
+  reverifyFlaggedAt: timestamp('reverify_flagged_at', { withTimezone: true }),
+  reverifyRef: text('reverify_ref'),
+  // The memory whose episode corroborated this candidate. Written ONLY by the
+  // automatic near-duplicate path of `learn` (a different task's repeat of
+  // the same lesson in the same project); explicit or band supersedes never
+  // set it. Promotion re-checks the linked row in SQL.
+  corroboratedBy: uuid('corroborated_by'),
+  // Active memories this candidate replaces, applied only when it is
+  // promoted: a candidate never hides an active memory from push.
+  pendingSupersedes: uuid('pending_supersedes').array().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: index('memories_team_idx').on(t.teamId),
+  stateCreatedIdx: index('memories_state_created_idx').on(t.state, t.createdAt),
   teamUpdatedIdx: index('memories_team_updated_idx').on(t.teamId, t.updatedAt),
   teamProjectIdx: index('memories_team_project_idx').on(t.teamId, t.project),
+}));
+
+// One row per episode the memory lifecycle pass tried to extract a candidate
+// from (packages/core/memory-lifecycle.ts), whatever the outcome, so a
+// failed task or review whose lesson is already recorded is not re-embedded
+// on every run. Content-free: ids and a label.
+export const memoryExtractionAttempts = pgTable('memory_extraction_attempts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  sourceKind: text('source_kind').notNull().$type<'failed_task' | 'review'>(),
+  sourceId: text('source_id').notNull(),
+  outcome: text('outcome').notNull().$type<'written' | 'duplicate' | 'skipped'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sourceUnique: uniqueIndex('memory_extraction_attempts_source_unique').on(t.sourceKind, t.sourceId),
 }));
 
 export const memoriesRelations = relations(memories, ({ one }) => ({
