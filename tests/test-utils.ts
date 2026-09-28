@@ -133,9 +133,11 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
 
     console.log(`Cleanup: ${workerIds.length} workers, ${taskIds.length} tasks, ${missionIds.length} missions...`);
 
-    // Clean workers, tasks, and missions in parallel to avoid timeouts
-    await Promise.all([
-      ...workerIds.map(wid =>
+    // Workers must finish first: PATCHing a worker to 'failed' writes a
+    // worker_terminal_records row FK'd to task_id, so deleting the task
+    // concurrently can race ahead of that insert and violate the FK.
+    await Promise.all(
+      workerIds.map(wid =>
         api(`/api/workers/${wid}`, {
           method: 'PATCH',
           body: JSON.stringify({ status: 'failed', error: 'Test cleanup' }),
@@ -146,7 +148,10 @@ export function createCleanup(api: ReturnType<typeof createTestApi>['api']) {
             console.log(`  Warning: failed to clean worker ${wid}: ${err.message}`);
           }
         })
-      ),
+      )
+    );
+
+    await Promise.all([
       ...taskIds.map(tid =>
         api(`/api/tasks/${tid}?force=true`, { method: 'DELETE' }).catch(err => {
           console.log(`  Warning: failed to clean task ${tid}: ${err.message}`);

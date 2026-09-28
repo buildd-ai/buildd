@@ -13,10 +13,9 @@
  * Stops when a batch changes nothing (e.g. every remaining row is a transient
  * failure), so it can't spin.
  */
-import { db } from '../packages/core/db';
-import { tasks } from '../packages/core/db/schema';
-import { isNull, sql } from 'drizzle-orm';
-import { sweepTaskCategories, type SweepCounts } from '../apps/web/src/lib/task-category-sweep';
+// Everything DB-shaped comes through the sweep module: the repo root does not
+// depend on drizzle-orm, apps/web does.
+import { countPendingTaskCategories, sweepTaskCategories, type SweepCounts } from '../apps/web/src/lib/task-category-sweep';
 
 const arg = (name: string, d: number) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -27,7 +26,7 @@ const batch = arg('batch', 200);
 const concurrency = arg('concurrency', 8);
 const max = arg('max', Infinity);
 
-const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(tasks).where(isNull(tasks.categoryDecision));
+const n = await countPendingTaskCategories();
 console.log(`${n} task(s) with no recorded look`);
 if (dryRun) process.exit(0);
 
