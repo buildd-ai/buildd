@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-09-03
 summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 domain: mcp
-surfaces: [packages/core/mcp-tools.ts, packages/core/mcp-tool-groups.ts, apps/web/src/app/api/mcp/tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
+surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
 verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, apps/web/src/app/api/mcp/route.group-tools.test.ts, packages/core/__tests__/mcp-tool-groups.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
@@ -60,6 +60,11 @@ every supported action.
 - AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the
   result is `isError: true` naming `buildd_runners`.
 - AC-23: WHEN `buildd` is called with any action THEN it dispatches as before.
+
+**Code surface**:
+- Registry: `packages/core/mcp-tool-groups.ts` — `ACTION_AREA`, `mcpGroupOf`
+- Listing and routing: `apps/web/src/app/api/mcp/tools.ts` — `listMcpTools`,
+  `routeGroupToolCall`, `mcpToolSurfaceFor`
 
 ---
 
