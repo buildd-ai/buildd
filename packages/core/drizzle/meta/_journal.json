@@ -1401,6 +1401,13 @@
       "when": 1790555685810,
       "tag": "0202_careless_shadowcat",
       "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1790560722716,
+      "tag": "0203_right_lethal_legion",
+      "breakpoints": true
     }
   ]
 }

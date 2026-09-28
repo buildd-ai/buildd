@@ -8,10 +8,10 @@ import {
   keepOwnProjectMemoryHits,
   memoryIdOfHit,
   memoryOverfetchTopK,
-  queryOwnProjectMemory,
   memoryScopeFor,
   type MemoryHitScope,
 } from '../memory-hit-scope';
+import { retrieveMemory } from '../memory-retrieval';
 
 const OWN = 'acme/widgets';
 const FOREIGN = 'acme/other-thing';
@@ -61,7 +61,13 @@ describe('keepOwnProjectMemoryHits', () => {
   });
 });
 
-describe('queryOwnProjectMemory', () => {
+// The query half of the rule lives in the one door now (retrieveMemory in
+// ../memory-retrieval); these pin that it still applies this module's rule.
+describe('retrieveMemory applies the rule', () => {
+  const run = (store: any, s: MemoryHitScope | null, topK: number) =>
+    retrieveMemory({ query: 'q', scope: { teamId: 'team-1', memoryScope: s }, caller: 'recall', budget: { topK }, store, ledger: false })
+      .then(r => r.results);
+
   it('over-fetches the team namespace, narrows, and trims to topK', async () => {
     const asked: Array<{ ns: string; topK?: number }> = [];
     const store = {
@@ -71,7 +77,7 @@ describe('queryOwnProjectMemory', () => {
       },
     };
     const { s } = scope({ o1: OWN, o2: OWN, o3: OWN, f1: FOREIGN, f2: FOREIGN });
-    const out = await queryOwnProjectMemory(store, 'team-1', s, { text: 'q', topK: 2 });
+    const out = await run(store, s, 2);
     expect(asked).toEqual([{ ns: 'team-1:memory', topK: memoryOverfetchTopK(2) }]);
     expect(out.map(r => r.id)).toEqual(['o1', 'o2']);
   });
@@ -79,17 +85,17 @@ describe('queryOwnProjectMemory', () => {
   it('does not query at all without a scope', async () => {
     let called = false;
     const store = { query: async () => { called = true; return []; } };
-    expect(await queryOwnProjectMemory(store, 'team-1', null, { text: 'q', topK: 3 })).toEqual([]);
+    expect(await run(store, null, 3)).toEqual([]);
     expect(called).toBe(false);
   });
 
   it('returns [] when the store or the lookup throws', async () => {
     const bad = { query: async () => { throw new Error('down'); } };
     const { s } = scope({});
-    expect(await queryOwnProjectMemory(bad, 'team-1', s, { text: 'q', topK: 3 })).toEqual([]);
+    expect(await run(bad, s, 3)).toEqual([]);
     const ok = { query: async () => [{ id: 'o1' } as any] };
     const throwing: MemoryHitScope = { project: OWN, lookup: async () => { throw new Error('db'); } };
-    expect(await queryOwnProjectMemory(ok, 'team-1', throwing, { text: 'q', topK: 3 })).toEqual([]);
+    expect(await run(ok, throwing, 3)).toEqual([]);
   });
 });
 

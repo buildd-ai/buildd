@@ -46,6 +46,7 @@
     "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-scope": "./memory-scope.ts",
     "./memory-hit-scope": "./memory-hit-scope.ts",
+    "./memory-retrieval": "./memory-retrieval.ts",
     "./memory-store": "./memory-store.ts",
     "./memory-write": "./memory-write.ts",
     "./memory-index-reconcile": "./memory-index-reconcile.ts",

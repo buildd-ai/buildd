@@ -1630,22 +1630,20 @@ export async function handleBuilddAction(
           ? await ctx.getMemoryClient(claimedWsId)
           : null;
         if (memClient && memProject) {
-          const searchData = await memClient.search({
-            query: claimedTask.title,
-            project: memProject,
-            limit: 5,
+          const { memories } = await retrieveMemory<any>({
+            strategy: 'store-search',
+            searcher: memClient,
+            search: { query: claimedTask.title, project: memProject, limit: 5 },
+            scope: { teamId: claimedWs.teamId, workspaceId: claimedWsId },
+            caller: 'claim_task_reply',
+            attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
           });
-          const results = searchData.results || [];
-          if (results.length > 0) {
-            const batchData = await memClient.batch(results.map(r => r.id));
-            const memories = batchData.memories || [];
-            if (memories.length > 0) {
-              const memoryLines = memories.map((m: any) => {
-                const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
-                return `- **[${m.type}] ${m.title}**: ${truncContent}`;
-              });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
-            }
+          if (memories.length > 0) {
+            const memoryLines = memories.map((m: any) => {
+              const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+              return `- **[${m.type}] ${m.title}**: ${truncContent}`;
+            });
+            memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
           }
         }
       } catch {
@@ -5451,7 +5449,8 @@ import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, Upsert
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
-import { keepOwnProjectMemoryHits, memoryOverfetchTopK } from './memory-hit-scope';
+import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
+import { retrieveMemory, type MemoryCaller } from './memory-retrieval';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5628,6 +5627,11 @@ async function ownMemoryHits<T extends { id: string; metadata?: Record<string, u
   return keepOwnProjectMemoryHits(hits, { project: ctx.project ?? null, lookup: ids => mc.batch(ids) });
 }
 
+/** The caller's memory scope for retrieveMemory, or null (no memory) with no store. */
+function ownMemoryScope(mc: MemoryStore | null, ctx: MemoryActionCtx): MemoryHitScope | null {
+  return mc ? { project: ctx.project ?? null, lookup: ids => mc.batch(ids) } : null;
+}
+
 /**
  * Server-side memory project key for a workspace (memoryProjectKey over the
  * workspace and its team). Loaded lazily: ./memory-scope reaches the DB, and
@@ -5801,6 +5805,7 @@ async function fanOutCorpora(
   ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+  caller: Extract<MemoryCaller, 'recall' | 'query_knowledge'>,
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
@@ -5818,9 +5823,17 @@ async function fanOutCorpora(
       try {
         // The memory namespace is team-wide: over-fetch, then keep the caller's project.
         if (c === 'memory') {
-          const raw = await ks.query(ns, { ...opts, topK: memoryOverfetchTopK(opts.topK) });
-          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
-          return own.slice(0, opts.topK);
+          return (await retrieveMemory({
+            query: opts.text,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(mc, ctx) },
+            caller,
+            budget: { topK: opts.topK },
+            store: ks,
+            mode: opts.mode,
+            excludeSuperseded: true,
+            attribution: { workerId: ctx.workerId },
+            onError: 'throw',
+          })).results;
         }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
@@ -5897,7 +5910,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall');
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5952,18 +5965,29 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-  const raw = await ks.query(ns, {
-    text: query,
-    mode,
-    topK: scope === 'memory' ? memoryOverfetchTopK(fetchTopK) : fetchTopK,
-  });
-
-  // Exclude superseded entries by default, apply type/files filters, then the caller limit.
-  let results = raw.filter(r => r.isCurrent !== false);
-  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
-  if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
-  results = results.slice(0, limit);
+  // Exclude superseded entries by default, apply type/files filters, then the
+  // caller limit. Memory goes through the one door, which over-fetches the
+  // team-wide namespace and keeps the caller's project.
+  let results: QueryResult[];
+  if (scope === 'memory') {
+    results = (await retrieveMemory({
+      query,
+      scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+      caller: 'recall',
+      budget: { topK: limit, candidates: fetchTopK },
+      store: ks,
+      mode,
+      excludeSuperseded: true,
+      filter: isFiltered ? r => matchesRecallFilters(r, filterParams) : undefined,
+      attribution: { workerId: ctx.workerId },
+      onError: 'throw',
+    })).results;
+  } else {
+    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    results = raw.filter(r => r.isCurrent !== false);
+    if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
+    results = results.slice(0, limit);
+  }
 
   if (results.length === 0) {
     if (scope === 'code' || scope === 'docs') {
@@ -6328,7 +6352,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK }, 'query_knowledge');
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6396,14 +6420,18 @@ export async function handleMemoryAction(
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
       // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-      const queried = await ks.query(ns, {
-        text: params.query as string,
-        mode,
-        topK: corpus === 'memory' ? memoryOverfetchTopK(topK) : topK,
-      });
       const results = corpus === 'memory'
-        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
-        : queried;
+        ? (await retrieveMemory({
+            query: params.query as string,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+            caller: 'query_knowledge',
+            budget: { topK },
+            store: ks,
+            mode,
+            attribution: { workerId: ctx.workerId },
+            onError: 'throw',
+          })).results
+        : await ks.query(ns, { text: params.query as string, mode, topK });
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

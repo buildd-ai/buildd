@@ -6,6 +6,8 @@
  * read of it (recall, query_knowledge, the learn dedupe check, claim-time and
  * planning "Related prior work", authoring-time "Prior work") over-fetches and
  * then keeps only hits whose `memories` row carries the caller's project key.
+ * The reads themselves go through `retrieveMemory` (./memory-retrieval), which
+ * applies this rule; the learn dedupe check and consolidation apply it directly.
  *
  * Chunk metadata is not trusted for this (older chunks carry no project); the
  * memories table is. A hit with no backing row is dropped, and so is a row
@@ -15,7 +17,6 @@
  * (`resolveMemoryHitScope`) and is loaded lazily by `memoryScopeFor`.
  */
 import { normalizeProject } from './project-scope';
-import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
 /** Memory rows by id, bound to one team. `MemoryStore.batch` satisfies it. */
@@ -90,29 +91,5 @@ export async function memoryScopeFor(
 
 /** Minimal store shape: KnowledgeStore and the web app's KnowledgeQuerier both fit. */
 export type MemoryQuerier = {
-  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode }) => Promise<QueryResult[]>;
+  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode; trackHits?: boolean }) => Promise<QueryResult[]>;
 };
-
-/**
- * Query `{teamId}:memory` and keep only the caller's project. Over-fetches so
- * narrowing does not starve the section, then trims back to `topK`. No scope
- * means no query at all. Never throws: a failure is an empty section.
- */
-export async function queryOwnProjectMemory(
-  store: MemoryQuerier,
-  teamId: string,
-  scope: MemoryHitScope | null | undefined,
-  params: { text: string; topK: number; mode?: QueryMode },
-): Promise<QueryResult[]> {
-  if (!hasMemoryScope(scope)) return [];
-  try {
-    const raw = await store.query(buildNamespace(teamId, 'memory'), {
-      ...params,
-      topK: memoryOverfetchTopK(params.topK),
-    });
-    const own = await keepOwnProjectMemoryHits(raw, scope);
-    return own.slice(0, params.topK);
-  } catch {
-    return [];
-  }
-}

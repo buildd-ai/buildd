@@ -103,6 +103,9 @@ const SAFE: Record<string, string[]> = {
   workers: ['status', 'pr_opened_base_sha', 'last_commit_sha'],
   worker_action_events: ['action'],
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
+  // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
+  // (MemoryCaller, MemoryGate in packages/core/memory-retrieval.ts). No content.
+  memory_uses: ['chunk_id', 'memory_id', 'caller', 'gated_by'],
   artifacts: ['type'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as

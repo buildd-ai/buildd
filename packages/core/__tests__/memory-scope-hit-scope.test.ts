@@ -27,7 +27,8 @@ let workspaceRows: Ws[] = [];
 let memoryRows: Array<{ id: string; teamId: string; project: string | null }> = [];
 let throwOnWorkspace = false;
 const memoryWheres: unknown[] = [];
-const siblingWheres: unknown[] = [];
+/** The WHERE of every workspaces lookup: one per resolution since task d1997424. */
+const workspaceWheres: unknown[] = [];
 
 const fullMemory = (r: { id: string; teamId: string; project: string | null }) => ({
   ...r, type: 'gotcha', title: 'T', content: 'C', tags: [], files: [], source: null,
@@ -38,16 +39,17 @@ mock.module('../db', () => ({
   db: {
     query: {
       workspaces: {
-        // The resolver's WHERE is a drizzle predicate; these stubs answer by
-        // the ids the tests set up, and the tests assert on the outcome.
-        findFirst: async () => {
-          if (throwOnWorkspace) throw new Error('db down');
-          return workspaceRows[0];
-        },
+        // ONE query answers both halves: the workspace itself, and its team's
+        // sensitive set. Answered by what the rendered predicate binds (the
+        // workspace id and the team), so a WHERE that lost its team filter
+        // would hand the resolver another team's sensitive rows here.
         findMany: async ({ where }: { where: unknown }) => {
-          siblingWheres.push(where);
+          workspaceWheres.push(where);
+          if (throwOnWorkspace) throw new Error('db down');
+          const q = render(where);
+          const id = q.params[0];
           const team = teamParam(where, 'workspaces');
-          return workspaceRows.filter(w => w.dataClass === 'sensitive' && w.teamId === team);
+          return workspaceRows.filter(w => w.id === id || (w.teamId === team && w.dataClass === 'sensitive'));
         },
       },
       memories: {
@@ -63,7 +65,7 @@ mock.module('../db', () => ({
   },
 }));
 
-const { resolveMemoryHitScope } = await import('../memory-scope');
+const { resolveMemoryHitScope, memoryScopeWorkspacesWhere } = await import('../memory-scope');
 
 const TEAM = 'team-a';
 const own = (over: Partial<Ws> = {}): Ws => ({
@@ -75,7 +77,7 @@ beforeEach(() => {
   memoryRows = [];
   throwOnWorkspace = false;
   memoryWheres.length = 0;
-  siblingWheres.length = 0;
+  workspaceWheres.length = 0;
 });
 
 describe('resolveMemoryHitScope', () => {
@@ -112,9 +114,9 @@ describe('resolveMemoryHitScope', () => {
   it('the sensitive-sibling check is bound to the workspace team', async () => {
     workspaceRows = [own()];
     await resolveMemoryHitScope('ws-own', TEAM);
-    expect(siblingWheres).toHaveLength(1);
-    expect(teamParam(siblingWheres[0], 'workspaces')).toBe(TEAM);
-    expect(render(siblingWheres[0]).params).toContain('sensitive');
+    expect(workspaceWheres).toHaveLength(1);
+    expect(teamParam(workspaceWheres[0], 'workspaces')).toBe(TEAM);
+    expect(render(workspaceWheres[0]).params).toContain('sensitive');
   });
 
   it('is null when the workspace belongs to a different team than the namespace', async () => {
@@ -168,5 +170,26 @@ describe('caller with memoryScope omitted resolves the scope from the DB', () =>
     expect(out).not.toContain('m-foreign-project');
     expect(out).not.toContain('m-other-team');
     expect(teamParam(memoryWheres[0], 'memories')).toBe(TEAM);
+  });
+});
+
+describe('one workspace query, not two', () => {
+  it('resolves scope with a single lookup', async () => {
+    workspaceRows = [own()];
+    expect((await resolveMemoryHitScope('ws-own', TEAM))?.project).toBe('acme/widgets');
+    expect(workspaceWheres).toHaveLength(1);
+  });
+
+  it('ignores a sensitive workspace in ANOTHER team that shares the key', async () => {
+    workspaceRows = [own(), own({ id: 'ws-elsewhere', teamId: 'team-b', dataClass: 'sensitive' })];
+    expect((await resolveMemoryHitScope('ws-own', TEAM))?.project).toBe('acme/widgets');
+  });
+});
+
+describe('memoryScopeWorkspacesWhere renders', () => {
+  it("the workspace, or that team's sensitive workspaces", () => {
+    const q = render(memoryScopeWorkspacesWhere('ws-1', 'team-1'));
+    expect(q.sql).toBe('("workspaces"."id" = $1 or ("workspaces"."team_id" = $2 and "workspaces"."data_class" = $3))');
+    expect(q.params).toEqual(['ws-1', 'team-1', 'sensitive']);
   });
 });
