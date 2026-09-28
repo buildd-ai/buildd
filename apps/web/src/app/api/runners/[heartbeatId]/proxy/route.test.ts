@@ -48,7 +48,7 @@ function makeParams(heartbeatId: string) {
 }
 
 const VALID_HB = {
-  id: 'hb-1',
+  id: '11111111-1111-4111-8111-111111111111',
   accountId: 'acc-1',
   localUiUrl: 'https://runner.example.com',
   viewerToken: 'tok-abc',
@@ -91,34 +91,43 @@ afterEach(() => {
 });
 
 describe('GET /api/runners/[heartbeatId]/proxy', () => {
+  it('returns 404 for a non-UUID heartbeatId without authenticating or querying the db', async () => {
+    const res = await GET(req('not-a-uuid', 'doctor'), { params: makeParams('not-a-uuid') });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockHbFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 401 when user is not authenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe('Unauthorized');
   });
 
   it('returns 400 when path is missing', async () => {
-    const res = await GET(req('hb-1', null), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', null), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain('path');
   });
 
   it('returns 400 when path is not in the allowlist', async () => {
-    const res = await GET(req('hb-1', '../../etc/passwd'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', '../../etc/passwd'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain('path');
   });
 
   it('returns 400 for an unrecognised but non-traversal path', async () => {
-    const res = await GET(req('hb-1', 'debug/internals'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'debug/internals'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(400);
   });
 
   it('returns 404 when heartbeat does not exist', async () => {
     mockHbFindFirst.mockResolvedValue(null);
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(404);
   });
 
@@ -131,7 +140,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
         where: mock(() => Promise.resolve([])),
       })),
     });
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(403);
   });
 
@@ -140,7 +149,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any),
     );
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.summary.ok).toBe(1);
@@ -152,7 +161,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
       capturedHeaders = Object.fromEntries(new Headers(init?.headers).entries());
       return Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any);
     });
-    await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(capturedHeaders['authorization']).toBe('Bearer tok-abc');
   });
 
@@ -162,7 +171,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
       capturedUrl = url;
       return Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any);
     });
-    await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(capturedUrl).toBe('https://runner.example.com/api/doctor');
   });
 
@@ -172,13 +181,13 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
       capturedUrl = url;
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ totalSessions: 42 }) } as any);
     });
-    await GET(req('hb-1', 'history/stats'), { params: makeParams('hb-1') });
+    await GET(req('11111111-1111-4111-8111-111111111111', 'history/stats'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(capturedUrl).toBe('https://runner.example.com/api/history/stats');
   });
 
   it('returns 502 when runner fetch throws a network error', async () => {
     globalThis.fetch = mock(() => Promise.reject(new Error('Connection refused')));
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(502);
     const data = await res.json();
     expect(data.error).toBeDefined();
@@ -188,7 +197,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) } as any),
     );
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(502);
   });
 
@@ -208,7 +217,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any),
     );
-    const res = await GET(req('hb-1', 'doctor'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
   });
 
@@ -216,7 +225,7 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     globalThis.fetch = mock(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve([]) } as any),
     );
-    const res = await GET(req('hb-1', 'debug/claims'), { params: makeParams('hb-1') });
+    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'debug/claims'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
   });
 });

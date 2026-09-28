@@ -30,6 +30,7 @@ import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import type { MigrationCollision } from '@/lib/migration-safety';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -155,6 +156,14 @@ export interface ConflictRetryInput {
   repoFullName: string;
   /** Override max iterations (default 3). */
   maxConflictIterations?: number;
+  /**
+   * When set, this retry is a migration-number-collision renumber, not a
+   * generic merge conflict — there is no real git conflict, so "merge the
+   * base in and resolve" would be wrong guidance. The task gets the
+   * schema-change renumber recipe instead, while reusing the same
+   * dedup/cap/dispatch machinery as a conflict retry.
+   */
+  migrationCollision?: MigrationCollision;
 }
 
 export interface ConflictRetryTask {
@@ -177,7 +186,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -202,8 +211,13 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
         : null;
 
   return {
-    title: formatAttemptTitle('builder', originalTask.title, { reason: 'after conflict', iteration: nextIteration }),
-    description: buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+    title: formatAttemptTitle('builder', originalTask.title, {
+      reason: migrationCollision ? 'migration collision' : 'after conflict',
+      iteration: nextIteration,
+    }),
+    description: migrationCollision
+      ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision)
+      : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -216,12 +230,19 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       baseBranch: worker.branch,
       resumeBranch: worker.branch,
       // Structured failure context
-      failureContext: {
-        summary: `PR #${worker.prNumber} has merge conflicts with the base branch. Merge the base branch in and resolve on the merits.`,
-        errorType: 'merge_conflict' as const,
-        prNumber: worker.prNumber,
-        headSha,
-      },
+      failureContext: migrationCollision
+        ? {
+            summary: `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
+            errorType: 'migration_collision' as const,
+            prNumber: worker.prNumber,
+            headSha,
+          }
+        : {
+            summary: `PR #${worker.prNumber} has merge conflicts with the base branch. Merge the base branch in and resolve on the merits.`,
+            errorType: 'merge_conflict' as const,
+            prNumber: worker.prNumber,
+            headSha,
+          },
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
       prNumber: worker.prNumber,
@@ -265,6 +286,44 @@ PR: ${prUrl}
 ${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }
 
+function buildMigrationCollisionDescription(
+  task: ConflictRetryInput['originalTask'],
+  worker: ConflictRetryInput['worker'],
+  repoFullName: string,
+  iteration: number,
+  maxIterations: number,
+  collision: MigrationCollision,
+): string {
+  const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  const otherPrUrl = `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
+
+  return `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.
+
+**Attempt ${iteration} of ${maxIterations}.**
+
+## Instructions (schema-change skill renumber recipe)
+
+1. You are on branch \`${worker.branch}\`. Your worktree is based on the previous attempt's work.
+2. Merge the base branch in (do NOT rebase):
+   \`\`\`bash
+   git fetch origin
+   git merge origin/dev   # or the PR's actual base branch
+   \`\`\`
+3. Take dev's \`packages/core/drizzle/meta/_journal.json\` and snapshots wholesale, then drop this PR's colliding \`${collision.file}\` (and its snapshot). Do NOT hand-edit the journal or a snapshot.
+4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):
+   \`\`\`bash
+   cd packages/core && bun db:generate
+   \`\`\`
+5. Confirm \`bun db:generate\` reports no pending schema changes (the regenerated SQL matches your original intent — read it), and that \`_journal.json\` entries are sequential with strictly increasing \`when\` timestamps. Delete any spurious extra migration \`db:generate\` mints.
+6. Change nothing else — this is a migration-file-only fix, same doctrine as any conflict-retry.
+7. Push to the existing branch, then request re-review so the collision flag clears.
+
+PR: ${prUrl}
+Colliding PR: ${otherPrUrl}
+
+${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
+}
+
 // ── DB dispatch ───────────────────────────────────────────────────────────────
 
 export interface DispatchConflictRetryParams {
@@ -287,6 +346,13 @@ export interface DispatchConflictRetryParams {
    * Try GitHub's update-branch first; an agent is only dispatched if it fails.
    */
   behindOnly?: boolean;
+  /**
+   * This is a migration-number-collision renumber, not a real merge
+   * conflict — see `ConflictRetryInput.migrationCollision`. Mutually
+   * exclusive with `behindOnly` in practice (a caller with a collision never
+   * also has a behind-base refusal for the same dispatch).
+   */
+  migrationCollision?: MigrationCollision;
 }
 
 export interface DispatchConflictRetryResult {
@@ -323,7 +389,7 @@ export interface DispatchConflictRetryResult {
 export async function dispatchConflictRetry(
   params: DispatchConflictRetryParams,
 ): Promise<DispatchConflictRetryResult> {
-  const { workerId, taskId, prNumber, headSha, repoFullName, workspaceId } = params;
+  const { workerId, taskId, prNumber, headSha, repoFullName, workspaceId, migrationCollision } = params;
 
   // Fetch workspace (needed for autoResolveMergeConflicts flag + dispatchNewTask)
   const workspace = await db.query.workspaces.findFirst({
@@ -518,6 +584,7 @@ export async function dispatchConflictRetry(
     headSha,
     repoFullName,
     prRepoUrl,
+    migrationCollision,
   });
 
   if (!retryTask) {

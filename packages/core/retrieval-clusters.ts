@@ -60,7 +60,10 @@ export type RetrievalReason =
   | 'step_query_empty'
   | 'step_skipped_no_keys'
   | 'step_skipped_priors_strong'
-  | 'memory_skipped_sensitive';
+  | 'memory_skipped_sensitive'
+  // The workspace has no memory project key, so a team-scoped memory step
+  // cannot be narrowed to it and does not run (fail closed).
+  | 'memory_skipped_no_scope';
 
 /**
  * How the search key fed to a step was produced. Separate from the reason so

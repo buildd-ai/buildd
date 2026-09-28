@@ -110,3 +110,63 @@ describe('buildAuthoringPriorWork', () => {
     expect(result).toBe('');
   });
 });
+
+// Invariant: memory surfaced to an agent comes only from the requesting
+// workspace's project. `{teamId}:memory` is team-wide, so a memory from another
+// workspace's project sits in the same namespace and must not render.
+describe('buildAuthoringPriorWork — memory is pinned to the caller project', () => {
+  const OWN = 'acme/widgets';
+  const FOREIGN = 'acme/other-thing';
+  const memoryNs = `${TEAM_ID}:memory`;
+
+  function nsStore(byNs: Record<string, ReturnType<typeof hit>[]>) {
+    const queried: Array<{ ns: string; topK?: number }> = [];
+    return {
+      queried,
+      store: {
+        query: async (ns: string, p: { topK?: number }) => {
+          queried.push({ ns, topK: p.topK });
+          return (byNs[ns] ?? []) as any[];
+        },
+      },
+    };
+  }
+
+  const scope = (projects: Record<string, string | null>) => ({
+    project: OWN,
+    lookup: async (ids: string[]) => ({
+      memories: ids.filter(id => id in projects).map(id => ({ id, project: projects[id] })),
+    }),
+  });
+
+  const memHits = () => [
+    hit({ id: 'own-1', corpus: 'memory', sourceType: 'memory', content: '# own lesson', score: 0.8 }),
+    hit({ id: 'foreign-1', corpus: 'memory', sourceType: 'memory', content: '# foreign lesson', score: 0.9 }),
+    hit({ id: 'digest-1', corpus: 'memory', sourceType: 'memory', content: '# unscoped digest', score: 0.9 }),
+  ];
+
+  it('renders own-project memory and drops another project and unscoped rows', async () => {
+    const { store } = nsStore({ [memoryNs]: memHits() });
+    const result = await buildAuthoringPriorWork('lesson', WORKSPACE_ID, TEAM_ID, store, {
+      memoryScope: scope({ 'own-1': OWN, 'foreign-1': FOREIGN, 'digest-1': null }),
+    });
+    expect(result).toContain('own lesson');
+    expect(result).not.toContain('foreign lesson');
+    expect(result).not.toContain('unscoped digest');
+  });
+
+  it('never queries the team memory namespace without a project scope', async () => {
+    const { store, queried } = nsStore({ [memoryNs]: memHits() });
+    const result = await buildAuthoringPriorWork('lesson', WORKSPACE_ID, TEAM_ID, store, { memoryScope: null });
+    expect(queried.some(q => q.ns === memoryNs)).toBe(false);
+    expect(result).not.toContain('lesson');
+  });
+
+  it('over-fetches the memory namespace before narrowing', async () => {
+    const { store, queried } = nsStore({});
+    await buildAuthoringPriorWork('lesson', WORKSPACE_ID, TEAM_ID, store, { memoryScope: scope({}) });
+    const mem = queried.find(q => q.ns === memoryNs)!;
+    const task = queried.find(q => q.ns === `${WORKSPACE_ID}:task`)!;
+    expect(mem.topK!).toBeGreaterThan(task.topK!);
+  });
+});

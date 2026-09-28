@@ -74,7 +74,7 @@ mock.module('crypto', () => ({
 import { POST } from './route';
 
 const TEAM_ROLE = {
-  id: 'role1',
+  id: '11111111-1111-4111-8111-111111111111',
   teamId: 'team1',
   workspaceId: null,
   slug: 'builder',
@@ -109,11 +109,11 @@ describe('POST /api/roles/[id]/overrides', () => {
 
   it('returns 401 if not authenticated', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/role1/overrides', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111/overrides', {
       method: 'POST',
       body: JSON.stringify({ workspaceId: 'ws1' }),
     });
-    const res = await POST(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(401);
   });
 
@@ -122,11 +122,11 @@ describe('POST /api/roles/[id]/overrides', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
-    const req = new NextRequest('http://localhost/api/roles/role1/overrides', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111/overrides', {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    const res = await POST(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(400);
   });
 
@@ -135,12 +135,23 @@ describe('POST /api/roles/[id]/overrides', () => {
     mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
     mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(null));
-    const req = new NextRequest('http://localhost/api/roles/unknown/overrides', {
+    const req = new NextRequest('http://localhost/api/roles/99999999-9999-4999-8999-999999999999/overrides', {
       method: 'POST',
       body: JSON.stringify({ workspaceId: 'ws1' }),
     });
-    const res = await POST(req, { params: Promise.resolve({ id: 'unknown' }) });
+    const res = await POST(req, { params: Promise.resolve({ id: '99999999-9999-4999-8999-999999999999' }) });
     expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for a non-UUID id without querying the db', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    const req = new NextRequest('http://localhost/api/roles/not-a-uuid/overrides', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId: 'ws1' }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    expect(mockWorkspaceSkillsFindFirst).not.toHaveBeenCalled();
   });
 
   it('creates a workspace override inheriting from team default', async () => {
@@ -162,11 +173,11 @@ describe('POST /api/roles/[id]/overrides', () => {
     const mockValues = mock(() => ({ returning: mockReturning }));
     mockWorkspaceSkillsInsert.mockReturnValue({ values: mockValues });
 
-    const req = new NextRequest('http://localhost/api/roles/role1/overrides', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111/overrides', {
       method: 'POST',
       body: JSON.stringify({ workspaceId: 'ws1', allowedTools: ['Read'] }),
     });
-    const res = await POST(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.skill.workspaceId).toBe('ws1');
@@ -197,11 +208,11 @@ describe('POST /api/roles/[id]/overrides', () => {
     const mockSet = mock(() => ({ where: mockWhere }));
     mockWorkspaceSkillsUpdate.mockReturnValue({ set: mockSet });
 
-    const req = new NextRequest('http://localhost/api/roles/role1/overrides', {
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111/overrides', {
       method: 'POST',
       body: JSON.stringify({ workspaceId: 'ws1', allowedTools: ['Read', 'Write'] }),
     });
-    const res = await POST(req, { params: Promise.resolve({ id: 'role1' }) });
+    const res = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.skill.allowedTools).toEqual(['Read', 'Write']);

@@ -287,3 +287,31 @@ describe('ChatSetupCard', () => {
     expect($('[data-testid="kit-setup"] a')!.getAttribute('href')).toBe('/settings/ai');
   });
 });
+
+describe('useComposerState (shared new-chat composer)', () => {
+  it('two composers share one draft, scope and tier; the page scope wins until the person picks; unknown scopes read as all', async () => {
+    const saves: unknown[] = [];
+    const store = kit.createComposerStore({ prefs: { load: () => ({ scope: 'gone', tier: 'premium' }), save: (_k: string, p: unknown) => { saves.push(p); } } });
+    const scopes = [{ id: 'w1', name: 'home' }, { id: 'w2', name: 'work' }];
+    function Box({ id, pageScope }: { id: string; pageScope?: string | null }) {
+      const c = kit.useComposerState(store, 'team-1', { scopes, pageScope });
+      return h('div', { id },
+        h(kit.ChatComposer, { value: c.draft, onChange: c.setDraft, onSend() {},
+          scope: h(kit.ScopePicker, { options: scopes, value: c.scope, onChange: c.setScope }),
+          tier: h(kit.TierPicker, { value: c.tier, onChange: c.setTier }) }),
+        h('span', { className: 'scope' }, String(c.scope)), h('span', { className: 'tier' }, String(c.tier)));
+    }
+    await render(h('div', null, h(Box, { id: 'home' }), h(Box, { id: 'canvas', pageScope: 'w2' })));
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    // The remembered scope isn't one of these: all. The canvas's own scope wins there.
+    expect($('#home .scope')!.textContent).toBe('null');
+    expect($('#canvas .scope')!.textContent).toBe('w2');
+    expect($('#home .tier')!.textContent).toBe('premium');
+    await type($<HTMLTextAreaElement>('#home [data-testid="kit-composer-input"]')!, 'ship it');
+    expect($<HTMLTextAreaElement>('#canvas [data-testid="kit-composer-input"]')!.value).toBe('ship it');
+    await click($('#home [data-testid="kit-scope-trigger"]'));
+    await click([...$$('#home [role="radio"]')].find(b => b.textContent === 'home')!);
+    expect($('#home .scope')!.textContent).toBe('w1');
+    expect(saves).toEqual([{ scope: 'w1' }]);
+  });
+});

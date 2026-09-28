@@ -252,6 +252,31 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
 | `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself (or with `/surfaces` later) |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
+| `createComposerStore` / `useComposerState` | the shared new-chat draft, remembered scope and tier (below) |
+
+**Shared new-chat composer (remembered scope and tier, one draft).** Where an app starts chats from several places (a home card, the chat page, a canvas), keep one module-level store so the draft, scope and tier follow the person between them, and seed it from their last choices:
+
+```ts
+// lib/chat/composer.ts
+import { createComposerStore } from '@builddai/ai-kit/chat/react';
+export const composer = createComposerStore({
+  prefs: {                                   // your storage; apply any tier cap on the server before returning
+    load: key => fetch(`/api/chat/composer?key=${key}`).then(r => (r.ok ? r.json() : null)),   // { scope?, tier? }
+    save: (key, patch) => fetch('/api/chat/composer', { method: 'PATCH', body: JSON.stringify({ key, ...patch }) }).then(() => {}),
+  },
+});
+
+// in any composer for a NEW chat
+const c = useComposerState(composer, teamId, { scopes: spaces, pageScope: searchParams.get('ws') });
+<ChatComposer value={c.draft} onChange={c.setDraft} ...
+  scope={<ScopePicker options={spaces} value={c.scope} onChange={c.setScope} />}
+  tier={<TierPicker value={c.tier} onChange={c.setTier} />} />
+```
+
+- `createComposerStore({ prefs?, onError? })` → `{ get, subscribe, seed(key), setDraft(key, d), setScope(key, s), setTier(key, t), reset }`. Keyed (team, household): nothing crosses keys. `ComposerPrefsAdapter = { load(key) → { scope?, tier? } | null, save(key, patch) }`; absent = never chosen, `null` = all / Auto.
+- The seed loads once per key and never overwrites a field the person already changed (`applyComposerSeed`). `setScope` / `setTier` remember the choice through `save`; the draft stays in memory.
+- `useComposerState(store, key, { scopes?, pageScope? })` → `{ draft, scope, tier, seeded, setDraft, setScope, setTier }`. `pageScope` (an object's workspace, a query param) wins until the person picks another; a remembered scope not in `scopes` reads as all.
+- An existing conversation keeps its own pin: hold its state yourself, and also call `composer.setScope` / `setTier` from its pickers if that choice should be the next new chat's default.
 
 **Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }`). Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; the menus are bottom sheets below 640px; `prefers-reduced-motion` is honoured.
 

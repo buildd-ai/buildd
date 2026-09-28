@@ -240,6 +240,53 @@ describe('memory writes — filed under the caller project only', () => {
     expect(mc.called('save')).toHaveLength(0);
   });
 
+  // The dedupe check reads the team-wide namespace too: another project's memory
+  // must be neither quoted back as a near-duplicate nor auto-superseded.
+  function dedupeStore(similarity: number) {
+    const upserts: Array<{ supersedes?: string[] }> = [];
+    const nearDupeTopK: number[] = [];
+    const { store } = makeKnowledgeStore([]);
+    const ks = {
+      ...store,
+      async upsert(_ns: string, chunks: any[]) {
+        for (const c of chunks) upserts.push({ supersedes: c.supersedes });
+        return { inserted: chunks.length, updated: 0, superseded: 0 };
+      },
+      async nearDupeCheck(_ns: string, _content: string, topK?: number) {
+        nearDupeTopK.push(topK ?? 0);
+        return [{ id: 'foreign-mem', similarity, content: 'FOREIGN SECRET BODY', sourceUrl: null }];
+      },
+    } as KnowledgeStore;
+    return { ks, upserts, nearDupeTopK };
+  }
+
+  it('learn does not quote another project memory back as a near-duplicate', async () => {
+    const mc = makeMemStore([{ id: 'foreign-mem', project: FOREIGN }]);
+    const { ks } = dedupeStore(0.91);
+    const res = await handleLearnAction(mc as any, { type: 'gotcha', title: 'T', content: 'C' }, ctxFor(OWN, ks));
+    expect(res.content[0].text).not.toContain('FOREIGN SECRET BODY');
+    expect(res.content[0].text).not.toContain('foreign-mem');
+    expect(mc.called('save')).toHaveLength(1);
+  });
+
+  it('learn does not auto-supersede another project memory', async () => {
+    const mc = makeMemStore([{ id: 'foreign-mem', project: FOREIGN }]);
+    const { ks, upserts, nearDupeTopK } = dedupeStore(0.99);
+    await handleLearnAction(mc as any, { type: 'gotcha', title: 'T', content: 'C' }, ctxFor(OWN, ks));
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].supersedes).toBeUndefined();
+    // Over-fetched so an own-project duplicate is not crowded out.
+    expect(nearDupeTopK[0]).toBeGreaterThan(5);
+  });
+
+  it('learn still flags an own-project near-duplicate', async () => {
+    const mc = makeMemStore([{ id: 'foreign-mem', project: OWN }]);
+    const { ks } = dedupeStore(0.91);
+    const res = await handleLearnAction(mc as any, { type: 'gotcha', title: 'T', content: 'C' }, ctxFor(OWN, ks));
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+    expect(mc.called('save')).toHaveLength(0);
+  });
+
   it('buildd_memory save refuses a foreign project and saves nothing', async () => {
     const mc = makeMemStore();
     const res = await handleMemoryAction(mc as any, 'save', { type: 'gotcha', title: 'T', content: 'C', project: FOREIGN }, ctxFor(OWN));

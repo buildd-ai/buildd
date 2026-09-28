@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { parseUpdateInput } from '@/lib/watched-project-input';
+import { isUuid } from '@/lib/uuid';
 
 async function loadAndAuthorize(req: NextRequest, projectId: string): Promise<
   | { ok: true; row: typeof watchedProjects.$inferSelect }
@@ -37,6 +38,9 @@ async function loadAndAuthorize(req: NextRequest, projectId: string): Promise<
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid watched project id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
   const auth = await loadAndAuthorize(req, id);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
   return NextResponse.json({ watchedProject: auth.row });
@@ -44,6 +48,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid watched project id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
   const auth = await loadAndAuthorize(req, id);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
@@ -71,6 +78,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid watched project id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
   const auth = await loadAndAuthorize(req, id);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 

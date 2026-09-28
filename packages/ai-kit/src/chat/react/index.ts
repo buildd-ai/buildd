@@ -28,6 +28,10 @@ export {
 export { Menu, MenuOption, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
 export {
+  createComposerStore, useComposerState, applyComposerSeed,
+  type ComposerStore, type ComposerPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
+} from './composer-store';
+export {
   thinkingSteps, isApprovalPart, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
   type ToolRowState,
 } from './model';

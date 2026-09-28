@@ -9,7 +9,9 @@
  *
  * A new chat has no id yet: the first send creates the conversation
  * (`POST /api/chat`), parks the text, and navigates to it; the conversation
- * page sends the parked text on arrival.
+ * page sends the parked text on arrival. Until then its draft, workspace and
+ * tier are the shared composer's (composer-store.ts), the same ones the Home
+ * card and the canvas show. An existing conversation keeps its own.
  *
  * Other devices: `conversation:updated` on `conversation-{id}` is a ping; when
  * nothing is streaming here, the conversation is refetched and replaced.
@@ -33,6 +35,7 @@ import ChatSetupCard from './ChatSetupCard';
 import { chatErrorLine, parseChatUnavailable } from './chat-errors';
 import { ObjectStoreProvider } from './objects/ObjectStoreProvider';
 import { parkPending, takePending } from './pending-message';
+import { chooseComposerTier, chooseComposerWorkspace, useSharedComposer } from './composer-store';
 import { composerHint, conversationHref, EMPTY_CHAT_ENTRY, type ChatEntry } from '@/lib/chat/entry-points';
 import type { CanvasPulse } from './canvas-empty';
 
@@ -50,6 +53,7 @@ export interface ChatConversationProps {
   pinnedTier?: ChatTierName | null;
   agent: ChatAgent;
   workspaces: readonly ComposerWorkspace[];
+  /** An existing conversation's workspace. A new chat: the page's scope, or null for the remembered one. */
   workspaceId: string | null;
   viewerName: string | null;
   canManageTeamKeys: boolean;
@@ -69,7 +73,7 @@ export interface ChatConversationProps {
    * instead of navigating to /app/chat/<id>, and the canvas chrome is passed
    * through to ChatWorkspace.
    */
-  onConversationCreated?: (id: string) => void;
+  onConversationCreated?: (id: string, created: { tier: ChatTierName | null; workspaceId: string | null }) => void;
   canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip' | 'pinOpenLabel'>;
 }
 
@@ -93,10 +97,15 @@ export default function ChatConversation(props: ChatConversationProps) {
   const [title, setTitle] = useState(props.title);
   const [titleSource, setTitleSource] = useState(props.titleSource);
   const [tier, setTier] = useState(initialTier);
-  const [pinnedTier, setPinnedTier] = useState<ChatTierName | null>(props.pinnedTier ?? null);
+  const [ownTier, setPinnedTier] = useState<ChatTierName | null>(props.pinnedTier ?? null);
   const [costKey, setCostKey] = useState(0);
   // Null = all workspaces: each turn is routed to the one the message is about.
-  const [workspaceId, setWorkspaceId] = useState<string | null>(props.workspaceId ?? null);
+  const [ownWorkspaceId, setWorkspaceId] = useState<string | null>(props.workspaceId ?? null);
+  const shared = useSharedComposer(teamId, workspaces, conversationId ? null : props.workspaceId);
+  const { setWorkspaceId: setSharedWorkspaceId, setTier: setSharedTier } = shared;
+  const isNew = !conversationId;
+  const pinnedTier = isNew ? shared.tier : ownTier;
+  const workspaceId = isNew ? shared.workspaceId : ownWorkspaceId;
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -171,24 +180,26 @@ export default function ChatConversation(props: ChatConversationProps) {
   }, [status, title, refetch]);
 
   const onWorkspaceChange = useCallback((next: string | null) => {
+    if (!conversationId) { setSharedWorkspaceId(next); return; } // sent with the create request
     const before = workspaceId;
     setWorkspaceId(next);
-    if (!conversationId) return; // sent with the create request
+    chooseComposerWorkspace(teamId, next);
     void fetch(`/api/chat/${conversationId}`, {
       method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId: next }),
     }).then(r => { if (!r.ok) setWorkspaceId(before); }).catch(() => setWorkspaceId(before));
-  }, [conversationId, workspaceId]);
+  }, [conversationId, workspaceId, teamId, setSharedWorkspaceId]);
 
   const onTierChange = useCallback((next: ChatTierName | null) => {
+    if (!conversationId) { setSharedTier(next); return; } // sent with the create request
     const before = pinnedTier;
     setPinnedTier(next);
-    if (!conversationId) return; // sent with the create request
+    chooseComposerTier(teamId, next);
     void fetch(`/api/chat/${conversationId}`, {
       method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tier: next }),
     }).then(r => { if (!r.ok) setPinnedTier(before); }).catch(() => setPinnedTier(before));
-  }, [conversationId, pinnedTier]);
+  }, [conversationId, pinnedTier, teamId, setSharedTier]);
 
   const onSend = useCallback(async (text: string) => {
     clearError();
@@ -208,7 +219,7 @@ export default function ChatConversation(props: ChatConversationProps) {
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
       parkPending(conversation.id, text);
-      if (onConversationCreated) onConversationCreated(conversation.id);
+      if (onConversationCreated) onConversationCreated(conversation.id, { tier: pinnedTier, workspaceId });
       else router.push(conversationHref(conversation.id, entry));
     } catch (e) {
       setCreateError(chatErrorLine(e));
@@ -254,6 +265,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         workspaces={workspaces}
         workspaceId={workspaceId}
         onWorkspaceChange={onWorkspaceChange}
+        {...(isNew ? { draft: shared.draft, onDraftChange: shared.setDraft } : {})}
         viewerName={viewerName}
         aside={aside}
         emptyState={emptyState}

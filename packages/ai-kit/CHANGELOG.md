@@ -39,6 +39,13 @@ README's "Chat" section for the full API.
   helpers (`thinkingSteps`, `tierLabel`, `greeting`, ...). Peers `react@^19`,
   `@ai-sdk/react@^4` and `ai@^7` are all required by this entry (the build
   audit allows it and only it to import optional peers statically).
+- `/chat/react`: `createComposerStore` / `useComposerState` / `applyComposerSeed`
+  — the shared new-chat composer (one draft, scope and tier across a home
+  card, the chat page and a canvas, keyed per team), seeded from and saved
+  through an app `ComposerPrefsAdapter`; a late seed never overwrites a field
+  the person already changed, and a page's own scope wins until they pick.
+  Generalised from buildd's composer-store (#2907), with storage left to the
+  app.
 - `/chat/styles.css` (new): the components' layout, reading only `--kit-*`.
   `/chat/theme.css` gains `--kit-rule`. `/chat/schema.sql` (new): reference
   tables for a `ChatStore`.

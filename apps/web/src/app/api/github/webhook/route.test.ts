@@ -429,6 +429,11 @@ mock.module('@/lib/migration-inspector', () => ({
   inspectPullRequestMigrations: mockInspectPullRequestMigrations,
 }));
 
+const mockTryDispatchMigrationCollisionRetry = mock(() => Promise.resolve({ handled: false }));
+mock.module('@/lib/migration-collision-retry', () => ({
+  tryDispatchMigrationCollisionRetry: mockTryDispatchMigrationCollisionRetry,
+}));
+
 const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
@@ -617,6 +622,7 @@ function resetAll() {
   );
   mockFireGateEvent.mockClear();
   mockPreflightEscalationCheck.mockReset();
+  mockTryDispatchMigrationCollisionRetry.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
   // mockReset() drops the implementation, so the passthrough is reinstalled.
@@ -671,6 +677,7 @@ function resetAll() {
   // Phase 2 defaults
   mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
   mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
+  mockTryDispatchMigrationCollisionRetry.mockReturnValue(Promise.resolve({ handled: false }));
   mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-task-1' }));
   mockTryAutoMergeWorkerPr.mockReturnValue(Promise.resolve());
   mockDispatchWorkflowRelease.mockReturnValue(
@@ -3437,6 +3444,58 @@ describe('POST /api/github/webhook', () => {
       // Auto-merge also not called
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       // Mission notification fired
+      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispatches a migration-collision renumber task instead of escalating to a human', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      const collision = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 41 };
+      mockInspectPullRequestMigrations.mockReturnValue(Promise.resolve({
+        safe: false,
+        operationClass: 'CONTRACT',
+        reason: 'migration number collision: 0093_safe.sql conflicts with open PR #41 migration 0093_other.sql',
+        collision,
+      }));
+      mockTryDispatchMigrationCollisionRetry.mockReturnValue(Promise.resolve({ handled: true }));
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockTryDispatchMigrationCollisionRetry).toHaveBeenCalledTimes(1);
+      expect(mockTryDispatchMigrationCollisionRetry.mock.calls[0][0]).toMatchObject({
+        collision,
+        workerId: 'w1',
+        taskId: 'task-1',
+        prNumber: 42,
+      });
+      // Handled by the renumber dispatch — no reviewer task, no human escalation.
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockPreflightEscalationCheck).not.toHaveBeenCalled();
+      expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('falls back to normal escalation when the collision retry is not handled (e.g. cap exhausted)', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      const collision = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 41 };
+      mockInspectPullRequestMigrations.mockReturnValue(Promise.resolve({
+        safe: false,
+        operationClass: 'CONTRACT',
+        reason: 'migration number collision: 0093_safe.sql conflicts with open PR #41 migration 0093_other.sql',
+        collision,
+      }));
+      mockTryDispatchMigrationCollisionRetry.mockReturnValue(Promise.resolve({ handled: false }));
+      mockPreflightEscalationCheck.mockReturnValue({
+        shouldEscalate: true,
+        reason: 'migration number collision: 0093_safe.sql conflicts with open PR #41 migration 0093_other.sql',
+      });
+
+      const res = await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockTryDispatchMigrationCollisionRetry).toHaveBeenCalledTimes(1);
+      // Not handled — falls through to the normal human-escalation path.
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
 

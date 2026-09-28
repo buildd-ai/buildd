@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const writes: string[] = [];
-let keyAccount: any = { id: 'acct-1', name: 'CI', teamId: 'team-1', level: 'admin' };
+let keyAccount: any = { id: 'acct-1', name: 'CI', teamId: '11111111-1111-4111-8111-111111111111', level: 'admin' };
 
 mock.module('@/auth', () => ({ auth: async () => null }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => keyAccount }));
@@ -37,17 +37,17 @@ mock.module('@buildd/core/db', () => {
     db: {
       query: {
         // Every team exists and has an owner — none of that may leak to a key.
-        teams: { findFirst: async () => teamRow('team-1') },
+        teams: { findFirst: async () => teamRow('11111111-1111-4111-8111-111111111111') },
         teamMembers: {
-          findFirst: async () => ({ teamId: 'team-1', userId: 'owner-user', role: 'owner', user: { id: 'owner-user' } }),
-          findMany: async () => [{ teamId: 'team-1', userId: 'owner-user', role: 'owner', joinedAt: null, user: { name: 'O', email: 'o@example.test', image: null }, team: teamRow('team-1') }],
+          findFirst: async () => ({ teamId: '11111111-1111-4111-8111-111111111111', userId: 'owner-user', role: 'owner', user: { id: 'owner-user' } }),
+          findMany: async () => [{ teamId: '11111111-1111-4111-8111-111111111111', userId: 'owner-user', role: 'owner', joinedAt: null, user: { name: 'O', email: 'o@example.test', image: null }, team: teamRow('11111111-1111-4111-8111-111111111111') }],
         },
         workspaces: { findMany: async () => [] },
-        teamInvitations: { findFirst: async () => ({ id: 'inv-1', teamId: 'team-1', status: 'pending', email: 'o@example.test', expiresAt: new Date(Date.now() + 1e6) }), findMany: async () => [] },
-        connectors: { findFirst: async () => ({ id: 'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', teamId: 'team-1', authMode: 'oauth', clientId: 'cid', url: 'https://mcp.example.test', discoveredMetadata: { authMode: 'oauth', authorizationServer: { authorization_endpoint: 'https://as.example.test/a', token_endpoint: 'https://as.example.test/t' } } }) },
+        teamInvitations: { findFirst: async () => ({ id: '22222222-2222-4222-8222-222222222222', teamId: '11111111-1111-4111-8111-111111111111', status: 'pending', email: 'o@example.test', expiresAt: new Date(Date.now() + 1e6) }), findMany: async () => [] },
+        connectors: { findFirst: async () => ({ id: 'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', teamId: '11111111-1111-4111-8111-111111111111', authMode: 'oauth', clientId: 'cid', url: 'https://mcp.example.test', discoveredMetadata: { authMode: 'oauth', authorizationServer: { authorization_endpoint: 'https://as.example.test/a', token_endpoint: 'https://as.example.test/t' } } }) },
         users: { findFirst: async () => null },
       },
-      select: () => ({ from: () => ({ where: () => ({ groupBy: async () => [{ teamId: 'team-1', count: 1 }] }) }) }),
+      select: () => ({ from: () => ({ where: () => ({ groupBy: async () => [{ teamId: '11111111-1111-4111-8111-111111111111', count: 1 }] }) }) }),
       insert: recordWrite('insert'),
       update: recordWrite('update'),
       delete: recordWrite('delete'),
@@ -77,20 +77,20 @@ const p = <T extends Record<string, string>>(v: T) => ({ params: Promise.resolve
 beforeEach(() => {
   process.env.NODE_ENV = 'production';
   writes.length = 0;
-  keyAccount = { id: 'acct-1', name: 'CI', teamId: 'team-1', level: 'admin' };
+  keyAccount = { id: 'acct-1', name: 'CI', teamId: '11111111-1111-4111-8111-111111111111', level: 'admin' };
 });
 
 describe('team administration requires a signed-in session', () => {
   const cases: Array<[string, () => Promise<Response>]> = [
     ['POST /api/teams', () => teamsRoute.POST(req('POST', { name: 'N', slug: 'n' }))],
-    ['PATCH /api/teams/[id]', () => teamRoute.PATCH(req('PATCH', { name: 'N' }), p({ id: 'team-1' }))],
-    ['DELETE /api/teams/[id]', () => teamRoute.DELETE(req('DELETE'), p({ id: 'team-1' }))],
-    ['POST /api/teams/[id]/members', () => membersRoute.POST(req('POST', { email: 'x@example.test', role: 'owner' }), p({ id: 'team-1' }))],
-    ['PATCH /api/teams/[id]/members/[userId]', () => memberRoute.PATCH(req('PATCH', { role: 'owner' }), p({ id: 'team-1', userId: 'u-2' }))],
-    ['DELETE /api/teams/[id]/members/[userId]', () => memberRoute.DELETE(req('DELETE'), p({ id: 'team-1', userId: 'u-2' }))],
-    ['GET /api/teams/[id]/invitations', () => invitationsRoute.GET(req('GET'), p({ id: 'team-1' }))],
-    ['POST /api/teams/[id]/invitations', () => invitationsRoute.POST(req('POST', { email: 'x@example.test', role: 'admin' }), p({ id: 'team-1' }))],
-    ['DELETE /api/teams/[id]/invitations/[invitationId]', () => invitationRoute.DELETE(req('DELETE'), p({ id: 'team-1', invitationId: 'inv-1' }))],
+    ['PATCH /api/teams/[id]', () => teamRoute.PATCH(req('PATCH', { name: 'N' }), p({ id: '11111111-1111-4111-8111-111111111111' }))],
+    ['DELETE /api/teams/[id]', () => teamRoute.DELETE(req('DELETE'), p({ id: '11111111-1111-4111-8111-111111111111' }))],
+    ['POST /api/teams/[id]/members', () => membersRoute.POST(req('POST', { email: 'x@example.test', role: 'owner' }), p({ id: '11111111-1111-4111-8111-111111111111' }))],
+    ['PATCH /api/teams/[id]/members/[userId]', () => memberRoute.PATCH(req('PATCH', { role: 'owner' }), p({ id: '11111111-1111-4111-8111-111111111111', userId: 'u-2' }))],
+    ['DELETE /api/teams/[id]/members/[userId]', () => memberRoute.DELETE(req('DELETE'), p({ id: '11111111-1111-4111-8111-111111111111', userId: 'u-2' }))],
+    ['GET /api/teams/[id]/invitations', () => invitationsRoute.GET(req('GET'), p({ id: '11111111-1111-4111-8111-111111111111' }))],
+    ['POST /api/teams/[id]/invitations', () => invitationsRoute.POST(req('POST', { email: 'x@example.test', role: 'admin' }), p({ id: '11111111-1111-4111-8111-111111111111' }))],
+    ['DELETE /api/teams/[id]/invitations/[invitationId]', () => invitationRoute.DELETE(req('DELETE'), p({ id: '11111111-1111-4111-8111-111111111111', invitationId: '22222222-2222-4222-8222-222222222222' }))],
     ['POST /api/invitations/[token]/accept', () => acceptRoute.POST(req('POST'), p({ token: 'tok' }))],
     ['POST /api/connectors/[id]/connect', () => connectRoute.POST(req('POST'), p({ id: 'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1' }))],
   ];
@@ -109,29 +109,29 @@ describe('API keys can read their own team only', () => {
     const res = await teamsRoute.GET(req('GET'));
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.teams.map((t: any) => t.id)).toEqual(['team-1']);
+    expect(data.teams.map((t: any) => t.id)).toEqual(['11111111-1111-4111-8111-111111111111']);
     expect(data.teams[0].role).toBeNull();
   });
 
   it('GET /api/teams/[id] returns the key team without a user role', async () => {
-    const res = await teamRoute.GET(req('GET'), p({ id: 'team-1' }));
+    const res = await teamRoute.GET(req('GET'), p({ id: '11111111-1111-4111-8111-111111111111' }));
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.currentUserRole).toBeNull();
   });
 
   it('GET /api/teams/[id] hides other teams', async () => {
-    const res = await teamRoute.GET(req('GET'), p({ id: 'team-2' }));
+    const res = await teamRoute.GET(req('GET'), p({ id: '33333333-3333-4333-8333-333333333333' }));
     expect(res.status).toBe(404);
   });
 
   it('GET /api/teams/[id]/members is scoped to the key team', async () => {
-    expect((await membersRoute.GET(req('GET'), p({ id: 'team-1' }))).status).toBe(200);
-    expect((await membersRoute.GET(req('GET'), p({ id: 'team-2' }))).status).toBe(404);
+    expect((await membersRoute.GET(req('GET'), p({ id: '11111111-1111-4111-8111-111111111111' }))).status).toBe(200);
+    expect((await membersRoute.GET(req('GET'), p({ id: '33333333-3333-4333-8333-333333333333' }))).status).toBe(404);
   });
 
   it('GET /api/teams/[id]/backend-readiness is scoped to the key team', async () => {
-    expect((await readinessRoute.GET(req('GET'), p({ id: 'team-1' }))).status).toBe(200);
-    expect((await readinessRoute.GET(req('GET'), p({ id: 'team-2' }))).status).toBe(404);
+    expect((await readinessRoute.GET(req('GET'), p({ id: '11111111-1111-4111-8111-111111111111' }))).status).toBe(200);
+    expect((await readinessRoute.GET(req('GET'), p({ id: '33333333-3333-4333-8333-333333333333' }))).status).toBe(404);
   });
 });

@@ -5445,6 +5445,7 @@ import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, Upsert
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
+import { keepOwnProjectMemoryHits, memoryOverfetchTopK } from './memory-hit-scope';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5608,21 +5609,17 @@ function isOwnMemory(m: { project?: string | null }, ctx: MemoryActionCtx): bool
 }
 
 /**
- * Narrow `{teamId}:memory` hits to the caller's project. Chunk metadata is not
- * trusted for this (older chunks carry no project); the memories table is.
- * A hit with no backing memory row is dropped.
+ * Narrow `{teamId}:memory` hits to the caller's project, by the shared rule in
+ * ./memory-hit-scope (the memories table decides, not chunk metadata; a hit
+ * with no backing row, or a row with no project, is dropped).
  */
-async function ownMemoryHits(
+async function ownMemoryHits<T extends { id: string; metadata?: Record<string, unknown> | null }>(
   mc: MemoryStore | null,
   ctx: MemoryActionCtx,
-  hits: QueryResult[],
-): Promise<QueryResult[]> {
-  const own = normalizeProject(ctx.project);
-  if (!own || !mc || hits.length === 0) return [];
-  const memoryIdOf = (r: QueryResult) => (typeof r.metadata?.memoryId === 'string' ? r.metadata.memoryId : r.id);
-  const { memories } = await mc.batch(hits.map(memoryIdOf));
-  const allowed = new Set(memories.filter(m => normalizeProject(m.project) === own).map(m => m.id));
-  return hits.filter(r => allowed.has(memoryIdOf(r)));
+  hits: T[],
+): Promise<T[]> {
+  if (!mc) return [];
+  return keepOwnProjectMemoryHits(hits, { project: ctx.project ?? null, lookup: ids => mc.batch(ids) });
 }
 
 /**
@@ -5784,7 +5781,7 @@ async function fanOutCorpora(
       try {
         // The memory namespace is team-wide: over-fetch, then keep the caller's project.
         if (c === 'memory') {
-          const raw = await ks.query(ns, { ...opts, topK: Math.min(opts.topK * 5, 100) });
+          const raw = await ks.query(ns, { ...opts, topK: memoryOverfetchTopK(opts.topK) });
           const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
           return own.slice(0, opts.topK);
         }
@@ -5922,7 +5919,7 @@ export async function handleRecallAction(
   const raw = await ks.query(ns, {
     text: query,
     mode,
-    topK: scope === 'memory' ? Math.min(fetchTopK * 5, 100) : fetchTopK,
+    topK: scope === 'memory' ? memoryOverfetchTopK(fetchTopK) : fetchTopK,
   });
 
   // Exclude superseded entries by default, apply type/files filters, then the caller limit.
@@ -5984,7 +5981,10 @@ export async function handleLearnAction(
   if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
     const ns = buildNamespace(ctx.teamId, 'memory');
     const embedText = `${params.title as string}\n\n${params.content as string}`;
-    const candidates = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, 5).catch(() => []);
+    // The namespace is team-wide: over-fetch, then keep the caller's project, so
+    // another workspace's memory is neither quoted back nor auto-superseded.
+    const nearest = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, memoryOverfetchTopK(5)).catch(() => []);
+    const candidates = (await ownMemoryHits(memoryClient, ctx, nearest).catch(() => [])).slice(0, 5);
 
     const top = candidates[0];
     if (top && top.similarity > THRESH_AUTO) {
@@ -6396,7 +6396,7 @@ export async function handleMemoryAction(
       const queried = await ks.query(ns, {
         text: params.query as string,
         mode,
-        topK: corpus === 'memory' ? Math.min(topK * 5, 100) : topK,
+        topK: corpus === 'memory' ? memoryOverfetchTopK(topK) : topK,
       });
       const results = corpus === 'memory'
         ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
@@ -6453,6 +6453,14 @@ export async function handleMemoryAction(
         if (!archiveNs) {
           throw new Error(corpus === 'memory' ? 'teamId required to archive memory chunks' : 'workspaceId required to archive chunks');
         }
+        // The memory namespace is team-wide: archive only the caller's own
+        // project's memories. A foreign id and a missing one read the same.
+        if (corpus === 'memory') {
+          const own = await ownMemoryHits(memoryClient, ctx, (sourceIds as string[]).map(id => ({ id })));
+          if (own.length !== sourceIds.length) {
+            throw new Error('sourceIds include memory that is not in this workspace — memory is scoped to the calling workspace');
+          }
+        }
         const result = await archiveChunks(archiveNs, sourceIds as string[], {
           reason: params.reason as string | undefined,
         });
@@ -6464,18 +6472,35 @@ export async function handleMemoryAction(
       // (memory is team-scoped; everything else workspace-scoped).
       const defaultCorpora: Corpus[] = op === 'find_duplicates' ? ['memory', 'task'] : ['task', 'artifact'];
       const corpora = (params.corpora as Corpus[] | undefined) ?? defaultCorpora;
+      // Memory needs a project key as well as a teamId: its namespace is
+      // team-wide and results are narrowed to the caller's project below.
+      const hasProject = !!normalizeProject(ctx.project);
       const namespaces = corpora
+        .filter(c => c !== 'memory' || hasProject)
         .map(c => knowledgeNamespace(ctx, c))
         .filter((ns): ns is string => ns !== null);
       if (namespaces.length === 0) {
-        throw new Error(`No namespace resolvable for corpora [${corpora.join(', ')}] — memory needs teamId, other corpora need workspaceId`);
+        throw new Error(`No namespace resolvable for corpora [${corpora.join(', ')}] — memory needs teamId and a workspace project, other corpora need workspaceId`);
       }
+      const memoryNs = ctx.teamId ? buildNamespace(ctx.teamId, 'memory') : null;
+      /** Source ids in the memory namespace that belong to the caller's project. */
+      const ownMemoryIds = async (ids: string[]): Promise<Set<string>> => {
+        const unique = [...new Set(ids)];
+        const own = await ownMemoryHits(memoryClient, ctx, unique.map(id => ({ id })));
+        return new Set(own.map(h => h.id));
+      };
 
       if (op === 'find_duplicates') {
-        const pairs = await findNearDuplicates(namespaces, {
+        const found = await findNearDuplicates(namespaces, {
           threshold: params.threshold as number | undefined,
           limit: params.limit as number | undefined,
         });
+        const memPairs = found.filter(p => p.namespace === memoryNs);
+        const allowed = memPairs.length > 0
+          ? await ownMemoryIds(memPairs.flatMap(p => [p.sourceIdA, p.sourceIdB]))
+          : new Set<string>();
+        const pairs = found.filter(p =>
+          p.namespace !== memoryNs || (allowed.has(p.sourceIdA) && allowed.has(p.sourceIdB)));
         if (pairs.length === 0) {
           return text(`No near-duplicate pairs found (namespaces: ${namespaces.join(', ')}).`);
         }
@@ -6488,10 +6513,15 @@ export async function handleMemoryAction(
       }
 
       // op === 'find_decayed'
-      const decayed = await findDecayedUnused(namespaces, {
+      const decayedAll = await findDecayedUnused(namespaces, {
         halfLifeMultiple: params.halfLifeMultiple as number | undefined,
         limit: params.limit as number | undefined,
       });
+      const memDecayed = decayedAll.filter(d => d.namespace === memoryNs);
+      const allowedDecayed = memDecayed.length > 0
+        ? await ownMemoryIds(memDecayed.map(d => d.sourceId))
+        : new Set<string>();
+      const decayed = decayedAll.filter(d => d.namespace !== memoryNs || allowedDecayed.has(d.sourceId));
       if (decayed.length === 0) {
         return text(`No decayed unused chunks found (namespaces: ${namespaces.join(', ')}).`);
       }
