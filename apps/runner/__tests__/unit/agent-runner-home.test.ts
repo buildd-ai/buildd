@@ -124,7 +124,7 @@ describe('WorkerManager wiring', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/workers.ts'), 'utf8');
 
   test('the agent env gets an isolated runner home after the allowlist copy', () => {
-    const copy = src.indexOf('for (const key of RUNNER_ENV_PASSTHROUGH)');
+    const copy = src.indexOf('const cleanEnv = buildAgentBaseEnv()');
     const isolate = src.indexOf('isolateAgentRunnerHome(cleanEnv');
     expect(copy).toBeGreaterThan(-1);
     expect(isolate).toBeGreaterThan(copy);
