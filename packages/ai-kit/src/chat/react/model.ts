@@ -93,6 +93,19 @@ export function tierLabel(pinned: string | null, last: string | null | undefined
   return last ? `Auto · ${name(last)}` : 'Auto';
 }
 
+/** A running total: '' when nothing has been spent, `<$0.01` under a cent, else `$0.42`. */
+export function formatCost(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd) || usd <= 0) return '';
+  if (usd < 0.01) return '<$0.01';
+  return `$${usd.toFixed(2)}`;
+}
+
+/** A per-1k-token price: two significant figures, trailing zeros dropped (`$0.0030` → `$0.003`). */
+export function formatPer1k(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) return '$0';
+  return `$${Number(usd.toPrecision(2)).toString()}`;
+}
+
 /** "Hi Sam, what are we working on?" */
 export function greeting(name?: string | null): string {
   const n = name?.trim();

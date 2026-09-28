@@ -7,7 +7,7 @@
  * and the fetches (e.g. `GET`/`PATCH` from `createPermissionsApi`).
  */
 import type { ReactNode } from 'react';
-import { allowedBadgeCount, type ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
+import type { ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
 import { Menu, MenuOption } from './Menu';
 import { tierLabel } from './model';
 
@@ -63,24 +63,19 @@ export function ToolRows({ rows, onChange, busyKey }: Pick<ToolsMenuProps, 'onCh
 }
 
 /**
- * The `···` control. The badge counts groups set to Allow (`··· 2`); with none
- * it is just `···`.
+ * The `···` control, named plainly "Tools". It carries no count: the panel
+ * already shows each group's mode, and a number on the trigger read as
+ * unread items.
  */
 export function ToolsMenu({ rows, onChange, busyKey = null, error, title = 'Tools', className }: ToolsMenuProps) {
-  const count = rows ? allowedBadgeCount(rows) : 0;
   return (
     <Menu
-      label={count > 0 ? `${title}, ${count} allowed without asking` : title}
+      label={title}
       title={title}
       align="end"
       className={className}
       testId="kit-tools"
-      trigger={(
-        <>
-          <span aria-hidden="true">···</span>
-          {count > 0 && <span className="kit-badge" data-testid="kit-tools-count">{count}</span>}
-        </>
-      )}
+      trigger={<span aria-hidden="true">···</span>}
     >
       {rows ? <ToolRows rows={rows} onChange={onChange} busyKey={busyKey} /> : <p className="kit-menu-title">…</p>}
       {error && <p role="alert" className="kit-menu-error">{error}</p>}
