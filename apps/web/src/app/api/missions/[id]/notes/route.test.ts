@@ -55,6 +55,13 @@ mock.module('@/lib/pusher', () => ({
   events: { MISSION_NOTE_POSTED: 'mission:note_posted' },
 }));
 
+// wakeMission's own gating is covered in lib/mission-wake.test.ts.
+const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
+  wakeMissionAfterResponse: mockWakeMissionAfterResponse,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -207,6 +214,7 @@ describe('POST /api/missions/[id]/notes', () => {
     mockUpdate.mockReset();
     insertedNoteValues = null;
     updatedNoteValues = null;
+    mockWakeMissionAfterResponse.mockClear();
 
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue(null);
@@ -391,5 +399,52 @@ describe('POST /api/missions/[id]/notes', () => {
 
     // Should have called update to mark parent as answered
     expect(updatedNoteValues).toEqual({ status: 'answered' });
+  });
+
+  // ── Wake on an owner note (event-driven replanning §2) ────────────────────
+  function asUser() {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+  }
+
+  it('wakes the mission with owner_note when a signed-in user posts a note', async () => {
+    asUser();
+    await POST(createRequest({ method: 'POST', body: { type: 'guidance', title: 'Prioritise the API' } }), { params: mockParams });
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith(MISSION_ID, 'owner_note');
+  });
+
+  it('wakes with owner_answer when the user note replies to another note', async () => {
+    asUser();
+    await POST(createRequest({ method: 'POST', body: { type: 'reply', title: 'Yes, use Redis', replyTo: 'note-parent' } }), { params: mockParams });
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith(MISSION_ID, 'owner_answer');
+  });
+
+  it('does not wake on an agent note', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+    await POST(createRequest({
+      method: 'POST',
+      body: { type: 'decision', title: 'Chose Redis' },
+      headers: { authorization: 'Bearer bld_test' },
+    }), { params: mockParams });
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not wake when an API-key caller claims authorType=user', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+    await POST(createRequest({
+      method: 'POST',
+      body: { type: 'guidance', title: 'Impersonating', authorType: 'user' },
+      headers: { authorization: 'Bearer bld_test' },
+    }), { params: mockParams });
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not wake on a system note posted by a signed-in user', async () => {
+    asUser();
+    await POST(createRequest({ method: 'POST', body: { type: 'update', title: 'Sync', authorType: 'system' } }), { params: mockParams });
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
   });
 });

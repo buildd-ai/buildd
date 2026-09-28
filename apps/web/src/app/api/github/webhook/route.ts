@@ -30,7 +30,8 @@ import {
   shouldAnnounceBaseAdvance,
 } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
-import { checkDependsOnResolved } from '@/lib/task-dependencies';
+import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
   countPendingTasksForMission,
@@ -1229,19 +1230,43 @@ async function handlePullRequestEvent(event: {
     // forever, and only when the human clicked Merge on GitHub rather than in
     // buildd, because the dashboard merge route raises the signal itself.
     if (worker.task.status !== 'completed') {
-      await db
+      // Guarded on the row, not only on the copy read above: the worker's own
+      // completion (PATCH /api/workers/[id]) can land between that read and
+      // this write, and it resolves the task itself. Only the writer that
+      // actually flips the row resolves it, so the task is resolved once.
+      const [flipped] = await db
         .update(tasks)
         .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(tasks.id, worker.task.id));
-      console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
-      // Same fact as the worker route's completion, same dedupe key: one row.
-      await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
+        .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
+        .returning({ id: tasks.id });
+      if (flipped) {
+        console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+        // Same fact as the worker route's completion, same dedupe key: one row.
+        await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
 
-      // Work-tracker: post completion comment and transition issue to "Done".
-      // Stays inside the transition guard deliberately: a "Done" comment is a
-      // one-shot announcement, and re-posting it on every delivery is spam on
-      // someone's issue tracker.
-      maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
+        // Work-tracker: post completion comment and transition issue to "Done".
+        // Stays inside the transition guard deliberately: a "Done" comment is a
+        // one-shot announcement, and re-posting it on every delivery is spam on
+        // someone's issue tracker.
+        maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
+
+        // The same post-completion path every other completion takes: parent
+        // rollup, dependents, mission completion and re-planning. Writing the
+        // status alone left a mission waiting for its next heartbeat tick.
+        // A loop task still waiting on this merge is resolved by
+        // evaluateAndAdvanceLoopOnMerge above, which runs resolveCompletedTask
+        // itself; doing it here too would resolve it twice.
+        if (worker.task.loopState !== 'condition_unmet') {
+          await resolveCompletedTask(worker.task.id, worker.task.workspaceId).catch(e =>
+            console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
+          );
+        }
+      }
+    } else if (mergeIsNew && worker.task.missionId) {
+      // The task was already completed (its worker finished with the PR open),
+      // so no completion fires now — but the mission's loop may be paused on
+      // exactly this open PR (evaluateMissionOpenPrGate). Wake it.
+      wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
     }
 
     // ── Effects of the merge itself ──────────────────────────────────────────
@@ -1465,10 +1490,13 @@ async function handlePullRequestEvent(event: {
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
-      await db
+      // Row-guarded for the same reason as the worker-match path above.
+      const [flipped] = await db
         .update(tasks)
         .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(tasks.id, matchingTask.id));
+        .where(and(eq(tasks.id, matchingTask.id), ne(tasks.status, 'completed')))
+        .returning({ id: tasks.id });
+      if (!flipped) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
       if (matchingTask.missionId) {
@@ -1476,6 +1504,11 @@ async function handlePullRequestEvent(event: {
           console.error(`[webhook] unblock failed for branch-match merged PR mission ${matchingTask.missionId}:`, e)
         );
       }
+
+      // Dependents, mission completion and re-planning, as for any completion.
+      await resolveCompletedTask(matchingTask.id, matchingTask.workspaceId).catch(e =>
+        console.error(`[webhook] resolveCompletedTask failed for branch-matched task ${matchingTask.id}:`, e),
+      );
     }
   }
 }

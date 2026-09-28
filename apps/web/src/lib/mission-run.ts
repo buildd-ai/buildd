@@ -16,6 +16,7 @@ import { isMissionBlocked } from '@/lib/mission-dependency';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
+import type { MissionWakeReason } from '@/lib/mission-wake';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -205,10 +206,29 @@ export interface RunMissionResult {
   skippedCircuitBreaker?: boolean;
 }
 
+/**
+ * What started an organizer (planning) run. Stamped on `tasks.context.triggerSource`
+ * of every organizer task; the mission timeline reads it.
+ *
+ * - `event`        — a task of the mission reached a terminal state (mission-loop.ts)
+ * - `wake:<reason>`— an external event woke the mission (mission-wake.ts)
+ * - `manual`       — someone ran it (`POST /api/missions/[id]/run`, mission creation)
+ * - `cron`         — the schedule's hourly cycle
+ * - `backstop`     — the cron's stuck-mission sweep
+ * - `auto_retry`   — a planning task failed and is being retried
+ */
+export type OrganizerTriggerSource =
+  | 'cron'
+  | 'manual'
+  | 'event'
+  | 'auto_retry'
+  | 'backstop'
+  | `wake:${MissionWakeReason}`;
+
 export interface CycleContext {
   cycleNumber: number;
   triggerChainId: string;
-  triggerSource: 'cron' | 'manual' | 'retrigger' | 'auto_retry';
+  triggerSource: OrganizerTriggerSource;
 }
 
 export interface RunMissionOptions {

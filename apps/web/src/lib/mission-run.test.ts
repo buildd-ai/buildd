@@ -359,6 +359,32 @@ describe('runMission', () => {
     expect(insertCall.backend).toBeUndefined();
   });
 
+  // The mission timeline (S4) and the backstop's grace check read
+  // tasks.context.triggerSource, so every organizer task must carry it.
+  it.each([
+    ['manual (no cycle context)', undefined, 'manual'],
+    ['event', { cycleNumber: 2, triggerChainId: 'chain-1', triggerSource: 'event' }, 'event'],
+    ['wake', { cycleNumber: 1, triggerChainId: 'chain-2', triggerSource: 'wake:owner_note' }, 'wake:owner_note'],
+  ] as const)('stamps triggerSource on the organizer task context: %s', async (_label, cycleContext, expected) => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Stamped Mission',
+      priority: 0,
+      schedule: null,
+    });
+    mockBuildMissionContext.mockResolvedValue({ description: 'x', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
+
+    await runMission('obj-1', cycleContext ? { cycleContext: { ...cycleContext } } : undefined, deps);
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, any>;
+    expect(insertCall.context.triggerSource).toBe(expected);
+  });
+
   it('sets manualRun in context when option is true', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-1',

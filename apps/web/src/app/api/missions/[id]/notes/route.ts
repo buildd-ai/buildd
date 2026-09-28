@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 
 function invalidUuid(label: string, value: string, status: 400 | 404) {
@@ -192,6 +193,16 @@ export async function POST(
     await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, payload);
     if (note.taskId) {
       await triggerEvent(channels.task(note.taskId), events.MISSION_NOTE_POSTED, payload);
+    }
+
+    // A person writing to the mission is steering it: plan the next step now
+    // rather than on the next heartbeat. Only a signed-in user's note — agent,
+    // MCP and system notes are the platform talking to itself, and waking on
+    // them would let an organizer's own note re-plan the mission. Keyed on the
+    // session, not only on authorType: an API-key caller may pass
+    // authorType='user' in the body.
+    if (note.authorType === 'user' && access.user && !access.apiAccount) {
+      wakeMissionAfterResponse(id, note.replyTo ? 'owner_answer' : 'owner_note');
     }
 
     return NextResponse.json(note, { status: 201 });

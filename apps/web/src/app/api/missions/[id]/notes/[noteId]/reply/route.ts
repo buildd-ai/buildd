@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 
 // POST /api/missions/[id]/notes/[noteId]/reply — reply to a specific note
 export async function POST(
@@ -105,6 +106,13 @@ export async function POST(
     await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, payload);
     if (parentNote.taskId) {
       await triggerEvent(channels.task(parentNote.taskId), events.MISSION_NOTE_POSTED, payload);
+    }
+
+    // The owner answered (typically a question the organizer asked): plan with
+    // the answer now. Only a signed-in user's reply — an API-key reply is an
+    // agent, and must not re-plan the mission on its own words.
+    if (reply.authorType === 'user') {
+      wakeMissionAfterResponse(id, 'owner_answer');
     }
 
     return NextResponse.json(reply, { status: 201 });
