@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * One conversation on `useChat` (AI SDK v7, `@ai-sdk/react`). The server's
- * stored history is the source of truth, so each request carries only the
- * newest message (`ChatTurnRequest`). An approval answer is a newest message
- * too: `addToolApprovalResponse` marks the part and
- * `lastAssistantMessageIsCompleteWithApprovalResponses` sends it back.
+ * One conversation on the kit's `useKitChat` (@builddai/ai-kit/chat/react,
+ * `useChat` from AI SDK v7 underneath). The server's stored history is the
+ * source of truth, so each request carries only the newest message
+ * (`ChatTurnRequest`) plus how the chat was opened. An approval answer is a
+ * newest message too: `respond` marks the part and it goes back once every
+ * card in the turn is answered.
  *
  * A new chat has no id yet: the first send creates the conversation
  * (`POST /api/chat`), parks the text, and navigates to it; the conversation
@@ -16,8 +17,7 @@
  * Other devices: `conversation:updated` on `conversation-{id}` is a ping; when
  * nothing is streaming here, the conversation is refetched and replaced.
  */
-import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai';
+import { useKitChat } from '@builddai/ai-kit/chat/react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -109,23 +109,18 @@ export default function ChatConversation(props: ChatConversationProps) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const transport = useMemo(() => new DefaultChatTransport<UIMessage>({
+  const entryBody = useMemo(
+    () => (entry.intent || entry.about ? { entry: { intent: entry.intent, about: entry.about } } : {}),
+    [entry.intent, entry.about],
+  );
+  const chat = useKitChat({
     api: `/api/chat/${conversationId ?? 'new'}`,
-    credentials: 'include',
-    prepareSendMessagesRequest: ({ messages }) => ({
-      body: {
-        message: messages[messages.length - 1],
-        ...(entry.intent || entry.about ? { entry: { intent: entry.intent, about: entry.about } } : {}),
-      },
-    }),
-  }), [conversationId, entry.intent, entry.about]);
-
-  const { messages, sendMessage, status, error, stop, addToolApprovalResponse, setMessages, clearError } = useChat<UIMessage>({
     id: conversationId ?? undefined,
-    messages: initialMessages as UIMessage[],
-    transport,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    initialMessages,
+    credentials: 'include',
+    body: entryBody,
   });
+  const { messages, send: sendText, status, error, stop, respond, setMessages, clearError } = chat;
 
   // The first message of a new chat, parked by the list page before it navigated here.
   const sentPending = useRef(false);
@@ -133,8 +128,8 @@ export default function ChatConversation(props: ChatConversationProps) {
     if (!conversationId || sentPending.current) return;
     sentPending.current = true;
     const text = takePending(conversationId);
-    if (text) void sendMessage({ text });
-  }, [conversationId, sendMessage]);
+    if (text) void sendText(text);
+  }, [conversationId, sendText]);
 
   // Other devices: a ping means refetch, never content over Pusher.
   const busyRef = useRef(false);
@@ -145,7 +140,7 @@ export default function ChatConversation(props: ChatConversationProps) {
     if (!res?.ok) return;
     const data = (await res.json()) as GetConversationResponse;
     if (busyRef.current) return;
-    setMessages(data.messages.map(m => dtoToMessage(m, viewerName)) as UIMessage[]);
+    setMessages(data.messages.map(m => dtoToMessage(m, viewerName)));
     setTitle(data.conversation.titleSource === 'user' || data.conversation.title !== 'New conversation' ? data.conversation.title : null);
     setTitleSource(data.conversation.titleSource);
     const last = [...data.messages].reverse().find(m => m.role === 'assistant' && m.tier);
@@ -204,7 +199,7 @@ export default function ChatConversation(props: ChatConversationProps) {
   const onSend = useCallback(async (text: string) => {
     clearError();
     if (conversationId) {
-      void sendMessage({ text });
+      void sendText(text);
       return;
     }
     setCreating(true);
@@ -225,13 +220,13 @@ export default function ChatConversation(props: ChatConversationProps) {
       setCreateError(chatErrorLine(e));
       setCreating(false);
     }
-  }, [clearError, conversationId, sendMessage, teamId, workspaceId, router, entry, pinnedTier, onConversationCreated]);
+  }, [clearError, conversationId, sendText, teamId, workspaceId, router, entry, pinnedTier, onConversationCreated]);
 
-  const onApproval = useCallback((id: string, approved: boolean, reason?: string) => {
-    void addToolApprovalResponse({ id, approved, reason });
-  }, [addToolApprovalResponse]);
+  const onApproval = respond;
 
-  const unavailable = parseChatUnavailable(error);
+  // A refusal before any model call: the kit reads its body (chat.unavailable);
+  // buildd's parse keeps the typed fields its setup card reads.
+  const unavailable = parseChatUnavailable(error) ?? (chat.unavailable ? parseChatUnavailable(JSON.stringify(chat.unavailable)) : null);
   const setupReason = unavailable?.error === 'no_key' ? 'no_key' : null;
   const errorLine = createError ?? (error && !setupReason ? chatErrorLine(error) : null);
 

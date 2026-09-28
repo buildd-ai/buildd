@@ -1,20 +1,20 @@
 /**
  * A new chat's first message, parked across the navigation to its page. The
- * conversation page sends it on arrival, once.
+ * conversation page sends it on arrival, once. The kit's
+ * `createPendingMessages` (session storage, read-and-clear), under buildd's
+ * key prefix so a message parked by an older tab still lands.
  */
-export const PENDING_KEY = (id: string) => `buildd-chat-pending:${id}`;
+import { createPendingMessages } from '@builddai/ai-kit/chat/react';
+
+const pending = createPendingMessages({ prefix: 'buildd-chat-pending:' });
+
+export const PENDING_KEY = (id: string) => pending.key(id);
 
 export function parkPending(id: string, text: string): void {
-  try { window.sessionStorage.setItem(PENDING_KEY(id), text); } catch { /* private mode */ }
+  pending.park(id, text);
 }
 
 /** Read and clear. */
 export function takePending(id: string): string | null {
-  try {
-    const text = window.sessionStorage.getItem(PENDING_KEY(id));
-    window.sessionStorage.removeItem(PENDING_KEY(id));
-    return text;
-  } catch {
-    return null;
-  }
+  return pending.take(id);
 }

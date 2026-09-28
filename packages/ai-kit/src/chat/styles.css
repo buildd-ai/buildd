@@ -28,6 +28,9 @@
 .kit-tool-summary { overflow-wrap: anywhere; }
 .kit-steer-note { font-size: 13px; color: var(--kit-muted); font-style: italic; }
 .kit-error { font-size: 13px; color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); padding: 8px 12px; }
+/* 0.9.0: an app's header and footer on a message (rendered only when the app passes them). */
+.kit-msg-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--kit-muted); }
+.kit-msg-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
 /* ── Thinking ───────────────────────────────────────────────────────────── */
 .kit-thinking { border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 8px 12px; }
@@ -206,7 +209,8 @@
 .kit-approval-body { min-width: 0; overflow-wrap: anywhere; }
 .kit-fold-toggle { display: none; }
 @media (max-width: 639px) {
-  .kit-fold-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+  /* `button.` so it wins over `.kit-chat button { font: inherit }` inside a thread (0.9.0). */
+  button.kit-fold-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
   .kit-fold-label { flex: none; font-weight: 600; color: var(--kit-ink); }
   .kit-fold-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kit-fold:not([data-open]) { display: none; }

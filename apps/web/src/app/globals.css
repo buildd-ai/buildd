@@ -199,12 +199,14 @@ select {
 
 /* The text field inside a brand Combobox: the wrapper draws the border. */
 input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
-textarea[data-bare-input] {
+textarea[data-bare-input],
+textarea.kit-composer-input {
   border: 0 !important;
 }
-/* The chat composer's box spans the slab edge to edge: the ring above would
-   draw two copper lines across it. Its focus cue is the slab's own top rule. */
-textarea[data-composer-input]:focus-visible { outline: none; }
+/* The chat composer's box (the kit's) spans the slab edge to edge: the ring
+   above would draw two copper lines across it. Its focus cue is the slab's
+   own top rule. */
+textarea.kit-composer-input:focus-visible { outline: none; }
 
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
@@ -888,7 +890,7 @@ textarea[data-composer-input]:focus-visible { outline: none; }
   .buildd-menu-cell .kit-menu-trigger {
     height: 100%; width: 100%; min-height: 44px; min-width: 0; padding: 0 8px;
     justify-content: center; gap: 6px;
-    font-size: 12.5px; font-weight: 500; color: var(--chat-muted);
+    font-family: var(--kit-font-mono); font-size: 12.5px; font-weight: 500; color: var(--chat-muted);
   }
   .buildd-menu-cell .kit-menu-trigger:hover,
   .buildd-menu-cell .kit-menu-trigger[aria-expanded="true"] { background: var(--chat-raised); color: var(--chat-text); }
@@ -1076,5 +1078,180 @@ textarea[data-composer-input]:focus-visible { outline: none; }
     .buildd-empty-plain > .kit-greeting { font-size: 64px; }
     .buildd-empty:not(.buildd-empty-plain) > .kit-greeting { max-width: 640px; }
     .buildd-empty > .kit-empty-sub { margin-top: 16px; font-size: 22px; }
+  }
+
+  /* ── Thread on the kit (ChatFeed): the kit's ChatThread is only the list and
+     its message frames; what is in them is buildd's. The feed sits straight
+     on the sea: no ground, no padding, 28px between messages. */
+  .kit-thread.buildd-thread { gap: 28px; padding: 0; background: transparent; }
+  .buildd-thread .kit-msg { max-width: none; }
+  /* The person: meta, then the bubble (it pushes itself right), then the tag. */
+  .buildd-thread .kit-msg[data-role="user"] { align-self: stretch; gap: 4px; }
+  .buildd-thread .kit-msg[data-role="user"] > .kit-msg-head,
+  .buildd-thread .kit-msg[data-role="user"] > .kit-msg-foot { justify-content: flex-end; }
+  /* The agent (and an event it posted): the avatar beside the header, the
+     turn indented under it. */
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) { gap: 14px; padding-left: 40px; }
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) > .kit-msg-head { margin-left: -40px; gap: 12px; }
+  .buildd-thread .kit-msg:not([data-role="user"]) > .kit-msg-foot { flex-direction: column; align-items: stretch; gap: 14px; }
+  .buildd-thread .kit-msg-foot > .buildd-feedback { align-self: flex-start; }
+  /* Nothing to say (no objects, no thumbs yet): no gap either. */
+  .buildd-thread .kit-msg-foot:empty { display: none; }
+  /* The turn in flight (docs/design/chat-canvas.md, "Thinking"): a square
+     panel with a plain blue left rule, BUILDD / THINKING and three ticking
+     squares, the steps in plain words, then what the agent is saying. No
+     glow here; the surface's one glow is the composer sweep. */
+  .buildd-thread .kit-msg[data-role="assistant"][data-streaming] {
+    gap: 12px; padding: 12px 16px 16px;
+    border: 1px solid var(--chat-rule); border-left: 2px solid var(--mood-thinking-rule); background: var(--chat-panel);
+  }
+  .buildd-thread .kit-thinking { border: 0; background: transparent; padding: 0; }
+  .buildd-thread .kit-thinking > summary { min-height: 0; pointer-events: none; cursor: default; }
+  .buildd-thinking-title {
+    display: flex; align-items: center; gap: 12px;
+    font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .buildd-thread .kit-steps { margin-top: 12px; gap: 8px; }
+  .buildd-thread .kit-step { gap: 12px; font-family: var(--kit-font-mono); font-size: 13px; line-height: 1.4; }
+  .buildd-thread .kit-step[data-state="done"] { color: var(--chat-muted); }
+  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking-text); }
+  .buildd-thread .kit-step[data-state="pending"] { color: var(--chat-dim); }
+  .buildd-thread .kit-step-mark { width: 10px; height: 10px; border: 0; border-radius: 0; }
+  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--mood-thinking-done); }
+  .buildd-thread .kit-step[data-state="active"] .kit-step-mark { background: var(--mood-thinking); animation: mood-dot 1.6s ease-in-out infinite; }
+  .buildd-thread .kit-step[data-state="pending"] .kit-step-mark { border: 1px solid var(--chat-dim); background: transparent; }
+  /* The request failed: said once, under the turn. */
+  .buildd-thread > .kit-error {
+    border: 0; border-radius: 12px; padding: 12px 16px; background: var(--fleet-err-soft);
+    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; color: var(--status-error);
+  }
+  /* The thumbs: 44px to touch on a phone, 32px on a desktop pointer. */
+  .buildd-feedback .kit-thumb-btn { color: var(--text-muted); }
+  .buildd-feedback .kit-thumb-btn:hover { color: var(--text-primary); border-color: var(--border); }
+  .buildd-feedback .kit-thumb-btn[aria-pressed="true"] { color: var(--text-primary); border-color: var(--border-strong); background: var(--surface-2); }
+  .buildd-feedback .kit-feedback-reason { font-size: 11.5px; color: var(--text-muted); }
+  @media (min-width: 768px) {
+    .buildd-feedback .kit-thumb-btn { min-width: 32px; min-height: 32px; }
+  }
+  .kit-feedback-panel .kit-option[aria-checked="true"] { background: var(--text-primary); color: var(--surface-1); }
+  @media (prefers-reduced-motion: reduce) {
+    .buildd-thread .kit-step[data-state="active"] .kit-step-mark { animation: none; }
+  }
+
+  /* ── Composer on the kit (ChatComposer): the kit's box drawn as buildd's
+     slab. A full-bleed slab on a phone, a square box from 768px, no radius
+     anywhere. The 2px top rule is copper while something needs the viewer,
+     the text colour on focus otherwise, and carries the streaming sweep. */
+  .buildd-composer > .kit-composer {
+    border: 0; border-top: 2px solid var(--chat-rule-strong); border-radius: 0;
+    background: var(--chat-surface); transition: border-color .15s;
+  }
+  .buildd-composer > .kit-composer[data-busy] { border-top-color: var(--chat-rule-strong); }
+  .buildd-composer > .kit-composer[data-mood="needs"] { border-top-color: var(--mood-needs); }
+  .buildd-composer .kit-composer-edge { top: -2px; overflow: visible; overflow-x: clip; }
+  .buildd-composer .kit-composer-input {
+    min-height: 64px; max-height: 12rem; padding: 12px 16px;
+    font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 17px; line-height: 1.35; color: var(--chat-text);
+  }
+  .buildd-composer .kit-composer-input::placeholder { color: var(--chat-muted); }
+  .buildd-composer .kit-toolbar { height: 48px; min-height: 48px; border-top-color: var(--chat-rule); }
+  .buildd-composer .kit-toolbar > * + * { border-left-color: var(--chat-rule); }
+  .buildd-composer .kit-toolbar-slot[data-slot="scope"] { flex: 1 1 0; }
+  .buildd-composer .kit-send, .buildd-composer .kit-stop { width: 60px; border-radius: 0; }
+  .buildd-composer .kit-send {
+    display: grid; place-items: center; background: var(--mood-needs-fill); color: var(--on-mood-needs);
+    font-family: var(--kit-font-mono); font-size: 20px; font-weight: 700;
+  }
+  .buildd-composer .kit-send:not([aria-disabled]):hover { filter: brightness(1.1); }
+  .buildd-composer .kit-stop { background: var(--chat-text); }
+  .buildd-composer .kit-stop:hover { opacity: .9; }
+  .buildd-composer .kit-stop-mark { border-radius: 0; background: var(--chat-ground); }
+  .buildd-composer .kit-composer-footer { margin-top: 8px; }
+  .buildd-composer .kit-composer-footer:empty { display: none; }
+  @media (min-width: 768px) {
+    .buildd-composer > .kit-composer { border-left: 1px solid var(--chat-rule); border-right: 1px solid var(--chat-rule); border-bottom: 1px solid var(--chat-rule); }
+    .buildd-composer > .kit-composer:not([data-mood="needs"]):focus-within { border-top-color: var(--chat-text); }
+    .buildd-composer .kit-composer-input { font-size: 16px; }
+    .buildd-composer > .kit-composer:not([data-compact]) .kit-composer-input { min-height: 76px; }
+  }
+  @media (min-width: 1024px) {
+    .buildd-composer > .kit-composer { box-shadow: 4px 4px 0 0 var(--chat-rule); }
+    .buildd-composer .kit-send, .buildd-composer .kit-stop { width: 64px; }
+  }
+
+  /* ── Pinned on the kit (objects/PinnedObject): the kit's strip, hard and
+     square like every fleet object. buildd's breakpoint for the desk bar is
+     768px (the pane docks there), not the kit's 640px. */
+  .kit-pinned.buildd-pinned { flex-shrink: 0; border-bottom: 2px solid var(--border-strong); background: var(--surface-1); }
+  .buildd-pinned .kit-pinned-bar { min-height: 48px; gap: 10px; padding: 8px 16px; }
+  .buildd-pinned .kit-pinned-phone { gap: 10px; }
+  .buildd-pinned .kit-pinned-desk { gap: 12px; }
+  .buildd-pinned .kit-pinned-kind { font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-title { color: var(--text-primary); }
+  .buildd-pinned .kit-pinned-go { color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-meta { display: none; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-open { min-height: 36px; color: var(--accent-text); }
+  .buildd-pinned .kit-pinned-open:hover { text-decoration: underline; }
+  .buildd-pinned .kit-pinned-toggle { min-height: 36px; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-toggle:hover { color: var(--text-primary); }
+  .buildd-pinned .kit-pinned-extra { gap: 12px; padding: 0 16px 8px; }
+  .buildd-pinned .kit-pinned-detail { padding: 0 24px 16px; }
+  @media (min-width: 640px) and (max-width: 767px) {
+    .kit-pinned.buildd-pinned[data-hide-desktop="true"] { display: block; }
+    .buildd-pinned .kit-pinned-phone { display: flex; }
+    .buildd-pinned .kit-pinned-desk, .buildd-pinned .kit-pinned-detail { display: none; }
+  }
+  @media (min-width: 768px) {
+    .buildd-pinned .kit-pinned-bar { padding: 8px 24px; }
+    .buildd-pinned .kit-pinned-extra { padding: 0 24px 8px; }
+  }
+  @media (min-width: 1024px) { .buildd-pinned .kit-pinned-meta { display: inline; } }
+
+  /* ── Steer on the kit (SteerConversation): the canvas's own chrome, rescoped
+     to one running agent. A header, the square presence strip (the pinned
+     object's family), the sent / delivered list, and a soft composer. */
+  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .buildd-steer .kit-steer-header { min-height: 56px; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--convo-line); }
+  .buildd-steer .kit-steer-header > .kit-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
+  .buildd-steer .kit-steer-header > .kit-eyebrow::after { content: "/"; margin-left: 8px; font-weight: 400; letter-spacing: 0; }
+  .buildd-steer .kit-steer-title { font-family: var(--kit-font-mono); font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
+  .buildd-steer .kit-steer-header > .kit-btn { min-width: 44px; min-height: 44px; padding: 0 8px; border-radius: 10px; font-size: 18px; color: var(--text-secondary); }
+  .buildd-steer .kit-steer-header > .kit-btn:hover { background: var(--convo-soft); color: var(--text-primary); }
+  .buildd-steer .kit-steer-presence { min-height: 44px; padding: 8px 16px; border-bottom: 2px solid var(--border-strong); background: var(--surface-1); color: var(--text-secondary); }
+  .buildd-steer .kit-steer-presence-item[data-tone="strong"] { color: var(--text-primary); }
+  .buildd-steer .kit-steer-presence-item[data-tone="muted"] { color: var(--text-muted); }
+  .buildd-steer .kit-steer-presence-item[data-tone="live"] { color: var(--status-info); }
+  .buildd-steer .kit-steer-feed { padding: 16px; }
+  .buildd-steer .kit-steer-feed > .kit-note { font-size: 14px; color: var(--text-muted); }
+  .buildd-steer .kit-steer-list { gap: 12px; }
+  .buildd-steer .kit-steer-msg { border: 2px solid var(--border-strong); background: var(--card); padding: 8px 12px; }
+  .buildd-steer .kit-steer-msg > .kit-text { font-size: 14px; color: var(--text-primary); }
+  /* The delivery chip: the object cards' square state chip. */
+  .buildd-steer .kit-steer-status {
+    display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+    border: 1.5px solid var(--border); font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--text-muted);
+  }
+  .buildd-steer .kit-steer-status[data-status="sent"]::before { content: ""; width: 8px; height: 8px; background: currentColor; animation: status-pulse 2s ease-in-out infinite; }
+  .buildd-steer .kit-steer-status[data-status="delivered"] { border-color: var(--status-success); color: var(--status-success); }
+  .buildd-steer > .kit-composer {
+    margin: 8px 12px 12px; border: 1.5px solid var(--convo-line); border-radius: 16px; background: var(--surface-2); transition: border-color .15s;
+  }
+  .buildd-steer > .kit-composer:focus-within { border-color: var(--accent); }
+  .buildd-steer .kit-composer-input { min-height: 78px; padding: 12px 14px; font-size: 15px; color: var(--text-primary); }
+  .buildd-steer .kit-composer-input::placeholder { color: var(--text-muted); }
+  .buildd-steer .kit-toolbar { min-height: 0; border-top: 0; justify-content: flex-end; padding: 0 8px 8px; }
+  .buildd-steer .kit-send.kit-steer-send {
+    min-height: 36px; padding: 0 14px; border-radius: 10px; background: var(--accent); color: var(--on-accent);
+    font-size: 13.5px; font-weight: 600;
+  }
+  .buildd-steer .kit-send.kit-steer-send[aria-disabled="true"] { opacity: .5; }
+  .buildd-steer .kit-send.kit-steer-send:not([aria-disabled]):hover { background: var(--primary-hover); }
+  .buildd-steer > .kit-error { margin: 0 12px 12px; border: 0; padding: 0; font-size: 13px; color: var(--status-error); }
+  @media (min-width: 768px) {
+    .buildd-steer .kit-steer-header, .buildd-steer .kit-steer-presence, .buildd-steer .kit-steer-feed { padding-left: 24px; padding-right: 24px; }
+    .buildd-steer .kit-steer-title { font-size: 13px; }
+    .buildd-steer .kit-steer-header > .kit-btn { min-width: 40px; min-height: 40px; }
+    .buildd-steer > .kit-composer { margin: 8px 24px 20px; }
+    .buildd-steer > .kit-error { margin: 0 24px 20px; }
   }
 }

@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.8.0
+npm i -E @builddai/ai-kit@0.9.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -280,8 +280,8 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | Export | |
 |---|---|
 | `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, turnError, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable`; a mid-stream provider failure in `turnError` |
-| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderEvent? renderHandoff? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after) |
-| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
+| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderToolGroup? renderEvent? eventPartType? renderHandoff? renderMessageHeader? renderMessageFooter? steps? thinkingTitle? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer; it gets the text part too), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after). An app with its own feed adds a header and footer per message, draws each run of tool calls as one group, supplies its own checklist and title, and names its own event part |
+| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact? inputId?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
 | `<TierPicker value onChange last? options? policy? auto? autoMeta? autoDetail? footer? triggerExtra? hover?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta, `options[].detail` / `autoDetail` as a second line under the name. `triggerExtra` rides on the trigger, `hover` shows on pointer hover. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |

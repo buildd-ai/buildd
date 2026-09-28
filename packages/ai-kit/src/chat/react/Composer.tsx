@@ -60,6 +60,11 @@ export interface ChatComposerProps {
   mood?: string | null;
   /** A shorter box, for a narrow docked column (`data-compact`). */
   compact?: boolean;
+  /**
+   * The message box's `id` (0.9.0), for an app that focuses it from elsewhere
+   * (a keyboard shortcut). Default: a generated id.
+   */
+  inputId?: string;
 }
 
 export const DEFAULT_BUSY_PLACEHOLDER = 'Steer while I think…';
@@ -69,14 +74,15 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   placeholder = 'Ask anything…', onSteer, busyPlaceholder = DEFAULT_BUSY_PLACEHOLDER,
   scope, tools, tier, formFallbackHref, formFallback, formFallbackLabel = 'Fill in a form instead',
   showFormFallback = true, label = 'Message', autoFocus, className,
-  leading, actions, edge, footer, mood = null, compact = false,
+  leading, actions, edge, footer, mood = null, compact = false, inputId: inputIdProp,
 }, ref) {
   const [inner, setInner] = useState(defaultValue);
   const [steerSent, setSteerSent] = useState(false);
   const controlled = value !== undefined;
   const text = controlled ? value : inner;
   const area = useRef<HTMLTextAreaElement>(null);
-  const inputId = useId();
+  const generatedId = useId();
+  const inputId = inputIdProp ?? generatedId;
   const hintId = useId();
 
   const set = (v: string) => {

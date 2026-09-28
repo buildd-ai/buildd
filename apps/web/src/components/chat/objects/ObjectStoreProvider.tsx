@@ -1,17 +1,26 @@
 'use client';
 
 /**
- * The feed's object registry context: one `ObjectStore` per chat surface.
- * The app's default source reads `GET /api/objects/[kind]/[id]` and listens on
+ * The feed's object registry context: one `ObjectStore` per chat surface,
+ * through the kit's `ObjectStoreProvider` / `useObjectEntry`. buildd's
+ * default source reads `GET /api/objects/[kind]/[id]` and listens on
  * the object's existing Pusher channels; the dev fixtures page passes a memory
  * source instead.
  */
-import { createContext, useCallback, useContext, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
+import {
+  ObjectStoreProvider as KitObjectStoreProvider,
+  useObjectEntry as useKitObjectEntry,
+  useObjectStore as useKitObjectStore,
+  type ObjectStore as KitObjectStore,
+} from '@builddai/ai-kit/chat/react';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { MISSION_EVENTS, WORKSPACE_EVENTS } from '@/app/app/(protected)/missions/[id]/MissionAutoRefresh';
-import { refKey, type BuilddObjectRef } from '../chat-contract';
-import { MISSION_OBJECT_EXTRA_EVENTS, createObjectStore, type ObjectEntry, type ObjectSource, type ObjectStore } from './object-store';
+import type { BuilddObjectRef } from '../chat-contract';
+import { MISSION_OBJECT_EXTRA_EVENTS, createObjectStore, type ObjectEntry, type ObjectSidecar, type ObjectSource, type ObjectStore } from './object-store';
 import type { ObjectView } from './object-views';
+
+type KitStore = KitObjectStore<BuilddObjectRef, ObjectView, unknown>;
 
 /** The object's own channels: its workspace always, plus the mission channel for a mission. */
 export function objectChannels(ref: BuilddObjectRef, view: ObjectView | null): Array<{ name: string; events: readonly string[] }> {
@@ -64,30 +73,17 @@ export const httpObjectSource: ObjectSource = {
   },
 };
 
-const ObjectStoreContext = createContext<ObjectStore | null>(null);
-
+/** One store per chat surface: the kit's context over buildd's store (object-store.ts). */
 export function ObjectStoreProvider({ source, store: given, children }: { source?: ObjectSource; store?: ObjectStore; children: ReactNode }) {
   const store = useMemo(() => given ?? createObjectStore(source ?? httpObjectSource), [given, source]);
-  return <ObjectStoreContext.Provider value={store}>{children}</ObjectStoreContext.Provider>;
+  return <KitObjectStoreProvider store={store as KitStore}>{children}</KitObjectStoreProvider>;
 }
 
 export function useObjectStore(): ObjectStore {
-  const store = useContext(ObjectStoreContext);
-  if (!store) throw new Error('useObjectStore outside ObjectStoreProvider');
-  return store;
+  return useKitObjectStore<BuilddObjectRef, ObjectView, ObjectSidecar>() as ObjectStore;
 }
 
-const SERVER_ENTRY: ObjectEntry = { view: null, error: null, loading: true };
-
-/** The live entry for one ref; subscribes while mounted. */
+/** The live entry for one ref; subscribes while mounted (keyed on `kind:id`). */
 export function useObjectEntry(ref: BuilddObjectRef): ObjectEntry {
-  const store = useObjectStore();
-  const key = refKey(ref);
-  const latest = useRef(ref);
-  latest.current = ref;
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the ref's identity, not the object
-  const subscribe = useCallback((l: () => void) => store.subscribe(latest.current, l), [store, key]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const get = useCallback(() => store.get(latest.current), [store, key]);
-  return useSyncExternalStore(subscribe, get, () => SERVER_ENTRY);
+  return useKitObjectEntry<ObjectView, BuilddObjectRef>(ref);
 }
