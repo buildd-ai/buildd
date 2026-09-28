@@ -309,6 +309,30 @@ describe('evaluateHeartbeatPrepass', () => {
     }
   });
 
+  it('invoke_llm carries the stuck-check inputs: open work (waits excluded), active planning, last organizer run', async () => {
+    const older = new Date('2026-09-28T08:00:00Z');
+    const newer = new Date('2026-09-28T10:00:00Z');
+    tasksFindManyResult = [
+      { title: 'Build A', mode: 'execution', taskClass: 'work', status: 'in_progress', result: null, context: null, createdAt: older },
+      // A queued reviewer is a self-resolving wait: not open work.
+      { title: 'Review A', mode: 'execution', taskClass: 'attempt', status: 'pending', result: null, context: null, createdAt: older },
+      { title: 'Mission: X', mode: 'planning', taskClass: 'bookkeeping', status: 'completed', result: null, context: null, createdAt: older },
+      { title: 'Mission: X', mode: 'planning', taskClass: 'bookkeeping', status: 'pending', result: null, context: null, createdAt: newer },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({ ...BASE_INPUT });
+    expect(result).toMatchObject({ action: 'invoke_llm', openTaskCount: 1, planningActive: true, lastOrganizerRunAt: newer });
+  });
+
+  it('invoke_llm on an empty mission reports no open work and no organizer run', async () => {
+    tasksFindManyResult = [];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass({ ...BASE_INPUT });
+    expect(result).toMatchObject({ action: 'invoke_llm', openTaskCount: 0, planningActive: false, lastOrganizerRunAt: null });
+  });
+
   it('counts tasks with prUrl in result as PRs', async () => {
     tasksFindManyResult = [
       { title: 'Build feature A', mode: 'execution', status: 'in_progress', result: { prUrl: 'https://github.com/x/y/pull/2' } },
