@@ -21,6 +21,13 @@
 # Secret guard: the job needs DATABASE_URL (read-only) + VOYAGE_API_KEY. On
 # forks / repos without these secrets it SKIPS cleanly and never fails the PR —
 # the gate only runs where it can actually measure retrieval.
+#
+# Unshipped schema: migrations only apply at Vercel deploy (main), so a PR
+# that adds one is measured against a DB still on the OLD schema — every query
+# touching the new column throws and the eval reports a false 100% regression.
+# Applying the migration from here would run unreviewed DDL against production
+# on every PR push, so instead the gate skips such PRs with a notice. Re-run it
+# via workflow_dispatch once the release carrying the migration has deployed.
 name: Retrieval Eval
 
 on:
@@ -58,8 +65,22 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Detect unshipped migrations
+        id: schema
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch -q --depth=1 origin "$BASE_REF"
+          added=$(git diff --name-only --diff-filter=A FETCH_HEAD HEAD -- 'packages/core/drizzle/*.sql')
+          if [ -n "$added" ]; then
+            echo "::notice::PR adds migrations not yet applied to the eval DB ($added). Skipping the retrieval gate; re-run via workflow_dispatch after deploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Retrieval eval regression gate
         id: eval
+        if: steps.schema.outputs.skip != 'true'
         run: |
           # Skip cleanly when secrets are absent (forks / unconfigured repos).
           if [ -z "$DATABASE_URL" ]; then

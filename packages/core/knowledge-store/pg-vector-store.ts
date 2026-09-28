@@ -85,6 +85,33 @@ export function sanitizeChunkForInsert(chunk: UpsertChunk, lexicalText: string):
 }
 
 /**
+ * Build the lexical (full-text) search query. Ranks against the stored
+ * generated `lexical_tsv` column rather than recomputing
+ * `to_tsvector('english', coalesce(lexical_text, content))` for every row —
+ * that recomputation was the slowest query on the claim path in prod traces.
+ * The column's generation expression must stay identical to this comment's.
+ */
+export function buildLexicalSearchSql(
+  namespace: string,
+  text: string,
+  filterClause: ReturnType<typeof sql>,
+  currentClause: ReturnType<typeof sql>,
+  limit: number,
+) {
+  return sql`
+    SELECT source_id AS id,
+           ts_rank(lexical_tsv, websearch_to_tsquery('english', ${text})) AS score
+    FROM knowledge_chunks
+    WHERE namespace = ${namespace}
+      AND lexical_tsv @@ websearch_to_tsquery('english', ${text})
+      ${filterClause}
+      ${currentClause}
+    ORDER BY score DESC
+    LIMIT ${limit}
+  `;
+}
+
+/**
  * Reciprocal Rank Fusion — fuse vector ANN and lexical BM25 result lists.
  * k=60 is the standard constant from the original RRF paper.
  */
@@ -309,22 +336,8 @@ export class PgVectorStore implements KnowledgeStore {
       const [queryEmbedding] = await activeEmbedder!.embed([text], 'query');
       const embeddingStr = vectorToString(queryEmbedding);
 
-      const vectorRes = await db.execute(sql`
-        SELECT source_id AS id,
-               1 - (embedding <=> ${embeddingStr}::vector) AS score
-        FROM knowledge_chunks
-        WHERE namespace = ${namespace}
-          AND embedding IS NOT NULL
-          ${filterClause}
-          ${currentClause}
-        ORDER BY embedding <=> ${embeddingStr}::vector
-        LIMIT ${limit * 2}
-      `);
-
-      const vectorRanked = (vectorRes.rows as Array<{ id: string; score: number }>)
-        .map(r => ({ id: r.id, score: Number(r.score) }));
-
       if (mode === 'vector') {
+        const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2);
         const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
@@ -332,19 +345,12 @@ export class PgVectorStore implements KnowledgeStore {
         const breakdownMap = new Map(vectorRanked.map(r => [r.id, { dense: r.score }]));
         results = this._toResults(rows, scoreMap, ids, breakdownMap);
       } else {
-        const lexicalRes = await db.execute(sql`
-          SELECT source_id AS id,
-                 ts_rank(to_tsvector('english', coalesce(lexical_text, content)),
-                         websearch_to_tsquery('english', ${text})) AS score
-          FROM knowledge_chunks
-          WHERE namespace = ${namespace}
-            AND to_tsvector('english', coalesce(lexical_text, content))
-                @@ websearch_to_tsquery('english', ${text})
-            ${filterClause}
-            ${currentClause}
-          ORDER BY score DESC
-          LIMIT ${limit * 2}
-        `);
+        // Vector ANN and lexical rank are independent reads — issue both
+        // concurrently instead of paying their latencies back-to-back.
+        const [vectorRanked, lexicalRes] = await Promise.all([
+          this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2),
+          db.execute(buildLexicalSearchSql(namespace, text, filterClause, currentClause, limit * 2)),
+        ]);
 
         const lexicalRanked = (lexicalRes.rows as Array<{ id: string; score: number }>)
           .map(r => ({ id: r.id, score: Number(r.score) }));
@@ -365,19 +371,7 @@ export class PgVectorStore implements KnowledgeStore {
       }
     } else {
       // Lexical-only
-      const lexOnlyRes = await db.execute(sql`
-        SELECT source_id AS id,
-               ts_rank(to_tsvector('english', coalesce(lexical_text, content)),
-                       websearch_to_tsquery('english', ${text})) AS score
-        FROM knowledge_chunks
-        WHERE namespace = ${namespace}
-          AND to_tsvector('english', coalesce(lexical_text, content))
-              @@ websearch_to_tsquery('english', ${text})
-          ${filterClause}
-          ${currentClause}
-        ORDER BY score DESC
-        LIMIT ${candidateLimit}
-      `);
+      const lexOnlyRes = await db.execute(buildLexicalSearchSql(namespace, text, filterClause, currentClause, candidateLimit));
 
       const lexRanked = (lexOnlyRes.rows as Array<{ id: string; score: number }>)
         .map(r => ({ id: r.id, score: Number(r.score) }));
@@ -809,6 +803,30 @@ export class PgVectorStore implements KnowledgeStore {
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
+
+  private async _vectorSearch(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    embeddingStr: string,
+    filterClause: ReturnType<typeof sql>,
+    currentClause: ReturnType<typeof sql>,
+    limit: number,
+  ): Promise<Array<{ id: string; score: number }>> {
+    const vectorRes = await db.execute(sql`
+      SELECT source_id AS id,
+             1 - (embedding <=> ${embeddingStr}::vector) AS score
+      FROM knowledge_chunks
+      WHERE namespace = ${namespace}
+        AND embedding IS NOT NULL
+        ${filterClause}
+        ${currentClause}
+      ORDER BY embedding <=> ${embeddingStr}::vector
+      LIMIT ${limit}
+    `);
+
+    return (vectorRes.rows as Array<{ id: string; score: number }>)
+      .map(r => ({ id: r.id, score: Number(r.score) }));
+  }
 
   private async _fetchBySourceIds(
     db: Awaited<ReturnType<typeof getDb>>,
