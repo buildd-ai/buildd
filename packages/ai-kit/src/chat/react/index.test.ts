@@ -11,7 +11,9 @@ const styles = strip(readFileSync(join(import.meta.dir, '..', 'styles.css'), 'ut
 describe('theme.css', () => {
   it('defines exactly the --kit-* variables the components read', () => {
     const defined = [...theme.matchAll(/(--kit-[a-z-]+)\s*:/g)].map(m => m[1]).sort();
-    expect(defined).toEqual([...KIT_CSS_VARS].sort());
+    // --kit-scrim (0.8.0) is read and carried but deliberately unset: unset,
+    // the scrim falls back to the 0.6 ink mix, so defaults don't change.
+    expect(defined).toEqual([...KIT_CSS_VARS].filter(v => v !== '--kit-scrim').sort());
   });
   it('uses no Tailwind directives', () => {
     expect(theme).not.toMatch(/@tailwind|@apply|@import\s+['"]tailwindcss/);

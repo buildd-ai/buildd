@@ -4,6 +4,66 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.8.0 — 2026-09-28
+
+The approval, empty-state, tier and menu slots buildd's own chat needed.
+Minor: every addition is optional and off by default, so an app that passes
+none of them renders exactly as on 0.7.0 (tests pin the default markup).
+
+**Upgrading: what you can delete**
+
+- **A copy of your tool part with a made-up `type`** to title an approval
+  card: pass `headline`.
+- **CSS `content` tricks for the card's verb or workspace**: pass `eyebrow`
+  and `meta`.
+- **Your own card for a draft** (a new record with its fields and criteria):
+  the kit card takes `body`, `details`, `fold`, `confirmLabel` / `busyLabel`.
+- **`display: contents` / `order` on `.kit-empty`** to place an overline, a
+  sub line or a header over the chips: pass `overline`, `mood`, `sub`,
+  `chipsHeader` / `chipsAside`. A chip id prefix used as a styling hook:
+  `tone`.
+- **An override of `.kit-sheet-scrim` for a dark theme**: set `--kit-scrim`.
+- **A hover tooltip wrapped around a menu**: `Menu` / `ToolsMenu` /
+  `TierPicker` take `hover`.
+- **A cast on `effectiveClass`** returning your own classes, and **leaving
+  deferred tools out of a read group**: see below.
+
+**Changes**
+
+- `/chat/react` `ApprovalCard`: `headline` (the title; default as before),
+  `eyebrow` and `meta` (a head row, `.kit-card-head` with `.kit-card-tag` /
+  `.kit-card-meta`, only when either is set), `body` (`.kit-approval-body`,
+  always shown), `details` (replaces the change list and the raw fields),
+  `fold` (`true` or `{ summary }`: "Show details · N changes" below 640px,
+  `kit-approval-fold` / `kit-approval-details`, `.kit-fold[data-open]`),
+  `confirmLabel` (default "Confirm"), `busyLabel` (default "Applying…"),
+  `settled: 'card' | 'row'` (default `card`; `row` is one line,
+  `.kit-approval-row`) and `deniedNote`. The `+` marker is
+  `.kit-change-mark[data-mark="add"]` and the arrow `.kit-change-arrow`,
+  same text as before.
+- `ChatEmpty`: `overline` (`.kit-empty-overline`), `mood` (`data-mood`, and a
+  `.kit-mood-dot` leading the overline), `sub` (`.kit-empty-sub`),
+  `chipsHeader` / `chipsAside` (`.kit-chips-head`, read before the chips),
+  `variant: 'chips' | 'rows'` and a chip's `tone` (`data-tone`).
+- `TierPicker`: `options[].detail` and `autoDetail` (a second line under the
+  name, `.kit-option-detail`), `triggerExtra` (`.kit-trigger-extra`), `hover`;
+  `autoMeta={null}` drops Auto's meta. `MenuOption` takes `detail`.
+- `Menu`: `hover` (`${testId}-hover`, `.kit-menu-hover`): shown on a hovering
+  pointer at 640px and up, never while open, on the side the panel opens.
+  `ToolsMenu` passes it through.
+- `--kit-scrim`: the phone sheet's scrim, carried into the sheet with the
+  other `--kit-*`. Unset (the default) it is the 0.7 ink mix.
+- `/chat/server` `KitToolDecl.effectiveClass` returns
+  `SkipCardFacts['callClass']` (your own classes, or `undefined` for an
+  unknown input) instead of `ToolCallClass`; only `'write'` ever skips.
+- `KitToolDecl.deferred`: declared but not registered with the model yet.
+  Not in `registeredToolNames` (a turn that passes it still throws), class
+  `'deferred'` (never skips), not the write a toggleable group needs, and
+  allowed in a `fixed: 'read'` group whatever its `class`. A read group still
+  throws on a registered write.
+- `KIT_VERSION` is `0.8.0`, so pinned decision versions read `…|kit-0.8.0`
+  (fingerprints are unchanged).
+
 ## 0.7.0 — 2026-09-28
 
 LiteLLM gateways and custom decision models. Minor: all additive; an app that

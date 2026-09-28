@@ -217,3 +217,33 @@ describe('skipCardVerdict (pure facts)', () => {
     }
   });
 });
+
+describe('0.8.0: app classes and deferred tools', () => {
+  it("effectiveClass may return an app's own class or undefined (typed as SkipCardFacts.callClass); only 'write' skips", () => {
+    const own: KitToolDecl = { name: 'own', class: 'write', effectiveClass: i => (obj(i).op === 'self' ? 'self' : obj(i).op === 'w' ? 'write' : undefined) };
+    const g = defineToolGroups({ a: { label: 'A', tools: [own], modes: ['ask', 'allow'] } });
+    const args = (op: string) => ({ tool: 'own', input: { op }, allowedGroups: new Set(['a']), ...clean });
+    expect(g.facts(args('self')).callClass).toBe('self');
+    expect(g.skipCardVerdict(args('self'))).toEqual({ skip: false, reason: 'not_write' });
+    expect(g.skipCardVerdict(args('nope'))).toEqual({ skip: false, reason: 'unknown_tool' });
+    expect(g.canSkipCard(args('w'))).toBe(true);
+  });
+
+  it('a read group may declare deferred tools of any class; they are not registered and never skip', () => {
+    const g = defineToolGroups({
+      prs: { label: 'PRs', tools: [{ name: 'get_pr', class: 'read' }, { name: 'merge_pr', class: 'write', deferred: true }], fixed: 'read' },
+      tasks: { label: 'Tasks', tools: [holdTask, { name: 'retry', class: 'write', deferred: true }], modes: ['ask', 'allow'] },
+    });
+    expect(g.registeredToolNames()).toEqual(['get_pr', 'hold_task']);
+    expect(g.groupOf('merge_pr')).toBe('prs');
+    expect(g.rows(new Set()).find(r => r.key === 'prs')).toEqual({ key: 'prs', label: 'PRs', mode: 'read', locked: true });
+    expect(g.facts({ tool: 'retry', input: {}, allowedGroups: new Set(['tasks']), ...clean }).callClass).toBe('deferred');
+    expect(g.canSkipCard({ tool: 'retry', input: {}, allowedGroups: new Set(['tasks']), ...clean })).toBe(false);
+  });
+
+  it('still throws on a registered write in a read group, and a deferred write is not the write a toggle needs', () => {
+    const bad = (d: Record<string, unknown>) => () => defineToolGroups(d as never);
+    expect(bad({ a: { label: 'A', tools: [{ name: 'd', class: 'write', deferred: true }, { name: 'w', class: 'write' }], fixed: 'read' } })).toThrow(/read only but 'w'/);
+    expect(bad({ a: { label: 'A', tools: [{ name: 'd', class: 'write', deferred: true }], modes: ['ask', 'allow'] } })).toThrow(/no write/);
+  });
+});

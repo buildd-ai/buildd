@@ -121,7 +121,22 @@ export interface KitToolDecl {
   name: string;
   /** Base class. `effectiveClass` may raise it per call (a budget field makes it admin). */
   class: ToolCallClass;
-  effectiveClass?: (input: unknown) => ToolCallClass;
+  /**
+   * The call's class, per input. Anything but `'write'` asks: an app may
+   * return its own classes (e.g. `'self'`, `'deferred'`), and `undefined`
+   * for an input it doesn't know (an unknown tool: denied). Widened in 0.8.0
+   * to match `SkipCardFacts.callClass`.
+   */
+  effectiveClass?: (input: unknown) => SkipCardFacts['callClass'];
+  /**
+   * Declared but not registered with the model yet (0.8.0), e.g. a tool whose
+   * scoping isn't ready. It is never in `registeredToolNames` (so a turn that
+   * passes it throws), its calls resolve to class `'deferred'` and never skip,
+   * and it doesn't count as the write a toggleable group needs. A `fixed:
+   * 'read'` group may list one whatever its `class`; a read group still
+   * can't hold a registered write.
+   */
+  deferred?: boolean;
   startsUnattendedWork?: ByInput<boolean>;
   spends?: ByInput<boolean>;
   /** Fields a skipped card may carry. Absent = any. An allowlist, so a new field asks. */
@@ -184,7 +199,7 @@ const resolve = <T>(v: ByInput<T> | undefined, input: unknown, dflt: T): T =>
  *
  * Throws at startup (a `ToolGroupsError`) when the declaration is unsafe:
  * a group with both or neither of `modes` / `fixed`, a `read` group holding a
- * write, a `never` group holding tools, a toggleable group without a write,
+ * registered write (a `deferred` tool is allowed), a `never` group holding tools, a toggleable group without a write,
  * or one tool in two groups. Every toggleable group defaults to `ask`.
  */
 export function defineToolGroups<const D extends Record<string, ToolGroupDecl>>(decl: D): ToolGroups<keyof D & string> {
@@ -203,7 +218,7 @@ export function defineToolGroups<const D extends Record<string, ToolGroupDecl>>(
       throw new ToolGroupsError(`group '${key}' is 'never' but lists tools; a never group is not a tool at all`);
     }
     if (g.fixed === 'read') {
-      const w = tools.find(t => t.class !== 'read');
+      const w = tools.find(t => !t.deferred && t.class !== 'read');
       if (w) throw new ToolGroupsError(`group '${key}' is read only but '${w.name}' is class '${w.class}'`);
     }
     if (hasModes) {
@@ -211,7 +226,7 @@ export function defineToolGroups<const D extends Record<string, ToolGroupDecl>>(
       if (!modes.includes('ask') || modes.some(m => m !== 'ask' && m !== 'allow')) {
         throw new ToolGroupsError(`group '${key}' modes must include 'ask' and contain only 'ask' / 'allow'`);
       }
-      if (!tools.some(t => t.class === 'write')) {
+      if (!tools.some(t => !t.deferred && t.class === 'write')) {
         throw new ToolGroupsError(`group '${key}' is toggleable but has no write tool; declare it fixed: 'read'`);
       }
       if (modes.includes('allow')) allowable.push(key);
@@ -228,7 +243,7 @@ export function defineToolGroups<const D extends Record<string, ToolGroupDecl>>(
   const facts = (a: CallArgs): SkipCardFacts => {
     const hit = byTool.get(a.tool);
     const t = hit?.tool;
-    const callClass = t ? (t.effectiveClass ? t.effectiveClass(a.input) : t.class) : undefined;
+    const callClass = t ? (t.deferred ? 'deferred' : t.effectiveClass ? t.effectiveClass(a.input) : t.class) : undefined;
     const i = (a.input && typeof a.input === 'object' ? a.input : {}) as Record<string, unknown>;
     const fields = t?.skippableFields ? new Set(t.skippableFields) : null;
     return {
@@ -263,7 +278,7 @@ export function defineToolGroups<const D extends Record<string, ToolGroupDecl>>(
     },
     groupOf: tool => byTool.get(tool)?.group,
     tool: name => byTool.get(name)?.tool,
-    registeredToolNames: () => [...byTool.keys()],
+    registeredToolNames: () => [...byTool.entries()].filter(([, v]) => !v.tool.deferred).map(([name]) => name),
     labelOf: group => (Object.prototype.hasOwnProperty.call(decl, group) ? decl[group as G].label : undefined),
     facts,
     skipCardVerdict: a => skipCardVerdict(facts(a)),

@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.7.0
+npm i -E @builddai/ai-kit@0.8.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -284,11 +284,11 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
-| `<TierPicker value onChange last? options? policy? auto?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
+| `<TierPicker value onChange last? options? policy? auto? autoMeta? autoDetail? footer? triggerExtra? hover?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta, `options[].detail` / `autoDetail` as a second line under the name. `triggerExtra` rides on the trigger, `hover` shows on pointer hover. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
-| `<ApprovalCard part onRespond onEdit? approverName?>` | before → after from the server preview; typed confirm for `confirmText` |
+| `<ApprovalCard part onRespond onEdit? approverName? headline? eyebrow? meta? body? details? fold? confirmLabel? busyLabel? settled? deniedNote?>` | before → after from the server preview; typed confirm for `confirmText`. `eyebrow` / `meta` join the status in a head row; `body` and `details` are yours (e.g. a draft); `fold` folds the details behind "Show details · N changes" below 640px; `settled: 'row'` folds a decided or discarded card to one line |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
-| `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface` |
+| `<ChatEmpty name chips onChip greeting? overline? mood? sub? chipsHeader? chipsAside? variant?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send, tone? }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface`. An overline (with a mood dot), a sub line, a header over the chips; `variant: 'rows'` for full-width rows |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
 | `createComposerStore` / `useComposerState` | the shared new-chat draft, remembered scope and tier (below) |
 | `<TurnFeedbackProvider onFeedback initial? loadVotes? messageIds? pendingId? reasons? title?>` + `<TurnFeedback messageId>` | Thumbs under a turn. Down opens one optional reason (popover; a sheet on phones). `onFeedback({ messageId, signal, reason, previous, cleared })`: resolve `false` or throw to roll back. No fetch in the kit |
@@ -359,7 +359,7 @@ const tier = tiers.resolve(body.tier, await savedTier(userId)) ?? 'standard';   
 - `tierPrefs({ load, save, peek? })` turns a tier-only adapter into a `ComposerPrefsAdapter`. Any `ComposerPrefsAdapter` may also have `peek(key)`: a synchronous seed for the first paint, which `load`'s answer replaces unless the person picked meanwhile.
 - `store.initial` is the unseeded snapshot (tier = the app default), also the server render's snapshot.
 
-**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
+**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`, and `--kit-scrim`, unset by default: the phone sheet's scrim, which a dark theme should set, e.g. `rgb(0 0 0 / 0.5)`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
 
 **Menus.** On wide screens the tools / scope / tier panels open above the composer (which doesn't clip them) and scroll past `min(70vh, 520px)`. Below 640px they are bottom sheets portaled to `<body>`, so a transformed, clipped or stacked ancestor can't capture them; the sheet carries the `--kit-*` values from where it was opened. If your app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset` to its height (including the safe-area padding it already has) and the sheet sits on top of it; the safe-area inset is padded only for what the offset doesn't cover.
 

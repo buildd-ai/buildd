@@ -41,13 +41,14 @@ describe('TierSwitch: one label format on every viewport', () => {
 });
 
 describe('tierOptions', () => {
-  it('three tiers; each names its model and per-1k price once loaded', () => {
+  it('three tiers; each names its model and per-1k price on its second line once loaded', () => {
     expect(tierOptions(null).map(o => o.tier)).toEqual(['budget', 'standard', 'premium']);
-    expect(tierOptions(null).every(o => o.price === undefined)).toBe(true);
+    expect(tierOptions(null).every(o => o.detail === undefined && o.price === undefined)).toBe(true);
     const opts = tierOptions([
       { tier: 'standard', model: 'm-mid', models: ['m-mid', 'm-alt'], inputPer1kUsd: 0.003, outputPer1kUsd: 0.015 },
     ]);
-    expect(opts.find(o => o.tier === 'standard')?.price).toBe('m-mid +1 · $0.003 / $0.015 per 1k');
-    expect(opts.find(o => o.tier === 'budget')?.price).toBeUndefined();
+    expect(opts.find(o => o.tier === 'standard')?.detail).toBe('m-mid +1 · $0.003 / $0.015 per 1k');
+    expect(opts.find(o => o.tier === 'standard')?.price).toBeUndefined();
+    expect(opts.find(o => o.tier === 'budget')?.detail).toBeUndefined();
   });
 });

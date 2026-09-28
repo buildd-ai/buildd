@@ -82,36 +82,60 @@ describe('approval card', () => {
     expect(card?.textContent).not.toContain('manage_missions');
     expect(card?.textContent).not.toContain('not filed');
     expect(card?.textContent).not.toContain('files through');
-    await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
-    await act(async () => { q('[data-testid="approval-confirm"]')!.click(); });
+    // The kit's card, with buildd's labels.
+    const confirm = q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement;
+    expect(card?.querySelector('.buildd-approval')).not.toBeNull();
+    expect(confirm.textContent).toBe('Confirm & file');
+    await act(async () => { confirm.click(); });
+    await act(async () => { confirm.click(); });
     expect(calls).toEqual([['approval-1', true]]);
-    expect((q('[data-testid="approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(confirm.textContent).toBe('Filing…');
+    expect(q('[data-testid="approval-card"]')?.dataset.state).toBe('deciding');
+    expect((q('[data-testid="kit-approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('the head names the write and its workspace; the draft is the card body', async () => {
+    await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { workspaceName: (id: string) => (id === fixtures.WS.id ? fixtures.WS.name : null) });
+    const head = q('[data-testid="approval-card"] .kit-card-head')!;
+    expect(head.querySelector('.kit-eyebrow')?.textContent).toBe('Needs your OK');
+    expect(head.querySelector('.kit-card-tag')?.textContent).toBe('New mission');
+    expect(head.querySelector('[data-testid="approval-workspace"]')?.textContent).toBe(fixtures.WS.name);
+    expect(q('[data-testid="approval-card"] .kit-card-title')?.textContent).toBe('Multi-currency invoices');
+    expect(q('[data-testid="approval-card"] .kit-approval-body')?.textContent).toContain('their own currency');
   });
 
   // On a phone the full draft was taller than the viewport: Confirm was in view
   // but the header and Discard were not. Details fold behind a toggle there.
   it('phone: details fold behind "Show details"; header and all actions stay in the card', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
-    const details = q('[data-testid="approval-details"]')!;
-    const toggle = q('[data-testid="approval-details-toggle"]') as HTMLButtonElement;
-    expect(details.className).toContain('hidden');
-    expect(details.className).toContain('md:block');
-    expect(toggle.className).toContain('md:hidden');
+    // The kit's fold: the toggle and the folded block show below 640px only (styles.css).
+    const details = q('[data-testid="kit-approval-details"]')!;
+    const toggle = q('[data-testid="kit-approval-fold"]') as HTMLButtonElement;
+    expect(details.classList.contains('kit-fold')).toBe(true);
+    expect(details.dataset.open).toBeUndefined();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.textContent).toContain('Show details');
-    expect(q('[data-testid="approval-draft-title"]')).not.toBeNull();
-    expect(details.contains(q('[data-testid="approval-draft-title"]'))).toBe(false);
+    expect(toggle.textContent).toContain('4 criteria · constraints · plan');
+    const title = q('[data-testid="approval-card"] .kit-card-title')!;
+    expect(details.contains(title)).toBe(false);
     expect(details.contains(q('[data-testid="approval-draft-criteria"]'))).toBe(true);
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain('Hide details');
-    expect(q('[data-testid="approval-details"]')!.className.split(/\s+/)).not.toContain('hidden');
-    for (const id of ['approval-confirm', 'approval-edit', 'approval-deny']) expect(q(`[data-testid="${id}"]`)).not.toBeNull();
+    expect(details.dataset.open).toBe('true');
+    for (const id of ['kit-approval-confirm', 'kit-approval-edit', 'kit-approval-deny']) expect(q(`[data-testid="${id}"]`)).not.toBeNull();
+  });
+
+  it('Edit prefills a change to the draft', async () => {
+    const prefills: string[] = [];
+    await render(fixtures.chatFixture('propose').messages as Msgs, 'split', { prefillComposer: (t: string) => { prefills.push(t); } });
+    await act(async () => { (q('[data-testid="kit-approval-edit"]') as HTMLButtonElement).click(); });
+    expect(prefills).toEqual(['Change the draft "Multi-currency invoices": ']);
   });
 
   it('Discard answers false', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
-    await act(async () => { q('[data-testid="approval-deny"]')!.click(); });
+    await act(async () => { q('[data-testid="kit-approval-deny"]')!.click(); });
     expect(calls).toEqual([['approval-1', false]]);
   });
 
@@ -119,13 +143,16 @@ describe('approval card', () => {
     await render(fixtures.chatFixture('denied').messages as Msgs);
     expect(q('[data-testid="approval-card"]')?.dataset.state).toBe('denied');
     expect(q('[data-testid="approval-card"]')?.textContent).toContain('nothing filed');
-    expect(q('[data-testid="approval-confirm"]')).toBeNull();
+    // One line, the kit's settled row, headed by what the write was.
+    const row = q('[data-testid="approval-card"] .kit-approval-row')!;
+    expect(row.querySelector('.kit-card-title')?.textContent).toBe('New mission');
+    expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
     expect(q('[data-kind="mission"]')).toBeNull();
   });
 
   it('once filed, the card is its tool row and the live mission renders under it', async () => {
     await render(fixtures.chatFixture('confirmed').messages as Msgs, 'confirmed');
-    expect(q('[data-testid="approval-confirm"]')).toBeNull();
+    expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
     const row = qa('[data-testid="tool-call-row"]').find(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'));
     expect(row?.dataset.state).toBe('done');
     expect(q('[data-testid="object-card"][data-kind="mission"]')?.textContent).toContain('Multi-currency invoices');
@@ -144,6 +171,9 @@ describe('approval card: a previewed change is the kit card', () => {
     expect(kit.className).toContain('buildd-approval');
     expect(kit.textContent).toContain('Watch: PR #421 (billing-web)');
     expect(kit.querySelectorAll('.kit-change')).toHaveLength(3);
+    // On a phone the changes fold behind "Show details · 3 changes"; the head names the write.
+    expect(kit.querySelector('[data-testid="kit-approval-fold"]')?.textContent).toContain('3 changes');
+    expect(kit.querySelector('.kit-card-tag')?.textContent).toBe('Tell me when');
     const confirm = () => card.querySelector('[data-testid="kit-approval-confirm"]') as HTMLButtonElement;
     await act(async () => { confirm().click(); });
     await act(async () => { confirm().click(); });

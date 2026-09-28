@@ -27,4 +27,6 @@
   /* Height of app chrome fixed to the screen bottom (a tab bar, with its own
      safe-area padding). The phone menu sheet sits above it. */
   --kit-sheet-bottom-offset: 0px;
+  /* --kit-scrim (0.8.0) is deliberately unset: the phone sheet's scrim is
+     then mixed from --kit-ink. A dark theme sets it, e.g. rgb(0 0 0 / 0.5). */
 }

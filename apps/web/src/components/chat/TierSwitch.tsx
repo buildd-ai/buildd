@@ -8,8 +8,9 @@
  * The picker is the kit's (`TierPicker` from @builddai/ai-kit/chat/react); this
  * owns buildd's `/api/chat/tiers` fetch and the pricing detail: each option
  * names its model and its expected price per 1k tokens (averaged over the
- * tier's models when it's pooled), and hovering the cell (desktop) shows the
- * shown tier's detail plus what this conversation has cost so far.
+ * tier's models when it's pooled) on its second line, and hovering the cell
+ * (desktop) shows the shown tier's detail plus what this conversation has
+ * cost so far (the kit Menu's `hover`).
  */
 import { useEffect, useState } from 'react';
 import { TierPicker, formatCost, formatPer1k, type TierOption } from '@builddai/ai-kit/chat/react';
@@ -23,12 +24,12 @@ function modelLine(info: ChatTierInfo): string {
   return info.models.length > 1 ? `${info.model} +${info.models.length - 1}` : info.model;
 }
 
-/** The kit's options, each with "model · $in / $out per 1k" once the tiers load. */
+/** The kit's options, each with a second line "model · $in / $out per 1k" once the tiers load. */
 export function tierOptions(tiers: readonly ChatTierInfo[] | null | undefined): TierOption[] {
   return TIERS.map(tier => {
     const info = tiers?.find(t => t.tier === tier);
     return info
-      ? { tier, price: `${modelLine(info)} · ${formatPer1k(info.inputPer1kUsd)} / ${formatPer1k(info.outputPer1kUsd)} per 1k` }
+      ? { tier, detail: `${modelLine(info)} · ${formatPer1k(info.inputPer1kUsd)} / ${formatPer1k(info.outputPer1kUsd)} per 1k` }
       : { tier };
   });
 }
@@ -75,16 +76,22 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
 
   const shown = pinned ?? last ?? 'standard';
   const info = data?.tiers.find(t => t.tier === shown) ?? null;
+  const spent = formatCost(data?.conversationCostUsd);
 
   return (
-    <KitMenuCell testId="composer-tier" hover={<TierDetail info={info} cost={data?.conversationCostUsd ?? null} />}>
+    <KitMenuCell testId="composer-tier">
       <TierPicker
         value={pinned}
         last={last}
         onChange={t => onChange(t as ChatTierName | null)}
         options={tierOptions(data?.tiers)}
-        autoMeta="Routed per message"
-        footer={`This chat: ${formatCost(data?.conversationCostUsd) || '$0'}`}
+        autoMeta={null}
+        autoDetail="Routed per message"
+        // The running cost on the cell at tablet width (globals.css), in the
+        // hover detail on desktop and in the menu's footer everywhere.
+        triggerExtra={spent ? <span data-testid="composer-tier-cost">{spent}</span> : undefined}
+        hover={<TierDetail info={info} cost={data?.conversationCostUsd ?? null} />}
+        footer={`This chat: ${spent || '$0'}`}
         placement="auto"
         sheetClose
         title="Tier"
