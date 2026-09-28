@@ -220,8 +220,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'denied' | 'watch';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'denied', 'watch'];
+export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'watch';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'watch'];
 
 export function isChatFixtureState(v: string | null | undefined): v is ChatFixtureState {
   return !!v && (CHAT_FIXTURE_STATES as string[]).includes(v);
@@ -295,6 +295,22 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
             call('list_tasks', { status: 'completed', since: 'today' }, { summary: '7 PRs across 2 missions', data: [], objects: prRefs }),
             { type: 'text', text: 'Seven PRs merged today. Multi-currency is 9 of 12 done, and checkout is in CI.' },
           ], 1900),
+        ],
+      };
+    case 'running':
+      // A broad read: the list calls return far more than the answer is about.
+      // The reply names one task; the rest fold into one "Also read" row.
+      return {
+        title: "What's running", status: 'ready',
+        messages: [
+          user('r1', "what's running right now?", 20),
+          agent('r2', 20, [
+            call('list_tasks', {}, { summary: '2 tasks', data: [], objects: [taskRef, questionRef] }),
+            call('manage_missions', { action: 'list' }, { summary: '2 missions', data: [], objects: [
+              missionRef, { kind: 'mission', id: 'mission-done', workspaceId: WS.id, fallbackText: 'Mission: Onboarding emails (complete)' },
+            ] }),
+            { type: 'text', text: 'One task is running: the rates service (task-fx), in CI now. Everything else in Multi-currency is queued behind it.' },
+          ], 1400),
         ],
       };
     case 'watch':
