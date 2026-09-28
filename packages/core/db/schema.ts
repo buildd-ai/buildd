@@ -95,6 +95,10 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Which model answers the team's decision calls (packages/core/decision-model.ts).
+  // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
+  // team's LiteLLM gateway, with confidence from token logprobs.
+  decisionModel: jsonb('decision_model').$type<import('../decision-model').DecisionModelConfig | null>(),
   // DEPRECATED — nothing reads or writes this. It was the admin kill switch for
   // chat; chat is now always on and runs whenever a key resolves. Drop in a
   // follow-up release, after the build that stopped reading it is live
@@ -270,6 +274,19 @@ export interface WorkspaceGitConfig {
 
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
+
+  // Claim-time memory as an index (one line per memory, bodies pulled with
+  // `recall` id=) instead of pasted bodies. Absent / false = today's output.
+  // See packages/core/memory-claim-index.ts and docs/design/memory-done-right.md.
+  memoryIndexInjection?: boolean;
+  memoryIndexTokenBudget?: number;   // estimated tokens (chars/4); default 800
+
+  // New `learn` / `buildd_memory save` writes land as candidates (not pushed at
+  // claim, recallable with includeCandidates) and are promoted by the
+  // lifecycle pass; failed tasks and changes-requested reviews are extracted
+  // into candidates. Absent / false = today's behaviour.
+  // See packages/core/memory-candidates.ts.
+  memoryCandidateWrites?: boolean;
 
   // Default agent backend for tasks in this workspace, when neither the task
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
@@ -933,6 +950,12 @@ export const missions = pgTable('missions', {
   // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
   // (which controls organizer initiative) — held is purely about worker claim eligibility.
   isHeld: boolean('is_held').default(false).notNull(),
+  // Who executes the mission's tasks. 'runner' (default): background runners
+  // auto-claim them. 'local': a person runs them from their own interactive
+  // session — runners never auto-claim, but a verified interactive session may
+  // claim_task {taskId} explicitly and gets a normal tracked worker. Orthogonal
+  // to isHeld: held is a pure pause and wins over both.
+  executor: text('executor').default('runner').notNull().$type<'runner' | 'local'>(),
   // Earliest time autonomous orchestration may begin. Deferred missions remain
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),
@@ -2482,7 +2505,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
@@ -2564,6 +2587,37 @@ export const experimentAssignments = pgTable('experiment_assignments', {
   // Readout scan: every row for an experiment/version, split by arm.
   experimentVersionArmIdx: index('experiment_assignments_experiment_version_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
   taskIdx: index('experiment_assignments_task_idx').on(t.taskId),
+}));
+
+/**
+ * One row per heartbeat triage look (apps/web/src/lib/heartbeat-triage.ts):
+ * a decision model's wait/act pick before the organizer is dispatched.
+ *
+ * The heartbeat_triage experiment's payload table (per-experiment payloads
+ * stay in their own tables, docs/design/experiment-lifecycle.md). `taskId` is
+ * the organizer task the cycle dispatched, NULL when the look skipped it, so
+ * the organizer's own outcome on the same state grades the pick. Kept out of
+ * `tasks.context`, which the organizer can read.
+ */
+export const heartbeatTriageLooks = pgTable('heartbeat_triage_looks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'set null' }),
+  policyVersion: integer('policy_version'),
+  arm: text('arm').$type<'control' | 'treatment'>(),
+  promptVersion: text('prompt_version').notNull(),
+  model: text('model'),
+  pick: text('pick').$type<'wait' | 'act'>(),
+  confidence: real('confidence'),
+  skipped: boolean('skipped').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  missionCreatedIdx: index('heartbeat_triage_looks_mission_created_idx').on(t.missionId, t.createdAt),
+  experimentArmIdx: index('heartbeat_triage_looks_experiment_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
+  taskIdx: index('heartbeat_triage_looks_task_idx').on(t.taskId),
 }));
 
 // Team invitations for multi-tenancy
@@ -2751,6 +2805,36 @@ export const chatTurnWindows = pgTable('chat_turn_windows', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Chat directives: the person's standing rules ("always open PRs as drafts"),
+// confirmed from a card in the thread or written in Settings, loaded into every
+// one of their chat turns (packages/core/chat-directives.ts). Owned by the
+// person, not the team: only they read or edit them. workspace_id NULL = every
+// workspace; set = that workspace's turns only (gone with the workspace).
+// Not in `memories`: that pool is team-scoped, retrieved by similarity and
+// indexed for everyone, and these must be always-loaded and private.
+export const chatDirectives = pgTable('chat_directives', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  text: text('text').notNull(),
+  // Where it came from: 'chat' (a confirmed card) or 'settings'. Provenance only.
+  source: text('source').notNull().default('chat').$type<'chat' | 'settings'>(),
+  // The assistant message whose card proposed it; null from Settings. No FK:
+  // a deleted conversation leaves the rule in place.
+  sourceMessageId: uuid('source_message_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userCreatedIdx: index('chat_directives_user_created_idx').on(t.userId, t.createdAt),
+  // One copy of a rule per person and scope, race-free: a double tap, a card
+  // answered on two devices, or an edit into an existing rule hits this and
+  // the write is a no-op (ON CONFLICT DO NOTHING). NULLS NOT DISTINCT makes
+  // two "everywhere" copies (workspace_id NULL) collide too.
+  userScopeTextUnique: unique('chat_directives_user_scope_text_unique').on(t.userId, t.workspaceId, t.text).nullsNotDistinct(),
+}));
+
+export type ChatDirectiveRow = typeof chatDirectives.$inferSelect;
+
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -2809,6 +2893,87 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
   entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
   lexicalTsvGinIdx: index('knowledge_chunks_lexical_tsv_gin_idx').using('gin', t.lexicalTsv),
+}));
+
+// Memory use ledger: one row per memory a retrieval returned, and how it
+// reached the agent. Written fire-and-forget by retrieveMemory
+// (packages/core/memory-retrieval.ts), one INSERT per retrieval.
+//
+// `via` is push (injected into a prompt or reply the agent did not ask for)
+// or pull (the agent asked: recall, query_knowledge). `gatedBy` names the rule
+// that retrieved the memory but kept it out of the output (score floor,
+// handoff exclusion, cross-corpus cap); null means it was shown. `outcome` is
+// filled after the task completes (used / ignored / contradicted) and is null
+// until then. No FKs: the ledger must never make a claim fail, and it outlives
+// the rows it points at.
+export const memoryUses = pgTable('memory_uses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').notNull(),
+  workspaceId: uuid('workspace_id'),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  /** knowledge_chunks.source_id in `{teamId}:memory`; null for a store (ILIKE) search hit. */
+  chunkId: text('chunk_id'),
+  memoryId: text('memory_id').notNull(),
+  /** Which read path retrieved it; see MemoryCaller in packages/core/memory-retrieval.ts. */
+  caller: text('caller').notNull(),
+  via: text('via').notNull().$type<'push' | 'pull'>(),
+  /** 1-based position in the retrieval's result list. */
+  rank: integer('rank').notNull(),
+  /** Store score; null for a store (ILIKE) search, which has no score. */
+  score: real('score'),
+  gatedBy: text('gated_by'),
+  outcome: text('outcome').$type<'used' | 'ignored' | 'contradicted'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  memoryIdx: index('memory_uses_memory_idx').on(t.teamId, t.memoryId),
+  taskIdx: index('memory_uses_task_idx').on(t.taskId),
+  createdIdx: index('memory_uses_created_idx').on(t.createdAt),
+}));
+
+// Memory decision log: one row per Jev verdict on a memory decision
+// (packages/core/memory-decisions.ts, docs/design/memory-done-right.md "Where
+// Jev helps"). Every row carries the verdict, its confidence, what the current
+// rule said and whether the verdict was acted on, so the offline readout
+// (packages/core/scripts/memory-decision-readout.ts) can compare Jev, the rule
+// and the use ledger's outcome per decision. Content-free: ids, labels and
+// numbers only. Spend is also receipted in ai_usage (surface 'decision').
+// Written after the response, so a failed insert costs log rows and nothing
+// else. Only the team is a FK (cascade, like ai_usage): the other ids point at
+// rows the log outlives, same as memory_uses. Pruned after 90 days by the
+// memory-digest-guardrail cron (packages/core/memory-uses-retention.ts).
+export const memoryDecisions = pgTable('memory_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id'),
+  taskId: uuid('task_id'),
+  /** The memory the verdict is about; null when none was written (a NOOP, a failed save). */
+  memoryId: text('memory_id'),
+  /** keep | type | update | use | relevance | promote | chat_tier | directive_scope. */
+  decision: text('decision').notNull(),
+  /** The decision's `version` (promptVersion|model|kit). */
+  version: text('version').notNull(),
+  mode: text('mode').notNull().$type<'live' | 'shadow'>(),
+  /** Jev's answer as a label ('true'/'false' for a yes/no); null when the call failed. */
+  verdict: text('verdict'),
+  confidence: real('confidence'),
+  /** The yes-probability of a yes/no answer; null for a choice. */
+  probability: real('probability'),
+  /** What the current rule decided (the caller's type, 'conflict', 'shown', ...). */
+  rule: text('rule'),
+  applied: boolean('applied').notNull().default(false),
+  /** Error kind when the call failed open (timeout, provider_error, parse, ...). */
+  error: text('error'),
+  /** Which read path, for relevance verdicts (memory_uses.caller). */
+  caller: text('caller'),
+  latencyMs: integer('latency_ms'),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamDecisionIdx: index('memory_decisions_team_decision_idx').on(t.teamId, t.decision, t.createdAt),
+  taskIdx: index('memory_decisions_task_idx').on(t.taskId),
+  memoryIdx: index('memory_decisions_memory_idx').on(t.memoryId),
+  createdIdx: index('memory_decisions_created_idx').on(t.createdAt),
 }));
 
 // Phase 2: knowledge entities — canonical nodes for the entity graph.
@@ -3729,8 +3894,10 @@ export const aiPlans = pgTable('ai_plans', {
 export const aiUsage = pgTable('ai_usage', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  // The account that reported the receipt (the app's service account).
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  // The account that reported the receipt (the app's service account). NULL
+  // for a buildd-internal decision with no acting account (memory relevance
+  // shadow, OAuth MCP, chat): attributed to the team only.
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   // NULL when the app ran on its own fallback plan (buildd was unreachable).
   planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
   // NULL only for a planless Jev decision receipt: Jev has no tier.
@@ -3998,12 +4165,67 @@ export const memories = pgTable('memories', {
   tags: text('tags').array().notNull().default([]),
   files: text('files').array().notNull().default([]),
   source: text('source'),
+  // Id of the memory that replaced this one. Recorded on the row (not only in
+  // the index) so the index reconcile pass never re-indexes it as current.
+  supersededBy: uuid('superseded_by'),
+  // Consecutive failed reconcile attempts to mirror this row into the index.
+  // Rows past the cap drop out of reconcile so they cannot block the backlog.
+  indexFailures: integer('index_failures').notNull().default(0),
+  // Lifecycle (docs/design/memory-done-right.md, "Write: candidates, then
+  // promotion"; packages/core/memory-candidates.ts). Every row written before
+  // this existed is 'active', and writes stay 'active' unless the workspace
+  // flag `memoryCandidateWrites` is on. Only 'active' is pushed at claim time;
+  // 'candidate' is served to a pull that asks for it; 'expired' and
+  // 'invalidated' are readable by id only. Nothing moves a row out of the
+  // table: expiry and invalidation are state changes, reversible.
+  // Supersession stays `superseded_by` (who replaced it) + `invalidated_at`
+  // (when); 'invalidated' is for an invalidation with no replacement.
+  state: text('state').notNull().default('active').$type<'candidate' | 'active' | 'expired' | 'invalidated'>(),
+  // Provenance: which episode proposed it. source_id is the task id for
+  // learn / failed_task, the review_feedback row id for review.
+  sourceKind: text('source_kind').$type<'learn' | 'failed_task' | 'review' | 'chat' | 'digest' | 'dashboard'>(),
+  sourceId: text('source_id'),
+  // Derived from content outside the team (external PR comments, issue text).
+  // Hard floor: never auto-promoted.
+  external: boolean('external').notNull().default(false),
+  // When the row became active by promotion. Null for rows active from birth.
+  validFrom: timestamp('valid_from', { withTimezone: true }),
+  // When it stopped being current (superseded or invalidated).
+  invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  // A merged PR touched one of its anchored `files` since it was written.
+  // A flag for re-verification, never a demotion.
+  reverifyFlaggedAt: timestamp('reverify_flagged_at', { withTimezone: true }),
+  reverifyRef: text('reverify_ref'),
+  // The memory whose episode corroborated this candidate. Written ONLY by the
+  // automatic near-duplicate path of `learn` (a different task's repeat of
+  // the same lesson in the same project); explicit or band supersedes never
+  // set it. Promotion re-checks the linked row in SQL.
+  corroboratedBy: uuid('corroborated_by'),
+  // Active memories this candidate replaces, applied only when it is
+  // promoted: a candidate never hides an active memory from push.
+  pendingSupersedes: uuid('pending_supersedes').array().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: index('memories_team_idx').on(t.teamId),
+  stateCreatedIdx: index('memories_state_created_idx').on(t.state, t.createdAt),
   teamUpdatedIdx: index('memories_team_updated_idx').on(t.teamId, t.updatedAt),
   teamProjectIdx: index('memories_team_project_idx').on(t.teamId, t.project),
+}));
+
+// One row per episode the memory lifecycle pass tried to extract a candidate
+// from (packages/core/memory-lifecycle.ts), whatever the outcome, so a
+// failed task or review whose lesson is already recorded is not re-embedded
+// on every run. Content-free: ids and a label.
+export const memoryExtractionAttempts = pgTable('memory_extraction_attempts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  sourceKind: text('source_kind').notNull().$type<'failed_task' | 'review'>(),
+  sourceId: text('source_id').notNull(),
+  outcome: text('outcome').notNull().$type<'written' | 'duplicate' | 'skipped'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sourceUnique: uniqueIndex('memory_extraction_attempts_source_unique').on(t.sourceKind, t.sourceId),
 }));
 
 export const memoriesRelations = relations(memories, ({ one }) => ({

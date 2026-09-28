@@ -6,6 +6,8 @@
  * read of it (recall, query_knowledge, the learn dedupe check, claim-time and
  * planning "Related prior work", authoring-time "Prior work") over-fetches and
  * then keeps only hits whose `memories` row carries the caller's project key.
+ * The reads themselves go through `retrieveMemory` (./memory-retrieval), which
+ * applies this rule; the learn dedupe check and consolidation apply it directly.
  *
  * Chunk metadata is not trusted for this (older chunks carry no project); the
  * memories table is. A hit with no backing row is dropped, and so is a row
@@ -15,13 +17,13 @@
  * (`resolveMemoryHitScope`) and is loaded lazily by `memoryScopeFor`.
  */
 import { normalizeProject } from './project-scope';
-import { buildNamespace } from './knowledge-store/pg-vector-store';
+import { memoryStateOf, type MemoryState } from './memory-candidates';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
 /** Memory rows by id, bound to one team. `MemoryStore.batch` satisfies it. */
 export type MemoryRowLookup = (
   ids: string[],
-) => Promise<{ memories: ReadonlyArray<{ id: string; project?: string | null }> }>;
+) => Promise<{ memories: ReadonlyArray<{ id: string; project?: string | null; state?: string | null }> }>;
 
 /** Everything a memory read needs to stay inside the caller's project. */
 export interface MemoryHitScope {
@@ -55,16 +57,25 @@ export function hasMemoryScope(scope: MemoryHitScope | null | undefined): scope 
  * Keep only the hits whose memories row belongs to `scope.project`. Order is
  * preserved. No scope or no project returns []. A failed lookup throws; the
  * caller decides whether that is an error or an empty section.
+ *
+ * `opts.states` narrows further to rows in those lifecycle states (a row with
+ * no state is active; see ./memory-candidates). Omitted: any state, for the
+ * write-side checks (dedupe, supersedes) that must see candidates too.
  */
 export async function keepOwnProjectMemoryHits<T extends MemoryHitLike>(
   hits: readonly T[],
   scope: MemoryHitScope | null | undefined,
+  opts: { states?: readonly MemoryState[] } = {},
 ): Promise<T[]> {
   if (!hasMemoryScope(scope) || hits.length === 0) return [];
   const own = normalizeProject(scope.project);
   const { memories } = await scope.lookup(hits.map(memoryIdOfHit));
+  const states = opts.states ? new Set<string>(opts.states) : null;
   const allowed = new Set(
-    memories.filter(m => normalizeProject(m.project ?? null) === own).map(m => m.id),
+    memories
+      .filter(m => normalizeProject(m.project ?? null) === own)
+      .filter(m => !states || states.has(memoryStateOf(m)))
+      .map(m => m.id),
   );
   return hits.filter(r => allowed.has(memoryIdOfHit(r)));
 }
@@ -90,29 +101,5 @@ export async function memoryScopeFor(
 
 /** Minimal store shape: KnowledgeStore and the web app's KnowledgeQuerier both fit. */
 export type MemoryQuerier = {
-  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode }) => Promise<QueryResult[]>;
+  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode; trackHits?: boolean }) => Promise<QueryResult[]>;
 };
-
-/**
- * Query `{teamId}:memory` and keep only the caller's project. Over-fetches so
- * narrowing does not starve the section, then trims back to `topK`. No scope
- * means no query at all. Never throws: a failure is an empty section.
- */
-export async function queryOwnProjectMemory(
-  store: MemoryQuerier,
-  teamId: string,
-  scope: MemoryHitScope | null | undefined,
-  params: { text: string; topK: number; mode?: QueryMode },
-): Promise<QueryResult[]> {
-  if (!hasMemoryScope(scope)) return [];
-  try {
-    const raw = await store.query(buildNamespace(teamId, 'memory'), {
-      ...params,
-      topK: memoryOverfetchTopK(params.topK),
-    });
-    const own = await keepOwnProjectMemoryHits(raw, scope);
-    return own.slice(0, params.topK);
-  } catch {
-    return [];
-  }
-}

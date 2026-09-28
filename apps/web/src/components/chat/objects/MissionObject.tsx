@@ -167,15 +167,15 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
   // BottomSheet.
   const boardVisual = { visual, reviewLayout: 'sheet' as const };
 
-  // "Review" on the card or the pinned strip: the deck takes the pane (desktop)
-  // or the sheet (phone) until it is closed.
+  // "Review" on the card or the pinned strip: the deck takes the sheet (phone
+  // and tablet) until it is closed. The desktop dock renders its own deck.
   const r = actions.visualReview;
-  const reviewing = r && r.surface === (variant === 'sheet' ? 'sheet' : 'pane') && refKey(r.ref) === refKey(objRef) ? r : null;
+  const reviewing = r && variant === 'sheet' && r.surface === 'sheet' && refKey(r.ref) === refKey(objRef) ? r : null;
   if (reviewing && visual && visual.cells.length > 0) {
     return (
       <MissionLiveContext.Provider value={store.live(objRef)}>
         <div data-testid="object-pane" data-kind="mission" data-reviewing="true">
-          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} showHeaderClose={variant === 'pane'} />
+          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} showHeaderClose={false} />
         </div>
       </MissionLiveContext.Provider>
     );

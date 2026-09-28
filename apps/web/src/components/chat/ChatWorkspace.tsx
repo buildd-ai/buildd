@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * The chat surface: the conversation canvas plus, on desktop, the object the
- * conversation is about docked beside it (object left, chat right at 540px,
- * swappable, collapsible, pop-out, following the conversation unless pinned).
- * On a phone the same object opens as a sheet over the conversation.
+ * The chat surface: the conversation canvas plus, on desktop (1024px and up),
+ * the object the conversation is about docked in the right panel (ChatDock).
+ * Below 1024px, phone and tablet alike, the same object opens as a sheet over
+ * the conversation: a tablet gets the phone's single column.
  *
  * The canvas (docs/design/chat-canvas.md): crumbs for who you're talking to
  * and about what, the live object pinned at the top, a soft conversation over
@@ -23,9 +23,10 @@ import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
 import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from './ChatComposer';
-import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
+import ChatFeed, { type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
+import { useObjectEntry } from './objects/ObjectStoreProvider';
 import PinnedObject from './objects/PinnedObject';
 import SeaLayer from './SeaLayer';
 import { useHideNeedsInputBannerOnPhone, useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
@@ -35,7 +36,7 @@ import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
 import { ChatEmpty, type ChatEmptyChip } from '@builddai/ai-kit/chat/react';
-import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
+import { INITIAL_PANE, paneReducer } from './pane-state';
 import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
 import { objectSheetTitle } from './mission-sheet';
 
@@ -83,7 +84,7 @@ export interface ChatWorkspaceProps {
   focusRef?: BuilddObjectRef | null;
   /** Where "+ New chat" goes. */
   newChatHref?: string;
-  /** The conversation list, shown above the feed on the empty state (desktop; a phone reaches it via History). */
+  /** The conversation list: a phone's (and tablet's) history view shows it in the column; desktop docks it. */
   emptyState?: ReactNode;
   /** A phone's history view (/app/chat?view=history): the list in place of the empty canvas. */
   historyOpen?: boolean;
@@ -98,8 +99,6 @@ export interface ChatWorkspaceProps {
    * False for "Ask about this…": the object shows as a strip above the feed instead.
    */
   focusOpensSheet?: boolean;
-  /** Where the form fallback lives ("Fill in a form instead"), shown until the first message. */
-  formFallbackHref?: string | null;
   /** How the chat was opened, for the empty canvas's suggestions. */
   entryIntent?: 'mission' | 'task' | null;
   /**
@@ -127,7 +126,8 @@ export interface ChatWorkspaceProps {
   pinOpenLabel?: string | null;
 }
 
-const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 768px)').matches;
+/** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
+const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 1024px)').matches;
 
 /** Whether the viewport is at least `px` wide, kept live. False on the server. */
 function useMinWidth(px: number): boolean {
@@ -148,7 +148,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, reviewShots, undoReview, initialVisualReview = null, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
-    composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null, pulse = null,
+    composerPlaceholder, autoFocus = false, focusOpensSheet = true, entryIntent = null, pulse = null,
     variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel,
   } = props;
   const overlay = variant === 'overlay';
@@ -177,16 +177,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const composer = useRef<ChatComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  // The saved side, after mount (localStorage is client-only).
-  useEffect(() => {
-    try { dispatch({ type: 'side', side: parsePaneSide(window.localStorage.getItem(PANE_SIDE_KEY)) }); } catch { /* private mode */ }
-  }, []);
-  const swap = () => {
-    dispatch({ type: 'swap' });
-    try { window.localStorage.setItem(PANE_SIDE_KEY, pane.side === 'left' ? 'right' : 'left'); } catch { /* private mode */ }
-  };
-
-  // Phone deep link: the focused question opens as a sheet.
+  // Phone and tablet deep link: the focused question opens as a sheet.
   useEffect(() => {
     if (focusRef && focusOpensSheet && !isDesktop()) setSheet(focusRef);
   }, [focusRef, focusOpensSheet]);
@@ -204,12 +195,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else setSheet(ref);
   }, [onOpenObject]);
 
-  // Review from the thread: the deck takes the docked pane on desktop and the
-  // sheet on a phone. The summoned overlay has no pane, so it uses the sheet.
+  // Review from the thread: the deck takes the dock on desktop and the sheet
+  // below it. The summoned overlay has no dock, so it uses the sheet.
   const openVisualReview = useCallback((ref: BuilddObjectRef, startKey: string | null = null) => {
     if (!overlay && isDesktop()) {
-      const surface = window.matchMedia?.('(min-width: 1024px)').matches ? 'dock' : 'pane';
-      setVisualReview({ ref, startKey, surface });
+      setVisualReview({ ref, startKey, surface: 'dock' });
       setHistoryDock(false);
       dispatch({ type: 'open', ref });
     } else {
@@ -301,11 +291,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
   const missionEmpty = !!missionSheet && messages.length === 0;
 
-  // The crumbs: who you're talking to, where, and about what.
-  const wsName = workspaceId ? workspaces.find(w => w.id === workspaceId)?.name ?? null : routedScope(messages)?.name ?? null;
-  // A phone (mobile chat v3): `CHAT / new` left, `HISTORY →` right, in place
-  // of the back arrow. Desktop (lg, docs/design/chat-v3-desktop.md) reads the
-  // same; only the tablet band (md to lg) keeps the agent / workspace / title crumbs.
+  // A phone or tablet (mobile chat v3): `CHAT / new` left, `HISTORY →` right,
+  // in place of the back arrow. Desktop (lg, docs/design/chat-v3-desktop.md)
+  // reads the same.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
   // The v3 peek header (docs/design/chat-v3-desktop.md, "Peek"): ASK / what,
@@ -342,34 +330,22 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const deskPeekHeader = overlay && !missionSheet && !crumbs
     && peekHeader(focusRef?.kind === 'task' && !focusOpensSheet ? 'This task' : 'Chat', { header: 'chat-header-peek', crumbs: 'peek-crumbs', full: 'peek-full-chat', close: 'peek-close' }, 'hidden lg:flex');
   const header = sheetHeader || (
-    <header data-testid="chat-header" className={`flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 md:bg-transparent md:px-6 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7 ${deskPeekHeader ? 'lg:hidden' : ''}`}>
-      {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary md:hidden">←</Link>}
+    <header data-testid="chat-header" className={`flex min-h-14 items-center gap-2.5 border-b border-[var(--convo-line)] bg-[var(--chat-bar)] px-4 py-2.5 lg:border-[var(--chat-rule)] lg:bg-[var(--chat-bar)] lg:px-7 ${deskPeekHeader ? 'lg:hidden' : ''}`}>
+      {!overlay && crumbs && <Link href="/app/chat" aria-label="All chats" className="grid h-11 w-8 place-items-center font-mono text-[18px] text-text-secondary lg:hidden">←</Link>}
       {crumbs ?? (
       <nav aria-label="Conversation" data-testid="canvas-crumbs" className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[12.5px]">
         {phoneCrumbs && (
           <>
-            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)] md:hidden lg:inline">Chat</span>
-            <span aria-hidden="true" className="text-[var(--chat-muted)] md:hidden lg:inline">/</span>
+            <span data-testid="chat-mobile-section" className="shrink-0 text-[13px] font-bold uppercase tracking-[.12em] text-[var(--chat-text)]">Chat</span>
+            <span aria-hidden="true" className="text-[var(--chat-muted)]">/</span>
           </>
         )}
-        <span data-testid="canvas-crumbs-desktop" className={`hidden shrink-0 items-center gap-2 text-text-secondary md:inline-flex ${phoneCrumbs ? 'lg:hidden' : ''}`}>
-          <AgentAvatar agent={agent} size="xs" />
-          <span className="font-semibold text-text-primary">{agent.name}</span>
-        </span>
-        {wsName && (
-          <>
-            <span aria-hidden="true" className={`hidden text-text-muted md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>/</span>
-            <span data-testid="canvas-crumb-workspace" className={`hidden shrink-0 text-text-secondary md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>{wsName}</span>
-          </>
-        )}
-        <span aria-hidden="true" className={`hidden text-text-muted md:inline ${phoneCrumbs ? 'lg:hidden' : ''}`}>/</span>
         {phoneCrumbs && (historyOpen || isNew) ? (
-          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)] md:font-semibold md:text-text-primary lg:font-normal lg:text-[var(--chat-muted)]">
-            <span data-testid="chat-title-mobile" className="md:hidden lg:inline">{historyOpen ? 'history' : 'new'}</span>
-            <span data-testid="chat-title-desktop" className="hidden md:inline lg:hidden">{shownTitle}</span>
+          <h1 data-testid="chat-title" className="min-w-0 truncate text-[13px] text-[var(--chat-muted)]">
+            <span data-testid="chat-title-mobile">{historyOpen ? 'history' : 'new'}</span>
           </h1>
         ) : (
-          <h1 data-testid="chat-title" className={`min-w-0 truncate text-[14.5px] font-semibold text-text-primary md:text-[13px] ${phoneCrumbs ? 'max-md:text-[13px] max-md:font-normal max-md:text-[var(--chat-muted)] lg:font-normal lg:text-[var(--chat-muted)]' : ''}`}>{shownTitle}</h1>
+          <h1 data-testid="chat-title" className={`min-w-0 truncate ${phoneCrumbs ? 'text-[13px] text-[var(--chat-muted)]' : 'text-[14.5px] font-semibold text-text-primary'}`}>{shownTitle}</h1>
         )}
       </nav>
       )}
@@ -389,7 +365,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             data-testid="canvas-close"
             onClick={onClose}
             aria-label="Close chat"
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:min-h-10 md:min-w-10"
+            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary"
           >
             <Kbd>Esc</Kbd>
             <span aria-hidden="true">✕</span>
@@ -401,7 +377,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           <Link
             href={historyOpen ? newChatHref : '/app/chat?view=history'}
             data-testid="chat-history-link"
-            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] md:hidden lg:hidden"
+            className="-mr-2 inline-flex min-h-11 shrink-0 items-center px-2 font-mono text-[12px] uppercase tracking-[.12em] text-[var(--chat-muted)] hover:text-[var(--chat-text)] lg:hidden"
           >
             {historyOpen ? 'New →' : 'History →'}
           </Link>
@@ -418,13 +394,16 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             History →
           </button>
         )}
-        <Link
-          href={newChatHref}
-          data-testid="chat-new"
-          className={`hidden min-h-9 shrink-0 items-center px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary md:inline-flex ${phoneCrumbs ? 'lg:hidden' : ''}`}
-        >
-          + New chat
-        </Link>
+        {/* Own crumbs (no HISTORY): desktop keeps + New chat; a phone has its back arrow. */}
+        {!phoneCrumbs && (
+          <Link
+            href={newChatHref}
+            data-testid="chat-new"
+            className="hidden min-h-9 shrink-0 items-center px-3 font-convo text-[13.5px] font-medium text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary lg:inline-flex"
+          >
+            + New chat
+          </Link>
+        )}
         </>
       )}
     </header>
@@ -456,7 +435,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // The needs-you hero already says what waits on the viewer: on a phone the
   // global banner above the page would repeat it in a third accent colour.
   useHideNeedsInputBannerOnPhone(!overlay && hero?.mood === 'needs');
-  // The plain new chat on a phone: hero at the top, PICKED FOR YOU anchored
+  // The plain new chat on a phone or tablet: hero at the top, PICKED FOR YOU anchored
   // just above the composer. Scoped chats and the history view keep flowing.
   // Desktop keeps the anchored canvas under ?view=history: the list is in the panel.
   const anchoredPhone = !!hero && plainCanvas && !overlay && !historyOpen;
@@ -467,10 +446,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-testid="canvas-empty"
       data-mood={hero.mood ?? undefined}
       data-layout={anchoredPhone ? 'anchored' : undefined}
-      className={`mb-8 mt-2 flex flex-col md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex-1' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+      className={`mb-8 mt-2 flex flex-col lg:mt-10 ${anchoredPhone ? 'max-lg:mb-0 max-lg:flex-1' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex-1' : ''} ${historyOpen ? 'max-lg:hidden' : ''}`}
     >
       <ChatEmpty
-        className={`buildd-empty flex flex-col${plainCanvas ? ' buildd-empty-plain' : ''}${anchoredPhone ? ' buildd-empty-anchor-phone max-md:flex-1' : ''}${anchoredDesk ? ' buildd-empty-anchor-desk lg:flex-1' : ''}`}
+        className={`buildd-empty flex flex-col${plainCanvas ? ' buildd-empty-plain' : ''}${anchoredPhone ? ' buildd-empty-anchor-phone max-lg:flex-1' : ''}${anchoredDesk ? ' buildd-empty-anchor-desk lg:flex-1' : ''}`}
         chips={chips}
         onChip={pick}
         variant="rows"
@@ -490,11 +469,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-canvas={variant}
       data-sheet={missionSheet ? 'mission' : undefined}
       data-busy={busy ? 'true' : undefined}
-      className={`relative isolate flex h-full min-h-0 min-w-0 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} md:bg-[var(--canvas-bg)] ${overlay ? 'lg:bg-[var(--chat-bar)]' : 'lg:bg-[var(--chat-ground)]'} ${docked ? 'md:w-[540px] md:shrink-0 lg:w-auto lg:flex-1 lg:shrink' : 'flex-1'}`}
+      className={`relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col ${missionSheet ? 'bg-[var(--chat-bar)]' : 'bg-[var(--chat-ground)]'} ${overlay ? 'lg:bg-[var(--chat-bar)]' : ''}`}
     >
-      {/* The sea: soft pools behind the phone canvas, coloured by mood. The
+      {/* The sea: soft pools behind the canvas, coloured by mood. The
           summoned overlay is an opaque sheet and draws none. */}
-      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} className="md:hidden lg:block" />}
+      {!overlay && <SeaLayer mood={seaMood({ busy, mood })} />}
       {deskPeekHeader}
       {header}
       {strip}
@@ -511,23 +490,24 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         data-testid="chat-scroller"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
-        <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchoredPhone && !missionEmpty ? 'max-md:flex max-md:min-h-full max-md:flex-col' : ''} ${anchoredDesk && !missionEmpty ? 'lg:flex lg:min-h-full lg:flex-col' : ''} ${overlay ? 'md:px-6' : docked ? 'md:px-6 lg:max-w-[720px] lg:px-0' : 'max-w-[820px] md:px-8 lg:max-w-[720px] lg:px-0'}`}>
+        <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchoredPhone && !missionEmpty ? 'max-lg:flex max-lg:min-h-full max-lg:flex-col' : ''} ${anchoredDesk && !missionEmpty ? 'lg:flex lg:min-h-full lg:flex-col' : ''} ${overlay ? 'lg:px-6' : 'max-w-[820px] lg:max-w-[720px] lg:px-0'}`}>
           {missionEmpty && missionSheet ? (
             <div data-testid="mission-sheet-empty" className="mb-6">
               <MissionContextCard objRef={missionSheet} />
               <MissionAskAbout objRef={missionSheet} onPick={pick} />
             </div>
           ) : emptyCanvas}
-          {messages.length === 0 && emptyState && (
-            <div data-testid="chat-empty-state" className={historyOpen ? 'lg:hidden' : 'hidden md:block lg:hidden'}>{emptyState}</div>
+          {/* A phone's or tablet's history view; desktop shows the list in the dock. */}
+          {messages.length === 0 && emptyState && historyOpen && (
+            <div data-testid="chat-empty-state" className="lg:hidden">{emptyState}</div>
           )}
           <ChatFeed messages={messages} agent={agent} status={status} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
-      {/* Phone: the composer is a full-bleed slab down to the safe area. */}
-      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] md:bg-transparent md:pb-5 md:pt-2 ${overlay ? 'md:px-6' : docked ? 'md:px-6 lg:px-8 lg:pb-7' : 'md:px-8 lg:pb-7'}`}>
-        <div data-testid="chat-composer-column" className={overlay ? '' : docked ? 'lg:mx-auto lg:max-w-[720px]' : 'mx-auto max-w-[820px] lg:max-w-[720px]'}>
+      {/* Phone and tablet: the composer is a full-bleed slab down to the safe area. */}
+      <div className={`bg-[var(--chat-surface)] pb-[env(safe-area-inset-bottom)] lg:bg-transparent lg:pb-5 lg:pt-2 ${overlay ? 'lg:px-6' : 'lg:px-8 lg:pb-7'}`}>
+        <div data-testid="chat-composer-column" className={overlay ? '' : 'mx-auto lg:max-w-[720px]'}>
           <ChatComposer
             ref={composer}
             value={draft}
@@ -551,42 +531,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             compact={overlay}
             scopeLock={missionSheet ? <MissionScopeCell objRef={missionSheet} /> : undefined}
           />
-          {formFallbackHref && messages.length === 0 && (
-            <div className="hidden justify-end md:mt-2 md:flex lg:hidden">
-              <Link
-                href={formFallbackHref}
-                data-testid="chat-form-fallback"
-                className="inline-flex min-h-9 items-center font-convo text-[13px] text-text-muted underline decoration-dotted underline-offset-4 hover:text-text-primary"
-              >
-                Fill in a form instead
-              </Link>
-            </div>
-          )}
         </div>
-      </div>
-    </section>
-  );
-
-  const popOut = focus ? popOutHref(focus) : null;
-  const paneEl = focus && (
-    <section data-testid="chat-pane" data-side={pane.side} data-ref={refKey(focus)} className="hidden min-h-0 min-w-0 flex-1 flex-col bg-surface-1 md:flex lg:hidden">
-      <div className="flex min-h-14 items-center gap-2.5 border-b border-border-default bg-surface-2 px-4 py-2">
-        <span aria-hidden="true" className="h-2.5 w-2.5 bg-[var(--status-info)]" />
-        <span className="min-w-0 truncate font-mono text-[12px] text-text-secondary">
-          {pane.pinned ? 'Pinned · ' : 'Following'}
-          {pane.pinned && (
-            <button type="button" onClick={() => dispatch({ type: 'unpin' })} className="underline hover:text-text-primary">Unpin</button>
-          )}
-        </span>
-        <span className="flex-1" />
-        <button type="button" data-testid="pane-swap" onClick={swap} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">⇄ Swap</button>
-        {popOut && (
-          <a href={popOut} target="_blank" rel="noreferrer" data-testid="pane-popout" className="inline-flex min-h-9 items-center border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Pop out ↗</a>
-        )}
-        <button type="button" data-testid="pane-close" onClick={() => { setVisualReview(null); dispatch({ type: 'close' }); }} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <ObjectPane key={refKey(focus)} objRef={focus} />
       </div>
     </section>
   );
@@ -597,11 +542,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         data-testid="chat-workspace"
         data-docked={docked ? 'true' : 'false'}
         data-dock={dock?.mode}
-        className={`flex h-full min-h-0 ${docked && pane.side === 'right' ? 'flex-row-reverse' : 'flex-row'} lg:flex-row`}
+        className="flex h-full min-h-0 flex-row"
       >
-        {/* The tablet band (768 to 1023) keeps the side-by-side pane. */}
-        {paneEl}
-        {docked && <div aria-hidden="true" className="hidden w-[2px] shrink-0 bg-border-strong md:block lg:hidden" />}
         {column}
         {/* lg+: one solid 420px panel on the right; the column stays centred in what is left. */}
         {dock && (
@@ -616,16 +558,24 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           />
         )}
       </div>
-      <BottomSheet
-        open={sheet !== null}
-        onClose={closeSheet}
-        title={sheet ? (sheetReviewing ? 'Review screens' : objectSheetTitle(sheet)) : ''}
-        height="tall"
-        testId="chat-object-sheet"
-        flush={sheetReviewing}
-      >
-        {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
-      </BottomSheet>
+      {sheet && <ObjectSheet objRef={sheet} reviewing={sheetReviewing} onClose={closeSheet} />}
     </ChatActionsProvider>
+  );
+}
+
+/** The phone object sheet. Its title reads the live view: an answered question stops saying it waits. */
+function ObjectSheet({ objRef, reviewing, onClose }: { objRef: BuilddObjectRef; reviewing: boolean; onClose: () => void }) {
+  const { view } = useObjectEntry(objRef);
+  return (
+    <BottomSheet
+      open
+      onClose={onClose}
+      title={reviewing ? 'Review screens' : objectSheetTitle(objRef, view)}
+      height="tall"
+      testId="chat-object-sheet"
+      flush={reviewing}
+    >
+      <ObjectPane objRef={objRef} variant="sheet" />
+    </BottomSheet>
   );
 }

@@ -22,7 +22,10 @@ export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
 export const MISSION_BOARD_VISUAL_FIXTURE_STATE = 'mission-board-visual';
 
 /** Every `?state=` the fixtures page understands. */
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE];
+/** The missions-list cards under each executor (mission-list-executor-fixtures.ts). */
+export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
+
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

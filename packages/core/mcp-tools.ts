@@ -14,6 +14,7 @@ import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldI
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
+import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -119,11 +120,15 @@ async function assertMissionControlCapabilities(
   }
 }
 
+/** One line an agent reads for a mission whose executor is 'local'. */
+const LOCAL_EXECUTOR = 'local — runs in a local session; runners never auto-claim its tasks. Claim each with claim_task {taskId} and finish with complete_task.';
+
 function requestedMissionControlCapabilities(
   params: Record<string, unknown>,
 ): MissionControlCapability[] {
   const required: MissionControlCapability[] = [];
   if (params.startMode !== undefined) required.push('startMode');
+  if (params.executor !== undefined) required.push('executor');
   if (params.pacingMode !== undefined || params.pacingMaxPerHour !== undefined) {
     required.push('pacing');
   }
@@ -163,6 +168,13 @@ export interface ActionContext {
   // task claim_task just claimed): the store is that workspace's team's, and
   // null when it is sensitive or cannot be resolved.
   getMemoryClient?: (workspaceId?: string) => Promise<MemoryStore | null>;
+  // Where memory reads record their use (memory_uses). The web routes pass an
+  // after()-backed writer so the write outlives the response; omitted, reads
+  // fire and forget.
+  memoryLedger?: MemoryLedgerWriter;
+  // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
+  // web routes inject one; omitted (the runner), learn keeps today's rules.
+  memoryDecider?: MemoryDecider;
 }
 
 export type ToolResult = {
@@ -247,7 +259,7 @@ export const workerActions = [
   // read-only over rows the caller's workspace access already covers.
   'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'request_pr_review', 'get_pr_review',
+  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -404,7 +416,11 @@ export const recallToolDefinition = {
       },
       id: {
         type: "string" as const,
-        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored. Accepts the full ID or the 8-char short ID a memory index line shows (m:1a2b3c4d).",
+      },
+      includeCandidates: {
+        type: "boolean" as const,
+        description: "Also return unverified candidate memories (not yet promoted). Default false.",
       },
     },
   },
@@ -471,7 +487,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
@@ -480,12 +496,13 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
+    list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url. Open lists conflicts first, then red CI, then newest. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist in the same repo and already be MERGED, and must differ from the PR being superseded; a 404/409 names which check failed. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
-    manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default | "cbm_access"), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5, REQUIRED for cbm_access), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }; cbm_access: { eligibility: { kinds, includeUnkinded }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. cbm_access withholds the codebase graph (codebase-memory MCP, its tools and its prompt steering) from the treatment share of eligible tasks (Claude backend, repo-backed, kind engineering/research/analysis by default, work-class, not reviewers or CBM-opted-out roles; the task is the unit, retries inherit); control runs CBM as usual. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
+    manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default | "cbm_access" | "heartbeat_triage"), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5, REQUIRED for cbm_access and heartbeat_triage), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }; cbm_access: { eligibility: { kinds, includeUnkinded }, minSamplePerArm }; heartbeat_triage: { waitMinConfidence, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. cbm_access withholds the codebase graph (codebase-memory MCP, its tools and its prompt steering) from the treatment share of eligible tasks (Claude backend, repo-backed, kind engineering/research/analysis by default, work-class, not reviewers or CBM-opted-out roles; the task is the unit, retries inherit); control runs CBM as usual. heartbeat_triage lets a confident "wait" from the decision model skip a heartbeat cycle of the mission organizer in the treatment share of missions (the mission is the unit); control is shadow (the organizer always runs); its readout is per arm: organizer dispatches per mission, how often the organizer acted right after a skip, and confident-wait precision against what the organizer then did. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -510,7 +527,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "planned" | "active" | "paused" | "completed" | "archived" (set by a person; nothing derives or auto-advances it), priority?: number, ownerUserId?: string (a member of the initiative\'s team; null falls back to the creator; create defaults to the caller), targetDate?: "YYYY-MM-DD" | null (optional calendar target). Initiatives carry no KPIs: put checkable outcomes in mission goalCriteria. } — an initiative is an execution-free container above missions (initiative → mission → task), like a Linear initiative. Progress is missions done over missions. "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; gitConfig.criteriaGrader: "auto"|"api"|"runner" sets the workspace default grader for prose goal criteria; to apply a detected policyConfig from action=init, use gitConfig.policyConfig; merge-policy paths are detected by action=init, never typed), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Paths are grouped into named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -525,7 +542,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
-    get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; every audit task (status, times, why); per route and viewport: round, agent verdict, finding, human decision, fix task, screenshot links; what needs you. missionTitle is team-wide unless workspaceId. No mission: the workspace\'s missions waiting on you. [admin]',
+    get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -536,7 +553,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
@@ -582,6 +599,48 @@ function fmtTokens(n: number | null | undefined): string {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${Math.round(n)}`;
+}
+
+const PR_STATE_LABEL: Record<string, string> = {
+  conflict: 'CONFLICT', ci_failed: 'CI FAILED', ci_running: 'CI running', ci_green: 'CI green', pr_open: 'open', merged: 'merged',
+};
+
+/** list_prs output: a header, then one line per PR. An empty list is one "No …" line. */
+export function renderPrList(data: { state?: string; sinceDays?: number; workspaceCount?: number; prs?: any[] }): string {
+  const state = data.state ?? 'open';
+  const prs = data.prs ?? [];
+  const noun = (n: number) => `${n} PR${n === 1 ? '' : 's'}`;
+  const days = data.sinceDays ?? 7;
+  const window = days === 1 ? 'in the last day' : `in the last ${days} days`;
+  // Saying the scope is what stops a model re-asking workspace by workspace.
+  const n = data.workspaceCount;
+  const scope = n === undefined ? '' : n === 1 ? ' in this workspace' : ` across your ${n} workspaces`;
+  if (prs.length === 0) {
+    return state === 'merged' ? `No PRs merged ${window}${scope}.`
+      : state === 'attention' ? `No open PRs with conflicts or failing CI${scope}.`
+      : state === 'open' ? `No open PRs${scope}.`
+      : `No open PRs in state ${state}${scope}.`;
+  }
+  const conflicts = prs.filter(p => p.status === 'conflict').length;
+  const red = prs.filter(p => p.status === 'ci_failed').length;
+  const flags = [conflicts ? `${conflicts} conflicting` : '', red ? `${red} with failing CI` : ''].filter(Boolean).join(', ');
+  const header = state === 'merged' ? `${noun(prs.length)} merged ${window}${scope}:`
+    : state === 'open' ? `${prs.length} open PR${prs.length === 1 ? '' : 's'}${scope}${flags ? ` (${flags})` : ''}:`
+    : `${noun(prs.length)} ${state === 'attention' ? 'needing attention' : `in state ${state}`}${scope}${flags ? ` (${flags})` : ''}:`;
+  const day = (d: string | null | undefined) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+  const lines = prs.map(p => {
+    const when = state === 'merged' ? `merged ${day(p.mergedAt)}`
+      : p.status === 'conflict' && p.conflictDetectedAt ? `conflicting since ${day(p.conflictDetectedAt)}`
+      : p.startedAt ? `opened ${day(p.startedAt)}` : null;
+    return `- #${p.prNumber ?? '?'} ${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'} · ${[
+      p.taskTitle ?? '(no task)',
+      p.workspaceName,
+      p.missionTitle ? `mission "${p.missionTitle}"` : null,
+      p.taskId ? `task ${String(p.taskId).slice(0, 8)}` : null,
+      when,
+    ].filter(Boolean).join(' · ')}\n  ${p.prUrl}`;
+  });
+  return `${header}\n${lines.join('\n')}`;
 }
 
 const errorResult = (t: string): ToolResult => ({
@@ -1249,7 +1308,10 @@ async function checkWriteFence(
  * excluded: path-keyed supersession already covers them, and defines-sets from
  * regex extraction are too weak there to key replacement on.
  */
-const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['memory', 'task', 'plan', 'artifact']);
+// Not 'memory': that namespace is team-wide, and entity-keyed supersession
+// would flip other projects' memories. Memory supersession goes only through
+// explicit `supersedes` narrowed to the caller's project (ownSupersedes).
+const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['task', 'plan', 'artifact']);
 
 /**
  * Validate an agent-supplied `supersedes` param.
@@ -1506,7 +1568,13 @@ export async function handleBuilddAction(
         : ['workers', 'artifacts'];
       const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
 
-      const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`);
+      const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
+        // The id is often a mission's, read off a mission list: say where to go.
+        if (e instanceof Error && /^API error: 404\b/.test(e.message)) {
+          throw new Error(`${e.message}. If this id came from a mission list it is a mission id: read it with manage_missions (action "get").`);
+        }
+        throw e;
+      });
 
       const appBase = ctx.appBaseUrl || 'https://buildd.dev';
       const taskUrl = `${appBase}/app/tasks/${task.id}`;
@@ -1684,29 +1752,47 @@ export async function handleBuilddAction(
       try {
         const claimedTask = workers[0]?.task;
         const claimedWs = claimedTask?.workspace;
-        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive'
-          ? workspaceProjectKey(claimedWs.repo, claimedWs.name)
+        // The key is memoryProjectKey's, the same rule every other memory read
+        // uses: it also closes a key shared with a sensitive workspace in the
+        // team, which the payload alone cannot show. retrieveMemory resolves it
+        // from the workspace itself and searches nothing when there is none.
+        const claimedWsId = claimedTask?.workspaceId ?? claimedWs?.id;
+        const memClient = claimedWs && claimedWs.dataClass !== 'sensitive' && claimedWsId
+          && claimedTask?.title && ctx.getMemoryClient
+          ? await ctx.getMemoryClient(claimedWsId)
           : null;
-        const memClient = memProject && claimedTask?.title && ctx.getMemoryClient
-          ? await ctx.getMemoryClient(claimedTask.workspaceId ?? claimedWs.id)
-          : null;
-        if (memClient && memProject) {
-          const searchData = await memClient.search({
-            query: claimedTask.title,
-            project: memProject,
-            limit: 5,
+        if (memClient) {
+          const indexOn = isMemoryIndexEnabled(claimedWs.gitConfig);
+          const { memories, commitLedger } = await retrieveMemory<any>({
+            strategy: 'store-search',
+            searcher: memClient,
+            search: { query: claimedTask.title, limit: 5 },
+            scope: { teamId: claimedWs.teamId, workspaceId: claimedWsId },
+            caller: 'claim_task_reply',
+            attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
+            ledger: ctx.memoryLedger,
+            // Index mode holds the ledger until the budget has decided what shows.
+            ...(indexOn ? { deferLedger: true } : {}),
           });
-          const results = searchData.results || [];
-          if (results.length > 0) {
-            const batchData = await memClient.batch(results.map(r => r.id));
-            const memories = batchData.memories || [];
-            if (memories.length > 0) {
-              const memoryLines = memories.map((m: any) => {
-                const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
-                return `- **[${m.type}] ${m.title}**: ${truncContent}`;
-              });
-              memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
-            }
+          if (indexOn) {
+            // Index injection (see ./memory-claim-index): the claim route's entries
+            // first, since this reply is the only place an MCP agent sees
+            // them, then this search's, deduped, under one budget.
+            const entries: MemoryIndexEntry[] = [
+              ...readMemoryIndexEntries(claimedTask.context),
+              ...memories.map((m: any) => ({ id: String(m.id), type: String(m.type ?? 'memory'), title: String(m.title ?? ''), why: 'title' as const })),
+            ];
+            const index = buildMemoryIndex(entries, { budgetTokens: memoryIndexTokenBudget(claimedWs.gitConfig) });
+            // Shown here, or already shown by the claim-time block (a dedupe, not a drop).
+            const shownIds = new Set(index.shown.map(e => e.id));
+            commitLedger(h => (shownIds.has(h.memoryId) ? null : 'char_budget'));
+            if (index.lines.length > 0) memorySection = `\n\n## Relevant Memory\n${index.lines.join('\n')}`;
+          } else if (memories.length > 0) {
+            const memoryLines = memories.map((m: any) => {
+              const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+              return `- **[${m.type}] ${m.title}**: ${truncContent}`;
+            });
+            memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
           }
         }
       } catch {
@@ -2143,6 +2229,20 @@ export async function handleBuilddAction(
         return text(`PR #${data.pr?.number ?? params.prNumber} merge failed: ${data.message ?? data.error}${hint}`);
       }
       return text(`PR #${data.pr.number} merged successfully.\n**URL:** ${data.pr.url}\n**Message:** ${data.message}`);
+    }
+
+    case 'list_prs': {
+      const state = typeof params.state === 'string' && params.state ? params.state : 'open';
+      if (state === 'closed') return errorResult('Closed PRs are not listed. Read one with get_pr (prNumber).');
+      const qs = new URLSearchParams({ state });
+      if (params.workspaceId) {
+        const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+        if (wsId) qs.set('workspaceId', wsId);
+      }
+      if (typeof params.sinceDays === 'number' && params.sinceDays > 0) qs.set('sinceDays', String(Math.trunc(params.sinceDays)));
+      if (typeof params.limit === 'number' && params.limit > 0) qs.set('limit', String(Math.trunc(params.limit)));
+      const data = await api(`/api/prs?${qs}`);
+      return text(renderPrList(data));
     }
 
     case 'get_pr': {
@@ -2791,7 +2891,10 @@ export async function handleBuilddAction(
         wsId,
         ctx.teamId,
         ctx.knowledgeStore,
-        { paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined },
+        {
+          paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined,
+          ledger: ctx.memoryLedger,
+        },
       ).catch(() => '');
 
       const routingLine = task.routing
@@ -4287,7 +4390,7 @@ export async function handleBuilddAction(
             const createdLine = m.createdAt
               ? `\n  Created: ${new Date(m.createdAt).toISOString()}`
               : '';
-            return `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
+            return `- **${m.title}** [${m.status}]${m.isHeld ? ' [HELD]' : ''}${m.executor === 'local' ? ' [LOCAL]' : ''} — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
           }).join('\n\n');
           return text(`${missions.length} mission(s), most recent activity first:\n\n${summary}${truncated}`);
         }
@@ -4323,6 +4426,7 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.executor !== undefined) body.executor = params.executor;
           if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
@@ -4337,6 +4441,7 @@ export async function handleBuilddAction(
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
           const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
+          const executorInfo = data.executor === 'local' ? `\nExecutor: ${LOCAL_EXECUTOR}` : '';
 
           // Same prior-work surfacing as create_task — best-effort, never fails
           // an already-created mission.
@@ -4349,9 +4454,10 @@ export async function handleBuilddAction(
             data.workspaceId ?? null,
             data.teamId ?? ctx.teamId ?? null,
             ctx.knowledgeStore,
+            { ledger: ctx.memoryLedger },
           ).catch(() => '');
 
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${executorInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
         }
         case 'get': {
           const target = await resolveMissionTarget(api, params, ctx);
@@ -4377,6 +4483,7 @@ export async function handleBuilddAction(
             : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
           const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
+          const executorInfo = `\nExecutor: ${data.executor === 'local' ? LOCAL_EXECUTOR : 'runner — background runners claim its tasks'}`;
 
           // goalCriteria + autoVerify + last evaluation state
           const criteriaArr = Array.isArray(data.goalCriteria) ? data.goalCriteria : [];
@@ -4403,7 +4510,7 @@ export async function handleBuilddAction(
             }
           }
 
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           // No UUID missionId: the mission is FOUND by title (missionId, else
@@ -4444,6 +4551,7 @@ export async function handleBuilddAction(
           if (params.startIn !== undefined) body.startIn = params.startIn;
           if (params.startAfter !== undefined) body.startAfter = params.startAfter;
           if (params.startMode !== undefined) body.startMode = params.startMode;
+          if (params.executor !== undefined) body.executor = params.executor;
           if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
@@ -4458,7 +4566,8 @@ export async function handleBuilddAction(
             body: JSON.stringify(body),
           });
           const heldStatus = data.isHeld ? ' [HELD — tasks not claimable]' : '';
-          return text(`Mission updated: "${data.title}" [${data.status}]${heldStatus} (ID: ${data.id})`);
+          const localStatus = data.executor === 'local' ? ' [LOCAL — runs in a local session]' : '';
+          return text(`Mission updated: "${data.title}" [${data.status}]${heldStatus}${localStatus} (ID: ${data.id})`);
         }
         case 'arm': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -5502,7 +5611,26 @@ import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, Upsert
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
-import { keepOwnProjectMemoryHits, memoryOverfetchTopK } from './memory-hit-scope';
+import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
+import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import { memoryStateOf, pullMemoryStates, type MemoryProvenance } from './memory-candidates';
+import {
+  buildMemoryIndex,
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  parseMemoryIdRef,
+  readMemoryIndexEntries,
+  type MemoryIndexEntry,
+} from './memory-claim-index';
+import {
+  fallbackLearnJudgement,
+  FALLBACK_UPDATE_JUDGEMENT,
+  KEEP_NOT_DURABLE_TAG,
+  type LearnJudgement,
+  type MemoryDecider,
+  type MemoryDecisionType,
+  type UpdateJudgement,
+} from './memory-decisions';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5629,6 +5757,8 @@ function formatKnowledgeResult(
 type MemoryActionCtx = {
   project?: string;
   workerId?: string;
+  /** The caller's task, when known; attributes ledger rows. */
+  taskId?: string;
   workspaceId?: string;
   teamId?: string;
   knowledgeStore?: KnowledgeStore;
@@ -5636,7 +5766,125 @@ type MemoryActionCtx = {
   api?: ApiFn;
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
+  /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
+  memoryLedger?: MemoryLedgerWriter;
+  /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
+  memoryDecider?: MemoryDecider;
+  /**
+   * Whether new writes land as candidates (workspace flag
+   * `memoryCandidateWrites`). Omitted: read from the workspace, off on any
+   * failure. See ./memory-candidates.
+   */
+  memoryCandidateWrites?: boolean;
+  /** Where this write came from. Omitted: a `learn` by the caller's task. */
+  memoryProvenance?: MemoryProvenance;
+  /**
+   * Any near-duplicate (the conflict band and up) means "already known":
+   * write nothing, supersede nothing. For background extraction, which must
+   * never replace a memory an agent wrote.
+   */
+  memoryDedupeOnly?: boolean;
 };
+
+/** Whether this write lands as a candidate. Never throws; off on any doubt. */
+async function candidateWritesOn(ctx: MemoryActionCtx): Promise<boolean> {
+  if (typeof ctx.memoryCandidateWrites === 'boolean') return ctx.memoryCandidateWrites;
+  // Unit tests never reach a database through a default.
+  if (!ctx.workspaceId || process.env.NODE_ENV === 'test') return false;
+  try {
+    const { resolveMemoryCandidateWrites } = await import('./memory-scope');
+    return await resolveMemoryCandidateWrites(ctx.workspaceId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lifecycle fields for a new row. Empty (so the row is active, exactly as
+ * before) unless the workspace flag is on.
+ */
+async function candidateWriteFields(ctx: MemoryActionCtx): Promise<{
+  state?: 'candidate'; sourceKind?: MemoryProvenance['kind']; sourceId?: string; external?: boolean;
+}> {
+  if (!(await candidateWritesOn(ctx))) return {};
+  const prov = ctx.memoryProvenance;
+  const sourceId = prov?.id ?? ctx.taskId ?? undefined;
+  return {
+    state: 'candidate',
+    sourceKind: prov?.kind ?? 'learn',
+    ...(sourceId ? { sourceId } : {}),
+    ...(prov?.external ? { external: true } : {}),
+  };
+}
+
+/**
+ * Where a candidate write's supersedes go. An ACTIVE target is deferred to
+ * the candidate's `pendingSupersedes` and superseded only when the candidate
+ * is promoted, so a candidate never hides an active memory from push. Any
+ * other state is superseded now. Not a candidate write: everything now, as
+ * before. A failed lookup defers everything (never hide on a doubt).
+ */
+async function splitSupersedes(
+  mc: MemoryStore,
+  ids: string[] | undefined,
+  candidate: boolean,
+): Promise<{ now: string[] | undefined; pending: string[]; rows: Map<string, MemoryRecordShape> }> {
+  const rows = new Map<string, MemoryRecordShape>();
+  if (!ids || ids.length === 0) return { now: ids, pending: [], rows };
+  if (!candidate) return { now: ids, pending: [], rows };
+  try {
+    for (const m of (await mc.batch(ids)).memories as MemoryRecordShape[]) rows.set(m.id, m);
+  } catch {
+    return { now: undefined, pending: [...ids], rows };
+  }
+  const now = ids.filter(id => rows.has(id) && memoryStateOf(rows.get(id)!) !== 'active');
+  const pending = ids.filter(id => !now.includes(id));
+  return { now: now.length > 0 ? now : undefined, pending, rows };
+}
+
+/**
+ * The corroboration link: set ONLY for the automatic near-duplicate match,
+ * when that row is an own-project, non-external candidate or active memory
+ * from another episode. Promotion re-checks all of it (and that the tasks
+ * differ) in SQL; this only refuses what it can already see.
+ */
+function corroborationLink(
+  match: MemoryRecordShape | undefined,
+  lifecycle: Awaited<ReturnType<typeof candidateWriteFields>>,
+  ctx: MemoryActionCtx,
+): string | undefined {
+  if (!match || lifecycle.state !== 'candidate' || lifecycle.sourceKind !== 'learn' || lifecycle.external) return undefined;
+  if (!isOwnMemory(match, ctx) || match.external) return undefined;
+  const st = memoryStateOf(match);
+  if (st !== 'candidate' && st !== 'active') return undefined;
+  if (lifecycle.sourceId && match.sourceId && lifecycle.sourceId === match.sourceId) return undefined;
+  return match.id;
+}
+
+const CANDIDATE_NOTE = ' | saved as a candidate: recall with includeCandidates=true finds it; it is shown at claim time once its task\'s PR merges or another task records the same lesson';
+
+/**
+ * Start the keep/type judgement for a write. Bounded by the decider's own
+ * deadline (5s) and never rejects; no decider, no team or a sensitive
+ * workspace is today's behaviour.
+ */
+function judgeMemoryWrite(ctx: MemoryActionCtx, title: string, content: string, type: MemoryDecisionType): Promise<LearnJudgement> {
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return Promise.resolve(fallbackLearnJudgement(type));
+  return ctx.memoryDecider
+    .judgeLearn({ scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null }, title, content, type })
+    .catch(() => fallbackLearnJudgement(type));
+}
+
+/** Reply suffix for what the keep/type decisions changed. Empty when nothing did. */
+function learnJudgementNote(j: LearnJudgement): string {
+  const parts: string[] = [];
+  if (j.type.overridden) parts.push(`type set to ${j.type.type}`);
+  if (j.keep.flag) parts.push(`tagged ${KEEP_NOT_DURABLE_TAG}: reads as a task summary, not a durable lesson`);
+  return parts.length ? ` | ${parts.join(' | ')}` : '';
+}
+
+const unionStrings = (...lists: Array<readonly string[] | null | undefined>): string[] =>
+  [...new Set(lists.flatMap(l => l ?? []).filter((v): v is string => typeof v === 'string'))];
 
 // ── Memory project scoping ───────────────────────────────────────────────────
 //
@@ -5677,6 +5925,28 @@ async function ownMemoryHits<T extends { id: string; metadata?: Record<string, u
 ): Promise<T[]> {
   if (!mc) return [];
   return keepOwnProjectMemoryHits(hits, { project: ctx.project ?? null, lookup: ids => mc.batch(ids) });
+}
+
+/** The caller's memory scope for retrieveMemory, or null (no memory) with no store. */
+function ownMemoryScope(mc: MemoryStore | null, ctx: MemoryActionCtx): MemoryHitScope | null {
+  return mc ? { project: ctx.project ?? null, lookup: ids => mc.batch(ids) } : null;
+}
+
+/**
+ * Narrow explicit `supersedes` ids to the caller's own project memories, by the
+ * same rule as reads. The index flips whatever ids it is given across the whole
+ * team namespace, so a foreign id and a missing id must both drop out here, and
+ * identically: the superseded count in the reply then says nothing about ids
+ * outside the caller's project. A failed lookup supersedes nothing.
+ */
+async function ownSupersedes(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  ids: string[] | undefined,
+): Promise<string[] | undefined> {
+  if (!ids || ids.length === 0) return undefined;
+  const own = await ownMemoryHits(mc, ctx, ids.map(id => ({ id }))).catch(() => []);
+  return own.length > 0 ? own.map(h => h.id) : undefined;
 }
 
 /**
@@ -5821,6 +6091,8 @@ async function fanOutCorpora(
   ctx: MemoryActionCtx,
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+  caller: Extract<MemoryCaller, 'recall' | 'query_knowledge'>,
+  memoryOpts: { includeCandidates?: boolean } = {},
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
@@ -5838,9 +6110,19 @@ async function fanOutCorpora(
       try {
         // The memory namespace is team-wide: over-fetch, then keep the caller's project.
         if (c === 'memory') {
-          const raw = await ks.query(ns, { ...opts, topK: memoryOverfetchTopK(opts.topK) });
-          const own = await ownMemoryHits(mc, ctx, raw.filter(r => r.isCurrent !== false));
-          return own.slice(0, opts.topK);
+          return (await retrieveMemory({
+            query: opts.text,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(mc, ctx) },
+            caller,
+            budget: { topK: opts.topK },
+            store: ks,
+            mode: opts.mode,
+            excludeSuperseded: true,
+            ...(memoryOpts.includeCandidates ? { includeCandidates: true } : {}),
+            attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
+            onError: 'throw',
+          })).results;
         }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
@@ -5866,18 +6148,47 @@ export async function handleRecallAction(
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
-  // id present → direct fetch, all other params ignored.
+  // id present → direct fetch, all other params ignored. Accepts a full id or
+  // the claim-time index's 8-char short id (`m:<id>` too); see ./memory-claim-index.
   if (params.id) {
-    const data = await memoryClient.get(params.id as string);
-    const m = data.memory;
+    const notFound = () => errorResult(`Memory not found: ${params.id}`);
+    // Memory is off for a sensitive workspace; say so the way a miss does.
+    if (ctx.isSensitive) return notFound();
+    const ref = parseMemoryIdRef(params.id);
+    let m: Awaited<ReturnType<MemoryStore['get']>>['memory'] | null | undefined;
+    if (ref?.kind === 'prefix') {
+      // Resolved inside the caller's own project, so a prefix can never reach
+      // another workspace's memory, and a foreign one reads as a miss.
+      const own = normalizeProject(ctx.project);
+      if (!own || typeof memoryClient.findByIdPrefix !== 'function') return notFound();
+      const rows = await memoryClient.findByIdPrefix(ref.value, own, 2).catch(() => []);
+      if (rows.length > 1) {
+        return errorResult(`Memory id ${params.id} matches more than one memory; pass more characters or the full id`);
+      }
+      m = rows[0];
+    } else {
+      // A miss throws in the store; a foreign row is returned and refused
+      // below. Both end as the same message.
+      m = (await memoryClient.get(ref ? ref.value : params.id as string).catch(() => null))?.memory;
+    }
     // Same message as a miss, so a foreign id is not confirmed to exist.
-    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
+    if (!m || !isOwnMemory(m, ctx)) return notFound();
+    recordMemoryPulls({
+      memoryIds: [m.id],
+      teamId: ctx.teamId,
+      workspaceId: ctx.workspaceId,
+      caller: 'recall',
+      attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
+    });
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,
       m.tags?.length && `Tags: ${m.tags.join(', ')}`,
       m.files?.length && `Files: ${m.files.join(', ')}`,
       m.source && `Source: ${m.source}`,
+      memoryStateOf(m) !== 'active' && `State: ${memoryStateOf(m)}`,
+      m.reverifyFlaggedAt && `Re-verify: files it names changed since it was written${m.reverifyRef ? ` (${m.reverifyRef})` : ''}`,
     ].filter(Boolean).join('\n');
     return text(`# ${m.title}\n\n${meta}\n\n${m.content}`);
   }
@@ -5904,6 +6215,7 @@ export async function handleRecallAction(
 
   const limit = Math.min((params.limit as number) || 10, 50);
   const query = params.query as string;
+  const includeCandidates = params.includeCandidates === true;
   // Filtering happens after retrieval, so over-fetch when a filter is active —
   // otherwise a topK=limit fetch can come back entirely filtered out even when
   // enough matching chunks exist further down the ranking.
@@ -5917,7 +6229,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK });
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -5972,18 +6284,31 @@ export async function handleRecallAction(
   // same query got different semantics depending on which path served it.
   const ks =
     ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
-  // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-  const raw = await ks.query(ns, {
-    text: query,
-    mode,
-    topK: scope === 'memory' ? memoryOverfetchTopK(fetchTopK) : fetchTopK,
-  });
-
-  // Exclude superseded entries by default, apply type/files filters, then the caller limit.
-  let results = raw.filter(r => r.isCurrent !== false);
-  if (scope === 'memory') results = await ownMemoryHits(memoryClient, ctx, results);
-  if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
-  results = results.slice(0, limit);
+  // Exclude superseded entries by default, apply type/files filters, then the
+  // caller limit. Memory goes through the one door, which over-fetches the
+  // team-wide namespace and keeps the caller's project.
+  let results: QueryResult[];
+  if (scope === 'memory') {
+    results = (await retrieveMemory({
+      query,
+      scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+      caller: 'recall',
+      budget: { topK: limit, candidates: fetchTopK },
+      store: ks,
+      mode,
+      excludeSuperseded: true,
+      ...(includeCandidates ? { includeCandidates: true } : {}),
+      filter: isFiltered ? r => matchesRecallFilters(r, filterParams) : undefined,
+      attribution: { workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
+      onError: 'throw',
+    })).results;
+  } else {
+    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    results = raw.filter(r => r.isCurrent !== false);
+    if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
+    results = results.slice(0, limit);
+  }
 
   if (results.length === 0) {
     if (scope === 'code' || scope === 'docs') {
@@ -6029,74 +6354,202 @@ export async function handleLearnAction(
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
 
+  const title = params.title as string;
+  const content = params.content as string;
+  const callerType = params.type as MemoryDecisionType;
+  // Jev's keep/type judgement runs alongside the near-duplicate check, inside
+  // its own 5s deadline, and falls back to the caller's type on any failure.
+  const judging = judgeMemoryWrite(ctx, title, content, callerType);
+
   // Dedupe check — embed the candidate and compare cosine similarity against the
   // team memory namespace. Skip when the caller already supplied explicit supersedes
   // (they've resolved the conflict) or when the store lacks nearDupeCheck.
   const THRESH_AUTO     = 0.94;
   const THRESH_CONFLICT = 0.88;
+  // Set when Jev resolved the 0.88 to 0.94 band into a write (ADD or SUPERSEDE).
+  let bandDecision: UpdateJudgement | null = null;
+  // The automatic (> THRESH_AUTO) match: the only source of a corroboration link.
+  let autoMatchId: string | null = null;
 
   if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
     const ns = buildNamespace(ctx.teamId, 'memory');
-    const embedText = `${params.title as string}\n\n${params.content as string}`;
+    const embedText = `${title}\n\n${content}`;
     // The namespace is team-wide: over-fetch, then keep the caller's project, so
     // another workspace's memory is neither quoted back nor auto-superseded.
     const nearest = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, memoryOverfetchTopK(5)).catch(() => []);
     const candidates = (await ownMemoryHits(memoryClient, ctx, nearest).catch(() => [])).slice(0, 5);
 
     const top = candidates[0];
+    if (ctx.memoryDedupeOnly && top && top.similarity >= THRESH_CONFLICT) {
+      (await judging).record(null);
+      return text(`Memory already recorded: ID: ${top.id} (similarity: ${top.similarity.toFixed(3)}) | nothing written`);
+    }
     if (top && top.similarity > THRESH_AUTO) {
       // Auto-supersede: fold the best match into the supersedes list so the
       // upsert marks it as not-current. The caller gets back superseded: 1.
       supersedesParam.ids = [top.id];
+      autoMatchId = top.id;
     } else {
       const conflicts = candidates.filter(c => c.similarity >= THRESH_CONFLICT);
       if (conflicts.length > 0) {
-        const list = conflicts
-          .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
-          .join('\n\n');
-        const ids = JSON.stringify(conflicts.map(c => c.id));
-        return text(
-          `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
-          `or modify the content to make the distinction clear.\n\n${list}\n\n` +
-          `To replace: re-call learn with supersedes: ${ids}`,
-        );
+        // The band: ask Jev whether this is new (ADD), a refinement (UPDATE),
+        // a replacement (SUPERSEDE) or a repeat (NOOP) of the closest match.
+        // Below its threshold (or on any failure) the reply is today's conflict.
+        const band = await resolveNearDuplicateBand(memoryClient, ctx, { title, content, type: callerType }, conflicts[0]);
+        if (band.action === 'SUPERSEDE') {
+          supersedesParam.ids = [conflicts[0].id];
+          bandDecision = band.judgement;
+        } else if (band.action === 'ADD') {
+          bandDecision = band.judgement;
+        } else if (band.action === 'NOOP' && band.existing) {
+          band.judgement.record(band.existing.id, true);
+          (await judging).record(null);
+          return text(
+            `Memory already recorded: "${band.existing.title}" (${band.existing.type})\nID: ${band.existing.id}` +
+            ` | nothing new to add (decision: NOOP). To replace it anyway, re-call learn with supersedes: ${JSON.stringify([band.existing.id])}`,
+          );
+        } else if (band.action === 'UPDATE' && band.existing) {
+          // A merge is a new row, never an overwrite: the new row carries the
+          // existing text plus the incoming text, and the old row is only
+          // superseded (reversible, still readable by id).
+          const existing = band.existing;
+          const judgement = await judging;
+          const mergeSupersedes = await ownSupersedes(memoryClient, ctx, [existing.id]);
+          // External text never merges into a row: the merged row would carry
+          // it under the caller's provenance. Refuse, as the conflict reply.
+          if (!mergeSupersedes || existing.external) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            return text(`Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement.\n\n- ID: ${existing.id}`);
+          }
+          let merged: Awaited<ReturnType<typeof saveMemory>>;
+          const mergeLifecycle = await candidateWriteFields(ctx);
+          const mergeSplit = await splitSupersedes(memoryClient, mergeSupersedes, mergeLifecycle.state === 'candidate');
+          try {
+            merged = await saveMemory(memoryClient, {
+              ...mergeLifecycle,
+              ...(mergeSplit.pending.length ? { pendingSupersedes: mergeSplit.pending } : {}),
+              type: existing.type,
+              title,
+              content: mergeMemoryContent(existing.content, content),
+              project: learnScope.project,
+              tags: unionStrings(existing.tags, params.tags as string[] | undefined, judgement.addTags),
+              files: unionStrings(existing.files, params.files as string[] | undefined),
+              source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: mergeSplit.now });
+          } catch (err) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            throw err;
+          }
+          band.judgement.record(merged.memory.id, true);
+          judgement.record(merged.memory.id);
+          return text(
+            `Memory saved: "${merged.memory.title}" (${merged.memory.type})\nID: ${merged.memory.id}` +
+            ` | merged with near-duplicate ${existing.id}, which is superseded (decision: UPDATE) | superseded: ${merged.superseded}` +
+            (mergeLifecycle.state ? CANDIDATE_NOTE : ''),
+          );
+        } else {
+          band.judgement.record(null, false);
+          (await judging).record(null);
+          const list = conflicts
+            .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
+            .join('\n\n');
+          const ids = JSON.stringify(conflicts.map(c => c.id));
+          return text(
+            `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
+            `or modify the content to make the distinction clear.\n\n${list}\n\n` +
+            `To replace: re-call learn with supersedes: ${ids}`,
+          );
+        }
       }
     }
   }
 
-  const data = await memoryClient.save({
-    type: params.type as string,
-    title: params.title as string,
-    content: params.content as string,
-    project: learnScope.project,
-    tags: params.tags as string[] | undefined,
-    files: params.files as string[] | undefined,
-    source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-  });
+  // Explicit ids are narrowed to the caller's own project before they reach the
+  // team-wide index (auto-supersede ids above already were).
+  const learnSupersedes = await ownSupersedes(memoryClient, ctx, supersedesParam.ids);
+  const judgement = await judging;
+  const lifecycle = await candidateWriteFields(ctx);
+  const split = await splitSupersedes(memoryClient, learnSupersedes, lifecycle.state === 'candidate');
+  const corroboratedBy = autoMatchId && lifecycle.state === 'candidate'
+    ? corroborationLink(split.rows.get(autoMatchId), lifecycle, ctx)
+    : undefined;
 
-  // Mirror into KnowledgeStore for hybrid retrieval (team-scoped).
-  let learnSuperseded = 0;
-  if (ctx.teamId && ctx.knowledgeStore) {
-    const m = data.memory;
-    const ns = buildNamespace(ctx.teamId, 'memory');
-    const lexicalText = `${m.title}\n\n${m.content}`;
-    const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-      id: m.id,
-      content: m.content,
-      lexicalText,
-      sourceType: 'memory',
-      sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-      ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
-    }]).catch(() => undefined);
-    if (upsertRes) learnSuperseded = upsertRes.superseded;
+  // Saved and mirrored through the one write helper; a failed mirror is
+  // recorded there and picked up by the reconcile pass. A "not durable"
+  // verdict only adds a tag: nothing is dropped.
+  let saved: Awaited<ReturnType<typeof saveMemory>>;
+  try {
+    saved = await saveMemory(memoryClient, {
+      ...lifecycle,
+      ...(split.pending.length ? { pendingSupersedes: split.pending } : {}),
+      ...(corroboratedBy ? { corroboratedBy } : {}),
+      type: judgement.type.type,
+      title,
+      content,
+      project: learnScope.project,
+      tags: judgement.addTags.length ? unionStrings(params.tags as string[] | undefined, judgement.addTags) : params.tags as string[] | undefined,
+      files: params.files as string[] | undefined,
+      source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+    }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: split.now });
+  } catch (err) {
+    judgement.record(null);
+    bandDecision?.record(null, false);
+    throw err;
   }
+  judgement.record(saved.memory.id);
+  bandDecision?.record(saved.memory.id, true);
+  const data = { memory: saved.memory };
+  const learnSuperseded = saved.superseded;
 
   const supersededStr = supersedesParam.ids !== undefined
     ? ` | superseded: ${learnSuperseded}`
     : '';
-  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}`);
+  const pendingStr = split.pending.length ? ` | replaces ${split.pending.length} active memory(s) once promoted` : '';
+  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}${pendingStr}${learnJudgementNote(judgement)}${lifecycle.state ? CANDIDATE_NOTE : ''}`);
 }
+
+/**
+ * Jev's verdict on the 0.88 to 0.94 near-duplicate band, against the closest
+ * match. The match came from `ownMemoryHits`, and the row is re-read here and
+ * re-checked as the caller's own before anything can act on it. No decider,
+ * no row, or a verdict below threshold: `action: null` (the conflict reply).
+ */
+async function resolveNearDuplicateBand(
+  mc: MemoryStore,
+  ctx: MemoryActionCtx,
+  incoming: { title: string; content: string; type: string },
+  match: { id: string; content: string },
+): Promise<{ action: UpdateJudgement['action']; judgement: UpdateJudgement; existing: MemoryRecordShape | null }> {
+  const none = { action: null, judgement: FALLBACK_UPDATE_JUDGEMENT, existing: null };
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return none;
+  const existing = await mc.get(match.id).then(r => r.memory as MemoryRecordShape).catch(() => null);
+  if (!existing || !isOwnMemory(existing, ctx)) return none;
+  const judgement = await ctx.memoryDecider.judgeUpdate({
+    scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null },
+    incoming,
+    existing: { id: existing.id, title: existing.title, content: existing.content || match.content, type: existing.type },
+  }).catch(() => FALLBACK_UPDATE_JUDGEMENT);
+  return { action: judgement.action, judgement, existing };
+}
+
+/**
+ * The text of a merged memory: the existing memory, then what the new write
+ * adds. No generative merge here; the superseded original stays readable.
+ */
+function mergeMemoryContent(existing: string, incoming: string): string {
+  const a = (existing ?? '').trim();
+  const b = (incoming ?? '').trim();
+  if (!a) return b;
+  if (!b || a.includes(b)) return a;
+  return `${a}\n\nUpdate:\n${b}`;
+}
+
+type MemoryRecordShape = {
+  id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[];
+  state?: string | null; sourceKind?: string | null; sourceId?: string | null; external?: boolean;
+};
 
 /** Log prefix for deprecated `buildd_memory` dispatches — grep prod logs for this. */
 export const BUILDD_MEMORY_DEPRECATION_TAG = '[buildd_memory-deprecated]';
@@ -6174,6 +6627,8 @@ export async function handleMemoryAction(
         type: params.type as string | undefined,
         project: scoped.project,
         files: params.files as string[] | undefined,
+        // A pull: active memories, and candidates when asked for.
+        states: pullMemoryStates(params.includeCandidates === true),
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
       });
@@ -6223,37 +6678,38 @@ export async function handleMemoryAction(
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
-      const data = await mc.save({
-        type: params.type as string,
-        title: params.title as string,
-        content: params.content as string,
-        project: saveScope.project,
-        tags: params.tags as string[] | undefined,
-        files: params.files as string[] | undefined,
-        source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
-      });
+      // Same keep/type judgement as learn (bounded, fails open to the caller's type).
+      const saveJudging = judgeMemoryWrite(ctx, params.title as string, params.content as string, params.type as MemoryDecisionType);
+      const saveIds = await ownSupersedes(mc, ctx, saveSupersedes.ids);
+      const saveJudgement = await saveJudging;
+      const saveLifecycle = await candidateWriteFields(ctx);
+      const saveSplit = await splitSupersedes(mc, saveIds, saveLifecycle.state === 'candidate');
+      let saved: Awaited<ReturnType<typeof saveMemory>>;
+      try {
+        saved = await saveMemory(mc, {
+          ...saveLifecycle,
+          ...(saveSplit.pending.length ? { pendingSupersedes: saveSplit.pending } : {}),
+          type: saveJudgement.type.type,
+          title: params.title as string,
+          content: params.content as string,
+          project: saveScope.project,
+          tags: saveJudgement.addTags.length ? unionStrings(params.tags as string[] | undefined, saveJudgement.addTags) : params.tags as string[] | undefined,
+          files: params.files as string[] | undefined,
+          source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
+        }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveSplit.now });
+      } catch (err) {
+        saveJudgement.record(null);
+        throw err;
+      }
+      saveJudgement.record(saved.memory.id);
+      const data = { memory: saved.memory };
+      const memSuperseded = saved.superseded;
 
-      // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
-      // belong to a team, not a workspace).
       let memEntityBinding: EntityBinding | null = null;
-      let memSuperseded = 0;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      // Entity refs bind to the chunk, so only once the chunk exists.
+      if (ctx.teamId && ctx.knowledgeStore && saved.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        // Best-effort — don't fail the memory save if indexing fails
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(saveSupersedes.ids && saveSupersedes.ids.length > 0 ? { supersedes: saveSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) memSuperseded = upsertRes.superseded;
-
         // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
         memEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
@@ -6270,7 +6726,7 @@ export async function handleMemoryAction(
         ? ` | ${memEntityBinding.bound} entities bound${memEntityBinding.ambiguous.length > 0 ? `, ${memEntityBinding.ambiguous.length} ambiguous` : ''}`
         : '';
       const saveSupersededStr = saveSupersedes.ids !== undefined ? ` | superseded: ${memSuperseded}` : '';
-      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}`);
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}${learnJudgementNote(saveJudgement)}`);
     }
 
     case 'get': {
@@ -6314,27 +6770,17 @@ export async function handleMemoryAction(
       const existing = await mc.get(params.id as string);
       if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
-      const data = await mc.update(params.id as string, updateFields);
+      const updateIds = await ownSupersedes(mc, ctx, updateSupersedes.ids);
+      const updated = await updateMemory(mc, params.id as string, updateFields, {
+        teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:update', supersedes: updateIds,
+      });
+      const data = { memory: updated.memory };
+      const updateSuperseded = updated.superseded;
 
-      // Mirror update into KnowledgeStore (team-scoped)
       let updateEntityBinding: EntityBinding | null = null;
-      let updateSuperseded = 0;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      if (ctx.teamId && ctx.knowledgeStore && updated.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(updateSupersedes.ids && updateSupersedes.ids.length > 0 ? { supersedes: updateSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) updateSuperseded = upsertRes.superseded;
-
         // Layer 2: re-bind entity refs on update
         updateEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
@@ -6392,7 +6838,7 @@ export async function handleMemoryAction(
       if (Array.isArray(params.corpus)) {
         const corpora = (params.corpus as string[]).map(c => c as Corpus);
 
-        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK });
+        const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, corpora, { text: params.query as string, mode, topK }, 'query_knowledge');
 
         if (corpora.length > 0 && failures.length === corpora.length) {
           throw new Error(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6460,14 +6906,19 @@ export async function handleMemoryAction(
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
       // The memory namespace is team-wide, so over-fetch and keep the caller's project.
-      const queried = await ks.query(ns, {
-        text: params.query as string,
-        mode,
-        topK: corpus === 'memory' ? memoryOverfetchTopK(topK) : topK,
-      });
       const results = corpus === 'memory'
-        ? (await ownMemoryHits(memoryClient, ctx, queried)).slice(0, topK)
-        : queried;
+        ? (await retrieveMemory({
+            query: params.query as string,
+            scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, memoryScope: ownMemoryScope(memoryClient, ctx) },
+            caller: 'query_knowledge',
+            budget: { topK },
+            store: ks,
+            mode,
+            attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
+            onError: 'throw',
+          })).results
+        : await ks.query(ns, { text: params.query as string, mode, topK });
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {
@@ -6595,7 +7046,7 @@ export async function handleMemoryAction(
       const decayedLines = decayed.map(d =>
         `- ${d.sourceId} [${d.corpus}]${d.sourceTs ? ` ts: ${d.sourceTs.toISOString()}` : ''} hits: ${d.hitCount}\n  > ${d.preview}`
       ).join('\n');
-      return text(`Found ${decayed.length} decayed zero-hit chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
+      return text(`Found ${decayed.length} decayed unused chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
     }
 
     default:

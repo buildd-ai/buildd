@@ -561,12 +561,22 @@ export class BuilddClient {
    * an absent one the same way — but sending `query=` makes the request log
    * ambiguous about which search was actually attempted.
    */
-  async searchObservations(workspaceId: string, query: string, limit = 5, files?: readonly string[]): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
+  async searchObservations(
+    workspaceId: string,
+    query: string,
+    limit = 5,
+    files?: readonly string[],
+    attribution?: { taskId?: string | null; workerId?: string | null },
+  ): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
     try {
       const params = new URLSearchParams();
       if (query) params.set('query', query);
       params.set('limit', String(limit));
       for (const f of files ?? []) params.append('files', f);
+      // Who the search is for, so the server's memory use ledger can record
+      // it. Changes nothing about what comes back.
+      if (attribution?.taskId) params.set('taskId', attribution.taskId);
+      if (attribution?.workerId) params.set('workerId', attribution.workerId);
       const data = await this.fetch(
         `/api/workspaces/${workspaceId}/memory?${params.toString()}`
       );

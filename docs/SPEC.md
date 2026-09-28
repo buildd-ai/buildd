@@ -297,8 +297,9 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
     `mission_summary` declared with no call site and not shown in Settings).
     `heartbeat_triage` asks a decision model (OpenRouter) whether a heartbeat
-    cycle needs the organizer before a runner is dispatched; it records every
-    look and skips nothing until applying is switched on
+    cycle needs the organizer before a runner is dispatched; every look is a
+    `heartbeat_triage_looks` row, and a confident wait skips the organizer only
+    in the treatment arm of a running `heartbeat_triage` experiment
     (`docs/design/heartbeat-triage.md`). All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
     overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
@@ -311,8 +312,16 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   Settings → Budgets shows each person's spend split into Interactive and Agent runs
   (agent runs attributed to the mission's creator), per person for admins.
 - **Providers per path** — chat: `anthropic | openai | openrouter`. `inferenceCall`:
-  `anthropic | openrouter` (`openai` returns `unsupported_provider`). Decision calls:
-  OpenRouter.
+  `anthropic | openrouter` (`openai` returns `unsupported_provider` unless a gateway
+  serves it). Decision calls: OpenRouter, or the team's decision model.
+  A team **LiteLLM gateway** (`packages/core/litellm-gateway.ts`) is the fallback
+  after the provider's own key (and, for chat, OpenRouter): the same model as
+  `provider/model` on the proxy's OpenAI-compatible API.
+- **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
+  null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
+  with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
+  Thresholds were measured on Jev, so a call site that auto-applies (task
+  category) records another model's pick without applying it.
 - **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
   to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
   with all tools. The task-category check is shadow only

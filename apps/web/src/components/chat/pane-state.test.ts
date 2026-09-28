@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { BuilddObjectRef } from './chat-contract';
-import { INITIAL_PANE, paneReducer, parsePaneSide, popOutHref } from './pane-state';
+import { INITIAL_PANE, paneReducer, popOutHref } from './pane-state';
 
 const mission: BuilddObjectRef = { kind: 'mission', id: 'm1', workspaceId: 'ws', fallbackText: 'M' };
 
@@ -16,11 +16,6 @@ describe('paneReducer', () => {
   it('swap flips sides; unpin goes back to following', () => {
     expect(paneReducer(INITIAL_PANE, { type: 'swap' }).side).toBe('right');
     expect(paneReducer({ ...INITIAL_PANE, pinned: mission }, { type: 'unpin' }).pinned).toBeNull();
-  });
-  it('a stored side is read defensively', () => {
-    expect(parsePaneSide('right')).toBe('right');
-    expect(parsePaneSide('bogus')).toBe('left');
-    expect(parsePaneSide(null)).toBe('left');
   });
 });
 

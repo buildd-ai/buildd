@@ -43,6 +43,8 @@ import { resolveInferenceKey, INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inf
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
+import { resolveLiteLLMGateway } from './litellm-gateway';
+import { gatewayModel } from '@builddai/ai-kit/models';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -245,6 +247,8 @@ async function callAnthropic(opts: {
 async function callOpenRouter(opts: {
   apiKey: string; model: string; system: string; user: string;
   imageB64?: string; maxTokens: number; fetcher: Fetcher; timeoutMs: number;
+  /** Another OpenAI-compatible `/chat/completions` URL (a LiteLLM gateway). No OpenRouter attribution is sent there. */
+  url?: string;
 }): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> {
   // OpenAI-compatible chat format. Multimodal uses an image_url part with a data
   // URI rather than Anthropic's base64 source block.
@@ -255,15 +259,14 @@ async function callOpenRouter(opts: {
       ]
     : opts.user;
 
-  const res = await opts.fetcher(OPENROUTER_URL, {
+  const res = await opts.fetcher(opts.url ?? OPENROUTER_URL, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'authorization': `Bearer ${opts.apiKey}`,
       // OpenRouter attributes requests by referer/title; without them calls are
       // anonymous in the team's OpenRouter dashboard.
-      'http-referer': 'https://buildd.dev',
-      'x-title': 'buildd',
+      ...(opts.url ? {} : { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' }),
     },
     body: JSON.stringify({
       model: opts.model,
@@ -365,26 +368,40 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
   const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId, 'chat');
   const provider = entry.provider;
 
-  if (provider !== 'anthropic' && provider !== 'openrouter') {
+  if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'openai') {
     // openai-codex is an agent backend: it drives a CLI with its own session, not
     // a single-shot structured endpoint this client can speak to.
     return { ok: false, error: { kind: 'unsupported_provider', provider } };
   }
 
-  const apiKey = await resolveInferenceKey({
+  // The provider's own key first (OpenAI has no direct path here), then the
+  // team's LiteLLM gateway, which serves the same model as `provider/model`.
+  const apiKey = provider === 'openai' ? null : await resolveInferenceKey({
     provider,
     teamId: params.teamId,
     workspaceId: params.workspaceId,
   });
-  if (!apiKey) return { ok: false, error: { kind: 'missing_key', provider } };
+  const gateway = apiKey ? null : await resolveLiteLLMGateway({ teamId: params.teamId, workspaceId: params.workspaceId });
+  if (!apiKey && !gateway) {
+    return provider === 'openai'
+      ? { ok: false, error: { kind: 'unsupported_provider', provider } }
+      : { ok: false, error: { kind: 'missing_key', provider } };
+  }
 
   const invoke = async (): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> => {
     try {
-      const args = {
-        apiKey, model: entry.model, system: params.system, user: params.user,
+      const common = {
+        system: params.system, user: params.user,
         imageB64: params.imageB64, maxTokens, fetcher,
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       };
+      if (gateway) {
+        return await callOpenRouter({
+          ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
+          url: `${gateway.baseURL}/chat/completions`,
+        });
+      }
+      const args = { ...common, apiKey: apiKey!, model: entry.model };
       return provider === 'anthropic' ? await callAnthropic(args) : await callOpenRouter(args);
     } catch (e) {
       return { ok: false, error: { kind: 'transport', message: e instanceof Error ? e.message : String(e) } };

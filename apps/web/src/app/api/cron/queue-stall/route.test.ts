@@ -113,6 +113,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 const mockCheckConnectorRouting = mock(() => Promise.resolve(null as any));
 const mockCheckMissionHeld = mock(() => Promise.resolve(false));
+const mockCheckMissionLocal = mock(() => Promise.resolve(false));
 const mockCheckWorkspaceCap = mock(() => Promise.resolve(null as any));
 const mockCheckMissionBudgetExhausted = mock(() => Promise.resolve(false));
 
@@ -121,6 +122,7 @@ mock.module('@/app/api/workers/claim/connector-gate', () => ({
 }));
 mock.module('@/app/api/workers/claim/held-gate', () => ({
   checkMissionHeld: mockCheckMissionHeld,
+  checkMissionLocal: mockCheckMissionLocal,
 }));
 mock.module('@/app/api/workers/claim/mission-budget-gate', () => ({
   checkMissionBudgetExhausted: mockCheckMissionBudgetExhausted,
@@ -216,6 +218,8 @@ beforeEach(() => {
   mockCheckConnectorRouting.mockResolvedValue(null);
   mockCheckMissionHeld.mockClear();
   mockCheckMissionHeld.mockResolvedValue(false);
+  mockCheckMissionLocal.mockClear();
+  mockCheckMissionLocal.mockResolvedValue(false);
   mockCheckWorkspaceCap.mockClear();
   mockCheckWorkspaceCap.mockResolvedValue(null);
   mockCheckMissionBudgetExhausted.mockClear();
@@ -359,6 +363,25 @@ describe('queue-stall cron — names the blocking gate', () => {
   it('names mission_held', async () => {
     candidateTasks = [task({ missionId: 'mission-1' })];
     mockCheckMissionHeld.mockResolvedValue(true);
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('mission_held');
+  });
+
+  it('does not report a local-executor mission\'s pending task as stalled', async () => {
+    candidateTasks = [task({ missionId: 'mission-1' })];
+    mockCheckMissionLocal.mockResolvedValue(true);
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled).toHaveLength(0);
+  });
+
+  it('a held local mission still names mission_held (held wins)', async () => {
+    candidateTasks = [task({ missionId: 'mission-1' })];
+    mockCheckMissionHeld.mockResolvedValue(true);
+    mockCheckMissionLocal.mockResolvedValue(true);
 
     const body = await (await POST(makeRequest())).json();
 

@@ -1,6 +1,6 @@
 ---
 name: buildd-mcp-consumer
-description: "Use whenever the buildd MCP tools (`buildd`, `recall`, `learn`) are available and you're about to act on a buildd task or file one — task coordination workflow: claiming, working, and completing tasks; deciding between a hard block and a flagged assumption; reporting friction; and which branch a task's PR should target."
+description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one — task coordination workflow: claiming, working, and completing tasks; deciding between a hard block and a flagged assumption; reporting friction; and which branch a task's PR should target."
 author: buildd
 ---
 
@@ -9,6 +9,22 @@ author: buildd
 You have the buildd MCP server mounted. This skill is the procedure for using
 it — the connector's `instructions` only tell you your token level and that
 this skill exists; everything about *how* to work a task lives here.
+
+## Tools
+
+Most sessions list one tool, `buildd`, that takes `{ action, params }` for
+every action; below, `buildd action=X` means exactly that call.
+
+A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
+one tool per area instead: `buildd_work` (your own task: claim, progress,
+notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
+`buildd_prs`, `buildd_runners` (explain, errors, failures, usage, runners),
+`buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
+`{ action, params }`, lists its actions with their params, and has action
+`help` (`params={ action }`) for one action's full docs. There,
+`buildd action=X` means: call X on the group tool that lists it (a wrong group
+tells you the right one). In a client that defers MCP tools, load only the
+group you need, e.g. `select:mcp__buildd__buildd_work`.
 
 ## Task Lifecycle
 
@@ -43,6 +59,22 @@ recall (check prior context) → claim_task → work → update_progress (milest
    later task is meant to read this one's output. Then `learn` anything a
    future agent would want to know (see Knowledge Discipline below).
 7. **Finish:** `buildd action=complete_task` with a summary.
+
+## Running a mission from your own session
+
+When you (an organizer, or a person driving Claude Code with local subagents)
+will do a mission's tasks yourself rather than hand them to background
+runners, create or update the mission with `executor: "local"`
+(`buildd action=manage_missions params={ action: "update", missionId, executor: "local" }`).
+Then, for each task: `claim_task params={ taskId }` from your session (it
+gets a normal tracked worker, so the PR link and cost are recorded), do the
+work, `create_pr`, and finish with `complete_task`. Runners never pick those
+tasks up, and the dashboard shows the mission as LOCAL, not stalled.
+
+Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
+own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves
+tasks with no worker to close by hand. Held still wins over `executor` if you
+do want to pause a local mission.
 
 ## Global CLAUDE.md Instructions — buildd Reporting Tools Take Precedence
 

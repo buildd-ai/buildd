@@ -116,3 +116,25 @@ export function loginUser<U extends { key: string }>(users: U[] | undefined, as?
   if (!u) throw new Error(`[storyboard] as: "${as}" is not a story user (${users.map((x) => x.key).join(', ')})`);
   return u;
 }
+
+/**
+ * A step's `type: { into, text, frames }`: the prefix lengths to capture while
+ * the text is typed, one still per frame, ending on the whole text. Cuts land
+ * after a word where they can, so a frame never ends mid-word unless the word
+ * is longer than a frame's share. Pure.
+ */
+export function typingPrefixes(text: string, frames: number): number[] {
+  const n = Math.max(1, Math.min(Math.floor(frames), text.length));
+  const out: number[] = [];
+  for (let i = 1; i <= n; i++) {
+    let cut = Math.round((text.length * i) / n);
+    if (i < n) {
+      const space = text.lastIndexOf(' ', cut);
+      const prev = out[out.length - 1] ?? 0;
+      if (space > prev) cut = space;
+    }
+    if (cut > (out[out.length - 1] ?? 0)) out.push(cut);
+  }
+  if (out[out.length - 1] !== text.length) out.push(text.length);
+  return out;
+}

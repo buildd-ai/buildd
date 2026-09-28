@@ -85,7 +85,7 @@ function sqlCoverage(sql: string) {
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes',
+  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'decision_model',
     'chat_default_tier'], // a chat tier name (CHAT_TIER_NAMES) or null
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
@@ -104,6 +104,14 @@ const SAFE: Record<string, string[]> = {
   workers: ['status', 'pr_opened_base_sha', 'last_commit_sha'],
   worker_action_events: ['action'],
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
+  // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
+  // (MemoryCaller, MemoryGate in packages/core/memory-retrieval.ts). No content.
+  memory_uses: ['chunk_id', 'memory_id', 'caller', 'gated_by'],
+  memory_extraction_attempts: ['source_id'], // a task id or review_feedback row id
+  memories: ['source_id', // a task id or review_feedback row id (packages/core/memory-candidates.ts)
+    'reverify_ref'], // 'pr:<number>'
+  // Content-free by construction: ids, decision names, labels, error kinds.
+  memory_decisions: ['memory_id', 'decision', 'version', 'verdict', 'rule', 'error', 'caller'],
   artifacts: ['type'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
@@ -119,6 +127,8 @@ const SAFE: Record<string, string[]> = {
   task_outcomes: ['kind', 'complexity', 'classified_by', 'predicted_model', 'actual_model', 'total_cost_usd', 'exit_cause'],
   // arm: 'control' | 'treatment' or a tier_pool_arms id (docs/design/tier-model-pools.md).
   experiment_assignments: ['default_model', 'assigned_model', 'runner_cli_version', 'arm'],
+  // Decision labels, versions and model ids; no user content.
+  heartbeat_triage_looks: ['arm', 'prompt_version', 'model', 'pick', 'reason'],
   // Tier pools hold no text by design: shares and weight levels keyed by arm
   // id, model ids, and an audit log of those same shares plus a system actor
   // label.

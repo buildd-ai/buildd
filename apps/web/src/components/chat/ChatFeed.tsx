@@ -16,25 +16,26 @@
  *   first), the collapsed "Also read" row, the thumbs, or a message's tag.
  * - `eventPartType` / `renderEvent`: lifecycle events (`data-buildd-event`)
  *   as their line or a fired watch's notice, with their objects.
- * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel
- *   (thinking-model.ts), steps in plain words, never a tool's name.
+ * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel, drawn
+ *   from the `data-step` parts the server streams (lib/chat/thinking-steps.ts):
+ *   steps in plain words, never a tool's name.
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
  * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo } from 'react';
-import { ChatThread, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
+import { ChatThread, thinkingSteps, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
 import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
-import { eventRefsShownLater, feedSegments, isApprovalPart, type FeedSegment } from './feed-model';
+import { eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
-import { intentTag, thinkingSteps } from './thinking-model';
 import WatchNotice from './WatchNotice';
+import DirectiveCards from './DirectiveCard';
 import TurnFeedback from './TurnFeedback';
 import { visualPhaseTone, type VisualReviewTone } from '@/components/visual-review/VisualReviewLine';
 import { VISUAL_REVIEW_PHASES, type VisualReviewPhase } from '@buildd/shared';
@@ -113,7 +114,7 @@ function IntentTag({ label }: { label: string }) {
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] md:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
+      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
     >
       {label}
     </button>
@@ -121,12 +122,12 @@ function IntentTag({ label }: { label: string }) {
 }
 
 /**
- * The person's message. Phone: a raised square block with an offset shadow, in
- * the voice face. Desktop keeps the soft tinted bubble.
+ * The person's message: a raised square block with an offset shadow, in the
+ * voice face, at every width (desktop only caps it at 590px).
  */
 const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
-    <div data-testid="feed-user-bubble" className="ml-auto w-fit max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none lg:max-w-[590px] lg:rounded-none lg:border lg:bg-[var(--chat-raised)] lg:py-3 lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif] lg:text-[17px] lg:leading-[1.4] lg:text-[var(--chat-text)] lg:shadow-[3px_3px_0_0_var(--chat-rule)]">
+    <div data-testid="feed-user-bubble" className="ml-auto w-fit max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] lg:max-w-[590px]">
       {text}
     </div>
   );
@@ -159,10 +160,13 @@ const THINKING_TITLE = (
   </span>
 );
 
-/** The steps of the turn in flight (thinking-model.ts); a settled turn shows no panel. */
+/**
+ * The steps of the turn in flight: its `data-step` parts, which the server
+ * streams (a continuation of an older message gets them backfilled there), so
+ * every message that can be streaming carries them. A settled turn shows no panel.
+ */
 function liveSteps(m: KitMessage, streaming: boolean): StepData[] {
-  if (!streaming) return [];
-  return thinkingSteps(m.parts).map(s => ({ id: s.key, label: s.label, state: s.state }));
+  return streaming ? thinkingSteps(m.parts, true) : [];
 }
 
 export default function ChatFeed({
@@ -230,6 +234,8 @@ export default function ChatFeed({
     return (
       <>
         {tail.map(s => (s.kind === 'more' ? <MoreObjects key={s.key} refs={s.refs} /> : s.kind === 'objects' ? <ObjectsSegment key={s.key} refs={s.refs} /> : null))}
+        {/* A standing rule the person just stated, offered for one-tap saving. */}
+        <DirectiveCards parts={m.parts} messageId={m.id} />
         <TurnFeedback messageId={m.id} />
       </>
     );

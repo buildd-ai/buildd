@@ -20,9 +20,12 @@ import {
   CORPORA, MEMORY_TYPES,
   type ActionContext, type ApiFn,
 } from '@buildd/core/mcp-tools';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
 import { asBool, previewMatches, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
+import { renderStandingRulesForTask, withStandingRules, type StandingRule } from '@buildd/core/chat-directives';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
@@ -142,7 +145,8 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         goalCriteria: z.array(criterion).max(12).optional().describe('create: the criteria. update: REPLACES the list; prefer addGoalCriteria / removeGoalCriteria.'),
         addGoalCriteria: z.array(criterion).max(12).optional().describe('update: criteria to add to the current list.'),
         removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
-        startMode: z.enum(['armed', 'held']).optional().describe('update: "held" stops its tasks being claimed; arm releases it.'),
+        startMode: z.enum(['armed', 'held']).optional().describe('update: "held" pauses it — no task is claimed by anyone until armed. Not for work someone runs locally; use executor.'),
+        executor: z.enum(['runner', 'local']).optional().describe('create / update: "local" when a person runs its tasks from their own session (runners leave them alone; the session claims each one). "runner" (default) for background runners.'),
         priority: z.number().int().min(0).max(10).optional(),
       }).catchall(z.unknown());
     case 'create_task':
@@ -191,6 +195,21 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       });
     case 'list_watches':
       return z.object({});
+    case 'list_prs':
+      return z.object({
+        state: z.enum(['open', 'attention', 'conflict', 'ci_failed', 'merged']).optional()
+          .describe('Default open. attention: conflicts and failing CI. merged: the last sinceDays.'),
+        workspaceId: ws,
+        sinceDays: z.number().int().min(1).max(90).optional().describe('merged: default 7.'),
+        limit: z.number().int().min(1).max(50).optional(),
+      });
+    case 'get_pr':
+      return z.object({
+        prNumber: z.union([z.number().int().positive(), z.string()]),
+        workspaceId: ws,
+        includeComments: z.boolean().optional().describe('buildd\'s decision trail on the PR.'),
+        fullBody: z.boolean().optional(),
+      });
     case 'recall': {
       const corpus = z.enum(CORPORA);
       return z.object({
@@ -259,7 +278,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
-  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
+  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task; plus other visual evidence (manual screenshots, validation reports with their verdict line). Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
 };
 
 /**
@@ -271,11 +290,13 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
 const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
-  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, or holds it (startMode "held"). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
+  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), or sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
   create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
+  list_prs: 'PRs buildd opened or adopted, one line each. Default: open ones, conflicts and failing CI first. state attention lists only those; merged lists recent merges. Closed PRs are never listed.',
+  get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos.',
   list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };
 
@@ -334,6 +355,37 @@ export interface ChatToolDeps {
   workspaces?: ReadonlyArray<WorkspaceActivity>;
   now?: () => number;
   handle?: typeof handleBuilddAction;
+  /**
+   * The chatting person's own standing rules (chat-directives.ts). A task or
+   * mission chat files carries the ones that apply to its workspace in its
+   * description, so the agent follows them and a reader can see why.
+   */
+  standingRules?: readonly StandingRule[];
+}
+
+/** create_task, or manage_missions create: the writes that file work for an agent. */
+function filesWork(action: string, op: string): boolean {
+  return action === 'create_task' || (action === 'manage_missions' && op === 'create');
+}
+
+/**
+ * The call input with any model-written rules block stripped from its
+ * description and the person's applicable rules appended, server-rendered.
+ * Runs even with no rules, so a forged block never reaches the agent. The
+ * workspace is the one the approval preview resolved (`targetWorkspaceId`),
+ * else a UUID in the input, else the turn's default.
+ */
+export function withRulesForFiledWork(
+  input: Record<string, unknown>,
+  rules: readonly StandingRule[] | undefined,
+  defaultWorkspaceId: string | null,
+  targetWorkspaceId?: string | null,
+): Record<string, unknown> {
+  const ws = targetWorkspaceId
+    ?? (typeof input.workspaceId === 'string' && isUuid(input.workspaceId) ? input.workspaceId : defaultWorkspaceId);
+  const block = rules && rules.length > 0 ? renderStandingRulesForTask(rules, { workspaceId: ws }) : '';
+  const description = withStandingRules(input.description, block);
+  return description === input.description ? input : { ...input, description };
 }
 
 /**
@@ -392,6 +444,11 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         }
 
         let callInput = input;
+        // The context block promises tool calls use the conversation's
+        // workspace; get_pr's handler only reads one it is given.
+        if ((action === 'get_pr' || action === 'get_pr_review') && !input.workspaceId && deps.ctx.workspaceId) {
+          callInput = { ...input, workspaceId: deps.ctx.workspaceId };
+        }
         // A read that names a task by short id or words (as the docked list
         // shows them) is resolved the same way a steering write is.
         if (!isWrite && typeof input.taskId === 'string' && !isUuid(input.taskId) && deps.resolveTask) {
@@ -434,6 +491,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
             target = now.preview.target;
           }
         }
+
+        // After the card check, so the approval still binds to what was shown.
+        if (isWrite && filesWork(action, op)) callInput = withRulesForFiledWork(callInput, deps.standingRules, deps.ctx.workspaceId ?? null, target?.workspaceId ?? null);
 
         const calls: ApiCall[] = [];
         const api = deps.makeApi(c => calls.push(c), { routes: routesFor(o.routes) });
@@ -478,7 +538,8 @@ async function runAction(
     const wsId = typeof input.workspaceId === 'string' ? input.workspaceId : deps.ctx.workspaceId ?? null;
     const mem = deps.memory ? await deps.memory(wsId) : null;
     if (!mem) return { content: [{ type: 'text' as const, text: 'Error: team knowledge is not available here (no workspace in reach, or the memory store is unavailable).' }], isError: true };
-    const ctx = { ...mem.ctx, api };
+    // A chat write is recorded as a chat episode (used only when the workspace writes candidates).
+    const ctx = { memoryLedger: afterResponseMemoryLedger, memoryDecider: memoryDeciderFor(null), memoryProvenance: { kind: 'chat' as const }, ...mem.ctx, api };
     return action === 'recall' ? handleRecallAction(mem.store, input, ctx) : handleLearnAction(mem.store, input, ctx);
   }
   if (action === 'hold_task') return holdTask(api, input);

@@ -40,6 +40,49 @@ export function missionNotHeld(): SQL {
 }
 
 /**
+ * Local-executor gate for the claim route: TRUE when the task's mission is not
+ * run from a person's local session (missions.executor = 'local').
+ *
+ *   - No missionId → claimable.
+ *   - mission.executor = 'runner' (the default) → claimable.
+ *   - mission.executor = 'local' → NOT claimable by runners.
+ *
+ * The route omits this gate for a verified interactive session's explicit
+ * `claim_task {taskId}` — that is how the local session takes the task and gets
+ * a normal tracked worker — and for an admin force claim. The dashboard's
+ * force-start writes context.bypassHeldGate, which lifts this gate too: a
+ * person who pressed "Start with override" asked a runner to take it.
+ *
+ * Orthogonal to missionNotHeld(): a held mission stays unclaimable by everyone,
+ * interactive sessions included (held is the pause and wins over the executor).
+ * Two-valued for the explicit-claim probe, like missionNotHeld().
+ */
+export function missionNotLocal(): SQL {
+  return sql`(
+    ${tasks.missionId} IS NULL
+    OR ${bypassFlagCondition(tasks.context, BYPASS_HELD_GATE_KEY)}
+    OR NOT EXISTS (
+      SELECT 1 FROM ${missions} m
+      WHERE m.id = ${tasks.missionId}
+      AND m.executor = 'local'
+    )
+  )`;
+}
+
+/**
+ * Per-task check for /api/tasks/[id]/start and the queue-stall watchdog: true
+ * when the task's mission runs in a local session. The caller checks the
+ * bypass flag / forceOverride first, as with checkMissionHeld().
+ */
+export async function checkMissionLocal(missionId: string): Promise<boolean> {
+  const mission = await db.query.missions.findFirst({
+    where: and(eq(missions.id, missionId), eq(missions.executor, 'local')),
+    columns: { id: true },
+  });
+  return !!mission;
+}
+
+/**
  * Context key a single-task hold writes (PATCH /api/tasks/[id] `{ held: true }`,
  * e.g. "pause checkout until the rounding decision is in" from chat). Its value
  * is `{ at, userId, reason? }`; resuming removes the key.

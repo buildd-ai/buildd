@@ -304,6 +304,14 @@ export interface Workspace {
   activeWorkerCount?: number;
 }
 
+/**
+ * Who executes a mission's tasks. 'runner' (default): background runners
+ * auto-claim them. 'local': a person runs them from their own interactive
+ * session (explicit claim_task {taskId}); runners never auto-claim. Orthogonal
+ * to the held pause, which wins over both.
+ */
+export type MissionExecutor = 'runner' | 'local';
+
 export interface Mission {
   id: string;
   teamId: string;
@@ -318,6 +326,8 @@ export interface Mission {
   createdByUserId: string | null;
   requiresReview: boolean;
   mergePolicy?: MergePolicy | null;
+  isHeld?: boolean;
+  executor?: MissionExecutor;
   startAt?: Date | null;
   startResolution?: 'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null;
   createdAt: Date;
@@ -1293,6 +1303,7 @@ export type ClaimTaskExclusionCode =
   | 'active_worker'
   | 'task_held'
   | 'mission_held'
+  | 'mission_local'
   | 'deps_blocked'
   | 'subject_dead'
   | 'runner_preference'
@@ -2585,7 +2596,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access';
+export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -2742,4 +2753,36 @@ export interface FleetSnapshot {
   capacity: number;
   /** Timeline window, epoch ms. */
   window: { from: number; to: number };
+}
+
+// ── GET /api/prs (list_prs) ─────────────────────────────────────────────────
+
+/** Which PRs `GET /api/prs` lists. There is deliberately no `closed`. */
+export type PrListState = 'open' | 'attention' | 'conflict' | 'ci_failed' | 'merged';
+
+/** One PR, collapsed from all the workers that share it (apps/web/src/lib/pr-list.ts). */
+export interface PrListItem {
+  workerId: string;
+  prNumber: number | null;
+  prUrl: string;
+  status: string | null;
+  mergedAt: string | null;
+  lastCheckedAt: string | null;
+  conflictDetectedAt: string | null;
+  startedAt: string | null;
+  workspaceId: string;
+  workspaceName: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  missionId: string | null;
+  missionTitle: string | null;
+}
+
+export interface ListPrsResponse {
+  state: PrListState;
+  /** How many workspaces the list covered. */
+  workspaceCount: number;
+  /** merged only: the window. */
+  sinceDays?: number;
+  prs: PrListItem[];
 }

@@ -370,6 +370,7 @@ async function viewForMission(missionId: string): Promise<{
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
+    executor: m.executor ?? null,
     orchestrationMode: m.orchestrationMode ?? null,
     activeAgents,
     progress,
@@ -523,6 +524,17 @@ async function viewForTask(taskId: string): Promise<{
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })) as any as LoadedTask[];
 
+  // The parent mission's executor. A local mission's pending task is waiting
+  // for the person's session to claim it, not stalled for want of a runner.
+  // A held mission is the pause and wins, so it is not read as local.
+  const parentMission = task.missionId
+    ? await db.query.missions.findFirst({
+        where: eq(missions.id, task.missionId),
+        columns: { executor: true, isHeld: true },
+      })
+    : null;
+  const executor = parentMission && !parentMission.isHeld ? parentMission.executor ?? null : null;
+
   const family = [task as LoadedTask, ...attempts];
   // Family scope: the attempts ARE this task's work, so they count here even
   // though mission-scope health (deliverables only) ignores them.
@@ -580,6 +592,7 @@ async function viewForTask(taskId: string): Promise<{
       : 'active',
     openAttempt,
     isHeld: false,
+    executor,
     activeAgents,
     health,
     progress: terminal ? 100 : undefined,

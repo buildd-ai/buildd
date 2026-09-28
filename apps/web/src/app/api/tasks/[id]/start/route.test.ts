@@ -88,7 +88,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', context: 'context', dependsOn: 'dependsOn', updatedAt: 'updatedAt', missionId: 'missionId', roleSlug: 'roleSlug', startAt: 'startAt' },
   workers: { taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', status: 'status' },
-  missions: { id: 'id', isHeld: 'isHeld' },
+  missions: { id: 'id', isHeld: 'isHeld', executor: 'executor' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', teamId: 'teamId', workspaceId: 'workspaceId', connectorRefs: 'connectorRefs' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
@@ -745,6 +745,31 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('mission_held');
     expect(data.missionId).toBe('mission-1');
+    expect(data.canForce).toBe(true);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  // executor='local' (task 09ed6675): Start would broadcast to runners that
+  // never claim it, so it names the local session and offers force start.
+  it('returns 422 mission_local when the task\'s mission runs in a local session', async () => {
+    const mockTask = {
+      id: 'task-123', title: 'Local Task', status: 'pending', workspaceId: 'ws-1', missionId: 'mission-1',
+      dependsOn: null, roleSlug: null, context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    // Not held; executor = 'local'. The two probes differ only in their WHERE.
+    // drizzle-orm is mocked here, so eq() keeps its field/value.
+    mockMissionsFindFirst.mockImplementation((opts: any) =>
+      Promise.resolve((opts?.where?.args ?? []).some((a: any) => a.field === 'executor' && a.value === 'local') ? { id: 'mission-1' } : null),
+    );
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('mission_local');
+    expect(data.error).toContain('local session');
     expect(data.canForce).toBe(true);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });

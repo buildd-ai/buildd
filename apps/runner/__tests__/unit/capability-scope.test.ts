@@ -9,6 +9,7 @@
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
+import { buildAgentBaseEnv } from '../../src/agent-env';
 
 // ─── Env allowlist unit tests ─────────────────────────────────────────────────
 
@@ -29,28 +30,9 @@ describe('Runner env allowlist — runner secrets excluded from agent cleanEnv',
     'ANTHROPIC_BASE_URL',
   ];
 
-  // Simulate the allowlist logic from workers.ts startSession
-  const RUNNER_ENV_PASSTHROUGH = new Set([
-    'HOME', 'USER', 'LOGNAME', 'USERNAME', 'SHELL', 'PATH',
-    'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_NUMERIC', 'LC_TIME',
-    'TZ', 'TERM', 'COLORTERM', 'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR',
-    'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
-    'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
-    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
-    'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY',
-    'GH_HOST', 'GITHUB_SERVER_URL',
-    'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-    'OPENAI_API_KEY',
-    'GITHUB_TOKEN', 'GH_TOKEN',
-  ]);
-
+  // The real allowlist workers.ts builds the agent env from (not a copy).
   function buildCleanEnv(processEnv: Record<string, string>): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const key of RUNNER_ENV_PASSTHROUGH) {
-      const val = processEnv[key];
-      if (val !== undefined) env[key] = val;
-    }
-    return env;
+    return buildAgentBaseEnv(processEnv, { available: false, searched: [], attempts: [] });
   }
 
   test('BUILDD_API_KEY does not appear in cleanEnv', () => {

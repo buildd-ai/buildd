@@ -59,7 +59,7 @@ export async function loadDocked(
     if (!missionId) return null;
     const m = await read(`/api/missions/${missionId}`);
     return {
-      kind: 'mission', id: String(m.id), title: String(m.title ?? 'mission'), status: m.isHeld ? 'held' : (m.status ?? null),
+      kind: 'mission', id: String(m.id), title: String(m.title ?? 'mission'), status: m.isHeld ? 'held' : m.executor === 'local' ? 'local' : (m.status ?? null),
       workspaceId: m.workspaceId ?? null, missionId: String(m.id), missionTitle: String(m.title ?? 'mission'),
       tasks: tasksOf(m),
     };

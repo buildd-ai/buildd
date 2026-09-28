@@ -13,6 +13,9 @@ npm i -E @builddai/ai-kit@0.9.0
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
 and you should re-run your evals before taking it.
+Releases publish on merge: a version bump landing on buildd's `dev` branch goes
+to npm with provenance and is tagged `ai-kit-v<version>`. See
+[CHANGELOG.md](./CHANGELOG.md).
 
 ## Entry points
 
@@ -361,7 +364,7 @@ const tier = tiers.resolve(body.tier, await savedTier(userId)) ?? 'standard';   
 
 **Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`, and `--kit-scrim`, unset by default: the phone sheet's scrim, which a dark theme should set, e.g. `rgb(0 0 0 / 0.5)`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
 
-**Menus.** On wide screens the tools / scope / tier panels open above the composer (which doesn't clip them) and scroll past `min(70vh, 520px)`. Below 640px they are bottom sheets portaled to `<body>`, so a transformed, clipped or stacked ancestor can't capture them; the sheet carries the `--kit-*` values from where it was opened. If your app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset` to its height (including the safe-area padding it already has) and the sheet sits on top of it; the safe-area inset is padded only for what the offset doesn't cover.
+**Menus.** On wide screens the tools / scope / tier panels open above the composer (which doesn't clip them) and scroll past `min(70vh, 520px)`. They always fit the viewport, 12px in from each edge (0.9.1): a panel that doesn't fit on its side flips to the other when it fits there (or has more room), its height is capped to the room left so it scrolls instead of overflowing, and it shifts sideways off an edge. Below 640px they are bottom sheets portaled to `<body>`, so a transformed, clipped or stacked ancestor can't capture them; the sheet carries the `--kit-*` values from where it was opened. If your app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset` to its height (including the safe-area padding it already has) and the sheet sits on top of it; the safe-area inset is padded only for what the offset doesn't cover.
 
 ## Tool permissions
 

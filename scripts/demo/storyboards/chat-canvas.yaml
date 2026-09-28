@@ -50,7 +50,7 @@ steps:
   - id: k2-chat-filed
     advance: "1:00"
     goto: /app/chat/{C1}
-    waitFor: [chat-pane, object-card]
+    waitFor: [chat-dock, object-card]
     caption: "The mission docks beside the chat."
 
   - id: k3-chat-filed-phone

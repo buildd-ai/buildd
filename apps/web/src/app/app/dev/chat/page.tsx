@@ -8,7 +8,8 @@
  * and `&aside=member|operator`, `&setup=no_key&admin=1`,
  * `&hints=1` (keyboard hints on), `&controls=1` (the composer's tools menu and
  * tier switch, on fixture rows and prices), `&pane=closed`, `&about=mission` (opened from
- * "Ask about this mission": the mission pinned in the canvas), `&feedback=1` (the thumbs,
+ * "Ask about this mission": the mission pinned in the canvas), `&focus=question` (the
+ * question's sheet or pane, e.g. with `answered`), `&feedback=1` (the thumbs,
  * one turn already voted down), `?steer=1` (steering a running agent).
  * Confirm, Discard and the question options work against the fixture.
  */
@@ -205,7 +206,7 @@ export default function DevChatPage() {
               onWorkspaceChange={() => {}}
               viewerName={VIEWER}
               aside={panel}
-              focusRef={state === 'question' ? questionRef : params.get('about') === 'mission' ? missionRef : null}
+              focusRef={state === 'question' || params.get('focus') === 'question' ? questionRef : params.get('about') === 'mission' ? missionRef : null}
               focusOpensSheet={params.get('about') !== 'mission'}
               initialPaneClosed={params.get('pane') === 'closed'}
               pulse={pulse}

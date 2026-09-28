@@ -2,19 +2,23 @@
  * Proxy route for workspace memory — forwards to memory service.
  *
  * GET  /api/workspaces/:id/memory  → list/search memories (scoped by workspace repo as project)
- * POST /api/workspaces/:id/memory  → save a memory
+ * POST /api/workspaces/:id/memory  → save a memory (mirrored into the recall index)
  *
  * Auth: session user or API key with workspace access.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
+import { workspaces, accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
+import { retrieveMemory } from '@buildd/core/memory-retrieval';
+import { MEMORY_STATES, type MemoryState } from '@buildd/core/memory-candidates';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -56,6 +60,12 @@ async function getWorkspaceProject(id: string): Promise<string | null> {
   return resolveMemoryProjectKey(id);
 }
 
+/** The team id the memory ledger rows are filed under. */
+async function getWorkspaceTeamId(id: string): Promise<string | null> {
+  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } });
+  return ws?.teamId ?? null;
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -75,12 +85,6 @@ export async function GET(
     return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
-  const project = await getWorkspaceProject(id);
-  // No key means no memory: never fall back to a team-wide list.
-  if (!project) {
-    // Flagged so the page can say memory is off here, rather than "no memories".
-    return NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
-  }
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
   const type = searchParams.get('type') || undefined;
@@ -96,10 +100,50 @@ export async function GET(
     .map(v => v.trim())
     .filter(Boolean);
 
+  const search = {
+    query, type, limit, offset,
+    files: files.length > 0 ? files : undefined,
+  };
+  // Flagged so the page can say memory is off here, rather than "no memories".
+  const unavailable = () => NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
+
   try {
+    // A search (a query or a file scope) is a memory read an agent receives:
+    // the runner's `## Workspace Memory` block is built from it. It goes
+    // through the one door, which resolves the workspace's project key itself
+    // (no key, no search) and shares the ledger. The ledger row needs the task it was for,
+    // which the runner sends as `taskId` / `workerId`; without one (a
+    // dashboard search) nothing is recorded.
+    if (query || search.files) {
+      const taskId = searchParams.get('taskId');
+      const teamId = await getWorkspaceTeamId(id);
+      const { memories, total, unavailable: noMemory } = await retrieveMemory({
+        strategy: 'store-search',
+        searcher: memClient,
+        search,
+        scope: { teamId, workspaceId: id },
+        caller: 'runner_workspace_memory',
+        attribution: { taskId, workerId: searchParams.get('workerId') },
+        ledger: taskId ? afterResponseMemoryLedger : false,
+      });
+      if (noMemory) return unavailable();
+      return NextResponse.json({ memories, total });
+    }
+
+    // No key means no memory: never fall back to a team-wide list.
+    const project = await getWorkspaceProject(id);
+    if (!project) return unavailable();
+    // Active memories unless the caller names states (the dashboard asks for
+    // every state so a person can see candidates). Unknown values are dropped.
+    const asked = searchParams.getAll('states').flatMap(v => v.split(',')).map(v => v.trim())
+      .filter((v): v is MemoryState => (MEMORY_STATES as readonly string[]).includes(v));
+    const states: MemoryState[] = asked.length > 0 ? [...new Set(asked)] : ['active'];
+    // Dashboard review: `superseded=include` also lists replaced rows (shown
+    // as superseded); `reverify=flagged` keeps only rows a merged PR flagged.
     const searchData = await memClient.search({
-      query, type, project, limit, offset,
-      files: files.length > 0 ? files : undefined,
+      ...search, project, states,
+      ...(searchParams.get('superseded') === 'include' ? { includeSuperseded: true } : {}),
+      ...(searchParams.get('reverify') === 'flagged' ? { reverifyFlagged: true } : {}),
     });
 
     if (searchData.results.length === 0) {
@@ -146,7 +190,9 @@ export async function POST(
   }
 
   try {
-    const data = await memClient.save({
+    // Saved and mirrored into the index recall reads; a failed mirror is logged
+    // and re-tried by the reconcile pass, it does not fail the save.
+    const data = await saveMemory(memClient, {
       type: body.type,
       title: body.title,
       content: body.content,
@@ -154,7 +200,7 @@ export async function POST(
       tags: body.tags || body.concepts || [],
       files: body.files || [],
       source: body.source || 'dashboard',
-    });
+    }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:create' });
 
     // Return in observation-compatible shape for backward compat
     return NextResponse.json({

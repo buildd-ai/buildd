@@ -75,6 +75,15 @@ resolve it through one function, `resolveInferenceKey` in
 `anthropic`, `openai`, `openrouter`), plus `anthropic_api_key` for Anthropic and the
 legacy `decision_key` for OpenRouter. So one OpenRouter key serves chat and decisions.
 
+**LiteLLM gateway.** An `inference_key` row labelled `litellm`, team-wide
+(optionally per workspace; never personal), holds an encrypted JSON blob
+`{ "apiKey", "baseUrl" }` for an OpenAI-compatible proxy
+(`packages/core/litellm-gateway.ts`, Settings → Model providers). Chat and
+`inferenceCall` use it only when the tier's provider has no key (chat tries
+OpenRouter first), sending the model as `provider/model`. Decision calls use it
+when `teams.decision_model` says `via: 'litellm'`. The key policy binds it like
+any shared key: under `own` it does not resolve.
+
 These rows add a **user** dimension: `secrets.userId` (nullable) marks a person's own
 key. `accountId` can't hold it, because accounts are API-key identities, not people.
 Precedence is caller-first, since the person asking is the one paying:

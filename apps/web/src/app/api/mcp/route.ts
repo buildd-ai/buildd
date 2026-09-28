@@ -45,7 +45,10 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
-import { listMcpTools } from "./tools";
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
+import { listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall, type McpToolSurface } from "./tools";
+import { mcpGroupOfToolName } from "@buildd/core/mcp-tool-groups";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
@@ -164,7 +167,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy') {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -219,6 +222,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   };
 
   const ctx: ActionContext = {
+    // Memory reads record their use after the response, not in a promise
+    // the platform may freeze.
+    memoryLedger: afterResponseMemoryLedger,
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
     authType,
@@ -328,6 +334,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         knowledgeStore,
         embedder,
         api,
+        // Jev keep/type/update on writes; fails open to today's rules.
+        memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
       },
     };
@@ -340,25 +348,33 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.
-
-**Token level:** ${accountLevel} — gates which \`buildd\` actions you can call (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
-
-**Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`,
+      instructions: mcpServerInstructions(accountLevel, toolSurface),
     }
   );
 
   // ── Tools ────────────────────────────────────────────────────────────────
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true }),
+    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name } = request.params;
+    let args = request.params.arguments;
 
     try {
-      if (name === "buildd") {
+      // buildd_<group> tools: help and wrong-group errors answer here; an
+      // action of the group then runs exactly as it does on `buildd`.
+      const group = mcpGroupOfToolName(name);
+      if (group) {
+        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel);
+        if (routed.kind === 'reply') {
+          return { content: [{ type: "text" as const, text: routed.text }], ...(routed.isError ? { isError: true } : {}) };
+        }
+        args = { action: routed.action, params: routed.params };
+      }
+
+      if (name === "buildd" || group) {
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
@@ -974,7 +990,8 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id);
+  const toolSurface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get("tools"), workerParam, serverDefault: process.env.BUILDD_MCP_TOOL_SURFACE });
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

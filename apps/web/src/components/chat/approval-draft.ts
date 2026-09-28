@@ -64,6 +64,7 @@ function missionPlan(input: Record<string, unknown>): string | null {
   const bits: string[] = [];
   if (input.orchestrationMode === 'manual') bits.push('Manual: you add the tasks');
   else bits.push('Plan first');
+  if (input.executor === 'local') bits.push('runs in your local session');
   if (input.startMode === 'held') bits.push('held until you arm it');
   else if (str(input.startIn)) bits.push(`starts in ${str(input.startIn)}`);
   else if (str(input.startAt)) bits.push('starts later');

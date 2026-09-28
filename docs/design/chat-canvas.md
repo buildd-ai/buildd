@@ -98,13 +98,15 @@ not "in CI".
 - **Your message:** a raised square block (1px `--chat-rule-strong` border, 3px
   offset shadow), Newsreader 17px, right aligned, at most 82% wide. Under it a
   tiny mono tag names the workspace the reply went to (`routed · billing-web`,
-  `intentTag` in `thinking-model.ts`); tapping it opens the composer's scope.
+  `intentTag` in `feed-model.ts`); tapping it opens the composer's scope.
   Desktop keeps the soft bubble.
 - **The panel:** the turn in flight draws as a square panel with a plain 2px blue
   left rule: BUILDD (copper), THINKING (blue) and three ticking 4px squares.
-  Then the steps, in plain words (`thinkingSteps`): each tool call is reworded
-  to a human verb ("Looked over the missions", "Read 3 tasks"), never a tool
-  name. Done steps are muted with a slate square, the one active step is bright
+  Then the steps, in plain words: the server streams a `data-step` part per
+  tool call (`apps/web/src/lib/chat/thinking-steps.ts`, the one label table),
+  reworded to a human verb ("Looked over the missions", "Read 3 tasks"), never
+  a tool name, and the kit's `thinkingSteps` draws them. A message saved before
+  steps existed gets them backfilled when an approval continues it. Done steps are muted with a slate square, the one active step is bright
   with a blue square breathing in opacity, a change waiting on you is an
   outlined pending square ("Check it with you"). After the calls it says
   "Writing the answer" while prose streams, else "Thinking it through". The

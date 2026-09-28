@@ -1605,6 +1605,84 @@ describe('POST /api/github/pr', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
+  // Regression: a worker whose earlier PR (#3070) had already merged called
+  // create_pr again with a new head branch. The dedup fast path used to
+  // return the stored prUrl/prNumber unconditionally, echoing the merged PR
+  // back as 'state: open' and never opening anything for the new head.
+  it('does not deduplicate a stored PR that is already merged — opens a new PR for the new head', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      branch: 'buildd/old-task-old-branch',
+      prUrl: 'https://github.com/owner/repo/pull/3070',
+      prNumber: 3070,
+      mergedAt: new Date('2026-09-01T00:00:00Z'),
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    // Dedup-by-head check: nothing open yet for the new head.
+    mockGithubApi.mockResolvedValueOnce([]);
+    // Creation succeeds against the new head.
+    mockGithubApi.mockResolvedValueOnce({
+      number: 3080,
+      html_url: 'https://github.com/owner/repo/pull/3080',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'buildd/new-task-new-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deduplicated).toBeUndefined();
+    expect(data.pr.number).toBe(3080);
+    expect(data.pr.url).toBe('https://github.com/owner/repo/pull/3080');
+    // Must have actually gone to GitHub instead of echoing the stale PR back.
+    expect(mockGithubApi).toHaveBeenCalled();
+  });
+
+  // Same root cause, narrower trigger: the stored PR isn't known merged, but
+  // it belongs to a different branch than the one the caller is asking about
+  // now — still not a valid dedup target for this request.
+  it('does not deduplicate a stored PR whose branch differs from the requested head', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      branch: 'buildd/old-task-old-branch',
+      prUrl: 'https://github.com/owner/repo/pull/3070',
+      prNumber: 3070,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 3080,
+      html_url: 'https://github.com/owner/repo/pull/3080',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'buildd/new-task-new-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.deduplicated).toBeUndefined();
+    expect(data.pr.number).toBe(3080);
+  });
+
   it('deduplicates when GitHub already has an open PR for the head branch', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({

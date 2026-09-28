@@ -6,6 +6,7 @@ import QuestionHero from '../QuestionHero';
 import type { UnifiedQuestion } from '../question-hero';
 import { respondRedirectHref } from './respond-links';
 import { submitAnswer } from './submit-answer';
+import { useNeedsInput } from '@/components/needs-input-context';
 
 interface Props {
   workerId: string;
@@ -22,6 +23,7 @@ interface Props {
  */
 export default function RespondForm({ workerId, taskId, missionId, question, askerLabel }: Props) {
   const router = useRouter();
+  const { markAnswerSent } = useNeedsInput();
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +33,7 @@ export default function RespondForm({ workerId, taskId, missionId, question, ask
     setError(null);
     try {
       const data = await submitAnswer({ workerId, taskId, noteId: question.noteId, message });
+      markAnswerSent?.(taskId);
       // On a resume this is the SAME task (the resumed worker continues under
       // it); on a cold continuation it is the new one. Either way it is where
       // the work now is. A task-less worker returns null — stay put rather than

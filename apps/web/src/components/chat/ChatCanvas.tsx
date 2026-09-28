@@ -239,7 +239,7 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
           data-testid="canvas-ask"
           onClick={() => open()}
           aria-label="Ask about this page"
-          className="fixed bottom-6 right-6 z-30 hidden min-h-12 items-center gap-2.5 rounded-[999px] border-2 border-[var(--on-accent)] bg-accent pl-4 pr-5 font-convo text-[15px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover md:inline-flex"
+          className="fixed bottom-6 right-6 z-30 hidden min-h-12 items-center gap-2.5 border-2 border-[var(--on-accent)] bg-accent pl-4 pr-5 font-convo text-[15px] font-semibold text-[var(--on-accent)] shadow-[3px_3px_0_0_var(--on-accent)] hover:bg-primary-hover md:inline-flex"
         >
           <span aria-hidden="true" className="text-[16px] leading-none">✳</span>
           Ask

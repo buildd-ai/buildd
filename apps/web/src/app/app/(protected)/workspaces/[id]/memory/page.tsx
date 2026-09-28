@@ -24,7 +24,8 @@ async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Me
     });
     const project = workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
 
-    const searchData = await client.search({ project, limit: 50 });
+    // Every state, superseded rows included: the page labels each one.
+    const searchData = await client.search({ project, limit: 50, includeSuperseded: true });
     if (searchData.results.length === 0) return { memories: [], total: 0 };
 
     const batchData = await client.batch(searchData.results.map(r => r.id));
@@ -98,7 +99,12 @@ export default async function WorkspaceMemoryPage({
             files: m.files || [],
             concepts: m.tags || [],
             createdAt: m.createdAt,
+            state: m.state ?? null,
+            supersededBy: m.supersededBy ?? null,
+            reverifyFlaggedAt: m.reverifyFlaggedAt ?? null,
+            reverifyRef: m.reverifyRef ?? null,
           }))}
+          canReview={access.role === 'admin' || access.role === 'owner'}
         />
       </div>
     </main>

@@ -225,7 +225,7 @@ type Terminal = {
   sessions: 1 | 2;
   /** Exact structuredOutput the runner must deliver (runner-written rows only). */
   structuredOutput?: Record<string, unknown>;
-  summarySource?: 'fallback';
+  summarySource?: 'agent' | 'fallback';
   /** resultMeta.closingTurnOutcome on whichever runner PATCH the server kept. */
   closingTurnOutcome?: string | RegExp;
   errorMatches?: RegExp;
@@ -259,23 +259,24 @@ const SHAPES: Shape[] = [
     name: 'reviewer: outputSchema, ends via StructuredOutput, never calls complete_task',
     task: { roleSlug: 'reviewer', outputRequirement: 'none', outputSchema: REVIEW_SCHEMA },
     scripts: [[init(), say('Reviewed the diff.'), ...structuredOutputTool(VERDICT), success('sess-fixture', { structured_output: VERDICT })]],
-    // The verdict IS the result. The summary is only the session's own text
-    // tail, so it is honestly tagged fallback — never presented as authored.
-    expect: { status: 'completed', writer: 'runner', sessions: 1, structuredOutput: VERDICT, summarySource: 'fallback' },
+    // The verdict IS the result, and the agent authored it — so the payload is
+    // tagged 'agent', not 'fallback'. 'fallback' told the server's bookkeeping
+    // gate "never reported" and got a complete structured result refused.
+    expect: { status: 'completed', writer: 'runner', sessions: 1, structuredOutput: VERDICT, summarySource: 'agent' },
   },
   {
     name: 'reviewer on codex: structured output arrives on the BackendEvent, not onProgress',
     codex: true,
     task: { roleSlug: 'reviewer', backend: 'codex', outputRequirement: 'none', outputSchema: REVIEW_SCHEMA },
     scripts: [[init('thread-fixture'), say('Reviewed the diff.'), { __event: { type: 'turn_complete', structuredOutput: VERDICT } }]],
-    expect: { status: 'completed', writer: 'runner', sessions: 1, structuredOutput: VERDICT, summarySource: 'fallback' },
+    expect: { status: 'completed', writer: 'runner', sessions: 1, structuredOutput: VERDICT, summarySource: 'agent' },
   },
   {
     name: 'planning mode: plan returns as structured output under the planning schema',
     task: { mode: 'planning', outputRequirement: 'none' },
     scripts: [[init(), say('Here is the plan.'), ...structuredOutputTool(PLAN), success('sess-fixture', { structured_output: PLAN })]],
     expect: {
-      status: 'completed', writer: 'runner', sessions: 1, structuredOutput: PLAN, summarySource: 'fallback',
+      status: 'completed', writer: 'runner', sessions: 1, structuredOutput: PLAN, summarySource: 'agent',
     },
   },
   {

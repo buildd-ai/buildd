@@ -69,7 +69,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/missions/:id/evaluate', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/[id]/evaluate/route'), reach: byMission },
   { pattern: '/api/missions/:id/notes', methods: ['POST'], load: () => import('@/app/api/missions/[id]/notes/route'), reach: byMission },
   { pattern: '/api/missions/:id/link', methods: ['POST'], load: () => import('@/app/api/missions/[id]/link/route'), reach: byMission },
-  { pattern: '/api/missions/:id/artifacts', methods: ['POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
+  { pattern: '/api/missions/:id/artifacts', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
   // The visual review read (get_visual_review). GET only: the decisions routes
   // under it are never listed here, so no assistant tool can reach them.
   { pattern: '/api/missions/:id/visual-review', methods: ['GET'], load: () => import('@/app/api/missions/[id]/visual-review/route'), reach: byMission },
@@ -92,6 +92,10 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/connectors/mounted', methods: ['GET'], load: () => import('@/app/api/connectors/mounted/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
 
   // ── PRs and releases ──
+  {
+    pattern: '/api/prs', methods: ['GET'], load: () => import('@/app/api/prs/route'),
+    reach: { unpinned: 'lists the caller\'s PRs; every row carries its workspaceId and is filtered', ...ROWS },
+  },
   { pattern: '/api/github/pr', methods: ['GET'], load: () => import('@/app/api/github/pr/route'), reach: { pinTeam: true, requireQuery: ['workerId', 'workspaceId'], ...ROWS } },
   { pattern: '/api/github/pr/review', methods: ['GET'], load: () => import('@/app/api/github/pr/review/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/releases', methods: ['GET'], load: () => import('@/app/api/releases/route'), reach: { requireQuery: ['workspaceId', 'missionId'], ...ROWS } },

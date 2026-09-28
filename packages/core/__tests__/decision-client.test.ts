@@ -542,3 +542,60 @@ describe('describeDecisionError', () => {
     for (const k of kinds) expect(describeDecisionError(k as any).length).toBeGreaterThan(0);
   });
 });
+
+// ── the team's decision model ────────────────────────────────────────────────
+
+/** An OpenAI-compatible completion whose first token puts all mass on option A. */
+function chatCompletion() {
+  return jsonResponse({
+    model: 'qwen3-8b',
+    choices: [{ message: { content: 'A' }, logprobs: { content: [{ token: 'A', logprob: 0, top_logprobs: [{ token: 'A', logprob: Math.log(0.9) }, { token: 'B', logprob: Math.log(0.1) }] }] } }],
+    usage: { prompt_tokens: 100, completion_tokens: 1 },
+  });
+}
+const NOUL = { is_bug: { type: 'noul' as const, instructions: 'Is this a software defect?' } };
+
+describe('decisionCall with a team decision model', () => {
+  it('asks a chat model on OpenRouter with the OpenRouter key', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter' } };
+    const seen: { url: string; auth: string | null; body: any }[] = [];
+    const fetcher = mock(async (url: string, init?: RequestInit) => {
+      seen.push({ url, auth: new Headers(init?.headers).get('authorization'), body: JSON.parse(init!.body as string) });
+      return chatCompletion();
+    });
+    const res = await decisionCall(params({ fetcher, questions: NOUL }));
+    expect(res.ok).toBe(true);
+    expect(seen[0]).toMatchObject({ url: 'https://openrouter.ai/api/v1/chat/completions', auth: 'Bearer sk-or-team' });
+    expect(seen[0].body).toMatchObject({ model: 'qwen/qwen3-8b', logprobs: true });
+  });
+
+  it('asks a chat model through the team LiteLLM gateway with the gateway key', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } };
+    secretRows = [secretRow({
+      id: 's-gw', purpose: 'inference_key', label: 'litellm', userId: null,
+      encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
+    })];
+    const seen: { url: string; auth: string | null }[] = [];
+    const fetcher = mock(async (url: string, init?: RequestInit) => {
+      seen.push({ url, auth: new Headers(init?.headers).get('authorization') });
+      return chatCompletion();
+    });
+    const res = await decisionCall(params({ fetcher, questions: NOUL }));
+    expect(res.ok).toBe(true);
+    expect(seen[0]).toEqual({ url: 'https://litellm.example.test/v1/chat/completions', auth: 'Bearer sk-lite' });
+  });
+
+  it('returns missing_key when the gateway model has no gateway', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } };
+    const fetcher = mock(async () => chatCompletion());
+    const res = await decisionCall(params({ fetcher, questions: NOUL }));
+    expect(!res.ok && res.error.kind).toBe('missing_key');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('keeps Jev when the stored decision model is malformed', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'nope' } };
+    const fetcher = mock(async (url: string) => { expect(url).toBe(DECISIONS_URL); return jsonResponse(OK_BODY); });
+    expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
+  });
+});

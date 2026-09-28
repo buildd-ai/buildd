@@ -144,17 +144,23 @@ describe('MCP tool gating — workspace data class', () => {
   it('offers the knowledge tools for a standard workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}`);
+    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
+    // The groups surface lists recall/learn; deprecated buildd_memory is callable, not listed.
+    const groups = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
+    expect(groups).toContain('recall');
+    expect(groups).toContain('learn');
   });
 
   it('withholds the knowledge tools for a sensitive workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}`);
-    for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    // Task coordination is unaffected — the data class gates knowledge only.
-    expect(names).toContain('buildd');
+    for (const surface of ['legacy', 'groups']) {
+      const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=${surface}`);
+      for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
+      // Task coordination is unaffected — the data class gates knowledge only.
+      expect(names).toContain(surface === 'legacy' ? 'buildd' : 'buildd_tasks');
+    }
   });
 
   it('withholds the knowledge tools when the data-class lookup fails (fail-closed)', async () => {
@@ -473,6 +479,14 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
     expect(await ctx.getMemoryClient(CLAIMED_WS)).toEqual({ id: 'store-1' });
     expect(mockGetMemoryStoreForTeam).toHaveBeenCalledWith(CLAIMED_WS);
+  });
+
+  it('hands actions the after()-backed memory ledger writer', async () => {
+    workspaceIs('standard');
+    const { afterResponseMemoryLedger } = await import('@/lib/memory-ledger');
+    await callTool('buildd', { action: 'claim_task', params: {} });
+    const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
+    expect(ctx.memoryLedger).toBe(afterResponseMemoryLedger);
   });
 
   it("withholds the memory client when a sensitive workspace in the team shares the claimed workspace's project key", async () => {

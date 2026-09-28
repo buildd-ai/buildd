@@ -143,16 +143,16 @@ describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the co
       await render({ pulse });
       const canvas = q('[data-testid="canvas-empty"]')!;
       expect(canvas.dataset.layout).toBe('anchored');
-      expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'max-md:flex-1']));
+      expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'max-lg:flex-1']));
       // The kit's box fills the column; its rows header is pushed to the
       // bottom (margin-top: auto, globals.css), and the rows are last.
       const box = canvas.querySelector('.kit-empty')!;
-      expect(cls(box)).toEqual(expect.arrayContaining(['buildd-empty', 'buildd-empty-anchor-phone', 'flex', 'flex-col', 'max-md:flex-1']));
+      expect(cls(box)).toEqual(expect.arrayContaining(['buildd-empty', 'buildd-empty-anchor-phone', 'flex', 'flex-col', 'max-lg:flex-1']));
       const head = box.querySelector('.kit-chips-head')!;
       expect(head.contains(q('[data-testid="canvas-suggestions"]'))).toBe(true);
       expect(head.nextElementSibling?.classList.contains('kit-chips')).toBe(true);
       expect(head.nextElementSibling?.nextElementSibling).toBeNull();
-      expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:min-h-full', 'max-md:flex-col']));
+      expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['max-lg:flex', 'max-lg:min-h-full', 'max-lg:flex-col']));
     });
   }
 
@@ -160,7 +160,7 @@ describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the co
     await render({ entryIntent: 'mission' });
     expect(q('[data-testid="canvas-empty"]')?.dataset.layout).toBeUndefined();
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
-    expect(cls(q('[data-testid="chat-feed"]')?.parentElement ?? null)).not.toContain('max-md:min-h-full');
+    expect(cls(q('[data-testid="chat-feed"]')?.parentElement ?? null)).not.toContain('max-lg:min-h-full');
   });
 });
 
@@ -213,12 +213,12 @@ describe('contrast over the sea (AA)', () => {
     expect(q('[data-testid="chat-composer"] .buildd-composer > form.kit-composer')).not.toBeNull();
     expect(ruleOf('.buildd-composer > .kit-composer')).toContain('border-top: 2px solid var(--chat-rule-strong)');
     expect(ruleOf('.buildd-composer > .kit-composer[data-mood="needs"]')).toContain('var(--mood-needs)');
-    // The focus rule turns the text colour only from 768px: never on a phone.
+    // The focus rule turns the text colour only from 1024px: never on a phone or tablet.
     const focus = GLOBALS.indexOf('.buildd-composer > .kit-composer:not([data-mood="needs"]):focus-within');
-    const md = GLOBALS.indexOf('@media (min-width: 768px) {\n    .buildd-composer > .kit-composer { border-left');
-    expect(md).toBeGreaterThan(0);
-    expect(focus).toBeGreaterThan(md);
-    expect(focus).toBeLessThan(GLOBALS.indexOf('@media (min-width: 1024px)', md));
+    const lg = GLOBALS.indexOf('@media (min-width: 1024px) {\n    .buildd-composer > .kit-composer { border-left');
+    expect(lg).toBeGreaterThan(0);
+    expect(focus).toBeGreaterThan(lg);
+    expect(focus).toBeLessThan(GLOBALS.indexOf('/* ── Pinned on the kit', lg));
   });
 });
 
@@ -318,7 +318,7 @@ describe('empty canvas', () => {
 });
 
 // happy-dom applies no media queries, so the phone-only rules are asserted as
-// the breakpoint classes that carry them (md = 768px, desktop unchanged).
+// the breakpoint classes that carry them (lg = 1024px: a tablet reads as a phone).
 describe('phone chrome (v3 frames)', () => {
   const header = () => q('[data-testid="chat-header"]')!;
 
@@ -326,18 +326,16 @@ describe('phone chrome (v3 frames)', () => {
     await render();
     const section = q('[data-testid="chat-mobile-section"]')!;
     expect(section.textContent).toBe('Chat');
-    expect(section.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    expect(section.className).not.toMatch(/(^|\s)(md|lg):hidden(\s|$)/);
     expect(section.className).toMatch(/uppercase/);
     expect(q('[data-testid="chat-title-mobile"]')?.textContent).toBe('new');
-    expect(q('[data-testid="chat-title-mobile"]')?.className).toMatch(/(^|\s)md:hidden(\s|$)/);
     const history = q('[data-testid="chat-history-link"]') as HTMLAnchorElement;
     expect(history.getAttribute('href')).toBe('/app/chat?view=history');
     expect(history.textContent).toBe('History →');
-    expect(history.className).toMatch(/(^|\s)md:hidden(\s|$)/);
+    expect(history.className).toMatch(/(^|\s)lg:hidden(\s|$)/);
     expect(header().querySelector('a[aria-label="All chats"]')).toBeNull();
-    // Desktop keeps its title and + New chat.
-    expect(q('[data-testid="chat-title"]')?.textContent).toContain('New chat');
-    expect(q('[data-testid="chat-new"]')).not.toBeNull();
+    // HISTORY stands in for + New chat at every width.
+    expect(q('[data-testid="chat-new"]')).toBeNull();
   });
 
   it('an open conversation keeps its title after `CHAT /`', async () => {
@@ -354,23 +352,13 @@ describe('phone chrome (v3 frames)', () => {
     expect(link.getAttribute('href')).toBe('/app/chat');
     expect(link.textContent).toBe('New →');
     expect(q('[data-testid="chat-empty-state"]')?.className ?? '').not.toMatch(/(^|\s)hidden(\s|$)/);
-    expect(q('[data-testid="canvas-empty"]')?.className).toMatch(/max-md:hidden/);
+    expect(q('[data-testid="canvas-empty"]')?.className).toMatch(/max-lg:hidden/);
   });
 
-  it('the new-chat canvas hides "Pick up where you left off" on a phone, keeps it on desktop', async () => {
+  it('the new-chat canvas leaves "Pick up where you left off" to the history view', async () => {
     await render({ emptyState: <nav data-testid="conversation-list" /> });
-    const wrap = q('[data-testid="chat-empty-state"]')!;
-    expect(wrap.className).toMatch(/(^|\s)hidden(\s|$)/);
-    expect(wrap.className).toMatch(/md:block/);
-    expect(wrap.querySelector('[data-testid="conversation-list"]')).not.toBeNull();
-    expect(q('[data-testid="canvas-empty"]')?.className).not.toMatch(/max-md:hidden/);
-  });
-
-  it('the form fallback is desktop only', async () => {
-    await render({ formFallbackHref: '/app/missions/new' });
-    const fallback = q('[data-testid="chat-form-fallback"]')!;
-    expect(fallback.parentElement!.className).toMatch(/(^|\s)hidden(\s|$)/);
-    expect(fallback.parentElement!.className).toMatch(/md:flex/);
+    expect(q('[data-testid="chat-empty-state"]')).toBeNull();
+    expect(q('[data-testid="canvas-empty"]')?.className).not.toMatch(/max-lg:hidden/);
   });
 
   it('the scope cell reads `@ all ▾` on a phone when every workspace is in scope', async () => {
@@ -378,10 +366,9 @@ describe('phone chrome (v3 frames)', () => {
     const chip = q('[data-testid="composer-scope-chip"]')!;
     const short = chip.querySelector('[data-testid="scope-chip-short"]')!;
     expect(short.textContent).toBe('all');
-    expect(short.className).toMatch(/(^|\s)md:hidden(\s|$)/);
-    const long = chip.querySelector('[data-testid="scope-chip-name"]')!;
-    expect(long.textContent).toBe('All workspaces');
-    expect(long.className).toMatch(/max-md:hidden/);
+    expect(short.className).not.toMatch(/(md|lg):hidden/);
+    expect(short.getAttribute('title')).toBe('All workspaces');
+    expect(chip.querySelector('[data-testid="scope-chip-name"]')).toBeNull();
   });
 
   it('the overlay keeps its own header', async () => {
@@ -459,7 +446,10 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
   it('the composer scope is locked to the mission and its workspace', async () => {
     await render(overlay());
     const cell = q('[data-testid="composer-scope-locked"]');
-    expect(cell?.textContent).toBe(`mission · ${fixtures.WS.name}`);
+    // Phones show the workspace alone, wider screens `mission · <workspace>` (#3080).
+    expect(cell?.querySelector('.hidden.md\\:inline')?.textContent).toBe(`mission · ${fixtures.WS.name}`);
+    expect(cell?.querySelector('.md\\:hidden')?.textContent).toBe(fixtures.WS.name);
+    expect(cell?.getAttribute('aria-label')).toBe(`Scope locked to mission · ${fixtures.WS.name}`);
     expect(q('[data-testid="composer-scope-lock"]')).not.toBeNull();
     expect(q('[data-testid="composer-scope-chip"]')).toBeNull();
   });
@@ -522,9 +512,9 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
   it('the sea fills the stage on desktop too, over the chat ground', async () => {
     await render({ pulse: calm });
     const layer = cls(q('[data-testid="chat-sea"]'));
-    expect(layer).toContain('md:hidden');
-    expect(layer).toContain('lg:block');
-    expect(cls(q('[data-testid="chat-column"]'))).toContain('lg:bg-[var(--chat-ground)]');
+    expect(layer).not.toContain('md:hidden');
+    expect(layer).not.toContain('hidden');
+    expect(cls(q('[data-testid="chat-column"]'))).toContain('bg-[var(--chat-ground)]');
   });
 
   it('headline, messages, picked panel and composer share one centred 720px column', async () => {
@@ -550,26 +540,27 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
   it('header: `CHAT / new` left and `HISTORY →` right, over the opaque bar; no agent crumbs, no + New chat', async () => {
     await render({ pulse: calm });
     expect(cls(q('[data-testid="chat-header"]'))).toContain('lg:bg-[var(--chat-bar)]');
-    expect(cls(q('[data-testid="chat-mobile-section"]'))).toContain('lg:inline');
-    expect(cls(q('[data-testid="chat-title-mobile"]'))).toContain('lg:inline');
-    expect(cls(q('[data-testid="canvas-crumbs-desktop"]'))).toContain('lg:hidden');
-    expect(cls(q('[data-testid="chat-title-desktop"]'))).toContain('lg:hidden');
+    expect(cls(q('[data-testid="chat-mobile-section"]'))).not.toContain('lg:hidden');
+    expect(q('[data-testid="chat-title-mobile"]')?.textContent).toBe('new');
+    expect(q('[data-testid="canvas-crumbs-desktop"]')).toBeNull();
+    expect(q('[data-testid="chat-title-desktop"]')).toBeNull();
     // Desktop: HISTORY opens the right panel instead of navigating.
     expect(cls(q('[data-testid="chat-history-link"]'))).toContain('lg:hidden');
     expect(cls(q('[data-testid="chat-history-toggle"]'))).toEqual(expect.arrayContaining(['hidden', 'lg:inline-flex']));
-    expect(cls(q('[data-testid="chat-new"]'))).toContain('lg:hidden');
+    expect(q('[data-testid="chat-new"]')).toBeNull();
   });
 
   it('an open conversation reads `CHAT / <title>` in the phone style', async () => {
     await render({ title: 'Gift card retries', messages: fixtures.chatFixture('streaming').messages });
     const title = cls(q('[data-testid="chat-title"]'));
-    expect(title).toEqual(expect.arrayContaining(['lg:font-normal', 'lg:text-[var(--chat-muted)]']));
+    expect(title).toEqual(expect.arrayContaining(['text-[13px]', 'text-[var(--chat-muted)]']));
+    expect(title).not.toContain('font-semibold');
   });
 
   it('the calm canvas shows neither the RECENT list nor the form link; the history view shows the list', async () => {
-    await render({ pulse: calm, formFallbackHref: '/app/missions/new', emptyState: <nav data-testid="conversation-list" /> });
-    expect(cls(q('[data-testid="chat-empty-state"]'))).toContain('lg:hidden');
-    expect(cls(q('[data-testid="chat-form-fallback"]')!.parentElement)).toContain('lg:hidden');
+    await render({ pulse: calm, emptyState: <nav data-testid="conversation-list" /> });
+    expect(q('[data-testid="chat-empty-state"]')).toBeNull();
+    expect(q('[data-testid="chat-form-fallback"]')).toBeNull();
     // The history view on desktop: the list opens in the right panel, the canvas stays.
     await render({ historyOpen: true, emptyState: <nav data-testid="conversation-list" />, aside: <nav data-testid="history-list" /> });
     expect(cls(q('[data-testid="chat-empty-state"]'))).toContain('lg:hidden');
@@ -586,14 +577,15 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
     expect(GLOBALS).toContain('.buildd-composer > .kit-composer { border-left: 1px solid var(--chat-rule); border-right: 1px solid var(--chat-rule); border-bottom: 1px solid var(--chat-rule); }');
     expect(cls(q('[data-testid="composer-tools-cell"]'))).toContain('lg:w-16');
     // The scope cell reads `@ all` as on the frame.
-    expect(cls(q('[data-testid="scope-chip-short"]'))).toContain('lg:inline');
-    expect(cls(q('[data-testid="scope-chip-name"]'))).toContain('lg:hidden');
+    expect(q('[data-testid="scope-chip-short"]')?.textContent).toBe('all');
+    expect(q('[data-testid="scope-chip-name"]')).toBeNull();
   });
 
   it('the person\'s message is the square phone bubble, not the rounded one', async () => {
     await render({ messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
     const bubble = cls(q('[data-testid="feed-user-bubble"]'));
-    expect(bubble).toEqual(expect.arrayContaining(['lg:rounded-none', 'lg:border', 'lg:bg-[var(--chat-raised)]', 'lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif]']));
+    expect(bubble).toEqual(expect.arrayContaining(['border', 'bg-[var(--chat-raised)]', 'font-voice', 'lg:max-w-[590px]']));
+    expect(bubble.some(c => /rounded/.test(c))).toBe(false);
   });
 
   it('the old 400px context aside is gone everywhere: the right panel replaces it', async () => {
@@ -630,11 +622,12 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
     expect(dock.querySelector('[data-testid="mission-context-card"]')).not.toBeNull();
     expect(dock.querySelector('[data-testid="dock-at-work"]')).not.toBeNull();
     expect(dock.querySelector('[data-testid="dock-open"]')?.getAttribute('href')).toBe(`/app/missions/${fixtures.missionRef.id}`);
-    // The dock follows the column; the tablet pane stays below lg only.
+    // The dock follows the column; there is no side-by-side tablet pane.
     expect(dock.previousElementSibling?.getAttribute('data-testid')).toBe('chat-column');
-    expect(cls(q('[data-testid="chat-pane"]'))).toContain('lg:hidden');
+    expect(q('[data-testid="chat-pane"]')).toBeNull();
     // The chat keeps its centred 720px column beside the dock (no 540px chat).
-    expect(cls(q('[data-testid="chat-column"]'))).toEqual(expect.arrayContaining(['lg:w-auto', 'lg:flex-1']));
+    expect(cls(q('[data-testid="chat-column"]'))).toContain('flex-1');
+    expect(cls(q('[data-testid="chat-column"]')).some(c => c.includes('540px'))).toBe(false);
     expect(cls(q('[data-testid="chat-voice-column"]'))).toContain('lg:max-w-[720px]');
     expect(cls(q('[data-testid="chat-composer-column"]'))).toContain('lg:max-w-[720px]');
   });
@@ -714,5 +707,67 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
   it('the summoned overlay has no dock', async () => {
     await render({ variant: 'overlay', onClose() {}, pulse: needs }, { views });
     expect(q('[data-testid="chat-dock"]')).toBeNull();
+  });
+});
+
+// A tablet (768 to 1023) used to get its own chat: agent / workspace crumbs,
+// a rounded bubble and a 540px chat beside a side-by-side pane. It now gets
+// the phone's v3 single column; only 1024px and up docks.
+describe('tablet (800px): the phone v3 layout, not the old split', () => {
+  /** matchMedia answered for a viewport `width` px wide (min/max-width only). */
+  const viewport = (width: number) => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    (window as any).matchMedia = (query: string) => {
+      const min = /min-width:\s*(\d+)px/.exec(query);
+      const max = /max-width:\s*(\d+)px/.exec(query);
+      const matches = (min || max) ? (!min || width >= Number(min[1])) && (!max || width <= Number(max[1])) : false;
+      return { matches, media: query, addEventListener() {}, removeEventListener() {} };
+    };
+  };
+  const tokens = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+  const sheet = () => document.querySelector('[data-testid="chat-object-sheet"]');
+
+  it('renders the kit thread in one column, with no tablet-only chrome', async () => {
+    viewport(800);
+    await render({ title: 'Gift card retries', messages: fixtures.chatFixture('streaming').messages, status: 'streaming' });
+    // The v3 thread: the kit's ChatThread with buildd's frames.
+    const thread = q('.kit-thread.buildd-thread');
+    expect(thread).not.toBeNull();
+    expect(qa('.buildd-thread .kit-msg').length).toBeGreaterThan(0);
+    expect(q('[data-testid="feed-user-bubble"]')).not.toBeNull();
+    // One column: no side-by-side pane, no divider, no 540px chat.
+    expect(q('[data-testid="chat-pane"]')).toBeNull();
+    expect(q('[data-testid="chat-workspace"]')?.children).toHaveLength(1);
+    // Nothing on the surface switches at 768px: the phone look holds to 1024px.
+    for (const id of ['chat-workspace', 'chat-column', 'chat-header', 'canvas-crumbs', 'chat-title', 'chat-voice-column', 'chat-composer-column', 'chat-sea', 'feed-user-bubble']) {
+      const el = q(`[data-testid="${id}"]`);
+      expect(el).not.toBeNull();
+      expect(tokens(el).filter(c => /^(max-)?md:/.test(c))).toEqual([]);
+    }
+    expect(tokens(q('[data-testid="chat-composer-column"]')!.parentElement).filter(c => /^(max-)?md:/.test(c))).toEqual([]);
+    // The phone header: CHAT / <title>, HISTORY → (a link, hidden only from lg).
+    expect(q('[data-testid="chat-mobile-section"]')?.textContent).toBe('Chat');
+    expect(tokens(q('[data-testid="chat-history-link"]'))).toContain('lg:hidden');
+    expect(q('[data-testid="canvas-crumbs-desktop"]')).toBeNull();
+    expect(q('[data-testid="chat-new"]')).toBeNull();
+  });
+
+  it('an object opens as a sheet at 800px, and docks at 1280px', async () => {
+    viewport(800);
+    await render({ focusRef: fixtures.missionRef });
+    expect(sheet()).not.toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    viewport(1280);
+    await render({ focusRef: fixtures.missionRef });
+    expect(sheet()).toBeNull();
+    expect(q('[data-testid="chat-dock"]')?.dataset.mode).toBe('object');
+  });
+
+  it('the stylesheet has no chat rule scoped to the 768 to 1023 band', () => {
+    expect(GLOBALS).not.toContain('(min-width: 768px) and (max-width: 1023px)');
+    const chatCss = GLOBALS.slice(GLOBALS.indexOf('/* ── The empty canvas (ChatWorkspace)'), GLOBALS.indexOf('/* ── Steer on the kit'));
+    expect(chatCss).not.toContain('@media (min-width: 768px)');
+    expect(chatCss).not.toContain('@media (max-width: 767px)');
   });
 });

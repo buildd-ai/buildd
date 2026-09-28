@@ -25,7 +25,7 @@ export {
   ThinkingPanel, ApprovalCard, HandoffCard, ChatEmpty, ChatSetupCard,
   type ThinkingPanelProps, type ApprovalCardProps, type HandoffCardProps, type ChatEmptyProps, type ChatEmptyChip, type ChatSetupCardProps,
 } from './cards';
-export { Menu, MenuOption, KIT_SHEET_QUERY, menuDropSide, type MenuProps } from './Menu';
+export { Menu, MenuOption, KIT_SHEET_QUERY, MENU_EDGE, fitMenuPanel, menuDropSide, menuShift, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
 export {
   createComposerStore, useComposerState, applyComposerSeed, tierPrefs,
@@ -67,4 +67,4 @@ export {
 // 0.6.0: per-app tier policy (also in /chat/contract, for the server).
 export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@builddai/ai-kit/chat/contract';
 
-export { KIT_CSS_VARS, type KitCssVar } from './vars';
+export { KIT_CSS_VARS, KIT_MENU_FIT_VARS, type KitCssVar } from './vars';

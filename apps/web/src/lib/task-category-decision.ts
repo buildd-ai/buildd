@@ -27,6 +27,7 @@
  */
 import { createHash } from 'node:crypto';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
+import { isJevModel } from '@buildd/core/decision-model';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
 // lazily inside the run, so importing this module from the task route adds
 // nothing to that route's static import graph.
@@ -262,9 +263,13 @@ export async function categorizeTask(
     }
 
     const answer = res.answers.category;
-    const gated = gateTaskCategory({
-      stored: input.stored, callerSet: input.callerSet, keyword, decision: answer.choice, confidence: answer.confidence,
-    });
+    // The gates were measured on Jev. A team's own decision model is recorded,
+    // never applied, until it has its own eval (decision-model.ts).
+    const gated = isJevModel(res.model)
+      ? gateTaskCategory({
+        stored: input.stored, callerSet: input.callerSet, keyword, decision: answer.choice, confidence: answer.confidence,
+      })
+      : { category: input.stored, source: input.callerSet ? 'caller' as const : 'keyword' as const };
     const record: TaskCategoryDecisionRecord = {
       v: `${TASK_CATEGORY_PROMPT_VERSION}|${res.model}`,
       source: gated.source, jev: answer.choice, confidence: answer.confidence, ...base,

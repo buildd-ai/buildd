@@ -50,6 +50,8 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
+import { buildAgentBaseEnv } from './agent-env';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -80,7 +82,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunnerMemoryIndex } from './memory-digest-policy';
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
@@ -681,6 +683,7 @@ export class WorkerManager {
   private consecutiveAuthFailures = 0;
   private environment?: WorkerEnvironment;
   private envScanInterval?: Timer;
+  private browserScanInterval?: Timer;
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
@@ -806,6 +809,16 @@ export class WorkerManager {
         this.environment = scanEnvironment();
       } catch { /* non-fatal */ }
     }, 30 * 60_000);
+    // Browser-only re-scan, cheaper and more frequent: a Chromium installed
+    // after startup (or one that disappears) reaches the next heartbeat's
+    // envKeys without a restart. Probe results are cached (see browser-capability.ts).
+    // Async: launch probes never block heartbeats or claim polling.
+    this.browserScanInterval = setInterval(() => {
+      rescanBrowserCapability(() => this.environment)
+        .then(env => { this.environment = env; })
+        .catch(() => { /* non-fatal */ });
+    }, BROWSER_RESCAN_INTERVAL_MS);
+    this.browserScanInterval.unref?.();
 
     // Runner-executed full knowledge-ingest jobs (KM v2 spec §3.3, A2).
     // Opt-out via KNOWLEDGE_INGEST_JOBS=0; polls only on idle heartbeat ticks.
@@ -2733,6 +2746,8 @@ export class WorkerManager {
           pathManifest: task.pathManifest,
           // Carries the claim-time predicted file area for treatment-arm tasks.
           context: (task as any).context,
+          taskId: task.id,
+          workerId: worker.id,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
@@ -2749,8 +2764,14 @@ export class WorkerManager {
         pathScopeMissed: taskMemory.pathScopeMissed,
       }), task.id);
 
+      // Index injection (workspace flag, see @buildd/core/memory-claim-index):
+      // the task matches render as index lines, so their bodies are not
+      // fetched, and what the claim-time block already listed is skipped.
+      // Needs the server's signal too; see resolveRunnerMemoryIndex.
+      const memoryIndex = resolveRunnerMemoryIndex(gitConfig, (task as any).context, taskMemory.derivedBy);
+
       // Fetch full content for task-specific memory matches
-      const fullObservations = taskSearchResults.length > 0
+      const fullObservations = taskSearchResults.length > 0 && !memoryIndex
         ? await this.buildd.getBatchObservations(
             task.workspaceId,
             taskSearchResults.map(r => r.id),
@@ -2789,6 +2810,7 @@ export class WorkerManager {
         compactResult,
         taskSearchResults,
         fullObservations,
+        ...(memoryIndex ? { memoryIndex } : {}),
         inputPolicy,
         hasApiKey: !!this.config.apiKey,
         inputAsRetry: this.config.inputAsRetry,
@@ -2834,38 +2856,7 @@ export class WorkerManager {
       // DISPATCH_API_KEY, TENANT_MASTER_KEY, etc.) must never appear in the env
       // visible to the agent — capability scoping, not permission prompts.
       // Credentials the agent actually needs are injected explicitly below.
-      const RUNNER_ENV_PASSTHROUGH = new Set([
-        // Shell essentials
-        'HOME', 'USER', 'LOGNAME', 'USERNAME', 'SHELL', 'PATH',
-        'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_NUMERIC', 'LC_TIME',
-        'TZ', 'TERM', 'COLORTERM', 'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR',
-        // Git identity (may also be in git config, but SDK may read env)
-        'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
-        'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
-        // Node / Bun runtime (needed for tools the agent runs)
-        'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
-        // Proxy / network (needed for egress from agent tools)
-        'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
-        'http_proxy', 'https_proxy', 'no_proxy',
-        // Display (Linux headless — needed for Playwright/browser tools)
-        'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY',
-        // GitHub CLI (non-secret — identifies endpoint only)
-        'GH_HOST', 'GITHUB_SERVER_URL',
-        // Anthropic SDK: endpoint override (not secret) + operator-configured LLM creds.
-        // Operator API keys are intentionally passed through — they are the agent's own
-        // LLM credentials, not runner coordination secrets. Server-managed keys (below)
-        // override them when present.
-        'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-        // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs
-        'OPENAI_API_KEY',
-        // GitHub token — needed for gh CLI (PRs, issues). Not a runner secret.
-        'GITHUB_TOKEN', 'GH_TOKEN',
-      ]);
-      const cleanEnv: Record<string, string> = {};
-      for (const key of RUNNER_ENV_PASSTHROUGH) {
-        const val = process.env[key];
-        if (val !== undefined) cleanEnv[key] = val;
-      }
+      const cleanEnv = buildAgentBaseEnv();
       // Any runner code the agent runs (its tests, from any checkout on this
       // host, including ones that predate the in-repo test-home guard) would
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.
@@ -4747,7 +4738,17 @@ export class WorkerManager {
           // so downstream consumers (KB ingestion, UI) never present it as an
           // authored result. See docs/specs — the agent's own complete_task
           // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
-          ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
+          //
+          // Exception: when the session returned a structured result, that
+          // result IS the agent-authored outcome (outputSchema sessions never
+          // call complete_task — see closingTurnOutcome 'skipped:structured_output').
+          // Tagging it 'fallback' made the server's bookkeeping gate read the
+          // payload as "never reported" and reject a complete, valid result.
+          // 'agent' is the only other value the server accepts
+          // (packages/shared/src/types.ts summarySource).
+          ...(fallbackSummary
+            ? { summary: fallbackSummary, summarySource: structuredOutput ? 'agent' as const : 'fallback' as const }
+            : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush
@@ -6372,6 +6373,10 @@ export class WorkerManager {
     }
     if (this.diskPersistInterval) {
       clearInterval(this.diskPersistInterval);
+    }
+    if (this.browserScanInterval) {
+      clearInterval(this.browserScanInterval);
+      this.browserScanInterval = undefined;
     }
     if (this.envScanInterval) {
       clearInterval(this.envScanInterval);

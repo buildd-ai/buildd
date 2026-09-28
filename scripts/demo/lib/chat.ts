@@ -48,12 +48,12 @@ type Part = { type: string; [k: string]: unknown };
 /**
  * The confirmed message: the approval part becomes the filed call (approved,
  * with the mission ref in its output) and the agent's one-line follow-up comes
- * after it. Pure; a part that isn't the approval is left alone.
+ * after it, then any `followUpParts` (a directive card, say). Pure; a part that isn't the approval is left alone.
  */
 export function confirmedParts(
   parts: readonly Part[],
   toolCallId: string,
-  onConfirm: { summary: string; data: string; objects: unknown[]; followUp?: string },
+  onConfirm: { summary: string; data: string; objects: unknown[]; followUp?: string; followUpParts?: Part[] },
 ): Part[] {
   let found = false;
   const out = parts.map((p) => {
@@ -68,7 +68,9 @@ export function confirmedParts(
     };
   });
   if (!found) throw new Error(`[demo] no tool part ${toolCallId} to confirm`);
-  return onConfirm.followUp ? [...out, { type: 'text', text: onConfirm.followUp }] : out;
+  const tail: Part[] = onConfirm.followUp ? [{ type: 'text', text: onConfirm.followUp }] : [];
+  // Parts the turn carries after its reply, e.g. a standing-rule card (data-buildd-directive).
+  return [...out, ...tail, ...(onConfirm.followUpParts ?? [])];
 }
 
 function conversationOf(story: Story, key: string): Entity {
@@ -82,6 +84,22 @@ export function registerChatKeys(story: Story, ids: IdMap) {
     ids.register(c.key);
     for (const m of c.messages ?? []) ids.register(m.key);
   }
+}
+
+/**
+ * The person's standing rules already on file (Settings > Profile, "Standing
+ * rules"): story `chat.directives`, each `{ userId, workspaceId?, text, source?,
+ * _createdAgo? }` with keys for ids. No workspace = every workspace. Pure.
+ */
+export function directiveRows(story: Story, ids: Pick<IdMap, 'get'>, anchorMs: number) {
+  return (story.chat?.directives ?? []).map((d: Entity) => {
+    if (!d.userId || !d.text) throw new Error(`[demo] chat.directives entry needs userId and text`);
+    const at = relTime(anchorMs, d._createdAgo, 24 * 3600_000);
+    return {
+      userId: ids.get(d.userId), workspaceId: d.workspaceId ? ids.get(d.workspaceId) : null,
+      text: d.text as string, source: (d.source ?? 'settings') as 'chat' | 'settings', createdAt: at, updatedAt: at,
+    };
+  });
 }
 
 /** Seed time: turn chat on for the team, store the synthetic key, write the conversation up to the open approval. */
@@ -100,6 +118,8 @@ export async function seedChat(db: LocalDb, story: Story, ids: IdMap, anchorMs: 
       encryptedValue: encrypt(chat.providerKey.value), healthStatus: 'healthy',
     } as any);
   }
+  const rules = directiveRows(story, ids, anchorMs);
+  if (rules.length) await db.insert(s.chatDirectives).values(rules as any);
   for (const c of chat.conversations ?? []) {
     const created = relTime(anchorMs, c._createdAgo, 5 * 60_000);
     const messages: Entity[] = c.messages ?? [];

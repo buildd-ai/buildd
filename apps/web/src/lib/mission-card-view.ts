@@ -116,6 +116,8 @@ export interface MissionCardRow {
   title: string;
   status: string;
   isHeld?: boolean | null;
+  /** `missions.executor`: 'local' runs in a person's own session (never HELD). */
+  executor?: string | null;
   startAt?: DateLike;
   orchestrationMode?: string | null;
   dependsOnMissionId?: string | null;
@@ -324,6 +326,7 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
     nextRunAt: (nextRunAt as any) ?? null,
     orchestrationMode: row.orchestrationMode ?? null,
     isHeld: row.isHeld ?? false,
+    executor: row.executor ?? null,
     pendingUserScheduledAt,
     criteriaEscalatedAt: row.criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork: pending,
@@ -404,6 +407,7 @@ function deriveCardState(
   return deriveMissionStateView({
     status: row.status,
     isHeld: row.isHeld ?? false,
+    executor: row.executor ?? null,
     orchestrationMode: row.orchestrationMode ?? null,
     activeAgents: s.liveWorkers,
     progress: s.progress,

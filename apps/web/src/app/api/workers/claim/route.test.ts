@@ -6772,6 +6772,66 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(probedGates()).toContain('runnerCooldown');
   });
 
+  // ── executor='local' missions (task 09ed6675) ──────────────────────────────
+  // The mocked `sql` tag keeps its template strings, so the claim query's WHERE
+  // is observable: look for the local-executor gate's own text in it.
+  function claimWhereHasLocalGate(): boolean {
+    const call = (mockTasksFindMany.mock.calls as any[]).find(c => c[0]?.orderBy && c[0]?.limit >= 25);
+    const args: any[] = call?.[0]?.where?.args ?? [];
+    return args.some(a => a?.type === 'sql' && Array.isArray(a.strings) && a.strings.join('').includes("m.executor = 'local'"));
+  }
+
+  it('local executor: a runner poll (no taskId) applies the local-mission gate', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }));
+    expect(claimWhereHasLocalGate()).toBe(true);
+  });
+
+  it('local executor: a runner\'s explicit claim is gated, and the probe can name it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'runner-7' });
+    expect(probedGates()).toContain('missionLocal');
+    expect(claimWhereHasLocalGate()).toBe(true);
+  });
+
+  it('local executor: an unverified "mcp" explicit claim is still gated (spoof)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' });
+    expect(probedGates()).toContain('missionLocal');
+  });
+
+  it('local executor: a verified interactive session\'s explicit claim is not gated, but held still is', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    const gates = probedGates();
+    expect(gates).not.toContain('missionLocal');
+    // Held is the pause and wins over the executor.
+    expect(gates).toContain('missionHeld');
+    expect(claimWhereHasLocalGate()).toBe(false);
+  });
+
+  it('local executor: an interactive session polling without a taskId is still gated', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: interactiveHeaders(), body: { runner: 'mcp' } }));
+    expect(claimWhereHasLocalGate()).toBe(true);
+  });
+
+  it('local executor: an interactive session claims a local mission\'s task as a tracked mcp worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L' })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('local executor: an admin force claim lifts the local-mission gate', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(probedGates()).not.toContain('missionLocal');
+  });
+
   it('rate-limits a session\'s explicit claims of one task to one per window', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     await claim({ runner: 'mcp' }, interactiveHeaders());

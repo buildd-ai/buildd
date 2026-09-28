@@ -60,7 +60,7 @@ import { eq, and, lt, inArray, isNull, isNotNull, asc } from 'drizzle-orm';
 // or mislabelling the alert as taskFailed.
 import { notify } from '@/lib/pushover';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
-import { checkMissionHeld } from '@/app/api/workers/claim/held-gate';
+import { checkMissionHeld, checkMissionLocal } from '@/app/api/workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '@/app/api/workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '@/app/api/workers/claim/workspace-cap-gate';
 import { isSubjectDead } from '@/lib/subject-gate-contract';
@@ -313,6 +313,13 @@ async function resolveStallGate(
         detail: `parent mission ${task.missionId} is held — arm it or force-start the task`,
       };
     }
+  }
+
+  // ── Local-executor mission ────────────────────────────────────────────────
+  // Waiting for a person's local session to claim it, not stalled: runners are
+  // meant to leave it alone. Placed after the held gate to match /start.
+  if (task.missionId && !hasBypassFlag(ctx, BYPASS_HELD_GATE_KEY)) {
+    if (await checkMissionLocal(task.missionId)) return null;
   }
 
   // ── Mission budget gate ───────────────────────────────────────────────────

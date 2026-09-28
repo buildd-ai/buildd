@@ -31,7 +31,7 @@
  *   VERCEL_AUTOMATION_BYPASS_SECRET — sets the x-vercel-protection-bypass header on every request
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
- *   QA_VIEWPORT                     — "mobile" (390x844 touch phone) or WIDTHxHEIGHT (default: 1280x900)
+ *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
  */
 
 import { chromium } from 'playwright';
@@ -39,6 +39,21 @@ import type { BrowserContextOptions } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { resolveViewport } from './viewport';
+
+// Validate QA_VIEWPORT before anything else runs (no browser launched yet, no
+// swallow handlers registered yet) so a typo fails fast with a clear message
+// and a non-zero exit, instead of throwing later — after the browser is up —
+// where it would land in the uncaughtException handler below, get logged as a
+// non-fatal warning, and leave the Capture step hanging with a live browser
+// and nothing left to await.
+let contextOptions: BrowserContextOptions;
+try {
+  contextOptions = resolveViewport(process.env.QA_VIEWPORT);
+} catch (err) {
+  console.error(`[capture] ${(err as Error).message}`);
+  process.exit(1);
+}
+console.log(`[capture] viewport ${contextOptions.viewport?.width}x${contextOptions.viewport?.height}${contextOptions.isMobile ? ' (mobile, touch)' : ''}`);
 
 // Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
 // a response URL is relative. Suppress these non-fatal background exceptions so the
@@ -108,8 +123,6 @@ const browser = await chromium.launch({
   args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
 });
 
-const contextOptions: BrowserContextOptions = resolveViewport(process.env.QA_VIEWPORT);
-console.log(`[capture] viewport ${contextOptions.viewport?.width}x${contextOptions.viewport?.height}${contextOptions.isMobile ? ' (mobile, touch)' : ''}`);
 if (BYPASS_SECRET) {
   // Bypass Vercel preview protection on every request (nav + page.request).
   contextOptions.extraHTTPHeaders = { 'x-vercel-protection-bypass': BYPASS_SECRET };
@@ -121,6 +134,12 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
 
 const context = await browser.newContext(contextOptions);
 const page = await context.newPage();
+// Hydration mismatches and other client errors land in the run log, so a shot
+// that looks fine but threw on load (React #418) is still visible.
+page.on('pageerror', (err) => console.warn(`[capture] page error on ${page.url()}: ${err.message}`));
+page.on('console', (msg) => {
+  if (msg.type() === 'error') console.warn(`[capture] console error on ${page.url()}: ${msg.text().slice(0, 2000)}`);
+});
 
 // --- Auth ---
 // If a storage state was loaded, we're already signed in. Otherwise fall back to

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -119,5 +119,21 @@ describe('reducedMotionFor', () => {
     expect(reducedMotionFor({ reducedMotion: true }, {})).toBe('reduce');
     expect(reducedMotionFor({}, { reducedMotion: true })).toBe('reduce');
     expect(reducedMotionFor({ reducedMotion: false }, { reducedMotion: true })).toBe('no-preference');
+  });
+});
+
+describe('typingPrefixes', () => {
+  test('ends on the whole text and only grows', () => {
+    const text = 'What would it take to bill customers in their own currency?';
+    const p = typingPrefixes(text, 12);
+    expect(p[p.length - 1]).toBe(text.length);
+    for (let i = 1; i < p.length; i++) expect(p[i]).toBeGreaterThan(p[i - 1]);
+  });
+  test('cuts land at word ends where they can', () => {
+    const text = 'bill customers in their own currency';
+    for (const n of typingPrefixes(text, 4).slice(0, -1)) expect(text[n]).toBe(' ');
+  });
+  test('more frames than characters is one frame per character', () => {
+    expect(typingPrefixes('abc', 10)).toEqual([1, 2, 3]);
   });
 });

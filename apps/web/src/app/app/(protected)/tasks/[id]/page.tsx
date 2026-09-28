@@ -215,7 +215,7 @@ export default async function TaskDetailPage({
           where: eq(missions.id, task.missionId),
           columns: {
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
-            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true,
+            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
             goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
             integrationBranchEnabled: true,
           },

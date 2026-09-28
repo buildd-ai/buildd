@@ -15,6 +15,8 @@ const mockRun = mock(async (..._a: any[]) => ({ verdict: 'insufficient_n' }) as 
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: mockResolveViewer }));
 mock.module('@/lib/experiments-store', () => ({ getTeamExperiment: mockGet }));
 mock.module('@buildd/core/experiment-readout-source', () => ({ runExperimentReadout: mockRun }));
+const mockTriageRun = mock(async (..._a: any[]) => ({ status: 'underpowered' }) as any);
+mock.module('@buildd/core/heartbeat-triage-readout-source', () => ({ runHeartbeatTriageReadout: mockTriageRun }));
 
 import { GET } from './route';
 
@@ -49,6 +51,15 @@ describe('GET /api/experiments/[id]/readout', () => {
     const res = await get();
     expect(res.status).toBe(status);
     if (status === 404) expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('a heartbeat_triage experiment gets its per-mission readout, not the task one', async () => {
+    as('admin');
+    stored = row({ kind: 'heartbeat_triage', config: { minSamplePerArm: 7, waitMinConfidence: 0.95 } });
+    const body = await (await get()).json();
+    expect(body.readout.status).toBe('underpowered');
+    expect(mockTriageRun).toHaveBeenCalledWith({ id: ID, policyVersion: 3 }, { minSamplePerArm: 7, waitMinConfidence: 0.95 });
+    expect(mockRun).not.toHaveBeenCalled();
   });
 
   it('reads the current policy version with the configured minimum sample', async () => {

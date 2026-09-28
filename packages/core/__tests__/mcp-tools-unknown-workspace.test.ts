@@ -40,6 +40,7 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['get_failure_analytics', {}],
   ['list_connectors', {}],
   ['list_releases', {}],
+  ['list_prs', {}],
   ['list_discrepancies', {}],
   ['manage_experiments', { action: 'list' }],
   ['manage_model_tiers', { action: 'list' }],

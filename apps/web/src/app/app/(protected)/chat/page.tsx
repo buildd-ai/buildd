@@ -58,7 +58,6 @@ export default async function ChatPage({
       pulse={canvasPulse(data.context)}
       focusRef={about}
       entry={{ ...entry, about: about ? entry.about : null }}
-      formFallbackHref={about ? null : formHref(entry.intent ?? 'mission', workspaceId)}
     />
     </>
   );

@@ -40,7 +40,7 @@ highlight:
   - approval-confirm
   - tool-call-row
   - object-card
-  - chat-pane
+  - chat-dock
   - chat-object-sheet
   - worker-stats
   - worker-touched-row
@@ -66,13 +66,13 @@ steps:
     scrollTo: approval-confirm
     scrollAlign: end
     caption: "Ask first. \"Make it a mission\" drafts it; you confirm on the card."
-    # Live take: the confirm lands (t=0) and the mission docks in the pane, planning.
+    # Live take: the confirm lands (t=0) and the mission docks beside the chat, planning.
     record: { ms: 9000, advanceTo: "0:12", ticks: 3 }
 
   - id: c1-chat-filed
     advance: "0:12"
     goto: /app/chat/{C1}
-    waitFor: [chat-pane, object-card]
+    waitFor: [chat-dock, object-card]
     scrollTo: object-card
     scrollOffset: 0
     caption: "Confirmed. The card is now the live mission, docked beside the chat."
@@ -114,13 +114,13 @@ steps:
     fullPage: true
     caption: "One sentence in. Twelve tasks, three phases, dependencies worked out."
 
-  - id: c4-chat-pane-planned
+  - id: c4-chat-dock-planned
     advance: "1:00"
     goto: /app/chat/{C1}
-    waitFor: chat-pane
+    waitFor: chat-dock
     scrollTo: object-card
     scrollOffset: 0
-    caption: "The pane follows the mission: twelve tasks, three phases."
+    caption: "The dock follows the mission: twelve tasks, three phases."
 
   - id: 02-home-fanout
     advance: "2:00"

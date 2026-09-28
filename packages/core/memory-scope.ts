@@ -2,12 +2,49 @@
  * Resolves the memory project key a workspace is allowed to use. See
  * `memoryProjectKey` in ./project-scope for the rule; this is the DB lookup.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or, type SQL } from 'drizzle-orm';
 import { db } from './db';
 import { workspaces } from './db/schema';
 import { memoryProjectKey } from './project-scope';
 import { MemoryStore } from './memory-store';
 import type { MemoryHitScope } from './memory-hit-scope';
+import { isMemoryCandidateWritesEnabled } from './memory-candidates';
+
+type ScopeRow = { id: string; teamId: string; repo: string | null; name: string; dataClass: string | null };
+
+const SCOPE_COLUMNS = { id: true, teamId: true, repo: true, name: true, dataClass: true } as const;
+
+/**
+ * The rows a memory scope decision needs, in ONE query: the workspace itself,
+ * plus every sensitive workspace in its team (a key shared with one of those
+ * gets no memory). This used to be two sequential round trips on the claim
+ * path, the second waiting on the first only to learn the team id.
+ *
+ * The team is the one the caller is reading memory for, so sensitive rows come
+ * only from that team. The caller still checks that the workspace itself is in
+ * it before trusting anything.
+ */
+export function memoryScopeWorkspacesWhere(workspaceId: string, teamId: string): SQL {
+  return or(
+    eq(workspaces.id, workspaceId),
+    and(eq(workspaces.teamId, teamId), eq(workspaces.dataClass, 'sensitive')),
+  )!;
+}
+
+/** Split the combined rows into the workspace and its team's sensitive set. */
+function splitScopeRows(rows: ScopeRow[], workspaceId: string): { ws: ScopeRow | null; sensitive: ScopeRow[] } {
+  const ws = rows.find(r => r.id === workspaceId) ?? null;
+  if (!ws) return { ws: null, sensitive: [] };
+  const sensitive = rows.filter(r => r.teamId === ws.teamId && r.dataClass === 'sensitive');
+  return { ws, sensitive };
+}
+
+async function loadScopeRows(workspaceId: string, teamId: string): Promise<ScopeRow[]> {
+  return (await db.query.workspaces.findMany({
+    where: memoryScopeWorkspacesWhere(workspaceId, teamId),
+    columns: SCOPE_COLUMNS,
+  })) as ScopeRow[];
+}
 
 /**
  * The workspace's memory project key, or null when it must get no memory:
@@ -19,14 +56,16 @@ export async function resolveMemoryProjectKey(
 ): Promise<string | null> {
   if (!workspaceId) return null;
   try {
+    // Two lookups here, unlike resolveMemoryHitScope below: this runs once per
+    // MCP connection, not per claimed task, so it is not on the claim path.
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
-      columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
+      columns: SCOPE_COLUMNS,
     });
     if (!ws) return null;
     const sensitive = await db.query.workspaces.findMany({
       where: and(eq(workspaces.teamId, ws.teamId), eq(workspaces.dataClass, 'sensitive')),
-      columns: { id: true, repo: true, name: true, dataClass: true },
+      columns: SCOPE_COLUMNS,
     });
     return memoryProjectKey(ws, sensitive);
   } catch {
@@ -47,15 +86,8 @@ export async function resolveMemoryHitScope(
 ): Promise<MemoryHitScope | null> {
   if (!workspaceId || !teamId) return null;
   try {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
-      columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
-    });
+    const { ws, sensitive } = splitScopeRows(await loadScopeRows(workspaceId, teamId), workspaceId);
     if (!ws || ws.teamId !== teamId) return null;
-    const sensitive = await db.query.workspaces.findMany({
-      where: and(eq(workspaces.teamId, ws.teamId), eq(workspaces.dataClass, 'sensitive')),
-      columns: { id: true, repo: true, name: true, dataClass: true },
-    });
     const project = memoryProjectKey(ws, sensitive);
     if (!project) return null;
     const store = new MemoryStore(teamId);
@@ -66,5 +98,22 @@ export async function resolveMemoryHitScope(
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether the workspace flag `memoryCandidateWrites` is on. Off for an
+ * unknown workspace or a failed lookup, so a doubt keeps today's behaviour.
+ */
+export async function resolveMemoryCandidateWrites(workspaceId: string | null | undefined): Promise<boolean> {
+  if (!workspaceId) return false;
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { gitConfig: true },
+    });
+    return isMemoryCandidateWritesEnabled(ws?.gitConfig);
+  } catch {
+    return false;
   }
 }

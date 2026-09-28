@@ -58,6 +58,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
+import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -609,7 +610,7 @@ export async function PATCH(
   const wsForSensitivity = worker.workspaceId
     ? await db.query.workspaces.findFirst({
         where: eq(workspaces.id, worker.workspaceId),
-        columns: { dataClass: true, teamId: true },
+        columns: { dataClass: true, teamId: true, gitConfig: true },
       })
     : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
@@ -1657,7 +1658,18 @@ export async function PATCH(
       // base can misreport as "nothing happened" (see collectGitStats in
       // apps/runner/src/git-operations.ts), so they must not be the only gate
       // for this outcome.
-      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
+      //
+      // A non-empty, object-shaped structuredOutput is a confirmed outcome in
+      // its own right: a session with an outputSchema delivers its result as
+      // the SDK's structured output and never calls complete_task, so the
+      // runner's end-of-session PATCH can still carry a fallback-tagged summary
+      // alongside a complete, valid result. Treating that as "never reported"
+      // 400'd payloads holding complete plans.
+      const hasStructuredOutcome = !!body.structuredOutput
+        && typeof body.structuredOutput === 'object'
+        && !Array.isArray(body.structuredOutput)
+        && Object.keys(body.structuredOutput as Record<string, unknown>).length > 0;
+      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback' && !hasStructuredOutcome;
 
       // A bookkeeping task's only confirmed outcome is a real complete_task
       // call — it has no PR/artifact to fall back on, so a fallback-provenance
@@ -2803,8 +2815,9 @@ export async function PATCH(
       const workerDeliveredSomething = expectsStructuredPlan
         ? workerHasPR || (await hasDeliverableArtifact())
         : false;
-      // A session that never produced a turn (≤2 turns, no tokens, $0 — the
-      // reaper's silent_start shape) did not break either contract below: it
+      // A session that never produced a turn (≤2 turns — or any turn count
+      // with an empty terminal usage record — no tokens, $0: the reaper's
+      // silent_start shape) did not break either contract below: it
       // never got to write a plan or a verdict, prose or otherwise. Evaluated on
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
@@ -2817,6 +2830,9 @@ export async function PATCH(
           costUsd: (updates.costUsd as string | undefined) ?? worker.costUsd,
           inputTokens: (updates.inputTokens as number | undefined) ?? worker.inputTokens,
           outputTokens: (updates.outputTokens as number | undefined) ?? worker.outputTokens,
+          // Terminal usage record (merged over the row's): lets a many-turn
+          // session that never billed a model token count as silent_start.
+          resultMeta: (updates.resultMeta ?? worker.resultMeta) as Parameters<typeof isSilentStartShape>[0]['resultMeta'],
         });
       const planningContractViolation = (
         status === 'completed' &&
@@ -3783,6 +3799,22 @@ export async function PATCH(
       shipped: workerHasPR,
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
+  }
+
+  // Memory use labels (Jev, docs/design/memory-done-right.md): did the final
+  // summary act on each memory this task was shown? Writes memory_uses.outcome
+  // after the response, at most a bounded handful of calls, never on the claim
+  // path. Only on the transition into completed, and only for a standard
+  // workspace by the shared predicate (either sensitivity marker, or a missing
+  // workspace, skips): a sensitive summary is never sent out.
+  if (worker.taskId && shouldLabelMemoryUses({
+    status,
+    previousStatus: worker.status,
+    taskId: worker.taskId,
+    workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
+    serverRefusal: isServerRefusal,
+  })) {
+    scheduleMemoryUseLabels({ taskId: worker.taskId, accountId: account.id, summary: typeof body.summary === 'string' ? body.summary : null });
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.

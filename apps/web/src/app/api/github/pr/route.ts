@@ -155,6 +155,17 @@ async function requestIntegrationBranchReview(params: {
   }
 }
 
+// A stored prUrl/prNumber stops being a truthful answer to "does this worker
+// have an open PR" the moment the PR merges or closes — the webhook records
+// that on `mergedAt`/`prLifecycleStatus`, but nothing previously consulted it
+// before the fast dedup paths below echoed the stored PR back as 'open'. Used
+// to gate both: a worker's own stored PR, and a sibling worker's on the same
+// task.
+function isStoredPrStale(pr: { mergedAt?: Date | string | null; prLifecycleStatus?: string | null } | null | undefined): boolean {
+  if (!pr) return false;
+  return !!pr.mergedAt || pr.prLifecycleStatus === 'merged' || pr.prLifecycleStatus === 'closed';
+}
+
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -381,9 +392,9 @@ export async function POST(req: NextRequest) {
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         ),
-        columns: { prUrl: true, prNumber: true, id: true, prBaseRef: true },
+        columns: { prUrl: true, prNumber: true, id: true, prBaseRef: true, mergedAt: true, prLifecycleStatus: true },
       });
-      if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber) {
+      if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber && !isStoredPrStale(siblingWorkerWithPr)) {
         // Mirror the PR onto this worker too so future calls hit the fast path.
         // The base ref is copied from the sibling because it is literally the same
         // PR — but only when the sibling actually has one recorded. A sibling from
@@ -431,8 +442,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
-    // Dedup: if worker already has a PR, return the existing one
-    if (worker.prUrl && worker.prNumber) {
+    // Dedup: if worker already has a PR for THIS head branch, and it isn't
+    // already known merged/closed, return the existing one. A worker that
+    // moves on to a NEW branch after its earlier PR merged still carries that
+    // PR's prUrl/prNumber on the row — echoing it back as 'open' here would
+    // both misreport the old PR's real state and silently drop the caller's
+    // request to open a PR for the new head. Falling through re-runs the
+    // head-based GitHub lookup below, which finds nothing for a genuinely new
+    // head and proceeds to open a fresh PR.
+    if (
+      worker.prUrl &&
+      worker.prNumber &&
+      (!worker.branch || worker.branch === head) &&
+      !isStoredPrStale(worker)
+    ) {
       await db
         .update(workers)
         .set({ updatedAt: new Date() })

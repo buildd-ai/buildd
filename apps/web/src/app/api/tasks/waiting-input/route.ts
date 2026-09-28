@@ -45,7 +45,9 @@ export async function GET() {
     const activeTasks = waitingTasks
       .filter(t => t.status !== 'completed' && t.status !== 'failed')
       .map(t => {
-        const worker = relevantWorkers.find(w => w.taskId === t.id);
+        // A worker still holding its question wins over one already answered.
+        const mine = relevantWorkers.filter(w => w.taskId === t.id);
+        const worker = mine.find(w => w.waitingFor) ?? mine[0];
         return {
           id: t.id,
           title: t.title,
@@ -53,6 +55,10 @@ export async function GET() {
           // Lets the banner open the task in its mission (mission-task-href.ts).
           missionId: t.missionId ?? null,
           waitingFor: worker?.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+          // Answered on the resume path: `waitingFor` is cleared at once, but
+          // the worker stays waiting_input until the runner resumes it. The
+          // answer is on its way, so this no longer needs the person.
+          answerSent: !worker?.waitingFor,
           actionUrl: `${appBaseUrl}/app/tasks/${t.id}/respond`,
         };
       });

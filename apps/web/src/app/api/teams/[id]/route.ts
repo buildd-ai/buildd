@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeFeatureModes } from '@buildd/core/inference-policy';
 import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -94,6 +95,7 @@ export async function GET(
         budgetAlertsSent: true,
         enabledBackends: true,
         inferenceFeatureModes: true,
+        decisionModel: true,
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
@@ -155,7 +157,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -191,6 +193,12 @@ export async function PATCH(
         );
       }
       updates.inferenceFeatureModes = normalizeFeatureModes(inferenceFeatureModes);
+    }
+    if (decisionModel !== undefined) {
+      // Which model answers decision calls. null = Jev on OpenRouter.
+      const normalized = normalizeDecisionModel(decisionModel);
+      if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      updates.decisionModel = normalized.value;
     }
     if (timezone !== undefined) {
       // The team's canonical working zone — used wherever a shared artifact needs a

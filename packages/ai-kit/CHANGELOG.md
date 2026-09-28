@@ -4,6 +4,40 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+Releasing: bump `version` in package.json and `KIT_VERSION` in
+`src/decide/index.ts`, add a `## <version>` heading here, and merge to dev.
+The merge publishes to npm and tags the commit `ai-kit-v<version>`
+(`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
+the publish.
+
+## 0.9.1 — 2026-09-28
+
+The desktop menu popover always fits the viewport. Patch: no API is removed
+and the phone sheet is unchanged.
+
+- `/chat/react` `Menu` (and so `ToolsMenu`, `ScopePicker`, `TierPicker`): the
+  wide-screen popover opened on a fixed side (`up` by default) with a fixed
+  `max-height: min(70vh, 520px)`, and nothing measured the viewport. A
+  composer near the top of a page (an app's home screen) pushed the panel
+  past the top edge, cutting off its title and first options. Now, when it
+  opens and on resize or scroll, the panel measures itself: it keeps its
+  side (`placement`, or what `auto` picks) if it fits there, flips when it
+  only fits on the other side, and otherwise takes the roomier side. It stays
+  `MENU_EDGE` (12px) from the viewport edges: its max-height is capped to the
+  room on that side, so it scrolls instead of overflowing, and it shifts
+  sideways rather than run off the left or right edge. The resolved side is
+  still `data-placement` on the wrapper.
+- `/chat/styles.css`: `.kit-menu-panel` reads `--kit-menu-room` (in its
+  max-height) and `--kit-menu-shift` (as `translate`). `Menu` sets both on
+  the panel; they are listed in the new `KIT_MENU_FIT_VARS` and never carried
+  to the phone sheet.
+- New exports: `fitMenuPanel(rect, panelHeight, viewportHeight, preferred)`,
+  `menuShift(rect, viewportWidth)`, `MENU_EDGE`, `KIT_MENU_FIT_VARS`.
+- The phone sheet (`KIT_SHEET_QUERY`, `[data-sheet]`) is untouched: no
+  measuring, no new variables, same `data-placement`.
+- `KIT_VERSION` is `0.9.1` (pinned decision versions read `…|kit-0.9.1`;
+  fingerprints unchanged).
+
 ## 0.9.0 — 2026-09-28
 
 The thread slots an app with its own feed needs, found moving buildd's
