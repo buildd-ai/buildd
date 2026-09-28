@@ -13,7 +13,8 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 
 async function authenticateRequest(req: NextRequest) {
@@ -146,7 +147,9 @@ export async function POST(
   }
 
   try {
-    const data = await memClient.save({
+    // Saved and mirrored into the index recall reads; a failed mirror is logged
+    // and re-tried by the reconcile pass, it does not fail the save.
+    const data = await saveMemory(memClient, {
       type: body.type,
       title: body.title,
       content: body.content,
@@ -154,7 +157,7 @@ export async function POST(
       tags: body.tags || body.concepts || [],
       files: body.files || [],
       source: body.source || 'dashboard',
-    });
+    }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:create' });
 
     // Return in observation-compatible shape for backward compat
     return NextResponse.json({
