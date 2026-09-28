@@ -54,6 +54,14 @@ describe('planPoolDay — succession', () => {
     expect(plan.actions.some(a => a.type === 'suggest')).toBe(false);
   });
 
+  it('a chat pool never proposes a successor that lists tools but was seen not to call them', () => {
+    const vendor = (id: string, created: number) => entry(id, { openRouterId: `aion-labs/${id}`, permaslug: `aion-labs/${id}`, provider: 'other', created });
+    const chatCatalog = [vendor('aion-3.0-mini', nowS - 300 * DAY), vendor('aion-3.5-mini', nowS - 20 * DAY)];
+    const chatPool = pool({ surface: 'chat', autoChallenger: true, arms: [armRow('inc', 'aion-3.0-mini', { role: 'incumbent', source: 'registry', route: 'openrouter' })], allocation: { inc: 1 }, weights: { inc: 'high' } });
+    const plan = planPoolDay({ pool: chatPool, evidence: evidence(['inc']), catalog: chatCatalog, rankings: {}, now: NOW });
+    expect(plan.actions.some(a => a.type === 'add_challenger' || a.type === 'suggest')).toBe(false);
+  });
+
   it('explore without auto-challenger: a suggestion instead', () => {
     const plan = planPoolDay({ pool: pool(), evidence: evidence(['inc', 'ch']), catalog, rankings: {}, now: NOW });
     expect(plan.actions.some(a => a.type === 'add_challenger')).toBe(false);

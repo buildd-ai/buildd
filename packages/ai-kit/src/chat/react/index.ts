@@ -2,7 +2,7 @@
 
 /**
  * `@builddai/ai-kit/chat/react`: chat UI over `/chat/contract`
- * (peers `react@^19`, `@ai-sdk/react@^4`, `ai@^7`).
+ * (peers `react@^19`, `react-dom@^19`, `@ai-sdk/react@^4`, `ai@^7`).
  *
  * Components style themselves only through the `--kit-*` custom properties
  * (`@builddai/ai-kit/chat/theme.css`) and the `kit-*` classes in
@@ -36,18 +36,4 @@ export {
   type ToolRowState,
 } from './model';
 
-/** The CSS custom properties the kit's components read. Map them once from the app's tokens. */
-export const KIT_CSS_VARS = [
-  '--kit-bg',
-  '--kit-surface',
-  '--kit-ink',
-  '--kit-muted',
-  '--kit-rule',
-  '--kit-accent',
-  '--kit-accent-ink',
-  '--kit-radius-soft',
-  '--kit-radius-hard',
-  '--kit-font-body',
-  '--kit-font-mono',
-] as const;
-export type KitCssVar = (typeof KIT_CSS_VARS)[number];
+export { KIT_CSS_VARS, type KitCssVar } from './vars';

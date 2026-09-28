@@ -76,6 +76,35 @@ describe('ToolsMenu', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('on a phone: a bottom sheet portaled to <body> with the --kit-* values from where it opened; the scrim closes it', async () => {
+    const realMatch = window.matchMedia;
+    (window as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: q.includes('max-width: 639px'), media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      const changes: string[] = [];
+      await render(h(kit.ToolsMenu, { rows, onChange: (k: string, m: string) => changes.push(`${k}:${m}`) }));
+      // (Set on the menu itself: happy-dom's computed style doesn't inherit custom properties; browsers do.)
+      $('[data-testid="kit-tools"]')!.style.setProperty('--kit-bg', 'rebeccapurple');
+      $('[data-testid="kit-tools"]')!.style.setProperty('--kit-sheet-bottom-offset', '64px');
+      await click($('[data-testid="kit-tools-trigger"]'));
+      expect($('[data-testid="kit-tools-panel"]')).toBeNull(); // not inside the composer
+      const layer = document.querySelector<HTMLElement>('body > [data-testid="kit-tools-sheet"]')!;
+      expect(layer).not.toBeNull();
+      expect(layer.classList.contains('kit-chat')).toBe(true);
+      expect(layer.style.getPropertyValue('--kit-bg')).toBe('rebeccapurple');
+      expect(layer.style.getPropertyValue('--kit-sheet-bottom-offset')).toBe('64px');
+      const panel = layer.querySelector('[data-testid="kit-tools-panel"]')!;
+      expect(panel.getAttribute('data-sheet')).toBe('true');
+      // A click inside the sheet is not "outside".
+      await click([...panel.querySelectorAll('[data-group="email"] button')].find(b => b.textContent === 'Allow')!);
+      expect(changes).toEqual(['email:allow']);
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).not.toBeNull();
+      await act(async () => { layer.querySelector('.kit-sheet-scrim')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).toBeNull();
+    } finally {
+      (window as { matchMedia: unknown }).matchMedia = realMatch;
+    }
+  });
+
   it('shows just ··· with nothing on Allow', async () => {
     await render(h(kit.ToolsMenu, { rows: rows.map(r => ({ ...r, mode: r.mode === 'allow' ? 'ask' : r.mode })), onChange() {} }));
     expect($('[data-testid="kit-tools-count"]')).toBeNull();
@@ -272,6 +301,19 @@ describe('ChatThread', () => {
     const panel = $('[data-testid="kit-thinking"]') as HTMLDetailsElement;
     expect(panel.open).toBe(true);
     expect($$('.kit-step').map(s => [s.textContent, s.getAttribute('data-state')])).toEqual([['Checking the calendar(in progress)', 'active']]);
+  });
+
+  it('renders a turn error in place and does not repeat the request error under it', async () => {
+    const message = 'The AI provider refused this turn: the key is out of credit or over its spending limit.';
+    const msgs = [
+      { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'a', role: 'assistant', parts: [{ type: 'data-turn-error', id: 'turn-error', data: { code: 'insufficient_credit', message, status: 402 } }] },
+    ];
+    await render(h(kit.ChatThread, { messages: msgs, status: 'error', error: message }));
+    const alerts = $$('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].getAttribute('data-turn-error')).toBe('insufficient_credit');
+    expect(alerts[0].textContent).toBe(message);
   });
 
   it('shows the empty state with no messages', async () => {

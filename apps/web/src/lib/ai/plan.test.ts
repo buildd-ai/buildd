@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  validatePlanRequest, routeEntry, tiersFrom, decidePlan, buildPlanResponse, estimateCallUsd,
+  validatePlanRequest, routeEntry, routeChatEntry, tiersFrom, decidePlan, buildPlanResponse, estimateCallUsd,
   DEFAULT_EXPECTED_TOKENS, PLAN_TTL_SECONDS, PLAN_MAX_STALE_SECONDS,
   type PlanOption, type PoolArmPick, type RoutedModel,
 } from './plan';
@@ -104,6 +104,33 @@ describe('routeEntry', () => {
   it('keeps the arm link when the draw landed on the incumbent', () => {
     const inc: PoolArmPick = { poolId: 'p1', armId: 'a1', route: 'anthropic', model: 'claude-sonnet-5', role: 'incumbent' };
     expect(routeEntry(entry, inc, ['anthropic'])).toMatchObject({ source: 'registry', poolId: 'p1', armId: 'a1' });
+  });
+});
+
+describe('routeChatEntry', () => {
+  const cat = [{ openRouterId: 'qwen/qwen3.8-27b', permaslug: 'qwen/qwen3.8-27b' }, { openRouterId: 'anthropic/claude-sonnet-5', permaslug: 'anthropic/claude-sonnet-5' }] as never[];
+  const incumbent = { provider: 'openrouter' as const, model: 'qwen/qwen3.8-27b', source: 'team' as const };
+  const arm = (model: string): PoolArmPick => ({ poolId: 'p', armId: 'a2', route: 'openrouter', model, role: 'challenger' });
+
+  it('a chat-capable challenger is served as the pool arm', () => {
+    const cat2 = [...cat, { openRouterId: 'vendor/good', permaslug: 'vendor/good' }] as never[];
+    expect(routeChatEntry('standard', incumbent, arm('vendor/good'), ['openrouter'], cat2)).toMatchObject({ routed: { model: 'vendor/good', source: 'pool' }, excluded: null });
+  });
+
+  it('a challenger that cannot serve chat falls back to the incumbent, with no pool link', () => {
+    const r = routeChatEntry('standard', incumbent, arm('aion-labs/aion-3.5-mini'), ['openrouter'], cat);
+    expect(r).toMatchObject({ routed: { model: 'qwen/qwen3.8-27b', source: 'registry', poolId: null, armId: null }, excluded: 'aion-labs/aion-3.5-mini' });
+  });
+
+  it('a registry pick that cannot serve chat falls back to the tier default, routed the same way', () => {
+    const r = routeChatEntry('standard', { provider: 'openrouter', model: 'vendor/no-tools', source: 'team' }, null, ['openrouter'], cat);
+    expect(r.routed).toMatchObject({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5', source: 'default', poolId: null });
+    expect(r.entry.source).toBe('default');
+    expect(r.excluded).toBe('vendor/no-tools');
+  });
+
+  it('with no catalog, a pick is served as before', () => {
+    expect(routeChatEntry('standard', { provider: 'openrouter', model: 'vendor/unknown', source: 'team' }, null, ['openrouter'], []).routed!.model).toBe('vendor/unknown');
   });
 });
 

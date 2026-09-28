@@ -1956,6 +1956,8 @@ export interface VisualReviewModel {
 // ── Decisions contract (POST /api/missions/[id]/visual-review/decisions) ────
 
 export const VISUAL_REVIEW_MAX_ARTIFACTS = 50;
+/** Longest `note` the decisions route accepts. */
+export const VISUAL_REVIEW_NOTE_MAX = 2000;
 
 export interface VisualReviewDecisionRequest {
   /** 1..VISUAL_REVIEW_MAX_ARTIFACTS shots of this mission (both viewports of a route: one fix). */
@@ -1974,14 +1976,43 @@ export interface VisualReviewDecisionResponse {
   cancelledFixTaskId: string | null;
   /** The fix that got a `guidance` note instead, because it had started. */
   guidanceTaskId: string | null;
+  /**
+   * Every fix of the request, for a request that spans routes (one fix per
+   * route; both viewports of a route share one). The singular fields above
+   * are the first of each, or null.
+   */
+  fixTaskIds: string[];
+  cancelledFixTaskIds: string[];
+  /** Fixes annotated with a `guidance` note (started, so not cancelled; or a needs-fix note on the auditor's fix). */
+  guidanceTaskIds: string[];
+  /** Why each fix in `guidanceTaskIds` got a note instead of a cancel, for an honest toast. */
+  annotated: VisualReviewAnnotation[];
   model: VisualReviewModel;
+}
+
+/**
+ * `started`: a looks-right could not cancel the fix because it had started.
+ * `still_linked`: another viewport or screen still links the fix, so it stays open.
+ * `note`: a needs-fix note sent to the open fix.
+ */
+export interface VisualReviewAnnotation {
+  fixTaskId: string;
+  reason: 'started' | 'still_linked' | 'note';
 }
 
 /** DELETE /api/missions/[id]/visual-review/decisions/[reviewId] (undo). */
 export interface VisualReviewUndoResponse {
   superseded: string;
+  /** Every review of the same decision (one tap on both viewports writes two rows; undo takes both back). */
+  supersededIds: string[];
+  /** The reviews this decision had replaced, active again: undo returns the cells to their state before the tap. */
+  restoredIds: string[];
+  /** The first of each list below, or null. */
   reopenedFixTaskId: string | null;
   cancelledFixTaskId: string | null;
+  /** Every fix the undo reopened or cancelled (a request can span routes, one fix per route). */
+  reopenedFixTaskIds: string[];
+  cancelledFixTaskIds: string[];
   model: VisualReviewModel;
 }
 

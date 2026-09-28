@@ -184,6 +184,35 @@ export const STEP_PART_TYPE = 'data-step' as const;
 export const HANDOFF_PART_TYPE = 'data-handoff' as const;
 export const EVENT_PART_TYPE = 'data-event' as const;
 export const STEER_PART_TYPE = 'data-steer' as const;
+export const TURN_ERROR_PART_TYPE = 'data-turn-error' as const;
+
+/**
+ * Why a turn that had started streaming failed. `insufficient_credit`: the
+ * provider refused the call for credit or a key's spending limit (OpenRouter's
+ * "requires more credits, or fewer max_tokens"); `rate_limited`: the provider
+ * throttled the key; `invalid_key`: the provider rejected the key; `failed`:
+ * anything else.
+ */
+export type ChatTurnErrorCode = 'insufficient_credit' | 'rate_limited' | 'invalid_key' | 'failed';
+
+/**
+ * A turn failed mid-stream. The server writes it as a `data-turn-error` part
+ * (saved with the message) and uses `message` as the stream's `errorText`, so
+ * `useChat().error.message` reads the same words.
+ */
+export interface TurnErrorData {
+  code: ChatTurnErrorCode;
+  /** One or two plain sentences for the person: what happened and what fixes it. */
+  message: string;
+  /** The provider's HTTP status, when there was one. */
+  status?: number;
+}
+
+export function isTurnErrorPart(part: ChatPart): part is { type: typeof TURN_ERROR_PART_TYPE; data: TurnErrorData } {
+  if (part.type !== TURN_ERROR_PART_TYPE) return false;
+  const d = (part as { data?: Partial<TurnErrorData> }).data;
+  return !!d && typeof d.code === 'string' && typeof d.message === 'string';
+}
 
 export function isStepPart(part: ChatPart): part is { type: typeof STEP_PART_TYPE; data: StepData } {
   if (part.type !== STEP_PART_TYPE) return false;

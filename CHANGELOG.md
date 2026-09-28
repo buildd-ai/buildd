@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- AI Kit 0.3.0 — output cap, typed provider errors, menu sheet fix, `/surfaces` rank slot (#3040)
+- Visual review cell-matrix review model, scoped loader, review table and integrity fixes (#3036)
+
+### Fixed
+
+- Chat plans and chat pool draws now serve only tool-capable models (#3043)
+
 ## [0.191.0] - 2026-08-31
 
 ### Changed
