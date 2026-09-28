@@ -14,9 +14,13 @@ import { handleLearnAction, handleMemoryAction, handleRecallAction } from '../mc
 const WS_ID = 'aaaa0000-0000-0000-0000-000000000000';
 const TEAM_ID = 'bbbb0000-0000-0000-0000-000000000001';
 const TASK_ID = 'cccc0000-0000-0000-0000-000000000002';
+const OTHER_TASK = 'cccc0000-0000-0000-0000-000000000003';
 const PROJECT = 'acme/widgets';
 
-type Row = { id: string; type: string; title: string; content: string; project: string; tags: string[]; files: string[]; source: null; state?: string };
+type Row = {
+  id: string; type: string; title: string; content: string; project: string; tags: string[]; files: string[]; source: null;
+  state?: string; sourceId?: string; sourceKind?: string; external?: boolean;
+};
 
 function memClient(rows: Row[] = []) {
   const saves: any[] = [];
@@ -69,6 +73,14 @@ const row = (id: string, state?: string): Row => ({
 });
 
 describe('learn with the candidate flag off', () => {
+  it('an automatic near-duplicate of an active memory supersedes it immediately, as before', async () => {
+    const mc = memClient([row('old-id')]);
+    const s = store({ dupe: { id: 'old-id', similarity: 0.97 } });
+    await handleLearnAction(mc as any, LEARN, ctx(s, { memoryCandidateWrites: false, taskId: TASK_ID }));
+    expect(mc.superseded).toEqual([{ ids: ['old-id'], byId: 'new-id' }]);
+    for (const k of ['pendingSupersedes', 'corroboratedBy', 'state']) expect(k in mc.saves[0]).toBe(false);
+  });
+
   it('writes the same row as before: no lifecycle fields', async () => {
     const mc = memClient();
     const res = await handleLearnAction(mc as any, LEARN, ctx(store(), { memoryCandidateWrites: false, taskId: TASK_ID }));
@@ -107,11 +119,71 @@ describe('learn with the candidate flag on', () => {
     expect(mc.saves[0]).toMatchObject({ state: 'candidate', sourceKind: 'learn' });
   });
 
-  it('an auto-superseding near-duplicate still supersedes (the corroboration link)', async () => {
-    const mc = memClient([row('old-id', 'candidate')]);
-    await handleLearnAction(mc as any, LEARN, ctx(store({ dupe: { id: 'old-id', similarity: 0.97 } }), { memoryCandidateWrites: true, taskId: TASK_ID }));
-    expect(mc.saves[0].state).toBe('candidate');
+  const on = (s: any, over: Record<string, unknown> = {}) => ctx(s, { memoryCandidateWrites: true, taskId: TASK_ID, ...over });
+  const autoDupe = () => store({ dupe: { id: 'old-id', similarity: 0.97 } });
+
+  it('an automatic near-duplicate of another task\'s candidate supersedes it now and links corroboration', async () => {
+    const mc = memClient([{ ...row('old-id', 'candidate'), sourceKind: 'learn', sourceId: OTHER_TASK }]);
+    const s = autoDupe();
+    await handleLearnAction(mc as any, LEARN, on(s));
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', corroboratedBy: 'old-id' });
+    expect('pendingSupersedes' in mc.saves[0]).toBe(false);
     expect(mc.superseded).toEqual([{ ids: ['old-id'], byId: 'new-id' }]);
+    expect(s.upserts[0].supersedes).toEqual(['old-id']);
+  });
+
+  it('an automatic near-duplicate of an ACTIVE memory defers the supersede until promotion, so push still sees it', async () => {
+    const mc = memClient([{ ...row('old-id'), sourceId: OTHER_TASK }]);
+    const s = autoDupe();
+    const res = await handleLearnAction(mc as any, LEARN, on(s));
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', pendingSupersedes: ['old-id'], corroboratedBy: 'old-id' });
+    expect(mc.superseded).toHaveLength(0);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+    expect(res.content[0].text).toContain('replaces 1 active memory(s) once promoted');
+  });
+
+  it('the same task repeating itself is not corroboration', async () => {
+    const mc = memClient([{ ...row('old-id', 'candidate'), sourceKind: 'learn', sourceId: TASK_ID }]);
+    await handleLearnAction(mc as any, LEARN, on(autoDupe()));
+    expect('corroboratedBy' in mc.saves[0]).toBe(false);
+  });
+
+  it('an external, expired or foreign-project match is not corroboration', async () => {
+    for (const r of [
+      { ...row('old-id', 'candidate'), external: true, sourceId: OTHER_TASK },
+      { ...row('old-id', 'expired'), sourceId: OTHER_TASK },
+    ]) {
+      const mc = memClient([r]);
+      await handleLearnAction(mc as any, LEARN, on(autoDupe()));
+      expect('corroboratedBy' in mc.saves[0]).toBe(false);
+    }
+    const foreign = memClient([{ ...row('old-id', 'candidate'), project: 'other/repo', sourceId: OTHER_TASK }]);
+    await handleLearnAction(foreign as any, LEARN, on(autoDupe()));
+    expect('corroboratedBy' in foreign.saves[0]).toBe(false);
+    expect(foreign.superseded).toHaveLength(0);
+  });
+
+  it('explicit supersedes never corroborates, and an active target is deferred', async () => {
+    const mc = memClient([{ ...row('old-id'), sourceId: OTHER_TASK }]);
+    const s = store();
+    await handleLearnAction(mc as any, { ...LEARN, supersedes: ['old-id'] }, on(s));
+    expect('corroboratedBy' in mc.saves[0]).toBe(false);
+    expect(mc.saves[0].pendingSupersedes).toEqual(['old-id']);
+    expect(mc.superseded).toHaveLength(0);
+  });
+
+  it('explicit supersedes of a candidate supersedes it now, still without corroboration', async () => {
+    const mc = memClient([{ ...row('old-id', 'candidate'), sourceKind: 'learn', sourceId: OTHER_TASK }]);
+    await handleLearnAction(mc as any, { ...LEARN, supersedes: ['old-id'] }, on(store()));
+    expect('corroboratedBy' in mc.saves[0]).toBe(false);
+    expect(mc.superseded).toEqual([{ ids: ['old-id'], byId: 'new-id' }]);
+  });
+
+  it('a chat write is never linked as corroboration', async () => {
+    const mc = memClient([{ ...row('old-id', 'candidate'), sourceKind: 'learn', sourceId: OTHER_TASK }]);
+    await handleLearnAction(mc as any, LEARN, on(autoDupe(), { memoryProvenance: { kind: 'chat' } }));
+    expect(mc.saves[0].sourceKind).toBe('chat');
+    expect('corroboratedBy' in mc.saves[0]).toBe(false);
   });
 });
 

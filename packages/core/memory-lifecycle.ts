@@ -96,9 +96,11 @@ export function memorySourceTaskSql(alias: 'm' | 'm2' | 'memories'): SQL {
  * - `reverted`: inside that window, a merged buildd task titled as a revert
  *   of it, or a later merged PR in the same workspace with exactly the same
  *   file list (what a revert looks like in the ingest log), landed.
- * - `corroborated`: a row in the same team and project, from a different task,
- *   not external, was superseded by this candidate (the learn near-duplicate
- *   path folds a repeat of the same lesson into the newer row).
+ * - `corroborated`: this candidate's `corroborated_by` link, which only
+ *   learn's automatic near-duplicate path writes, points at a row in the same
+ *   team and project that is a candidate or active, not external, a learn (or
+ *   pre-provenance) row, from a different task. `superseded_by` is NOT
+ *   evidence: an explicit or band supersede can set it from anywhere.
  */
 export function promotionCandidatesQuery(limit: number): SQL {
   const window = sql`make_interval(hours => ${PROMOTION_REVERT_WINDOW_HOURS})`;
@@ -132,11 +134,12 @@ export function promotionCandidatesQuery(limit: number): SQL {
                  AND jsonb_array_length(js.changed_files) > 0
              )
            )) AS reverted,
-           (m.source_kind = 'learn' AND src.task_id IS NOT NULL AND EXISTS (
+           (m.source_kind = 'learn' AND src.task_id IS NOT NULL AND m.corroborated_by IS NOT NULL AND EXISTS (
              SELECT 1 FROM memories m2
-             WHERE m2.team_id = m.team_id
+             WHERE m2.id = m.corroborated_by
+               AND m2.team_id = m.team_id
                AND m2.project = m.project
-               AND m2.superseded_by = m.id
+               AND m2.state IN ('candidate', 'active')
                AND m2.external = false
                AND (m2.source_kind IS NULL OR m2.source_kind = 'learn')
                AND ${memorySourceTaskSql('m2')} IS NOT NULL
@@ -173,6 +176,44 @@ export function promoteCandidatesSql(teamId: string, ids: readonly string[]): SQ
       AND external = false
       AND superseded_by IS NULL
     RETURNING id
+  `;
+}
+
+/**
+ * After promotion: supersede the active memories each promoted row deferred
+ * (`pending_supersedes`), inside the same team and project only, and clear
+ * the list. Returns (superseded id, replacing id) pairs for the index flip.
+ */
+export function applyPendingSupersedesSql(teamId: string, promotedIds: readonly string[]): SQL {
+  return sql`
+    UPDATE memories t
+    SET superseded_by = p.id, invalidated_at = COALESCE(t.invalidated_at, now()), updated_at = now()
+    FROM memories p
+    WHERE p.id IN ${uuidList(promotedIds)}
+      AND p.team_id = ${teamId}
+      AND p.state = 'active'
+      AND t.team_id = p.team_id
+      AND t.project = p.project
+      AND t.id = ANY(p.pending_supersedes)
+      AND t.id <> p.id
+      AND t.superseded_by IS NULL
+    RETURNING t.id AS id, p.id AS by_id
+  `;
+}
+
+/** Clear the deferred list on promoted rows once applied. */
+export function clearPendingSupersedesSql(teamId: string, promotedIds: readonly string[]): SQL {
+  return sql`
+    UPDATE memories SET pending_supersedes = '{}'
+    WHERE team_id = ${teamId} AND id IN ${uuidList(promotedIds)} AND cardinality(pending_supersedes) > 0
+  `;
+}
+
+/** Flip a superseded memory's index chunk to not current, in its team's namespace. */
+export function flipSupersededChunkSql(teamId: string, memoryId: string, byId: string): SQL {
+  return sql`
+    UPDATE knowledge_chunks SET is_current = false, superseded_by = ${byId}
+    WHERE namespace = ${`${teamId}:memory`} AND source_id = ${memoryId}
   `;
 }
 
@@ -232,6 +273,9 @@ export function failedTasksForExtractionQuery(workspaceIds: readonly string[], w
       AND NOT EXISTS (
         SELECT 1 FROM memories m WHERE m.source_kind = 'failed_task' AND m.source_id = t.id::text
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM memory_extraction_attempts a WHERE a.source_kind = 'failed_task' AND a.source_id = t.id::text
+      )
     ORDER BY t.updated_at DESC
     LIMIT ${clampInt(limit, MEMORY_EXTRACT_MAX_PER_RUN)}
   `;
@@ -259,8 +303,25 @@ export function changesRequestedReviewsQuery(workspaceIds: readonly string[], wi
       AND NOT EXISTS (
         SELECT 1 FROM memories m WHERE m.source_kind = 'review' AND m.source_id = r.id::text
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM memory_extraction_attempts a WHERE a.source_kind = 'review' AND a.source_id = r.id::text
+      )
     ORDER BY r.created_at DESC
     LIMIT ${clampInt(limit, MEMORY_EXTRACT_MAX_PER_RUN)}
+  `;
+}
+
+/**
+ * Record one extraction attempt so the episode is not tried again. Idempotent
+ * on (source_kind, source_id).
+ */
+export function recordExtractionAttemptSql(a: {
+  workspaceId: string; sourceKind: 'failed_task' | 'review'; sourceId: string; outcome: 'written' | 'duplicate' | 'skipped';
+}): SQL {
+  return sql`
+    INSERT INTO memory_extraction_attempts (workspace_id, source_kind, source_id, outcome)
+    VALUES (${a.workspaceId}, ${a.sourceKind}, ${a.sourceId}, ${a.outcome})
+    ON CONFLICT (source_kind, source_id) DO NOTHING
   `;
 }
 
@@ -321,6 +382,9 @@ export function flagReverifySql(t: ReverifyTarget): SQL | null {
 
 // ── Orchestration ────────────────────────────────────────────────────────────
 
+/** Wall-clock budget for the whole pass, so it can never eat the cron's 60s. */
+export const MEMORY_LIFECYCLE_DEADLINE_MS = 20_000;
+
 export interface FlaggedWorkspace { id: string; teamId: string; project: string }
 
 export interface PromotionCandidateRow {
@@ -334,10 +398,21 @@ export interface PromotionCandidateRow {
   evidence: PromotionEvidence;
 }
 
+export type ExtractionOutcome = 'written' | 'duplicate' | 'failed';
+
+export interface ExtractionAttempt {
+  workspaceId: string;
+  sourceKind: 'failed_task' | 'review';
+  sourceId: string;
+  outcome: 'written' | 'duplicate' | 'skipped';
+}
+
 export interface LifecycleDeps {
   flaggedWorkspaces(): Promise<FlaggedWorkspace[]>;
   findPromotionCandidates(limit: number): Promise<PromotionCandidateRow[]>;
   promote(teamId: string, ids: string[]): Promise<string[]>;
+  /** Apply the promoted rows' deferred supersedes (rows + index). Returns rows superseded. */
+  applyPendingSupersedes(teamId: string, promotedIds: string[]): Promise<number>;
   expire(days: number, limit: number): Promise<number>;
   findFailedTasks(workspaceIds: string[], windowHours: number, limit: number): Promise<Array<{
     id: string; workspaceId: string; title: string; summary: string | null; error: string | null; files: string[];
@@ -346,7 +421,9 @@ export interface LifecycleDeps {
     id: string; workspaceId: string; taskId: string | null; prNumber: number; body: string; files: string[];
   }>>;
   /** Write one extracted candidate via learn (dedupe-only). */
-  writeCandidate(ws: FlaggedWorkspace, c: ExtractedCandidate, taskId: string | null): Promise<'written' | 'duplicate' | 'failed'>;
+  writeCandidate(ws: FlaggedWorkspace, c: ExtractedCandidate, taskId: string | null): Promise<ExtractionOutcome>;
+  /** Mark an episode as tried, so it is not re-embedded on later runs. */
+  recordAttempt(a: ExtractionAttempt): Promise<void>;
   findMergedPrJobs(workspaceIds: string[], windowHours: number, limit: number): Promise<Array<{
     workspaceId: string; prNumber: number; files: string[]; mergedAt: Date;
   }>>;
@@ -354,13 +431,17 @@ export interface LifecycleDeps {
 }
 
 export interface LifecycleResult {
-  extracted: { failedTasks: number; reviews: number; duplicates: number; failed: number };
+  extracted: { failedTasks: number; reviews: number; duplicates: number; skipped: number; failed: number };
   promoted: number;
+  /** Active memories superseded because the candidate that replaces them was promoted. */
+  pendingSuperseded: number;
   held: number;
   shadowed: number;
   expired: number;
   reverifyFlagged: number;
   errors: number;
+  /** The deadline cut the pass short; whatever ran is counted above. */
+  timedOut: boolean;
 }
 
 async function getDb() {
@@ -409,6 +490,13 @@ function dbDeps(knowledgeStore: KnowledgeStore | null): LifecycleDeps {
       const rows = await rowsOf<{ id: string }>(promoteCandidatesSql(teamId, ids));
       return rows.map(r => r.id);
     },
+    async applyPendingSupersedes(teamId, promotedIds) {
+      if (promotedIds.length === 0) return 0;
+      const pairs = await rowsOf<{ id: string; by_id: string }>(applyPendingSupersedesSql(teamId, promotedIds));
+      for (const p of pairs) await rowsOf(flipSupersededChunkSql(teamId, p.id, p.by_id));
+      await rowsOf(clearPendingSupersedesSql(teamId, promotedIds));
+      return pairs.length;
+    },
     async expire(days, limit) {
       return (await rowsOf<{ id: string }>(expireCandidatesSql(days, limit))).length;
     },
@@ -454,6 +542,9 @@ function dbDeps(knowledgeStore: KnowledgeStore | null): LifecycleDeps {
         return 'failed';
       }
     },
+    async recordAttempt(a) {
+      await rowsOf(recordExtractionAttemptSql(a));
+    },
     async findMergedPrJobs(workspaceIds, windowHours, limit) {
       if (workspaceIds.length === 0) return [];
       const rows = await rowsOf<{ workspace_id: string; pr_number: number; changed_files: unknown; created_at: string | Date }>(
@@ -474,124 +565,170 @@ function dbDeps(knowledgeStore: KnowledgeStore | null): LifecycleDeps {
   };
 }
 
+class DeadlineReached extends Error {}
+
 /**
  * Run one bounded lifecycle pass. Never throws: a failed step is counted in
- * `errors` and the other steps still run.
+ * `errors` and the other steps still run. One deadline covers the whole pass:
+ * it is checked between items, and a call still hanging at the deadline is
+ * abandoned (the result reports `timedOut`), so the rest of the cron is never
+ * held up by it.
  */
 export async function runMemoryLifecycle(opts: {
   knowledgeStore?: KnowledgeStore | null;
   decider?: MemoryDecider | null;
   deps?: LifecycleDeps;
+  deadlineMs?: number;
+  now?: () => number;
 } = {}): Promise<LifecycleResult> {
   const deps = opts.deps ?? dbDeps(opts.knowledgeStore ?? null);
+  const now = opts.now ?? (() => Date.now());
+  const deadline = now() + (opts.deadlineMs ?? MEMORY_LIFECYCLE_DEADLINE_MS);
   const result: LifecycleResult = {
-    extracted: { failedTasks: 0, reviews: 0, duplicates: 0, failed: 0 },
-    promoted: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0,
+    extracted: { failedTasks: 0, reviews: 0, duplicates: 0, skipped: 0, failed: 0 },
+    promoted: 0, pendingSuperseded: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0, timedOut: false,
+  };
+  const check = () => {
+    if (result.timedOut || now() >= deadline) throw new DeadlineReached();
+  };
+  /** Run a step. The deadline stops the pass; any other failure is one error. */
+  const step = async (name: string, work: () => Promise<void>): Promise<void> => {
+    if (result.timedOut) return;
+    try {
+      check();
+      await work();
+    } catch (err) {
+      if (err instanceof DeadlineReached) {
+        result.timedOut = true;
+        return;
+      }
+      result.errors++;
+      console.warn(`[memory-lifecycle] ${name} failed`, err);
+    }
   };
 
-  let flagged: FlaggedWorkspace[] = [];
-  try {
-    flagged = await deps.flaggedWorkspaces();
-  } catch (err) {
-    result.errors++;
-    console.warn('[memory-lifecycle] flagged workspaces lookup failed', err);
-  }
-  const byId = new Map(flagged.map(w => [w.id, w]));
-  const wsIds = flagged.map(w => w.id);
+  const pass = async () => {
+    let flagged: FlaggedWorkspace[] = [];
+    await step('flagged workspaces lookup', async () => { flagged = await deps.flaggedWorkspaces(); });
+    const byId = new Map(flagged.map(w => [w.id, w]));
+    const wsIds = flagged.map(w => w.id);
 
-  // 1. Extract. One budget across both sources, failed tasks first.
-  if (wsIds.length > 0) {
-    try {
-      let budget = MEMORY_EXTRACT_MAX_PER_RUN;
-      const tally = async (ws: FlaggedWorkspace | undefined, c: ExtractedCandidate | null, taskId: string | null, kind: 'failedTasks' | 'reviews') => {
-        if (!ws || !c || budget <= 0) return;
-        budget--;
-        const out = await deps.writeCandidate(ws, c, taskId);
-        if (out === 'written') result.extracted[kind]++;
-        else if (out === 'duplicate') result.extracted.duplicates++;
-        else result.extracted.failed++;
-      };
-      const failed = await deps.findFailedTasks(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, budget);
-      for (const t of failed) {
-        await tally(byId.get(t.workspaceId), failedTaskCandidate({ taskId: t.id, title: t.title, error: t.error, summary: t.summary, files: t.files }), t.id, 'failedTasks');
-      }
-      if (budget > 0) {
-        const reviews = await deps.findChangesRequestedReviews(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, budget);
-        for (const r of reviews) {
-          await tally(byId.get(r.workspaceId), reviewCandidate({ reviewId: r.id, prNumber: r.prNumber, body: r.body, files: r.files }), r.taskId, 'reviews');
+    // 1. Extract. One budget across both sources, failed tasks first. Every
+    // settled attempt is recorded, so a duplicate is not re-embedded next run;
+    // a failed write is not recorded and is retried inside the window.
+    if (wsIds.length > 0) {
+      await step('extraction', async () => {
+        let budget = MEMORY_EXTRACT_MAX_PER_RUN;
+        const attempt = async (
+          ws: FlaggedWorkspace | undefined, c: ExtractedCandidate | null, sourceId: string, taskId: string | null,
+          kind: 'failed_task' | 'review',
+        ) => {
+          if (!ws || budget <= 0) return;
+          check();
+          budget--;
+          if (!c) {
+            result.extracted.skipped++;
+            await deps.recordAttempt({ workspaceId: ws.id, sourceKind: kind, sourceId, outcome: 'skipped' });
+            return;
+          }
+          const out = await deps.writeCandidate(ws, c, taskId);
+          if (out === 'failed') {
+            result.extracted.failed++;
+            return;
+          }
+          if (out === 'written') result.extracted[kind === 'failed_task' ? 'failedTasks' : 'reviews']++;
+          else result.extracted.duplicates++;
+          await deps.recordAttempt({ workspaceId: ws.id, sourceKind: kind, sourceId, outcome: out });
+        };
+        const failed = await deps.findFailedTasks(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, budget);
+        for (const t of failed) {
+          await attempt(byId.get(t.workspaceId), failedTaskCandidate({ taskId: t.id, title: t.title, error: t.error, summary: t.summary, files: t.files }), t.id, t.id, 'failed_task');
+        }
+        if (budget > 0) {
+          check();
+          const reviews = await deps.findChangesRequestedReviews(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, budget);
+          for (const r of reviews) {
+            await attempt(byId.get(r.workspaceId), reviewCandidate({ reviewId: r.id, prNumber: r.prNumber, body: r.body, files: r.files }), r.id, r.taskId, 'review');
+          }
+        }
+      });
+    }
+
+    // 2. Promote, deterministic rule; Jev in shadow.
+    await step('promotion', async () => {
+      const candidates = await deps.findPromotionCandidates(MEMORY_PROMOTE_MAX_PER_RUN);
+      const toPromote = new Map<string, string[]>();
+      const shadow = new Map<string, PromoteShadowItem[]>();
+      let shadowBudget = MEMORY_PROMOTE_SHADOW_MAX_PER_RUN;
+      for (const c of candidates) {
+        const verdict = decidePromotion(c.evidence);
+        if (verdict.promote) {
+          const list = toPromote.get(c.teamId) ?? [];
+          list.push(c.id);
+          toPromote.set(c.teamId, list);
+        } else {
+          result.held++;
+        }
+        // External content is never asked about: nothing Jev says could promote it.
+        if (!c.evidence.external && shadowBudget > 0) {
+          shadowBudget--;
+          const items = shadow.get(c.teamId) ?? [];
+          items.push({
+            memoryId: c.id, title: c.title, content: c.content, type: c.type,
+            evidence: { sourceKind: c.sourceKind, ...c.evidence },
+            rule: verdict.promote ? 'promote' : `hold:${verdict.reason}`,
+          });
+          shadow.set(c.teamId, items);
         }
       }
-    } catch (err) {
-      result.errors++;
-      console.warn('[memory-lifecycle] extraction failed', err);
-    }
-  }
+      for (const [teamId, ids] of toPromote) {
+        check();
+        const promoted = await deps.promote(teamId, ids);
+        result.promoted += promoted.length;
+        // A promoted row now replaces the active memories it deferred.
+        if (promoted.length > 0) result.pendingSuperseded += await deps.applyPendingSupersedes(teamId, promoted);
+      }
+      if (opts.decider?.shadowPromote) {
+        for (const [teamId, items] of shadow) {
+          check();
+          await opts.decider.shadowPromote({ scope: { teamId }, items }).catch(() => {});
+          result.shadowed += items.length;
+        }
+      }
+    });
 
-  // 2. Promote, deterministic rule; Jev in shadow.
+    // 3. Expire.
+    await step('expiry', async () => {
+      result.expired = await deps.expire(MEMORY_CANDIDATE_EXPIRY_DAYS, MEMORY_EXPIRE_MAX_PER_RUN);
+    });
+
+    // 4. Re-verify flags.
+    if (wsIds.length > 0) {
+      await step('re-verify', async () => {
+        const jobs = await deps.findMergedPrJobs(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, MEMORY_REVERIFY_MAX_JOBS_PER_RUN);
+        for (const j of jobs) {
+          const ws = byId.get(j.workspaceId);
+          if (!ws || j.files.length === 0) continue;
+          check();
+          result.reverifyFlagged += await deps.flagReverify({
+            teamId: ws.teamId, project: ws.project, workspaceId: ws.id, prNumber: j.prNumber, files: j.files, mergedAt: j.mergedAt,
+          });
+        }
+      });
+    }
+  };
+
+  // A call still hanging at the deadline is abandoned, not awaited.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cutoff = new Promise<'cutoff'>(resolve => {
+    timer = setTimeout(() => resolve('cutoff'), Math.max(0, deadline - now()));
+  });
   try {
-    const candidates = await deps.findPromotionCandidates(MEMORY_PROMOTE_MAX_PER_RUN);
-    const toPromote = new Map<string, string[]>();
-    const shadow = new Map<string, PromoteShadowItem[]>();
-    let shadowBudget = MEMORY_PROMOTE_SHADOW_MAX_PER_RUN;
-    for (const c of candidates) {
-      const verdict = decidePromotion(c.evidence);
-      if (verdict.promote) {
-        const list = toPromote.get(c.teamId) ?? [];
-        list.push(c.id);
-        toPromote.set(c.teamId, list);
-      } else {
-        result.held++;
-      }
-      // External content is never asked about: nothing Jev says could promote it.
-      if (!c.evidence.external && shadowBudget > 0) {
-        shadowBudget--;
-        const items = shadow.get(c.teamId) ?? [];
-        items.push({
-          memoryId: c.id, title: c.title, content: c.content, type: c.type,
-          evidence: { sourceKind: c.sourceKind, ...c.evidence },
-          rule: verdict.promote ? 'promote' : `hold:${verdict.reason}`,
-        });
-        shadow.set(c.teamId, items);
-      }
-    }
-    for (const [teamId, ids] of toPromote) {
-      result.promoted += (await deps.promote(teamId, ids)).length;
-    }
-    if (opts.decider?.shadowPromote) {
-      for (const [teamId, items] of shadow) {
-        await opts.decider.shadowPromote({ scope: { teamId }, items }).catch(() => {});
-        result.shadowed += items.length;
-      }
-    }
-  } catch (err) {
-    result.errors++;
-    console.warn('[memory-lifecycle] promotion failed', err);
+    const first = await Promise.race([pass().then(() => 'done' as const), cutoff]);
+    if (first === 'cutoff') result.timedOut = true;
+  } finally {
+    clearTimeout(timer);
   }
-
-  // 3. Expire.
-  try {
-    result.expired = await deps.expire(MEMORY_CANDIDATE_EXPIRY_DAYS, MEMORY_EXPIRE_MAX_PER_RUN);
-  } catch (err) {
-    result.errors++;
-    console.warn('[memory-lifecycle] expiry failed', err);
-  }
-
-  // 4. Re-verify flags.
-  if (wsIds.length > 0) {
-    try {
-      const jobs = await deps.findMergedPrJobs(wsIds, MEMORY_EXTRACT_WINDOW_HOURS, MEMORY_REVERIFY_MAX_JOBS_PER_RUN);
-      for (const j of jobs) {
-        const ws = byId.get(j.workspaceId);
-        if (!ws || j.files.length === 0) continue;
-        result.reverifyFlagged += await deps.flagReverify({
-          teamId: ws.teamId, project: ws.project, workspaceId: ws.id, prNumber: j.prNumber, files: j.files, mergedAt: j.mergedAt,
-        });
-      }
-    } catch (err) {
-      result.errors++;
-      console.warn('[memory-lifecycle] re-verify failed', err);
-    }
-  }
-
-  return result;
+  // A snapshot: an abandoned call finishing later must not change what was reported.
+  return { ...result, extracted: { ...result.extracted } };
 }

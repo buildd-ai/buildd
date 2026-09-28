@@ -1,5 +1,5 @@
 {
-  "id": "a017a2ef-a28f-4327-a171-f636ac8ceb69",
+  "id": "b9a95f35-066d-4dbb-a9ce-9c3c8bf0cbba",
   "prevId": "39418e40-12b6-4ce4-b336-519befc8340a",
   "version": "7",
   "dialect": "postgresql",
@@ -5286,6 +5286,19 @@
           "primaryKey": false,
           "notNull": false
         },
+        "corroborated_by": {
+          "name": "corroborated_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pending_supersedes": {
+          "name": "pending_supersedes",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5599,6 +5612,93 @@
           "tableTo": "teams",
           "columnsFrom": [
             "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.memory_extraction_attempts": {
+      "name": "memory_extraction_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "memory_extraction_attempts_source_unique": {
+          "name": "memory_extraction_attempts_source_unique",
+          "columns": [
+            {
+              "expression": "source_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "memory_extraction_attempts_workspace_id_workspaces_id_fk": {
+          "name": "memory_extraction_attempts_workspace_id_workspaces_id_fk",
+          "tableFrom": "memory_extraction_attempts",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
           ],
           "columnsTo": [
             "id"

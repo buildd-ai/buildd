@@ -19,6 +19,10 @@ import {
   mergedPrJobsQuery,
   promoteCandidatesSql,
   promotionCandidatesQuery,
+  applyPendingSupersedesSql,
+  clearPendingSupersedesSql,
+  flipSupersededChunkSql,
+  recordExtractionAttemptSql,
   runMemoryLifecycle,
   type LifecycleDeps,
   type PromotionCandidateRow,
@@ -71,13 +75,18 @@ describe('promotionCandidatesQuery', () => {
     expect(sql).toContain('js.workspace_id = pr.workspace_id');
   });
 
-  it('corroboration is a same-team, same-project, non-external row from a different task folded into this one', () => {
+  it('corroboration is ONLY the corroborated_by link, to an own-project candidate or active row from a different task', () => {
+    expect(sql).toContain("m.source_kind = 'learn' AND src.task_id IS NOT NULL AND m.corroborated_by IS NOT NULL");
+    expect(sql).toContain('m2.id = m.corroborated_by');
     expect(sql).toContain('m2.team_id = m.team_id');
     expect(sql).toContain('m2.project = m.project');
-    expect(sql).toContain('m2.superseded_by = m.id');
+    expect(sql).toContain("m2.state IN ('candidate', 'active')");
     expect(sql).toContain('m2.external = false');
-    expect(sql).toContain("m.source_kind = 'learn' AND src.task_id IS NOT NULL");
     expect(sql).toMatch(/<> src\.task_id/);
+  });
+
+  it('superseded_by is not evidence of anything (explicit and band supersedes set it)', () => {
+    expect(sql).not.toContain('superseded_by = m.id');
   });
 });
 
@@ -89,6 +98,44 @@ describe('promoteCandidatesSql', () => {
     expect(sql).toContain('id IN ($2::uuid, $3::uuid)');
     expect(sql).toContain("AND state = 'candidate' AND external = false AND superseded_by IS NULL");
     expect(params).toEqual([TEAM, 'm1', 'm2']);
+  });
+});
+
+describe('deferred supersedes on promotion', () => {
+  it('supersedes only the promoted rows\' pending targets, in the same team and project, and returns pairs', () => {
+    const { sql, params } = render(applyPendingSupersedesSql(TEAM, ['p1']));
+    expect(sql).toContain('SET superseded_by = p.id, invalidated_at = COALESCE(t.invalidated_at, now())');
+    expect(sql).toContain('p.id IN ($1::uuid) AND p.team_id = $2');
+    expect(sql).toContain("p.state = 'active'");
+    expect(sql).toContain('t.team_id = p.team_id AND t.project = p.project');
+    expect(sql).toContain('t.id = ANY(p.pending_supersedes)');
+    expect(sql).toContain('t.superseded_by IS NULL');
+    expect(sql).toContain('RETURNING t.id AS id, p.id AS by_id');
+    expect(params).toEqual(['p1', TEAM]);
+  });
+
+  it('flips the superseded chunk in its own team namespace, and clears the list', () => {
+    const flip = render(flipSupersededChunkSql(TEAM, 'old', 'new'));
+    expect(flip.sql).toContain('SET is_current = false, superseded_by = $1 WHERE namespace = $2 AND source_id = $3');
+    expect(flip.params).toEqual(['new', `${TEAM}:memory`, 'old']);
+    const clear = render(clearPendingSupersedesSql(TEAM, ['p1']));
+    expect(clear.sql).toContain("SET pending_supersedes = '{}' WHERE team_id = $1 AND id IN ($2::uuid)");
+  });
+});
+
+describe('extraction attempts', () => {
+  it('both extraction queries skip an episode already attempted', () => {
+    expect(render(failedTasksForExtractionQuery([WS], 24, 1)).sql)
+      .toContain("a.source_kind = 'failed_task' AND a.source_id = t.id::text");
+    expect(render(changesRequestedReviewsQuery([WS], 24, 1)).sql)
+      .toContain("a.source_kind = 'review' AND a.source_id = r.id::text");
+  });
+
+  it('records an attempt idempotently', () => {
+    const { sql, params } = render(recordExtractionAttemptSql({ workspaceId: WS, sourceKind: 'review', sourceId: 'r1', outcome: 'duplicate' }));
+    expect(sql).toContain('INSERT INTO memory_extraction_attempts (workspace_id, source_kind, source_id, outcome)');
+    expect(sql).toContain('ON CONFLICT (source_kind, source_id) DO NOTHING');
+    expect(params).toEqual([WS, 'review', 'r1', 'duplicate']);
   });
 });
 
@@ -171,11 +218,16 @@ const cand = (id: string, over: Partial<PromotionCandidateRow['evidence']> = {},
 });
 
 function fakeDeps(over: Partial<LifecycleDeps> = {}) {
-  const calls = { promote: [] as Array<{ teamId: string; ids: string[] }>, written: [] as any[], flagged: [] as any[], expire: [] as any[] };
+  const calls = {
+    promote: [] as Array<{ teamId: string; ids: string[] }>, written: [] as any[], flagged: [] as any[], expire: [] as any[],
+    applied: [] as Array<{ teamId: string; ids: string[] }>, attempts: [] as any[],
+  };
   const deps: LifecycleDeps = {
     flaggedWorkspaces: async () => [],
     findPromotionCandidates: async () => [],
     promote: async (teamId, ids) => { calls.promote.push({ teamId, ids }); return ids; },
+    applyPendingSupersedes: async (teamId, ids) => { calls.applied.push({ teamId, ids }); return 0; },
+    recordAttempt: async (a) => { calls.attempts.push(a); },
     expire: async (d, l) => { calls.expire.push({ d, l }); return 0; },
     findFailedTasks: async () => [],
     findChangesRequestedReviews: async () => [],
@@ -254,19 +306,65 @@ describe('runMemoryLifecycle', () => {
     const review = calls.written.at(-1);
     expect(review.c.provenance).toEqual({ kind: 'review', id: 'r1', external: true });
     expect(review.taskId).toBe('tr');
-    expect(r.extracted).toEqual({ failedTasks: MEMORY_EXTRACT_MAX_PER_RUN - 1, reviews: 1, duplicates: 0, failed: 0 });
+    expect(r.extracted).toEqual({ failedTasks: MEMORY_EXTRACT_MAX_PER_RUN - 1, reviews: 1, duplicates: 0, skipped: 0, failed: 0 });
   });
 
-  it('counts duplicates and failed writes separately', async () => {
+  it('counts outcomes, and records every settled attempt (not a failed write, which is retried)', async () => {
     const outs = ['duplicate', 'failed', 'written'] as const;
     let i = 0;
-    const { deps } = fakeDeps({
+    const { deps, calls } = fakeDeps({
       flaggedWorkspaces: async () => [{ id: WS, teamId: TEAM, project: 'p' }],
-      findFailedTasks: async () => outs.map((_, k) => ({ id: `t${k}`, workspaceId: WS, title: 'x', summary: 's', error: null, files: [] })),
+      findFailedTasks: async () => [
+        ...outs.map((_, k) => ({ id: `t${k}`, workspaceId: WS, title: 'x', summary: 's', error: null, files: [] })),
+        { id: 'empty', workspaceId: WS, title: 'x', summary: null, error: null, files: [] },
+      ],
       writeCandidate: async () => outs[i++],
     });
     const r = await runMemoryLifecycle({ deps });
-    expect(r.extracted).toEqual({ failedTasks: 1, reviews: 0, duplicates: 1, failed: 1 });
+    expect(r.extracted).toEqual({ failedTasks: 1, reviews: 0, duplicates: 1, skipped: 1, failed: 1 });
+    expect(calls.attempts).toEqual([
+      { workspaceId: WS, sourceKind: 'failed_task', sourceId: 't0', outcome: 'duplicate' },
+      { workspaceId: WS, sourceKind: 'failed_task', sourceId: 't2', outcome: 'written' },
+      { workspaceId: WS, sourceKind: 'failed_task', sourceId: 'empty', outcome: 'skipped' },
+    ]);
+  });
+
+  it('applies deferred supersedes for the rows it promoted, per team', async () => {
+    const { deps, calls } = fakeDeps({
+      findPromotionCandidates: async () => [cand('merged', { sourcePrMergedPastWindow: true }), cand('none')],
+      promote: async (_t, ids) => ids,
+      applyPendingSupersedes: async (teamId, ids) => { calls.applied.push({ teamId, ids }); return 2; },
+    });
+    const r = await runMemoryLifecycle({ deps });
+    expect(calls.applied).toEqual([{ teamId: TEAM, ids: ['merged'] }]);
+    expect(r.pendingSuperseded).toBe(2);
+  });
+
+  it('one deadline covers the pass: checked between items, the rest skipped, reported as timedOut', async () => {
+    let t = 0;
+    const ws = { id: WS, teamId: TEAM, project: 'p' };
+    const { deps, calls } = fakeDeps({
+      flaggedWorkspaces: async () => [ws],
+      findFailedTasks: async () => Array.from({ length: 5 }, (_, k) => ({ id: `t${k}`, workspaceId: WS, title: 'x', summary: 's', error: 'e', files: [] })),
+      // Each write costs 10s of the clock.
+      writeCandidate: async (w, c, taskId) => { t += 10_000; calls.written.push({ w, c, taskId }); return 'written'; },
+      expire: async () => { throw new Error('must not run past the deadline'); },
+    });
+    const r = await runMemoryLifecycle({ deps, now: () => t, deadlineMs: 20_000 });
+    expect(r.timedOut).toBe(true);
+    expect(calls.written).toHaveLength(2);
+    expect(r.errors).toBe(0);
+    expect(r.expired).toBe(0);
+  });
+
+  it('abandons a call that hangs past the deadline instead of waiting on it', async () => {
+    const { deps } = fakeDeps({
+      findPromotionCandidates: () => new Promise(() => {}),
+    });
+    const started = Date.now();
+    const r = await runMemoryLifecycle({ deps, deadlineMs: 50 });
+    expect(r.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('flags re-verify under the flagged workspace\'s own team and project', async () => {

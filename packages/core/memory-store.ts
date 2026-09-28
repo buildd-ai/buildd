@@ -45,6 +45,8 @@ export interface MemoryRecord {
   /** Set when a merged PR touched one of this memory's files since it was written. */
   reverifyFlaggedAt?: string | null;
   reverifyRef?: string | null;
+  corroboratedBy?: string | null;
+  pendingSupersedes?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +75,10 @@ export interface SaveMemoryInput {
   sourceKind?: MemorySourceKind;
   sourceId?: string;
   external?: boolean;
+  /** Set only by learn's automatic near-duplicate path; see db/schema.ts. */
+  corroboratedBy?: string;
+  /** Active memories to supersede when this candidate is promoted. */
+  pendingSupersedes?: string[];
 }
 
 export interface UpdateMemoryInput {
@@ -107,6 +113,8 @@ function toRecord(row: typeof memories.$inferSelect): MemoryRecord {
     invalidatedAt: row.invalidatedAt ? row.invalidatedAt.toISOString() : null,
     reverifyFlaggedAt: row.reverifyFlaggedAt ? row.reverifyFlaggedAt.toISOString() : null,
     reverifyRef: row.reverifyRef ?? null,
+    corroboratedBy: row.corroboratedBy ?? null,
+    pendingSupersedes: row.pendingSupersedes ?? [],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -344,6 +352,8 @@ export class MemoryStore {
       ...(input.sourceKind ? { sourceKind: input.sourceKind } : {}),
       ...(input.sourceId ? { sourceId: input.sourceId } : {}),
       ...(input.external ? { external: true } : {}),
+      ...(input.corroboratedBy ? { corroboratedBy: input.corroboratedBy } : {}),
+      ...(input.pendingSupersedes?.length ? { pendingSupersedes: input.pendingSupersedes } : {}),
     }).returning();
 
     return { memory: toRecord(row) };

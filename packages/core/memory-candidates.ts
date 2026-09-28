@@ -19,6 +19,20 @@
  * | candidate   | never           | includeCandidates | yes      |
  * | expired     | never           | never          | yes         |
  * | invalidated | never           | never          | yes         |
+ *
+ * Deliberate gaps, not oversights:
+ *
+ * - A **chat** candidate never auto-promotes: it has no task whose PR could
+ *   verify it and it is never linked as corroboration (only a `learn` is).
+ *   It becomes active through the chat directive confirm (step 6) or a human.
+ * - A candidate an agent **pulled** (or a task used) never expires: someone
+ *   found it worth reading, so it waits for promotion or a human instead of
+ *   silently retiring.
+ * - Failed-task and review candidates are **external** and never
+ *   auto-promote: error text and review text carry content from outside the
+ *   team.
+ * - A candidate write never hides an active memory: supersedes of active rows
+ *   are deferred to `pendingSupersedes` and applied on promotion.
  */
 
 export const MEMORY_STATES = ['candidate', 'active', 'expired', 'invalidated'] as const;
@@ -134,7 +148,7 @@ export interface ExtractedCandidate {
 
 /**
  * A failed task's candidate: the error plus the last summary. Null when there
- * is nothing to learn from (no error and no summary).
+ * is nothing to learn from (no error and no summary). Marked external.
  */
 export function failedTaskCandidate(t: {
   taskId: string;
@@ -154,7 +168,10 @@ export function failedTaskCandidate(t: {
     title: clip(`Failed: ${t.title}`, 120),
     content: parts.join('\n\n'),
     files: [...(t.files ?? [])].slice(0, 20),
-    provenance: { kind: 'failed_task', id: t.taskId, external: false },
+    // External: an error message and a summary routinely quote tool output,
+    // fetched pages or issue text. Recallable as a candidate, never
+    // auto-promoted.
+    provenance: { kind: 'failed_task', id: t.taskId, external: true },
   };
 }
 

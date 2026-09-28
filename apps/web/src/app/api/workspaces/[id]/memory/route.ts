@@ -17,6 +17,7 @@ import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper'
 import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
+import { MEMORY_STATES, type MemoryState } from '@buildd/core/memory-candidates';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 
 async function authenticateRequest(req: NextRequest) {
@@ -132,7 +133,12 @@ export async function GET(
     // No key means no memory: never fall back to a team-wide list.
     const project = await getWorkspaceProject(id);
     if (!project) return unavailable();
-    const searchData = await memClient.search({ ...search, project });
+    // Active memories unless the caller names states (the dashboard asks for
+    // every state so a person can see candidates). Unknown values are dropped.
+    const asked = searchParams.getAll('states').flatMap(v => v.split(',')).map(v => v.trim())
+      .filter((v): v is MemoryState => (MEMORY_STATES as readonly string[]).includes(v));
+    const states: MemoryState[] = asked.length > 0 ? [...new Set(asked)] : ['active'];
+    const searchData = await memClient.search({ ...search, project, states });
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });

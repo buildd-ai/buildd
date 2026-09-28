@@ -268,6 +268,9 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
             "offset": 0,
             "project": "acme/widgets",
             "query": undefined,
+            "states": [
+              "active",
+            ],
             "type": undefined,
           },
         ],

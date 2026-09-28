@@ -4082,6 +4082,14 @@ export const memories = pgTable('memories', {
   // A flag for re-verification, never a demotion.
   reverifyFlaggedAt: timestamp('reverify_flagged_at', { withTimezone: true }),
   reverifyRef: text('reverify_ref'),
+  // The memory whose episode corroborated this candidate. Written ONLY by the
+  // automatic near-duplicate path of `learn` (a different task's repeat of
+  // the same lesson in the same project); explicit or band supersedes never
+  // set it. Promotion re-checks the linked row in SQL.
+  corroboratedBy: uuid('corroborated_by'),
+  // Active memories this candidate replaces, applied only when it is
+  // promoted: a candidate never hides an active memory from push.
+  pendingSupersedes: uuid('pending_supersedes').array().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4089,6 +4097,21 @@ export const memories = pgTable('memories', {
   stateCreatedIdx: index('memories_state_created_idx').on(t.state, t.createdAt),
   teamUpdatedIdx: index('memories_team_updated_idx').on(t.teamId, t.updatedAt),
   teamProjectIdx: index('memories_team_project_idx').on(t.teamId, t.project),
+}));
+
+// One row per episode the memory lifecycle pass tried to extract a candidate
+// from (packages/core/memory-lifecycle.ts), whatever the outcome, so a
+// failed task or review whose lesson is already recorded is not re-embedded
+// on every run. Content-free: ids and a label.
+export const memoryExtractionAttempts = pgTable('memory_extraction_attempts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  sourceKind: text('source_kind').notNull().$type<'failed_task' | 'review'>(),
+  sourceId: text('source_id').notNull(),
+  outcome: text('outcome').notNull().$type<'written' | 'duplicate' | 'skipped'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sourceUnique: uniqueIndex('memory_extraction_attempts_source_unique').on(t.sourceKind, t.sourceId),
 }));
 
 export const memoriesRelations = relations(memories, ({ one }) => ({

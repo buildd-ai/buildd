@@ -77,9 +77,9 @@ describe('decidePromotion', () => {
 });
 
 describe('extraction candidates', () => {
-  it('a failed task becomes a gotcha with the error and the last summary', () => {
+  it('a failed task becomes an external gotcha with the error and the last summary', () => {
     const c = failedTaskCandidate({ taskId: 't1', title: 'Fix the thing', error: 'boom', summary: 'tried X', files: ['a.ts'] })!;
-    expect(c).toMatchObject({ type: 'gotcha', title: 'Failed: Fix the thing', files: ['a.ts'], provenance: { kind: 'failed_task', id: 't1', external: false } });
+    expect(c).toMatchObject({ type: 'gotcha', title: 'Failed: Fix the thing', files: ['a.ts'], provenance: { kind: 'failed_task', id: 't1', external: true } });
     expect(c.content).toContain('Error: boom');
     expect(c.content).toContain('Last summary: tried X');
   });

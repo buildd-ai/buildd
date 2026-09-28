@@ -139,6 +139,38 @@ describe('learn: the 0.88 to 0.94 band', () => {
     expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'SUPERSEDE', rule: 'conflict', applied: true, memoryId: 'new-id' });
   });
 
+  it('UPDATE never merges into an external row: nothing is written, the conflict reply is returned', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const external = { ...EXISTING, external: true, sourceKind: 'review', state: 'candidate' };
+    const mc = { ...memClient(), get: async () => ({ memory: external }), batch: async (ids: string[]) => ({ memories: ids.map(id => ({ ...external, id })) }) };
+    const s = store(0.9);
+    const res = await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(mc.saves).toHaveLength(0);
+    expect(s.upserts).toHaveLength(0);
+    expect(res.content[0].text).toContain('Near-duplicate detected');
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'UPDATE', applied: false });
+  });
+
+  it('UPDATE with external incoming text marks the merged row external', async () => {
+    const { d } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const mc = memClient();
+    await handleLearnAction(mc as any, LEARN, {
+      ...ctx(store(0.9), d), memoryCandidateWrites: true, memoryProvenance: { kind: 'review', id: 'rv', external: true },
+    } as any);
+    expect(mc.saves).toHaveLength(1);
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', external: true, sourceKind: 'review' });
+  });
+
+  it('UPDATE as a candidate defers superseding an active row until promotion', async () => {
+    const { d } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const mc = memClient();
+    const s = store(0.9);
+    await handleLearnAction(mc as any, LEARN, { ...ctx(s, d), memoryCandidateWrites: true } as any);
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', pendingSupersedes: [EXISTING.id] });
+    expect(mc.superseded).toHaveLength(0);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+  });
+
   it('UPDATE writes a NEW merged row and supersedes the old one, which stays readable', async () => {
     const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
     const mc = memClient();
