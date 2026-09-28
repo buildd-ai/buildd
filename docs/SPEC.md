@@ -292,7 +292,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
     unread). Never falls back to a runner or seat. With no key the Chat entry
     point still shows, its page says who can fix it, and the mission form stays.
-  - *Built-in* decision calls (`task_category_shadow`, `task_classification`):
+  - *Built-in* decision calls (`task_category`, `task_classification`):
     no toggle; they run whenever a key resolves.
   - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
     declared with no call site and not shown in Settings): default by billing

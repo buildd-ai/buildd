@@ -28,6 +28,7 @@ import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
 import { sweepAbandonedPathClaims } from './maintenance/path-claims';
+import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
@@ -1001,11 +1002,22 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     const abandonedClaimsReleased = await sweepAbandonedPathClaims();
 
+    // Category looks for tasks created off the POST /api/tasks path (missions,
+    // schedules, webhooks, retries). Bounded and last, so it can't crowd out the
+    // tick; a failure only means the next hour tries again.
+    let taskCategories: Awaited<ReturnType<typeof sweepTaskCategories>> | { error: string };
+    try {
+      taskCategories = await sweepTaskCategories({ since: new Date(now.getTime() - 48 * 3_600_000), limit: 40, budgetMs: 15_000 });
+    } catch (sweepErr) {
+      taskCategories = { error: sweepErr instanceof Error ? sweepErr.message : String(sweepErr) };
+      console.warn('[Cron] task category sweep failed:', taskCategories.error);
+    }
+
     report({
       processed,
       changed: created,
       errors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased },
+      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories },
     });
 
     return NextResponse.json({
@@ -1023,6 +1035,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       archivedMissions,
       overdueHeartbeatAlerts,
       abandonedClaimsReleased,
+      taskCategories,
     });
   } catch (error) {
     console.error('Cron schedules error:', error);
