@@ -72,7 +72,7 @@ describe('ModelFeatures', () => {
   it('does not list the built-in decision calls, or features with no call site', async () => {
     await mount();
     expect(q('[data-testid="feature-task_classification"]')).toBeNull();
-    expect(q('[data-testid="feature-task_category_shadow"]')).toBeNull();
+    expect(q('[data-testid="feature-task_category"]')).toBeNull();
     expect(q('[data-testid="feature-visual_qa"]')).toBeNull();
     expect(q('[data-testid="feature-mission_summary"]')).toBeNull();
     expect(q('[data-testid="feature-criteria_grading"]')).not.toBeNull();
