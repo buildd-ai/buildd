@@ -1,3 +1,35 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+# Shipped: the triage look, its call site in the schedules cron, the
+# heartbeat_triage experiment kind that gates a skip, and its readout.
+assertions:
+  - id: "triage-look"
+    type: "symbol"
+    name: "triageHeartbeat"
+    path: "apps/web/src/lib/heartbeat-triage.ts"
+  - id: "triage-gate"
+    type: "symbol"
+    name: "gateHeartbeatTriage"
+    path: "apps/web/src/lib/heartbeat-triage.ts"
+  - id: "triage-in-cron"
+    type: "symbol_reachable"
+    symbol: "triageHeartbeat"
+    entry: "apps/web/src/app/api/cron/schedules/route.ts"
+    as: "call"
+  - id: "experiment-arm"
+    type: "symbol"
+    name: "decideHeartbeatTriageArm"
+    path: "packages/core/heartbeat-triage-experiment.ts"
+  - id: "looks-table"
+    type: "symbol"
+    name: "heartbeatTriageLooks"
+    path: "packages/core/db/schema.ts"
+  - id: "readout"
+    type: "symbol"
+    name: "computeHeartbeatTriageReadout"
+    path: "packages/core/heartbeat-triage-readout.ts"
+---
 # Heartbeat Triage: Ask a Decision Model Before Hiring the Organizer
 
 **Status:** Implemented (shadow everywhere; skips only inside a `heartbeat_triage` experiment)
