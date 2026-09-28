@@ -79,6 +79,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ args, type: 'or' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  ne: (field: any, value: any) => ({ field, value, type: 'ne' }),
   not: (expr: any) => ({ expr, type: 'not' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
@@ -106,6 +107,7 @@ mock.module('@/lib/worker-deliverables', () => ({
 }));
 
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from './stale-workers';
+import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -2135,6 +2137,28 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     expect(update.exitCause).toBe('never_started');
     expect(update.error).not.toContain('no update for 15+ minutes');
     expect(update.error.toLowerCase()).toContain('never started');
+  });
+
+  // Friction 92866723: an MCP claim_task worker reaped by its 2h no-MCP-activity
+  // TTL must say so, not claim a runner failed to start it.
+  it('books an abandoned interactive (MCP) worker with its own text', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'idle', startedAt: null, turns: 0, costUsd: '0.000000', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([]) // failed workers (retry cap)
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    const update = workerUpdates[0].vals;
+    expect(update.status).toBe('failed');
+    expect(update.error).toBe(INTERACTIVE_ABANDONED_ERROR);
+    expect(update.error.toLowerCase()).not.toContain('never started by a runner');
   });
 
   it('books a started-but-outputless worker as silent_start with diagnosable text', async () => {

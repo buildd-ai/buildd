@@ -23,6 +23,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
@@ -953,6 +954,16 @@ async function handleMcpRequest(req: Request): Promise<Response> {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  // Any MCP request from a worker/admin session is liveness for the
+  // interactive workers that session claimed (claim_task, runner = 'mcp');
+  // without it the reaper judged them by runner rules and reaped live work
+  // (friction 92866723). Runs after the response; best-effort.
+  scheduleInteractiveTouch({
+    accountId: account.id,
+    userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
+    level: account.level,
+  });
 
   // Create per-request API wrapper, server, and transport
   const api = createApi(apiKey, signInteractiveSession({

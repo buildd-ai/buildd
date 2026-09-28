@@ -47,6 +47,7 @@ import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/cor
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
@@ -281,6 +282,13 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   const account = await authenticateApiKey(jwt);
   if (!account) return unauthorized(workspace);
   const level = (account.level as SessionLevel) || 'worker';
+  // Liveness for this session's interactive (claim_task) workers; see
+  // lib/interactive-worker-liveness.ts. After the response; best-effort.
+  scheduleInteractiveTouch({
+    accountId: account.id,
+    userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+    level,
+  });
 
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({

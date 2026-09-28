@@ -6946,6 +6946,31 @@ describe('claim route: interactive session marker', () => {
     expect(insertedRunner()).toBe('mcp-unverified');
   });
 
+  /** The context the atomic claim UPDATE wrote. */
+  function claimedContext(): any {
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) });
+    return () => sets.find(v => v.status === 'assigned')?.context;
+  }
+
+  // Review of #3052: the touch is scoped to the session user who claimed, so
+  // the claim has to record who that was.
+  it('an interactive claim stamps the session user; a runner claim never does', async () => {
+    const ctx = claimedContext();
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(ctx().interactiveClaimUserId).toBe('user-1');
+  });
+
+  it('a claim without a verified session user drops a stale stamp', async () => {
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimUserId: 'user-old' }, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    const ctx = claimedContext();
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp' } }));
+    expect('interactiveClaimUserId' in ctx()).toBe(false);
+  });
+
   it('runner "mcp" with a marker the MCP route signed for this account is interactive', async () => {
     const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));

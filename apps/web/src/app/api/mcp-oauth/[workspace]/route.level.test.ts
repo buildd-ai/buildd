@@ -43,6 +43,11 @@ mock.module('@buildd/core/mcp-tools', () => ({
   handleMemoryAction: mockHandleMemoryAction,
 }));
 
+const mockTouchInteractiveWorkers = mock((_opts: { accountId: string; userId?: string | null; level: string }) => {});
+mock.module('@/lib/interactive-worker-liveness', () => ({
+  scheduleInteractiveTouch: mockTouchInteractiveWorkers,
+}));
+
 import { POST } from './route';
 
 function rpc(method: string, params?: unknown) {
@@ -115,5 +120,26 @@ describe('mcp-oauth route: session level follows the team role', () => {
     sessionAt('admin');
     await callTool('buildd', { action: 'memory_delete', params: { id: 'm-1' } });
     expect(mockAuthenticateApiKey).toHaveBeenCalledWith('aaa.bbb.ccc');
+  });
+});
+
+// Friction 92866723: the OAuth transport is liveness for interactive workers too.
+describe('mcp-oauth route: interactive worker liveness', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockTouchInteractiveWorkers.mockClear();
+  });
+
+  it("touches the session account's interactive workers on each call", async () => {
+    sessionAt('admin');
+    await callTool('buildd', { action: 'memory_delete', params: { id: 'm-1' } });
+    expect(mockTouchInteractiveWorkers).toHaveBeenCalledTimes(1);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ accountId: 'acct-1', userId: 'u-1', level: 'admin' });
+  });
+
+  it('touches nothing when the session does not resolve', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    await callTool('buildd', { action: 'list_tasks', params: {} });
+    expect(mockTouchInteractiveWorkers).not.toHaveBeenCalled();
   });
 });
