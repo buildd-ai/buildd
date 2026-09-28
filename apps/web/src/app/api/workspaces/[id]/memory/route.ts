@@ -2,13 +2,13 @@
  * Proxy route for workspace memory — forwards to memory service.
  *
  * GET  /api/workspaces/:id/memory  → list/search memories (scoped by workspace repo as project)
- * POST /api/workspaces/:id/memory  → save a memory
+ * POST /api/workspaces/:id/memory  → save a memory (mirrored into the recall index)
  *
  * Auth: session user or API key with workspace access.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
+import { workspaces, accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
@@ -16,6 +16,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
+import { retrieveMemory } from '@buildd/core/memory-retrieval';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -57,6 +58,15 @@ async function getWorkspaceProject(id: string): Promise<string | null> {
   return resolveMemoryProjectKey(id);
 }
 
+/** The project key plus the team id the memory ledger needs. */
+async function getWorkspaceScope(id: string): Promise<{ project: string | null; teamId: string | null }> {
+  const [project, ws] = await Promise.all([
+    getWorkspaceProject(id),
+    db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } }),
+  ]);
+  return { project, teamId: ws?.teamId ?? null };
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -76,7 +86,7 @@ export async function GET(
     return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
-  const project = await getWorkspaceProject(id);
+  const { project, teamId } = await getWorkspaceScope(id);
   // No key means no memory: never fall back to a team-wide list.
   if (!project) {
     // Flagged so the page can say memory is off here, rather than "no memories".
@@ -97,11 +107,33 @@ export async function GET(
     .map(v => v.trim())
     .filter(Boolean);
 
+  const search = {
+    query, type, project, limit, offset,
+    files: files.length > 0 ? files : undefined,
+  };
+
   try {
-    const searchData = await memClient.search({
-      query, type, project, limit, offset,
-      files: files.length > 0 ? files : undefined,
-    });
+    // A search (a query or a file scope) is a memory read an agent receives:
+    // the runner's `## Workspace Memory` block is built from it. It goes
+    // through the one door so it shares the ledger; the output is the store's
+    // own token search, unchanged. The ledger row needs the task it was for,
+    // which the runner sends as `taskId` / `workerId`; without one (a
+    // dashboard search) nothing is recorded.
+    if (query || search.files) {
+      const taskId = searchParams.get('taskId');
+      const { memories, total } = await retrieveMemory({
+        strategy: 'store-search',
+        searcher: memClient,
+        search,
+        scope: { teamId, workspaceId: id },
+        caller: 'runner_workspace_memory',
+        attribution: { taskId, workerId: searchParams.get('workerId') },
+        ledger: taskId ? undefined : false,
+      });
+      return NextResponse.json({ memories, total });
+    }
+
+    const searchData = await memClient.search(search);
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });

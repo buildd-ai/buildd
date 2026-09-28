@@ -232,6 +232,8 @@ describe('workspace access is checked before any memory store call', () => {
     expect(saved).toHaveLength(0);
     expect(updated).toHaveLength(0);
     expect(deleted).toHaveLength(0);
+  });
+});
 
 describe('dashboard writes reach the recall index', () => {
   it('POST mirrors the new memory into the team memory namespace', async () => {
