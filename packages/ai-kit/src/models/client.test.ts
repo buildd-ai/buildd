@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  createModelsClient, isPlanDeniedError, memoryPlanStore, PlanDeniedError, toCallConfig, toWireReceipt,
+  createModelsClient, isPlanDeniedError, memoryPlanStore, PlanDeniedError, toCallConfig, gatewayModel, toWireReceipt,
   USAGE_RECORD_KEYS, USAGE_TOKEN_KEYS,
   type ModelsClientEvent, type ModelsClientOptions, type PlanStore, type ResolvedPlan, type UsageReceipt, type WirePlan,
 } from './index';
@@ -380,7 +380,7 @@ describe('toCallConfig', () => {
   it('builds an OpenRouter config with attribution and cost accounting', () => {
     const cfg = toCallConfig(freshPlan, { apiKeys: { openrouter: 'sk-or' }, appName: 'cue', appUrl: 'https://cue.app' });
     expect(cfg).toEqual({
-      provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', baseURL: 'https://openrouter.ai/api/v1', apiKey: 'sk-or',
+      provider: 'openrouter', via: 'direct', model: 'anthropic/claude-sonnet-4.5', baseURL: 'https://openrouter.ai/api/v1', apiKey: 'sk-or',
       headers: { 'X-Title': 'cue', 'HTTP-Referer': 'https://cue.app' }, extraBody: { usage: { include: true } },
       effort: 'medium', maxTurns: null,
     });
@@ -389,5 +389,26 @@ describe('toCallConfig', () => {
   it('builds an Anthropic config', () => {
     const cfg = toCallConfig({ ...freshPlan, provider: 'anthropic', model: 'claude-sonnet-4-5' });
     expect(cfg).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-5', baseURL: 'https://api.anthropic.com/v1', apiKey: undefined, headers: { 'anthropic-version': '2023-06-01' }, extraBody: {} });
+  });
+
+  it('routes through a LiteLLM gateway: provider/model id, gateway URL and key, no provider headers', () => {
+    const plan = { ...freshPlan, provider: 'anthropic' as const, model: 'claude-sonnet-5' };
+    const cfg = toCallConfig(plan, { apiKeys: { anthropic: 'sk-ant' }, gateway: { kind: 'litellm', baseURL: 'https://litellm.example.test/v1/', apiKey: 'sk-lite' } });
+    expect(cfg).toEqual({
+      provider: 'anthropic', via: 'litellm', model: 'anthropic/claude-sonnet-5', baseURL: 'https://litellm.example.test/v1',
+      apiKey: 'sk-lite', headers: {}, extraBody: {}, effort: 'medium', maxTurns: null,
+    });
+  });
+
+  it('maps a plan to the gateway\'s own alias, qualified first, or sends the bare id', () => {
+    const base = { kind: 'litellm' as const, baseURL: 'https://litellm.example.test/v1' };
+    expect(gatewayModel({ ...base, models: { 'openai/gpt-5': 'house-gpt', 'gpt-5': 'bare' } }, 'openai', 'gpt-5')).toBe('house-gpt');
+    expect(gatewayModel({ ...base, models: { 'gpt-5': 'bare' } }, 'openai', 'gpt-5')).toBe('bare');
+    expect(gatewayModel({ ...base, prefix: false }, 'openai', 'gpt-5')).toBe('gpt-5');
+    expect(gatewayModel(base, 'openrouter', 'qwen/qwen3-8b')).toBe('openrouter/qwen/qwen3-8b');
+  });
+
+  it('refuses a gateway with no base URL', () => {
+    expect(() => toCallConfig(freshPlan, { gateway: { kind: 'litellm', baseURL: '' } })).toThrow(/baseURL/);
   });
 });
