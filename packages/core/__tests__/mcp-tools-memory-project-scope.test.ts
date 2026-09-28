@@ -216,6 +216,45 @@ describe('memory fetch by id — project checked, not just team', () => {
     expect(mc.called('update')).toHaveLength(0);
   });
 
+  it('delete refuses another project memory and never deletes it', async () => {
+    const mc = makeMemStore(rows);
+    const deleted: string[] = [];
+    const ks = { ...makeKnowledgeStore([]).store, delete: async (_ns: string, ids: string[]) => { deleted.push(...ids); } };
+    const res = await handleMemoryAction(mc as any, 'delete', { id: 'foreign-1' }, ctxFor(OWN, ks));
+    expect(res.isError).toBe(true);
+    expect(mc.called('delete')).toHaveLength(0);
+    expect(deleted).toEqual([]);
+  });
+
+  it('delete answers a foreign id exactly as it answers a missing one', async () => {
+    const mc = makeMemStore(rows);
+    const foreign = await handleMemoryAction(mc as any, 'delete', { id: 'same-id' }, ctxFor(OWN));
+    const mcMissing = makeMemStore([]);
+    const missing = await handleMemoryAction(mcMissing as any, 'delete', { id: 'same-id' }, ctxFor(OWN));
+    const mcForeign = makeMemStore([{ id: 'same-id', project: FOREIGN }]);
+    const foreignRow = await handleMemoryAction(mcForeign as any, 'delete', { id: 'same-id' }, ctxFor(OWN));
+    expect(foreignRow).toEqual(missing);
+    expect(foreign).toEqual(missing);
+    expect(missing.isError).toBe(true);
+  });
+
+  it('delete refuses a team-wide (no project) memory and a caller with no project', async () => {
+    const mc = makeMemStore([{ id: 'team-wide', project: null }, { id: 'own-1', project: OWN }]);
+    expect((await handleMemoryAction(mc as any, 'delete', { id: 'team-wide' }, ctxFor(OWN))).isError).toBe(true);
+    expect((await handleMemoryAction(mc as any, 'delete', { id: 'own-1' }, ctxFor(undefined))).isError).toBe(true);
+    expect(mc.called('delete')).toHaveLength(0);
+  });
+
+  it('delete removes the caller own memory from the table and the index', async () => {
+    const mc = makeMemStore([{ id: 'own-1', project: OWN }]);
+    const deleted: string[] = [];
+    const ks = { ...makeKnowledgeStore([]).store, delete: async (_ns: string, ids: string[]) => { deleted.push(...ids); } };
+    const res = await handleMemoryAction(mc as any, 'delete', { id: 'own-1' }, ctxFor(OWN, ks));
+    expect(res.isError).toBeFalsy();
+    expect(mc.called('delete').map(c => c.args[0])).toEqual(['own-1']);
+    expect(deleted).toEqual(['own-1']);
+  });
+
   it('update refuses moving a memory to another project', async () => {
     const mc = makeMemStore([{ id: 'own-1', project: OWN }]);
     const res = await handleMemoryAction(mc as any, 'update', { id: 'own-1', project: FOREIGN }, ctxFor(OWN));
