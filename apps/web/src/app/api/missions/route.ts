@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { missions, workspaces, taskSchedules, initiatives, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveBranchStrategy, isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { generateMissionBranchName } from '@buildd/core/branch-names';
-import { eq, and, inArray, notInArray, desc } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
@@ -23,6 +23,7 @@ import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
+import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -57,24 +58,20 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
-    let where = inArray(missions.teamId, scopedTeamIds);
-    if (statusFilter === 'open') {
-      // Everything still in play: the list an agent means by "my missions".
-      where = and(where, notInArray(missions.status, ['completed', 'archived']))!;
-    } else if (statusFilter) {
-      where = and(where, eq(missions.status, statusFilter as any))!;
-    }
     // Opt-in cap: every mission carries all its tasks, so an unbounded list
     // grows with the team's whole history. Unset keeps the dashboard's full list.
     const limitParam = Number(searchParams.get('limit'));
     const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : undefined;
-    if (workspaceIdFilter) {
-      where = and(where, eq(missions.workspaceId, workspaceIdFilter))!;
-    }
+    const where = buildMissionListWhere({
+      teamIds: scopedTeamIds,
+      status: statusFilter,
+      workspaceId: workspaceIdFilter,
+      q: searchParams.get('q'),
+    });
 
     const results = await db.query.missions.findMany({
       where,
-      orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
+      orderBy: missionListOrderBy(parseMissionListSort(searchParams.get('sort'))),
       ...(limit ? { limit } : {}),
       with: {
         workspace: { columns: { id: true, name: true } },
@@ -124,7 +121,9 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ missions: missionsWithProgress });
+    // total: how many match before the cap, so a capped page can say "N of M".
+    const total = limit && results.length >= limit ? await db.$count(missions, where) : results.length;
+    return NextResponse.json({ missions: missionsWithProgress, total });
   } catch (error) {
     console.error('List missions error:', error);
     return NextResponse.json({ error: 'Failed to list missions' }, { status: 500 });

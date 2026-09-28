@@ -200,14 +200,12 @@ describe('get_error_traces', () => {
 
   it('errors when a workspaceId cannot be resolved', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
-    const res = await handleBuilddAction(
+    await expect(handleBuilddAction(
       mockApi as unknown as ApiFn,
       'get_error_traces',
       { workspaceId: 'no-such-workspace' },
       ctx(),
-    );
-    expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/no-such-workspace/);
+    )).rejects.toThrow(/Could not resolve workspace "no-such-workspace"/);
   });
 
   it('passes an 8-char task prefix through to the task route (the server resolves it)', async () => {

@@ -997,14 +997,19 @@ export function renderReleaseList(
 
 /**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
- * Falls back to context workspace ID if no param given.
+ * No param → the connection's workspace (null when it has none).
+ * An explicit param that matches nothing the caller can see THROWS, naming the
+ * workspaces it can see: dropping the filter (or swapping in the connection's
+ * workspace) answers about the wrong workspace. UUIDs pass through; the API
+ * authorizes them.
  */
 async function resolveWorkspaceId(
   api: ApiFn,
   param: unknown,
   ctx: ActionContext,
 ): Promise<string | null> {
-  const raw = (param as string) || ctx.workspaceId;
+  const explicit = typeof param === 'string' ? param.trim() : '';
+  const raw = explicit || ctx.workspaceId;
   if (raw && UUID_RE.test(raw)) return raw;
 
   // Try context fallback first
@@ -1025,15 +1030,25 @@ async function resolveWorkspaceId(
 
   // Fall back to name match across accessible workspaces
   const wsData = await api('/api/workspaces');
-  const workspaces = wsData.workspaces || [];
+  const workspaces: Array<{ id: string; name: string; repo?: string | null }> = wsData?.workspaces || [];
   const match = workspaces.find((ws: any) =>
     ws.name.toLowerCase() === raw.toLowerCase() ||
     ws.repo?.toLowerCase() === raw.toLowerCase() ||
     ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
   );
   if (match) return match.id;
-
+  if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
+}
+
+/** `Could not resolve workspace "x": not visible to this key. You can see: a, b.` */
+export function unknownWorkspaceMessage(value: string, visible: Array<{ name: string }>): string {
+  const MAX = 20;
+  const names = visible.map((w) => w.name);
+  const seen = names.length === 0
+    ? 'This key can see no workspaces.'
+    : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
+  return `Could not resolve workspace "${value}": not visible to this key. ${seen}`;
 }
 
 /**
@@ -1381,7 +1396,6 @@ export async function handleBuilddAction(
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
         : ctx.workspaceId || await ctx.getWorkspaceId();
-      if (params.workspaceId && !wsId) throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
       const rawLimit = params.limit;
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(Math.max(Math.trunc(rawLimit), 1), 50)
@@ -3671,9 +3685,7 @@ export async function handleBuilddAction(
       if (params.prNumber != null) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
       if (params.workspaceId) {
         const wsId = await resolveWorkspaceId(api, String(params.workspaceId), ctx);
-        if (!wsId) {
-          return errorResult(`Could not resolve workspace "${params.workspaceId}". Pass a workspace UUID.`);
-        }
+        if (!wsId) return errorResult('workspaceId did not resolve.');
         parts.push(`workspaceId=${encodeURIComponent(wsId)}`);
       }
       if (parts.length === 0) {
@@ -4005,9 +4017,6 @@ export async function handleBuilddAction(
       let wsId: string | null = null;
       if (rawWsId) {
         wsId = await resolveWorkspaceId(api, rawWsId, ctx);
-        if (!wsId) {
-          return errorResult(`Could not resolve workspace "${rawWsId}". Pass a workspace UUID, or omit workspaceId for a team-wide report.`);
-        }
       }
 
       // The route only ever normalizes the first line, so a long trace adds URL
@@ -4916,13 +4925,9 @@ export async function handleBuilddAction(
 
       const body: Record<string, unknown> = {};
       if (params.workspaceId !== undefined) {
+        // An explicit workspaceId that does not resolve throws, even with repo.
         const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-        if (wsId) {
-          body.workspaceId = wsId;
-        } else if (!params.repo) {
-          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
-        }
-        // If wsId is null but params.repo is provided, fall through to repo param below.
+        if (wsId) body.workspaceId = wsId;
       }
       if (params.repo !== undefined) body.repo = params.repo;
       if (params.ref !== undefined) body.ref = params.ref;
@@ -4977,13 +4982,9 @@ export async function handleBuilddAction(
 
       const qs = new URLSearchParams();
       if (params.workspaceId) {
+        // An explicit workspaceId that does not resolve throws, even with repo.
         const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-        if (wsId) {
-          qs.set('workspaceId', wsId);
-        } else if (!params.repo) {
-          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
-        }
-        // If wsId is null but params.repo is provided, fall through to repo param below.
+        if (wsId) qs.set('workspaceId', wsId);
       }
       if (params.repo) qs.set('repo', String(params.repo));
       if (params.ref) qs.set('ref', String(params.ref));

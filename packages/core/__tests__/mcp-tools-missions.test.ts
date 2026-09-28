@@ -202,7 +202,7 @@ describe('manage_missions — workspace resolution', () => {
         },
         createMockContext(),
       ),
-    ).rejects.toThrow('Workspace not found: nonexistent');
+    ).rejects.toThrow(/Could not resolve workspace "nonexistent": not visible to this key/);
   });
 
   it('resolves workspace name to ID on update', async () => {
