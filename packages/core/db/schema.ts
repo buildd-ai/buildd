@@ -15,6 +15,13 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
   },
 });
 
+// Custom tsvector column type — used for the stored generated lexical search column below.
+const tsvectorType = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
+
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
@@ -1142,6 +1149,19 @@ export const tasks = pgTable('tasks', {
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
+  // How `category` was decided, once the decision model has looked at the task
+  // (apps/web/src/lib/task-category-decision.ts). NULL = not looked at yet: the
+  // sweep picks it up. Carries the prompt/model version, the keyword result and
+  // the model's pick, so every write is reversible and re-scoreable.
+  categoryDecision: jsonb('category_decision').$type<{
+    v: string;
+    source: 'caller' | 'keyword' | 'jev';
+    keyword: string | null;
+    jev: string | null;
+    confidence: number | null;
+    skipped?: 'sensitive' | 'unconfigured';
+    at: string;
+  }>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -2709,7 +2729,7 @@ export const deviceCodes = pgTable('device_codes', {
 
 // Knowledge chunks — unified semantic + lexical retrieval store.
 // namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
-// HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
+// HNSW index on embedding is added in the migration SQL.
 export const knowledgeChunks = pgTable('knowledge_chunks', {
   id: uuid('id').primaryKey().defaultRandom(),
   sourceId: text('source_id').notNull(),
@@ -2720,6 +2740,12 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceUrl: text('source_url'),
   content: text('content').notNull(),
   lexicalText: text('lexical_text'),
+  // Stored generated column so lexical search ranks against a precomputed
+  // tsvector instead of recomputing to_tsvector(...) per row on every query.
+  // Expression MUST stay identical to the one it replaces.
+  lexicalTsv: tsvectorType('lexical_tsv').generatedAlwaysAs(
+    sql`to_tsvector('english', coalesce(lexical_text, content))`,
+  ),
   embedding: vectorType('embedding', { dimensions: 1024 }),
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
@@ -2739,6 +2765,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
   entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
+  lexicalTsvGinIdx: index('knowledge_chunks_lexical_tsv_gin_idx').using('gin', t.lexicalTsv),
 }));
 
 // Memory use ledger: one row per memory a retrieval returned, and how it

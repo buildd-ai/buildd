@@ -150,6 +150,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         teamId: conv.teamId,
         // A session can see several workspaces: ambiguous actions must name one.
         authType: 'oauth' as const,
+        surface: 'chat' as const,
         getWorkspaceId: async () => def,
         knowledgeStore,
         embedder,

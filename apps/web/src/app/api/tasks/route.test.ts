@@ -75,11 +75,12 @@ mock.module('@/lib/mission-loop', () => ({
   reopenCompletedMission: mockReopenCompletedMission,
 }));
 
-// The category shadow is covered by task-category-decision.test.ts; here we only
-// assert WHEN the route schedules it, and that it cannot touch the stored row.
-const mockScheduleTaskCategoryShadow = mock((..._args: any[]) => {});
+// The category decision is covered by task-category-decision.test.ts; here we
+// only assert WHEN the route schedules it and with what, and that it cannot fail
+// creation.
+const mockScheduleTaskCategorize = mock((..._args: any[]) => {});
 mock.module('@/lib/task-category-decision', () => ({
-  scheduleTaskCategoryShadow: mockScheduleTaskCategoryShadow,
+  scheduleTaskCategorize: mockScheduleTaskCategorize,
 }));
 
 // Mock auth-helpers
@@ -1297,13 +1298,13 @@ describe('POST /api/tasks', () => {
   });
 
   // ── task category decision shadow ────────────────────────────────────
-  describe('category shadow', () => {
+  describe('category decision', () => {
     async function postWithBody(
       body: Record<string, unknown>,
       workspace: Record<string, unknown> = {},
       opts: { keepMock?: boolean } = {},
     ) {
-      if (!opts.keepMock) mockScheduleTaskCategoryShadow.mockReset();
+      if (!opts.keepMock) mockScheduleTaskCategorize.mockReset();
       mockGetCurrentUser.mockResolvedValue(null);
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
       mockResolveCreatorContext.mockResolvedValue({
@@ -1328,15 +1329,15 @@ describe('POST /api/tasks', () => {
       return { response, capturedValues };
     }
 
-    it('schedules a shadow run when the keyword classifier picked the category', async () => {
+    it('schedules a look at a keyword-picked category, after the response', async () => {
       const { response, capturedValues } = await postWithBody({
         title: 'Fix crash on save',
         description: 'Throws on click.',
       });
       expect(response.status).toBe(200);
       expect(capturedValues.category).toBe('bug');
-      expect(mockScheduleTaskCategoryShadow).toHaveBeenCalledTimes(1);
-      const [input, schedule] = mockScheduleTaskCategoryShadow.mock.calls[0] as any[];
+      expect(mockScheduleTaskCategorize).toHaveBeenCalledTimes(1);
+      const [input, schedule] = mockScheduleTaskCategorize.mock.calls[0] as any[];
       expect(input).toEqual({
         taskId: capturedValues.id,
         teamId: 'team-1',
@@ -1344,31 +1345,32 @@ describe('POST /api/tasks', () => {
         accountId: 'account-123',
         title: 'Fix crash on save',
         description: 'Throws on click.',
-        keywordCategory: 'bug',
+        stored: 'bug',
+        callerSet: false,
         dataClass: null,
       });
       expect(typeof schedule).toBe('function');
     });
 
-    it('also shadows when the keyword classifier abstained', async () => {
+    it('also looks when the keyword classifier abstained', async () => {
       const { capturedValues } = await postWithBody({ title: 'Quarterly thing' });
       expect(capturedValues.category).toBeUndefined();
-      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].keywordCategory).toBeNull();
+      expect((mockScheduleTaskCategorize.mock.calls[0] as any[])[0]).toMatchObject({ stored: null, callerSet: false });
     });
 
-    it('does not shadow a caller-supplied category', async () => {
+    it('marks a caller-supplied category as the caller\'s, so it is never changed', async () => {
       const { capturedValues } = await postWithBody({ title: 'Fix crash on save', category: 'docs' });
       expect(capturedValues.category).toBe('docs');
-      expect(mockScheduleTaskCategoryShadow).not.toHaveBeenCalled();
+      expect((mockScheduleTaskCategorize.mock.calls[0] as any[])[0]).toMatchObject({ stored: 'docs', callerSet: true });
     });
 
     it('passes the workspace data class so sensitive content can be withheld', async () => {
       await postWithBody({ title: 'Fix crash' }, { gitConfig: { dataClass: 'sensitive' } });
-      expect((mockScheduleTaskCategoryShadow.mock.calls[0] as any[])[0].dataClass).toBe('sensitive');
+      expect((mockScheduleTaskCategorize.mock.calls[0] as any[])[0].dataClass).toBe('sensitive');
     });
 
     it('never fails task creation when scheduling throws', async () => {
-      mockScheduleTaskCategoryShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      mockScheduleTaskCategorize.mockImplementationOnce(() => { throw new Error('boom'); });
       const { response } = await postWithBody({ title: 'Fix crash on save' }, {}, { keepMock: true });
       expect(response.status).toBe(200);
     });

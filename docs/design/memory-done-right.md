@@ -54,27 +54,29 @@ Hit counts split into `pushCount` and `useCount`. Consolidation's decay test rea
 - **Sources, many episodes over time:** `learn` calls; failed tasks (the error plus the last summary); PR reviews that requested changes; reverts; chat turns where the user states a preference or correction ("always", "never", "remember"); merged PRs touching paths a memory is anchored to.
 - **Candidate first.** New memories are written with `state: candidate`, provenance (source kind + id) and path anchors (`files`). Candidates are recallable when asked for but not pushed.
 - **Update decision.** Against the top similar memories, the writer resolves ADD / UPDATE / SUPERSEDE / NOOP. The existing 0.94 auto-replace and 0.88 to 0.94 conflict band become inputs to this decision rather than the whole rule.
-- **Promotion to `active`:** the source outcome is verified (task succeeded and its PR merged and was not reverted within a window), or a second independent episode corroborates it, or a human approves it. Candidates that are neither promoted nor used within a window expire.
+- **Promotion to `active` is automatic, judged by Jev.** Evidence is assembled deterministically: source outcome (task succeeded, PR merged, not reverted within a window), independent corroborating episodes, use-ledger counts, source kind. Jev answers yes/no "promote?" over that evidence. Hard floors Jev cannot override: external-source content never auto-promotes, and a candidate with zero verified outcomes and zero corroboration stays a candidate. While Jev is in shadow, the deterministic rule decides (verified outcome or one corroborating episode). Candidates neither promoted nor used within a window expire.
 - **Validity.** `validFrom` / `invalidatedAt` next to `supersedes`. When a merged PR touches a memory's anchored paths, the memory is flagged for re-verification instead of trusted forever.
 - **Reflection.** A background job per workspace, triggered by accumulated new episodes rather than a clock, reads recent outcomes and writes a few `pattern` / `decision` candidates that link back to their sources. It edits memories one at a time and never regenerates a whole summary (whole-text rewrites erode detail).
 - **Graduation.** A pattern that stays active and used across many tasks is proposed as a skill or CLAUDE.md change via a PR a human merges.
 
 ### Chat
 
-Chat gets two tiers: **directives** (user-stated rules, always loaded, small, editable in settings, scoped to the user or the workspace) and **knowledge** (everything else, through the one door). A chat turn that states a rule produces a directive candidate the user confirms in one tap.
+Chat gets two tiers: **directives** (user-stated rules, always loaded, small, editable in settings) and **knowledge** (everything else, through the one door). A chat turn that states a rule produces a directive candidate the user confirms in one tap. Directives apply to the user everywhere by default; Jev suggests "only this workspace" when the rule names workspace-specific things (a repo, a path, a mission), and the confirm card shows that suggestion preselected.
 
 ### Where Jev helps
 
-Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never writes prose. That fits the decision points above, and each one ships **shadow first** (log the verdict, act on the current rule) per [decision-calls.md](decision-calls.md), then an offline benchmark against the ledger, then a confidence-gated apply:
+Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never writes prose. Each decision is **confidence-gated and fails open** to the current rule (5s deadline, low confidence, error). Shadow is reserved for the two decisions whose mistakes are invisible or spread: the relevance gate (a hidden memory leaves no trace) and promotion (one bad promotion reaches every agent). Those log verdicts until the use ledger can grade them, then switch on. The rest go live with the first release, because a wrong answer is visible, confirmed by a human, or reversible:
 
-| Decision | Jev question | Replaces |
-|---|---|---|
-| Worth keeping | yes/no: durable lesson, not a task summary? | nothing (today every `learn` lands) |
-| Type | choice: gotcha / pattern / decision / discovery / architecture | caller's guess |
-| Update | choice: ADD / UPDATE / SUPERSEDE / NOOP given the top similar | 0.88 to 0.94 "retry with supersedes" |
-| Relevance gate | yes/no per hit: does this change what the agent should do on this task? | fixed 0.45 floor |
-| Use label | yes/no: does the summary act on this memory? | nothing |
-| Chat tier | choice: directive / knowledge / neither | nothing |
+| Decision | Jev question | Replaces | Mode |
+|---|---|---|---|
+| Worth keeping | yes/no: durable lesson, not a task summary? | nothing (today every `learn` lands) | live: "no" writes a candidate, never drops |
+| Type | choice: gotcha / pattern / decision / discovery / architecture | caller's guess | live |
+| Update | choice: ADD / UPDATE / SUPERSEDE / NOOP given the top similar | 0.88 to 0.94 "retry with supersedes" | live in the 0.88 to 0.94 band; supersede invalidates, reversible |
+| Relevance gate | yes/no per hit: does this change what the agent should do on this task? | fixed 0.45 floor | shadow |
+| Use label | yes/no: does the summary act on this memory? | nothing | live (measurement), spot-checked |
+| Chat tier | choice: directive / knowledge / neither | nothing | live: proposes a card the user confirms |
+| Directive scope | choice: everywhere / this workspace | user picks from scratch | live: preselects, user confirms |
+| Promote | yes/no over assembled evidence, inside hard floors | deterministic rule | shadow; deterministic rule decides meanwhile |
 
 Not Jev: reflection and extraction of text. Those need a generating model and run as background runner tasks on the team's seat.
 
@@ -85,7 +87,7 @@ Load-bearing first.
 1. **Correctness.** Project filter on every memory read (in flight as a security fix); mirror dashboard and feedback-digest writes; surface mirror failures instead of swallowing them; stop pushes from counting as hits.
 2. **One door + ledger.** `retrieveMemory` in `packages/core`, `memory_uses` table, migrate all read paths, keep the current rules as defaults so output is unchanged until an option flips.
 3. **Index injection** behind a flag, compared on the ledger's use rate and the existing `eval-retrieval.ts` golden set.
-4. **Jev in shadow** for the six decisions above; readout from the ledger.
+4. **Jev decisions**: live where the table says live, shadow for relevance and promotion; readout from the ledger.
 5. **Candidate state, promotion, validity, failed-task and review extraction.**
 6. **Reflection job and chat directives.**
 7. **Graduation to skills.**
@@ -98,12 +100,17 @@ Defaults stay no-ops: steps 2 to 4 change nothing an agent sees until a flag fli
 - Reflection is capped per workspace per run (illustrative: 5 candidates) and only edits one memory per decision.
 - Expiry and invalidation are reversible: nothing is hard-deleted by automation.
 
+## Decisions (2026-09-27)
+
+1. **Claim push:** index injection (type, title, id per line); bodies pulled with `recall`.
+2. **Promotion:** automatic, judged by Jev inside hard floors; deterministic rule while Jev is in shadow.
+3. **Directives:** user-level everywhere by default; Jev suggests workspace scope.
+4. **Jev:** live now for keep, type, update, use label, chat tier and directive scope (confidence-gated, fail open); shadow for relevance gate and promotion until the ledger grades them.
+
 ## Open questions
 
-1. **Push or pull at claim.** Lean: index injection (titles + ids) with bodies pulled, because near-miss bodies act as distractors. Keeping body injection for the top 1 or 2 gotchas is the compromise.
-2. **Who promotes.** Lean: automatic on verified outcome or corroboration, with a review queue only for chat-derived and external-source memories.
-3. **Directive scope.** Lean: user-level by default, with an explicit "for this workspace" option.
-4. **Holdout.** Lean: ship the ledger without it; turn on a small holdout only once the ledger shows enough traffic to read.
+1. **Holdout.** Lean: ship the ledger without it; turn on a small holdout only once the ledger shows enough traffic to read.
+2. **Promotion window.** How long a merged PR must stay unreverted before it counts as verified. Lean: 72 hours.
 
 ## Non-goals
 

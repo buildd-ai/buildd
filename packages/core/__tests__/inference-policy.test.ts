@@ -25,9 +25,9 @@ describe('isInferenceAllowed', () => {
   });
 
   it('never gates the built-in decision calls', () => {
-    const gate = { featureModes: { task_classification: 'runner', task_category_shadow: 'runner' } };
+    const gate = { featureModes: { task_classification: 'runner', task_category: 'runner' } };
     expect(isInferenceAllowed('task_classification', gate)).toBe(true);
-    expect(isInferenceAllowed('task_category_shadow', gate)).toBe(true);
+    expect(isInferenceAllowed('task_category', gate)).toBe(true);
   });
 
   it('never gates chat, whatever the deprecated chat_disabled column holds', () => {
@@ -107,7 +107,7 @@ describe('the capability registry', () => {
     for (const f of SERVER_FEATURES) expect(INFERENCE_CAPABILITIES[f].kind).toBe('server_feature');
     expect(INFERENCE_CAPABILITIES.chat.kind).toBe('interactive');
     expect(INFERENCE_CAPABILITIES.task_classification.kind).toBe('built_in');
-    expect(INFERENCE_CAPABILITIES.task_category_shadow.kind).toBe('built_in');
+    expect(INFERENCE_CAPABILITIES.task_category.kind).toBe('built_in');
   });
 
   it('gives every server-side feature a one-line label and description', () => {

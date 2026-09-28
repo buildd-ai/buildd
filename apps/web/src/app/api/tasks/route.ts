@@ -14,7 +14,7 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
-import { scheduleTaskCategoryShadow } from '@/lib/task-category-decision';
+import { scheduleTaskCategorize } from '@/lib/task-category-decision';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -936,8 +936,8 @@ export async function POST(req: NextRequest) {
     } else if (!rawCategory) {
       category = classifyTask(title, description) as CategoryType | null;
     }
-    // Only a keyword-derived category is shadowed: a caller-supplied one is the
-    // filer's own label, not a classifier output worth comparing against.
+    // A caller-supplied category is the filer's own label: the decision model
+    // records its look but never changes it.
     const categoryWasKeywordClassified = !rawCategory;
 
     // Short display label: whoever files the task may supply one; otherwise the
@@ -1340,24 +1340,24 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Decision-model shadow of the keyword category (observe-only, off unless
-    // the team enabled `task_category_shadow` and stored a decision key). Runs
-    // after the response via after(); it cannot change `category` on the row
-    // and cannot fail this request. See docs/design/decision-calls.md.
-    if (categoryWasKeywordClassified && intake.outcome.action !== 'attached') {
+    // The decision model's look at the category (lib/task-category-decision.ts):
+    // after the response via after(), so it cannot delay or fail this request.
+    // It may fill or replace a keyword category; never a supplied one or review.
+    if (intake.outcome.action !== 'attached') {
       try {
-        scheduleTaskCategoryShadow({
+        scheduleTaskCategorize({
           taskId: task.id,
           teamId: targetWorkspace.teamId,
           workspaceId,
           accountId: creatorContext.createdByAccountId ?? null,
           title,
           description: description ?? null,
-          keywordCategory: category,
+          stored: category,
+          callerSet: !categoryWasKeywordClassified,
           dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
         }, after);
       } catch (err) {
-        console.error('[task-create] decision shadow scheduling failed (non-fatal):', err);
+        console.error('[task-create] category decision scheduling failed (non-fatal):', err);
       }
     }
 

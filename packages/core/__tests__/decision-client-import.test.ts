@@ -25,12 +25,12 @@ const OK = {
 };
 const questions = { q: { type: 'noul', instructions: 'Is this a bug?' } };
 const withKey = await mod.decisionCall({
-  capability: 'task_category_shadow', teamId: 't', state: 'x', questions, apiKey: 'sk-or-test',
+  capability: 'task_category', teamId: 't', state: 'x', questions, apiKey: 'sk-or-test',
   fetcher: async () => new Response(JSON.stringify(OK), { headers: { 'content-type': 'application/json' } }),
 });
 // Without a key the lazy DB import is attempted; it must fail closed, not throw.
 const withoutKey = await mod.decisionCall({
-  capability: 'task_category_shadow', teamId: 't', state: 'x', questions,
+  capability: 'task_category', teamId: 't', state: 'x', questions,
   fetcher: async () => { throw new Error('must not fetch'); },
 });
 console.log(JSON.stringify({ withKey: withKey.ok, withoutKey: withoutKey.ok ? 'ok' : withoutKey.error.kind }));
