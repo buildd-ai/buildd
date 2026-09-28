@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, workspaces, accounts } from '@buildd/core/db/schema';
-import { eq, and, lt, inArray } from 'drizzle-orm';
+import { eq, and, lt, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -11,6 +11,7 @@ import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-de
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -82,6 +83,8 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
       claimedAt: null,
       expiresAt: null,
       updatedAt: now,
+      // A requeue ends the claim, so a force claim's audit goes with it.
+      context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
     })
     .where(eq(tasks.id, taskId));
   return 'pending' as const;

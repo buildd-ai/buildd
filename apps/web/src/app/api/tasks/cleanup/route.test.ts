@@ -114,6 +114,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings: [...strings], values, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -400,6 +401,10 @@ describe('POST /api/tasks/cleanup', () => {
     expect(capturedSetData.claimedBy).toBeNull();
     expect(capturedSetData.claimedAt).toBeNull();
     expect(capturedSetData.expiresAt).toBeNull();
+    // A requeue ends the claim, so a force claim's audit is removed with it.
+    expect(capturedSetData.context.type).toBe('sql');
+    expect(capturedSetData.context.strings.join('')).toContain(' - ');
+    expect(capturedSetData.context.values).toContain('forceClaim');
   });
 
   it('marks task failed (not pending) once worker failures hit the retry cap', async () => {

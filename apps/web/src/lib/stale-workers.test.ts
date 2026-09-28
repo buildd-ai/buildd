@@ -1341,6 +1341,29 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
   });
 
+  // Review of #3053: a force claim's audit describes one claim; a requeue ends it.
+  it('a requeue drops the previous claim\'s force audit', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1', exitCause: 'infra_failure' }])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned', category: 'feature',
+      context: { forceClaim: { at: 'x', accountId: 'a', userId: null, bypassed: ['deps_blocked'] }, keep: 1 },
+      loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }) });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('pending');
+    expect('forceClaim' in taskUpdateSet.context).toBe(false);
+    expect(taskUpdateSet.context.keep).toBe(1);
+  });
+
   it('sets resumeBranch alongside baseBranch on infra-failure reset, so the runner resumes the branch rather than treating it as a declared base', async () => {
     // Same as the first-infra-failure case above, but the stale worker has a
     // real branch — the retry must resume that exact branch, not cut a fresh

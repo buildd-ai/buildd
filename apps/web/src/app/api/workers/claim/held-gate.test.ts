@@ -88,7 +88,10 @@ describe('missionNotHeld() — emitted SQL', () => {
 
   it('honours the force-start bypass written into task.context', () => {
     const text = renderHeldGate();
-    expect(text).toContain(`"tasks"."context"->>'${BYPASS_HELD_GATE_KEY}' = 'true'`);
+    const q = dialect.sqlToQuery(missionNotHeld());
+    // Coalesced (see the two-valued test below); the key is a bound param.
+    expect(text).toMatch(/COALESCE\("tasks"\."context"->>\$1, ''\) = 'true'/);
+    expect(q.params[0]).toBe(BYPASS_HELD_GATE_KEY);
     // The three arms are alternatives, not requirements — an AND here would
     // mean a task needs no mission AND a bypass AND an unheld mission.
     expect(text).not.toContain('AND "tasks"."context"');
@@ -102,6 +105,19 @@ describe('missionNotHeld() — emitted SQL', () => {
     expect(text).toMatch(
       /OR NOT EXISTS \( SELECT 1 FROM "missions" m WHERE m\.id = "tasks"\."mission_id" AND m\.is_held = true \)/,
     );
+  });
+});
+
+// Friction cad81659: `context->>'bypassHeldGate' = 'true'` is NULL when the key
+// is absent, so a HELD mission's gate evaluated to NULL OR NULL OR FALSE = NULL
+// rather than FALSE. The claim WHERE excludes either way, but the explicit-claim
+// probe reads the gate as a column and took NULL for "not evaluated", answering
+// "Excluded by a claim filter this diagnosis does not cover".
+describe('missionNotHeld(): two-valued', () => {
+  it('never reads the bypass key bare (a missing key must be FALSE, not NULL)', () => {
+    const text = renderHeldGate();
+    expect(text).not.toMatch(/"tasks"\."context"->>'bypassHeldGate' = 'true'/);
+    expect(text).toContain('COALESCE("tasks"."context"->>');
   });
 });
 

@@ -1248,6 +1248,17 @@ export interface ClaimTasksInput {
    * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
    */
   runnerFeatures?: string[];
+  /**
+   * Admin-only, only with `taskId`, and only for a task in the admin's own
+   * team's workspace: claim that one task past the gates a person may override,
+   * the MCP equivalent of the dashboard's "Start with override". Skips
+   * dependencies, a held mission, a dead subject, a future startAt, mission
+   * concurrency and pacing, path overlap and the workspace cap. Never skips a
+   * live worker, a person's hold on the task, the mission budget,
+   * scope-undeclared serialization, role/runner routing, provider walls or
+   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
+   */
+  forceOverride?: boolean;
 }
 
 export type ClaimDiagnosticReason =
@@ -1262,11 +1273,17 @@ export type ClaimDiagnosticReason =
   | 'budget_exhausted'
   | 'budget_exhausted_partial'
   | 'context_paused'
-  | 'path_overlap_blocked';
+  | 'path_overlap_blocked'
+  /** An interactive session's explicit claim of this task came too soon after its last one. */
+  | 'rate_limited';
 
 /**
- * Which gate excluded an explicitly requested task (claim with `taskId`) from
- * the claim query. See apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts.
+ * Which gate excluded an explicitly requested task (claim with `taskId`). The
+ * SQL-level codes come from the probe in
+ * apps/web/src/app/api/workers/claim/explicit-task-exclusion.ts; the
+ * dispatch-loop codes are the `deferrals` keys, set when the named task itself
+ * was the one deferred. There is deliberately no "unknown": every exclusion
+ * names its filter (friction cad81659).
  */
 export type ClaimTaskExclusionCode =
   | 'not_found'
@@ -1283,7 +1300,17 @@ export type ClaimTaskExclusionCode =
   | 'runner_cooldown'
   | 'workspace_cap'
   | 'path_overlap'
-  | 'unknown';
+  /** Codex task and this caller can run neither Codex nor its credential. */
+  | 'capability_mismatch'
+  /** Pinned to a project the workspace does not have; the task was failed. */
+  | 'workspace_mismatch'
+  /** The account filled its concurrent-worker limit before this task's insert. */
+  | 'account_cap'
+  /** Every filter passes on re-check: the task changed between query and probe. Retry. */
+  | 'state_changed'
+  /** An interactive session claimed this task too recently; retry after the window. */
+  | 'rate_limited'
+  | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
