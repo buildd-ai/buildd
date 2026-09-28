@@ -56,8 +56,13 @@ const mockPrune = mock(async (_opts?: any) => {
   if (pruneResult instanceof Error) throw pruneResult;
   return pruneResult;
 });
+const mockPruneDecisions = mock(async (_opts?: any) => {
+  if (pruneResult instanceof Error) throw pruneResult;
+  return { deleted: 2, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+});
 mock.module('@buildd/core/memory-uses-retention', () => ({
   pruneMemoryUses: mockPrune,
+  pruneMemoryDecisions: mockPruneDecisions,
 }));
 
 const { POST } = await import('./route');
@@ -147,6 +152,14 @@ describe('POST /api/cron/memory-digest-guardrail', () => {
     const res = await POST(makeRequest());
     expect(mockPrune).toHaveBeenCalledTimes(1);
     expect((await res.json()).memoryUsesPruned).toEqual(pruneResult);
+  });
+
+  it('prunes expired memory_decisions rows in the same run', async () => {
+    mockPruneDecisions.mockClear();
+    pruneResult = { deleted: 4, cutoff: '2026-06-01T00:00:00.000Z', batchFull: false };
+    const res = await POST(makeRequest());
+    expect(mockPruneDecisions).toHaveBeenCalledTimes(1);
+    expect((await res.json()).memoryDecisionsPruned).toMatchObject({ deleted: 2 });
   });
 
   it('a failed prune never fails the guardrail run', async () => {

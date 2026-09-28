@@ -260,6 +260,72 @@ function writeLedger(
   }
 }
 
+// ── Relevance shadow ─────────────────────────────────────────────────────────
+
+/**
+ * One pushed retrieval, as the relevance shadow sees it: the task text the
+ * query was built from and the hits the agent was shown. The shadow asks Jev
+ * "does this memory change what the agent should do on this task?" per hit
+ * and logs the verdict next to the rule's (see ./memory-decisions). It never
+ * changes a result: the hook runs after the ledger rows are built, is not
+ * awaited, and anything it throws is swallowed.
+ */
+export interface MemoryRelevanceShadowInput {
+  teamId: string;
+  workspaceId: string | null;
+  taskId: string;
+  caller: MemoryCaller;
+  query: string;
+  hits: Array<{ memoryId: string; rank: number; score: number | null; gatedBy: MemoryGate | null; content: string }>;
+}
+
+/** Must not throw and must not be awaited; schedule the work after the response. */
+export type MemoryRelevanceShadow = (input: MemoryRelevanceShadowInput) => void;
+
+let relevanceShadow: MemoryRelevanceShadow | null = null;
+
+/**
+ * Install (or clear, with null) the relevance shadow, returning the previous
+ * one. The web app installs one; the runner and tests run without.
+ */
+export function setMemoryRelevanceShadow(hook: MemoryRelevanceShadow | null): MemoryRelevanceShadow | null {
+  const previous = relevanceShadow;
+  relevanceShadow = hook;
+  return previous;
+}
+
+/**
+ * Pushes only, attributed to a task, shown hits only. Called from each
+ * strategy's `commitLedger`, with the same final hits (after any caller
+ * `gateFor`) the ledger rows are built from, so the shadow and the ledger
+ * always agree on which memories the agent was shown.
+ */
+function shadowRelevance(
+  args: { caller: MemoryCaller; query: string; workspaceId?: string | null; attribution?: MemoryAttribution },
+  teamId: string | null | undefined,
+  hits: ReadonlyArray<MemoryHit & { content: string }>,
+): void {
+  const hook = relevanceShadow;
+  if (!hook || MEMORY_CALLER_VIA[args.caller] !== 'push') return;
+  const taskId = uuidOrNull(args.attribution?.taskId);
+  const team = uuidOrNull(teamId);
+  if (!taskId || !team) return;
+  const shown = hits.filter(h => !h.gated);
+  if (shown.length === 0) return;
+  try {
+    hook({
+      teamId: team,
+      workspaceId: uuidOrNull(args.workspaceId),
+      taskId,
+      caller: args.caller,
+      query: args.query,
+      hits: shown.map(h => ({ memoryId: h.memoryId, rank: h.rank, score: h.score, gatedBy: h.gatedBy, content: h.content })),
+    });
+  } catch {
+    // Shadow: nothing depends on it.
+  }
+}
+
 /**
  * Record memories the agent pulled by id (`recall` id=, the claim-time index's
  * pull path): one `via: pull` row each, same writer and verification as a
@@ -508,6 +574,11 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
         caller: input.caller,
         attribution: input.attribution,
       }));
+      shadowRelevance(
+        { caller: input.caller, query: input.query, workspaceId, attribution: input.attribution },
+        teamId,
+        final.map(h => ({ ...h, content: h.result.content })),
+      );
     };
     if (!input.deferLedger) commitLedger();
 
@@ -551,6 +622,7 @@ async function retrieveStoreMemory(
     .filter(h => h.rank > 0)
     .sort((a, b) => a.rank - b.rank);
 
+  const contentOf = new Map(memories.map(m => [m.id, m as { title?: string; content?: string }]));
   let committed = false;
   const commitLedger: RetrieveStoreMemoryResult<unknown>['commitLedger'] = (gateFor) => {
     if (committed) return;
@@ -568,6 +640,14 @@ async function retrieveStoreMemory(
       caller: input.caller,
       attribution: input.attribution,
     }));
+    shadowRelevance(
+      { caller: input.caller, query: input.search.query ?? '', workspaceId: input.scope.workspaceId, attribution: input.attribution },
+      input.scope.teamId,
+      final.map(h => {
+        const m = contentOf.get(h.memoryId);
+        return { ...h, content: m ? `${m.title ?? ''}\n\n${m.content ?? ''}`.trim() : '' };
+      }),
+    );
   };
   if (!input.deferLedger) commitLedger();
 

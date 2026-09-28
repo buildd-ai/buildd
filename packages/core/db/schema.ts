@@ -2810,6 +2810,51 @@ export const memoryUses = pgTable('memory_uses', {
   createdIdx: index('memory_uses_created_idx').on(t.createdAt),
 }));
 
+// Memory decision log: one row per Jev verdict on a memory decision
+// (packages/core/memory-decisions.ts, docs/design/memory-done-right.md "Where
+// Jev helps"). Every row carries the verdict, its confidence, what the current
+// rule said and whether the verdict was acted on, so the offline readout
+// (packages/core/scripts/memory-decision-readout.ts) can compare Jev, the rule
+// and the use ledger's outcome per decision. Content-free: ids, labels and
+// numbers only. Spend is also receipted in ai_usage (surface 'decision').
+// Written after the response, so a failed insert costs log rows and nothing
+// else. Only the team is a FK (cascade, like ai_usage): the other ids point at
+// rows the log outlives, same as memory_uses. Pruned after 90 days by the
+// memory-digest-guardrail cron (packages/core/memory-uses-retention.ts).
+export const memoryDecisions = pgTable('memory_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id'),
+  taskId: uuid('task_id'),
+  /** The memory the verdict is about; null when none was written (a NOOP, a failed save). */
+  memoryId: text('memory_id'),
+  /** keep | type | update | use | relevance | promote | chat_tier | directive_scope. */
+  decision: text('decision').notNull(),
+  /** The decision's `version` (promptVersion|model|kit). */
+  version: text('version').notNull(),
+  mode: text('mode').notNull().$type<'live' | 'shadow'>(),
+  /** Jev's answer as a label ('true'/'false' for a yes/no); null when the call failed. */
+  verdict: text('verdict'),
+  confidence: real('confidence'),
+  /** The yes-probability of a yes/no answer; null for a choice. */
+  probability: real('probability'),
+  /** What the current rule decided (the caller's type, 'conflict', 'shown', ...). */
+  rule: text('rule'),
+  applied: boolean('applied').notNull().default(false),
+  /** Error kind when the call failed open (timeout, provider_error, parse, ...). */
+  error: text('error'),
+  /** Which read path, for relevance verdicts (memory_uses.caller). */
+  caller: text('caller'),
+  latencyMs: integer('latency_ms'),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamDecisionIdx: index('memory_decisions_team_decision_idx').on(t.teamId, t.decision, t.createdAt),
+  taskIdx: index('memory_decisions_task_idx').on(t.taskId),
+  memoryIdx: index('memory_decisions_memory_idx').on(t.memoryId),
+  createdIdx: index('memory_decisions_created_idx').on(t.createdAt),
+}));
+
 // Phase 2: knowledge entities — canonical nodes for the entity graph.
 // workspace_id doubles as a scope id (team or workspace depending on corpus).
 export const knowledgeEntities = pgTable('knowledge_entities', {
@@ -3728,8 +3773,10 @@ export const aiPlans = pgTable('ai_plans', {
 export const aiUsage = pgTable('ai_usage', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  // The account that reported the receipt (the app's service account).
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  // The account that reported the receipt (the app's service account). NULL
+  // for a buildd-internal decision with no acting account (memory relevance
+  // shadow, OAuth MCP, chat): attributed to the team only.
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   // NULL when the app ran on its own fallback plan (buildd was unreachable).
   planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
   // NULL only for a planless Jev decision receipt: Jev has no tier.

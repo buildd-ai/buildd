@@ -80,6 +80,8 @@ Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never 
 
 Not Jev: reflection and extraction of text. Those need a generating model and run as background runner tasks on the team's seat.
 
+Built (step 4): every decision above is defined in `packages/core/memory-decisions.ts` with its threshold next to its question. Keep and type run on `learn` and `buildd_memory save`; until candidates exist, a confident "not durable" only adds the `jev:not-durable` tag. Update resolves the band into ADD, UPDATE (a new row holding the existing text plus the incoming text, which supersedes the old row; needs higher confidence), SUPERSEDE or NOOP, and below threshold returns the conflict reply as before. Use labels run after a task completes. The relevance shadow is a hook in `retrieveMemory` that runs after the response, on a sample of pushes (`MEMORY_RELEVANCE_SHADOW_SAMPLE`, default 0.25), for standard workspaces and attributed tasks only. `MEMORY_DECISIONS_DISABLED=1` turns every memory decision off. Every verdict is a `memory_decisions` row next to the rule's answer, and spend is also receipted in `ai_usage`. `packages/core/scripts/memory-decision-readout.ts` compares Jev, the rule and the ledger. The thresholds are provisional until the readout can grade them.
+
 ## Implementation sketch
 
 Load-bearing first.

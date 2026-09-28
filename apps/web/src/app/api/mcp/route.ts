@@ -44,6 +44,7 @@ import {
   type ActionContext,
 } from "@buildd/core/mcp-tools";
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 import { listMcpTools } from "./tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
@@ -324,6 +325,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         knowledgeStore,
         embedder,
         api,
+        // Jev keep/type/update on writes; fails open to today's rules.
+        memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
       },
     };

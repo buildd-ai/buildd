@@ -20,6 +20,7 @@ import {
   type ActionContext, type ApiFn,
 } from '@buildd/core/mcp-tools';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
 import { asBool, previewMatches, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
@@ -426,7 +427,7 @@ async function runAction(
     const wsId = typeof input.workspaceId === 'string' ? input.workspaceId : deps.ctx.workspaceId ?? null;
     const mem = deps.memory ? await deps.memory(wsId) : null;
     if (!mem) return { content: [{ type: 'text' as const, text: 'Error: team knowledge is not available here (no workspace in reach, or the memory store is unavailable).' }], isError: true };
-    const ctx = { memoryLedger: afterResponseMemoryLedger, ...mem.ctx, api };
+    const ctx = { memoryLedger: afterResponseMemoryLedger, memoryDecider: memoryDeciderFor(null), ...mem.ctx, api };
     return action === 'recall' ? handleRecallAction(mem.store, input, ctx) : handleLearnAction(mem.store, input, ctx);
   }
   if (action === 'hold_task') return holdTask(api, input);

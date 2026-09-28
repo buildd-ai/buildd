@@ -18,7 +18,7 @@ mock.module('../db', () => ({
   },
 }));
 
-const { pruneMemoryUsesSql, pruneMemoryUses, MEMORY_USES_RETENTION_DAYS } = await import('../memory-uses-retention');
+const { pruneMemoryUsesSql, pruneMemoryUses, MEMORY_USES_RETENTION_DAYS, pruneMemoryDecisionsSql, pruneMemoryDecisions, MEMORY_DECISIONS_RETENTION_DAYS } = await import('../memory-uses-retention');
 
 const dialect = new PgDialect();
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -57,5 +57,23 @@ describe('pruneMemoryUses', () => {
 
   it('retention defaults to 90 days', () => {
     expect(MEMORY_USES_RETENTION_DAYS).toBe(90);
+  });
+});
+
+describe('pruneMemoryDecisions', () => {
+  it('deletes a bounded, oldest-first batch of memory_decisions older than 90 days', async () => {
+    const cutoff = new Date('2026-06-01T00:00:00.000Z');
+    const q = dialect.sqlToQuery(pruneMemoryDecisionsSql(cutoff, 500));
+    expect(squash(q.sql)).toBe(
+      'DELETE FROM "memory_decisions" WHERE "memory_decisions"."id" IN ( SELECT "memory_decisions"."id" FROM "memory_decisions" WHERE "memory_decisions"."created_at" < $1 ORDER BY "memory_decisions"."created_at" LIMIT $2 ) RETURNING "memory_decisions"."id"',
+    );
+    expect(q.params).toEqual([cutoff.toISOString(), 500]);
+    expect(MEMORY_DECISIONS_RETENTION_DAYS).toBe(90);
+
+    executed.length = 0;
+    deletedRows = 2;
+    const res = await pruneMemoryDecisions({ now: new Date(), batchSize: 2 });
+    expect(executed).toHaveLength(1);
+    expect(res.batchFull).toBe(true);
   });
 });

@@ -107,6 +107,8 @@ const SAFE: Record<string, string[]> = {
   // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
   // (MemoryCaller, MemoryGate in packages/core/memory-retrieval.ts). No content.
   memory_uses: ['chunk_id', 'memory_id', 'caller', 'gated_by'],
+  // Content-free by construction: ids, decision names, labels, error kinds.
+  memory_decisions: ['memory_id', 'decision', 'version', 'verdict', 'rule', 'error', 'caller'],
   artifacts: ['type'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
