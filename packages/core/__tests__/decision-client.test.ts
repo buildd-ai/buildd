@@ -107,7 +107,7 @@ const noSleep = () => Promise.resolve();
 
 function params(over: Record<string, unknown> = {}) {
   return {
-    capability: 'task_category_shadow' as const,
+    capability: 'task_category' as const,
     teamId: 'team-1',
     state: { ticket: 'Checkout page is blank after I click Pay.' },
     questions: QUESTIONS,
@@ -238,7 +238,7 @@ describe('decisionCall gating', () => {
     teamRow = undefined;
     const fetcher = mock(async () => jsonResponse(OK_BODY));
     const res = await decisionCall(params({ fetcher }));
-    expect(!res.ok && res.error).toEqual({ kind: 'capability_disabled', capability: 'task_category_shadow' });
+    expect(!res.ok && res.error).toEqual({ kind: 'capability_disabled', capability: 'task_category' });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -530,7 +530,7 @@ describe('gateChoice', () => {
 describe('describeDecisionError', () => {
   it('has a message for every kind', () => {
     const kinds = [
-      { kind: 'capability_disabled', capability: 'task_category_shadow' },
+      { kind: 'capability_disabled', capability: 'task_category' },
       { kind: 'missing_key' },
       { kind: 'invalid_request', message: 'm' },
       { kind: 'timeout', timeoutMs: 1 },

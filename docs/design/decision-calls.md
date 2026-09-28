@@ -1,35 +1,25 @@
 ---
-status: partially
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
-# decision-client and task-category-shadow pass because steps 1-4 shipped
-# (PRs #2823, #2829, #2830). gated-apply fails because step 6 has not. Status
-# stays 'partially' until it does, so the two passing assertions are suppressed
-# (skip_until) rather than left to read as code_ahead. See "Implementation
-# status" at the end.
+# Steps 1-6 shipped: the client, policy wiring, benchmark, the classifyTask
+# shadow (since replaced) and the first confidence-gated apply.
 assertions:
   - id: "decision-client"
     type: "symbol"
     name: "decisionCall"
     path: "packages/core/decision-client.ts"
-    skip_until: "2026-12-27"
-    skip_reason: "decisionCall genuinely shipped (step 1, PRs #2823/#2829) and is this doc's own deliverable, not a false positive. The doc stays `partially` because step 6, the first confidence-gated apply (tracked by the failing gated-apply assertion), is unbuilt. Unsuppressed, this reads as code_ahead on every run."
-  - id: "task-category-shadow"
+  - id: "task-category-decision"
     type: "symbol"
-    name: "runTaskCategoryShadow"
+    name: "categorizeTask"
     path: "apps/web/src/lib/task-category-decision.ts"
-    skip_until: "2026-12-27"
-    skip_reason: "runTaskCategoryShadow genuinely shipped (step 4, the observe-only classifyTask shadow) and is this doc's own deliverable, not a false positive. The doc stays `partially` because step 6, the first confidence-gated apply (tracked by the failing gated-apply assertion), is unbuilt. Unsuppressed, this reads as code_ahead on every run."
-  # Tracks the remaining work (step 6): the first confidence-gated apply. Fails
-  # until a site actually acts on a decision, which is what keeps this doc at
-  # 'partially' honestly.
   - id: "gated-apply"
     type: "symbol"
-    name: "applyTaskCategoryDecision"
+    name: "gateTaskCategory"
     path: "apps/web/src/lib/task-category-decision.ts"
 ---
 # Decision Calls: a Third Primitive for Fixed-Label Judgments
 
-**Status:** Partially implemented. Steps 1–4 have shipped: the client, the policy wiring, the offline benchmark and the `classifyTask` shadow. Step 6, the first confidence-gated apply, has not, so nothing acts on a decision yet. See "Implementation status" below.
+**Status:** Implemented. The client, the policy wiring, the offline benchmark, and the first confidence-gated apply (task category, Point 9) have shipped. See "Implementation status" below.
 **Related:** `docs/design/inference-calls-primitive.md` (which this extends), `packages/core/inference-client.ts`, `packages/core/inference-policy.ts`, `packages/core/decision-client.ts`, `packages/core/inference-keys.ts`, `packages/core/decision-benchmark.ts`, `apps/web/src/lib/task-category.ts`, `apps/web/src/lib/task-category-decision.ts`, `scripts/decision-benchmark.ts`, `docs/credentials-architecture.md`, `docs/design/model-tiers.md`, `docs/design/agent-chat.md`
 
 ---
@@ -195,7 +185,7 @@ Ranked by fit for a decision call: a fixed label set, short text input, a cheap-
 
 | Rank | Site | Today | Labels | Cost of a wrong answer | Verdict |
 |---|---|---|---|---|---|
-| 1 | Task category: `classifyTask`, `apps/web/src/lib/task-category.ts:66`, called from `POST /api/tasks` | Ordered keyword regex; returns null when nothing matches | `bug feature refactor chore docs test infra design review research` | Low. Mostly a display tag. `review` changes claim pacing and reviewer handling, and the regex never emits it today. `research` is emitted only from the title's opening verb or prefix, never from a word in the description. | **Best fit. Shadowed now (Point 9).** |
+| 1 | Task category: `classifyTask`, `apps/web/src/lib/task-category.ts:66`, called from `POST /api/tasks` | Ordered keyword regex; returns null when nothing matches | `bug feature refactor chore docs test infra design review research` | Low. Mostly a display tag. `review` changes claim pacing and reviewer handling, and the regex never emits it today. `research` is emitted only from the title's opening verb or prefix, never from a word in the description. | **Best fit. Applied behind the gate (Point 9).** |
 | 2 | Task routing kind/complexity: `inferRouting`, `packages/core/task-routing-preview.ts:128` | Title prefix, manifest size, sensitive paths, description length | kind (`coordination`/`engineering`/…), complexity `simple/normal/complex` | Medium. Picks the model tier, so the result is cost, not correctness. | Good fit for complexity, as a Choice or Score over the description. Keep the manifest and sensitive-path rules in code, because they are exact. |
 | 3 | Coordination intent: `classifyCoordinationIntent`, `apps/web/src/lib/coordination-intent.ts:25` | Keywords on the plan step title | `wait aggregate merge verify` or null | Medium | Good fit, with short input. Gate high, because it changes orchestration. |
 | 4 | Role routing: `tasks.roleSlug`. Nothing infers it today (`POST /api/tasks` stores only what the caller sends; the planner copies its plan). The claim filter is `apps/web/src/app/api/workers/claim/role-gate.ts`. | Caller or planner supplied | The workspace's roles (defaults in `apps/web/src/lib/default-roles.ts`, plus custom ones) | High. The wrong role gets the wrong prompt, skills and connectors, or the task is never claimed. | Fit as a **suggestion only**: pre-fill the role in the UI, or fill it when the caller left it empty and confidence is high. Labels are per workspace, so criteria come from role descriptions at call time. |
@@ -238,43 +228,40 @@ These are for agent chat, designed in `docs/design/agent-chat.md` (Proposed), wh
 In order, load-bearing piece first:
 
 1. **`packages/core/decision-client.ts`**: `decisionCall`, typed question/answer types, local validation, response validation, `gateChoice`, and `resolveDecisionKey`. Unit tests mock HTTP and assert the documented request shape (`packages/core/__tests__/decision-client.test.ts`). *Done.*
-2. **Policy wiring.** A `task_category_shadow` capability in `packages/core/inference-policy.ts`. It renders in the existing Agent Backends settings toggle list, off by default. The `decision_key` purpose is added to the `secrets` unions and to `POST /api/secrets`. *Done.*
+2. **Policy wiring.** A `task_category` capability (first named `task_category_shadow`) in `packages/core/inference-policy.ts`. It renders in the existing Agent Backends settings toggle list, off by default. The `decision_key` purpose is added to the `secrets` unions and to `POST /api/secrets`. *Done.*
 3. **Offline benchmark.**
    - `packages/core/decision-benchmark.ts` is pure: JSONL parsing, a deterministic held-out split, and accuracy/coverage at thresholds plus per-label precision/recall and a confusion matrix.
    - `scripts/decision-benchmark.ts` is the I/O half: it runs a question set with an env key and prints the incumbent's accuracy alongside.
    - The data lives in `.decision-data/`, which is gitignored.
    - *Done.*
 4. **Shadow on `classifyTask`** (Point 9). *Done.*
-5. **Read the shadow.** Collect `[decision-shadow]` lines, hand-label a sample of tasks into `.decision-data/task-category.jsonl`, run the benchmark, and pick the threshold. *Operator step.*
-6. **Apply behind the gate.** Only after step 5: store Jev's category when `gateChoice` clears the threshold, and keep the keyword result otherwise. That is a separate PR with its own capability, so turning the shadow on can never start writing categories.
+5. **Benchmark on real work.** The shadow alone gave too little to judge by: it ran on one creation path, and agreement with a regex isn't accuracy. So the gold labels came from merged work instead: each task's merged PR title, by its conventional-commit type (`feat` → feature, `fix` → bug, `docs`, `refactor`/`perf`, `chore`, `test`, `ci`/`build` → infra), across several weeks of tasks, scored on the benchmark's held-out split. The keyword rules were right about half the time, Jev about three quarters, and past 90% at confidence ≥0.8 (on roughly three fifths of tasks) and ≥0.9. `fix` is used loosely for polish, so the bug gold is noisy, and review/research tasks rarely open a PR, so those two labels are unscored. *Done.*
+6. **Apply behind the gate** (Point 9). *Done.*
 
-### Point 9: Shadow — `classifyTask`
+### Point 9: Task category — `classifyTask`, gated apply
 
-`apps/web/src/lib/task-category-decision.ts`:
+`apps/web/src/lib/task-category-decision.ts` and `task-category-sweep.ts`:
 
-- **Where it runs.** `POST /api/tasks` calls `scheduleTaskCategoryShadow(…, after)` only when the category came from the keyword classifier, not from the caller, and only for a newly filed task, not an `attached` intake. The run happens after the response is sent.
-- **It cannot change the task.** The stored `category` is always `classifyTask`'s result, and the shadow run holds no handle to the row.
-- **It cannot fail or slow task creation.** Scheduling is wrapped in `try`, the run never throws, and it has a 3-second deadline. The decision client is imported lazily, so the route's static import graph is unchanged.
-- **It stays silent by default.** `capability_disabled` and `missing_key` produce no log line.
-- **The question.** `TASK_CATEGORY_QUESTIONS` covers all ten stored categories, including `review`, which the regex cannot produce. `research` was added after a research task ("Research … providers") landed on `review` at low confidence: with no research label, the nearest one absorbed it. `review` is now scoped to an existing PR or change, so the two do not overlap. It has contrastive definitions, no catch-all, and an instruction to follow definitions over title keywords. The state is `{ task: { title, description } }`, with the description truncated to 1,500 characters.
-- **Privacy.** A workspace with `gitConfig.dataClass === 'sensitive'` is skipped before any call, so its task text never leaves the platform.
-- **Telemetry.** One `[decision-shadow] {json}` log line per task, the same observe-only pattern the worker lease used (`[lease-shadow]` in `apps/web/src/lib/stale-workers.ts`).
-  - Fields: `taskId`, `workspaceId`, `keyword`, `decision`, `confidence`, `agree`, `probabilities`, `model`, `latencyMs`, `inputTokens` and `costUsd`. `agree` is `null` when the regex abstained.
-  - Ids, labels and numbers only. The task's title and description are never logged.
-  - The table-free choice is deliberate. Agreement with a regex is not accuracy; it only shows where to look. The real measurement is the benchmark on hand-labelled data, which needs task ids (to join and label locally), not another table. If a shadow ever needs durable, queryable storage, `gate_events` is the wrong shape for it, and the right answer is a small events table following `.claude/skills/schema-change/SKILL.md`.
-- **Cost of the flag itself.** With the capability off, every auto-classified task creation costs one indexed `teams` lookup after the response. It never costs a network call.
+- **The gate** (`gateTaskCategory`, pure). A category the caller supplied is never changed. `review` is never written and never replaced: it is a behaviour flag (reviewer dispatch, claim-gate exemptions, completion, review de-duplication), not a label. When the keyword rules abstained, Jev fills in at `FILL_MIN_CONFIDENCE` (0.8). When they disagree, Jev replaces them at `OVERRIDE_MIN_CONFIDENCE` (0.9). Below the gate the keyword result stands.
+- **One look per task, recorded.** `tasks.category_decision` (jsonb) holds `{ v, source, keyword, jev, confidence, skipped?, at }`: the prompt/model version, who decided, both answers and the confidence. Ids, labels and numbers only. Every write is reversible (the keyword result is kept) and re-scoreable. The write is optimistic: only while the category is still what was read and no look is recorded, so a concurrent edit or a second trigger never clobbers anything.
+- **Two triggers, one function.** `POST /api/tasks` schedules `categorizeTask` after the response (`after()`), so it cannot slow or fail creation. Every other creation path (missions, schedules, webhooks, retries) is covered by a bounded sweep at the end of the hourly schedules tick: tasks from the last 48 hours with no recorded look, 40 per run, a 15-second budget. `scripts/backfill-task-categories.ts` runs the same sweep over all time.
+- **Caller vs keyword, for rows that don't say.** The sweep infers it: a stored category the keyword rules would not give for the same text was supplied, and is kept.
+- **No spend where nothing can change.** A caller-set or `review` task records its look without a call.
+- **Not configured.** With no OpenRouter key the look is recorded as `skipped: 'unconfigured'`, so the sweep doesn't ask every hour; the backfill re-asks those once a key exists. A transient failure (timeout, 5xx) records nothing, so the next sweep retries.
+- **Privacy.** A workspace with `gitConfig.dataClass === 'sensitive'` is skipped before any call (`skipped: 'sensitive'`).
+- **The question.** `TASK_CATEGORY_QUESTIONS` covers all ten stored categories with contrastive definitions and no catch-all. It is pinned to `TASK_CATEGORY_PROMPT_VERSION` by a hash test: change a definition, bump the version and re-run the benchmark.
+- **Telemetry.** One `[task-category] {json}` log line per look: `taskId`, `stored`, `keyword`, `jev`, `confidence`, `applied`, `costUsd`. Never the task's text.
 
 ## Open questions
 
 1. **Key precedence: account-first or workspace-first?** I lean account-first, as built. The person whose account filed the work and who brought a key expects that key to be spent. This differs from the runner-credential order in `docs/credentials-architecture.md`, and the two may be worth unifying later. Nothing breaks if the order is flipped: a flip only changes which key is spent.
-2. **Should the shadow write somewhere queryable instead of the log?** I lean no until step 5 shows the log is insufficient. Log retention limits how long a shadow window can be, and that is the trade.
+2. **Should the shadow write somewhere queryable instead of the log?** *Resolved.* It did turn out to be insufficient (too few records, one creation path). The applied decision records its provenance on the row (`tasks.category_decision`), and the benchmark used merged work as gold.
 3. **A platform-provided OpenRouter key?** Deferred, as for inference calls. It is a pricing decision. Mechanically it would be a new bottom fallback in `resolveDecisionKey`, with no caller change.
 4. **`inferenceCall`'s production env fallback.** *Resolved.* The shared `resolveInferenceKey` applies the same production guard to every caller, with `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` as the opt-in for deployments that relied on an env key (Point 4).
 5. **Should decision capabilities live in the inference allowlist or a separate one?** I lean toward the same allowlist, as built. It is one settings surface for "what may buildd spend API money on", and the descriptor's `fallback` field already communicates the difference.
 
 ## Non-goals
 
-- **Changing any stored value.** The shadow is observe-only. Applying a decision is step 6, in a separate PR with its own capability.
 - **A new credential table**, or a per-integration key store.
 - **Adding decision models to the model tier registry** (Point 5).
 - **Replacing deterministic rules.** Mission health, merge policy and auto-merge safety stay code. A decision call may add an *escalating* signal and never a relaxing one.
@@ -287,11 +274,7 @@ Landed:
 
 - `packages/core/decision-client.ts` and its unit tests.
 - `packages/core/decision-benchmark.ts` and `scripts/decision-benchmark.ts`.
-- The `task_category_shadow` capability.
-- The `decision_key` secret purpose.
-- The `classifyTask` shadow in `POST /api/tasks`, including the `research` label (PR #2830).
+- The `task_category` capability (first `task_category_shadow`) and the `decision_key` secret purpose.
+- The `classifyTask` shadow in `POST /api/tasks`, including the `research` label (PR #2830); since replaced by the gated apply.
 - The key lookup moved onto the shared `resolveInferenceKey` (agent chat P1, PR #2832); `resolveDecisionKey` is now a wrapper.
-
-Landed in PRs #2823 (client, benchmark and shadow) and #2829 (SDK transport, lazy DB import).
-
-Remaining: steps 5 and 6. Both are gated on real shadow and benchmark data, so this doc stays `partially` until one site applies a decision.
+- The first confidence-gated apply: task category (Point 9), with `tasks.category_decision`, the schedules-tick sweep and the backfill script.

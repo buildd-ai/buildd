@@ -1,21 +1,26 @@
 import { describe, it, expect, mock } from 'bun:test';
 
 /**
- * Shadow mode for the task category decision: runs beside the keyword
- * classifier, logs agreement, and must be incapable of changing a task or of
- * failing task creation. `decisionCall` is injected, so nothing here reaches the
- * DB or the network.
+ * The task category decision: Jev may fill or replace a keyword category when
+ * confident, never a caller's or `review`, records one look per task, and can
+ * never fail task creation. `decisionCall`, the keyword rules and the DB write
+ * are injected, so nothing here reaches the DB or the network.
  */
 
 const {
-  runTaskCategoryShadow,
-  scheduleTaskCategoryShadow,
+  categorizeTask,
+  scheduleTaskCategorize,
+  gateTaskCategory,
+  taskCategoryPromptHash,
   buildTaskCategoryState,
   TASK_CATEGORY_QUESTIONS,
   TASK_CATEGORY_LABELS,
-  SHADOW_DESCRIPTION_CHARS,
-  SHADOW_TIMEOUT_MS,
-  SHADOW_LOG_PREFIX,
+  TASK_CATEGORY_PROMPT_VERSION,
+  DECISION_DESCRIPTION_CHARS,
+  DECISION_TIMEOUT_MS,
+  DECISION_LOG_PREFIX,
+  FILL_MIN_CONFIDENCE,
+  OVERRIDE_MIN_CONFIDENCE,
 } = await import('./task-category-decision');
 
 const INPUT = {
@@ -25,7 +30,8 @@ const INPUT = {
   accountId: 'acct-1',
   title: 'Fix crash when saving settings',
   description: 'Saving throws a TypeError.',
-  keywordCategory: 'bug' as const,
+  stored: 'bug' as const,
+  callerSet: false,
 };
 
 function okResult(choice: string, confidence = 0.9) {
@@ -38,6 +44,18 @@ function okResult(choice: string, confidence = 0.9) {
     attempts: 1,
   };
 }
+
+/** A recording write that wins unless told otherwise. */
+function writer(wins = true) {
+  const calls: Array<{ taskId: string; expected: unknown; category: unknown; record: any }> = [];
+  const write = async (taskId: string, expected: any, category: any, record: any) => { calls.push({ taskId, expected, category, record }); return wins; };
+  return { calls, write };
+}
+
+const deps = (decide: unknown, w = writer(), keyword: string | null = 'bug') => ({
+  decide: decide as any, write: w.write, classify: () => keyword as any, log: () => {},
+  now: () => new Date('2026-09-27T12:00:00Z'),
+});
 
 describe('TASK_CATEGORY_QUESTIONS', () => {
   it('offers every stored category, including review, and no catch-all', () => {
@@ -64,8 +82,8 @@ describe('TASK_CATEGORY_QUESTIONS', () => {
 
 describe('buildTaskCategoryState', () => {
   it('truncates long descriptions', () => {
-    const s = buildTaskCategoryState('t', 'x'.repeat(SHADOW_DESCRIPTION_CHARS + 500));
-    expect(s.task.description.length).toBe(SHADOW_DESCRIPTION_CHARS + 1);
+    const s = buildTaskCategoryState('t', 'x'.repeat(DECISION_DESCRIPTION_CHARS + 500));
+    expect(s.task.description.length).toBe(DECISION_DESCRIPTION_CHARS + 1);
   });
 
   it('handles a missing description', () => {
@@ -73,84 +91,116 @@ describe('buildTaskCategoryState', () => {
   });
 });
 
-describe('runTaskCategoryShadow', () => {
-  it('asks under the shadow capability with a short deadline and logs agreement', async () => {
-    const decide = mock(async () => okResult('bug', 0.92));
-    const lines: string[] = [];
-    const rec = await runTaskCategoryShadow(INPUT, { decide: decide as any, log: l => lines.push(l) });
+describe('prompt version', () => {
+  it('the prompt is pinned to its version: change a definition, bump the version and re-run the benchmark', () => {
+    expect([TASK_CATEGORY_PROMPT_VERSION, taskCategoryPromptHash()]).toEqual(['tc1', '3850bae28633']);
+  });
+});
 
-    const args = (decide.mock.calls[0] as any[])[0];
-    expect(args.capability).toBe('task_category_shadow');
-    expect(args.timeoutMs).toBe(SHADOW_TIMEOUT_MS);
-    expect(args.teamId).toBe('team-1');
-    expect(args.workspaceId).toBe('ws-1');
-    expect(args.accountId).toBe('acct-1');
-    expect(args.state).toEqual({ task: { title: INPUT.title, description: INPUT.description } });
+describe('gateTaskCategory', () => {
+  const g = (over: Partial<Parameters<typeof gateTaskCategory>[0]>) =>
+    gateTaskCategory({ stored: 'bug', callerSet: false, keyword: 'bug', decision: 'feature', confidence: 0.95, ...over });
 
-    expect(rec).toMatchObject({ keyword: 'bug', decision: 'bug', confidence: 0.92, agree: true, costUsd: 0.0000126 });
-    expect(lines).toHaveLength(1);
-    expect(lines[0].startsWith(`${SHADOW_LOG_PREFIX} `)).toBe(true);
-    expect(JSON.parse(lines[0].slice(SHADOW_LOG_PREFIX.length + 1)).taskId).toBe('task-1');
+  it('fills a blank at the fill gate, not below', () => {
+    expect(g({ stored: null, keyword: null, confidence: FILL_MIN_CONFIDENCE })).toEqual({ category: 'feature', source: 'jev' });
+    expect(g({ stored: null, keyword: null, confidence: FILL_MIN_CONFIDENCE - 0.01 })).toEqual({ category: null, source: 'keyword' });
   });
 
-  it('never puts task content in the log line', async () => {
+  it('replaces a keyword category only at the stricter override gate', () => {
+    expect(g({ confidence: OVERRIDE_MIN_CONFIDENCE })).toEqual({ category: 'feature', source: 'jev' });
+    expect(g({ confidence: 0.85 })).toEqual({ category: 'bug', source: 'keyword' });
+  });
+
+  it('never changes a caller\'s category, however confident', () => {
+    expect(g({ callerSet: true, confidence: 1 })).toEqual({ category: 'bug', source: 'caller' });
+  });
+
+  it('never writes review and never replaces it: review is a behaviour flag', () => {
+    expect(g({ stored: null, keyword: null, decision: 'review', confidence: 1 })).toEqual({ category: null, source: 'keyword' });
+    expect(g({ stored: 'review', decision: 'bug', confidence: 1 })).toEqual({ category: 'review', source: 'keyword' });
+  });
+});
+
+describe('categorizeTask', () => {
+  it('asks with a short deadline and the task text, and writes a confident fill with its provenance', async () => {
+    const decide = mock(async () => okResult('docs', 0.93));
+    const w = writer();
     const lines: string[] = [];
-    await runTaskCategoryShadow(INPUT, { decide: (async () => okResult('feature')) as any, log: l => lines.push(l) });
+    const res = await categorizeTask({ ...INPUT, stored: null }, { ...deps(decide, w, null), log: l => lines.push(l) });
+
+    const args = (decide.mock.calls[0] as any[])[0];
+    expect(args.capability).toBe('task_category');
+    expect(args.timeoutMs).toBe(DECISION_TIMEOUT_MS);
+    expect(args.state).toEqual({ task: { title: INPUT.title, description: INPUT.description } });
+    expect(res.outcome).toBe('applied');
+    expect(w.calls).toEqual([{
+      taskId: 'task-1', expected: null, category: 'docs',
+      record: { v: 'tc1|typesafe/jev-1.13-20260917', source: 'jev', keyword: null, jev: 'docs', confidence: 0.93, at: '2026-09-27T12:00:00.000Z' },
+    }]);
+    expect(lines[0].startsWith(`${DECISION_LOG_PREFIX} `)).toBe(true);
     expect(lines[0]).not.toContain('crash');
     expect(lines[0]).not.toContain('TypeError');
   });
 
-  it('records disagreement, and null agreement when the keyword classifier abstained', async () => {
-    const dis = await runTaskCategoryShadow(INPUT, { decide: (async () => okResult('refactor')) as any, log: () => {} });
-    expect(dis?.agree).toBe(false);
-    const abstain = await runTaskCategoryShadow({ ...INPUT, keywordCategory: null }, {
-      decide: (async () => okResult('docs')) as any, log: () => {},
-    });
-    expect(abstain?.agree).toBeNull();
+  it('below the gate it keeps the category but still records the look, so it is asked once', async () => {
+    const w = writer();
+    const res = await categorizeTask(INPUT, deps(async () => okResult('feature', 0.7), w));
+    expect(res.outcome).toBe('kept');
+    expect(w.calls[0]).toMatchObject({ expected: 'bug', category: 'bug', record: { source: 'keyword', jev: 'feature', confidence: 0.7 } });
   });
 
-  it('is silent when not enabled or not configured (the default)', async () => {
-    for (const error of [{ kind: 'capability_disabled', capability: 'task_category_shadow' }, { kind: 'missing_key' }]) {
-      const lines: string[] = [];
-      const rec = await runTaskCategoryShadow(INPUT, {
-        decide: (async () => ({ ok: false, error, latencyMs: 1, attempts: 0 })) as any,
-        log: l => lines.push(l),
-      });
-      expect(rec).toBeNull();
-      expect(lines).toHaveLength(0);
+  it('a caller\'s category or a review task costs no call', async () => {
+    for (const input of [{ ...INPUT, callerSet: true }, { ...INPUT, stored: 'review' as const }]) {
+      const decide = mock(async () => okResult('bug'));
+      const w = writer();
+      await categorizeTask(input, deps(decide, w));
+      expect(decide).not.toHaveBeenCalled();
+      expect(w.calls[0].category).toBe(input.stored);
     }
   });
 
-  it('logs a real failure without throwing', async () => {
+  it('a lost race (someone changed the row) reports it and changes nothing else', async () => {
+    const res = await categorizeTask(INPUT, deps(async () => okResult('feature', 0.99), writer(false)));
+    expect(res.outcome).toBe('lost_race');
+  });
+
+  it('not configured: records a retryable skip; a transient failure records nothing', async () => {
+    const w = writer();
+    const res = await categorizeTask(INPUT, deps(async () => ({ ok: false, error: { kind: 'missing_key' }, latencyMs: 0, attempts: 0 }), w));
+    expect(res.outcome).toBe('skipped');
+    expect(w.calls[0].record.skipped).toBe('unconfigured');
+
+    const w2 = writer();
     const lines: string[] = [];
-    const rec = await runTaskCategoryShadow(INPUT, {
-      decide: (async () => ({ ok: false, error: { kind: 'timeout', timeoutMs: 3000 }, latencyMs: 3000, attempts: 1 })) as any,
+    const res2 = await categorizeTask(INPUT, {
+      ...deps(async () => ({ ok: false, error: { kind: 'timeout', timeoutMs: 3000 }, latencyMs: 3000, attempts: 1 }), w2),
       log: l => lines.push(l),
     });
-    expect(rec).toBeNull();
+    expect(res2.outcome).toBe('error');
+    expect(w2.calls).toHaveLength(0);
     expect(lines[0]).toContain('"error":"timeout"');
   });
 
   it('swallows a thrown error', async () => {
-    const rec = await runTaskCategoryShadow(INPUT, {
-      decide: (async () => { throw new Error('boom'); }) as any, log: () => {},
-    });
-    expect(rec).toBeNull();
+    const res = await categorizeTask(INPUT, deps(async () => { throw new Error('boom'); }));
+    expect(res.outcome).toBe('error');
   });
 
   it('never sends a sensitive workspace\'s task content out', async () => {
     const decide = mock(async () => okResult('bug'));
-    const rec = await runTaskCategoryShadow({ ...INPUT, dataClass: 'sensitive' }, { decide: decide as any, log: () => {} });
-    expect(rec).toBeNull();
+    const w = writer();
+    const res = await categorizeTask({ ...INPUT, dataClass: 'sensitive' }, deps(decide, w));
     expect(decide).not.toHaveBeenCalled();
+    expect(res.outcome).toBe('skipped');
+    expect(w.calls[0].record.skipped).toBe('sensitive');
   });
 });
 
-describe('scheduleTaskCategoryShadow', () => {
+describe('scheduleTaskCategorize', () => {
   it('hands the run to the scheduler instead of running inline', async () => {
     const decide = mock(async () => okResult('bug'));
     let scheduled: (() => Promise<unknown>) | null = null;
-    scheduleTaskCategoryShadow(INPUT, fn => { scheduled = fn; }, { decide: decide as any, log: () => {} });
+    scheduleTaskCategorize(INPUT, fn => { scheduled = fn; }, deps(decide));
     expect(decide).not.toHaveBeenCalled();
     await scheduled!();
     expect(decide).toHaveBeenCalledTimes(1);
@@ -158,8 +208,8 @@ describe('scheduleTaskCategoryShadow', () => {
 
   it('falls back to fire-and-forget when the scheduler is unavailable', async () => {
     const decide = mock(async () => okResult('bug'));
-    scheduleTaskCategoryShadow(INPUT, () => { throw new Error('outside request scope'); }, { decide: decide as any, log: () => {} });
-    await Promise.resolve();
+    scheduleTaskCategorize(INPUT, () => { throw new Error('outside request scope'); }, deps(decide));
+    await new Promise(r => setTimeout(r, 0));
     expect(decide).toHaveBeenCalledTimes(1);
   });
 });

@@ -1149,6 +1149,19 @@ export const tasks = pgTable('tasks', {
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
+  // How `category` was decided, once the decision model has looked at the task
+  // (apps/web/src/lib/task-category-decision.ts). NULL = not looked at yet: the
+  // sweep picks it up. Carries the prompt/model version, the keyword result and
+  // the model's pick, so every write is reversible and re-scoreable.
+  categoryDecision: jsonb('category_decision').$type<{
+    v: string;
+    source: 'caller' | 'keyword' | 'jev';
+    keyword: string | null;
+    jev: string | null;
+    confidence: number | null;
+    skipped?: 'sensitive' | 'unconfigured';
+    at: string;
+  }>(),
   project: text('project'),
   // Output requirement — controls what deliverables are enforced on completion
   outputRequirement: text('output_requirement').default('auto').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
