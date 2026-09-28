@@ -40,6 +40,13 @@ describe('isWrite (mcp surface)', () => {
     expect(isWrite('mcp', 'learn', {})).toBe(true);
     expect(isWrite('mcp', 'send_worker_message', {})).toBe(true);
   });
+
+  it('classifies group tool calls like buildd calls; help is a read', () => {
+    expect(isWrite('mcp', 'buildd_missions', { action: 'manage_missions', params: { action: 'list' } })).toBe(false);
+    expect(isWrite('mcp', 'buildd_missions', { action: 'manage_missions', params: { action: 'create' } })).toBe(true);
+    expect(isWrite('mcp', 'buildd_work', { action: 'claim_task', params: {} })).toBe(true);
+    expect(isWrite('mcp', 'buildd_work', { action: 'help', params: { action: 'claim_task' } })).toBe(false);
+  });
 });
 
 describe('surfaces', () => {
@@ -52,8 +59,10 @@ describe('surfaces', () => {
     }
   });
 
-  it('advertises the buildd tool on the mcp surface', () => {
-    expect(mcpToolDefs().map(d => d.name)).toContain('buildd');
+  it('advertises the group tools on the mcp surface, and buildd on legacy', () => {
+    expect(mcpToolDefs().map(d => d.name)).toContain('buildd_missions');
+    expect(mcpToolDefs().map(d => d.name)).not.toContain('buildd');
+    expect(mcpToolDefs('legacy').map(d => d.name)).toContain('buildd');
   });
 });
 

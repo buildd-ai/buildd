@@ -58,7 +58,9 @@ describe('buildd-mcp-consumer skill vs. packages/core/mcp-tools.ts action vocabu
 
   it('every backticked action the skill names still exists in mcp-tools.ts', async () => {
     const { allActions } = await import('../packages/core/mcp-tools');
-    const allActionsSet = new Set<string>(allActions);
+    // The group tool names (`buildd_work`, ...) are real identifiers too.
+    const { MCP_TOOL_GROUPS, mcpGroupToolName } = await import('../packages/core/mcp-tool-groups');
+    const allActionsSet = new Set<string>([...allActions, ...MCP_TOOL_GROUPS.map(mcpGroupToolName)]);
 
     const referenced = backtickedActionLikeIdentifiers(skillBody).filter(
       id => !NOT_AN_ACTION.has(id),

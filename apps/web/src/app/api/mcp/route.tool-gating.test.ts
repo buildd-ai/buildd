@@ -144,17 +144,23 @@ describe('MCP tool gating — workspace data class', () => {
   it('offers the knowledge tools for a standard workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}`);
+    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
+    // The groups surface lists recall/learn; deprecated buildd_memory is callable, not listed.
+    const groups = await listTools(`?workspace=${WORKSPACE_ID}`);
+    expect(groups).toContain('recall');
+    expect(groups).toContain('learn');
   });
 
   it('withholds the knowledge tools for a sensitive workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}`);
-    for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    // Task coordination is unaffected — the data class gates knowledge only.
-    expect(names).toContain('buildd');
+    for (const surface of ['legacy', 'groups']) {
+      const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=${surface}`);
+      for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
+      // Task coordination is unaffected — the data class gates knowledge only.
+      expect(names).toContain(surface === 'legacy' ? 'buildd' : 'buildd_tasks');
+    }
   });
 
   it('withholds the knowledge tools when the data-class lookup fails (fail-closed)', async () => {
@@ -170,7 +176,7 @@ describe('MCP tool gating — workspace data class', () => {
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    expect(names).toContain('buildd');
+    expect(names).toContain('buildd_tasks');
   });
 
   it('refuses a knowledge tool call in a sensitive workspace even if it was somehow invoked', async () => {

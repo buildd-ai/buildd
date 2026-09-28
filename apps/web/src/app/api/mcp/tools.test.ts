@@ -7,11 +7,21 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { actionsForLevel, listMcpTools, type McpAccountLevel } from './tools';
+import { allActions } from '@buildd/core/mcp-tools';
+import { actionHelp, MCP_TOOL_GROUPS, mcpGroupOf, mcpGroupToolName } from '@buildd/core/mcp-tool-groups';
+import {
+  actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
+  type McpAccountLevel,
+} from './tools';
 
 const LEVELS: McpAccountLevel[] = ['trigger', 'worker', 'admin'];
 
-function toolNames(opts: { accountLevel: McpAccountLevel; isSensitive: boolean }): string[] {
+type Tool = { name: string; description: string; inputSchema: { properties: { action: { enum: string[] }; params: { description: string } } } };
+const tools = (opts: Parameters<typeof listMcpTools>[0]) => listMcpTools(opts) as Tool[];
+/** Same estimate the chat-eval `static` command uses. */
+const estTokens = (t: Tool) => Math.ceil(JSON.stringify({ name: t.name, description: t.description, input_schema: t.inputSchema }).length / 3.6);
+
+function toolNames(opts: Parameters<typeof listMcpTools>[0]): string[] {
   return listMcpTools(opts).map((t) => (t as { name: string }).name);
 }
 
@@ -19,9 +29,15 @@ function toolNames(opts: { accountLevel: McpAccountLevel; isSensitive: boolean }
 const KNOWLEDGE_TOOLS = ['buildd_memory', 'recall', 'learn'];
 
 describe('listMcpTools — token level gating', () => {
-  it('exposes the buildd tool at every level', () => {
+  it('legacy surface: exposes the buildd tool at every level', () => {
     for (const accountLevel of LEVELS) {
-      expect(toolNames({ accountLevel, isSensitive: false })).toContain('buildd');
+      expect(toolNames({ accountLevel, isSensitive: false, surface: 'legacy' })).toContain('buildd');
+    }
+  });
+
+  it('groups surface: does not list buildd', () => {
+    for (const accountLevel of LEVELS) {
+      expect(toolNames({ accountLevel, isSensitive: false })).not.toContain('buildd');
     }
   });
 
@@ -64,7 +80,7 @@ describe('listMcpTools — token level gating', () => {
   });
 
   it('documents every advertised action in the params description', () => {
-    const [builddTool] = listMcpTools({ accountLevel: 'admin', isSensitive: false }) as Array<{
+    const [builddTool] = listMcpTools({ accountLevel: 'admin', isSensitive: false, surface: 'legacy' }) as Array<{
       inputSchema: { properties: { params: { description: string } } };
     }>;
     const description = builddTool.inputSchema.properties.params.description;
@@ -74,7 +90,7 @@ describe('listMcpTools — token level gating', () => {
   });
 
   it('publishes the same action list in the schema enum and the description', () => {
-    const [builddTool] = listMcpTools({ accountLevel: 'worker', isSensitive: false }) as Array<{
+    const [builddTool] = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' }) as Array<{
       inputSchema: { properties: { action: { enum: string[] } } };
     }>;
     expect(builddTool.inputSchema.properties.action.enum).toEqual(actionsForLevel('worker'));
@@ -84,21 +100,158 @@ describe('listMcpTools — token level gating', () => {
 describe('listMcpTools — sensitive workspace gating', () => {
   it('does not expose knowledge tools for a sensitive workspace, at any level', () => {
     for (const accountLevel of LEVELS) {
-      const names = toolNames({ accountLevel, isSensitive: true });
-      for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
+      for (const surface of ['groups', 'legacy'] as const) {
+        const names = toolNames({ accountLevel, isSensitive: true, surface });
+        for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
+      }
     }
   });
 
   it('exposes knowledge tools for a standard workspace', () => {
-    const names = toolNames({ accountLevel: 'worker', isSensitive: false });
+    const names = toolNames({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' });
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
+    const groups = toolNames({ accountLevel: 'worker', isSensitive: false });
+    expect(groups).toContain('recall');
+    expect(groups).toContain('learn');
+    // Deprecated: callable, no longer listed on the groups surface.
+    expect(groups).not.toContain('buildd_memory');
   });
 
   it('still exposes task coordination tools for a sensitive workspace', () => {
     // The data class gates knowledge, not the ability to do the work.
     const names = toolNames({ accountLevel: 'worker', isSensitive: true });
-    expect(names).toContain('buildd');
+    expect(names).toContain('buildd_work');
+    expect(toolNames({ accountLevel: 'worker', isSensitive: true, surface: 'legacy' })).toContain('buildd');
     expect(names).toContain('check_path_claim');
     expect(names).toContain('send_worker_message');
+  });
+});
+
+describe('listMcpTools — group tools', () => {
+  const groupTools = (accountLevel: McpAccountLevel) => tools({ accountLevel, isSensitive: false }).filter(t => t.name.startsWith('buildd_') && t.name !== 'buildd_memory');
+
+  it('lists one tool per group the level reaches', () => {
+    expect(groupTools('admin').map(t => t.name)).toEqual(MCP_TOOL_GROUPS.map(mcpGroupToolName));
+    expect(groupTools('worker').map(t => t.name)).toEqual(
+      MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, 'worker').length > 0).map(mcpGroupToolName),
+    );
+    // Trigger tokens reach only these areas.
+    expect(groupTools('trigger').map(t => t.name).sort()).toEqual(['buildd_artifacts', 'buildd_schedules', 'buildd_tasks', 'buildd_work']);
+  });
+
+  it("each group's enum is its actions at that level, plus help", () => {
+    for (const level of LEVELS) {
+      const allowed = new Set(actionsForLevel(level));
+      for (const t of groupTools(level)) {
+        const actions = t.inputSchema.properties.action.enum;
+        expect(actions[actions.length - 1]).toBe('help');
+        for (const a of actions.slice(0, -1)) {
+          expect(allowed.has(a), `${level} ${t.name} ${a}`).toBe(true);
+          expect(mcpGroupToolName(mcpGroupOf(a)!)).toBe(t.name);
+          expect(t.description).toContain(`- ${a} {`);
+        }
+      }
+    }
+  });
+
+  it('every action the level may call is reachable through exactly one listed group', () => {
+    for (const level of LEVELS) {
+      const listed = groupTools(level).flatMap(t => t.inputSchema.properties.action.enum.filter(a => a !== 'help'));
+      expect([...listed].sort()).toEqual([...actionsForLevel(level)].sort());
+      expect(new Set(listed).size).toBe(listed.length);
+    }
+  });
+
+  it('keeps each group tool well under 4k tokens, and missions + runners under 5k', () => {
+    const admin = groupTools('admin');
+    for (const t of admin) expect(estTokens(t), t.name).toBeLessThan(3000);
+    const visual = admin.filter(t => t.name === 'buildd_missions' || t.name === 'buildd_runners');
+    expect(visual.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5000);
+  });
+
+  it('is far smaller than the legacy buildd tool', () => {
+    const groups = groupTools('admin').reduce((s, t) => s + estTokens(t), 0);
+    const [legacy] = tools({ accountLevel: 'admin', isSensitive: false, surface: 'legacy' });
+    expect(groups * 3).toBeLessThan(estTokens(legacy));
+  });
+});
+
+describe('routeGroupToolCall', () => {
+  it('dispatches an action of its own group unchanged', () => {
+    expect(routeGroupToolCall('missions', { action: 'manage_missions', params: { action: 'list' } }, 'admin'))
+      .toEqual({ kind: 'dispatch', action: 'manage_missions', params: { action: 'list' } });
+    expect(routeGroupToolCall('work', { action: 'claim_task' }, 'worker'))
+      .toEqual({ kind: 'dispatch', action: 'claim_task', params: {} });
+  });
+
+  it('dispatches above-level actions too, so the handler refuses them as buildd does', () => {
+    expect(routeGroupToolCall('admin', { action: 'manage_secrets', params: {} }, 'trigger').kind).toBe('dispatch');
+  });
+
+  it('names the right tool for an action from another group, in one line', () => {
+    const r = routeGroupToolCall('missions', { action: 'list_tasks' }, 'admin');
+    expect(r.kind).toBe('reply');
+    if (r.kind !== 'reply') return;
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('buildd_tasks');
+    expect(r.text.includes('\n')).toBe(false);
+  });
+
+  it('refuses an unknown action, listing the group', () => {
+    const r = routeGroupToolCall('prs', { action: 'nope' }, 'admin');
+    expect(r.kind === 'reply' && r.isError && r.text.includes('get_pr')).toBe(true);
+  });
+
+  it('help returns the long docs for an action', () => {
+    const r = routeGroupToolCall('work', { action: 'help', params: { action: 'create_pr' } }, 'worker');
+    expect(r).toEqual({ kind: 'reply', isError: false, text: actionHelp('create_pr')! });
+    expect(r.kind === 'reply' && r.text.includes('lede')).toBe(true);
+  });
+
+  it('help without an action lists the group', () => {
+    const r = routeGroupToolCall('runners', { action: 'help' }, 'worker');
+    expect(r.kind === 'reply' && !r.isError && r.text.includes('explain')).toBe(true);
+  });
+
+  it('help for another group works and says where to call it', () => {
+    const r = routeGroupToolCall('missions', { action: 'help', params: { action: 'list_tasks' } }, 'admin');
+    expect(r.kind === 'reply' && !r.isError && r.text.includes('buildd_tasks')).toBe(true);
+  });
+
+  it('help does not document an action above the level', () => {
+    const r = routeGroupToolCall('admin', { action: 'help', params: { action: 'manage_secrets' } }, 'worker');
+    expect(r.kind === 'reply' && r.isError).toBe(true);
+  });
+
+  it('every action is dispatched by its group and refused by every other', () => {
+    for (const a of allActions) {
+      for (const g of MCP_TOOL_GROUPS) {
+        const r = routeGroupToolCall(g, { action: a }, 'admin');
+        expect(r.kind, `${g} ${a}`).toBe(mcpGroupOf(a) === g ? 'dispatch' : 'reply');
+      }
+    }
+  });
+});
+
+describe('surface choice and instructions', () => {
+  it('worker sessions keep the legacy surface unless asked', () => {
+    expect(mcpToolSurfaceFor({ workerParam: 'w' })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ workerParam: 'w', toolsParam: 'groups' })).toBe('groups');
+    expect(mcpToolSurfaceFor({})).toBe('groups');
+    expect(mcpToolSurfaceFor({ toolsParam: 'legacy' })).toBe('legacy');
+    expect(mcpToolSurfaceFor({ toolsParam: 'bogus' })).toBe('groups');
+  });
+
+  it('groups instructions name the reachable group tools and help', () => {
+    const t = mcpServerInstructions('trigger', 'groups');
+    expect(t).toContain('buildd_<group>');
+    expect(t).toContain('help');
+    expect(t).toContain('tasks');
+    expect(t).not.toContain('runners');
+  });
+
+  it('legacy instructions are unchanged', () => {
+    expect(mcpServerInstructions('admin', 'legacy').startsWith('Buildd is a task coordination system for AI coding agents. Tools: `buildd` (task actions)')).toBe(true);
+    expect(mcpServerInstructions('admin', 'legacy')).toContain('gates which `buildd` actions you can call');
   });
 });
