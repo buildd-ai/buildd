@@ -18,8 +18,17 @@ import {
   type MissionEventContext,
   type MissionLiveStore,
 } from '@/app/app/(protected)/missions/[id]/MissionLiveStore';
+import { VISUAL_REVIEW_EVENT } from '@buildd/shared';
 import { refKey, type BuilddObjectRef } from '../chat-contract';
 import type { ObjectView } from './object-views';
+
+/**
+ * Mission-channel events a chat object listens for on top of the mission
+ * page's own list (MISSION_EVENTS): a visual review decision, and a new or
+ * changed audit shot (upload-url and the artifact PATCH fire worker:artifact
+ * on the mission channel), so the Screens line and tray stay live.
+ */
+export const MISSION_OBJECT_EXTRA_EVENTS = [VISUAL_REVIEW_EVENT, 'worker:artifact'] as const;
 
 export interface ObjectEntry {
   view: ObjectView | null;
@@ -156,6 +165,14 @@ export function createObjectStore(source: ObjectSource, opts: { clock?: Clock; w
     s.throttle?.cancel();
     s.throttle = createThrottle(() => load(s), { waitMs: opts.windowMs ?? OBJECT_REFRESH_WINDOW_MS, leading: false }, clock);
     s.unwatch = source.watch(s.ref, s.entry.view, (event, data) => {
+      if (event === VISUAL_REVIEW_EVENT) {
+        // A decision on this mission's screens (the decisions route fires it
+        // with the mission id). The mission page's classifier predates it.
+        const mid = data && typeof data === 'object' ? (data as { missionId?: unknown }).missionId : undefined;
+        if (!s.ctx.missionId || (typeof mid === 'string' && mid !== s.ctx.missionId)) return;
+        s.throttle?.call();
+        return;
+      }
       const d = classifyMissionEvent(event, data, s.ctx);
       if (d.kind === 'ignore') return;
       if (d.patch && d.taskId) s.live.patch(d.taskId, d.patch);

@@ -14,6 +14,7 @@ import {
   isSteerPart,
   isTextPart,
   isToolPart,
+  isTurnErrorPart,
   latestHandoffs,
   type ChatMessage,
   type ChatToolPart,
@@ -46,7 +47,11 @@ export interface ChatThreadProps {
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
   empty?: ReactNode;
-  /** The failure of the last request (`useChat().error`), shown after the list. */
+  /**
+   * The failure of the last request (`useChat().error`), shown after the list.
+   * Not shown when the last message already carries the turn's
+   * `data-turn-error` part (rendered in place, same words).
+   */
   error?: ReactNode;
   /** Accessible name of the log. */
   label?: string;
@@ -65,6 +70,7 @@ export function ChatThread({
   const live = status === 'submitted' || status === 'streaming';
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
   const waitingForFirstChunk = status === 'submitted' && messages.at(-1)?.role === 'user';
+  const lastHasTurnError = !!messages.at(-1)?.parts.some(isTurnErrorPart);
 
   if (messages.length === 0 && empty) return <div className={`kit-chat${className ? ` ${className}` : ''}`}>{empty}</div>;
 
@@ -115,6 +121,9 @@ export function ChatThread({
                 const data = handoffs.get(p.data.taskId) ?? p.data;
                 return <div key={key}>{renderHandoff ? renderHandoff(data) : <HandoffCard data={data} />}</div>;
               }
+              if (isTurnErrorPart(p)) {
+                return <div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>;
+              }
               if (isSteerPart(p)) {
                 return (
                   <p key={key} className="kit-steer-note" data-steer-state={p.data.state}>
@@ -132,7 +141,7 @@ export function ChatThread({
           <ThinkingPanel steps={thinkingSteps([], true)} streaming />
         </div>
       )}
-      {error && <div className="kit-error" role="alert">{error}</div>}
+      {error && !lastHasTurnError && <div className="kit-error" role="alert">{error}</div>}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useSyncExterna
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { MISSION_EVENTS, WORKSPACE_EVENTS } from '@/app/app/(protected)/missions/[id]/MissionAutoRefresh';
 import { refKey, type BuilddObjectRef } from '../chat-contract';
-import { createObjectStore, type ObjectEntry, type ObjectSource, type ObjectStore } from './object-store';
+import { MISSION_OBJECT_EXTRA_EVENTS, createObjectStore, type ObjectEntry, type ObjectSource, type ObjectStore } from './object-store';
 import type { ObjectView } from './object-views';
 
 /** The object's own channels: its workspace always, plus the mission channel for a mission. */
@@ -19,7 +19,7 @@ export function objectChannels(ref: BuilddObjectRef, view: ObjectView | null): A
   const ws = ref.workspaceId ?? view?.workspaceId ?? null;
   if (ws) out.push({ name: `${CHANNEL_PREFIX}workspace-${ws}`, events: WORKSPACE_EVENTS });
   const missionId = ref.kind === 'mission' ? ref.id : (view && 'missionId' in view ? view.missionId : null) ?? (ref.kind === 'question' ? ref.missionId ?? null : null);
-  if (missionId) out.push({ name: `${CHANNEL_PREFIX}mission-${missionId}`, events: MISSION_EVENTS });
+  if (missionId) out.push({ name: `${CHANNEL_PREFIX}mission-${missionId}`, events: [...new Set<string>([...MISSION_EVENTS, ...MISSION_OBJECT_EXTRA_EVENTS])] });
   return out;
 }
 

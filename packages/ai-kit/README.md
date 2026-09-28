@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.2.0
+npm i -E @builddai/ai-kit@0.3.1
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -26,7 +26,7 @@ and you should re-run your evals before taking it.
 | `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
-| `@builddai/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
+| `@builddai/ai-kit/surfaces` | Jev orders the app's own chips (`defineRankSurface`), with a code fallback and a confidence gate. Multi-slot `defineSurface` is types only | Rank slot ready |
 
 ## Model plans
 
@@ -92,7 +92,7 @@ the look.
 |---|---|
 | `/chat/contract` | nothing |
 | `/chat/server` | `ai@^7` to run a turn (imported lazily: the entry loads, and `defineToolGroups` works, without it). Its `.d.ts` references `ai` types |
-| `/chat/react` | `react@^19`, `@ai-sdk/react@^4`, `ai@^7` (imported statically) |
+| `/chat/react` | `react@^19`, `react-dom@^19` (since 0.3.0, for the phone menu sheet's portal), `@ai-sdk/react@^4`, `ai@^7` (imported statically) |
 
 The kit never imports a provider SDK. Build the model yourself, e.g. with
 `@openrouter/ai-sdk-provider`.
@@ -156,7 +156,7 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 | `docked?` | an object's data is in the instructions: blocks Allow |
 | `activeGroups?` | groups offered to the model this turn (all tools stay defined, so an approved call still runs) |
 | `admit?` | your rate limit / per-person cap, before any model call |
-| `limits?` | `{ maxSteps: 8, turnMs: 45_000, historyLimit: 40, storedLimit: 500, maxUserText: 8_000 }` |
+| `limits?` | `{ maxSteps: 8, turnMs: 45_000, historyLimit: 40, storedLimit: 500, maxUserText: 8_000, maxOutputTokens: 4_096 }`. `maxOutputTokens` caps every model step: without a cap OpenRouter reserves the model's whole output window against the key and a key with a daily or credit limit refuses every turn. `0` sends no cap |
 | `steering?` | `{ queue: SteerQueue, maxPerTurn?: 3 }`. Off when absent |
 | `onUsage?` | `TurnUsageRecord`: user, conversation, message, plan, tokens, cost, latency, outcome, `meta` from your key resolver. Carries identity; never sent to buildd |
 | `onStep?`, `onError?`, `metadata?`, `headers?`, `generateId?` | hooks |
@@ -172,6 +172,8 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 **Thinking steps.** The runner emits `data-step` parts from the tool lifecycle (active → done, "Check it with you" while a card waits, "Filed as a task" for a hand-off), labelled from the tool declaration's `steps: { active, done, failed? }` or the group label, never the tool name. Plus your own `ctx.step()` rows.
 
 **Hand-off.** Declare the tool `class: 'write', spends: true` (so it always asks) and return `handoffResult({ taskId, url, title })` from its `execute`. The runner streams a `data-handoff` part (`state: 'filed'`), calls `store.linkHandoff`, and the card becomes a live object. When the task reports back (your webhook), append `handoffEventMessage({ id, handoff: { taskId, url, state: 'completed', summary } })` through your store; `latestHandoffs(messages)` folds the states and `<HandoffCard>` shows the newest.
+
+**Provider failures.** A turn that fails after it started streaming writes a typed `data-turn-error` part (`TurnErrorData { code, message, status? }`, saved with the message) and uses the same sentence as the stream's `errorText`. `code` is `insufficient_credit` (out of credit or over the key's limit, e.g. OpenRouter's "requires more credits, or fewer max_tokens"), `rate_limited`, `invalid_key`, or `failed` ("The turn failed."). `classifyTurnError(error)` is exported for your own logs. `<ChatThread>` renders the part in place and `useKitChat().turnError` exposes it.
 
 **Stop.** `useKitChat().stop()` aborts the request; `handle` passes the request's signal, so the model call stops too. The turn deadline (`turnMs`) always applies. Either way the partial answer is saved with `STOPPED_NOTE` and the receipt says `outcome: 'aborted'`.
 
@@ -241,7 +243,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 
 | Export | |
 |---|---|
-| `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable` |
+| `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, turnError, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable`; a mid-stream provider failure in `turnError` |
 | `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderEvent? renderHandoff? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after) |
 | `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control; the badge is `allowedBadgeCount(rows)` (`··· 2`). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
@@ -250,7 +252,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
 | `<ApprovalCard part onRespond onEdit? approverName?>` | before → after from the server preview; typed confirm for `confirmText` |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
-| `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself (or with `/surfaces` later) |
+| `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface` |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
 | `createComposerStore` / `useComposerState` | the shared new-chat draft, remembered scope and tier (below) |
 
@@ -278,7 +280,9 @@ const c = useComposerState(composer, teamId, { scopes: spaces, pageScope: search
 - `useComposerState(store, key, { scopes?, pageScope? })` → `{ draft, scope, tier, seeded, setDraft, setScope, setTier }`. `pageScope` (an object's workspace, a query param) wins until the person picks another; a remembered scope not in `scopes` reads as all.
 - An existing conversation keeps its own pin: hold its state yourself, and also call `composer.setScope` / `setTier` from its pickers if that choice should be the next new chat's default.
 
-**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }`). Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; the menus are bottom sheets below 640px; `prefers-reduced-motion` is honoured.
+**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
+
+**Menus.** On wide screens the tools / scope / tier panels open above the composer (which doesn't clip them) and scroll past `min(70vh, 520px)`. Below 640px they are bottom sheets portaled to `<body>`, so a transformed, clipped or stacked ancestor can't capture them; the sheet carries the `--kit-*` values from where it was opened. If your app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset` to its height (including the safe-area padding it already has) and the sheet sits on top of it; the safe-area inset is padded only for what the offset doesn't cover.
 
 ## Tool permissions
 
@@ -370,6 +374,41 @@ const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: to
 
 Writing labels: define each one contrastively, avoid a catch-all label
 ("other"), keep state small, and leave arithmetic and dates to code.
+
+## Surfaces: Jev orders your chips
+
+`defineRankSurface` orders the app's own candidates (empty-state chips) with
+one Jev `score` question per candidate, in one call. The output space is
+closed: only ids you registered, and your code supplies every label and text.
+
+```ts
+import { defineRankSurface } from '@builddai/ai-kit/surfaces';
+
+export const CHIPS = defineRankSurface({
+  id: 'money.chat_chips',
+  promptVersion: '2026-09-28.a',
+  candidates: CHIP_CATALOGUE,                       // [{ id, ...your fields }]
+  question: c => `Offer the one-tap question "${c.label}" (${c.purpose}) right now? Judge by the counts.`,
+  levels: LEVELS,                                   // optional; lowest first
+  fallback: state => codeOrder(state),              // always computed: the order when Jev is off or unsure, and the tie-break
+  max: 4,
+  mode: 'gated', minConfidence: 0.6,                // or 'shadow' to log only
+});
+
+const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // never throws
+// pick = { ids, order, source: 'jev' | 'fallback', reason?, version, scores }
+const chips = CHIPS.resolve(pick.ids);
+```
+
+- Scores count only when applied (at or above `minConfidence` in `gated`). If
+  fewer than `minAppliedShare` (default half) of the candidates are applied,
+  or the call fails or times out (default 3s), or there is no key, or the
+  mode is `shadow`, the fallback order stands, and `reason` says why.
+- Applied candidates sort by score; ties and unapplied candidates follow the
+  fallback order. `rank(state, run)` is the same combination, pure, for tests
+  and for replaying logged runs.
+- `CHIPS.decision` is the `/decide` definition: pin it with
+  `expectDecisionPinned` and eval it with `runDecisionEval` before gating.
 
 ## Theming
 

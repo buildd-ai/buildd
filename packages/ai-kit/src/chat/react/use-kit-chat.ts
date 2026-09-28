@@ -11,6 +11,9 @@
  * - A refusal before any model call (`409 no_key`, `429 budget_exhausted`,
  *   `429 rate_limited`) lands in `unavailable` for `<ChatSetupCard>`, and the
  *   draft is kept.
+ * - A turn that failed mid-stream carries a typed `data-turn-error` part
+ *   (`insufficient_credit`, `rate_limited`, `invalid_key`, `failed`), exposed
+ *   as `turnError`; `error.message` is the same readable sentence.
  * - With `steer`, `steer(text)` posts to the steer endpoint while a turn runs,
  *   and steers the turn ended before applying (`data-steer` `deferred`) are
  *   sent as the next message.
@@ -18,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai';
-import { isSteerPart, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason } from '@builddai/ai-kit/chat/contract';
+import { isSteerPart, isTurnErrorPart, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason, type TurnErrorData } from '@builddai/ai-kit/chat/contract';
 
 const REASONS = new Set<ChatUnavailableReason>(['no_key', 'budget_exhausted', 'rate_limited']);
 
@@ -48,6 +51,8 @@ export interface KitChat {
   error: Error | undefined;
   /** The last refusal, until the next successful send. */
   unavailable: ChatUnavailableBody | null;
+  /** Why the latest turn failed mid-stream (its `data-turn-error` part), else null. */
+  turnError: TurnErrorData | null;
   send(text: string): Promise<void>;
   stop(): Promise<void>;
   /** Answer an approval card (`<ApprovalCard onRespond>` / `<ChatThread onApprovalResponse>`). */
@@ -137,12 +142,18 @@ export function useKitChat(opts: UseKitChatOptions): KitChat {
     void sendMessage({ text: pending.map(p => p.data.text).join('\n\n') });
   }, [messages, status, steerApi, sendMessage]);
 
+  const last = messages.at(-1);
+  const turnError = last?.role === 'assistant'
+    ? ((last.parts as ChatMessage['parts']).find(isTurnErrorPart)?.data ?? null)
+    : null;
+
   return {
     messages: messages as unknown as ChatMessage[],
     status,
     busy,
     error,
     unavailable,
+    turnError,
     send,
     stop,
     respond,

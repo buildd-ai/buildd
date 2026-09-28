@@ -10,8 +10,12 @@
  * strip opens the object as a sheet.
  */
 import { useState } from 'react';
+import type { VisualReviewModel } from '@buildd/shared';
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import type { BuilddObjectRef } from '../chat-contract';
+import { useChatActions } from '../ChatActions';
+import { hasVisualReview } from './mission-visual';
 import { ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import { useObjectEntry } from './ObjectStoreProvider';
 import type { ObjectView } from './object-views';
@@ -41,6 +45,41 @@ export function pinnedObjectTitle(objRef: BuilddObjectRef, view: ObjectView | nu
   return objRef.title ?? objRef.fallbackText;
 }
 
+/**
+ * The strip's visual review chip: the action, "Review N" (the card button's
+ * words; the Line beside it already says how many wait), while screens wait on
+ * you, red "No browser runner" while the audit cannot start. Null otherwise
+ * (the Line beside it says the rest).
+ */
+export function pinnedVisualChip(visual: VisualReviewModel | null | undefined): { label: string; tone: 'needs' | 'bad' } | null {
+  if (!visual) return null;
+  if (visual.phase === 'no_browser_runner') return { label: 'No browser runner', tone: 'bad' };
+  const n = visual.summary.awaitingHuman;
+  return n > 0 ? { label: `Review ${n}`, tone: 'needs' } : null;
+}
+
+const CHIP_TONE = {
+  needs: 'border-accent text-accent-text hover:bg-[var(--accent-soft)]',
+  bad: 'border-status-error text-status-error hover:bg-surface-3',
+} as const;
+
+/** The chip as a button, at every width: it opens the deck (or, with no screens yet, the mission). */
+export function PinnedVisualChip({ model, onReview }: { model: VisualReviewModel; onReview(startKey: string | null): void }) {
+  const chip = pinnedVisualChip(model);
+  if (!chip) return null;
+  return (
+    <button
+      type="button"
+      data-testid="canvas-pinned-visual-chip"
+      data-tone={chip.tone}
+      onClick={() => onReview(model.queue[0] ?? null)}
+      className={`inline-flex min-h-9 shrink-0 items-center border-[1.5px] px-2.5 font-mono text-[11px] font-bold uppercase tracking-[1.2px] ${CHIP_TONE[chip.tone]}`}
+    >
+      {chip.label}
+    </button>
+  );
+}
+
 export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, openLabel = 'Open beside ▸', className = '' }: {
   objRef: BuilddObjectRef;
   /** Desktop: dock it in the pane. Phone: open the sheet. */
@@ -53,8 +92,14 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, op
   className?: string;
 }) {
   const { view } = useObjectEntry(objRef);
+  const actions = useChatActions();
   const [open, setOpen] = useState(true);
   const mission = view?.kind === 'mission' ? view : null;
+  const visual = mission && hasVisualReview(mission.visual) ? mission.visual : null;
+  const review = (startKey: string | null) => {
+    if (visual && visual.cells.length > 0) actions.openVisualReview(objRef, startKey);
+    else onOpen();
+  };
   const title = pinnedObjectTitle(objRef, view);
   const cols = mission ? miniBoardColumns(mission.board, 4) : [];
   const tone = mission ? missionTone(mission.stateLabel, mission.status) : null;
@@ -97,6 +142,12 @@ export default function PinnedObject({ objRef, onOpen, hideOnDesktop = false, op
           )}
         </div>
       </div>
+      {visual && (
+        <div data-testid="canvas-pinned-visual" data-phase={visual.phase} className="flex min-w-0 items-center gap-3 px-4 pb-2 md:px-6">
+          <VisualReviewLine model={visual} className="min-w-0 flex-1" />
+          <PinnedVisualChip model={visual} onReview={review} />
+        </div>
+      )}
       {open && cols.length > 0 && (
         <div
           data-testid="canvas-mini-board"

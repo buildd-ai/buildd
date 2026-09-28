@@ -15,7 +15,7 @@
 
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
 
@@ -36,8 +36,20 @@ type DefaultRoleRouting =
   | { whenToUse: string; notFor?: string }
   | { disabled: true };
 
-interface DefaultRole {
+interface DefaultRoleDefinition {
   slug: string;
+  /**
+   * Bump when `content` changes in a way existing teams should get. Seeding
+   * stamps it into `metadata.defaultRoleVersion`; `planDefaultRoleResync`
+   * finds the rows still on an older version. Absent = 1.
+   */
+  version?: number;
+  /**
+   * sha256 of every earlier shipped `content` of this role. A row whose hash
+   * is listed is unedited, so a re-sync may overwrite it; any other hash is a
+   * team's own edit and is left alone.
+   */
+  supersededContentHashes?: string[];
   name: string;
   description: string;
   content: string;
@@ -51,7 +63,12 @@ interface DefaultRole {
   routing: DefaultRoleRouting;
 }
 
-export const DEFAULT_ROLES: DefaultRole[] = [
+interface DefaultRole extends DefaultRoleDefinition {
+  version: number;
+  supersededContentHashes: string[];
+}
+
+const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
   {
     slug: 'organizer',
     name: 'Organizer',
@@ -512,6 +529,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow, never a role). It is one of EXPLICIT_ROLE_SLUGS, so only a
     // runner whose env-scan found a browser can claim it.
     slug: VISUAL_AUDITOR_ROLE_SLUG,
+    // v2 (visual-qa-human-review.md): no note for unsure, update_artifact
+    // sends only qa.fixTaskId, later rounds report prior-finding resolution.
+    version: 2,
+    supersededContentHashes: ['858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d'],
     name: 'Visual Auditor',
     description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
     content: `# Visual Auditor
@@ -583,22 +604,28 @@ generically; never paste real names or content from a shot anywhere.
 
   The title shape \`[surface fix] <route>: <finding>\` is read by code: \`<route>\` must be the
   route pattern exactly as you recorded it on the shot (\`/app/tasks/:id\`, not a concrete URL),
-  starting with \`/\`. It decides which routes the next round re-checks. Then put the task's id
-  on every shot of that defect: \`update_artifact\` with \`metadata.qa.fixTaskId\`. Every issue
-  shot needs one. File it in THIS mission, never as a friction report.
-- **unsure**: \`post_note\` with \`type: 'question'\`, a title naming the route and viewport, and
-  the artifact id in the body, so a human can say fix or waive. An unsure shot does not block
-  completion: record it and move on.
+  starting with \`/\`. It decides which routes the next round re-checks. Then link the task
+  on every shot of that defect with \`update_artifact\`, sending only the link:
+  \`metadata: { qa: { fixTaskId: "<task id>" } }\`. The server merges it into the shot's
+  \`qa\`, so route, viewport and finding stay as you uploaded them. Every issue shot needs
+  one. File it in THIS mission, never as a friction report.
+- **unsure**: upload the shot with \`verdict: "unsure"\` and a finding that says what you could
+  not tell. That is all: do not \`post_note\` about it. The human review queue shows every
+  unsure shot to a person, who decides it. An unsure shot does not block your completion.
 
 ## Rounds
 
 Your title says which round you are. Round 1 audits what the builder tasks changed. When a
 \`[surface fix]\` task is filed after an audit has started, the server opens ONE
-\`[surface audit] round 2\` task that depends on the fix tasks and lists their routes. If you
-are Round 2, re-capture those routes (both viewports) and say in each finding whether the
-issue is gone. File new issues exactly as above. There are at most 2 rounds: a fix filed
-during round 2 makes the server ask a human instead. Do not open another audit task yourself,
-and do not skip filing a fix because no round follows.
+\`[surface audit] round 2\` task that depends on the fix tasks and lists their routes. There
+are at most 2 automatic rounds: a fix filed during round 2 makes the server ask a human instead.
+A person reviewing the shots can also ask for a fix, which opens a later round (your task
+description says when a round was opened by a human review).
+
+In round 2 or later, re-capture the listed routes (both viewports) and start each finding with
+"Resolved:" or "Still there:" for the previous round's finding on that route and viewport,
+then say what you saw. File new issues exactly as above. Do not open another audit task
+yourself, and do not skip filing a fix because no round follows.
 
 ## 5. Complete
 
@@ -728,7 +755,76 @@ If a near-duplicate exists, update it instead of creating a new entry.
  * `metadata.routing` (role-routing.md §2), so it needs no migration.
  */
 export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string, unknown> {
-  return { routing: { ...role.routing, updatedAt: now.toISOString() } };
+  return { routing: { ...role.routing, updatedAt: now.toISOString() }, defaultRoleVersion: role.version };
+}
+
+export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
+  ...r,
+  version: r.version ?? 1,
+  supersededContentHashes: r.supersededContentHashes ?? [],
+}));
+
+export function roleContentHash(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+export interface SeededRoleRow {
+  id: string;
+  slug: string;
+  source: string | null;
+  contentHash: string | null;
+  metadata: unknown;
+}
+
+export interface DefaultRoleResync {
+  id: string;
+  slug: string;
+  version: number;
+  content: string;
+  contentHash: string;
+}
+
+/**
+ * Which seeded role rows a version bump should update: system rows of a
+ * default slug, stamped with an older `metadata.defaultRoleVersion` (absent
+ * = 1), whose content is exactly an earlier shipped version. A row a team
+ * edited keeps its edit. Pure; `resyncDefaultRolesForTeam` applies it.
+ */
+export function planDefaultRoleResync(rows: readonly SeededRoleRow[]): DefaultRoleResync[] {
+  const bySlug = new Map(DEFAULT_ROLES.map(r => [r.slug, r]));
+  const out: DefaultRoleResync[] = [];
+  for (const row of rows) {
+    const role = bySlug.get(row.slug);
+    if (!role || row.source !== 'system') continue;
+    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    const version = typeof meta.defaultRoleVersion === 'number' ? meta.defaultRoleVersion : 1;
+    if (version >= role.version) continue;
+    if (!row.contentHash || !role.supersededContentHashes.includes(row.contentHash)) continue;
+    out.push({ id: row.id, slug: role.slug, version: role.version, content: role.content, contentHash: roleContentHash(role.content) });
+  }
+  return out;
+}
+
+/**
+ * Bring a team's unedited default roles up to the current version. Safe to
+ * call repeatedly. Guarded per row on the content hash it read, so an edit
+ * landing in between is never overwritten.
+ */
+export async function resyncDefaultRolesForTeam(teamId: string): Promise<number> {
+  const rows = await db.query.workspaceSkills.findMany({
+    where: and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.source, 'system')),
+    columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
+  }) as SeededRoleRow[];
+  const plan = planDefaultRoleResync(rows);
+  const now = new Date();
+  for (const p of plan) {
+    const row = rows.find(r => r.id === p.id)!;
+    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    await db.update(workspaceSkills)
+      .set({ content: p.content, contentHash: p.contentHash, metadata: { ...meta, defaultRoleVersion: p.version }, updatedAt: now })
+      .where(and(eq(workspaceSkills.id, p.id), eq(workspaceSkills.contentHash, row.contentHash!)));
+  }
+  return plan.length;
 }
 
 
@@ -748,7 +844,7 @@ export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
       name: role.name,
       description: role.description,
       content: role.content,
-      contentHash: createHash('sha256').update(role.content).digest('hex'),
+      contentHash: roleContentHash(role.content),
       source: 'system',
       enabled: true,
       origin: 'manual' as const,

@@ -24,7 +24,14 @@ export type CompletionDecisionCode =
   | 'awaiting_mission_pr'
   | 'criteria_failed'
   | 'criteria_pending'
-  | 'criteria_unverified';
+  | 'criteria_unverified'
+  /**
+   * The visual audit has screens a human must look at: a current `unsure`
+   * shot nobody decided, or the round-cap question is open. Produced only
+   * under `VISUAL_REVIEW_GATE=enforce`; by default the hold is shadow and
+   * rides along on the decision as `visualReviewHold`.
+   */
+  | 'visual_review_open';
 
 /**
  * Refusals that mean "the goal criteria did not clear". Exported so callers can

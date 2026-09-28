@@ -16,15 +16,26 @@ import {
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
-import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
+import type { VisualReviewModel } from '@buildd/shared';
+import { effectiveScreensLine, humanCallsLine } from './MissionBoard';
+import {
+  MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
+  type MissionVisualReviewValue, type VisualReviewLayout,
+} from './MissionVisualReview';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import CriteriaCheckNow from './CriteriaCheckNow';
 
 export interface MissionLanesProps extends BoardLinkContext {
   model: MissionBoardModel;
   completionText?: string | null;
-  /** The latest visual-review run: the completion record counts its screens. */
-  visual?: { shots: readonly VisualShot[]; taskId: string | null } | null;
+  /**
+   * The mission's visual review (`loadVisualReview`), whenever an audit task
+   * exists: the side rail gets the Ask and the Tray, and the completion
+   * record counts the screens and your calls on them.
+   */
+  visual?: VisualReviewModel | null;
+  /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
+  reviewLayout?: VisualReviewLayout;
 }
 
 /** Look-ahead past NOW while running. */
@@ -45,7 +56,15 @@ export function laneWindow(model: Pick<MissionBoardModel, 'startedAt' | 'complet
   return { from, to: Math.max(from + LANE_WINDOW_MIN_SPAN_MS, now + LOOKAHEAD_MS) };
 }
 
-export default function MissionLanes({ model: serverModel, completionText, visual = null, ...link }: MissionLanesProps) {
+export default function MissionLanes(props: MissionLanesProps) {
+  return (
+    <WithMissionVisualReview missionId={props.missionId} visual={props.visual} reviewLayout={props.reviewLayout}>
+      {review => <LanesView {...props} review={review} />}
+    </WithMissionVisualReview>
+  );
+}
+
+function LanesView({ model: serverModel, completionText, visual: _visual, reviewLayout: _layout, review, ...link }: MissionLanesProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const { from, to } = laneWindow(model, now);
@@ -131,7 +150,7 @@ export default function MissionLanes({ model: serverModel, completionText, visua
           </div>
           {detailBar && <Detail bar={detailBar} model={model} now={now} />}
         </div>
-        <Side model={model} now={now} link={link} completionText={completionText ?? null} shots={visual?.shots ?? null} />
+        <Side model={model} now={now} link={link} completionText={completionText ?? null} review={review} />
       </div>
       <Legend kinds={legendKinds(model.bars, from, to, now)} />
     </div>
@@ -224,7 +243,7 @@ function Kv({ k, v }: { k: string; v: string }) {
   );
 }
 
-function Side({ model, now, link, completionText, shots }: { model: MissionBoardModel; now: number; link: BoardLinkContext; completionText: string | null; shots: readonly VisualShot[] | null }) {
+function Side({ model, now, link, completionText, review: visualReview }: { model: MissionBoardModel; now: number; link: BoardLinkContext; completionText: string | null; review: MissionVisualReviewValue | null }) {
   const sec = (label: string, n: number, hot: boolean, testId: string, body: React.ReactNode) => (
     <div data-testid={testId}>
       <div className={`mb-1.5 flex items-center gap-2 border-b-2 border-border-strong pb-[7px] font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.6px] ${hot ? 'text-accent-text' : 'text-text-muted'}`}>
@@ -235,10 +254,21 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
     </div>
   );
   const row = 'flex h-[34px] min-w-0 items-center gap-[7px] border-b border-border-default font-mono text-[12px] text-text-secondary hover:bg-card-hover';
+  const vm = visualReview?.model ?? null;
+  const awaiting = vm?.summary.awaitingHuman ?? 0;
+  // The audit's Ask and Tray, one section of the rail, from the same model as the Board.
+  const screens = visualReview && vm && vm.phase !== 'off'
+    ? sec('Screens', vm.summary.shots, vm.phase === 'needs_you', 'lanes-screens', (
+      <div className="flex flex-col gap-3 pt-1.5">
+        <MissionVisualAsk review={visualReview} board={model} />
+        <MissionVisualTray review={visualReview} board={model} columns="one" besideAsk />
+      </div>
+    ))
+    : null;
 
   if (model.complete) {
     const r = model.record;
-    const review = shots ? summarizeVisualRun(shots) : null;
+    const review = vm && vm.summary.shots > 0 ? vm.summary : null;
     const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });
     const unevaluated = !model.criteriaEvaluated && model.criteria.length > 0;
     const stat = (n: string, l: string, cls = 'text-text-primary', testId?: string) => (
@@ -259,16 +289,20 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
             {stat(String(r.runners), 'runners')}
             {/* A zero is not an outcome: CI auto-fix shows only when something was fixed. */}
             {r.ciFixes > 0 && stat(String(r.ciFixes), 'CI auto-fixed', 'text-status-error')}
-            {review && review.shots > 0 && stat(
-              `${review.ok}/${review.shots}`,
-              review.ok === review.shots ? 'screens ok' : verdictLine(review).replace(/^\d+ of \d+ ok · /, 'screens · '),
-              review.issues > 0 ? 'text-status-error' : 'text-text-primary',
+            {review && stat(
+              // After your decisions, as the Band's Line counts them.
+              `${review.effectiveOk}/${review.shots}`,
+              review.effectiveOk === review.shots ? 'screens ok' : effectiveScreensLine(review).replace(/^\d+ of \d+ ok · /, 'screens · '),
+              review.effectiveIssues > 0 ? 'text-status-error' : 'text-text-primary',
+              'record-screens',
             )}
+            {review && review.reviewed > 0 && stat(String(review.reviewed), `screens you judged · ${humanCallsLine(review)}`, 'text-text-primary', 'record-screen-calls')}
             {stat(String(r.decisions), 'your answers', r.decisions ? 'text-accent-text' : 'text-text-primary')}
             {d.work && stat(d.work, 'of work', 'text-text-primary', 'record-time')}
             {d.showOpen && stat(d.open, 'open', 'text-text-secondary', 'record-open')}
           </div>
         </div>
+        {screens}
         {sec(unevaluated ? 'Goal criteria · not evaluated' : 'Goal criteria', unevaluated ? model.criteria.length : model.criteriaPassed, false, 'lanes-criteria', <>
           {unevaluated && <div className="py-2"><CriteriaCheckNow missionId={link.missionId} /></div>}
           {model.criteria.map((c, i) => (
@@ -287,10 +321,11 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
   const ny = model.needsYou.map(id => model.tasks[id]);
   const review = model.inReview.map(id => model.tasks[id]);
   const next = model.upNext.map(id => model.tasks[id]);
+  const needsN = ny.length + awaiting + (vm?.needsYou?.reason === 'round_cap' ? 1 : 0);
   return (
     <aside className="mt-[22px] flex min-w-0 flex-col gap-[18px]">
-      {sec('Needs you', ny.length, ny.length > 0, 'needs-you-band', ny.length === 0
-        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">Nothing waiting on you.</div>
+      {sec('Needs you', needsN, needsN > 0, 'needs-you-band', ny.length === 0
+        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens below want your call.' : 'Nothing waiting on you.'}</div>
         : ny.map(t => (
           <div key={t.id} className="flex flex-col gap-2.5 border-2 border-accent bg-card p-3 shadow-[3px_3px_0_0_var(--border-strong)]">
             <div className="flex items-center gap-[7px] font-mono text-[12px] text-text-muted">
@@ -302,6 +337,7 @@ function Side({ model, now, link, completionText, shots }: { model: MissionBoard
             <AnswerButtons workerId={t.workerId} options={t.waitingFor?.options ?? []} compact />
           </div>
         )))}
+      {screens}
       {sec('In review', review.length, false, 'lanes-in-review', review.length === 0
         ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">No open PRs.</div>
         : review.map(t => {

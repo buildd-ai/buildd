@@ -2,7 +2,8 @@
 
 /**
  * Agent chat states in isolation, from fictional fixtures — no database, no
- * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty`
+ * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty|watch|visual`
+ * (`&review=1` with `visual` opens the review deck: the sheet on a phone, the pane on desktop)
  * (`&mood=calm|needs` for the empty canvas's mood)
  * and `&aside=member|operator`, `&setup=no_key&admin=1`,
  * `&hints=1` (keyboard hints on), `&pane=closed`, `&about=mission` (opened from
@@ -11,6 +12,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ChatWorkspace from '@/components/chat/ChatWorkspace';
+import type { ChatActions } from '@/components/chat/ChatActions';
+import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import type { CanvasPulse } from '@/components/chat/canvas-empty';
 import ChatContextPanel from '@/components/chat/ChatContextPanel';
 import ChatSetupCard, { type ChatSetupReason } from '@/components/chat/ChatSetupCard';
@@ -21,7 +24,7 @@ import type { ChatMessage, ChatToolPart } from '@/components/chat/chat-contract'
 import { isToolPart } from '@/components/chat/chat-contract';
 import {
   CHAT_FIXTURE_STATES, ORGANIZER, TEAM_NAME, VIEWER, WORKSPACES, WS, chatFixture, fixtureViews, isChatFixtureState,
-  missionRef, questionRef, type ChatFixtureState,
+  missionRef, questionRef, type ChatFixtureState, VISUAL_FIXTURE_OPTS, VISUAL_FIXTURE_PHASE,
 } from './chat-fixtures';
 
 function useParams() {
@@ -60,13 +63,21 @@ export default function DevChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(fixture.messages);
   useEffect(() => setMessages(fixture.messages), [fixture]);
   const views = useMemo(() => fixtureViews(state), [state]);
+  // Visual review decisions against an in-memory "server" (the S3 fixture
+  // transport), so the deck in the sheet or pane is fully clickable and a
+  // refetch reads the decisions back.
+  const reviewTransport = useMemo(() => createFixtureVisualReviewTransport(VISUAL_FIXTURE_PHASE, VISUAL_FIXTURE_OPTS, { latencyMs: 350 }), []);
+  const reviewShots = useCallback<ChatActions['reviewShots']>(({ missionId: _m, ...req }) => reviewTransport.decide(req), [reviewTransport]);
+  const undoReview = useCallback<ChatActions['undoReview']>(({ reviewId }) => reviewTransport.undo(reviewId), [reviewTransport]);
+
   const source: ObjectSource = useMemo(() => ({
     load: async (ref) => {
       const v = views[`${ref.kind}:${ref.id}`];
       if (!v) throw new Error('Not found');
+      if (v.kind === 'mission' && v.visual) return { ...v, visual: { ...reviewTransport.model(), missionId: v.id } };
       return v;
     },
-  }), [views]);
+  }), [views, reviewTransport]);
 
   const onApproval = useCallback((id: string, ok: boolean) => {
     setTimeout(() => setMessages(ms => approve(ms, id, ok)), 500);
@@ -114,6 +125,9 @@ export default function DevChatPage() {
           onApproval={onApproval}
           onStop={() => {}}
           answerQuestion={() => new Promise(r => setTimeout(r, 400))}
+          reviewShots={reviewShots}
+          undoReview={undoReview}
+          initialVisualReview={state === 'visual' && params.get('review') === '1' ? { ref: missionRef, startKey: null } : null}
           title={fixture.title}
           teamName={TEAM_NAME}
           agent={ORGANIZER}

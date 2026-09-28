@@ -2013,6 +2013,49 @@ export const artifacts = pgTable('artifacts', {
   initiativeIdx: index('artifacts_initiative_idx').on(t.initiativeId),
 }));
 
+/**
+ * A human's decision on one visual-audit screenshot
+ * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
+ * undo sets `supersededAt` on the active row, then inserts. Kept out of
+ * `artifacts.metadata.qa` on purpose: the auditor writes that field
+ * (update_artifact) and could erase a human decision, and a human "looks
+ * right" must never satisfy the auditor's issue → fixTaskId evidence rule.
+ *
+ * The partial unique index keeps at most one active review per artifact, so a
+ * double tap cannot leave two (no db.transaction on neon-http).
+ */
+export const visualShotReviews = pgTable('visual_shot_reviews', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  auditTaskId: uuid('audit_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  round: integer('round').notNull(),
+  /** `route|viewport|variant`, the model's cell key (visual-review-model.ts). */
+  cellKey: text('cell_key').notNull(),
+  route: text('route').notNull(),
+  viewport: text('viewport').$type<'mobile' | 'desktop'>().notNull(),
+  /** The agent's verdict when the human decided: the stale guard compares it. */
+  agentVerdict: text('agent_verdict').$type<'ok' | 'issue' | 'unsure'>().notNull(),
+  decision: text('decision').$type<'looks_right' | 'needs_fix'>().notNull(),
+  relation: text('relation').$type<'agree' | 'dispute' | 'waive'>().notNull(),
+  note: text('note'),
+  /** The `[surface fix]` task this decision filed. Never written to qa.fixTaskId. */
+  fixTaskId: uuid('fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  /** The auditor's fix this decision cancelled (a waive), so undo can reopen it. */
+  cancelledFixTaskId: uuid('cancelled_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  reviewerUserId: uuid('reviewer_user_id').references(() => users.id, { onDelete: 'set null' }),
+  reviewerLabel: text('reviewer_label'),
+  supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  missionActiveIdx: index('visual_shot_reviews_mission_idx').on(t.missionId, t.supersededAt),
+  artifactIdx: index('visual_shot_reviews_artifact_idx').on(t.artifactId),
+  oneActivePerArtifactIdx: uniqueIndex('visual_shot_reviews_one_active_per_artifact')
+    .on(t.artifactId)
+    .where(sql`superseded_at IS NULL`),
+}));
+
 // Mission notes — lightweight append-only feed for agent↔user communication
 /**
  * Review feedback on a PR, captured for RETRIEVAL rather than for the activity

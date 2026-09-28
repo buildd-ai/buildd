@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Rea
 import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
-import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions } from './ChatActions';
+import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
 import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from './ChatComposer';
 import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
@@ -49,6 +49,11 @@ export interface ChatWorkspaceProps {
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
   answerQuestion?: ChatActions['answerQuestion'];
+  /** Override how visual review decisions are sent (fixtures). Default: the decisions route. */
+  reviewShots?: ChatActions['reviewShots'];
+  undoReview?: ChatActions['undoReview'];
+  /** Open a mission's review deck on arrival (the dev fixtures' `&review=1`). */
+  initialVisualReview?: Pick<OpenVisualReview, 'ref' | 'startKey'> | null;
   title: string | null;
   titleSource?: 'auto' | 'user';
   teamName?: string | null;
@@ -139,7 +144,7 @@ function useMinWidth(px: number): boolean {
 
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
-    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
+    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, reviewShots, undoReview, initialVisualReview = null, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null, pulse = null,
@@ -151,6 +156,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     overlay ? { ...s, closed: true } : focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
+  // The visual review deck, shown by the mission's pane or sheet while set.
+  const [visualReview, setVisualReview] = useState<OpenVisualReview | null>(null);
   // The desktop right panel's HISTORY (?view=history deep-links it open).
   const [historyDock, setHistoryDock] = useState(historyOpen && !overlay);
   // A client navigation to ?view=history keeps this mounted: open it then too.
@@ -196,6 +203,28 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else setSheet(ref);
   }, [onOpenObject]);
 
+  // Review from the thread: the deck takes the docked pane on desktop and the
+  // sheet on a phone. The summoned overlay has no pane, so it uses the sheet.
+  const openVisualReview = useCallback((ref: BuilddObjectRef, startKey: string | null = null) => {
+    if (!overlay && isDesktop()) {
+      const surface = window.matchMedia?.('(min-width: 1024px)').matches ? 'dock' : 'pane';
+      setVisualReview({ ref, startKey, surface });
+      setHistoryDock(false);
+      dispatch({ type: 'open', ref });
+    } else {
+      setVisualReview({ ref, startKey, surface: 'sheet' });
+      setSheet(ref);
+    }
+  }, [overlay]);
+  const closeVisualReview = useCallback(() => setVisualReview(null), []);
+  useEffect(() => {
+    if (initialVisualReview) openVisualReview(initialVisualReview.ref, initialVisualReview.startKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- on arrival only
+  }, []);
+  const closeSheet = useCallback(() => { setSheet(null); setVisualReview(null); }, []);
+  // The sheet is showing the deck: full bleed, the deck pads itself.
+  const sheetReviewing = !!sheet && visualReview?.surface === 'sheet' && refKey(visualReview.ref) === refKey(sheet);
+
   // The right panel (lg+): history, the object, or the task that needs you.
   const needsRef = overlay ? null : needsDockRef(pulse?.needsYou);
   const dock = overlay ? null : dockChoice({ historyOpen: historyDock, focus, needsRef, needsClosedId });
@@ -207,7 +236,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else if (dock.mode === 'needs' && dock.ref) {
       setNeedsClosedId(dock.ref.id);
       try { window.sessionStorage.setItem(NEEDS_DOCK_CLOSED_KEY, dock.ref.id); } catch { /* private mode */ }
-    } else dispatch({ type: 'close' });
+    } else {
+      // Closing the panel mid-review ends the review, so the next open of
+      // the same mission shows the mission, not the deck again.
+      setVisualReview(null);
+      dispatch({ type: 'close' });
+    }
   };
 
   const actions: ChatActions = useMemo(() => ({
@@ -219,7 +253,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     viewerName,
     paneRef: focus,
     ...(answerQuestion ? { answerQuestion } : {}),
-  }), [onApproval, openObject, workspaces, viewerName, focus, answerQuestion]);
+    ...(reviewShots ? { reviewShots } : {}),
+    ...(undoReview ? { undoReview } : {}),
+    openVisualReview,
+    visualReview,
+    closeVisualReview,
+  }), [onApproval, openObject, workspaces, viewerName, focus, answerQuestion, reviewShots, undoReview, openVisualReview, visualReview, closeVisualReview]);
 
   // Stick to the bottom while new content streams in, unless the reader scrolled up.
   const pinnedToBottom = useRef(true);
@@ -570,7 +609,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {popOut && (
           <a href={popOut} target="_blank" rel="noreferrer" data-testid="pane-popout" className="inline-flex min-h-9 items-center border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Pop out ↗</a>
         )}
-        <button type="button" data-testid="pane-close" onClick={() => dispatch({ type: 'close' })} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
+        <button type="button" data-testid="pane-close" onClick={() => { setVisualReview(null); dispatch({ type: 'close' }); }} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ObjectPane key={refKey(focus)} objRef={focus} />
@@ -599,10 +638,18 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             history={aside}
             onSend={send}
             onOpen={ref => { setHistoryDock(false); dispatch({ type: 'open', ref }); }}
+            wide={dock.mode === 'object' && !!dock.ref && visualReview?.surface === 'dock' && refKey(visualReview.ref) === refKey(dock.ref)}
           />
         )}
       </div>
-      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet ? objectSheetTitle(sheet) : ''} height="tall" testId="chat-object-sheet">
+      <BottomSheet
+        open={sheet !== null}
+        onClose={closeSheet}
+        title={sheet ? (sheetReviewing ? 'Review screens' : objectSheetTitle(sheet)) : ''}
+        height="tall"
+        testId="chat-object-sheet"
+        flush={sheetReviewing}
+      >
         {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
       </BottomSheet>
     </ChatActionsProvider>

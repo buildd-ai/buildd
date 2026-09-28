@@ -4,6 +4,97 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.3.1 — 2026-09-28
+
+Two fixes to 0.3.0's `/chat/react`. No API is removed.
+
+**Upgrading: what you can delete**
+
+- **The tools-panel width override.** Remove `.kit-menu-panel { width:
+  max-content }` (or `:not([data-sheet])` variants) and `.kit-row >
+  .kit-toggle { flex: none }` from your chat CSS. The kit does both now.
+- **A local copy of the sheet breakpoint.** Import `KIT_SHEET_QUERY` from
+  `@builddai/ai-kit/chat/react` instead of hard-coding `(max-width: 639px)`.
+- **Pinned decision versions** read `…|kit-0.3.1` now (fingerprints are
+  unchanged): update `expectDecisionPinned({ version })` and version regexes.
+
+**Changes**
+
+- `/chat/styles.css`: the desktop menu panel sizes to its content
+  (`width: max-content`) between its 260px min-width and `min(92vw, 380px)`.
+  It used to resolve to 260px, because it is absolutely positioned inside a
+  trigger-sized `.kit-menu`, so next to a long tool-group label ("Shipments:
+  hold, release, merge, consolidate") the Ask first / Allow toggle was cut
+  off. The toggle and the lock label never shrink (`flex: none`, toggle
+  buttons `nowrap`); the row label takes the rest and wraps. The phone sheet
+  stays full width.
+- `/chat/react`: `KIT_SHEET_QUERY` is re-exported, as the 0.3.0 notes said.
+- `KIT_VERSION` is `0.3.1`.
+
+## 0.3.0 — 2026-09-28
+
+Fixes from the first two apps on 0.2.0, plus the rank slot of `/surfaces`.
+Minor because `/surfaces` and `/chat/contract` gain API; nothing is removed.
+
+**Upgrading: what you can delete**
+
+- **The local output cap.** `createChatTurn` now sends `maxOutputTokens: 4096`
+  on every model step (`limits.maxOutputTokens`, `0` = no cap). Remove any
+  `wrapLanguageModel` + `defaultSettingsMiddleware({ maxOutputTokens })`
+  around the model you return from `modelFromPlan`'s `create`. Apps that never
+  added one were exposed to the same failure and are fixed by the upgrade.
+- **The menu CSS workarounds.** Remove overrides of `.kit-composer`
+  `overflow`, `.kit-send` / `.kit-stop` corner radius, `.kit-menu` /
+  `.kit-menu-panel` position, and the `max-width: 639px` sheet `left` / `right`
+  fix. If the app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset`
+  to its height instead. Rules scoped under your chat wrapper
+  (`.app-chat .kit-menu-panel`) no longer reach the phone sheet, which now
+  lives in `<body>`; target `.kit-sheet-layer .kit-menu-panel` if you need to.
+- **`:root:root`.** The kit's theme defaults are on `:where(:root)`, so a
+  plain `:root` (or wrapper) mapping of `--kit-*` wins in any import order.
+- **Pinned decision versions** read `…|kit-0.3.0` now (fingerprints are
+  unchanged): update `expectDecisionPinned({ version })` and version regexes.
+
+**Changes**
+
+- `/chat/server`: `DEFAULT_TURN_LIMITS.maxOutputTokens = 4_096`, passed to
+  `streamText`. With no cap, OpenRouter reserves the model's whole output
+  window (131k tokens on some models) against the key, and a key with a daily
+  or credit limit refuses every call ("requires more credits, or fewer
+  max_tokens"), which showed as "The turn failed." on every turn.
+- `/chat/server`: provider failures mid-stream are typed. The turn writes a
+  `data-turn-error` part (`TurnErrorData { code, message, status? }`, saved
+  with the message) before the stream's error chunk, and the `errorText` is
+  the same readable sentence. Codes: `insufficient_credit`, `rate_limited`,
+  `invalid_key`, `failed`. `classifyTurnError(error)` is exported; it reads
+  `APICallError`-shaped errors through `RetryError.lastError` and `cause`.
+- `/chat/contract` (additive): `TURN_ERROR_PART_TYPE`, `TurnErrorData`,
+  `ChatTurnErrorCode`, `isTurnErrorPart`.
+- `/chat/react`: `useKitChat` returns `turnError`. `<ChatThread>` renders a
+  `data-turn-error` part in place (`.kit-error[data-turn-error]`) and doesn't
+  repeat the `error` prop under it.
+- `/chat/react` + `/chat/styles.css`: the composer no longer clips its menus
+  (`overflow: hidden` removed; the send / stop button rounds its own corner).
+  Desktop panels scroll past `min(70vh, 520px)`. Below 640px `Menu` portals
+  the sheet to `<body>` (a transformed or clipping ancestor can't capture its
+  `position: fixed`), full width, with a scrim, carrying the `--kit-*` values
+  from where it was opened, and `--kit-sheet-bottom-offset` above the bottom.
+  The safe-area inset is padded only for what the offset doesn't cover.
+  `KIT_SHEET_QUERY` is exported. `/chat/react` now imports `react-dom`
+  (`createPortal`), declared as an optional peer `react-dom@^19` like `react`;
+  every React app already has it.
+- `/chat/theme.css`: defaults on `:where(:root)`; new
+  `--kit-sheet-bottom-offset: 0px` (also in `KIT_CSS_VARS`).
+- `/surfaces`: `defineRankSurface({ id, promptVersion, candidates, question,
+  levels?, fallback, max?, mode, minConfidence?, minAppliedShare?, timeoutMs?,
+  model? })` → `{ decision, version, pick(state, runOpts), rank(state, run),
+  resolve(ids) }`. One `score` question per candidate in one Jev call; applied
+  scores order the candidates, the app's `fallback` order breaks ties and
+  stands when there is no key, the call fails, fewer than `minAppliedShare`
+  (default half) are applied, or the mode is `shadow`. The multi-slot
+  `defineSurface` remains types only.
+- `KIT_VERSION` is `0.3.0`.
+
 ## 0.2.0 — 2026-09-27
 
 The chat turn runner and the React components (P3 of
