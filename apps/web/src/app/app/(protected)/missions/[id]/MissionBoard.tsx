@@ -22,16 +22,20 @@
  * opens the task sheet.
  */
 import type { ReactNode } from 'react';
+import type { VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
-import { BOARD_LANDED, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
+import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
+import { BOARD_LANDED, boardNeedsYouCount, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import {
   AnswerButtons, CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
-import { summarizeVisualRun, verdictLine, type VisualShot } from '@/lib/mission-visual-review';
-import BoardVisualShots from './BoardVisualShots';
+import {
+  MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
+  type MissionVisualReviewValue, type VisualReviewLayout,
+} from './MissionVisualReview';
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
@@ -49,11 +53,16 @@ export interface MissionBoardProps extends BoardLinkContext {
    */
   compact?: boolean;
   /**
-   * The latest visual-review run and the auditor task it belongs to. The
-   * shots show under that task's row (else under the columns), and the
-   * completion record counts the screens reviewed.
+   * The mission's visual review (`loadVisualReview`), whenever an audit task
+   * exists, pending and failed ones included. The Band gets a Screens row,
+   * Needs you counts the screens awaiting a human, the Ask sits with the
+   * other asks, the auditor's tile carries the Tray (else a section under
+   * the columns) and the completion record counts the human calls. Decisions
+   * go to the decisions route; the page's provider is used when mounted.
    */
-  visual?: { shots: readonly VisualShot[]; taskId: string | null } | null;
+  visual?: VisualReviewModel | null;
+  /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
+  reviewLayout?: VisualReviewLayout;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -64,7 +73,17 @@ const ORDER: Record<BoardStatus, number> = {
 /** The elapsed bar's full width: the longest live run, at least this. */
 const MIN_STRIP_SPAN_MS = 15 * 60_000;
 
-export default function MissionBoard({ model: serverModel, completionText, notice, compact = false, visual = null, ...link }: MissionBoardProps) {
+export default function MissionBoard(props: MissionBoardProps) {
+  return (
+    <WithMissionVisualReview missionId={props.missionId} visual={props.visual} reviewLayout={props.reviewLayout}>
+      {review => <BoardView {...props} review={review} />}
+    </WithMissionVisualReview>
+  );
+}
+
+function BoardView({
+  model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review, ...link
+}: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
@@ -72,22 +91,27 @@ export default function MissionBoard({ model: serverModel, completionText, notic
     .map(t => (t.startedAt != null ? now - t.startedAt : 0));
   const stripSpan = Math.max(MIN_STRIP_SPAN_MS, ...liveSpans);
   const lastCol = model.phases.length - 1;
-  const visualShots = visual && visual.shots.length > 0 ? visual.shots : null;
-  const visualTaskOnBoard = !!visualShots && !!visual?.taskId
-    && model.phases.some(p => p.taskIds.includes(visual.taskId!));
+  const vm = review?.model ?? null;
+  // The Tray sits under the latest audit's tile; an audit the board does not
+  // draw (none, or folded away) gets a section under the columns.
+  const auditId = vm?.audit?.id ?? null;
+  const auditOnBoard = !!auditId && model.phases.some(p => p.taskIds.includes(auditId));
   const shotsFor = (taskId: string) =>
-    visualShots && visualTaskOnBoard && visual?.taskId === taskId
-      ? <BoardVisualShots key={`${taskId}:shots`} shots={visualShots} missionId={link.missionId} />
-      : null;
+    review && auditOnBoard && taskId === auditId ? (
+      <div key={`${taskId}:shots`} data-testid="board-visual-tray" className="-mt-1 border-[1.5px] border-t-0 border-border-strong bg-card px-3 pb-3 pt-2.5">
+        <MissionVisualTray review={review} board={model} columns="fit" hideLine besideAsk />
+      </div>
+    ) : null;
 
   return (
     <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
-      <Band model={model} compact={compact} missionId={link.missionId} />
+      <Band model={model} compact={compact} missionId={link.missionId} visual={vm} onReview={review ? () => review.openDeck(null) : undefined} />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
       ))}
-      {model.complete && <CompletionRecord model={model} text={completionText ?? null} shots={visualShots} />}
+      {review && <MissionVisualAsk review={review} board={model} className="mt-4" />}
+      {model.complete && <CompletionRecord model={model} text={completionText ?? null} visual={vm} />}
 
       {model.phases.length === 0 && model.planning && (
         <PlanningPlaceholder planning={model.planning} now={now} link={link} />
@@ -122,7 +146,7 @@ export default function MissionBoard({ model: serverModel, completionText, notic
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />,
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
@@ -135,9 +159,9 @@ export default function MissionBoard({ model: serverModel, completionText, notic
         })}
       </section>}
 
-      {visualShots && !visualTaskOnBoard && (
-        <section className="mt-[22px] border-t-2 border-border-strong">
-          <BoardVisualShots shots={visualShots} missionId={link.missionId} />
+      {review && !auditOnBoard && (
+        <section data-testid="board-visual-section" className="mt-[22px] border-t-2 border-border-strong pt-3">
+          <MissionVisualTray review={review} board={model} columns="fit" besideAsk />
         </section>
       )}
 
@@ -148,9 +172,44 @@ export default function MissionBoard({ model: serverModel, completionText, notic
 
 // ── Band ─────────────────────────────────────────────────────────────────────
 
-export function Band({ model, compact, missionId }: { model: MissionBoardModel; compact: boolean; missionId: string }) {
-  const needs = model.needsYou.length;
-  const first = needs ? model.tasks[model.needsYou[0]] : null;
+/** Audit phases only a human can move (start a runner, retry, skip, turn off). */
+const STUCK_PHASES = new Set<VisualReviewModel['phase']>(['no_browser_runner', 'stalled', 'failed']);
+
+/**
+ * The audit tile's caption when the audit cannot move: "ready · next free
+ * slot" would contradict the Tray under it.
+ */
+export function stuckVisualCaption(vm: Pick<VisualReviewModel, 'phase'>): string | null {
+  switch (vm.phase) {
+    case 'no_browser_runner': return 'waiting for a browser runner';
+    case 'stalled': return 'visual audit stalled';
+    case 'failed': return 'visual audit failed';
+    default: return null;
+  }
+}
+
+export function Band({ model, compact, missionId, visual = null, onReview }: {
+  model: MissionBoardModel;
+  compact: boolean;
+  missionId: string;
+  /** The live visual review: a Screens row, and its screens in Needs you. */
+  visual?: VisualReviewModel | null;
+  onReview?: () => void;
+}) {
+  const needs = boardNeedsYouCount(model, visual);
+  const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
+  const awaiting = visual?.summary.awaitingHuman ?? 0;
+  const needsCaption = first
+    ? `${first.scope ?? first.label} has a question`
+    : awaiting > 0
+      ? `${awaiting} ${awaiting === 1 ? 'screen' : 'screens'} to review`
+      : visual?.needsYou?.reason === 'round_cap'
+        ? 'visual issues: your call'
+        : visual && STUCK_PHASES.has(visual.phase)
+          // Not counted (the number is what awaits an answer), but not
+          // "nothing" either: only you can unstick it.
+          ? 'visual audit is stuck'
+          : model.complete ? 'all answered' : 'nothing waiting';
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
   return (
     <section
@@ -195,9 +254,28 @@ export function Band({ model, compact, missionId }: { model: MissionBoardModel; 
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
         <span className={`font-mono text-[34px] font-semibold leading-none tracking-[-1px] tabular-nums ${needs ? 'text-accent-text' : 'text-[var(--fleet-faint)]'}`}>{needs}</span>
         <span className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
-          {first ? `${first.scope ?? first.label} has a question` : model.complete ? 'all answered' : 'nothing waiting'}
+          {needsCaption}
         </span>
       </div>
+      {visual && visual.phase !== 'off' && (
+        // The Visual cell: one full-width row under the four, at every width,
+        // so the band keeps its columns (a fifth would crowd a docked pane).
+        <div data-testid="visual-band" data-phase={visual.phase} className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default px-[18px] py-3 md:col-span-4">
+          {/* needs_you: the Ask under the band says the sentence; the row keeps the label and dots. */}
+          <VisualReviewLine model={visual} variant={visual.phase === 'needs_you' ? 'compact' : 'full'} className="min-w-0 flex-1" />
+          {onReview && visual.cells.length > 0 && visual.phase !== 'needs_you' && (
+            <button
+              type="button"
+              data-testid="visual-band-open"
+              onClick={onReview}
+              className="inline-flex min-h-10 shrink-0 items-center gap-1 font-mono text-[12px] font-semibold text-text-secondary hover:text-text-primary md:min-h-8"
+            >
+              Open screens
+              <span aria-hidden="true">›</span>
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -298,7 +376,7 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
+function Tile({ task: t, model, now, span, link, popLeft, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean; visualStuck?: string | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const live = t.status === 'running' || t.status === 'fixing';
@@ -326,7 +404,7 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
   if (queued) {
     body = (
       <div className="flex min-h-[18px] items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
-        {t.status === 'ready' ? 'ready · next free slot' : (
+        {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
             {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
@@ -358,7 +436,9 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
     const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
     // A live tile says what it is doing (the current action, else the elapsed
     // strip) and for how long — or nothing: no empty second line under the title.
-    const lead = live && t.currentAction
+    const lead = visualStuck
+      ? <span data-testid="board-tile-visual-stuck" className="min-w-0 flex-1 truncate text-status-warning">{visualStuck}</span>
+      : live && t.currentAction
       ? <span data-testid="board-tile-action" className="min-w-0 flex-1 truncate text-text-secondary">{t.currentAction}</span>
       : live && t.startedAt != null
         ? <ElapsedStrip task={t} now={now} span={span} />
@@ -565,9 +645,9 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 // ── Completion ───────────────────────────────────────────────────────────────
 
-function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; text: string | null; shots: readonly VisualShot[] | null }) {
+function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; text: string | null; visual: VisualReviewModel | null }) {
   const r = model.record;
-  const review = shots ? summarizeVisualRun(shots) : null;
+  const review = visual && visual.summary.shots > 0 ? visual.summary : null;
   const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });
   // Only what happened: a CI auto-fix count of 0 is not an outcome, and a
   // visual review is. One compact card, like the Lanes side card: the summary
@@ -576,10 +656,13 @@ function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; te
     { label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' },
     { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
     ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
-    ...(review && review.shots > 0
-      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review), subCls: review.ok === review.shots ? 'text-status-success' : 'text-text-secondary' }]
+    ...(review
+      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: effectiveScreensLine(review), subCls: review.effectiveOk === review.shots ? 'text-status-success' : 'text-text-secondary' }]
       : []),
-    { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
+    ...(review && review.reviewed > 0
+      ? [{ label: 'Screens you judged', value: String(review.reviewed), testId: 'record-screen-calls', sub: humanCallsLine(review) }]
+      : []),
+    { label: 'Your answers', value: String(r.decisions), testId: 'record-decisions' },
     { label: 'Work', value: d.work ?? '0m', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
   ];
   return (
@@ -599,6 +682,29 @@ function CompletionRecord({ model, text, shots }: { model: MissionBoardModel; te
       </div>
     </section>
   );
+}
+
+/**
+ * The screens after your decisions (the counts the Band's Line reads), not
+ * the agent's: `all ok`, else `5 of 7 ok · 1 issue · 1 to review`.
+ */
+export function effectiveScreensLine(s: Pick<VisualReviewModel['summary'], 'shots' | 'effectiveOk' | 'effectiveIssues'>): string {
+  if (s.shots > 0 && s.effectiveOk === s.shots) return 'all ok';
+  const open = Math.max(0, s.shots - s.effectiveOk - s.effectiveIssues);
+  return [
+    `${s.effectiveOk} of ${s.shots} ok`,
+    s.effectiveIssues > 0 ? `${s.effectiveIssues} ${s.effectiveIssues === 1 ? 'issue' : 'issues'}` : null,
+    open > 0 ? `${open} to review` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+/** `2 agreed · 1 disputed · 1 waived`, zeros left out. */
+export function humanCallsLine(s: Pick<VisualReviewModel['summary'], 'confirmed' | 'disputed' | 'waived'>): string {
+  return [
+    s.confirmed > 0 ? `${s.confirmed} agreed` : null,
+    s.disputed > 0 ? `${s.disputed} disputed` : null,
+    s.waived > 0 ? `${s.waived} waived` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 function Concurrency({ model }: { model: MissionBoardModel }) {

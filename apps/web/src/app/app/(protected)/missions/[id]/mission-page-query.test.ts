@@ -149,11 +149,12 @@ describe('visual review shots query', () => {
     expect(text).toBe('"artifacts"."created_at" desc');
   });
 
-  it('page.tsx reads the shots through the dedicated query and helper', () => {
-    expect(PAGE).toContain('missionVisualShotsWhere(');
-    expect(PAGE).toContain('limit: MISSION_VISUAL_SHOTS_LIMIT');
-    expect(PAGE).toContain('orderBy: MISSION_VISUAL_SHOTS_ORDER');
-    expect(PAGE).toContain('missionVisualReview(');
+  it('page.tsx reads the shots only through the one loader (visual-review-load.ts), never a query of its own', () => {
+    // The loader goes through missionVisualShotsWhere (visual-review-query.ts),
+    // so the page cannot widen the auditor scoping.
+    expect(PAGE).toContain('loadVisualReview(');
+    expect(PAGE).not.toContain('missionVisualShotsWhere(');
+    expect(PAGE).not.toContain('db.query.artifacts.findMany({\n      where: missionVisualShotsWhere');
   });
 });
 

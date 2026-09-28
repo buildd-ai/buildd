@@ -43,7 +43,8 @@ export function visualPhaseTone(phase: VisualReviewPhase): VisualReviewTone {
   }
 }
 
-const TONE_TEXT: Record<VisualReviewTone, string> = {
+/** The label colour per tone (text and dots only). */
+export const VISUAL_TONE_TEXT: Record<VisualReviewTone, string> = {
   needs: 'text-accent-text',
   attention: 'text-status-error',
   blocked: 'text-status-warning',
@@ -96,7 +97,7 @@ export default function VisualReviewLine({ model, variant = 'compact', className
     <div data-testid="visual-review-line" data-phase={model.phase} className={`min-w-0 ${className}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
         <span className="section-label !text-text-muted">Screens</span>
-        <span data-testid="visual-review-line-label" aria-label={aria} className={`font-mono text-[13px] font-semibold ${TONE_TEXT[tone]}`}>
+        <span data-testid="visual-review-line-label" aria-label={aria} className={`font-mono text-[13px] font-semibold ${VISUAL_TONE_TEXT[tone]}`}>
           {copy.label}
         </span>
         <VerdictDots cells={model.cells} />

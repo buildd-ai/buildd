@@ -7,6 +7,7 @@ const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockDepTasksFindMany = mock(() => Promise.resolve([] as any[]));
 const mockErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+const mockLoadVisualReview = mock((_m: { id: string; workspaceId: string | null }) => Promise.resolve(null as any));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -14,6 +15,10 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+}));
+
+mock.module('@/lib/visual-review-load', () => ({
+  loadVisualReview: mockLoadVisualReview,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -40,6 +45,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { GET } from './route';
+import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 
 function createRequest(taskId: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/tasks/${taskId}/summary`, {
@@ -767,5 +773,85 @@ describe('GET /api/tasks/[id]/summary', () => {
       const data = await (await callGET(TASK)).json();
       expect(data.origin).toBeNull();
     });
+  });
+});
+
+describe('GET /api/tasks/[id]/summary: the visual review (docs/design/visual-qa-human-review.md)', () => {
+  // Illustrative ids only.
+  const TASK = '0a1b2c3d-2222-4222-8333-444455556666';
+  const auditTask = {
+    id: TASK, title: '[surface audit] round 2: Example', status: 'completed', description: null, mode: null,
+    roleSlug: 'visual-auditor', createdAt: new Date().toISOString(), missionId: 'mission-1', workspaceId: 'ws-1',
+    result: null, context: { surfaceAuditRound: 2 },
+  };
+  const model = buildVisualReviewFixtureModel('reviewed');
+  // The fixture's round-2 audit is `fixture-audit-2`: stand this task in for it.
+  const asThisTask = {
+    ...model,
+    cells: model.cells.map(c => ({
+      ...c,
+      history: c.history.map(h => (h.round === 2 ? { ...h, shot: { ...h.shot, auditTaskId: TASK } } : h)),
+      current: c.current.round === 2 ? { ...c.current, shot: { ...c.current.shot, auditTaskId: TASK } } : c.current,
+    })),
+  };
+  const shotId = asThisTask.cells.find(c => c.current.round === 2)!.current.shot.id;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockErrorTracesFindMany.mockResolvedValue([]);
+    mockDepTasksFindMany.mockResolvedValue([]);
+    mockLoadVisualReview.mockReset();
+    mockLoadVisualReview.mockResolvedValue(asThisTask);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockImplementation(((args: { with?: { artifacts?: unknown } }) => Promise.resolve(
+      args?.with?.artifacts
+        ? [{ id: 'worker-1', artifacts: [{ id: shotId, type: 'screenshot', title: 'Round 2 shot' }, { id: 'art-report', type: 'report', title: 'audit.md' }] }]
+        : [{ id: 'worker-1', status: 'completed', milestones: [] }],
+    )) as never);
+  });
+
+  it('an auditor task returns its round and the mission model (qa and reviews), read through the loader', async () => {
+    mockTasksFindFirst.mockResolvedValue(auditTask);
+    const data = await (await callGET(TASK)).json();
+    expect(mockLoadVisualReview).toHaveBeenCalledTimes(1);
+    expect(mockLoadVisualReview.mock.calls[0][0]).toEqual({ id: 'mission-1', workspaceId: 'ws-1' });
+    expect(data.visual.round).toBe(2);
+    expect(data.visual.model.cells.length).toBe(asThisTask.cells.length);
+    const cell = data.visual.model.cells.find((c: any) => c.current.shot.id === shotId);
+    expect(cell.current.shot.qa.route).toBeTruthy();
+    expect(cell.current).toHaveProperty('review');
+  });
+
+  it('the shots render in the Tray, so they are not repeated as title links in records', async () => {
+    mockTasksFindFirst.mockResolvedValue(auditTask);
+    const data = await (await callGET(TASK)).json();
+    expect(data.records.map((r: any) => r.id)).toEqual(['art-report']);
+  });
+
+  it('a non-auditor task reads no visual review', async () => {
+    mockTasksFindFirst.mockResolvedValue({ ...auditTask, roleSlug: 'builder', title: 'Build it' });
+    const data = await (await callGET(TASK)).json();
+    expect(mockLoadVisualReview).not.toHaveBeenCalled();
+    expect(data.visual).toBeNull();
+    expect(data.records.map((r: any) => r.id)).toEqual([shotId, 'art-report']);
+  });
+
+  it('an auditor task outside a mission reads none either', async () => {
+    mockTasksFindFirst.mockResolvedValue({ ...auditTask, missionId: null });
+    const data = await (await callGET(TASK)).json();
+    expect(mockLoadVisualReview).not.toHaveBeenCalled();
+    expect(data.visual).toBeNull();
+  });
+
+  it('a failed visual read still returns the summary, without the review', async () => {
+    mockTasksFindFirst.mockResolvedValue(auditTask);
+    mockLoadVisualReview.mockRejectedValue(new Error('boom'));
+    const res = await callGET(TASK);
+    expect(res.status).toBe(200);
+    expect((await res.json()).visual).toBeNull();
   });
 });

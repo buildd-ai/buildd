@@ -7,6 +7,10 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { isUuid } from '@/lib/uuid';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
+import { loadVisualReview } from '@/lib/visual-review-load';
+import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
+import type { VisualReviewModel } from '@buildd/shared';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -147,9 +151,25 @@ export async function GET(
       columns: { id: true },
       with: { artifacts: { columns: { id: true, type: true, title: true } } },
     });
+    // Visual audit (docs/design/visual-qa-human-review.md): the audit's round
+    // and the mission's review model, through the one loader (auditor-scoped
+    // shots, their qa and the human reviews). The sheet renders the Tray, so
+    // the shots are not listed again as records. A failed read drops only this.
+    let visual: { round: number; model: VisualReviewModel } | null = null;
+    if (task.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && task.missionId) {
+      try {
+        const model = await loadVisualReview({ id: task.missionId, workspaceId: task.workspaceId ?? null });
+        const round = visualReviewRoundOf(model, task.id);
+        if (round != null) visual = { round, model };
+      } catch (err) {
+        console.error('Task summary: visual review load failed', err);
+      }
+    }
+    const shotIds = new Set(visual ? visual.model.cells.flatMap(c => c.history.map(h => h.shot.id)) : []);
+
     const records: TaskSummaryRecord[] = (recordWorkers ?? [])
       .flatMap(w => (w as { artifacts?: Array<{ id: string; type: string; title: string | null }> }).artifacts ?? [])
-      .filter(a => a.type !== 'impl_plan')
+      .filter(a => a.type !== 'impl_plan' && !shotIds.has(a.id))
       .map(a => ({ id: a.id, type: a.type, title: a.title ?? null, href: `/app/artifacts/${a.id}` }));
 
     // Origin (U6): who created the task and why, from stored columns only —
@@ -252,6 +272,7 @@ export async function GET(
       blockedByCount,
       records,
       origin,
+      visual,
     });
   } catch (error) {
     console.error('Task summary error:', error);
