@@ -36,7 +36,7 @@ export const MISSION_WORKER_BASE_COLUMNS = {
 const MISSION_WITH_SHARED = {
   workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } } as const,
   initiative: { columns: { id: true, title: true } } as const,
-  schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true } } as const,
+  schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } } as const,
 };
 
 const taskOrderBy = (t: any, { desc }: any) => [desc(t.updatedAt)];
