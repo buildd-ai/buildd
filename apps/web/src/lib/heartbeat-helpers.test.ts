@@ -242,7 +242,9 @@ describe('detectMissionPhase', () => {
     expect(result.phase).toBe('building');
   });
 
-  it('includes failed task retry in building phase actions', () => {
+  // Task auto-retry already retries failed tasks. Telling the organizer to do
+  // it too made it spend runs filing duplicate retry children.
+  it('building phase does not tell the organizer to retry failed tasks', () => {
     const result = detectMissionPhase(makePhaseData({
       activeTasks: [
         { status: 'in_progress', roleSlug: 'builder' },
@@ -252,7 +254,17 @@ describe('detectMissionPhase', () => {
       ],
     }));
     expect(result.phase).toBe('building');
-    expect(result.actions.some(a => a.includes('Retry'))).toBe(true);
+    expect(result.actions.some(a => /retry/i.test(a))).toBe(false);
+    expect(result.actions.some(a => a.includes('failureContext'))).toBe(false);
+  });
+
+  it('default building phase does not tell the organizer to retry failed tasks either', () => {
+    const result = detectMissionPhase(makePhaseData({
+      activeTasks: [{ status: 'in_progress', roleSlug: 'researcher' }],
+      failedTasks: [{ title: 'Scaffold project' }],
+    }));
+    expect(result.phase).toBe('building');
+    expect(result.actions.some(a => /retry/i.test(a))).toBe(false);
   });
 
   it('prioritizes active builders over PRs', () => {
@@ -266,16 +278,20 @@ describe('detectMissionPhase', () => {
     expect(result.phase).toBe('building');
   });
 
-  it('reviewing phase advises retrying originating task for conflicts, not creating integration task', () => {
+  // CI retry, the conflict sweep and pr-reconcile already handle a PR that
+  // conflicts or goes red; the organizer is not told to do it by hand.
+  it('reviewing phase leaves PR conflicts and retries to the platform', () => {
     const result = detectMissionPhase(makePhaseData({
       completedTasks: [{ roleSlug: 'builder', result: { prUrl: 'https://github.com/...' } }],
       prCount: 1,
     }));
     expect(result.phase).toBe('reviewing');
-    // Must NOT instruct to create a separate integration task
+    expect(result.actions.some(a => /conflict/i.test(a))).toBe(false);
+    expect(result.actions.some(a => a.includes('parentTaskId'))).toBe(false);
+    expect(result.actions.some(a => /retry the originating task/i.test(a))).toBe(false);
     expect(result.actions.some(a => /^create integration task/i.test(a.trim()))).toBe(false);
-    // Must suggest retry of originating task
-    expect(result.actions.some(a => a.includes('parentTaskId') || a.includes('originating task'))).toBe(true);
+    // What only the organizer can do stays: the next batch, or completion.
+    expect(result.actions.some(a => a.includes('next batch'))).toBe(true);
   });
 
   it('reviewing phase tells the organizer to check the review verdict before escalating for approval', () => {
