@@ -274,13 +274,18 @@ export function toolGroupSummary(calls: readonly ChatToolPart[]): ToolGroupSumma
 /** Kinds that have a full view worth docking. */
 const PANE_KINDS: ReadonlySet<string> = new Set(['mission', 'task', 'pr', 'question']);
 
-/** Every object ref in the conversation, oldest first, each once (its latest mention wins the order). */
+/**
+ * Every object the feed shows as a card, oldest first, each once (its latest
+ * mention wins the order). What a list read returned without the answer
+ * naming it (the collapsed "Also read" row) is left out, so the tail of a
+ * broad list never drives the pin or the pane.
+ */
 export function conversationRefs(messages: readonly ChatMessage[]): BuilddObjectRef[] {
   const order = new Map<string, BuilddObjectRef>();
   for (const m of messages) {
-    for (const p of m.parts) {
-      const refs = isToolPart(p) ? objectsOf(p) : isEventPart(p) ? eventObjects(p.data) : [];
-      for (const r of refs) {
+    for (const seg of feedSegments(m.parts)) {
+      if (seg.kind !== 'objects') continue;
+      for (const r of seg.refs) {
         const k = refKey(r);
         order.delete(k);
         order.set(k, r);

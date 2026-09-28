@@ -211,6 +211,17 @@ describe('routedScope', () => {
 describe('canvas pin', () => {
   const withRefs = (...refs: BuilddObjectRef[]) => msg([tool('x', { output: { objects: refs } })]);
 
+  it("a list read's unnamed tail doesn't pin: the object the answer is about does", () => {
+    const m = msg([
+      tool('manage_missions', { input: { action: 'list' }, output: { objects: [ref('mission', 'm-kit'), ref('mission', 'm-done')] } }),
+      tool('get_task', { output: { objects: [ref('task', 't1')] } }),
+      { type: 'text', text: 'One task is running; mission m-kit is held.' },
+    ]);
+    expect(canvasPin([m], null)).toEqual(ref('mission', 'm-kit'));
+    expect(paneFocus([m], null)).toEqual(ref('task', 't1'));
+    expect(conversationRefs([m]).map(r => r.id)).not.toContain('m-done');
+  });
+
   it('the object the chat was opened about wins', () => {
     expect(canvasPin([withRefs(ref('mission', 'm1'))], ref('task', 't9'))).toEqual(ref('task', 't9'));
   });
