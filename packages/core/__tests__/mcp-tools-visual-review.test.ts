@@ -95,9 +95,16 @@ describe('get_visual_review', () => {
     const out = res.content[0].text;
     expect(out).toContain(`Visual review of "Desktop chat v3" (mission ${MISSION}, completed)`);
     expect(out).toContain(`round 1: completed (task ${AUDIT}): Checked one route.`);
+    expect(out).toContain('1 screen needs your review.');
     expect(out).toContain(`${BASE}/app/artifacts/${SHOT}`);
     expect(out).toContain(`${BASE}/api/artifacts/${SHOT}/download`);
-    expect(out).toContain('1 need your review.');
+  });
+
+  it('passes the mission completion time through, so "checked before done" is answerable', async () => {
+    const { api } = apiOf((e) => e === `/api/missions/${MISSION}` ? { id: MISSION, title: 'Desktop chat v3', status: 'completed', completedAt: '2026-03-10T12:00:00.000Z' } : missionsRoute(e));
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionId: MISSION }, ctx());
+    expect(res.content[0].text).toContain('(mission ' + MISSION + ', completed 2026-03-10 12:00 UTC)');
+    expect(res.content[0].text).toMatch(/Visually checked before the mission was completed: /);
   });
 
   it('by title: matches case-insensitively across every status, in the named workspace', async () => {
@@ -139,7 +146,10 @@ describe('get_visual_review', () => {
     const { api, calls } = apiOf((e) => {
       if (e === `/api/workspaces/${WS}/visual-review`) return {
         workspace: { id: WS, name: 'Example WS' },
-        missions: [{ id: MISSION, title: 'Desktop chat v3', status: 'active', phase: 'needs_you', awaitingHuman: 2 }],
+        missions: [
+          { id: MISSION, title: 'Desktop chat v3', status: 'active', phase: 'needs_you', reason: 'unsure', awaitingHuman: 2 },
+          { id: OTHER, title: 'Desktop chat v2', status: 'active', phase: 'needs_you', reason: 'round_cap', awaitingHuman: 0 },
+        ],
         more: true,
       };
       return new Error(`unexpected ${e}`);
@@ -149,14 +159,42 @@ describe('get_visual_review', () => {
     expect(calls).toEqual([`/api/workspaces/${WS}/visual-review`]);
     const out = res.content[0].text;
     expect(out).toContain('Example WS');
-    expect(out).toContain(`"Desktop chat v3" (mission ${MISSION}, active): 2 need your review`);
-    expect(out).toMatch(/more missions were not checked/);
+    expect(out).toContain(`"Desktop chat v3" (mission ${MISSION}, active): 2 screens need your review`);
+    expect(out).toContain(`"Desktop chat v2" (mission ${OTHER}, active): needs your decision (round cap: fix or waive)`);
+    expect(out).toMatch(/^2 missions wait on you in Example WS \(2 screens to review\):/);
+    expect(out).not.toMatch(/\b0 (screens? )?needs? your review/);
+    expect(out).toMatch(/older missions were not checked/);
   });
 
   it('workspace only: says none plainly', async () => {
     const { api } = apiOf(() => ({ workspace: { id: WS, name: 'Example WS' }, missions: [], more: false }));
     const res = await handleBuilddAction(api, 'get_visual_review', { workspaceId: WS }, ctx());
-    expect(res.content[0].text).toMatch(/No screens awaiting review in Example WS/);
+    expect(res.content[0].text).toMatch(/Nothing waits on you in Example WS/);
+  });
+
+  it('by title, no workspace named: searches team-wide, never the guessed workspace', async () => {
+    const { api, calls } = apiOf(missionsRoute);
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionTitle: 'Desktop chat v3' }, ctx({ getWorkspaceId: async () => WS }));
+    expect(res.isError).toBeFalsy();
+    const list = calls.find(c => c.startsWith('/api/missions?'))!;
+    expect(new URLSearchParams(list.split('?')[1]).get('workspaceId')).toBeNull();
+    expect(calls).toContain(`/api/missions/${MISSION}/visual-review`);
+  });
+
+  it('by title in a named workspace: a miss names the workspace searched', async () => {
+    const { api } = apiOf((e) => e.startsWith('/api/missions?') ? { missions: [] } : missionsRoute(e));
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionTitle: 'Memory done right', workspaceId: WS }, ctx());
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain(`in workspace "${WS}"`);
+    expect(res.content[0].text).toMatch(/omit workspaceId to search every workspace/);
+  });
+
+  it('no mission, no workspace named: errors rather than answering for the guessed workspace', async () => {
+    const { api, calls } = apiOf(() => ({ workspace: { id: WS, name: 'Example WS' }, missions: [], more: false }));
+    const res = await handleBuilddAction(api, 'get_visual_review', {}, ctx({ getWorkspaceId: async () => WS }));
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/workspaceId/);
+    expect(calls.some(c => c.includes('/visual-review'))).toBe(false);
   });
 
   it('falls back to the context workspace, and errors with neither mission nor workspace', async () => {

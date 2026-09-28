@@ -79,6 +79,8 @@ export interface FormatVisualReviewOptions {
   baseUrl?: string;
   missionId?: string;
   missionStatus?: string | null;
+  /** `mcp`: the mission's `completedAt`; with status `completed`, adds whether an audit came first. */
+  missionCompletedAt?: string | null;
   /** List only the screens that need a human decision; count the rest. */
   awaitingOnly?: boolean;
 }
@@ -122,13 +124,54 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
   return `  - ${bits.join('; ')}`;
 }
 
+/** `2026-03-10 10:05 UTC`; null for a missing or unparsable time. */
+function when(t: string | null | undefined): string | null {
+  const ms = t ? Date.parse(t) : NaN;
+  return Number.isNaN(ms) ? null : `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
 function auditLine(a: VisualReviewAuditTask, mcp: boolean): string {
-  const status = STATUS_WORD[a.status] === 'done' ? 'completed' : a.status;
   const id = mcp ? a.id : a.id.slice(0, 8);
   const reasons = [a.errorType, a.why].filter((x): x is string => !!x).map(one);
   const why = reasons.length > 0 ? reasons.join('; ') : null;
   const tail = why ? `: ${why}` : a.status === 'cancelled' || a.status === 'failed' ? ': no reason recorded' : '';
-  return `  - round ${a.round}: ${status} (task ${id})${tail}`;
+  const times = [when(a.createdAt) && `started ${when(a.createdAt)}`, when(a.endedAt) && `ended ${when(a.endedAt)}`].filter(Boolean);
+  return `  - round ${a.round}: ${a.status}${times.length > 0 ? `, ${times.join(', ')}` : ''} (task ${id})${tail}`;
+}
+
+/** Q3: did an audit complete before the mission did? Only for a completed mission. */
+function checkedBeforeDone(audits: VisualReviewAuditTask[], completedAt: string | null | undefined): string {
+  const q = 'Visually checked before the mission was completed:';
+  const doneMs = completedAt ? Date.parse(completedAt) : NaN;
+  if (Number.isNaN(doneMs)) return `${q} unknown (completion time not recorded).`;
+  if (audits.length === 0) return `${q} no (no visual audit ran).`;
+  const completed = audits.filter(a => a.status === 'completed' && when(a.endedAt));
+  const before = completed.filter(a => Date.parse(a.endedAt!) <= doneMs);
+  if (before.length > 0) {
+    const a = before[before.length - 1];
+    return `${q} yes (round ${a.round} audit completed ${when(a.endedAt)}).`;
+  }
+  if (completed.length > 0) {
+    const a = completed[0];
+    return `${q} no (round ${a.round} audit completed after it, ${when(a.endedAt)}).`;
+  }
+  const latest = audits[audits.length - 1];
+  return `${q} no (no audit completed; latest: round ${latest.round} ${latest.status}).`;
+}
+
+/** The MCP closing line: what, if anything, waits on a human, from `needsYou`, never a bare count. */
+function needsYouLine(model: VisualReviewModel): string {
+  const n = model.summary.awaitingHuman;
+  const reason = model.needsYou?.reason;
+  if (reason === 'question') {
+    const prompt = model.needsYou?.prompt?.trim();
+    return `Needs your answer: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
+  }
+  if (n > 0) return `${plural(n, 'screen needs', 'screens need')} your review.`;
+  if (reason === 'round_cap' || (model.phase === 'needs_you' && !reason)) {
+    return `Needs your decision: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
+  }
+  return 'Nothing needs your review.';
 }
 
 export function formatVisualReview(
@@ -138,11 +181,13 @@ export function formatVisualReview(
 ): string {
   const mcp = opts.audience === 'mcp';
   const named = missionTitle ? `Visual review of "${missionTitle}"` : 'Visual review';
+  const doneAt = opts.missionStatus === 'completed' ? when(opts.missionCompletedAt) : null;
   const head = mcp && opts.missionId
-    ? `${named} (mission ${opts.missionId}${opts.missionStatus ? `, ${opts.missionStatus}` : ''})`
+    ? `${named} (mission ${opts.missionId}${opts.missionStatus ? `, ${opts.missionStatus}${doneAt ? ` ${doneAt}` : ''}` : ''})`
     : named;
   const audits = model.audits ?? (model.audit ? [model.audit] : []);
-  if (model.phase === 'off' && audits.length === 0) return `${head}: No visual audit on this mission.`;
+  const q3 = mcp && opts.missionStatus === 'completed' ? `\n${checkedBeforeDone(audits, opts.missionCompletedAt)}` : '';
+  if (model.phase === 'off' && audits.length === 0) return `${head}: No visual audit on this mission.${q3}`;
 
   const lines: string[] = [];
   if (model.phase === 'off') {
@@ -155,6 +200,7 @@ export function formatVisualReview(
     lines.push(`Audit tasks (${audits.length}):`);
     for (const a of audits) lines.push(auditLine(a, mcp));
   }
+  if (q3) lines.push(q3.slice(1));
   const s = model.summary;
   const human = mcp ? 'await a human' : 'await the user';
   lines.push(`Screens: ${s.shots} current across ${plural(s.rounds, 'round')}; agent said ${s.ok} ok, ${plural(s.issues, 'issue')}, ${s.unsure} unsure; ${s.awaitingHuman} ${human}; ${s.reviewed} decided by ${mcp ? 'a human' : 'the user'}; ${plural(s.openFixes, 'fix', 'fixes')} open.`);
@@ -178,7 +224,7 @@ export function formatVisualReview(
   }
 
   if (mcp) {
-    lines.push(`${s.awaitingHuman} need your review.`);
+    lines.push(needsYouLine(model));
     if (opts.missionId && opts.baseUrl) lines.push(`Decide on the mission page: ${opts.baseUrl.replace(/\/+$/, '')}/app/missions/${encodeURIComponent(opts.missionId)}`);
   } else {
     lines.push('You have not seen these images; the card in the chat shows them. The user decides each screen there (Looks right / Needs fix).');

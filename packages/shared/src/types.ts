@@ -1913,6 +1913,8 @@ export interface VisualReviewAuditTask {
   status: string;
   round: number;
   createdAt: string | null;
+  /** When it reached completed, failed or cancelled (the task's `updatedAt` then); null while live. */
+  endedAt?: string | null;
   /** `result.errorType`, e.g. `infra_stalled`. */
   errorType: string | null;
   /** Why it ended as it did, when known: the task's result summary, else its newest worker's error. */

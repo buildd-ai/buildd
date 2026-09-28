@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE } from '@buildd/core/surface-audit';
 import {
   WORKSPACE_AWAITING_MISSIONS_LIMIT,
   visualReviewTasksQuery,
@@ -18,24 +19,30 @@ const qb = () => new QueryBuilder();
 describe('workspaceAwaitingMissionsQuery', () => {
   const { sql, params } = workspaceAwaitingMissionsQuery(qb(), WS, ['team-a', 'team-b']).toSQL();
 
-  it('scopes to the workspace and the caller teams', () => {
+  it('reads missions, scoped to the workspace and the caller teams', () => {
+    expect(sql).toMatch(/from "missions" where/);
     expect(sql).toContain('"missions"."workspace_id" = $1');
     expect(sql).toMatch(/"missions"\."team_id" in \(\$2, \$3\)/);
     expect(params.slice(0, 3)).toEqual([WS, 'team-a', 'team-b']);
   });
 
-  it('counts only auditor-scoped unsure screenshots with no active review', () => {
-    expect(sql).toContain('"artifacts"."type" = $4');
-    expect(params[3]).toBe('screenshot');
-    expect(sql).toContain(`"artifacts"."metadata" -> 'qa' ->> 'verdict' = 'unsure'`);
-    expect(sql).toMatch(/"artifacts"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "artifacts"\."mission_id" and "t"\."role_slug" = \$5\)/);
-    expect(params[4]).toBe('visual-auditor');
-    expect(sql).toContain('not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "artifacts"."id" and "r"."superseded_at" is null)');
+  it('candidate: an auditor-scoped unsure screenshot with no active review', () => {
+    expect(sql).toContain(`"a"."type" = 'screenshot'`);
+    expect(sql).toContain(`"a"."metadata" -> 'qa' ->> 'verdict' = 'unsure'`);
+    expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and "t"\."role_slug" = \$\d+\)/);
+    expect(params).toContain('visual-auditor');
+    expect(sql).toContain('not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)');
   });
 
-  it('groups per mission, newest shot first, one past the limit so the caller can say more exist', () => {
-    expect(sql).toContain('group by "missions"."id"');
-    expect(sql).toContain('order by max("artifacts"."created_at") desc');
+  it('candidate: the open round-cap question, or an auditor worker waiting on a question', () => {
+    expect(sql).toMatch(/exists \(select 1 from "mission_notes" "n" where "n"\."mission_id" = "missions"\."id" and "n"\."title" = \$\d+ and "n"\."status" = 'open'\)/);
+    expect(params).toContain(SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE);
+    expect(sql).toMatch(/"w"\."status" = 'waiting_input'/);
+    expect(sql).toMatch(/\) or exists \(/);
+  });
+
+  it('newest first, one past the limit so the caller can say more exist', () => {
+    expect(sql).toContain('order by "missions"."updated_at" desc');
     expect(params[params.length - 1]).toBe(WORKSPACE_AWAITING_MISSIONS_LIMIT + 1);
   });
 });

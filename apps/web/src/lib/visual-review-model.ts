@@ -200,6 +200,8 @@ function auditWhy(t: VisualReviewTaskInput): string | null {
   return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
 }
 
+const TERMINAL_AUDIT = new Set(['completed', 'failed', 'cancelled']);
+
 function auditView(t: VisualReviewTaskInput): VisualReviewAuditTask {
   return {
     id: t.id,
@@ -207,6 +209,7 @@ function auditView(t: VisualReviewTaskInput): VisualReviewAuditTask {
     status: t.status,
     round: surfaceAuditRound(t),
     createdAt: iso(t.createdAt ?? null),
+    endedAt: TERMINAL_AUDIT.has(t.status) ? iso(t.updatedAt ?? null) : null,
     errorType: errorTypeOf(t),
     why: auditWhy(t),
   };

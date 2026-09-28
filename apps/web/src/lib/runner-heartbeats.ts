@@ -164,6 +164,7 @@ export async function loadBrowserRunnerHeartbeats(
       .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id)));
     const linkOf = new Map(links.map(l => [l.accountId, l]));
     return hbs.map(h => ({
+      accountId: h.accountId,
       lastHeartbeatAt: h.lastHeartbeatAt,
       environment: (h.environment as { envKeys?: string[] } | null) ?? null,
       workspaceIds: accountReachesWorkspace({ teamId: h.accountTeamId }, workspace, linkOf.get(h.accountId) ?? null, 'canClaim')

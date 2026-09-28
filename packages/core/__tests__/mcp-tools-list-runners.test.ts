@@ -139,17 +139,44 @@ describe('list_runners', () => {
     expect(out).not.toMatch(/\b0\/10\b/);
   });
 
-  it('prints browser: yes/no per runner from the heartbeat env keys', async () => {
-    mockApi.mockResolvedValueOnce({ activeLocalUis: [
-      runner({ accountName: 'With browser', environment: { envKeys: ['node', 'browser'] } }),
-      runner({ accountName: 'Without', environment: { envKeys: ['node'] } }),
+  it('browser: yes only when the server says online by the summary rule; a stale capable runner is labelled, not yes', async () => {
+    const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    mockApi.mockResolvedValueOnce({ onlineWindowMs: 180_000, activeLocalUis: [
+      runner({ accountName: 'Online', browser: true, browserOnline: true, lastUpdated: ago(1) }),
+      runner({ accountName: 'Stale', browser: true, browserOnline: false, lastUpdated: ago(20) }),
+      runner({ accountName: 'Without', browser: false, browserOnline: false, environment: { envKeys: ['node'] } }),
       runner({ accountName: 'Unknown env', environment: null }),
     ] });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
     const line = (name: string) => out.split('\n').find(l => l.includes(name))!;
-    expect(line('With browser')).toContain('browser: yes');
+    expect(line('Online')).toContain('browser: yes');
+    expect(line('Stale')).toContain('browser: capable, not online (heartbeat 20m ago; online = heartbeat within 3m)');
+    expect(line('Stale')).not.toContain('browser: yes');
     expect(line('Without')).toContain('browser: no');
     expect(line('Unknown env')).toContain('browser: no');
+  });
+
+  it('with workspaceId: summary no and a stale browser row never reads as a plain yes', async () => {
+    mockApi.mockResolvedValueOnce({
+      onlineWindowMs: 180_000,
+      activeLocalUis: [runner({ browser: true, browserOnline: false, canClaimInWorkspace: true, lastUpdated: new Date(Date.now() - 20 * 60_000).toISOString() })],
+      workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' },
+      browserRunnerOnline: false,
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(out.split('\n')[0]).toBe('Browser-capable runner online for My Workspace: no');
+    expect(out).not.toContain('browser: yes');
+    expect(out).toContain('browser: capable, not online');
+  });
+
+  it('with workspaceId: a fresh capable runner that cannot claim there says so', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [runner({ browser: true, browserOnline: false, canClaimInWorkspace: false, lastUpdated: new Date().toISOString() })],
+      workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' },
+      browserRunnerOnline: false,
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(out).toContain('browser: capable, cannot claim in My Workspace');
   });
 
   it('with workspaceId: asks the server for that workspace, keeps its runners, and gives the one-line browser answer', async () => {

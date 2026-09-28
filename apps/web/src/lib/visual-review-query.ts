@@ -11,7 +11,7 @@
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { artifacts, missionNotes, missions, tasks, visualShotReviews, workers } from '@buildd/core/db/schema';
 import { ArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
-import { SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
 
 // ── Shots ───────────────────────────────────────────────────────────────────
 
@@ -154,32 +154,28 @@ export function roundCapNoteQuery(q: Selectable, missionId: string, title: strin
 export const WORKSPACE_AWAITING_MISSIONS_LIMIT = 10;
 
 /**
- * Candidate missions of a workspace for "which screens wait for me": an
- * auditor-scoped (`missionVisualShotsWhere`'s rule) unsure screenshot with no
- * active review, newest first. A superset: a later round may have re-shot the
- * cell, so the caller builds each mission's model for the exact count.
+ * Candidate missions of a workspace for "what waits on me": one with an
+ * auditor-scoped (`missionVisualShotsWhere`'s rule) unsure screenshot and no
+ * active review, the open round-cap question, or an auditor worker waiting on
+ * a question. Newest first. A superset: a later round may have re-shot the
+ * cell, so the caller builds each mission's model for the exact answer.
  * Scoped to the caller's teams as well as the workspace.
  */
 export function workspaceAwaitingMissionsQuery(q: Selectable, workspaceId: string, teamIds: readonly string[], limit = WORKSPACE_AWAITING_MISSIONS_LIMIT) {
+  const auditorWorkers = sql`select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG}`;
   return q
     .select({
       id: missions.id,
       title: missions.title,
       status: missions.status,
       workspaceId: missions.workspaceId,
-      latestShotAt: sql<string>`max(${artifacts.createdAt})`.as('latest_shot_at'),
     })
-    .from(artifacts)
-    .innerJoin(missions, eq(missions.id, artifacts.missionId))
+    .from(missions)
     .where(and(
       eq(missions.workspaceId, workspaceId),
       inArray(missions.teamId, [...teamIds]),
-      eq(artifacts.type, ArtifactType.SCREENSHOT),
-      sql`${artifacts.metadata} -> 'qa' ->> 'verdict' = 'unsure'`,
-      sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${artifacts.missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
-      sql`not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = ${artifacts.id} and "r"."superseded_at" is null)`,
+      sql`(exists (select 1 from "artifacts" "a" where "a"."mission_id" = ${missions.id} and "a"."type" = 'screenshot' and "a"."metadata" -> 'qa' ->> 'verdict' = 'unsure' and "a"."worker_id" in (${auditorWorkers}) and not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)) or exists (select 1 from "mission_notes" "n" where "n"."mission_id" = ${missions.id} and "n"."title" = ${SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE} and "n"."status" = 'open') or exists (select 1 from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} and "w"."status" = 'waiting_input'))`,
     ))
-    .groupBy(missions.id)
-    .orderBy(sql`max(${artifacts.createdAt}) desc`)
+    .orderBy(desc(missions.updatedAt))
     .limit(limit + 1);
 }

@@ -37,8 +37,8 @@ function cell(id: string, viewport: 'mobile' | 'desktop', verdict: 'ok' | 'issue
 }
 
 const audits: VisualReviewAuditTask[] = [
-  { id: A1, title: '[surface audit] Example', status: 'cancelled', round: 1, createdAt: '2026-03-10T09:00:00.000Z', errorType: null, why: null },
-  { id: A2, title: '[surface audit] Example (round 2)', status: 'failed', round: 2, createdAt: '2026-03-10T09:30:00.000Z', errorType: 'max_turns', why: 'Ran out of turns before the last route.' },
+  { id: A1, title: '[surface audit] Example', status: 'cancelled', round: 1, createdAt: '2026-03-10T09:00:00.000Z', endedAt: '2026-03-10T09:10:00.000Z', errorType: null, why: null },
+  { id: A2, title: '[surface audit] Example (round 2)', status: 'failed', round: 2, createdAt: '2026-03-10T09:30:00.000Z', endedAt: '2026-03-10T09:50:00.000Z', errorType: 'max_turns', why: 'Ran out of turns before the last route.' },
 ];
 
 function model(over: Partial<VisualReviewModel> = {}): VisualReviewModel {
@@ -69,8 +69,8 @@ const BASE = 'https://app.example.test';
 describe('formatVisualReview for MCP', () => {
   it('lists every audit task with status and why, including cancelled ones', () => {
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toContain(`round 1: cancelled (task ${A1}): no reason recorded`);
-    expect(text).toContain(`round 2: failed (task ${A2}): max_turns; Ran out of turns before the last route.`);
+    expect(text).toContain(`round 1: cancelled, started 2026-03-10 09:00 UTC, ended 2026-03-10 09:10 UTC (task ${A1}): no reason recorded`);
+    expect(text).toContain(`round 2: failed, started 2026-03-10 09:30 UTC, ended 2026-03-10 09:50 UTC (task ${A2}): max_turns; Ran out of turns before the last route.`);
     expect(text).toMatch(/Audit tasks \(2\)/);
   });
 
@@ -85,7 +85,60 @@ describe('formatVisualReview for MCP', () => {
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
     expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed yet, needs review/);
     expect(text).toMatch(new RegExp(`fix: in progress, PR #12 \\(task ${FIX}\\)`));
-    expect(text).toContain('1 need your review.');
+    expect(text).toContain('1 screen needs your review.');
+  });
+
+  it('round cap: says a decision is needed and never "0 need your review"', () => {
+    const m = model({ needsYou: { reason: 'round_cap' }, roundCapOpen: true, cells: [model().cells[1]], summary: { ...model().summary, unsure: 0, awaitingHuman: 0 } });
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
+    expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
+    expect(text).toContain('Needs your decision: issues remain after 2 rounds (fix or waive).');
+  });
+
+  it('question: the closing line carries the prompt', () => {
+    const m = model({ needsYou: { reason: 'question', prompt: 'Is the old header intended?' } as never, summary: { ...model().summary, awaitingHuman: 0 } });
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
+    expect(text).toContain('Needs your answer: Is the old header intended?');
+    expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
+  });
+
+  it('nothing pending: says nobody is needed', () => {
+    const m = model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0 } });
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
+    expect(text).toContain('Nothing needs your review.');
+  });
+
+  describe('checked before the mission was completed (Q3)', () => {
+    const done = (a: VisualReviewAuditTask[]) => formatVisualReview(model({ phase: 'reviewed', needsYou: null, audits: a, audit: a[a.length - 1] ?? null }), 'Example', {
+      audience: 'mcp', baseUrl: BASE, missionId: 'mission-1', missionStatus: 'completed', missionCompletedAt: '2026-03-10T11:00:00.000Z',
+    });
+    const ok = (endedAt: string): VisualReviewAuditTask => ({ id: A2, title: 'a', status: 'completed', round: 2, createdAt: '2026-03-10T09:30:00.000Z', endedAt, errorType: null, why: null });
+
+    it('puts the completion time in the head', () => {
+      expect(done([ok('2026-03-10T10:05:00.000Z')])).toContain('(mission mission-1, completed 2026-03-10 11:00 UTC)');
+    });
+
+    it('yes when an audit completed before the mission did', () => {
+      expect(done([audits[0], ok('2026-03-10T10:05:00.000Z')])).toContain('Visually checked before the mission was completed: yes (round 2 audit completed 2026-03-10 10:05 UTC).');
+    });
+
+    it('no when the only completed audit ended after', () => {
+      expect(done([ok('2026-03-10T12:00:00.000Z')])).toContain('Visually checked before the mission was completed: no (round 2 audit completed after it, 2026-03-10 12:00 UTC).');
+    });
+
+    it('no when every audit was cancelled or failed', () => {
+      expect(done(audits)).toContain('Visually checked before the mission was completed: no (no audit completed; latest: round 2 failed).');
+    });
+
+    it('says the time is unknown rather than guessing', () => {
+      const text = formatVisualReview(model({ phase: 'reviewed', needsYou: null }), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1', missionStatus: 'completed', missionCompletedAt: null });
+      expect(text).toContain('Visually checked before the mission was completed: unknown (completion time not recorded).');
+    });
+
+    it('says nothing about it for a mission that is not completed', () => {
+      const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1', missionStatus: 'active' });
+      expect(text).not.toMatch(/Visually checked before/);
+    });
   });
 
   it('awaitingOnly lists only the screens that need review and says how many were left out', () => {

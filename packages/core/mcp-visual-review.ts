@@ -34,7 +34,8 @@ type MissionRow = { id: string; title?: string; status?: string };
  * TODO: switch to the shared mission title resolver once it lands in
  * mcp-tools.ts; this reads the newest TITLE_LOOKUP_LIMIT missions only.
  */
-async function missionIdFromTitle(api: ApiFn, title: string, wsId: string | null): Promise<{ id: string } | { error: ToolResult }> {
+async function missionIdFromTitle(api: ApiFn, title: string, ws: { id: string; raw: string } | null): Promise<{ id: string } | { error: ToolResult }> {
+  const wsId = ws?.id ?? null;
   const qs = new URLSearchParams({ limit: String(TITLE_LOOKUP_LIMIT) });
   if (wsId) qs.set('workspaceId', wsId);
   const data = await api(`/api/missions?${qs}`);
@@ -43,9 +44,10 @@ async function missionIdFromTitle(api: ApiFn, title: string, wsId: string | null
   const exact = rows.filter(m => m.title!.toLowerCase() === want);
   const hits = exact.length > 0 ? exact : rows.filter(m => m.title!.toLowerCase().includes(want));
   if (hits.length === 1) return { id: hits[0].id };
-  const where = wsId ? ' in that workspace' : '';
+  const where = ws ? ` in workspace "${ws.raw}"` : '';
   if (hits.length === 0) {
-    return { error: errorResult(`No mission titled "${title}" among the ${rows.length} missions${where} this token can see (every status). Pass missionId, or check the title with manage_missions action=list status="all".`) };
+    const widen = ws ? ' Or omit workspaceId to search every workspace.' : '';
+    return { error: errorResult(`No mission titled "${title}" among the ${rows.length} missions${where} this token can see (every status). Pass missionId, or check the title with manage_missions action=list status="all".${widen}`) };
   }
   const shown = hits.slice(0, 5).map(m => `- "${m.title}" (${m.id}, ${m.status ?? 'unknown'})`);
   const left = hits.length - shown.length;
@@ -57,15 +59,20 @@ export async function runGetVisualReview(
   params: Record<string, unknown>,
   resolveWorkspace: WorkspaceResolver,
   appBaseUrl: string,
+  /** The workspace pinned in the MCP URL, if any. Never the token's guessed workspace. */
+  pinnedWorkspace: string | null = null,
 ): Promise<ToolResult> {
+  // Only a workspace the caller named narrows the title lookup; with none it
+  // is team-wide. The no-mission listing also takes the URL-pinned one. The
+  // resolver is never called without a param, so its guess never applies.
   const rawWs = str(params.workspaceId);
-  const wsId = await resolveWorkspace(rawWs || undefined);
-  if (rawWs && !wsId) return notVisible(rawWs);
+  const explicitWs = rawWs ? await resolveWorkspace(rawWs) : null;
+  if (rawWs && !explicitWs) return notVisible(rawWs);
 
   let missionId = str(params.missionId);
   const missionTitle = str(params.missionTitle);
   if (!missionId && missionTitle) {
-    const found = await missionIdFromTitle(api, missionTitle, wsId);
+    const found = await missionIdFromTitle(api, missionTitle, explicitWs ? { id: explicitWs, raw: rawWs } : null);
     if ('error' in found) return found.error;
     missionId = found.id;
   }
@@ -73,7 +80,8 @@ export async function runGetVisualReview(
   if (missionId) {
     if (!UUID_RE.test(missionId)) return errorResult(`missionId must be a full UUID; pass missionTitle to look a mission up by title.`);
     const id = encodeURIComponent(missionId);
-    const mission = await api(`/api/missions/${id}`) as { title?: unknown; status?: unknown; mission?: { title?: unknown; status?: unknown } } | null;
+    type MissionHead = { title?: unknown; status?: unknown; completedAt?: unknown };
+    const mission = await api(`/api/missions/${id}`) as (MissionHead & { mission?: MissionHead }) | null;
     const m = mission?.mission ?? mission;
     const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel } | null;
     if (!out?.model) return errorResult('The visual review could not be read.');
@@ -82,23 +90,31 @@ export async function runGetVisualReview(
       baseUrl: appBaseUrl,
       missionId,
       missionStatus: typeof m?.status === 'string' ? m.status : null,
+      missionCompletedAt: typeof m?.completedAt === 'string' ? m.completedAt : null,
       awaitingOnly: params.awaitingOnly === true,
     }));
   }
 
-  if (!wsId) return errorResult('Name a mission (missionTitle or missionId), or a workspace (workspaceId) to list screens awaiting review.');
+  const wsId = explicitWs ?? (pinnedWorkspace ? await resolveWorkspace(pinnedWorkspace) : null);
+  if (!wsId) return errorResult('Name a mission (missionTitle or missionId), or pass workspaceId to list screens awaiting review there.');
   const data = await api(`/api/workspaces/${encodeURIComponent(wsId)}/visual-review`) as {
     workspace?: { name?: string };
-    missions?: Array<{ id: string; title: string; status: string; phase: string; awaitingHuman: number }>;
+    missions?: Array<{ id: string; title: string; status: string; phase: string; reason?: string; awaitingHuman: number }>;
     more?: boolean;
   };
   const name = data?.workspace?.name ?? wsId;
   const rows = data?.missions ?? [];
-  const more = data?.more ? '\nLeft out: more missions were not checked (only the most recent with unsure screens are); pass missionTitle to read one.' : '';
-  if (rows.length === 0) return text(`No screens awaiting review in ${name}.${more}`);
+  const more = data?.more ? '\nLeft out: older missions were not checked (only the most recent candidates are); pass missionTitle to read one.' : '';
+  if (rows.length === 0) return text(`Nothing waits on you in ${name}: no screens awaiting review, no open visual-audit decision or question.${more}`);
   const total = rows.reduce((n, m) => n + m.awaitingHuman, 0);
-  const lines = rows.map(m => `- "${m.title}" (mission ${m.id}, ${m.status}): ${m.awaitingHuman} need your review`);
-  return text(`${total} screens awaiting review in ${name}, across ${rows.length} mission(s):\n${lines.join('\n')}\nget_visual_review with missionId for the screens and links.${more}`);
+  const lines = rows.map(m => `- "${m.title}" (mission ${m.id}, ${m.status}): ${waitsOn(m)}`);
+  return text(`${rows.length} mission${rows.length === 1 ? '' : 's'} wait${rows.length === 1 ? 's' : ''} on you in ${name} (${total} screen${total === 1 ? '' : 's'} to review):\n${lines.join('\n')}\nget_visual_review with missionId for the screens and links.${more}`);
+}
+
+function waitsOn(m: { reason?: string; awaitingHuman: number }): string {
+  if (m.awaitingHuman > 0) return `${m.awaitingHuman} screen${m.awaitingHuman === 1 ? ' needs' : 's need'} your review`;
+  if (m.reason === 'question') return 'needs your answer (the audit asked a question)';
+  return 'needs your decision (round cap: fix or waive)';
 }
 
 type RunnerRow = Record<string, unknown> & {
@@ -107,11 +123,28 @@ type RunnerRow = Record<string, unknown> & {
   workspaceNames?: unknown;
 };
 
-/** The heartbeat advertises the `browser` capability (CAPABILITY_BROWSER), browserRunnerOnline's rule. */
+/** The heartbeat advertises the `browser` capability (CAPABILITY_BROWSER). */
 function hasBrowser(r: RunnerRow): boolean {
   if (typeof r.browser === 'boolean') return r.browser;
   const keys = r.environment?.envKeys;
   return Array.isArray(keys) && keys.includes('browser');
+}
+
+/**
+ * `yes` only when the server's `browserOnline` (browserRunnerOnline's rule:
+ * fresh heartbeat, capability, claim reach) says so, so a row never
+ * contradicts the summary line. A capable runner that is not online says why.
+ */
+function browserWord(r: RunnerRow, windowMs: number, wsName: string | null): string {
+  if (!hasBrowser(r)) return 'no';
+  if (r.browserOnline === true) return 'yes';
+  if (typeof r.browserOnline !== 'boolean') return 'capable (online not reported)';
+  const age = Date.now() - Date.parse(String(r.lastUpdated));
+  if (!Number.isNaN(age) && age >= windowMs) {
+    return `capable, not online (heartbeat ${Math.round(age / 60_000)}m ago; online = heartbeat within ${Math.round(windowMs / 60_000)}m)`;
+  }
+  if (r.canClaimInWorkspace === false) return `capable, cannot claim in ${wsName ?? 'this workspace'}`;
+  return 'capable, not online';
 }
 
 export async function runListRunners(
@@ -141,8 +174,10 @@ export async function runListRunners(
   const tail = left > 0 ? `\n${left} runner${left === 1 ? '' : 's'} of other workspaces not shown; omit workspaceId for all.` : '';
   if (runners.length === 0) return text([...head, 'No active runners visible to this token.'].join('\n') + tail);
 
+  const windowMs = typeof data?.onlineWindowMs === 'number' ? data.onlineWindowMs : 3 * 60_000;
+  const wsName = wsId ? (data?.workspace?.name ?? rawWs) : null;
   const lines = runners.map((r) => {
-    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots — browser: ${hasBrowser(r) ? 'yes' : 'no'} — branch ${r.trackedBranch ?? 'unknown'}`;
+    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'}`;
     const update = [
       `currentCommit=${r.currentCommit ?? 'null'}`,
       `diskCommit=${r.diskCommit ?? 'null'}`,

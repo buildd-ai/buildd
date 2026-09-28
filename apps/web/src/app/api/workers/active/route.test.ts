@@ -678,6 +678,35 @@ describe('GET /api/workers/active', () => {
       expect((await (await GET(req)).json()).browserRunnerOnline).toBeNull();
     });
 
+    it('browserOnline per runner is the summary rule: fresh heartbeat within the online window and browser', async () => {
+      session();
+      const stale = { ...hb(['browser']), localUiUrl: 'http://stale', lastHeartbeatAt: new Date(Date.now() - 20 * 60 * 1000) };
+      mockHeartbeatsFindMany.mockResolvedValue([hb(['browser']), stale, { ...hb(['node']), localUiUrl: 'http://b' }]);
+      const data = await (await GET(createMockRequest())).json();
+      const by = Object.fromEntries(data.activeLocalUis.map((r: any) => [r.localUiUrl, r]));
+      expect(by['http://localhost:8766'].browserOnline).toBe(true);
+      expect(by['http://stale'].browser).toBe(true);
+      expect(by['http://stale'].browserOnline).toBe(false);
+      expect(by['http://b'].browserOnline).toBe(false);
+      expect(data.onlineWindowMs).toBe(3 * 60 * 1000);
+    });
+
+    it('with ?workspaceId, browserOnline also needs the claim reach the summary uses', async () => {
+      session();
+      mockHeartbeatsFindMany.mockResolvedValue([hb(['browser']), { ...hb(['browser']), accountId: 'account-2', localUiUrl: 'http://other' }]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', accessMode: 'restricted' });
+      mockLoadBrowserRunnerHeartbeats.mockResolvedValue([
+        { accountId: 'account-1', lastHeartbeatAt: new Date(), environment: { envKeys: ['browser'] }, workspaceIds: [] },
+        { accountId: 'account-2', lastHeartbeatAt: new Date(), environment: { envKeys: ['browser'] }, workspaceIds: ['ws-1'] },
+      ]);
+      const data = await (await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-1'))).json();
+      const by = Object.fromEntries(data.activeLocalUis.map((r: any) => [r.localUiUrl, r]));
+      expect(by['http://localhost:8766'].browserOnline).toBe(false);
+      expect(by['http://localhost:8766'].canClaimInWorkspace).toBe(false);
+      expect(by['http://other'].browserOnline).toBe(true);
+      expect(data.browserRunnerOnline).toBe(true);
+    });
+
     it('404s a workspaceId the caller cannot see', async () => {
       session();
       mockHeartbeatsFindMany.mockResolvedValue([]);
