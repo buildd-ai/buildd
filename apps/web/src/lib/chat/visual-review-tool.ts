@@ -3,8 +3,9 @@
  * mission's visual review as text the assistant can report from. Registered
  * in registry.ts (CHAT_NATIVE_TOOL_SPECS, a read) and run by tools.ts through
  * the in-process API, so it reaches only `GET /api/missions/:id` (for the
- * mission ref) and `GET /api/missions/:id/visual-review` (the auditor-scoped
- * model), both as the signed-in user and inside the conversation's reach.
+ * mission ref), `GET /api/missions/:id/visual-review` (the auditor-scoped
+ * model) and `GET /api/missions/:id/artifacts` (manual visual evidence), all
+ * as the signed-in user and inside the conversation's reach.
  *
  * Text only: never an image, a download link or a signed URL. The card in the
  * feed shows the screens; the assistant has not seen them and must not say so.
@@ -12,13 +13,13 @@
  */
 import type { ApiFn } from '@buildd/core/mcp-tools';
 import type { VisualReviewModel } from '@buildd/shared';
-import { formatVisualReview as formatShared } from '@buildd/core/visual-review-text';
+import { formatVisualReview as formatShared, missionArtifacts, type VisualEvidenceArtifact } from '@buildd/core/visual-review-text';
 
 const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
 
 /** The shared text (packages/core/visual-review-text.ts), chat audience: no links. */
-export function formatVisualReview(model: VisualReviewModel, missionTitle: string | null): string {
-  return formatShared(model, missionTitle, { audience: 'chat' });
+export function formatVisualReview(model: VisualReviewModel, missionTitle: string | null, artifacts: VisualEvidenceArtifact[] | null = null): string {
+  return formatShared(model, missionTitle, { audience: 'chat', artifacts });
 }
 
 export async function runGetVisualReview(api: ApiFn, input: Record<string, unknown>) {
@@ -30,5 +31,5 @@ export async function runGetVisualReview(api: ApiFn, input: Record<string, unkno
     : typeof mission?.mission?.title === 'string' ? mission.mission.title : null;
   const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel } | null;
   if (!out?.model) return textOut('Error: the visual review could not be read.', true);
-  return textOut(formatVisualReview(out.model, title));
+  return textOut(formatVisualReview(out.model, title, await missionArtifacts(api, id)));
 }

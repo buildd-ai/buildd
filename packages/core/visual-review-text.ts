@@ -10,6 +10,12 @@
  *   screens; the assistant has not seen them and must not say so.
  * - `mcp`: a link per screenshot (the artifact page and the download route
  *   the app already uses), full task ids.
+ *
+ * "Other visual evidence": a mission can be checked by hand as well as by
+ * the auditor. Given the mission's artifacts (one list call, no per-artifact
+ * read), screenshots the auditor did not write and reports whose title or key
+ * names visual validation are listed too, so the text never says "no visual
+ * QA" over a manual validation report.
  */
 import type { VisualReviewAuditTask, VisualReviewCell, VisualReviewModel, VisualReviewNeedsYou } from '@buildd/shared';
 
@@ -83,6 +89,133 @@ export interface FormatVisualReviewOptions {
   missionCompletedAt?: string | null;
   /** List only the screens that need a human decision; count the rest. */
   awaitingOnly?: boolean;
+  /** The mission's artifacts (GET /api/missions/:id/artifacts); null or absent: no evidence section. */
+  artifacts?: VisualEvidenceArtifact[] | null;
+}
+
+/** The fields of an artifact row the evidence section reads. Never its image. */
+export interface VisualEvidenceArtifact {
+  id: string;
+  type: string;
+  title?: string | null;
+  key?: string | null;
+  content?: string | null;
+  metadata?: unknown;
+  updatedAt?: string | null;
+  createdAt?: string | null;
+}
+
+/** Artifact types a written validation can be filed as. */
+const REPORT_TYPES = new Set(['report', 'analysis', 'summary', 'walkthrough']);
+/** "Visual validation", "visual QA", "visual-review", "screenshot check", ... in a title or key. */
+const VALIDATION_RE = /visual[\s_-]*(validation|qa|review|check|verification|test)|screenshots?[\s_-]*(review|check|validation)/i;
+const SHOTS_SHOWN = 5;
+const REPORTS_SHOWN = 3;
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const stamp = (a: VisualEvidenceArtifact) => {
+  const ms = Date.parse(a.updatedAt ?? a.createdAt ?? '');
+  return Number.isNaN(ms) ? 0 : ms;
+};
+
+/**
+ * The mission's visual evidence besides the audit: screenshots with no
+ * `metadata.qa` that the model does not already show, and validation-like
+ * reports. Newest first.
+ */
+export function otherVisualEvidence(
+  artifacts: VisualEvidenceArtifact[] | null | undefined,
+  model: Pick<VisualReviewModel, 'cells'>,
+): { screenshots: VisualEvidenceArtifact[]; reports: VisualEvidenceArtifact[] } {
+  const shown = new Set<string>();
+  for (const c of model.cells) {
+    shown.add(c.current.shot.id);
+    for (const h of c.history ?? []) shown.add(h.shot.id);
+  }
+  const screenshots: VisualEvidenceArtifact[] = [];
+  const reports: VisualEvidenceArtifact[] = [];
+  for (const a of artifacts ?? []) {
+    if (!a || typeof a.id !== 'string') continue;
+    if (a.type === 'screenshot') {
+      if (shown.has(a.id) || (isObject(a.metadata) && isObject(a.metadata.qa))) continue;
+      screenshots.push(a);
+    } else if (REPORT_TYPES.has(a.type) && VALIDATION_RE.test(`${a.title ?? ''} ${a.key ?? ''}`)) {
+      reports.push(a);
+    }
+  }
+  const newest = (x: VisualEvidenceArtifact, y: VisualEvidenceArtifact) => stamp(y) - stamp(x);
+  return { screenshots: screenshots.sort(newest), reports: reports.sort(newest) };
+}
+
+const VIEWPORT_IN_TITLE: Array<[RegExp, string]> = [
+  [/\b(mobile|phone|iphone)\b/i, 'phone'],
+  [/\btablet|ipad\b/i, 'tablet'],
+  [/\bdesktop\b/i, 'desktop'],
+];
+
+function viewportOf(a: VisualEvidenceArtifact): string | null {
+  const meta = isObject(a.metadata) ? a.metadata : {};
+  const v = meta.viewport;
+  if (typeof v === 'string' && v.trim()) return VIEWPORT_WORD[v.trim() as keyof typeof VIEWPORT_WORD] ?? one(v);
+  for (const [re, word] of VIEWPORT_IN_TITLE) if (re.test(a.title ?? '')) return word;
+  const size = (a.title ?? '').match(/\b\d{3,4}\s*[x×]\s*\d{3,4}\b/);
+  return size ? size[0].replace(/\s+/g, '') : null;
+}
+
+const VERDICT_RE = /\b(verdict|result|outcome|conclusion|status|passed|failed|pass|fail)\b/i;
+const MAX_PREVIEW = 160;
+
+/** The report's verdict line, else its first line of prose. Markdown marks stripped. */
+function previewOf(a: VisualEvidenceArtifact): string | null {
+  const lines = (a.content ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const plain = (l: string) => one(l.replace(/^(#+|>|[-*+]|\d+\.)\s*/, '').replace(/[*_`]/g, ''));
+  const pick = lines.map(plain).find(l => VERDICT_RE.test(l) && l.split(' ').length > 2)
+    ?? lines.filter(l => !l.startsWith('#')).map(plain).find(Boolean)
+    ?? null;
+  if (!pick) return null;
+  return pick.length > MAX_PREVIEW ? `${pick.slice(0, MAX_PREVIEW - 1)}…` : pick;
+}
+
+/**
+ * The mission's artifacts, for the evidence section: one list read
+ * (GET /api/missions/:id/artifacts) through the caller's own api, so its
+ * access check applies. A failure drops the section, never the review.
+ */
+export async function missionArtifacts(
+  api: (endpoint: string) => Promise<unknown>,
+  encodedMissionId: string,
+): Promise<VisualEvidenceArtifact[] | null> {
+  try {
+    const data = await api(`/api/missions/${encodedMissionId}/artifacts`) as { artifacts?: unknown } | null;
+    return Array.isArray(data?.artifacts) ? data.artifacts as VisualEvidenceArtifact[] : null;
+  } catch {
+    return null;
+  }
+}
+
+function evidenceLines(ev: ReturnType<typeof otherVisualEvidence>, o: FormatVisualReviewOptions): string[] {
+  const mcp = o.audience === 'mcp';
+  const base = (o.baseUrl ?? '').replace(/\/+$/, '');
+  const link = (a: VisualEvidenceArtifact) => (mcp ? ` (${base}/app/artifacts/${encodeURIComponent(a.id)})` : '');
+  const title = (a: VisualEvidenceArtifact) => `"${one(a.title || a.key || 'Untitled')}"`;
+  const parts = [ev.screenshots.length > 0 && plural(ev.screenshots.length, 'screenshot'), ev.reports.length > 0 && plural(ev.reports.length, 'report')].filter(Boolean);
+  const out = [`Other visual evidence (${parts.join(', ')}):`];
+  for (const a of ev.screenshots.slice(0, SHOTS_SHOWN)) {
+    const vp = viewportOf(a);
+    const at = when(a.updatedAt ?? a.createdAt);
+    out.push(`  - screenshot ${title(a)}${vp ? ` (${vp})` : ''}${at ? `, ${at}` : ''}${link(a)}`);
+  }
+  const moreShots = ev.screenshots.length - SHOTS_SHOWN;
+  if (moreShots > 0) out.push(`  - ${plural(moreShots, 'more screenshot')} not shown`);
+  for (const a of ev.reports.slice(0, REPORTS_SHOWN)) {
+    const at = when(a.updatedAt ?? a.createdAt);
+    const preview = previewOf(a);
+    out.push(`  - ${a.type} ${title(a)}${at ? `, updated ${at}` : ''}${link(a)}${preview ? `: ${preview}` : ''}`);
+  }
+  const moreReports = ev.reports.length - REPORTS_SHOWN;
+  if (moreReports > 0) out.push(`  - ${plural(moreReports, 'more report')} not shown`);
+  if (mcp && (moreShots > 0 || moreReports > 0) && o.missionId) out.push(`  list_artifacts missionId=${o.missionId} lists them all.`);
+  return out;
 }
 
 const VIEWPORT_WORD = { mobile: 'phone', desktop: 'desktop' } as const;
@@ -140,10 +273,16 @@ function auditLine(a: VisualReviewAuditTask, mcp: boolean): string {
 }
 
 /** Q3: did an audit complete before the mission did? Only for a completed mission. */
-function checkedBeforeDone(audits: VisualReviewAuditTask[], completedAt: string | null | undefined): string {
+function checkedBeforeDone(audits: VisualReviewAuditTask[], completedAt: string | null | undefined, evidence: VisualEvidenceArtifact[] = []): string {
   const q = 'Visually checked before the mission was completed:';
   const doneMs = completedAt ? Date.parse(completedAt) : NaN;
   if (Number.isNaN(doneMs)) return `${q} unknown (completion time not recorded).`;
+  if (audits.length === 0 && evidence.length > 0) {
+    const dated = evidence.filter(a => stamp(a) > 0);
+    const before = dated.filter(a => stamp(a) <= doneMs).sort((x, y) => stamp(y) - stamp(x))[0];
+    if (before) return `${q} no automatic audit ran; manual evidence dated before completion ("${one(before.title || before.key || 'Untitled')}", ${when(before.updatedAt ?? before.createdAt)}).`;
+    return `${q} no automatic audit ran; ${dated.length > 0 ? 'the manual evidence is dated after completion' : 'the manual evidence is undated'}.`;
+  }
   if (audits.length === 0) return `${q} no (no visual audit ran).`;
   const completed = audits.filter(a => a.status === 'completed' && when(a.endedAt));
   const before = completed.filter(a => Date.parse(a.endedAt!) <= doneMs);
@@ -186,12 +325,23 @@ export function formatVisualReview(
     ? `${named} (mission ${opts.missionId}${opts.missionStatus ? `, ${opts.missionStatus}${doneAt ? ` ${doneAt}` : ''}` : ''})`
     : named;
   const audits = model.audits ?? (model.audit ? [model.audit] : []);
-  const q3 = mcp && opts.missionStatus === 'completed' ? `\n${checkedBeforeDone(audits, opts.missionCompletedAt)}` : '';
-  if (model.phase === 'off' && audits.length === 0) return `${head}: No visual audit on this mission.${q3}`;
+  const ev = otherVisualEvidence(opts.artifacts, model);
+  const evidence = [...ev.screenshots, ...ev.reports];
+  const hasEvidence = evidence.length > 0;
+  const q3 = mcp && opts.missionStatus === 'completed' ? `\n${checkedBeforeDone(audits, opts.missionCompletedAt, evidence)}` : '';
+  const unseen = ev.screenshots.length > 0 ? 'You have not seen these screenshots; the user opens them from the mission\'s artifacts.' : null;
+  if (model.phase === 'off' && audits.length === 0) {
+    if (!hasEvidence) return `${head}: No visual audit on this mission.${q3}`;
+    const lines = [`${head}: No automatic visual audit ran; manual visual evidence below.`];
+    if (q3) lines.push(q3.slice(1));
+    lines.push(...evidenceLines(ev, opts));
+    if (!mcp && unseen) lines.push(unseen);
+    return lines.join('\n');
+  }
 
   const lines: string[] = [];
   if (model.phase === 'off') {
-    lines.push(`${head}: no screens were captured.`);
+    lines.push(hasEvidence ? `${head}: the audit captured no screens; other visual evidence below.` : `${head}: no screens were captured.`);
   } else {
     const copy = describeVisualPhase(model);
     lines.push(`${head}: ${copy.label}. ${copy.detail}`);
@@ -207,7 +357,7 @@ export function formatVisualReview(
 
   const shown = opts.awaitingOnly ? model.cells.filter(c => c.needsHuman) : model.cells;
   if (model.cells.length === 0) {
-    lines.push('No screenshots yet.');
+    if (!hasEvidence) lines.push('No screenshots yet.');
   } else {
     const byRoute = new Map<string, VisualReviewCell[]>();
     for (const c of shown) byRoute.set(c.route, [...(byRoute.get(c.route) ?? []), c]);
@@ -222,11 +372,13 @@ export function formatVisualReview(
     const left = model.cells.length - shown.length;
     if (left > 0) lines.push(`${plural(left, 'other screen')} not shown (awaitingOnly); call without awaitingOnly for all.`);
   }
+  if (hasEvidence) lines.push(...evidenceLines(ev, opts));
 
   if (mcp) {
     lines.push(needsYouLine(model));
     if (opts.missionId && opts.baseUrl) lines.push(`Decide on the mission page: ${opts.baseUrl.replace(/\/+$/, '')}/app/missions/${encodeURIComponent(opts.missionId)}`);
   } else {
+    if (unseen) lines.push(unseen);
     lines.push('You have not seen these images; the card in the chat shows them. The user decides each screen there (Looks right / Needs fix).');
   }
   return lines.join('\n');

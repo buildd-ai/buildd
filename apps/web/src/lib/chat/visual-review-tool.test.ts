@@ -48,14 +48,16 @@ describe('formatVisualReview', () => {
 });
 
 describe('runGetVisualReview', () => {
-  it('reads the mission and its review through two GETs and returns text plus a mission ref', async () => {
+  it('reads the mission, its review and its artifacts through three GETs and returns text plus a mission ref', async () => {
     const calls: ApiCall[] = [];
     const m = deck();
     const api = async (endpoint: string, opts: { method?: string } = {}) => {
       const method = opts.method ?? 'GET';
       const body = endpoint.endsWith('/visual-review')
         ? { model: m }
-        : { id: 'fixture-mission', title: 'Fixture mission', workspaceId: 'ws', status: 'active' };
+        : endpoint.endsWith('/artifacts')
+          ? { artifacts: [{ id: 'fixture-diff', type: 'diff', title: 'A diff', workspaceId: 'ws' }] }
+          : { id: 'fixture-mission', title: 'Fixture mission', workspaceId: 'ws', status: 'active' };
       calls.push({ method, path: endpoint, status: 200, body });
       return body;
     };
@@ -63,9 +65,33 @@ describe('runGetVisualReview', () => {
     expect(calls.map(c => `${c.method} ${c.path}`)).toEqual([
       'GET /api/missions/fixture-mission',
       'GET /api/missions/fixture-mission/visual-review',
+      'GET /api/missions/fixture-mission/artifacts',
     ]);
     expect(out.content[0].text).toContain('Fixture mission');
     expect(refsFromCalls(calls)).toEqual([expect.objectContaining({ kind: 'mission', id: 'fixture-mission' })]);
+  });
+
+  it('adds manual visual evidence (no links) and a card for the validation report only', async () => {
+    const calls: ApiCall[] = [];
+    const off = buildVisualReviewFixtureModel('off');
+    const artifacts = [
+      { id: 'fixture-report', type: 'report', title: 'Visual validation: fixture (final)', content: 'Verdict: all checks passed.', workspaceId: 'ws', updatedAt: '2026-03-10T10:45:00.000Z' },
+      { id: 'fixture-diff', type: 'diff', title: 'A diff', workspaceId: 'ws' },
+    ];
+    const api = async (endpoint: string) => {
+      const body = endpoint.endsWith('/visual-review') ? { model: off }
+        : endpoint.endsWith('/artifacts') ? { artifacts }
+          : { id: 'fixture-mission', title: 'Fixture mission', workspaceId: 'ws', status: 'completed' };
+      calls.push({ method: 'GET', path: endpoint, status: 200, body });
+      return body;
+    };
+    const out = await runGetVisualReview(api as never, { missionId: 'fixture-mission' });
+    const text = out.content[0].text;
+    expect(text).not.toMatch(/No visual audit on this mission/);
+    expect(text).toContain('Verdict: all checks passed.');
+    expect(text).not.toMatch(/\/app\/artifacts\/|\/download/);
+    const refs = refsFromCalls(calls);
+    expect(refs.map(r => `${r.kind}:${r.id}`)).toEqual(['mission:fixture-mission', 'artifact:fixture-report']);
   });
 
   it('needs a missionId', async () => {
