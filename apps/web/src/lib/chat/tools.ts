@@ -350,15 +350,22 @@ function filesWork(action: string, op: string): boolean {
   return action === 'create_task' || (action === 'manage_missions' && op === 'create');
 }
 
-/** The call input with the person's applicable rules appended to its description. */
+/**
+ * The call input with any model-written rules block stripped from its
+ * description and the person's applicable rules appended, server-rendered.
+ * Runs even with no rules, so a forged block never reaches the agent. The
+ * workspace is the one the approval preview resolved (`targetWorkspaceId`),
+ * else a UUID in the input, else the turn's default.
+ */
 export function withRulesForFiledWork(
   input: Record<string, unknown>,
   rules: readonly StandingRule[] | undefined,
   defaultWorkspaceId: string | null,
+  targetWorkspaceId?: string | null,
 ): Record<string, unknown> {
-  if (!rules || rules.length === 0) return input;
-  const ws = typeof input.workspaceId === 'string' && isUuid(input.workspaceId) ? input.workspaceId : defaultWorkspaceId;
-  const block = renderStandingRulesForTask(rules, { workspaceId: ws });
+  const ws = targetWorkspaceId
+    ?? (typeof input.workspaceId === 'string' && isUuid(input.workspaceId) ? input.workspaceId : defaultWorkspaceId);
+  const block = rules && rules.length > 0 ? renderStandingRulesForTask(rules, { workspaceId: ws }) : '';
   const description = withStandingRules(input.description, block);
   return description === input.description ? input : { ...input, description };
 }
@@ -463,7 +470,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
         }
 
         // After the card check, so the approval still binds to what was shown.
-        if (isWrite && filesWork(action, op)) callInput = withRulesForFiledWork(callInput, deps.standingRules, deps.ctx.workspaceId ?? null);
+        if (isWrite && filesWork(action, op)) callInput = withRulesForFiledWork(callInput, deps.standingRules, deps.ctx.workspaceId ?? null, target?.workspaceId ?? null);
 
         const calls: ApiCall[] = [];
         const api = deps.makeApi(c => calls.push(c), { routes: routesFor(o.routes) });

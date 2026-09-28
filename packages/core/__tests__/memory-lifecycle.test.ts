@@ -26,6 +26,9 @@ import {
   runMemoryLifecycle,
   type LifecycleDeps,
   type PromotionCandidateRow,
+  cronStepBudgetMs,
+  lifecycleDeadlineMs,
+  MEMORY_LIFECYCLE_DEADLINE_MS,
 } from '../memory-lifecycle';
 import {
   MEMORY_EXTRACT_MAX_PER_RUN,
@@ -60,6 +63,15 @@ describe('promotionCandidatesQuery', () => {
     expect(sql).toContain("WHERE m.state = 'candidate' AND m.superseded_by IS NULL AND m.project IS NOT NULL");
     expect(sql).toContain('ORDER BY m.created_at ASC');
     expect(params).toContain(MEMORY_PROMOTE_MAX_PER_RUN);
+  });
+
+  it('never reads a sensitive workspace key: promotion (and the Jev shadow over the same rows) skips it', () => {
+    const q = render(promotionCandidatesQuery(500, [{ teamId: TEAM, project: 'acme/secret' }]));
+    expect(q.sql).toContain('AND (m.team_id::text, m.project) NOT IN ((');
+    expect(q.params).toEqual(expect.arrayContaining([TEAM, 'acme/secret']));
+    // No sensitive keys: no clause at all (and no empty NOT IN).
+    expect(sql).not.toContain('NOT IN (())');
+    expect(sql).not.toContain('m.project) NOT IN');
   });
 
   it('counts a merged PR only once the 72h revert window has passed', () => {
@@ -394,5 +406,16 @@ describe('runMemoryLifecycle', () => {
     expect(r.errors).toBe(1);
     expect(r.expired).toBe(4);
     expect(calls.promote).toHaveLength(0);
+  });
+});
+
+describe('cron step budgets', () => {
+  it('the lifecycle gets its own cap, or what the cron has left minus a reserve, whichever is less', () => {
+    expect(lifecycleDeadlineMs(0, 60_000)).toBe(MEMORY_LIFECYCLE_DEADLINE_MS);
+    expect(lifecycleDeadlineMs(40_000, 60_000)).toBe(15_000);
+    expect(lifecycleDeadlineMs(58_000, 60_000)).toBe(0);
+    expect(cronStepBudgetMs(15_000, 10_000, 60_000)).toBe(15_000);
+    expect(cronStepBudgetMs(15_000, 45_000, 60_000)).toBe(10_000);
+    expect(cronStepBudgetMs(15_000, -5, 60_000)).toBe(15_000);
   });
 });

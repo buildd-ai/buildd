@@ -64,6 +64,30 @@ export function sensitiveMemoryKeys(
 }
 
 /**
+ * `AND (<alias>.team_id, <alias>.project) NOT IN (...)` for these keys, or
+ * nothing. Shared by every background pass that reads memories (the index
+ * reconcile, the lifecycle's promotion), so a sensitive workspace's memories
+ * never reach an embedding provider or a decision model.
+ */
+export function excludedKeysSql(alias: string, excluded: readonly ExcludedKey[]): SQL {
+  if (excluded.length === 0) return sql``;
+  const a = sql.raw(alias);
+  return sql`AND (${a}.team_id::text, ${a}.project) NOT IN (${sql.join(excluded.map(k => sql`(${k.teamId}, ${k.project})`), sql`, `)})`;
+}
+
+/** The sensitive workspaces' memory keys, read from the database. */
+export async function loadSensitiveMemoryKeys(): Promise<ExcludedKey[]> {
+  const { db } = await import('./db');
+  const sensitive = await db.execute(sql`
+    SELECT team_id::text AS team_id, repo, name FROM workspaces WHERE data_class = 'sensitive'
+  `);
+  return sensitiveMemoryKeys(
+    (sensitive.rows as Array<{ team_id: string; repo: string | null; name: string | null }>)
+      .map(r => ({ teamId: r.team_id, repo: r.repo, name: r.name })),
+  );
+}
+
+/**
  * Rows whose chunk is missing, stale, or current despite the row being
  * superseded. The join key matches how writes are keyed: namespace
  * `{team_id}:memory`, source_id = memory id.
@@ -77,9 +101,7 @@ export function reconcileCandidatesQuery(limit: number, excluded: readonly Exclu
     OR kc.metadata->'tags' IS DISTINCT FROM to_jsonb(m.tags)
     OR kc.metadata->'files' IS DISTINCT FROM to_jsonb(m.files)
   )`;
-  const exclusion = excluded.length > 0
-    ? sql`AND (m.team_id::text, m.project) NOT IN (${sql.join(excluded.map(k => sql`(${k.teamId}, ${k.project})`), sql`, `)})`
-    : sql``;
+  const exclusion = excludedKeysSql('m', excluded);
   return sql`
     SELECT m.id, m.team_id, m.type, m.title, m.content, m.project, m.tags, m.files,
            m.superseded_by, m.index_failures,
@@ -125,13 +147,7 @@ async function getDb() {
 const dbDeps: ReconcileDeps = {
   async findCandidates(limit) {
     const db = await getDb();
-    const sensitive = await db.execute(sql`
-      SELECT team_id::text AS team_id, repo, name FROM workspaces WHERE data_class = 'sensitive'
-    `);
-    const excluded = sensitiveMemoryKeys(
-      (sensitive.rows as Array<{ team_id: string; repo: string | null; name: string | null }>)
-        .map(r => ({ teamId: r.team_id, repo: r.repo, name: r.name })),
-    );
+    const excluded = await loadSensitiveMemoryKeys();
     const res = await db.execute(reconcileCandidatesQuery(limit, excluded));
     return (res.rows as CandidateRow[]).map(r => ({
       id: r.id,
@@ -168,7 +184,16 @@ export interface ReconcileResult {
   mirrored: number;
   superseded: number;
   failed: number;
+  /** The time budget ran out before every row was tried; the rest wait for the next run. */
+  timedOut: boolean;
 }
+
+/**
+ * Time budget for one reconcile pass. It rides a cron with a 60s ceiling and
+ * each row is an embedding call, so a slow provider must end the pass early
+ * rather than the function. Checked between rows.
+ */
+export const MEMORY_RECONCILE_BUDGET_MS = 15_000;
 
 /**
  * Reconcile up to `limit` (capped) rows. One upsert per row, so one bad row
@@ -179,14 +204,21 @@ export async function reconcileMemoryIndex(opts: {
   knowledgeStore: KnowledgeStore;
   limit?: number;
   deps?: ReconcileDeps;
+  /** Default MEMORY_RECONCILE_BUDGET_MS. */
+  budgetMs?: number;
+  now?: () => number;
 }): Promise<ReconcileResult> {
   const deps = opts.deps ?? dbDeps;
+  const now = opts.now ?? (() => Date.now());
+  const deadline = now() + (opts.budgetMs ?? MEMORY_RECONCILE_BUDGET_MS);
   const limit = clampLimit(opts.limit);
   const rows = (await deps.findCandidates(limit)).slice(0, limit);
   let mirrored = 0;
   let superseded = 0;
   let failed = 0;
+  let timedOut = false;
   for (const m of rows) {
+    if (now() >= deadline) { timedOut = true; break; }
     // A replaced memory with no chunk has nothing to reconcile: embedding it
     // would only index text that no read may serve.
     if (m.supersededBy && m.chunkState === 'missing') continue;
@@ -208,5 +240,5 @@ export async function reconcileMemoryIndex(opts: {
     if (!ok) failed++;
     if (!ok || m.indexFailures > 0) await deps.recordOutcome(m.id, ok).catch(() => {});
   }
-  return { scanned: rows.length, mirrored, superseded, failed };
+  return { scanned: rows.length, mirrored, superseded, failed, timedOut };
 }

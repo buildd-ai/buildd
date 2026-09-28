@@ -49,6 +49,7 @@ import {
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
 import type { MemoryDecider, PromoteShadowItem } from './memory-decisions';
 import type { KnowledgeStore } from './knowledge-store/types';
+import { excludedKeysSql, loadSensitiveMemoryKeys, type ExcludedKey } from './memory-index-reconcile';
 
 const clampInt = (n: number, max: number): number => {
   const v = Math.floor(n);
@@ -102,7 +103,7 @@ export function memorySourceTaskSql(alias: 'm' | 'm2' | 'memories'): SQL {
  *   pre-provenance) row, from a different task. `superseded_by` is NOT
  *   evidence: an explicit or band supersede can set it from anywhere.
  */
-export function promotionCandidatesQuery(limit: number): SQL {
+export function promotionCandidatesQuery(limit: number, excluded: readonly ExcludedKey[] = []): SQL {
   const window = sql`make_interval(hours => ${PROMOTION_REVERT_WINDOW_HOURS})`;
   return sql`
     SELECT m.id, m.team_id, m.project, m.type, m.title, m.content, m.external, m.source_kind,
@@ -157,6 +158,7 @@ export function promotionCandidatesQuery(limit: number): SQL {
     WHERE m.state = 'candidate'
       AND m.superseded_by IS NULL
       AND m.project IS NOT NULL
+      ${excludedKeysSql('m', excluded)}
     ORDER BY m.created_at ASC
     LIMIT ${clampInt(limit, MEMORY_PROMOTE_MAX_PER_RUN)}
   `;
@@ -384,6 +386,23 @@ export function flagReverifySql(t: ReverifyTarget): SQL | null {
 
 /** Wall-clock budget for the whole pass, so it can never eat the cron's 60s. */
 export const MEMORY_LIFECYCLE_DEADLINE_MS = 20_000;
+/** Kept free at the end of a cron for its own report write. */
+export const CRON_TAIL_RESERVE_MS = 5_000;
+
+/**
+ * The lifecycle pass's deadline given how long the cron has already run:
+ * never more than MEMORY_LIFECYCLE_DEADLINE_MS, never past the cron's own
+ * ceiling minus a reserve. 0 means there is no time left: skip the pass.
+ */
+export function lifecycleDeadlineMs(elapsedMs: number, cronMaxMs: number): number {
+  return cronStepBudgetMs(MEMORY_LIFECYCLE_DEADLINE_MS, elapsedMs, cronMaxMs);
+}
+
+/** A step's budget: its own cap, or what the cron has left (minus the reserve), whichever is less. */
+export function cronStepBudgetMs(capMs: number, elapsedMs: number, cronMaxMs: number): number {
+  const left = cronMaxMs - CRON_TAIL_RESERVE_MS - Math.max(0, elapsedMs);
+  return Math.max(0, Math.min(capMs, left));
+}
 
 export interface FlaggedWorkspace { id: string; teamId: string; project: string }
 
@@ -473,7 +492,7 @@ function dbDeps(knowledgeStore: KnowledgeStore | null): LifecycleDeps {
       const rows = await rowsOf<{
         id: string; team_id: string; project: string | null; type: string; title: string; content: string;
         external: boolean; source_kind: string | null; merged_past_window: boolean | null; reverted: boolean | null; corroborated: boolean | null;
-      }>(promotionCandidatesQuery(limit));
+      }>(promotionCandidatesQuery(limit, await loadSensitiveMemoryKeys()));
       return rows.map(r => ({
         id: r.id, teamId: r.team_id, project: r.project, type: r.type, title: r.title, content: r.content,
         sourceKind: r.source_kind,

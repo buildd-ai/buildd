@@ -33,6 +33,7 @@ mock.module('@buildd/core/memory-index-reconcile', () => ({
     return reconcileResult;
   },
   MEMORY_RECONCILE_MAX_ROWS: 25,
+  MEMORY_RECONCILE_BUDGET_MS: 15_000,
 }));
 
 let lifecycleResult: any = { extracted: { failedTasks: 0, reviews: 0, duplicates: 0, failed: 0 }, promoted: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0 };
@@ -42,6 +43,9 @@ mock.module('@buildd/core/memory-lifecycle', () => ({
     lifecycleCalls.push(opts);
     return lifecycleResult;
   },
+  // The real budget helpers (pure), so the wiring is tested against them.
+  cronStepBudgetMs: (cap: number, elapsed: number, max: number) => Math.max(0, Math.min(cap, max - 5_000 - Math.max(0, elapsed))),
+  lifecycleDeadlineMs: (elapsed: number, max: number) => Math.max(0, Math.min(20_000, max - 5_000 - Math.max(0, elapsed))),
 }));
 const decider = { judgeLearn: async () => ({}) };
 mock.module('@/lib/memory-decisions', () => ({ memoryDeciderFor: () => decider }));
@@ -99,6 +103,18 @@ describe('feedback-digest cron: memory lifecycle', () => {
     expect(body.memoryLifecycle).toEqual(lifecycleResult);
     expect(lastReport.result.memoryLifecycle).toEqual(lifecycleResult);
     expect(lastReport.errors).toBeUndefined();
+  });
+
+  it('bounds both passes: reconcile by its time budget, the lifecycle by what the cron has left', async () => {
+    reconcileCalls.length = 0;
+    lifecycleCalls.length = 0;
+    await call();
+    const r = reconcileCalls.at(-1) as { budgetMs: number };
+    const l = lifecycleCalls.at(-1) as { deadlineMs: number };
+    expect(r.budgetMs).toBeGreaterThan(0);
+    expect(r.budgetMs).toBeLessThanOrEqual(15_000);
+    expect(l.deadlineMs).toBeGreaterThan(0);
+    expect(l.deadlineMs).toBeLessThanOrEqual(20_000);
   });
 
   it('counts failed lifecycle steps as run errors', async () => {

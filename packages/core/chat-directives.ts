@@ -201,9 +201,40 @@ export function renderStandingRulesForTask(
   return `${TASK_RULES_HEADING}\nThe person who asked for this in chat saved these rules. Follow them unless this task says otherwise.\n${body}`;
 }
 
-/** The description with the rules block added once. Unchanged when there is nothing to add or it is already there. */
+/**
+ * A line that opens a rules block: the heading, in any heading level or case,
+ * with or without the "(from chat)" suffix. Matched loosely on purpose: a
+ * look-alike must not survive to be read as the real thing.
+ */
+const RULES_HEADING_LINE = /^[ \t]*#{1,6}[ \t]*standing rules\b.*$/i;
+/** The lines a rules block holds after its heading: the lead sentence, list items, the "not shown" line. */
+const RULES_BODY_LINE = /^[ \t]*(?:-[ \t].*|\(\d+ older rules? not shown\..*\)|The person who asked for this in chat saved these rules\..*)?$/i;
+
+/**
+ * The description with every rules block removed. The description arrives
+ * from the model, so a block already in it is never trusted: it could forge
+ * rules, or stand in for the real ones to suppress them.
+ */
+export function stripStandingRules(description: string): string {
+  const out: string[] = [];
+  let inBlock = false;
+  for (const line of description.split('\n')) {
+    if (RULES_HEADING_LINE.test(line)) { inBlock = true; continue; }
+    if (inBlock && RULES_BODY_LINE.test(line) && line.trim() !== '') continue;
+    inBlock = false;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * The description with any model-supplied rules block stripped and the
+ * server-rendered block appended. The appended block is the only one that
+ * survives, whatever the description contained.
+ */
 export function withStandingRules(description: unknown, block: string): string | undefined {
-  const base = typeof description === 'string' ? description : undefined;
-  if (!block || base?.includes(TASK_RULES_HEADING)) return base;
+  const raw = typeof description === 'string' ? description : undefined;
+  const base = raw !== undefined && raw.split('\n').some(l => RULES_HEADING_LINE.test(l)) ? stripStandingRules(raw) : raw;
+  if (!block) return base;
   return base && base.trim() ? `${base.trimEnd()}\n\n${block}` : block;
 }
