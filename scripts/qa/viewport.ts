@@ -10,6 +10,7 @@ const DESKTOP: BrowserContextOptions = { viewport: { width: 1280, height: 900 } 
  *
  *   unset / ''  → 1280x900 desktop (the historical default)
  *   'mobile'    → 390x844 touch phone
+ *   'desktop'   → 1280x900 (alias for the default, for symmetry with 'mobile')
  *   'WxH'       → that size; below 768px wide it also emulates a touch phone
  *
  * A malformed value throws: a typo must not quietly produce desktop shots
@@ -19,12 +20,15 @@ export function resolveViewport(raw: string | undefined): BrowserContextOptions 
   const value = (raw ?? '').trim().toLowerCase();
   if (!value) return DESKTOP;
   if (value === 'mobile') return phone(390, 844);
+  if (value === 'desktop') return DESKTOP;
 
   const match = /^(\d+)x(\d+)$/.exec(value);
   const width = match ? Number(match[1]) : 0;
   const height = match ? Number(match[2]) : 0;
   if (!width || !height) {
-    throw new Error(`QA_VIEWPORT must be "mobile" or WIDTHxHEIGHT (e.g. 390x844), got "${raw}"`);
+    throw new Error(
+      `QA_VIEWPORT must be "mobile", "desktop", or WIDTHxHEIGHT (e.g. 390x844), got "${raw}"`,
+    );
   }
   return width < MOBILE_MAX_WIDTH ? phone(width, height) : { viewport: { width, height } };
 }

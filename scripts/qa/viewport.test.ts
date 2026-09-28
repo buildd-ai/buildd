@@ -29,6 +29,10 @@ describe('resolveViewport', () => {
     expect(resolveViewport('1440x900')).toEqual({ viewport: { width: 1440, height: 900 } });
   });
 
+  test('"desktop" is an alias for the 1280x900 default', () => {
+    expect(resolveViewport('desktop')).toEqual({ viewport: { width: 1280, height: 900 } });
+  });
+
   test('rejects malformed values instead of silently shooting desktop', () => {
     expect(() => resolveViewport('390')).toThrow(/QA_VIEWPORT/);
     expect(() => resolveViewport('0x844')).toThrow(/QA_VIEWPORT/);

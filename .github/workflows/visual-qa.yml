@@ -29,7 +29,7 @@ on:
         required: false
         default: ""
       viewport:
-        description: "'mobile' (390x844 touch) or WIDTHxHEIGHT. Empty = 1280x900 desktop."
+        description: "'mobile' (390x844 touch), 'desktop', or WIDTHxHEIGHT. Empty = 1280x900 desktop."
         type: string
         required: false
         default: ""
@@ -302,6 +302,7 @@ jobs:
       # path stays report-only.
       - name: Capture screenshots and a11y snapshots
         continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
+        timeout-minutes: 10
         run: bun scripts/qa/capture.ts
         env:
           QA_BASE_URL: ${{ env.QA_BASE_URL }}
