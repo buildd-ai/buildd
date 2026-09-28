@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { KIT_CSS_VARS, KIT_SHEET_QUERY } from './index';
+import { KIT_CSS_VARS, KIT_MENU_FIT_VARS, KIT_SHEET_QUERY } from './index';
 import { greeting, thinkingSteps, tierLabel, toolRowLabel, toolSummary } from './model';
 
 const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -23,7 +23,7 @@ describe('theme.css', () => {
 describe('styles.css', () => {
   it('reads only the declared --kit-* variables', () => {
     const used = new Set([...styles.matchAll(/var\((--kit-[a-z-]+)/g)].map(m => m[1]));
-    expect([...used].filter(v => !(KIT_CSS_VARS as readonly string[]).includes(v))).toEqual([]);
+    expect([...used].filter(v => !([...KIT_CSS_VARS, ...KIT_MENU_FIT_VARS] as readonly string[]).includes(v))).toEqual([]);
     expect(used.size).toBeGreaterThan(5);
   });
   it('defines no variables of its own and no literal colours: every colour comes from the theme', () => {
@@ -37,6 +37,9 @@ describe('styles.css', () => {
     const rule = (sel: string) => styles.match(new RegExp(`(?:^|\\n)${sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
     expect(rule('.kit-menu-panel')).toMatch(/width:\s*max-content/);
     expect(rule('.kit-menu-panel')).toMatch(/max-width:\s*min\(92vw, 380px\)/);
+    // 0.9.1: capped to the room `Menu` measures, nudged off an edge.
+    expect(rule('.kit-menu-panel')).toMatch(/max-height:\s*min\(70vh, 520px, var\(--kit-menu-room, 100vh\)\)/);
+    expect(rule('.kit-menu-panel')).toMatch(/translate:\s*var\(--kit-menu-shift, 0\)/);
     expect(rule('.kit-row > .kit-toggle, .kit-row > .kit-row-lock')).toMatch(/flex:\s*none/);
     expect(rule('.kit-row > .kit-row-label')).toMatch(/min-width:\s*0/);
     // The phone sheet stays full width.
