@@ -47,10 +47,16 @@ describe('VisualReviewLine', () => {
     expect(renderToStaticMarkup(<VisualReviewLine model={buildVisualReviewFixtureModel('queued')} />)).not.toContain('data-dot=');
   });
 
-  it('re-exports the copy and gives attention phases a loud tone', () => {
+  it('re-exports the copy; needs you is the accent, broken is red, blocked is a warning', () => {
     expect(visualReviewPhaseCopy).toBe(describeVisualPhase);
-    expect(visualPhaseTone('no_browser_runner')).toBe('attention');
-    expect(visualPhaseTone('needs_you')).toBe('attention');
+    expect(visualPhaseTone('needs_you')).toBe('needs');
+    expect(visualPhaseTone('no_browser_runner')).toBe('blocked');
+    expect(visualPhaseTone('boot_failed')).toBe('attention');
+    expect(visualPhaseTone('failed')).toBe('attention');
+    expect(visualPhaseTone('stalled')).toBe('attention');
+    const needs = renderToStaticMarkup(<VisualReviewLine model={buildVisualReviewFixtureModel('needs_you')} />);
+    expect(needs).toContain('text-accent-text');
+    expect(needs).not.toContain('text-status-error');
     expect(visualPhaseTone('reviewed')).toBe('done');
     expect(visualPhaseTone('off')).toBe('quiet');
   });

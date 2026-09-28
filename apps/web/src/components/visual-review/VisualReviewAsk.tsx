@@ -110,7 +110,7 @@ export default function VisualReviewAsk({ model, onReview, onAnswer, answerOptio
       data-testid="visual-review-ask"
       data-reason={reason}
       aria-label="Visual review needs you"
-      className={`border-2 border-l-[6px] border-border-strong border-l-status-info bg-card p-4 shadow-[var(--card-shadow)] ${className}`}
+      className={`border-2 border-l-[6px] border-border-strong border-l-accent bg-card p-4 shadow-[var(--card-shadow)] ${className}`}
     >
       <p className="section-label mb-1.5">{heading}</p>
       {reason === 'question' ? (

@@ -140,7 +140,8 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
 export default function VisualReviewTray({ model, onReview, actions, hideLine = false, className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
   const s = model.summary;
-  const unreviewed = s.unreviewed;
+  // One count across the Line, the Ask and this button: screens awaiting you.
+  const awaiting = s.awaitingHuman;
   const reviewButton = onReview && model.cells.length > 0 ? (
     <button
       type="button"
@@ -148,7 +149,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
       onClick={() => onReview(model.queue[0] ?? null)}
       className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY} shrink-0`}
     >
-      {unreviewed > 0 ? `Review ${unreviewed}` : 'Open screens'}
+      {awaiting > 0 ? `Review ${awaiting}` : `All ${model.cells.length} screens`}
     </button>
   ) : null;
 

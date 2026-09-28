@@ -19,7 +19,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
 const { default: VisualReviewDeck, swipeStep, verdictEffects } = await import('./VisualReviewDeck');
-const { useVisualReviewDecisions, VisualReviewRequestError } = await import('./review-transport');
+const { useVisualReviewDecisions, VisualReviewRequestError, applyOptimisticDecision } = await import('./review-transport');
 const { createFixtureVisualReviewTransport } = await import('./fixture-transport');
 type Transport = import('./review-transport').VisualReviewTransport;
 type DecideInput = import('./review-transport').DecideInput;
@@ -149,12 +149,83 @@ describe('deciding', () => {
     expect(onDecide.mock.calls[0][0]).toMatchObject({ decision: 'needs_fix', note: 'Drop the second heading.' });
   });
 
-  it('Needs fix on an issue leaves the note empty (it only adds guidance)', () => {
-    renderDeck({ startKey: '/app/settings|desktop|' });
+  it('agreeing with an issue is one tap (button or N); a note is optional from the toast', async () => {
+    const { onDecide } = renderDeck({ startKey: '/app/settings|desktop|' });
     act(() => q('deck-needs-fix')!.click());
-    expect((q('deck-note') as HTMLInputElement).value).toBe('');
-    act(() => q('deck-note-cancel')!.click());
+    await flush();
     expect(q('deck-note')).toBeNull();
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide.mock.calls[0][0]).toMatchObject({ decision: 'needs_fix' });
+    expect(onDecide.mock.calls[0][0].cells.map(c => c.key)).toEqual(['/app/settings|desktop|']);
+    expect('note' in onDecide.mock.calls[0][0]).toBe(false);
+    // The optional guidance, from the undo toast.
+    act(() => q('deck-add-note')!.click());
+    const note = q('deck-note') as HTMLInputElement;
+    expect(note.value).toBe('');
+    typeInto(note, 'Keep the save bar sticky.');
+    act(() => { note.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(onDecide).toHaveBeenCalledTimes(2);
+    expect(onDecide.mock.calls[1][0]).toMatchObject({ decision: 'needs_fix', note: 'Keep the save bar sticky.' });
+    expect(onDecide.mock.calls[1][0].cells.map(c => c.key)).toEqual(['/app/settings|desktop|']);
+  });
+
+  it('N on an issue decides at once too', async () => {
+    const { onDecide } = renderDeck({ startKey: '/app/settings|desktop|' });
+    key('n');
+    await flush();
+    expect(q('deck-note')).toBeNull();
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide.mock.calls[0][0].decision).toBe('needs_fix');
+  });
+
+  it('Needs fix on an ok screen opens an empty note that needs text to file', () => {
+    const { onDecide } = renderDeck({ startKey: '/app/missions/:id|desktop|' });
+    expect(focused()).toBe('/app/missions/:id|desktop|');
+    act(() => q('deck-needs-fix')!.click());
+    const note = q('deck-note') as HTMLInputElement;
+    expect(note.value).toBe('');
+    expect((q('deck-note-submit') as HTMLButtonElement).disabled).toBe(true);
+    typeInto(note, 'The band is cut off.');
+    expect((q('deck-note-submit') as HTMLButtonElement).disabled).toBe(false);
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it('Looks right on an issue says what happens to the fix, by its status', () => {
+    const withFix = (status: string) => {
+      const m = deckModel();
+      return { ...m, cells: m.cells.map(c => (c.key === '/app/settings|desktop|' && c.current.fixTask ? { ...c, current: { ...c.current, fixTask: { ...c.current.fixTask, status } } } : c)) };
+    };
+    const copyFor = (status: string) => {
+      act(() => root.render(<VisualReviewDeck key={status} model={withFix(status)} layout="sheet" startKey="/app/settings|desktop|" onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
+      return q('deck-looks-right')!.textContent;
+    };
+    expect(copyFor('pending')).toContain('Not a bug, drop the fix');
+    expect(copyFor('in_progress')).toContain('Not a bug, tell the fix to stop');
+    expect(copyFor('running')).toContain('Not a bug, tell the fix to stop');
+    expect(copyFor('completed')).not.toContain('fix');
+    expect(copyFor('completed')).toContain('Not a bug');
+  });
+
+  it('the toast reports what the server did with the fix', async () => {
+    const guided = mock(async (input: DecideInput): Promise<DecideResult> => ({ ok: true, reviewIds: input.cells.map(() => 'g1'), fixTaskId: null, cancelledFixTaskId: null, guidanceTaskId: 'fix-a' }));
+    renderDeck({ startKey: '/app/settings|desktop|', onDecide: guided });
+    key('y');
+    await flush();
+    expect(q('deck-toast')!.textContent).toContain('running fix told to stop');
+
+    const dropped = mock(async (input: DecideInput): Promise<DecideResult> => ({ ok: true, reviewIds: input.cells.map(() => 'd1'), fixTaskId: null, cancelledFixTaskId: 'fix-a', guidanceTaskId: null }));
+    act(() => root.render(<VisualReviewDeck key="b" model={deckModel()} layout="sheet" startKey="/app/settings|desktop|" onDecide={dropped} onUndo={async () => ({ ok: true })} />));
+    key('y');
+    await flush();
+    expect(q('deck-toast')!.textContent).toContain('fix dropped');
+  });
+
+  it('apply-to-both names the other viewport and, when they differ, what the agent said', () => {
+    renderDeck();
+    const label = (q('deck-apply-both') as HTMLInputElement).closest('label')!.textContent;
+    expect(label).toContain('Also apply to desktop');
+    expect(label).toContain('agent: ok');
   });
 
   it('shows a 5 second undo; the button and U undo the decision just made', async () => {
@@ -213,6 +284,10 @@ describe('deciding', () => {
     expect(q('compare-fix')!.textContent).toContain('Header title overflows');
     expect(q('compare-fix')!.textContent).toContain('PR #1');
     expect(q('visual-review-deck')!.dataset.swipe).toBe('off');
+    // The phone round chip sits above the frame, never over the screenshot.
+    const chip = q('compare-showing')!;
+    expect(chip.closest('[data-testid="compare-phone-frame"]')).toBeNull();
+    expect(q('compare-phone-frame')!.querySelector('[data-testid="visual-review-img"]')).not.toBeNull();
     key('c');
     expect(q('visual-review-compare')).toBeNull();
     expect(q('visual-review-deck')!.dataset.swipe).toBe('on');
@@ -259,18 +334,72 @@ describe('layout', () => {
 
 describe('optimistic apply with rollback', () => {
   it('a 409 stale re-renders the returned cell and is not retried', async () => {
-    const t = createFixtureVisualReviewTransport('needs_you', { needsYou: 'unsure', scenario: 'deck' }, { staleOnce: true });
-    const decide = mock(t.decide);
-    const transport: Transport = { decide, undo: t.undo };
-    act(() => root.render(<Connected transport={transport} model={t.model()} />));
+    const m = deckModel();
+    const target = '/app/missions/:id|mobile|';
+    // The server's fresh model: the agent re-judged the screen as an issue.
+    const fresh: VisualReviewModel = {
+      ...m,
+      generatedAt: new Date(Date.parse(m.generatedAt) + 1000).toISOString(),
+      cells: m.cells.map(c => (c.key === target ? { ...c, effectiveVerdict: 'issue', needsHuman: false, current: { ...c.current, agentVerdict: 'issue', finding: 'Re-judged: the second heading is a bug.' } } : c)),
+    };
+    const decide = mock(async () => {
+      throw new VisualReviewRequestError(409, { error: 'stale', stale: true, cells: fresh.cells.filter(c => c.key === target), model: fresh });
+    });
+    const transport: Transport = { decide, undo: async () => { throw new Error('unused'); } };
+    act(() => root.render(<Connected transport={transport} model={m} />));
+    expect(q('deck-looks-right')!.dataset.effect).toBe('waive');
     key('y');
     await flush();
     expect(decide).toHaveBeenCalledTimes(1);
     expect(q('deck-notice')!.textContent).toContain('changed while you looked');
-    expect(focused()).toBe('/app/missions/:id|mobile|');
-    expect(q('deck-progress')!.textContent).toBe(`1 of ${t.model().cells.length} reviewed`);
+    expect(focused()).toBe(target);
+    const finding = document.querySelector<HTMLElement>('[data-focused-shot="true"] [data-testid="deck-finding"]')!;
+    expect(finding.textContent).toBe('Re-judged: the second heading is a bug.');
+    expect(q('deck-looks-right')!.dataset.effect).toBe('dispute');
+    expect(q('deck-needs-fix')!.dataset.effect).toBe('agree');
     await flush();
     expect(decide).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the newest server model when two decisions resolve out of order', async () => {
+    const m = deckModel();
+    const a = m.cells.find(c => c.key === '/app/missions/:id|mobile|')!;
+    const b = m.cells.find(c => c.key === '/app/missions/:id|desktop|')!;
+    const t0 = Date.parse(m.generatedAt);
+    // A commits first, so its model has only A; B's model has both.
+    const modelA = { ...applyOptimisticDecision(m, { cells: [a], decision: 'looks_right' }, 'a').model, generatedAt: new Date(t0 + 1000).toISOString() };
+    const modelB = { ...applyOptimisticDecision(modelA, { cells: [b], decision: 'looks_right' }, 'b').model, generatedAt: new Date(t0 + 2000).toISOString() };
+    const resolvers: Record<string, () => void> = {};
+    const transport: Transport = {
+      decide: req => new Promise((res) => {
+        const which = req.artifactIds[0] === a.current.shot.id ? 'a' : 'b';
+        const model = which === 'a' ? modelA : modelB;
+        resolvers[which] = () => res({ reviews: [], fixTaskId: null, cancelledFixTaskId: null, guidanceTaskId: null, model });
+      }),
+      undo: async () => { throw new Error('unused'); },
+    };
+    let seen: VisualReviewModel | null = null;
+    const adopted: string[] = [];
+    function Probe() {
+      const d = useVisualReviewDecisions(m, transport, { onModel: mm => adopted.push(mm.generatedAt) });
+      seen = d.model;
+      return <VisualReviewDeck model={d.model} layout="sheet" onDecide={d.decide} onUndo={d.undo} />;
+    }
+    act(() => root.render(<Probe />));
+    key('y');
+    await flush();
+    key('y');
+    await flush();
+    await act(async () => { resolvers.b(); });
+    await flush();
+    await act(async () => { resolvers.a(); });
+    await flush();
+    const reviewed = (k: string) => !!seen!.cells.find(c => c.key === k)!.current.review;
+    expect(reviewed(a.key)).toBe(true);
+    expect(reviewed(b.key)).toBe(true);
+    expect(seen!.generatedAt).toBe(modelB.generatedAt);
+    // The late, older model was not handed on either.
+    expect(adopted).toEqual([modelB.generatedAt]);
   });
 
   it('applies at once, then rolls back when the server fails', async () => {

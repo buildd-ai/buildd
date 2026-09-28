@@ -13,7 +13,7 @@
 import { useState } from 'react';
 import type { VisualReviewCell, VisualReviewCellEntry, VisualReviewFixTask } from '@buildd/shared';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL } from './ShotImage';
-import { BTN_BASE, BTN_SECONDARY, CHIP } from './review-ui';
+import { BTN_BASE, BTN_SECONDARY } from './review-ui';
 
 export interface VisualShotCompareProps {
   cell: VisualReviewCell;
@@ -150,10 +150,13 @@ export default function VisualShotCompare({ cell, fixTaskHref, className = '' }:
         >
           {holding ? `Showing before, round ${before.round}` : 'Press and hold to see before'}
         </button>
-        <div className="relative select-none border-2 border-border-strong bg-surface-3" {...hold}>
-          <span data-testid="compare-showing" className={`absolute left-2 top-2 z-10 ${CHIP} border-border-strong bg-surface-1 text-text-primary`}>
+        {/* The round chip sits above the frame: headers and titles live at the top left of most screens. */}
+        <p className="-mb-1.5 flex items-center gap-2">
+          <span data-testid="compare-showing" className={`inline-flex items-center border px-1.5 py-px font-mono text-[11px] uppercase tracking-[1px] ${holding ? 'border-text-primary bg-text-primary text-surface-1' : 'border-border-strong bg-surface-1 text-text-primary'}`}>
             {holding ? `Before, round ${before.round}` : `After, round ${after.round}`}
           </span>
+        </p>
+        <div data-testid="compare-phone-frame" className="select-none border-2 border-border-strong bg-surface-3" {...hold}>
           <ShotImage shot={shown.shot} alt={`${holding ? 'Before' : 'After'}: round ${shown.round}`} large eager className="block h-auto w-full" />
         </div>
       </div>

@@ -223,6 +223,13 @@ export function applyOptimisticUndo(model: VisualReviewModel, reviewIds: readonl
 
 // ── The hook ────────────────────────────────────────────────────────────────
 
+/** True when `m` was built no earlier than `cur` (by `generatedAt`). An unparseable time is adopted. */
+export function isNewerOrSame(m: VisualReviewModel, cur: VisualReviewModel): boolean {
+  const a = Date.parse(m.generatedAt);
+  const b = Date.parse(cur.generatedAt);
+  return Number.isNaN(a) || Number.isNaN(b) || a >= b;
+}
+
 export type DecideResult =
   | { ok: true; reviewIds: string[]; fixTaskId: string | null; cancelledFixTaskId: string | null; guidanceTaskId: string | null }
   | { ok: false; reason: 'stale' | 'round_ceiling' | 'not_in_mission' | 'error'; message: string };
@@ -276,7 +283,14 @@ export function useVisualReviewDecisions(
 
   const view = useMemo(() => ops.reduce(applyOp, server), [server, ops]);
 
+  // Responses can land out of order (two quick taps, or a stale body after a
+  // newer success). Keep whichever model the server built last, not whichever
+  // arrived last, so a decision that already landed never drops out again.
+  const serverRef = useRef(server);
+  serverRef.current = server;
   const adopt = useCallback((m: VisualReviewModel) => {
+    if (!isNewerOrSame(m, serverRef.current)) return;
+    serverRef.current = m;
     setServer(m);
     onModel.current?.(m);
   }, []);

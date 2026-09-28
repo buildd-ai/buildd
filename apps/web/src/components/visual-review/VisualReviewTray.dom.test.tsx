@@ -69,12 +69,22 @@ describe('VisualReviewTray with shots', () => {
     const onReview = mock((_k: string | null) => {});
     render(<VisualReviewTray model={model} onReview={onReview} />);
     const btn = q('visual-review-review-button')!;
-    expect(btn.textContent).toContain(`Review ${model.summary.unreviewed}`);
+    // The same count the Line and the Ask use: screens awaiting you.
+    expect(model.summary.awaitingHuman).toBeGreaterThan(0);
+    expect(model.summary.unreviewed).not.toBe(model.summary.awaitingHuman);
+    expect(btn.textContent).toContain(`Review ${model.summary.awaitingHuman}`);
     act(() => btn.click());
     expect(onReview).toHaveBeenLastCalledWith(model.queue[0]);
     const thumb = qa('visual-review-thumb')[2];
     act(() => thumb.click());
     expect(onReview).toHaveBeenLastCalledWith(thumb.dataset.cell!);
+  });
+
+  it('with nothing awaiting you the button offers the screens, not a review count', () => {
+    const done = buildVisualReviewFixtureModel('reviewed');
+    expect(done.summary.awaitingHuman).toBe(0);
+    render(<VisualReviewTray model={done} onReview={() => {}} />);
+    expect(q('visual-review-review-button')!.textContent).toBe(`All ${done.cells.length} screens`);
   });
 
   it('with no callback there is nothing to click', () => {

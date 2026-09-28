@@ -15,17 +15,24 @@ import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
 
-export type VisualReviewTone = 'attention' | 'working' | 'done' | 'quiet';
+export type VisualReviewTone = 'needs' | 'attention' | 'blocked' | 'working' | 'done' | 'quiet';
 
-/** How loud a phase is. Colour is for the label text and the dots only. */
+/**
+ * How loud a phase is. Colour is for the label text and the dots only.
+ * `needs` is the accent (the agent is asking, nothing broke), matching the
+ * board's Needs-you tile; red is kept for a run that broke, and a missing
+ * browser runner is blocked rather than broken.
+ */
 export function visualPhaseTone(phase: VisualReviewPhase): VisualReviewTone {
   switch (phase) {
     case 'needs_you':
-    case 'no_browser_runner':
+      return 'needs';
     case 'boot_failed':
     case 'stalled':
     case 'failed':
       return 'attention';
+    case 'no_browser_runner':
+      return 'blocked';
     case 'capturing':
     case 'fixing':
       return 'working';
@@ -37,7 +44,9 @@ export function visualPhaseTone(phase: VisualReviewPhase): VisualReviewTone {
 }
 
 const TONE_TEXT: Record<VisualReviewTone, string> = {
+  needs: 'text-accent-text',
   attention: 'text-status-error',
+  blocked: 'text-status-warning',
   working: 'text-status-warning',
   done: 'text-status-success',
   quiet: 'text-text-secondary',

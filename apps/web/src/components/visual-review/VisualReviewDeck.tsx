@@ -9,10 +9,12 @@
  *   fixed when the deck opens, so a decision never reshuffles what is next.
  * - Two buttons whatever the agent said, **Looks right** and **Needs fix**.
  *   What each does follows the agent's verdict (`verdictEffects`); the server
- *   derives it again and builds any fix title. Needs fix opens a one-line
- *   note, prefilled with the finding when it files a fix.
- * - Apply to both viewports, on by default when their verdicts match: one
- *   request, so one fix.
+ *   derives it again and builds any fix title. Agreeing with an issue is one
+ *   tap (an optional note from the toast); filing a fix opens a one-line note,
+ *   prefilled with the finding only when the agent was unsure. On an issue,
+ *   Looks right names what happens to the fix by its status (`effectCopy`).
+ * - Also apply to the other viewport (named, with the agent's verdict when
+ *   it differs), on by default when their verdicts match: one request, so one fix.
  * - Every decision shows a five-second Undo. At the end of the queue, one
  *   batch action accepts every screen the agent marked fine.
  * - Keys: Y looks right, N needs fix, J/K next and previous, C compare,
@@ -60,6 +62,38 @@ export const EFFECT_COPY: Record<VisualQaVerdict, Record<VisualReviewDecision, s
   issue: { looks_right: 'Not a bug, drop the fix', needs_fix: 'Agree, keep the fix' },
   unsure: { looks_right: 'Fine as it is', needs_fix: 'File a fix' },
 };
+
+const FIX_OVER = new Set(['completed', 'cancelled', 'failed']);
+
+/** Where the cell's fix is, as far as a waive can act on it (the decisions route's rule). */
+export function fixStage(cell: VisualReviewCell): 'none' | 'pending' | 'running' | 'over' {
+  const fix = cell.current.fixTask;
+  if (!fix) return 'none';
+  if (fix.mergedAt || FIX_OVER.has(fix.status)) return 'over';
+  return fix.status === 'pending' ? 'pending' : 'running';
+}
+
+/**
+ * The line under each button for this cell. On an issue, Looks right only
+ * cancels a fix that has not started; a running fix is told to stop (a
+ * guidance note), and a finished one is left alone.
+ */
+export function effectCopy(cell: VisualReviewCell): Record<VisualReviewDecision, string> {
+  const verdict = cell.current.agentVerdict;
+  if (verdict !== 'issue') return EFFECT_COPY[verdict];
+  const stage = fixStage(cell);
+  return {
+    looks_right: stage === 'pending' ? 'Not a bug, drop the fix' : stage === 'running' ? 'Not a bug, tell the fix to stop' : 'Not a bug',
+    needs_fix: stage === 'none' ? 'Agree with the agent' : 'Agree, keep the fix',
+  };
+}
+
+/** What the server did with a fix, for the undo toast. */
+function outcomeSuffix(r: Extract<DecideResult, { ok: true }>): string {
+  if (r.cancelledFixTaskId) return ', fix dropped';
+  if (r.guidanceTaskId) return ', running fix told to stop';
+  return '';
+}
 
 const DECISION_WORDS: Record<VisualReviewDecision, string> = { looks_right: 'looks right', needs_fix: 'needs fix' };
 const RELATION_WORDS: Record<VisualReviewRelation, string> = { agree: 'agreed', dispute: 'disagreed', waive: 'waived' };
@@ -110,7 +144,16 @@ interface Toast {
   id: number;
   label: string;
   keys: string[];
+  cells: VisualReviewCell[];
+  decision: VisualReviewDecision;
   result: Promise<DecideResult>;
+  at: { index: number; viewport: VisualQaViewport };
+}
+
+/** An optional note for a fix the reviewer already agreed with (sent as a re-decision). */
+interface Guidance {
+  cells: VisualReviewCell[];
+  label: string;
   at: { index: number; viewport: VisualQaViewport };
 }
 
@@ -165,6 +208,7 @@ function DeckInner({
   const sibling = group && focused ? groupCellsOf(group).find(c => c.key !== focused.key) : undefined;
 
   const [note, setNote] = useState<string | null>(null);
+  const [guidance, setGuidance] = useState<Guidance | null>(null);
   const [applyBoth, setApplyBoth] = useState<boolean | null>(null);
   const [comparing, setComparing] = useState(initialCompare && !!focused && focused.history.length > 1);
   const [zoomed, setZoomed] = useState(false);
@@ -183,7 +227,7 @@ function DeckInner({
   const go = useCallback((index: number, prefer?: string | null) => {
     const i = Math.max(0, Math.min(groups.length, index));
     setPos({ index: i, viewport: focusIn(groups[i], prefer) });
-    setNote(null);
+    setNote(null); setGuidance(null);
     setApplyBoth(null);
     setComparing(false);
     setZoomed(false);
@@ -210,7 +254,7 @@ function DeckInner({
     const rest = here ? groupCellsOf(here).find(c => !done(c)) : undefined;
     if (rest) {
       setPos({ index: pos.index, viewport: rest.viewport });
-      setNote(null);
+      setNote(null); setGuidance(null);
       setApplyBoth(null);
       setComparing(false);
       setZoomed(false);
@@ -240,14 +284,20 @@ function DeckInner({
       return last && last.ok ? { ...last, reviewIds: ids } : { ok: false as const, reason: 'error' as const, message: 'Nothing was saved.' };
     })();
     const id = ++toastSeq.current;
-    setToast({ id, label, keys, result, at: from });
+    setToast({ id, label, keys, cells, decision, result, at: from });
     void result.then((r) => {
-      if (!mounted.current || r.ok) return;
+      if (!mounted.current) return;
+      if (r.ok) {
+        // Say what the server actually did with the fix.
+        const suffix = outcomeSuffix(r);
+        if (suffix) setToast(cur => (cur?.id === id ? { ...cur, label: `${cur.label}${suffix}` } : cur));
+        return;
+      }
       setDecided(prev => { const s = new Set(prev); keys.forEach(k => s.delete(k)); return s; });
       setToast(cur => (cur?.id === id ? null : cur));
       setNotice(r.message);
       setPos(from);
-      setNote(null);
+      setNote(null); setGuidance(null);
     });
     return new Set(keys);
   }, [onDecide]);
@@ -261,10 +311,45 @@ function DeckInner({
     advanceAfter(keys);
   }, [focused, sibling, both, submit, advanceAfter, pos.index]);
 
-  const openNote = useCallback(() => {
+  /**
+   * Needs fix. Agreeing with an issue is one tap: the fix exists, a note is
+   * optional (from the toast). Filing a fix opens the one-line note, prefilled
+   * with the finding only when the agent was unsure (an ok finding says what
+   * is right, not what to change).
+   */
+  const needsFix = useCallback(() => {
     if (!focused) return;
-    setNote(focused.current.agentVerdict === 'issue' ? '' : focused.current.finding);
-  }, [focused]);
+    if (focused.current.agentVerdict === 'issue') { decide('needs_fix'); return; }
+    setGuidance(null);
+    setNote(focused.current.agentVerdict === 'unsure' ? focused.current.finding : '');
+  }, [focused, decide]);
+
+  /** Add guidance to the fix just agreed with: back to that screen, an empty note. */
+  const addNote = useCallback(() => {
+    const t = toast;
+    if (!t) return;
+    setToast(null);
+    setPos(t.at);
+    setComparing(false);
+    setZoomed(false);
+    setGuidance({ cells: t.cells, label: t.label, at: t.at });
+    setNote('');
+  }, [toast]);
+
+  const submitNote = useCallback((text: string) => {
+    setNote(null);
+    const g = guidance;
+    setGuidance(null);
+    if (g) {
+      // A re-decision with the note: the server supersedes and appends it as guidance.
+      submit(g.cells, 'needs_fix', text, `${g.label}, note added`, g.at);
+      advanceAfter(new Set(g.cells.map(c => c.key)));
+      return;
+    }
+    decide('needs_fix', text);
+  }, [guidance, submit, advanceAfter, decide]);
+
+  const closeNote = useCallback(() => { setNote(null); setGuidance(null); }, []);
 
   const okLeft = useMemo(() => model.cells.filter(c => !isDone(c) && c.current.agentVerdict === 'ok'), [model.cells, isDone]);
   const othersLeft = useMemo(() => model.cells.filter(c => !isDone(c) && c.current.agentVerdict !== 'ok'), [model.cells, isDone]);
@@ -285,7 +370,7 @@ function DeckInner({
     if (u.ok) {
       setDecided(prev => { const s = new Set(prev); t.keys.forEach(k => s.delete(k)); return s; });
       setPos(t.at);
-      setNote(null);
+      setNote(null); setGuidance(null);
       setComparing(false);
       setFlash('Undone.');
     } else {
@@ -300,13 +385,13 @@ function DeckInner({
   }, [focused]);
 
   // Keys. Typing in the note is never a shortcut.
-  const keyState = useRef({ decide, openNote, next, prev, toggleCompare, undo, note, comparing, atEnd, onClose, layout, focused });
-  keyState.current = { decide, openNote, next, prev, toggleCompare, undo, note, comparing, atEnd, onClose, layout, focused };
+  const keyState = useRef({ decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused });
+  keyState.current = { decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused };
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const s = keyState.current;
       if (e.key === 'Escape') {
-        if (s.note !== null) { e.preventDefault(); setNote(null); return; }
+        if (s.note !== null) { e.preventDefault(); s.closeNote(); return; }
         if (s.comparing) { e.preventDefault(); setComparing(false); return; }
         if (s.layout === 'sheet' && s.onClose) { e.preventDefault(); s.onClose(); }
         return;
@@ -316,7 +401,7 @@ function DeckInner({
       const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       const act = (fn: () => void) => { e.preventDefault(); fn(); };
       if ((k === 'y') && s.focused && !s.atEnd) act(() => s.decide('looks_right'));
-      else if (k === 'n' && s.focused && !s.atEnd) act(s.openNote);
+      else if (k === 'n' && s.focused && !s.atEnd) act(s.needsFix);
       else if (k === 'j' || k === 'ArrowRight') act(s.next);
       else if (k === 'k' || k === 'ArrowLeft') act(s.prev);
       else if (k === 'c') act(s.toggleCompare);
@@ -419,7 +504,7 @@ function DeckInner({
               type="button"
               data-testid={`deck-viewport-${c.viewport}`}
               aria-pressed={c.key === focused.key}
-              onClick={() => { setPos({ index: pos.index, viewport: c.viewport }); setZoomed(false); setNote(null); }}
+              onClick={() => { setPos({ index: pos.index, viewport: c.viewport }); setZoomed(false); closeNote(); }}
               className={`flex min-h-11 items-center justify-center gap-2 font-mono text-[13px] font-semibold ${c.key === focused.key ? 'bg-text-primary text-surface-1' : 'bg-surface-2 text-text-secondary'}`}
             >
               <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[c.effectiveVerdict]}`} />
@@ -449,10 +534,13 @@ function DeckInner({
   ) : null;
 
   const effects = focused ? verdictEffects(focused.current.agentVerdict) : null;
+  const copy = focused ? effectCopy(focused) : null;
   const primary: VisualReviewDecision | null = focused
     ? focused.current.agentVerdict === 'ok' ? 'looks_right' : focused.current.agentVerdict === 'issue' ? 'needs_fix' : null
     : null;
-  const filesFix = !!focused && focused.current.agentVerdict !== 'issue';
+  // The note either files a fix (ok or unsure) or adds guidance to one you agreed with.
+  const filesFix = !!focused && !guidance && focused.current.agentVerdict !== 'issue';
+  const noteRequired = filesFix && focused!.current.agentVerdict === 'ok';
 
   const bar = (
     <div
@@ -467,11 +555,18 @@ function DeckInner({
         )}
         {(toast || flash) && (
           <div role="status" data-testid="deck-toast" className="flex min-h-11 items-center justify-between gap-3 border-2 border-border-strong bg-surface-3 py-1 pl-3 pr-1">
-            <span className="min-w-0 truncate font-mono text-[12px] text-text-primary">{toast ? toast.label : flash}</span>
+            <span data-testid="deck-toast-label" className="min-w-0 break-words py-1 font-mono text-[12px] leading-snug text-text-primary">{toast ? toast.label : flash}</span>
             {toast && (
-              <button type="button" data-testid="deck-undo" onClick={() => void undo()} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-9 shrink-0 px-3 text-[12px]`}>
-                Undo<Kbd>U</Kbd>
-              </button>
+              <span className="flex shrink-0 gap-1">
+                {toast.decision === 'needs_fix' && toast.cells.every(c => c.current.agentVerdict === 'issue') && (
+                  <button type="button" data-testid="deck-add-note" onClick={addNote} className={`${BTN_BASE} ${BTN_GHOST} min-h-9 shrink-0 px-2.5 text-[12px]`}>
+                    Add a note
+                  </button>
+                )}
+                <button type="button" data-testid="deck-undo" onClick={() => void undo()} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-9 shrink-0 px-3 text-[12px]`}>
+                  Undo<Kbd>U</Kbd>
+                </button>
+              </span>
             )}
           </div>
         )}
@@ -494,39 +589,41 @@ function DeckInner({
               className="h-5 w-5"
             />
             <span>
-              Apply to both viewports
-              {sibling.current.agentVerdict !== focused.current.agentVerdict && <span className="text-text-muted">, judged differently</span>}
+              {`Also apply to ${VIEWPORT_LABEL[sibling.viewport].toLowerCase()}`}
+              {sibling.current.agentVerdict !== focused.current.agentVerdict && (
+                <span className="text-text-muted">{` (agent: ${sibling.current.agentVerdict})`}</span>
+              )}
             </span>
           </label>
         )}
         {!atEnd && focused && note !== null && (
           <form
             className="flex flex-col gap-2.5"
-            onSubmit={(e) => { e.preventDefault(); const text = note; setNote(null); decide('needs_fix', text); }}
+            onSubmit={(e) => { e.preventDefault(); if (noteRequired && !note.trim()) return; submitNote(note); }}
           >
             <label className="flex flex-col gap-1.5">
-              <span className="section-label">{filesFix ? 'What should the fix change?' : 'A note for the fix (optional)'}</span>
+              <span className="section-label">{filesFix ? 'What should the fix change?' : 'A note for the fix'}</span>
               <input
                 autoFocus
                 data-testid="deck-note"
                 value={note}
                 onChange={e => setNote(e.target.value)}
                 onFocus={e => e.currentTarget.select()}
-                placeholder={filesFix ? 'One line for the fix task' : 'Add guidance for the fix'}
+                placeholder={filesFix ? 'One line for the fix task' : 'Guidance for the fix task'}
                 className="min-h-12 w-full border-2 border-border-strong bg-surface-2 px-3 font-mono text-base text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none md:text-[13px]"
               />
             </label>
             <div className="flex gap-2">
-              <button type="button" data-testid="deck-note-cancel" onClick={() => setNote(null)} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-12 basis-1/2 text-[14px]`}>
+              <button type="button" data-testid="deck-note-cancel" onClick={closeNote} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-12 basis-1/2 text-[14px]`}>
                 Cancel
               </button>
               <button
                 type="submit"
                 data-testid="deck-note-submit"
-                disabled={filesFix && !note.trim() && !focused.current.finding.trim()}
+                disabled={filesFix && !note.trim() && (noteRequired || !focused.current.finding.trim())}
                 className={`${BTN_BASE} ${BTN_PRIMARY} min-h-12 basis-1/2 text-[14px]`}
               >
-                {filesFix ? 'File the fix' : 'Keep the fix'}
+                {filesFix ? 'File the fix' : 'Send the note'}
               </button>
             </div>
           </form>
@@ -538,16 +635,16 @@ function DeckInner({
               label="Needs fix"
               hint="N"
               effect={effects.needs_fix}
-              copy={EFFECT_COPY[focused.current.agentVerdict].needs_fix}
+              copy={copy!.needs_fix}
               primary={primary === 'needs_fix'}
-              onClick={openNote}
+              onClick={needsFix}
             />
             <DecisionButton
               testId="deck-looks-right"
               label="Looks right"
               hint="Y"
               effect={effects.looks_right}
-              copy={EFFECT_COPY[focused.current.agentVerdict].looks_right}
+              copy={copy!.looks_right}
               primary={primary === 'looks_right'}
               onClick={() => decide('looks_right')}
             />
