@@ -114,7 +114,7 @@ function IntentTag({ label }: { label: string }) {
       type="button"
       data-testid="feed-intent-tag"
       onClick={() => (document.querySelector('[data-testid="composer-scope-chip"]') as HTMLElement | null)?.click()}
-      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] md:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
+      className="min-h-6 bg-[var(--chat-ground)] px-1.5 font-mono text-[11px] lg:text-[10px] tracking-[.08em] text-[var(--chat-muted)] hover:text-[var(--chat-text)]"
     >
       {label}
     </button>
@@ -122,12 +122,12 @@ function IntentTag({ label }: { label: string }) {
 }
 
 /**
- * The person's message. Phone: a raised square block with an offset shadow, in
- * the voice face. Desktop keeps the soft tinted bubble.
+ * The person's message: a raised square block with an offset shadow, in the
+ * voice face, at every width (desktop only caps it at 590px).
  */
 const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
-    <div data-testid="feed-user-bubble" className="ml-auto w-fit max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] md:max-w-[min(100%,560px)] md:rounded-[18px] md:rounded-br-[6px] md:border-0 md:bg-[var(--convo-me)] md:py-2.5 md:[font-family:var(--font-plex-sans),ui-sans-serif,system-ui,sans-serif] md:text-[15.5px] md:leading-[1.6] md:text-text-primary md:shadow-none lg:max-w-[590px] lg:rounded-none lg:border lg:bg-[var(--chat-raised)] lg:py-3 lg:[font-family:var(--font-newsreader),ui-serif,Georgia,serif] lg:text-[17px] lg:leading-[1.4] lg:text-[var(--chat-text)] lg:shadow-[3px_3px_0_0_var(--chat-rule)]">
+    <div data-testid="feed-user-bubble" className="ml-auto w-fit max-w-[82%] whitespace-pre-wrap border border-[var(--chat-rule-strong)] bg-[var(--chat-raised)] px-4 py-3 font-voice text-[17px] leading-[1.4] text-[var(--chat-text)] shadow-[3px_3px_0_0_var(--chat-rule)] [overflow-wrap:anywhere] lg:max-w-[590px]">
       {text}
     </div>
   );

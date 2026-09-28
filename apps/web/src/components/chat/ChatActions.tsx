@@ -13,17 +13,17 @@ import { createHttpVisualReviewTransport } from '@/components/visual-review/revi
 /** A human decision on audit screens, as the decisions route takes it (plus the mission). */
 export type ReviewShotsInput = VisualReviewDecisionRequest & { missionId: string };
 
-/** The visual review the pane or sheet is showing: the mission, and the screen to open on. */
+/** The visual review the dock or sheet is showing: the mission, and the screen to open on. */
 export interface OpenVisualReview {
   ref: BuilddObjectRef;
   /** A cell key; null opens on the head of the queue. */
   startKey: string | null;
   /**
-   * Which surface shows the deck: the phone sheet, the tablet pane or the
-   * desktop dock. All three can be mounted at once (CSS hides the others), so
-   * exactly one renders the deck, and its keys and swipes act once.
+   * Which surface shows the deck: the sheet (phone and tablet) or the desktop
+   * dock. Both can be mounted at once (CSS hides the other), so exactly one
+   * renders the deck, and its keys and swipes act once.
    */
-  surface: 'sheet' | 'pane' | 'dock';
+  surface: 'sheet' | 'dock';
 }
 
 export interface ChatActions {
