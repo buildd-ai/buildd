@@ -28,8 +28,8 @@ export {
 export { Menu, MenuOption, KIT_SHEET_QUERY, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
 export {
-  createComposerStore, useComposerState, applyComposerSeed,
-  type ComposerStore, type ComposerPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
+  createComposerStore, useComposerState, applyComposerSeed, tierPrefs,
+  type ComposerStore, type ComposerStoreOptions, type ComposerPrefsAdapter, type TierPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
 } from './composer-store';
 export {
   thinkingSteps, isApprovalPart, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
@@ -63,5 +63,8 @@ export {
   approvalDraft, approvalLabel, firstParagraph, toolAction, toolInput,
   type ApprovalDraft, type PreviewDraft, type GenericDraft,
 } from './approval-draft';
+
+// 0.6.0: per-app tier policy (also in /chat/contract, for the server).
+export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@builddai/ai-kit/chat/contract';
 
 export { KIT_CSS_VARS, type KitCssVar } from './vars';

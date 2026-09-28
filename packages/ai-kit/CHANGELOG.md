@@ -4,6 +4,33 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.6.0 — 2026-09-28
+
+Per-app tier defaults, names and offer, plus a remembered last pick. Minor:
+all additive; an app that passes no policy behaves exactly as on 0.5.0 (Auto
+first and the default, Budget / Standard / Premium).
+
+- `/chat/contract` new: `defineTierPolicy({ offer?, defaultTier?, labels?,
+  auto?, autoLabel? })` → `{ offer, defaultTier, auto, autoLabel, label,
+  isOffered, accepts, resolve, options }`, plus `CHAT_TIERS`, `ChatTier`,
+  `isChatTier`, `defaultTierName`. Isomorphic, so the server validates a
+  turn's tier with the same object (`accepts`, `resolve(saved) → default`).
+  Also re-exported from `/chat/react`.
+- `/chat/react` `TierPicker`: optional `policy` (only its tiers, its names,
+  Auto only when offered, Auto's name) and `auto` (hide Auto without a policy).
+- `/chat/react` `createComposerStore({ tiers })`: a new chat starts on the
+  policy's `defaultTier` instead of Auto; a seeded tier the policy doesn't
+  accept is dropped; `setTier` ignores one (to `onError`). Precedence: saved
+  choice → app default → kit default. `store.initial` and `store.tiers`.
+- `/chat/react` `ComposerPrefsAdapter.peek?(key)`: a synchronous first-paint
+  seed (e.g. localStorage) applied before `load` answers.
+- `/chat/react` new: `tierPrefs({ load, save, peek? })`, a tier-only adapter
+  (`load(): Tier | null | Promise<…>`, `save(tier)`).
+- `tierLabel(pinned, last, labels?, autoLabel?)`: optional Auto name.
+- **Pinned decision versions** read `…|kit-0.6.0` now (fingerprints are
+  unchanged).
+- `KIT_VERSION` is `0.6.0`.
+
 ## 0.5.0 — 2026-09-28
 
 The generic half of buildd's chat, lifted into the kit so buildd, Cue and moa

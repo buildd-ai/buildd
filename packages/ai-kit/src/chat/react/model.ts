@@ -11,6 +11,7 @@ import {
   type ChatPart,
   type ChatToolPart,
   type StepData,
+  defaultTierName,
 } from '@builddai/ai-kit/chat/contract';
 
 /**
@@ -87,10 +88,10 @@ export function toolSummary(part: ChatToolPart): string | null {
 }
 
 /** The composer's tier label: "Auto", "Auto · Standard" once a turn ran, or the pinned tier. */
-export function tierLabel(pinned: string | null, last: string | null | undefined, labels: Record<string, string> = {}): string {
-  const name = (t: string) => labels[t] ?? (t === 'premium-plus' ? 'Premium+' : t[0].toUpperCase() + t.slice(1));
+export function tierLabel(pinned: string | null, last: string | null | undefined, labels: Record<string, string> = {}, autoLabel = 'Auto'): string {
+  const name = (t: string) => labels[t] ?? defaultTierName(t);
   if (pinned) return name(pinned);
-  return last ? `Auto · ${name(last)}` : 'Auto';
+  return last ? `${autoLabel} · ${name(last)}` : autoLabel;
 }
 
 /** A running total: '' when nothing has been spent, `<$0.01` under a cent, else `$0.42`. */
