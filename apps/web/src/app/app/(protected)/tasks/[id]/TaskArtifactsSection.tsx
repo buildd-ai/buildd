@@ -67,7 +67,7 @@ export default function TaskArtifactsSection({
     now: Date.now(),
   })), [visual, shotIds, items, missionId]);
 
-  if (artifacts.length === 0) return null;
+  if (artifacts.length === 0 && !visual) return null;
 
   const viewerItems: ArtifactViewerItem[] = items.map((a) => ({
     id: a.id,
@@ -89,7 +89,7 @@ export default function TaskArtifactsSection({
   return (
     <div data-testid="task-artifacts" className="mb-8">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-        Artifacts ({artifacts.length})
+        {artifacts.length > 0 ? `Artifacts (${artifacts.length})` : 'Visual audit'}
       </div>
       {visual ? (
         <div data-testid="task-visual-shots" className="mb-4">

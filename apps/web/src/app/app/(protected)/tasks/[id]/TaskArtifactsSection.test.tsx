@@ -4,11 +4,17 @@
  * card each; every other artifact keeps its card. With the mission's review
  * model, one Tray per round, latest first. Static render; illustrative fixtures.
  */
-import { describe, expect, it } from 'bun:test';
-import { renderToStaticMarkup } from 'react-dom/server';
-import TaskArtifactsSection from './TaskArtifactsSection';
-import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
+import { describe, expect, it, mock } from 'bun:test';
 import type { TaskArtifactItem } from './task-artifact-items';
+
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }),
+}));
+
+const { renderToStaticMarkup } = await import('react-dom/server');
+const { default: TaskArtifactsSection } = await import('./TaskArtifactsSection');
+const { default: AuditRoundTrays } = await import('./AuditRoundTrays');
+const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
 
 const shot = (id: string, title: string, viewport: string, verdict = 'ok'): TaskArtifactItem => ({
   id,
@@ -86,5 +92,37 @@ describe('TaskArtifactsSection, an audit round with the mission model', () => {
     );
     expect([...html1.matchAll(/data-testid="audit-round" data-round="(\d+)"/g)].map(m => m[1])).toEqual(['1']);
     expect(html1).not.toContain('Round 2');
+  });
+});
+
+// Regression (S4 review): a pending audit (no screens yet) showed the phase
+// with no way out, and the task page drew nothing at all without artifacts.
+describe('an audit with no screens yet', () => {
+  it('the task sheet\'s Tray offers the phase actions (no browser runner)', () => {
+    const model = buildVisualReviewFixtureModel('no_browser_runner');
+    const html = renderToStaticMarkup(<AuditRoundTrays visual={{ round: 1, model }} layout="sheet" columns="one" />);
+    expect(html).toContain('data-testid="visual-review-action-turn-off"');
+    expect(html).toContain('data-testid="visual-review-action-skip"');
+  });
+
+  it('stalled: retry and skip', () => {
+    const model = buildVisualReviewFixtureModel('stalled');
+    const html = renderToStaticMarkup(<AuditRoundTrays visual={{ round: 1, model }} />);
+    expect(html).toContain('data-testid="visual-review-action-retry"');
+    expect(html).toContain('data-testid="visual-review-action-skip"');
+  });
+
+  it('the task page section renders the Tray even with no artifacts', () => {
+    const model = buildVisualReviewFixtureModel('no_browser_runner');
+    const html = renderToStaticMarkup(
+      <TaskArtifactsSection artifacts={[]} taskId="fixture-audit-1" baseUrl="https://example.test" missionId="fixture-mission" visual={{ round: 1, model }} />,
+    );
+    expect(html).toContain('data-testid="task-visual-shots"');
+    expect(html).toContain('data-testid="visual-review-action-skip"');
+    expect(html).not.toContain('Artifacts (0)');
+  });
+
+  it('with neither artifacts nor an audit, nothing', () => {
+    expect(renderToStaticMarkup(<TaskArtifactsSection artifacts={[]} taskId="t" baseUrl="https://example.test" />)).toBe('');
   });
 });

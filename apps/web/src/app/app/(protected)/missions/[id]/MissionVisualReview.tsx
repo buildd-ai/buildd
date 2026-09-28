@@ -148,6 +148,11 @@ function subscribeWide(onChange: () => void) {
 }
 const readWide = () => typeof window !== 'undefined' && !!window.matchMedia?.(VISUAL_REVIEW_DIALOG_QUERY).matches;
 
+/** A model worth drawing: present and not `off` (no audit on the mission). */
+export function hasVisualReview(visual: VisualReviewModel | null | undefined): visual is VisualReviewModel {
+  return !!visual && visual.phase !== 'off';
+}
+
 /** A stand-in the hook can hold while there is no audit; never rendered. */
 function emptyModel(missionId: string): VisualReviewModel {
   return {
@@ -213,7 +218,9 @@ export function MissionVisualReviewProvider({ missionId, visual, reviewLayout, t
   const auditTaskId = visual?.audit?.id ?? null;
   const actions = useMemo(() => visualReviewPhaseActions({ missionId, auditTaskId, refresh }), [missionId, auditTaskId, refresh]);
 
-  const value = useMemo<MissionVisualReviewValue | null>(() => (visual ? {
+  // A phase-off model (the route's answer for a mission with no audit) is no
+  // review: nothing is provided, so no surface draws an "Off" Tray.
+  const value = useMemo<MissionVisualReviewValue | null>(() => (hasVisualReview(visual) ? {
     missionId,
     model: review.model,
     openDeck,
@@ -272,7 +279,7 @@ export function WithMissionVisualReview({
 }) {
   const ctx = useContext(Ctx);
   if (ctx && ctx.missionId === missionId) return <>{children(ctx)}</>;
-  if (!visual) return <>{children(null)}</>;
+  if (!hasVisualReview(visual)) return <>{children(null)}</>;
   return (
     <MissionVisualReviewProvider missionId={missionId} visual={visual} reviewLayout={reviewLayout}>
       <Ctx.Consumer>{v => children(v)}</Ctx.Consumer>
@@ -292,18 +299,31 @@ function answeredElsewhere(model: VisualReviewModel, board: Pick<MissionBoardMod
   return !!taskId && !!board?.needsYou.includes(taskId);
 }
 
+/** Whether `MissionVisualAsk` draws anything for this model beside this board. */
+export function visualAskShows(model: VisualReviewModel, board: Pick<MissionBoardModel, 'needsYou'> | null): boolean {
+  if (model.phase !== 'needs_you') return false;
+  return !(model.needsYou?.reason === 'question' && answeredElsewhere(model, board));
+}
+
 /** The Tray with this page's actions. */
 export function MissionVisualTray({
   review,
   board = null,
   columns = 'auto',
   hideLine = false,
+  besideAsk = false,
   className = '',
 }: {
   review: MissionVisualReviewValue;
   board?: Pick<MissionBoardModel, 'needsYou' | 'tasks'> | null;
   columns?: 'auto' | 'one' | 'fit';
   hideLine?: boolean;
+  /**
+   * The host also renders `MissionVisualAsk`: while it shows, the Ask's
+   * orange button is the one way into the deck, so the Tray drops its own
+   * (the thumbnails still open it).
+   */
+  besideAsk?: boolean;
   className?: string;
 }) {
   const m = review.model;
@@ -322,6 +342,7 @@ export function MissionVisualTray({
       }}
       columns={columns}
       hideLine={hideLine}
+      hideReviewButton={besideAsk && visualAskShows(m, board)}
       className={className}
     />
   );
@@ -342,8 +363,7 @@ export function MissionVisualAsk({
   className?: string;
 }) {
   const m = review.model;
-  if (m.phase !== 'needs_you') return null;
-  if (m.needsYou?.reason === 'question' && answeredElsewhere(m, board)) return null;
+  if (!visualAskShows(m, board)) return null;
   return (
     <VisualReviewAsk
       model={m}

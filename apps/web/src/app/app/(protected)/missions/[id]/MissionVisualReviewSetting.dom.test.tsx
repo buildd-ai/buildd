@@ -109,6 +109,29 @@ describe('MissionVisualReviewSetting', () => {
     expect(container.textContent).toContain('No visual audit on this mission yet');
   });
 
+  // Regression: the Tray's "Turn off for this mission" PATCHes and refreshes;
+  // the switch must follow the server's new value, not keep its first one.
+  it('follows the server value after a refresh', () => {
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} />));
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled={false} visual={null} />));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} />));
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('keeps the optimistic value while its own save is in flight', async () => {
+    stubFetch(true, true);
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} />));
+    await act(async () => { sw().click(); });
+    // A re-render with the stale server value mid-save does not undo the flip.
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} />));
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+    await act(async () => { release?.(); });
+    await flush();
+    expect(sw().getAttribute('aria-checked')).toBe('false');
+  });
+
   it('is read-only on a finished mission', () => {
     act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} readonly />));
     expect(sw().disabled).toBe(true);

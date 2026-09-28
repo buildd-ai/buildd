@@ -23,6 +23,8 @@ describe('mission board visual fixture', () => {
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=capturing&layout=lanes'))).toMatchObject({ phase: 'capturing', layout: 'lanes' });
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=off&layout=nope'))).toMatchObject({ phase: 'needs_you', layout: 'board' });
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=reviewed&complete=1')).complete).toBe(true);
+    // The audit task's own surfaces (task sheet and task page), e.g. before its first screen.
+    expect(parseMissionBoardVisualParams(new URLSearchParams('phase=no_browser_runner&layout=task'))).toMatchObject({ phase: 'no_browser_runner', layout: 'task' });
   });
 
   it('every linked state puts the audit on the board, under its own id', () => {

@@ -32,7 +32,6 @@ import {
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
-import { verdictLine } from '@/lib/mission-visual-review';
 import {
   MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
   type MissionVisualReviewValue, type VisualReviewLayout,
@@ -100,7 +99,7 @@ function BoardView({
   const shotsFor = (taskId: string) =>
     review && auditOnBoard && taskId === auditId ? (
       <div key={`${taskId}:shots`} data-testid="board-visual-tray" className="-mt-1 border-[1.5px] border-t-0 border-border-strong bg-card px-3 pb-3 pt-2.5">
-        <MissionVisualTray review={review} board={model} columns="fit" hideLine />
+        <MissionVisualTray review={review} board={model} columns="fit" hideLine besideAsk />
       </div>
     ) : null;
 
@@ -147,7 +146,7 @@ function BoardView({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} />,
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
@@ -162,7 +161,7 @@ function BoardView({
 
       {review && !auditOnBoard && (
         <section data-testid="board-visual-section" className="mt-[22px] border-t-2 border-border-strong pt-3">
-          <MissionVisualTray review={review} board={model} columns="fit" />
+          <MissionVisualTray review={review} board={model} columns="fit" besideAsk />
         </section>
       )}
 
@@ -172,6 +171,22 @@ function BoardView({
 }
 
 // ── Band ─────────────────────────────────────────────────────────────────────
+
+/** Audit phases only a human can move (start a runner, retry, skip, turn off). */
+const STUCK_PHASES = new Set<VisualReviewModel['phase']>(['no_browser_runner', 'stalled', 'failed']);
+
+/**
+ * The audit tile's caption when the audit cannot move: "ready · next free
+ * slot" would contradict the Tray under it.
+ */
+export function stuckVisualCaption(vm: Pick<VisualReviewModel, 'phase'>): string | null {
+  switch (vm.phase) {
+    case 'no_browser_runner': return 'waiting for a browser runner';
+    case 'stalled': return 'visual audit stalled';
+    case 'failed': return 'visual audit failed';
+    default: return null;
+  }
+}
 
 export function Band({ model, compact, missionId, visual = null, onReview }: {
   model: MissionBoardModel;
@@ -190,7 +205,11 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
       ? `${awaiting} ${awaiting === 1 ? 'screen' : 'screens'} to review`
       : visual?.needsYou?.reason === 'round_cap'
         ? 'visual issues: your call'
-        : model.complete ? 'all answered' : 'nothing waiting';
+        : visual && STUCK_PHASES.has(visual.phase)
+          // Not counted (the number is what awaits an answer), but not
+          // "nothing" either: only you can unstick it.
+          ? 'visual audit is stuck'
+          : model.complete ? 'all answered' : 'nothing waiting';
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
   return (
     <section
@@ -242,7 +261,8 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
         // The Visual cell: one full-width row under the four, at every width,
         // so the band keeps its columns (a fifth would crowd a docked pane).
         <div data-testid="visual-band" data-phase={visual.phase} className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default px-[18px] py-3 md:col-span-4">
-          <VisualReviewLine model={visual} variant="full" className="min-w-0 flex-1" />
+          {/* needs_you: the Ask under the band says the sentence; the row keeps the label and dots. */}
+          <VisualReviewLine model={visual} variant={visual.phase === 'needs_you' ? 'compact' : 'full'} className="min-w-0 flex-1" />
           {onReview && visual.cells.length > 0 && visual.phase !== 'needs_you' && (
             <button
               type="button"
@@ -356,7 +376,7 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean }) {
+function Tile({ task: t, model, now, span, link, popLeft, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean; visualStuck?: string | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const live = t.status === 'running' || t.status === 'fixing';
@@ -384,7 +404,7 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
   if (queued) {
     body = (
       <div className="flex min-h-[18px] items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
-        {t.status === 'ready' ? 'ready · next free slot' : (
+        {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
             {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
@@ -416,7 +436,9 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false }: { t
     const chip = t.pr && t.status !== 'running' ? <PrChip task={t} /> : t.pr && t.pr.state !== 'open' ? <PrChip task={t} /> : null;
     // A live tile says what it is doing (the current action, else the elapsed
     // strip) and for how long — or nothing: no empty second line under the title.
-    const lead = live && t.currentAction
+    const lead = visualStuck
+      ? <span data-testid="board-tile-visual-stuck" className="min-w-0 flex-1 truncate text-status-warning">{visualStuck}</span>
+      : live && t.currentAction
       ? <span data-testid="board-tile-action" className="min-w-0 flex-1 truncate text-text-secondary">{t.currentAction}</span>
       : live && t.startedAt != null
         ? <ElapsedStrip task={t} now={now} span={span} />
@@ -635,12 +657,12 @@ function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; t
     { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
     ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
     ...(review
-      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: review.ok === review.shots ? 'all ok' : verdictLine(review), subCls: review.ok === review.shots ? 'text-status-success' : 'text-text-secondary' }]
+      ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: effectiveScreensLine(review), subCls: review.effectiveOk === review.shots ? 'text-status-success' : 'text-text-secondary' }]
       : []),
     ...(review && review.reviewed > 0
       ? [{ label: 'Screens you judged', value: String(review.reviewed), testId: 'record-screen-calls', sub: humanCallsLine(review) }]
       : []),
-    { label: 'Your decisions', value: String(r.decisions), testId: 'record-decisions' },
+    { label: 'Your answers', value: String(r.decisions), testId: 'record-decisions' },
     { label: 'Work', value: d.work ?? '0m', testId: 'record-time', sub: d.showOpen ? `open ${d.open}` : undefined },
   ];
   return (
@@ -660,6 +682,20 @@ function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; t
       </div>
     </section>
   );
+}
+
+/**
+ * The screens after your decisions (the counts the Band's Line reads), not
+ * the agent's: `all ok`, else `5 of 7 ok · 1 issue · 1 to review`.
+ */
+export function effectiveScreensLine(s: Pick<VisualReviewModel['summary'], 'shots' | 'effectiveOk' | 'effectiveIssues'>): string {
+  if (s.shots > 0 && s.effectiveOk === s.shots) return 'all ok';
+  const open = Math.max(0, s.shots - s.effectiveOk - s.effectiveIssues);
+  return [
+    `${s.effectiveOk} of ${s.shots} ok`,
+    s.effectiveIssues > 0 ? `${s.effectiveIssues} ${s.effectiveIssues === 1 ? 'issue' : 'issues'}` : null,
+    open > 0 ? `${open} to review` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 /** `2 agreed · 1 disputed · 1 waived`, zeros left out. */

@@ -85,7 +85,7 @@ function FeedView({
         <section data-testid="feed-visual-section" className="mt-[22px]">
           <SectionLabel className="mb-2 block">Screens</SectionLabel>
           <div className="border-2 border-border-strong bg-card p-3.5">
-            <MissionVisualTray review={review} board={model} columns="fit" hideLine />
+            <MissionVisualTray review={review} board={model} columns="fit" hideLine besideAsk />
           </div>
         </section>
       )}

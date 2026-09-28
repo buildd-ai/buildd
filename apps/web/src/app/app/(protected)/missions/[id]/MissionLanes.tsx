@@ -17,8 +17,7 @@ import {
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import type { VisualReviewModel } from '@buildd/shared';
-import { verdictLine } from '@/lib/mission-visual-review';
-import { humanCallsLine } from './MissionBoard';
+import { effectiveScreensLine, humanCallsLine } from './MissionBoard';
 import {
   MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
   type MissionVisualReviewValue, type VisualReviewLayout,
@@ -262,7 +261,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
     ? sec('Screens', vm.summary.shots, vm.phase === 'needs_you', 'lanes-screens', (
       <div className="flex flex-col gap-3 pt-1.5">
         <MissionVisualAsk review={visualReview} board={model} />
-        <MissionVisualTray review={visualReview} board={model} columns="one" />
+        <MissionVisualTray review={visualReview} board={model} columns="one" besideAsk />
       </div>
     ))
     : null;
@@ -291,9 +290,10 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
             {/* A zero is not an outcome: CI auto-fix shows only when something was fixed. */}
             {r.ciFixes > 0 && stat(String(r.ciFixes), 'CI auto-fixed', 'text-status-error')}
             {review && stat(
-              `${review.ok}/${review.shots}`,
-              review.ok === review.shots ? 'screens ok' : verdictLine(review).replace(/^\d+ of \d+ ok · /, 'screens · '),
-              review.issues > 0 ? 'text-status-error' : 'text-text-primary',
+              // After your decisions, as the Band's Line counts them.
+              `${review.effectiveOk}/${review.shots}`,
+              review.effectiveOk === review.shots ? 'screens ok' : effectiveScreensLine(review).replace(/^\d+ of \d+ ok · /, 'screens · '),
+              review.effectiveIssues > 0 ? 'text-status-error' : 'text-text-primary',
               'record-screens',
             )}
             {review && review.reviewed > 0 && stat(String(review.reviewed), `screens you judged · ${humanCallsLine(review)}`, 'text-text-primary', 'record-screen-calls')}

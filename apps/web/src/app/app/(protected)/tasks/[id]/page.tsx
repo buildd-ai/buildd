@@ -1565,8 +1565,9 @@ export default async function TaskDetailPage({
           })()
         )}
 
-        {/* Artifacts */}
-        {visibleArtifacts.length > 0 && (
+        {/* Artifacts; an audit task's Tray shows even before its first screen
+            (queued, no browser runner, boot failed, stalled), with its actions. */}
+        {(visibleArtifacts.length > 0 || auditVisual) && (
           <TaskArtifactsSection
             artifacts={visibleArtifacts.map(toTaskArtifactItem)}
             taskId={task.id}

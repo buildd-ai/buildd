@@ -32,8 +32,16 @@ export default function MissionVisualReviewSetting({
 }) {
   const live = useMissionVisualReview(missionId);
   const model = live?.model ?? visual ?? null;
-  const [enabled, setEnabled] = useState(initialEnabled ?? true);
+  const server = initialEnabled ?? true;
+  const [enabled, setEnabled] = useState(server);
   const [saving, setSaving] = useState(false);
+  // Follow the server's value when it changes (a refresh after the Tray's
+  // "Turn off for this mission"), unless this switch's own save is in flight.
+  const [lastServer, setLastServer] = useState(server);
+  if (server !== lastServer && !saving) {
+    setLastServer(server);
+    setEnabled(server);
+  }
   const [error, setError] = useState<string | null>(null);
   const hintId = useId();
 

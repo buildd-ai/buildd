@@ -317,6 +317,81 @@ describe('MissionBoard — visual review (docs/design/visual-qa-human-review.md)
     expect(html).toContain('data-testid="record-ci-fixes"');
     expect(html).not.toContain('data-testid="record-screens"');
   });
+
+  // Review regressions (S4 PR review).
+  it('a phase-off model (no audit, the chat pane passes it as is) draws nothing visual', () => {
+    const off = { ...buildVisualReviewFixtureModel('off'), missionId: 'mission-1' };
+    for (const moment of ['running', 'complete'] as const) {
+      const html = render(moment, { completionText: 'x', visual: off });
+      for (const id of ['board-visual-section', 'board-visual-tray', 'visual-band', 'visual-review-tray']) {
+        expect(html).not.toContain(`data-testid="${id}"`);
+      }
+      expect(text(html)).not.toContain('No visual audit on this mission');
+    }
+  });
+
+  it('the completion record counts screens after your decisions, like the Band does', () => {
+    // Fixture: the agent said 6 ok and 1 unsure; your decisions make all 7 ok.
+    const visual = visualAs('guide', 'reviewed');
+    const s = visual.summary;
+    expect(s.ok).toBeLessThan(s.shots);
+    expect(s.effectiveOk).toBe(s.shots);
+    const html = render('complete', { completionText: 'x', visual });
+    const stats = html.split('data-testid="record-stats"')[1] ?? '';
+    const screens = text(stats.split('data-testid="record-screens"')[1]?.split('data-testid="record-')[0] ?? '');
+    expect(screens).toContain('all ok');
+    expect(screens).not.toContain('unsure');
+    expect(screens).not.toContain(`${s.ok} of ${s.shots}`);
+    // "Your decisions" read as the screen decisions: the mission's answers are "Your answers".
+    expect(text(stats)).toContain('Your answers');
+    expect(text(stats)).not.toContain('Your decisions');
+  });
+
+  it('with issues left after your calls, the record says how many', () => {
+    const base = visualAs('guide', 'reviewed');
+    const visual = { ...base, summary: { ...base.summary, effectiveOk: base.summary.shots - 2, effectiveIssues: 2 } };
+    const html = render('complete', { completionText: 'x', visual });
+    const screens = text(html.split('data-testid="record-screens"')[1]?.split('data-testid="record-')[0] ?? '');
+    expect(screens).toContain(`${visual.summary.shots - 2} of ${visual.summary.shots} ok`);
+    expect(screens).toContain('2 issues');
+  });
+
+  it('no browser runner: the audit tile and Needs you say the audit is stuck', () => {
+    const model = boardFixture('running');
+    model.tasks.guide = { ...model.tasks.guide, status: 'ready' };
+    const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" visual={visualAs('guide', 'no_browser_runner')} />);
+    const tile = html.split('data-task-id="guide"')[1]?.split('data-testid="board-visual-tray"')[0] ?? '';
+    expect(text(tile)).not.toContain('next free slot');
+    expect(text(tile)).toContain('waiting for a browser runner');
+    const cell = text(html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '');
+    expect(cell).not.toContain('nothing waiting');
+    expect(cell).toContain('visual audit is stuck');
+  });
+
+  it('stalled: the live audit tile and Needs you say the audit is stuck', () => {
+    const model = boardFixture('running');
+    model.tasks.guide = { ...model.tasks.guide, status: 'running', startedAt: null, currentAction: null };
+    const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" visual={visualAs('guide', 'stalled')} />);
+    const tile = html.split('data-task-id="guide"')[1]?.split('data-testid="board-visual-tray"')[0] ?? '';
+    expect(text(tile)).toContain('visual audit stalled');
+    const cell = text(html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '');
+    expect(cell).toContain('visual audit is stuck');
+  });
+
+  it('while the Ask shows, the Tray has no second Review button and the Band row no repeat sentence', () => {
+    const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    const html = render('running', { visual });
+    expect(html).toContain('data-testid="visual-review-ask"');
+    expect(html).not.toContain('data-testid="visual-review-review-button"');
+    const band = html.split('data-testid="visual-band"')[1]?.split('</section>')[0] ?? '';
+    expect(band).toContain('data-testid="visual-review-line-label"');
+    expect(band).not.toContain('data-testid="visual-review-line-detail"');
+  });
+
+  it('with no Ask (reviewed), the Tray keeps its Review button', () => {
+    const html = render('running', { visual: visualAs('guide', 'reviewed') });
+    expect(html).toContain('data-testid="visual-review-review-button"');
+  });
 });
 
 describe('MissionBoard — complete, open for weeks', () => {

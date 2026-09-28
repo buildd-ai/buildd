@@ -16,6 +16,8 @@ import MissionFeedLayout from '@/app/app/(protected)/missions/[id]/MissionFeedLa
 import MissionScreensRow from '@/app/app/(protected)/missions/[id]/MissionScreensRow';
 import MissionVisualReviewSetting from '@/app/app/(protected)/missions/[id]/MissionVisualReviewSetting';
 import { MissionVisualReviewProvider } from '@/app/app/(protected)/missions/[id]/MissionVisualReview';
+import AuditRoundTrays from '@/app/app/(protected)/tasks/[id]/AuditRoundTrays';
+import TaskArtifactsSection from '@/app/app/(protected)/tasks/[id]/TaskArtifactsSection';
 import {
   MISSION_BOARD_VISUAL_LAYOUTS,
   missionBoardVisualFixture,
@@ -79,7 +81,20 @@ function View({ params }: { params: MissionBoardVisualParams }) {
 
       <main className="mx-auto max-w-[1400px] px-4 py-2 md:px-8">
         <MissionVisualReviewProvider missionId={visual.missionId} visual={visual} transport={transport}>
-          {params.layout === 'lanes' ? (
+          {params.layout === 'task' ? (
+            // The audit task's own surfaces (display only: the task views post
+            // to the live routes, so do not click their actions here).
+            <div className="grid gap-8 py-4 md:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+              <section data-testid="fixture-task-sheet" className="border-2 border-border-strong bg-surface-2 p-4">
+                <p className="section-label mb-3">Task sheet (preview)</p>
+                <AuditRoundTrays visual={{ round: visual.audit?.round ?? 1, model: visual }} layout="sheet" columns="one" />
+              </section>
+              <section data-testid="fixture-task-page">
+                <p className="section-label mb-3">Task page (preview, no artifacts yet)</p>
+                <TaskArtifactsSection artifacts={[]} taskId={visual.audit?.id ?? 'fixture-audit'} baseUrl="" missionId={visual.missionId} visual={{ round: visual.audit?.round ?? 1, model: visual }} />
+              </section>
+            </div>
+          ) : params.layout === 'lanes' ? (
             <MissionLanes model={board} completionText={null} visual={visual} {...link} />
           ) : params.layout === 'feed' ? (
             <MissionFeedLayout model={board} completionText={null} timeZone="UTC" visual={visual} {...link} />

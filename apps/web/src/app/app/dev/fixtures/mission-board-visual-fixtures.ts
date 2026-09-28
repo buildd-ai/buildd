@@ -6,7 +6,7 @@
  *
  *   ?state=mission-board-visual&phase=<phase>     the Board with the audit in that phase
  *   &reason=unsure|question|round_cap              which needs_you
- *   &layout=board|lanes|feed                       which mission layout
+ *   &layout=board|lanes|feed|task                  which mission layout (task: the audit's task sheet and page)
  *   &complete=1                                    the mission is done (completion record)
  *
  * The board is illustrative: a small mission whose last task is the audit
@@ -20,7 +20,8 @@ import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtu
 import { MISSION_BOARD_VISUAL_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_BOARD_VISUAL_STATE = MISSION_BOARD_VISUAL_FIXTURE_STATE;
-export const MISSION_BOARD_VISUAL_LAYOUTS = ['board', 'lanes', 'feed'] as const;
+/** `task`: the audit task's sheet and page sections, not a mission layout. */
+export const MISSION_BOARD_VISUAL_LAYOUTS = ['board', 'lanes', 'feed', 'task'] as const;
 export type MissionBoardVisualLayout = (typeof MISSION_BOARD_VISUAL_LAYOUTS)[number];
 
 const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];

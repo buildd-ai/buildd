@@ -70,7 +70,10 @@ describe('MissionLanes — question and complete', () => {
       <MissionLanes model={boardFixture('complete')} missionId="mission-1" completionText="x" visual={visual} />,
     );
     const s = visual.summary;
-    expect(html.replace(/<[^>]+>/g, ' ')).toMatch(new RegExp(`${s.ok}/${s.shots}\\s+screens`));
+    // After your decisions (the Band's count), not the agent's.
+    expect(s.ok).toBeLessThan(s.effectiveOk);
+    expect(html.replace(/<[^>]+>/g, ' ')).toMatch(new RegExp(`${s.effectiveOk}/${s.shots}\\s+screens ok`));
+    expect(html.replace(/<[^>]+>/g, ' ')).not.toContain('unsure');
     expect(html).toContain('data-testid="record-screen-calls"');
     const m = boardFixture('complete');
     m.record.ciFixes = 1;
@@ -134,6 +137,13 @@ describe('MissionLanes — visual review', () => {
     // Needs you counts the screens awaiting a human.
     const needs = html.split('data-testid="needs-you-band"')[1]?.split('</b>')[0] ?? '';
     expect(needs).toContain(`>${visual.summary.awaitingHuman}`);
+  });
+
+  it('while the Ask shows, the rail\'s Tray has no second Review button', () => {
+    const visual = { ...buildVisualReviewFixtureModel('needs_you', { needsYou: 'unsure', scenario: 'deck' }), missionId: 'mission-1' };
+    const html = renderToStaticMarkup(<MissionLanes model={boardFixture('running')} missionId="mission-1" visual={visual} />);
+    expect(html).toContain('data-testid="visual-review-ask"');
+    expect(html).not.toContain('data-testid="visual-review-review-button"');
   });
 
   it('no audit: no Screens section', () => {
