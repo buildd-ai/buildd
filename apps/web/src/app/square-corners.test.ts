@@ -38,21 +38,22 @@ describe('arbitraryRadiusTokens', () => {
 /**
  * The one deliberate exception: the chat conversation layer is soft by design
  * (docs/design/agent-chat.md, the canvas: "soft, unboxed conversation; hard
- * fleet objects"). Conversation files under components/chat/ may round, and so
- * may a line styled with the conversation tokens (`--convo-*`), such as the
- * composer's workspace chip. Fleet objects rendered inside chat
- * (components/chat/objects/) stay square like everywhere else.
+ * fleet objects"). Only a line styled with the conversation tokens (`--convo-*`)
+ * may round, such as a user message bubble or the composer's workspace chip.
+ * Fleet objects rendered inside chat (components/chat/objects/) stay square like
+ * everywhere else. UI controls in chat files (like the floating Ask button) that
+ * don't use convo tokens must stay square.
  */
 export function isSoftConversationSurface(file: string, line: string): boolean {
-  const conversationFile = file.startsWith('components/chat/') && !file.startsWith('components/chat/objects/');
-  return conversationFile || line.includes('var(--convo-');
+  return line.includes('var(--convo-');
 }
 
 describe('isSoftConversationSurface', () => {
-  it('allows the conversation layer and convo-token lines, not fleet objects', () => {
-    expect(isSoftConversationSurface('components/chat/ChatFeed.tsx', 'rounded-[18px]')).toBe(true);
+  it('allows only lines styled with conversation tokens, not other files or fleet objects', () => {
+    expect(isSoftConversationSurface('components/chat/ChatFeed.tsx', 'md:rounded-[18px] md:bg-[var(--convo-me)]')).toBe(true);
     expect(isSoftConversationSurface('components/chat/objects/MissionObject.tsx', 'rounded-[8px]')).toBe(false);
     expect(isSoftConversationSurface('components/WorkspaceSwitcher.tsx', 'rounded-[999px] bg-[var(--convo-soft)]')).toBe(true);
+    expect(isSoftConversationSurface('components/chat/ChatCanvas.tsx', 'rounded-[999px] border-[var(--on-accent)]')).toBe(false);
     expect(isSoftConversationSurface('app/app/(protected)/home/page.tsx', 'rounded-[10px]')).toBe(false);
   });
 });
