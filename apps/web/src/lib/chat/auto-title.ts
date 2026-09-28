@@ -1,7 +1,8 @@
 /**
  * Name the conversation after its first exchange, so the user never has to.
- * The kit's pipeline (`titleConversation`): a short first message is its own
- * title; otherwise one call on the budget tier. Runs after the response;
+ * The kit's pipeline (`titleConversation`): a chat opened on a mission or
+ * task takes that object's name; a short first message is its own title;
+ * otherwise one call on the budget tier. Runs after the response;
  * never overwrites a title the user set (store.setConversationTitle is
  * conditional on title_source='auto').
  */
@@ -16,6 +17,8 @@ export async function autoTitleConversation(
   messages: UIMessage[],
   userId: string,
   deps: {
+    /** The object the chat was opened on (entry.about), when it loaded. */
+    about?: { kind: 'mission' | 'task'; title: string } | null;
     generate?: Parameters<typeof titleConversation>[0]['generate'];
     resolveModel?: typeof resolveChatModel;
     save?: typeof setConversationTitle;
@@ -26,6 +29,7 @@ export async function autoTitleConversation(
   try {
     const result = await titleConversation({
       messages,
+      rules: () => deps.about?.title ?? null,
       generate: deps.generate,
       onError: warn,
       model: async () => {
