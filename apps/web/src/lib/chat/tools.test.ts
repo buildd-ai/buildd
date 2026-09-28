@@ -204,3 +204,63 @@ describe('manage_missions', () => {
     expect(schema.safeParse({ action: 'list' }).success).toBe(true);
   });
 });
+
+describe('knowledge tool schemas', () => {
+  // Chat's recall once had a catch-all schema: the model, reading "scope=[...]"
+  // in the description with no typed field, sent the array as a JSON string and
+  // every multi-corpus recall failed with "Unknown scope(s)".
+  it('recall types scope as a corpus or a list of corpora', () => {
+    const schema = (setup().tools.recall as any).inputSchema;
+    expect(schema.safeParse({ query: 'x', scope: ['memory', 'task'] }).success).toBe(true);
+    expect(schema.safeParse({ query: 'x', scope: 'pr' }).success).toBe(true);
+    expect(schema.safeParse({ query: 'x', scope: '["memory","task"]' }).success).toBe(false);
+    expect(schema.safeParse({ query: 'x', scope: ['tasks'] }).success).toBe(false);
+  });
+
+  it('recall and learn name the workspace field chat reads memory from', () => {
+    const { tools } = setup();
+    expect((tools.recall as any).inputSchema.safeParse({ query: 'x', workspaceId: 'ws' }).success).toBe(true);
+    expect((tools.learn as any).inputSchema.safeParse({ type: 'gotcha', title: 't', content: 'c', workspaceId: 'ws' }).success).toBe(true);
+    expect((tools.learn as any).inputSchema.safeParse({ type: 'nope', title: 't', content: 'c' }).success).toBe(false);
+  });
+});
+
+describe('descriptions of tools with a typed chat schema', () => {
+  // The model reads these on every step of every turn. The MCP params dump
+  // (cut at 1500 chars) repeated the schema and listed worker-only fields
+  // chat never sets, or refuses (context, parentTaskId).
+  const TYPED = ['list_tasks', 'get_task', 'manage_missions', 'create_task', 'send_agent_message', 'list_schedules', 'trace_schedule', 'list_artifacts'];
+
+  it('are written for chat, not the MCP params dump', () => {
+    const { tools } = setup();
+    for (const name of TYPED) {
+      const d = (tools[name] as any).description as string;
+      expect(d).not.toContain('Action-specific parameters');
+      expect(d.length).toBeLessThan(800);
+    }
+  });
+
+  it('never advertise fields chat refuses', () => {
+    const d = (setup().tools.create_task as any).description as string;
+    for (const f of ['parentTaskId', 'callbackUrl', 'context?']) expect(d).not.toContain(f);
+  });
+
+  it('manage_missions types the fields its ops take', () => {
+    const schema = (setup().tools.manage_missions as any).inputSchema;
+    expect(schema.safeParse({ action: 'list', query: 'wix' }).success).toBe(true);
+    expect(schema.safeParse({ action: 'update', missionId: 'm', startMode: 'held' }).success).toBe(true);
+    expect(schema.safeParse({ action: 'update', missionId: 'm', startMode: 'paused' }).success).toBe(false);
+  });
+});
+
+describe('boilerplate said once, not per tool', () => {
+  it('no description repeats the workspace note, the params preamble or the approval-card line', () => {
+    const { tools } = setup();
+    for (const [name, t] of Object.entries(tools)) {
+      const d = (t as any).description as string;
+      expect({ name, note: d.includes('workspaceId accepts a UUID') }).toEqual({ name, note: false });
+      expect({ name, preamble: d.includes('Action-specific parameters') }).toEqual({ name, preamble: false });
+      expect({ name, card: d.includes('Writes show the user an approval card') }).toEqual({ name, card: false });
+    }
+  });
+});
