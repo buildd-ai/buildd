@@ -4,6 +4,54 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.5.0 — 2026-09-28
+
+The generic half of buildd's chat, lifted into the kit so buildd, Cue and moa
+share it. Minor: everything is additive, except that `ToolsMenu` drops its
+Allow count (a visible change, no API removed).
+
+**Upgrading: what you can delete**
+
+- **Any CSS or test that reads the tools count.** `ToolsMenu`'s trigger is a
+  plain `···` named "Tools"; `kit-tools-count` is gone. `allowedBadgeCount`
+  stays in `/chat/contract` for settings pages.
+- **Local copies of these helpers**, if your app wrote its own: per-turn
+  thumbs, a steer box, a live object cache, a pinned object strip, a pane
+  side reducer, a parked first message, refusal parsing, cost formatting.
+- **Pinned decision versions** read `…|kit-0.4.0` now (fingerprints are
+  unchanged): update `expectDecisionPinned({ version })` and version regexes.
+
+**Changes**
+
+- `/chat/react` `ToolsMenu`: no Allow count on the trigger; its accessible
+  name is the title ("Tools").
+- `/chat/react` `ChatComposer`: optional `leading` (a row in the box above the
+  message), `actions` (toolbar controls after `tier`), `edge` (decoration over
+  the top edge), `footer` (under the box), `mood` and `compact` (as
+  `data-mood` / `data-compact`). Nothing renders without them.
+- `/chat/react` new: `TurnFeedbackProvider` / `TurnFeedback` /
+  `useTurnFeedback` / `DEFAULT_FEEDBACK_REASONS` (thumbs with one optional
+  reason; `onFeedback` records, `loadVotes` or `initial` seeds; no fetch).
+- `/chat/react` new: `SteerComposer`, `steerTitle`, `steerStatusLabel`,
+  `canSteer` (steer a running agent through the app's `onSend`, each message
+  `sent` then `delivered`).
+- `/chat/react` new: `createObjectStore` (one live copy per `ObjectRef`, with
+  an app `classify` for events and a per-object `sidecar`),
+  `createTrailingThrottle`, `ObjectStoreProvider`, `useObjectStore`,
+  `useObjectEntry`, `ObjectCard`, `ObjectPane`, `ObjectPlaceholder`,
+  `PinnedObject`, `pinnedObjectTitle`, and the dock models `paneReducer`,
+  `parsePaneSide`, `dockChoice`, `INITIAL_PANE`, `PANE_SIDE_KEY`.
+- `/chat/react` new: `createPendingMessages`, `approvalDraft`,
+  `approvalLabel`, `firstParagraph`, `toolAction`, `toolInput`, `formatCost`,
+  `formatPer1k`.
+- `/chat/contract` new: `refKey`, `parseChatUnavailable`, `chatErrorLine`
+  (with `DEFAULT_CHAT_ERROR_LINES`), `TurnSignal`, `TurnVote`,
+  `applyTurnVote`.
+- `/chat/styles.css`: `kit-feedback*`, `kit-thumb*`, `kit-steer*`,
+  `kit-object-*`, `kit-pinned*` and the composer slot classes, reading only
+  `--kit-*`. No new custom properties.
+- `KIT_VERSION` is `0.4.0`.
+
 ## 0.4.0 — 2026-09-28
 
 Conversation titles, opt-in. Nothing changes unless you pass `title`.

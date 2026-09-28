@@ -51,12 +51,12 @@ const rows = [
 ];
 
 describe('ToolsMenu', () => {
-  it('shows ··· N for groups on Allow, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
+  it('is a plain "Tools" ··· trigger, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
     const changes: string[] = [];
     await render(h(kit.ToolsMenu, { rows, onChange: (k: string, m: string) => changes.push(`${k}:${m}`) }));
-    expect($('[data-testid="kit-tools-count"]')!.textContent).toBe('1');
     const trigger = $('[data-testid="kit-tools-trigger"]')!;
-    expect(trigger.getAttribute('aria-label')).toBe('Tools, 1 allowed without asking');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
+    expect(trigger.textContent).toBe('···');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     await click(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
@@ -105,9 +105,14 @@ describe('ToolsMenu', () => {
     }
   });
 
-  it('shows just ··· with nothing on Allow', async () => {
-    await render(h(kit.ToolsMenu, { rows: rows.map(r => ({ ...r, mode: r.mode === 'allow' ? 'ask' : r.mode })), onChange() {} }));
+  it('carries no Allow count, however many groups are on Allow', async () => {
+    const allAllowed = rows.map(r => (r.locked ? r : { ...r, mode: 'allow' as const }));
+    await render(h(kit.ToolsMenu, { rows: allAllowed, onChange() {} }));
     expect($('[data-testid="kit-tools-count"]')).toBeNull();
+    expect($('.kit-badge')).toBeNull();
+    const trigger = $('[data-testid="kit-tools-trigger"]')!;
+    expect(trigger.textContent).toBe('···');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
   });
 });
 

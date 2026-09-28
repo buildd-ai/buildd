@@ -22,12 +22,13 @@ export const KIT_SHEET_QUERY = '(max-width: 639px)';
 
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
-function sheetMatches(): boolean {
+/** The phone-sheet breakpoint matches now (false without `matchMedia`). */
+export function sheetMatches(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(KIT_SHEET_QUERY).matches;
 }
 
 /** The `--kit-*` values in effect at `el`, as inline style for the portaled sheet. */
-function kitVarsAt(el: Element | null): CSSProperties {
+export function kitVarsAt(el: Element | null): CSSProperties {
   if (!el || typeof getComputedStyle !== 'function') return {};
   const cs = getComputedStyle(el);
   const out: Record<string, string> = {};
