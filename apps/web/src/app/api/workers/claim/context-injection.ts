@@ -35,8 +35,9 @@ import {
   recordTaskAreaPrediction,
   type TaskAreaPrediction,
 } from '@buildd/core/task-area-prediction-source';
-import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
+import { PgVectorStore, getVoyageEmbedder } from '@buildd/core/knowledge-store';
 import { buildSubjectPriorWork } from './subject-prior-work';
+import { CLAIM_FANOUT_CONCURRENCY, mapWithConcurrency } from './concurrency-limit';
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; title: string; workspaceId: string };
@@ -238,12 +239,18 @@ export async function predictTaskAreas(
     const config = await loadTaskAreaConfig();
     if (!config.enabled) return out;
 
-    const store = new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    // No reranker: predictTaskArea only needs neighbour task ids + scores to
+    // union their paths (see findNeighbourTasks/unionNeighbourPaths), so the
+    // cross-encoder rerank step is pure overhead here — a store built without
+    // one skips it entirely (PgVectorStore.query no-ops rerank when `reranker`
+    // is null).
+    const store = new PgVectorStore(getVoyageEmbedder());
     // One task's prediction (a Voyage query plus a neighbour-paths lookup) does
     // not depend on any other task's — the loop body's only writes are to this
     // task's own `out` entry and its own DB row, so running the batch
-    // concurrently instead of one task at a time is safe.
-    await Promise.all(claimedTasks.map(async (task) => {
+    // concurrently instead of one task at a time is safe. Capped so a claim
+    // with a deep candidate pool cannot fan out unbounded Neon queries.
+    await mapWithConcurrency(claimedTasks, CLAIM_FANOUT_CONCURRENCY, async (task) => {
       const prediction = await predictTaskArea(store, {
         taskId: task.id,
         workspaceId: task.workspaceId,
@@ -256,7 +263,7 @@ export async function predictTaskAreas(
       if (!prediction) return;
       out.set(task.id, prediction);
       await recordTaskAreaPrediction(prediction);
-    }));
+    });
   } catch (err) {
     console.warn('[claim] task-area prediction unavailable:', (err as Error)?.message ?? err);
   }
@@ -297,8 +304,9 @@ export async function attachKnowledgeContext(
   // Independent per worker — each iteration only reads the shared predictions
   // map and excluded-sources set (both fully populated by the time this runs)
   // and only writes its own `cw`, so the batch can run concurrently instead of
-  // one Voyage embed+rerank round trip at a time.
-  await Promise.all(claimedWorkers.map(async (cw) => {
+  // one Voyage embed+rerank round trip at a time. Capped for the same reason
+  // as predictTaskAreas' batch — see ./concurrency-limit.
+  await mapWithConcurrency(claimedWorkers, CLAIM_FANOUT_CONCURRENCY, async (cw) => {
     const task = claimedTasks.find(t => t.id === cw.taskId);
     if (!task) return;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
@@ -374,7 +382,7 @@ export async function attachKnowledgeContext(
     if (parts.length === 0) return;
 
     sink(cw, parts.join('\n'));
-  }));
+  });
 }
 
 /**

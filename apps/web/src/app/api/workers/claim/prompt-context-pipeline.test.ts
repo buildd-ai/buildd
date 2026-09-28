@@ -73,6 +73,26 @@ mock.module('./mission-handoff-injection', () => ({
   attachMissionHandoff: mockAttachMissionHandoff,
 }));
 
+// Arm assignment defaults to "treatment" so every pre-existing test below
+// keeps exercising the real predictions-gate-knowledge dependency; the
+// dedicated "control arm" tests further down override this per-call.
+const mockLoadTaskAreaConfig = mock(async () => ({ enabled: true, fraction: 1 } as any));
+const mockAssignTaskAreaArm = mock((_taskId: string, config: any) => ({
+  arm: 'neighbour_area',
+  propensity: config.fraction,
+  fraction: config.fraction,
+  policyVersion: config.policyVersion ?? 'v1',
+}));
+
+mock.module('@buildd/core/task-area-prediction-source', () => ({
+  loadTaskAreaConfig: mockLoadTaskAreaConfig,
+}));
+
+mock.module('@buildd/core/task-area-prediction', () => ({
+  assignTaskAreaArm: mockAssignTaskAreaArm,
+  TASK_AREA_TREATMENT_ARM: 'neighbour_area',
+}));
+
 const { runDependentContextInjections } = await import('./prompt-context-pipeline');
 
 function claimedWorker(id: string) {
@@ -93,6 +113,8 @@ beforeEach(() => {
   mockPredictTaskAreas.mockClear();
   mockAttachKnowledgeContext.mockClear();
   mockAppendContextBlock.mockClear();
+  mockLoadTaskAreaConfig.mockClear();
+  mockAssignTaskAreaArm.mockClear();
 });
 
 describe('runDependentContextInjections', () => {
@@ -183,5 +205,56 @@ describe('runDependentContextInjections', () => {
 
     const result = await resultPromise;
     expect(result).toBe(predictions as any);
+  });
+
+  it('predicts only the tasks that were actually claimed, not the full over-fetched candidate pool', async () => {
+    const cw = claimedWorker('task-1');
+    // `claimedTasks` here stands in for route.ts's `filteredTasks` — the whole
+    // over-fetched candidate pool, most of which was not handed out.
+    const claimedTasks = [
+      { id: 'task-1', title: 'Fix the thing', workspaceId: 'ws-1' },
+      { id: 'task-2', title: 'Unrelated candidate', workspaceId: 'ws-1' },
+      { id: 'task-3', title: 'Another candidate', workspaceId: 'ws-1' },
+    ];
+
+    const resultPromise = runDependentContextInjections([cw], claimedTasks as any);
+    predictionsDeferred.resolve(new Map());
+    missionHandoffDeferred.resolve();
+    subjectPriorWorkDeferred.resolve();
+    discrepancyDeferred.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    knowledgeDeferred.resolve();
+    await resultPromise;
+
+    expect(mockPredictTaskAreas).toHaveBeenCalledTimes(1);
+    expect(mockPredictTaskAreas.mock.calls[0]?.[0]).toEqual([
+      { id: 'task-1', title: 'Fix the thing', workspaceId: 'ws-1' },
+    ]);
+  });
+
+  it('does not wait for predictions before starting knowledge context when the claimed task is control-arm', async () => {
+    mockAssignTaskAreaArm.mockImplementationOnce(() => ({
+      arm: 'regex_paths',
+      propensity: 1,
+      fraction: 1,
+      policyVersion: 'v1',
+    }));
+    const cw = claimedWorker('task-1');
+    const claimedTasks = [{ id: 'task-1', title: 'Fix the thing', workspaceId: 'ws-1' }];
+
+    const resultPromise = runDependentContextInjections([cw], claimedTasks as any);
+    missionHandoffDeferred.resolve();
+    // predictionsDeferred is deliberately left unresolved — knowledge must not
+    // need it for a batch with no treatment-arm task.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(started).toContain('knowledge');
+    expect(finished).not.toContain('predictTaskAreas');
+
+    knowledgeDeferred.resolve();
+    subjectPriorWorkDeferred.resolve();
+    discrepancyDeferred.resolve();
+    predictionsDeferred.resolve(new Map());
+    await resultPromise;
   });
 });

@@ -123,6 +123,15 @@ describe('findNeighbourTasks', () => {
     expect(askedTopK).toBeGreaterThan(5);
   });
 
+  it('queries vector-only, with graph expansion and hit tracking off — this only needs ids + scores', async () => {
+    let seenParams: any = null;
+    await findNeighbourTasks(
+      { query: async (_ns: string, p: any) => { seenParams = p; return []; } } as any,
+      { workspaceId: 'ws-1', taskId: 'self', seedText: 'fix the claim route', config: cfg() },
+    );
+    expect(seenParams).toMatchObject({ mode: 'vector', useGraph: false, trackHits: false });
+  });
+
   it('does not query at all on empty seed text', async () => {
     let called = false;
     const out = await findNeighbourTasks(
