@@ -1394,6 +1394,13 @@
       "when": 1790547505781,
       "tag": "0201_natural_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1790555685810,
+      "tag": "0202_careless_shadowcat",
+      "breakpoints": true
     }
   ]
 }
