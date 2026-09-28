@@ -69,6 +69,7 @@ import {
   type DecisionQuestions,
   type DecisionUsage,
   type DecisionEndpoint,
+  type UsageSink,
 } from '@builddai/ai-kit/decide';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
@@ -101,6 +102,8 @@ export type {
   DecisionAnswers,
   DecisionUsage,
   GateOutcome,
+  DecisionReceipt,
+  UsageSink,
 } from '@builddai/ai-kit/decide';
 
 /** OpenRouter's System One API root, per OpenRouter's TypeSafe SDK guide. */
@@ -254,6 +257,13 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   apiKey?: string;
   /** With `apiKey` only: where to send it (default Jev on OpenRouter). A team call uses the team's decision model. */
   endpoint?: DecisionEndpoint;
+  /**
+   * Receipt sink (the kit's): called once per call that reached the provider,
+   * timeouts and errors included; never for a gated or keyless call.
+   */
+  onUsage?: UsageSink;
+  /** Stamped on the receipt, e.g. the `ai_usage` kind. */
+  decisionId?: string;
   /** Test seams. */
   fetcher?: Fetcher;
   sleep?: (ms: number) => Promise<void>;
@@ -315,6 +325,8 @@ export async function decisionCall<Q extends DecisionQuestions>(
     retryBackoffMs: 250,
     minRetryBudgetMs: 500,
     headers: { ...ATTRIBUTION_HEADERS },
+    ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+    ...(params.decisionId ? { decisionId: params.decisionId } : {}),
     fetch: fetcher,
     sleep,
     now,

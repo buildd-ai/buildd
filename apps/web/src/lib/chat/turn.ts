@@ -37,7 +37,7 @@ import {
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
-import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
+import { routeTurn, logRoutingRecord, FALLBACK_TIER, type RoutableWorkspace, type RoutingRecord, type TurnRoute } from './routing';
 import { titleToCheck } from './retitle-policy';
 import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
 import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
@@ -164,6 +164,16 @@ export function turnEntry(raw: unknown): ChatTurnEntry | null {
   return intent || about ? { intent, about } : null;
 }
 
+/**
+ * The user message's `usage`: the routing call's spend plus its record under
+ * `routing` (jsonb, no migration). A call that failed spent nothing, so the
+ * record rides on zero tokens with a null cost, which the budget sums skip.
+ */
+export function userTurnUsage(route: Pick<TurnRoute, 'usage' | 'routing'>): (ChatUsage & { routing?: RoutingRecord }) | null {
+  if (!route.routing) return route.usage ?? null;
+  return { ...(route.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: null }), routing: route.routing };
+}
+
 function userText(message: ChatTurnRequest['message']): string | null {
   const texts = message.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? ''));
   const text = texts.join('\n').trim();
@@ -233,6 +243,7 @@ export async function runChatTurn(args: {
 
   if (message.role === 'user') {
     route = await routePromise!;
+    if (route.routing) logRoutingRecord(route.routing);
     // A tier the person pinned for this conversation wins over routing's pick.
     if (conv.tier) route = { ...route, tier: conv.tier };
   } else {
@@ -299,8 +310,9 @@ export async function runChatTurn(args: {
     const saved = await insertMessage({
       conversationId: conv.id, role: 'user', authorUserId: user.id,
       parts: [{ type: 'text', text: text! }],
-      // The routing decision call's spend, so the daily budget counts it.
-      usage: route.usage ?? null,
+      // The routing decision call's spend, so the daily budget counts it, and
+      // its content-free record (a failed call spent nothing: zero, cost null).
+      usage: userTurnUsage(route),
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];

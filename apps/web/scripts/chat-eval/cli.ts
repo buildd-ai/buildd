@@ -11,9 +11,12 @@
  *   questions --synth 40 [--replace] [--model sonnet]   likely questions from Claude (OAuth), grounded in live state
  *   questions --add "text" [--weight 3]     add one by hand
  *   questions --classify       Jev: chat's router (complexity / intent / area) on each
+ *   questions --classify --timeout 900   observe routing at production's deadline: outcome
+ *       and latency tally, stored classifications untouched
  *   questions --list
  *   run --surface chat|mcp [--routing jev|fallback|all] [--model sonnet|haiku|opus|tier]
  *       [--limit N] [--ids a,b] [--area tasks] [--workspace name] [--concurrency 2] [--label x]
+ *       [--timeout 900]        route each question live at this deadline (a timeout is a fallback turn)
  *   judge --run <id>           Jev judges answered / efficiency / obstacle per question
  *   report --run <id> [--vs <id>]
  *
@@ -30,7 +33,9 @@ import {
 } from './lib/surfaces';
 import { runClaude, type ClaudeRun } from './lib/claude';
 import { callRemoteTool } from './lib/remote';
-import { classify, judge, type Classification, type Judgement } from './lib/jev';
+import { classify, judge, routeForEval, EVAL_ROUTING_TIMEOUT_MS, type Classification, type Judgement } from './lib/jev';
+import { formatRoutingSummary, parseTimeoutMs, summarizeRouting } from './lib/routing-summary';
+import type { RoutingRecord } from '../../src/lib/chat/routing';
 import { TOOL_GROUPS, type ToolGroup } from '../../src/lib/chat/registry';
 
 const argv = process.argv.slice(2);
@@ -217,6 +222,21 @@ Reply with ONLY a JSON array: [{"text": "...", "likelihood": 1-5, "note": "what 
     saveQuestions(qs);
     console.log(`synthesized ${added} new questions (${r.totalInput} in / ${r.totalOutput} out tokens, OAuth)`);
   }
+  if (flag(argv, 'classify') && arg(argv, 'timeout') !== undefined) {
+    // Observation only: a production-deadline timeout must not erase a good
+    // classification made at the eval's generous one.
+    const timeoutMs = parseTimeoutMs(arg(argv, 'timeout'), EVAL_ROUTING_TIMEOUT_MS);
+    const records: Array<{ qid: string; routing: RoutingRecord }> = [];
+    await pool(qs, 4, async q => {
+      const { route } = await routeForEval(q.text, timeoutMs);
+      if (route.routing) records.push({ qid: q.id, routing: route.routing });
+    });
+    const file = dataPath(`routing-${timeoutMs}ms-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.jsonl`);
+    writeFileSync(file, records.map(r => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''));
+    console.log(formatRoutingSummary(summarizeRouting(records.map(r => r.routing)), timeoutMs));
+    console.log(`records: ${file}`);
+    return;
+  }
   if (flag(argv, 'classify')) {
     const todo = qs.filter(q => flag(argv, 'force') || !q.classification);
     await pool(todo, 4, async q => { q.classification = await classify(q.text).catch(() => null); });
@@ -239,6 +259,8 @@ export interface RunResult {
   area: string | null;
   run: Omit<ClaudeRun, 'steps'> & { steps: ClaudeRun['steps'] };
   judgement?: Judgement | { error: string };
+  /** With `--timeout`: the live routing call's record for this question. */
+  routing?: RoutingRecord;
 }
 
 async function pool<T>(items: T[], n: number, fn: (t: T) => Promise<void>) {
@@ -254,6 +276,7 @@ async function cmdRun() {
   const surface = (arg(argv, 'surface') ?? 'chat') as Surface;
   const routing = arg(argv, 'routing') ?? 'jev';
   const modelArg = arg(argv, 'model') ?? 'sonnet';
+  const liveTimeout = arg(argv, 'timeout') !== undefined ? parseTimeoutMs(arg(argv, 'timeout'), EVAL_ROUTING_TIMEOUT_MS) : null;
   let qs = loadQuestions().sort((a, b) => b.weight - a.weight);
   const ids = arg(argv, 'ids')?.split(',');
   if (ids) qs = qs.filter(q => ids.includes(q.id));
@@ -268,7 +291,7 @@ async function cmdRun() {
   const pinName = arg(argv, 'workspace');
   const pinned = pinName ? all.find(w => w.name === pinName || w.id === pinName) ?? null : null;
   if (pinName && !pinned) throw new Error(`workspace ${pinName} not in reach`);
-  writeFileSync(out('meta.json'), JSON.stringify({ runId, surface, routing, model: modelArg, workspace: pinned?.name ?? null, questions: qs.length, at: new Date().toISOString() }, null, 2));
+  writeFileSync(out('meta.json'), JSON.stringify({ runId, surface, routing, routingTimeoutMs: liveTimeout, model: modelArg, workspace: pinned?.name ?? null, questions: qs.length, at: new Date().toISOString() }, null, 2));
   console.log(`run ${runId}: ${qs.length} questions on ${surface}${surface === 'chat' ? ` (routing ${routing})` : ''}, model ${modelArg}`);
 
   await pool(qs, Number(arg(argv, 'concurrency') ?? 2), async q => {
@@ -276,10 +299,16 @@ async function cmdRun() {
     let system: string;
     let area: string | null = null;
     let model = modelArg;
+    let routingRecord: RoutingRecord | undefined;
     if (surface === 'chat') {
-      let c = q.classification;
-      if (routing === 'jev' && !c) c = await classify(q.text).catch(() => null);
-      const route = routing === 'jev' ? c?.route : undefined;
+      let route: Classification['route'] | undefined;
+      if (routing === 'jev' && liveTimeout !== null) {
+        // Live, at the given deadline: a failed call routes like production (fallback).
+        route = (await routeForEval(q.text, liveTimeout).catch(() => null))?.route;
+        routingRecord = route?.routing;
+      } else if (routing === 'jev') {
+        route = (q.classification ?? await classify(q.text).catch(() => null))?.route;
+      }
       area = routing === 'all' ? 'all' : route?.area ?? null;
       defs = activeChatDefs(chatToolDefs({ allowWrites: route?.allowWrites ?? true }), chatGroups(routing === 'all' ? 'all' : (route?.area ?? null)));
       if (modelArg === 'tier') model = TIER_MODEL[route?.tier ?? 'standard'];
@@ -308,6 +337,7 @@ async function cmdRun() {
       tools: defs.map(d => d.name),
       toolsTokensEst: defs.reduce((s, d) => s + estTokens(JSON.stringify({ name: d.name, description: d.description, input_schema: d.inputSchema })), 0),
       run,
+      ...(routingRecord ? { routing: routingRecord } : {}),
     };
     appendFileSync(out('results.jsonl'), `${JSON.stringify(r)}\n`);
     console.log(`${q.id}  ${lpad(run.totalInput, 7)} in ${lpad(run.totalOutput, 5)} out  ${run.toolUses.length} calls  ${run.ok ? '' : `[${run.error}] `}${q.text.slice(0, 60).replace(/\n/g, ' ')}`);

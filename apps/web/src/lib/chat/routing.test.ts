@@ -7,7 +7,7 @@ mock.module('@buildd/core/decision-client', () => ({
     : { apply: false, reason: 'low_confidence', label: a.choice, confidence: a.confidence }),
 }));
 
-const { routeTurn, FALLBACK_TIER, workspaceHint, TITLE_TOPIC_QUESTION } = await import('./routing');
+const { routeTurn, FALLBACK_TIER, workspaceHint, TITLE_TOPIC_QUESTION, ROUTING_DECISION_ID, logRoutingRecord } = await import('./routing');
 
 const input = { teamId: 't', workspaceId: null, userId: 'u', message: 'make this a mission' };
 const answer = (complexity: [string, number], intent: [string, number]) => async () => ({
@@ -20,13 +20,13 @@ const answer = (complexity: [string, number], intent: [string, number]) => async
 
 describe('routeTurn', () => {
   it('no decision available ⇒ standard tier with every tool', async () => {
-    expect(await routeTurn(input)).toEqual({ tier: 'standard', allowWrites: true, source: 'fallback' });
+    expect(await routeTurn(input)).toMatchObject({ tier: 'standard', allowWrites: true, source: 'fallback' });
     expect(FALLBACK_TIER).toBe('standard');
   });
 
   it('a throwing decision call still falls back', async () => {
     expect(await routeTurn(input, { decide: async () => { throw new Error('boom'); } }))
-      .toEqual({ tier: 'standard', allowWrites: true, source: 'fallback' });
+      .toMatchObject({ tier: 'standard', allowWrites: true, source: 'fallback' });
   });
 
   it('confident complexity maps simple/standard/complex to budget/standard/premium', async () => {
@@ -161,3 +161,102 @@ describe('routeTurn: title topic (re-title shadow)', () => {
   });
 });
 
+
+describe('routeTurn: the routing record (content-free)', () => {
+  const MESSAGE = 'SECRET-MESSAGE-TEXT please pause checkout';
+  const TITLE = 'SECRET-TITLE Release status';
+  const workspaces = [
+    { id: 'ws-a', name: 'SECRET-WS-billing', hint: 'SECRET-HINT stripe' },
+    { id: 'ws-b', name: 'docs-site', hint: null },
+  ];
+  const full = { ...input, message: MESSAGE, previous: 'SECRET-PREVIOUS', title: TITLE, workspaces };
+  const failed = (error: any) => async () => ({ ok: false as const, error, latencyMs: 912, attempts: 1 }) as any;
+  const answered = (a: Record<string, [string, number]>) => async () => ({
+    ok: true as const,
+    answers: Object.fromEntries(Object.entries(a).map(([k, [choice, confidence]]) => [k, { choice, confidence }])),
+    usage: { inputTokens: 300, outputTokens: 12, costUsd: 0.0004 },
+    latencyMs: 420, attempts: 1,
+  }) as any;
+
+  it('a gate applied: outcome decision, with latency, attempts, shape and every answer', async () => {
+    const r = await routeTurn(full, { decide: answered({
+      complexity: ['simple', 0.95], intent: ['act', 0.95], area: ['tasks', 0.5],
+      workspace: ['SECRET-WS-billing', 0.9], topic: ['new_topic', 0.6],
+    }) });
+    expect(r.routing).toEqual({
+      outcome: 'decision', latencyMs: 420, attempts: 1,
+      questionCount: 5, workspaceCount: 2, topicAsked: true,
+      answers: {
+        complexity: { label: 'simple', confidence: 0.95, applied: true },
+        intent: { label: 'act', confidence: 0.95, applied: true },
+        area: { label: 'tasks', confidence: 0.5, applied: false },
+        workspace: { label: 'ws-a', confidence: 0.9, applied: true },
+        topic: { label: 'new_topic', confidence: 0.6, applied: true },
+      },
+    });
+    expect(r.source).toBe('decision');
+  });
+
+  it('answered but nothing cleared a gate: low_confidence, not an error', async () => {
+    const r = await routeTurn(input, { decide: answered({ complexity: ['simple', 0.5], intent: ['act', 0.5], area: ['tasks', 0.3] }) });
+    expect(r.source).toBe('fallback');
+    expect(r.routing).toMatchObject({ outcome: 'low_confidence', questionCount: 3, workspaceCount: 0, topicAsked: false });
+    expect(r.routing!.answers.complexity).toEqual({ label: 'simple', confidence: 0.5, applied: false });
+    expect(r.routing!.answers.workspace).toBeUndefined();
+  });
+
+  it('a workspace question the model skipped is recorded as unanswered', async () => {
+    const r = await routeTurn({ ...input, workspaces }, { decide: answered({ complexity: ['simple', 0.95], intent: ['act', 0.5] }) });
+    expect(r.routing!.answers.workspace).toEqual({ label: null, confidence: null, applied: false });
+    expect(r.routing!.answers.area).toEqual({ label: null, confidence: null, applied: false });
+  });
+
+  for (const error of [
+    { kind: 'timeout', timeoutMs: 900 },
+    { kind: 'missing_key' },
+    { kind: 'capability_disabled', capability: 'chat' },
+    { kind: 'provider_error', status: 502, body: 'upstream said SECRET-MESSAGE-TEXT' },
+    { kind: 'rate_limited' },
+    { kind: 'transport', message: 'fetch failed' },
+    { kind: 'parse', message: 'bad answer' },
+  ]) {
+    it(`a failed call records error:${error.kind}, its latency and attempts`, async () => {
+      const r = await routeTurn(full, { decide: failed(error) });
+      expect(r).toMatchObject({ tier: 'standard', allowWrites: true, source: 'fallback' });
+      expect(r.routing).toEqual({
+        outcome: `error:${error.kind}` as any, latencyMs: 912, attempts: 1,
+        questionCount: 5, workspaceCount: 2, topicAsked: true, answers: {},
+      });
+    });
+  }
+
+  it('a throw records error:threw with the measured latency', async () => {
+    let t = 1_000;
+    const r = await routeTurn(input, { now: () => t, decide: async () => { t += 37; throw new Error('boom SECRET-MESSAGE-TEXT'); } });
+    expect(r.routing).toEqual({ outcome: 'error:threw', latencyMs: 37, attempts: 0, questionCount: 3, workspaceCount: 0, topicAsked: false, answers: {} });
+  });
+
+  it('never carries message, previous, title, workspace names or hints, whatever the outcome', async () => {
+    const outcomes = [
+      await routeTurn(full, { decide: answered({ complexity: ['simple', 0.95], intent: ['act', 0.95], area: ['tasks', 0.9], workspace: ['SECRET-WS-billing', 0.99], topic: ['same_topic', 0.9] }) }),
+      await routeTurn(full, { decide: answered({ complexity: ['simple', 0.1], intent: ['act', 0.1], workspace: ['SECRET-WS-billing', 0.1] }) }),
+      await routeTurn(full, { decide: failed({ kind: 'provider_error', status: 500, body: 'SECRET-MESSAGE-TEXT' }) }),
+      await routeTurn(full, { decide: async () => { throw new Error('SECRET-MESSAGE-TEXT'); } }),
+    ];
+    for (const r of outcomes) expect(JSON.stringify(r.routing)).not.toContain('SECRET');
+    const lines: string[] = [];
+    logRoutingRecord(outcomes[0].routing!, l => lines.push(l));
+    expect(lines).toHaveLength(1);
+    expect(lines[0].startsWith('[chat-routing] {')).toBe(true);
+    expect(lines[0]).not.toContain('SECRET');
+  });
+
+  it('asks the decision call for a receipt, stamped chat_routing', async () => {
+    const seen: any[] = [];
+    const onUsage = () => {};
+    await routeTurn(input, { onUsage, decide: async (p: any) => { seen.push(p); return { ok: false, error: { kind: 'timeout', timeoutMs: 900 }, latencyMs: 900, attempts: 1 } as any; } });
+    expect(seen[0].decisionId).toBe(ROUTING_DECISION_ID);
+    expect(ROUTING_DECISION_ID).toBe('chat_routing');
+    expect(seen[0].onUsage).toBe(onUsage);
+  });
+});
