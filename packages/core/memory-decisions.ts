@@ -81,6 +81,8 @@ export const DIRECTIVE_SCOPE_MIN_CONFIDENCE = 0.8;
 
 /** Use labels written per completed task. */
 export const MAX_USE_LABELS_PER_TASK = 10;
+/** Promote verdicts per lifecycle call (shadow). */
+export const MAX_PROMOTE_SHADOW_ITEMS = 10;
 /** Relevance verdicts per retrieval (shadow). */
 export const MAX_RELEVANCE_SHADOW_HITS = 8;
 /** Run budget for the off-path fan-outs (use labels, relevance shadow). */
@@ -479,7 +481,24 @@ export interface RelevanceShadowHit {
   gatedBy: string | null;
 }
 
+/** One candidate the lifecycle pass judged, for the shadow promote verdict. */
+export interface PromoteShadowItem {
+  memoryId: string;
+  title?: string | null;
+  content: string;
+  type?: string | null;
+  /** Deterministic evidence, as the rule saw it. Ids and booleans only. */
+  evidence: Record<string, unknown>;
+  /** What the deterministic rule decided: 'promote' or 'hold:<reason>'. */
+  rule: string;
+}
+
 export interface MemoryDecider {
+  /**
+   * Shadow: ask "promote?" over the evidence and log the verdict next to the
+   * rule's. Never acts, never throws. Optional so older fakes still type.
+   */
+  shadowPromote?(input: { scope: MemoryDecisionScope; items: PromoteShadowItem[] }): Promise<void>;
   judgeLearn(input: { scope: MemoryDecisionScope; title: string; content: string; type: MemoryDecisionType }): Promise<LearnJudgement>;
   judgeUpdate(input: { scope: MemoryDecisionScope; incoming: MemoryText; existing: MemoryText & { id: string } }): Promise<UpdateJudgement>;
   labelUses(input: { scope: MemoryDecisionScope; summary: string; memories: Array<MemoryText & { memoryId: string }> }): Promise<UseLabel[]>;
@@ -649,6 +668,30 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
         return labels;
       } catch {
         return items.map(m => ({ memoryId: m.memoryId, outcome: null }));
+      }
+    },
+
+    async shadowPromote({ scope, items }) {
+      const batch = items.slice(0, MAX_PROMOTE_SHADOW_ITEMS);
+      if (batch.length === 0) return;
+      try {
+        const runs = await runMany(MEMORY_PROMOTE_DECISION, scope, batch, i => promoteState(i, i.evidence));
+        if (!runs) return;
+        const rows: MemoryDecisionRow[] = runs.filter(r => r.run).map(({ item, run }) => {
+          const answer = run!.result.ok ? run!.result.answers.promote : null;
+          return {
+            ...baseRow(scope, run as DecisionRun<DecisionQuestions>, MEMORY_PROMOTE_DECISION as Decision<DecisionQuestions>),
+            memoryId: item.memoryId, decision: 'promote' as const, mode: 'shadow' as const, caller: null,
+            verdict: answer ? String(answer.noul >= 0.5) : null,
+            confidence: answer ? noulConfidence(answer.noul) : null,
+            probability: answer?.noul ?? null,
+            rule: item.rule,
+            applied: false,
+          };
+        });
+        safeRecord(deps, rows, receiptsOf(runs.map(r => r.run as DecisionRun<DecisionQuestions> | null)), scope);
+      } catch {
+        // Shadow: nothing depends on it.
       }
     },
 

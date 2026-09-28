@@ -17,12 +17,13 @@
  * (`resolveMemoryHitScope`) and is loaded lazily by `memoryScopeFor`.
  */
 import { normalizeProject } from './project-scope';
+import { memoryStateOf, type MemoryState } from './memory-candidates';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
 /** Memory rows by id, bound to one team. `MemoryStore.batch` satisfies it. */
 export type MemoryRowLookup = (
   ids: string[],
-) => Promise<{ memories: ReadonlyArray<{ id: string; project?: string | null }> }>;
+) => Promise<{ memories: ReadonlyArray<{ id: string; project?: string | null; state?: string | null }> }>;
 
 /** Everything a memory read needs to stay inside the caller's project. */
 export interface MemoryHitScope {
@@ -56,16 +57,25 @@ export function hasMemoryScope(scope: MemoryHitScope | null | undefined): scope 
  * Keep only the hits whose memories row belongs to `scope.project`. Order is
  * preserved. No scope or no project returns []. A failed lookup throws; the
  * caller decides whether that is an error or an empty section.
+ *
+ * `opts.states` narrows further to rows in those lifecycle states (a row with
+ * no state is active; see ./memory-candidates). Omitted: any state, for the
+ * write-side checks (dedupe, supersedes) that must see candidates too.
  */
 export async function keepOwnProjectMemoryHits<T extends MemoryHitLike>(
   hits: readonly T[],
   scope: MemoryHitScope | null | undefined,
+  opts: { states?: readonly MemoryState[] } = {},
 ): Promise<T[]> {
   if (!hasMemoryScope(scope) || hits.length === 0) return [];
   const own = normalizeProject(scope.project);
   const { memories } = await scope.lookup(hits.map(memoryIdOfHit));
+  const states = opts.states ? new Set<string>(opts.states) : null;
   const allowed = new Set(
-    memories.filter(m => normalizeProject(m.project ?? null) === own).map(m => m.id),
+    memories
+      .filter(m => normalizeProject(m.project ?? null) === own)
+      .filter(m => !states || states.has(memoryStateOf(m)))
+      .map(m => m.id),
   );
   return hits.filter(r => allowed.has(memoryIdOfHit(r)));
 }

@@ -411,6 +411,10 @@ export const recallToolDefinition = {
         type: "string" as const,
         description: "Direct fetch by memory ID — bypasses ranking; all other params ignored. Accepts the full ID or the 8-char short ID a memory index line shows (m:1a2b3c4d).",
       },
+      includeCandidates: {
+        type: "boolean" as const,
+        description: "Also return unverified candidate memories (not yet promoted). Default false.",
+      },
     },
   },
 };
@@ -5489,6 +5493,7 @@ import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
 import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import { memoryStateOf, pullMemoryStates, type MemoryProvenance } from './memory-candidates';
 import {
   buildMemoryIndex,
   isMemoryIndexEnabled,
@@ -5645,7 +5650,98 @@ type MemoryActionCtx = {
   memoryLedger?: MemoryLedgerWriter;
   /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
   memoryDecider?: MemoryDecider;
+  /**
+   * Whether new writes land as candidates (workspace flag
+   * `memoryCandidateWrites`). Omitted: read from the workspace, off on any
+   * failure. See ./memory-candidates.
+   */
+  memoryCandidateWrites?: boolean;
+  /** Where this write came from. Omitted: a `learn` by the caller's task. */
+  memoryProvenance?: MemoryProvenance;
+  /**
+   * Any near-duplicate (the conflict band and up) means "already known":
+   * write nothing, supersede nothing. For background extraction, which must
+   * never replace a memory an agent wrote.
+   */
+  memoryDedupeOnly?: boolean;
 };
+
+/** Whether this write lands as a candidate. Never throws; off on any doubt. */
+async function candidateWritesOn(ctx: MemoryActionCtx): Promise<boolean> {
+  if (typeof ctx.memoryCandidateWrites === 'boolean') return ctx.memoryCandidateWrites;
+  // Unit tests never reach a database through a default.
+  if (!ctx.workspaceId || process.env.NODE_ENV === 'test') return false;
+  try {
+    const { resolveMemoryCandidateWrites } = await import('./memory-scope');
+    return await resolveMemoryCandidateWrites(ctx.workspaceId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lifecycle fields for a new row. Empty (so the row is active, exactly as
+ * before) unless the workspace flag is on.
+ */
+async function candidateWriteFields(ctx: MemoryActionCtx): Promise<{
+  state?: 'candidate'; sourceKind?: MemoryProvenance['kind']; sourceId?: string; external?: boolean;
+}> {
+  if (!(await candidateWritesOn(ctx))) return {};
+  const prov = ctx.memoryProvenance;
+  const sourceId = prov?.id ?? ctx.taskId ?? undefined;
+  return {
+    state: 'candidate',
+    sourceKind: prov?.kind ?? 'learn',
+    ...(sourceId ? { sourceId } : {}),
+    ...(prov?.external ? { external: true } : {}),
+  };
+}
+
+/**
+ * Where a candidate write's supersedes go. An ACTIVE target is deferred to
+ * the candidate's `pendingSupersedes` and superseded only when the candidate
+ * is promoted, so a candidate never hides an active memory from push. Any
+ * other state is superseded now. Not a candidate write: everything now, as
+ * before. A failed lookup defers everything (never hide on a doubt).
+ */
+async function splitSupersedes(
+  mc: MemoryStore,
+  ids: string[] | undefined,
+  candidate: boolean,
+): Promise<{ now: string[] | undefined; pending: string[]; rows: Map<string, MemoryRecordShape> }> {
+  const rows = new Map<string, MemoryRecordShape>();
+  if (!ids || ids.length === 0) return { now: ids, pending: [], rows };
+  if (!candidate) return { now: ids, pending: [], rows };
+  try {
+    for (const m of (await mc.batch(ids)).memories as MemoryRecordShape[]) rows.set(m.id, m);
+  } catch {
+    return { now: undefined, pending: [...ids], rows };
+  }
+  const now = ids.filter(id => rows.has(id) && memoryStateOf(rows.get(id)!) !== 'active');
+  const pending = ids.filter(id => !now.includes(id));
+  return { now: now.length > 0 ? now : undefined, pending, rows };
+}
+
+/**
+ * The corroboration link: set ONLY for the automatic near-duplicate match,
+ * when that row is an own-project, non-external candidate or active memory
+ * from another episode. Promotion re-checks all of it (and that the tasks
+ * differ) in SQL; this only refuses what it can already see.
+ */
+function corroborationLink(
+  match: MemoryRecordShape | undefined,
+  lifecycle: Awaited<ReturnType<typeof candidateWriteFields>>,
+  ctx: MemoryActionCtx,
+): string | undefined {
+  if (!match || lifecycle.state !== 'candidate' || lifecycle.sourceKind !== 'learn' || lifecycle.external) return undefined;
+  if (!isOwnMemory(match, ctx) || match.external) return undefined;
+  const st = memoryStateOf(match);
+  if (st !== 'candidate' && st !== 'active') return undefined;
+  if (lifecycle.sourceId && match.sourceId && lifecycle.sourceId === match.sourceId) return undefined;
+  return match.id;
+}
+
+const CANDIDATE_NOTE = ' | saved as a candidate: recall with includeCandidates=true finds it; it is shown at claim time once its task\'s PR merges or another task records the same lesson';
 
 /**
  * Start the keep/type judgement for a write. Bounded by the decider's own
@@ -5876,6 +5972,7 @@ async function fanOutCorpora(
   corpora: Corpus[],
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
   caller: Extract<MemoryCaller, 'recall' | 'query_knowledge'>,
+  memoryOpts: { includeCandidates?: boolean } = {},
 ): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
@@ -5901,6 +5998,7 @@ async function fanOutCorpora(
             store: ks,
             mode: opts.mode,
             excludeSuperseded: true,
+            ...(memoryOpts.includeCandidates ? { includeCandidates: true } : {}),
             attribution: { workerId: ctx.workerId },
             ledger: ctx.memoryLedger,
             onError: 'throw',
@@ -5969,6 +6067,8 @@ export async function handleRecallAction(
       m.tags?.length && `Tags: ${m.tags.join(', ')}`,
       m.files?.length && `Files: ${m.files.join(', ')}`,
       m.source && `Source: ${m.source}`,
+      memoryStateOf(m) !== 'active' && `State: ${memoryStateOf(m)}`,
+      m.reverifyFlaggedAt && `Re-verify: files it names changed since it was written${m.reverifyRef ? ` (${m.reverifyRef})` : ''}`,
     ].filter(Boolean).join('\n');
     return text(`# ${m.title}\n\n${meta}\n\n${m.content}`);
   }
@@ -5995,6 +6095,7 @@ export async function handleRecallAction(
 
   const limit = Math.min((params.limit as number) || 10, 50);
   const query = params.query as string;
+  const includeCandidates = params.includeCandidates === true;
   // Filtering happens after retrieval, so over-fetch when a filter is active —
   // otherwise a topK=limit fetch can come back entirely filtered out even when
   // enough matching chunks exist further down the ranking.
@@ -6008,7 +6109,7 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall');
+    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
@@ -6076,6 +6177,7 @@ export async function handleRecallAction(
       store: ks,
       mode,
       excludeSuperseded: true,
+      ...(includeCandidates ? { includeCandidates: true } : {}),
       filter: isFiltered ? r => matchesRecallFilters(r, filterParams) : undefined,
       attribution: { workerId: ctx.workerId },
       ledger: ctx.memoryLedger,
@@ -6146,6 +6248,8 @@ export async function handleLearnAction(
   const THRESH_CONFLICT = 0.88;
   // Set when Jev resolved the 0.88 to 0.94 band into a write (ADD or SUPERSEDE).
   let bandDecision: UpdateJudgement | null = null;
+  // The automatic (> THRESH_AUTO) match: the only source of a corroboration link.
+  let autoMatchId: string | null = null;
 
   if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
     const ns = buildNamespace(ctx.teamId, 'memory');
@@ -6156,10 +6260,15 @@ export async function handleLearnAction(
     const candidates = (await ownMemoryHits(memoryClient, ctx, nearest).catch(() => [])).slice(0, 5);
 
     const top = candidates[0];
+    if (ctx.memoryDedupeOnly && top && top.similarity >= THRESH_CONFLICT) {
+      (await judging).record(null);
+      return text(`Memory already recorded: ID: ${top.id} (similarity: ${top.similarity.toFixed(3)}) | nothing written`);
+    }
     if (top && top.similarity > THRESH_AUTO) {
       // Auto-supersede: fold the best match into the supersedes list so the
       // upsert marks it as not-current. The caller gets back superseded: 1.
       supersedesParam.ids = [top.id];
+      autoMatchId = top.id;
     } else {
       const conflicts = candidates.filter(c => c.similarity >= THRESH_CONFLICT);
       if (conflicts.length > 0) {
@@ -6186,14 +6295,20 @@ export async function handleLearnAction(
           const existing = band.existing;
           const judgement = await judging;
           const mergeSupersedes = await ownSupersedes(memoryClient, ctx, [existing.id]);
-          if (!mergeSupersedes) {
+          // External text never merges into a row: the merged row would carry
+          // it under the caller's provenance. Refuse, as the conflict reply.
+          if (!mergeSupersedes || existing.external) {
             band.judgement.record(existing.id, false);
             judgement.record(null);
             return text(`Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement.\n\n- ID: ${existing.id}`);
           }
           let merged: Awaited<ReturnType<typeof saveMemory>>;
+          const mergeLifecycle = await candidateWriteFields(ctx);
+          const mergeSplit = await splitSupersedes(memoryClient, mergeSupersedes, mergeLifecycle.state === 'candidate');
           try {
             merged = await saveMemory(memoryClient, {
+              ...mergeLifecycle,
+              ...(mergeSplit.pending.length ? { pendingSupersedes: mergeSplit.pending } : {}),
               type: existing.type,
               title,
               content: mergeMemoryContent(existing.content, content),
@@ -6201,7 +6316,7 @@ export async function handleLearnAction(
               tags: unionStrings(existing.tags, params.tags as string[] | undefined, judgement.addTags),
               files: unionStrings(existing.files, params.files as string[] | undefined),
               source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: mergeSupersedes });
+            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: mergeSplit.now });
           } catch (err) {
             band.judgement.record(existing.id, false);
             judgement.record(null);
@@ -6211,7 +6326,8 @@ export async function handleLearnAction(
           judgement.record(merged.memory.id);
           return text(
             `Memory saved: "${merged.memory.title}" (${merged.memory.type})\nID: ${merged.memory.id}` +
-            ` | merged with near-duplicate ${existing.id}, which is superseded (decision: UPDATE) | superseded: ${merged.superseded}`,
+            ` | merged with near-duplicate ${existing.id}, which is superseded (decision: UPDATE) | superseded: ${merged.superseded}` +
+            (mergeLifecycle.state ? CANDIDATE_NOTE : ''),
           );
         } else {
           band.judgement.record(null, false);
@@ -6234,6 +6350,11 @@ export async function handleLearnAction(
   // team-wide index (auto-supersede ids above already were).
   const learnSupersedes = await ownSupersedes(memoryClient, ctx, supersedesParam.ids);
   const judgement = await judging;
+  const lifecycle = await candidateWriteFields(ctx);
+  const split = await splitSupersedes(memoryClient, learnSupersedes, lifecycle.state === 'candidate');
+  const corroboratedBy = autoMatchId && lifecycle.state === 'candidate'
+    ? corroborationLink(split.rows.get(autoMatchId), lifecycle, ctx)
+    : undefined;
 
   // Saved and mirrored through the one write helper; a failed mirror is
   // recorded there and picked up by the reconcile pass. A "not durable"
@@ -6241,6 +6362,9 @@ export async function handleLearnAction(
   let saved: Awaited<ReturnType<typeof saveMemory>>;
   try {
     saved = await saveMemory(memoryClient, {
+      ...lifecycle,
+      ...(split.pending.length ? { pendingSupersedes: split.pending } : {}),
+      ...(corroboratedBy ? { corroboratedBy } : {}),
       type: judgement.type.type,
       title,
       content,
@@ -6248,7 +6372,7 @@ export async function handleLearnAction(
       tags: judgement.addTags.length ? unionStrings(params.tags as string[] | undefined, judgement.addTags) : params.tags as string[] | undefined,
       files: params.files as string[] | undefined,
       source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-    }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: learnSupersedes });
+    }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: split.now });
   } catch (err) {
     judgement.record(null);
     bandDecision?.record(null, false);
@@ -6262,7 +6386,8 @@ export async function handleLearnAction(
   const supersededStr = supersedesParam.ids !== undefined
     ? ` | superseded: ${learnSuperseded}`
     : '';
-  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}${learnJudgementNote(judgement)}`);
+  const pendingStr = split.pending.length ? ` | replaces ${split.pending.length} active memory(s) once promoted` : '';
+  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}${pendingStr}${learnJudgementNote(judgement)}${lifecycle.state ? CANDIDATE_NOTE : ''}`);
 }
 
 /**
@@ -6301,7 +6426,10 @@ function mergeMemoryContent(existing: string, incoming: string): string {
   return `${a}\n\nUpdate:\n${b}`;
 }
 
-type MemoryRecordShape = { id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[] };
+type MemoryRecordShape = {
+  id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[];
+  state?: string | null; sourceKind?: string | null; sourceId?: string | null; external?: boolean;
+};
 
 /** Log prefix for deprecated `buildd_memory` dispatches — grep prod logs for this. */
 export const BUILDD_MEMORY_DEPRECATION_TAG = '[buildd_memory-deprecated]';
@@ -6379,6 +6507,8 @@ export async function handleMemoryAction(
         type: params.type as string | undefined,
         project: scoped.project,
         files: params.files as string[] | undefined,
+        // A pull: active memories, and candidates when asked for.
+        states: pullMemoryStates(params.includeCandidates === true),
         limit: Math.min((params.limit as number) || 10, 50),
         offset: params.offset as number | undefined,
       });
@@ -6432,9 +6562,13 @@ export async function handleMemoryAction(
       const saveJudging = judgeMemoryWrite(ctx, params.title as string, params.content as string, params.type as MemoryDecisionType);
       const saveIds = await ownSupersedes(mc, ctx, saveSupersedes.ids);
       const saveJudgement = await saveJudging;
+      const saveLifecycle = await candidateWriteFields(ctx);
+      const saveSplit = await splitSupersedes(mc, saveIds, saveLifecycle.state === 'candidate');
       let saved: Awaited<ReturnType<typeof saveMemory>>;
       try {
         saved = await saveMemory(mc, {
+          ...saveLifecycle,
+          ...(saveSplit.pending.length ? { pendingSupersedes: saveSplit.pending } : {}),
           type: saveJudgement.type.type,
           title: params.title as string,
           content: params.content as string,
@@ -6442,7 +6576,7 @@ export async function handleMemoryAction(
           tags: saveJudgement.addTags.length ? unionStrings(params.tags as string[] | undefined, saveJudgement.addTags) : params.tags as string[] | undefined,
           files: params.files as string[] | undefined,
           source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
-        }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveIds });
+        }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveSplit.now });
       } catch (err) {
         saveJudgement.record(null);
         throw err;

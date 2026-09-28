@@ -207,7 +207,7 @@ describe('retrieveMemory (store-search)', () => {
       attribution: { taskId: TASK, workerId: 'not-a-uuid' }, ledger: l.write,
     });
     expect(resolverCalls).toEqual([WS]);
-    expect(searches).toEqual([{ query: 'fix', project: OWN, limit: 5 }]);
+    expect(searches).toEqual([{ query: 'fix', project: OWN, limit: 5, states: ['active'] }]);
     expect(batches).toEqual([['a', 'b']]);
     expect(res.memories.map((m: any) => m.id)).toEqual(['b', 'a']);
     expect(res.total).toBe(42);
