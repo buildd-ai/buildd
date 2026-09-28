@@ -4,11 +4,15 @@ import { join } from 'node:path';
 import type { UsageReceipt } from '../models/index';
 import {
   choice,
+  DECIDE_ENGINE_VERSION,
+  decisionFingerprint,
   defineDecision,
   expectDecisionPinned,
   JEV_MODEL,
   KIT_VERSION,
+  normalizeDecisionVersion,
   noul,
+  parseDecisionVersion,
   score,
   type DecisionReceipt,
   type DecisionRun,
@@ -42,11 +46,29 @@ const config = () => ({
   minConfidence: { concerning: 0.6 },
 });
 
+/** `defineDecision(config()).fingerprint` on kit 0.9.1. */
+const LEGACY_FINGERPRINT = '115057d5a3e5';
+
 describe('defineDecision versioning', () => {
-  it('names prompt version, model and kit release', () => {
+  it('names prompt version, model and decide engine; the kit release is metadata', () => {
     const d = defineDecision(config());
-    expect(d.version).toBe(`2026-09-27.a|${JEV_MODEL}|kit-${KIT_VERSION}`);
+    expect(d.version).toBe(`2026-09-27.a|${JEV_MODEL}|engine-${DECIDE_ENGINE_VERSION}`);
+    expect(d.version).not.toContain(KIT_VERSION);
+    expect(d.engine).toBe(DECIDE_ENGINE_VERSION);
+    expect(d.kitVersion).toBe(KIT_VERSION);
     expect(d.fingerprint).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  it('fingerprints pinned before 0.10.0 are unchanged (engine 1 adds nothing to the hash)', () => {
+    // Pinned on kit 0.9.1 for this exact config; a kit release must not move it.
+    expect(DECIDE_ENGINE_VERSION).toBe(1);
+    expect(defineDecision(config()).fingerprint).toBe(decisionFingerprint(config(), 1));
+    expect(defineDecision(config()).fingerprint).toBe(LEGACY_FINGERPRINT);
+  });
+
+  it('an engine bump changes the fingerprint, so a fingerprint-only pin still fails', () => {
+    expect(decisionFingerprint(config(), 2)).not.toBe(decisionFingerprint(config(), 1));
+    expect(decisionFingerprint(config(), 3)).not.toBe(decisionFingerprint(config(), 2));
   });
 
   it('KIT_VERSION matches package.json', () => {
@@ -207,5 +229,48 @@ describe('receipts fit /models', () => {
     const input = toModelsUsage(receipt, { planId: '00000000-0000-4000-8000-000000000000', tier: 'standard' });
     expect(input.plan).toMatchObject({ planSource: 'default', tier: 'standard' });
     expect(input.kind).toBe('decision');
+  });
+});
+
+describe('legacy version strings', () => {
+  const legacy = `2026-09-27.a|${JEV_MODEL}|kit-0.9.1`;
+
+  it('parses both forms', () => {
+    expect(parseDecisionVersion(legacy)).toEqual({ promptVersion: '2026-09-27.a', model: JEV_MODEL, engine: 1, kitVersion: '0.9.1', legacy: true });
+    expect(parseDecisionVersion(`v1|${JEV_MODEL}|engine-2`)).toEqual({ promptVersion: 'v1', model: JEV_MODEL, engine: 2, kitVersion: null, legacy: false });
+    expect(parseDecisionVersion('2026-09-27.a|openai/gpt-oss-20b:free|kit-0.7.0-rc.1')?.kitVersion).toBe('0.7.0-rc.1');
+    for (const bad of ['', 'v1', `v1|${JEV_MODEL}`, `v1|${JEV_MODEL}|sdk-0.6.0`, `v1|${JEV_MODEL}|kit-latest`, `a|b|c|kit-0.9.1`]) {
+      expect(parseDecisionVersion(bad)).toBeNull();
+    }
+  });
+
+  it('normalises every pre-0.10.0 kit release of a definition to one identity', () => {
+    const current = defineDecision(config()).version;
+    for (const kit of ['0.1.1', '0.2.0', '0.3.0', '0.4.0', '0.6.1', '0.8.0', '0.9.1']) {
+      expect(normalizeDecisionVersion(`2026-09-27.a|${JEV_MODEL}|kit-${kit}`)).toBe(current);
+    }
+    expect(normalizeDecisionVersion(current)).toBe(current);
+  });
+
+  it('leaves other strings alone and keeps prompt version and model apart', () => {
+    expect(normalizeDecisionVersion(`v1|${JEV_MODEL}|sdk-0.6.0`)).toBe(`v1|${JEV_MODEL}|sdk-0.6.0`);
+    expect(normalizeDecisionVersion('free text')).toBe('free text');
+    expect(normalizeDecisionVersion(`v2|${JEV_MODEL}|kit-0.9.1`)).not.toBe(normalizeDecisionVersion(`v1|${JEV_MODEL}|kit-0.9.1`));
+    expect(normalizeDecisionVersion('v1|typesafe/jev-1.14|kit-0.9.1')).not.toBe(normalizeDecisionVersion(`v1|${JEV_MODEL}|kit-0.9.1`));
+  });
+
+  it('expectDecisionPinned accepts a legacy pin of the same identity, and nothing else', () => {
+    const d = defineDecision(config());
+    expect(() => expectDecisionPinned(d, { fingerprint: d.fingerprint, version: legacy })).not.toThrow();
+    expect(() => expectDecisionPinned(d, { fingerprint: d.fingerprint, version: d.version })).not.toThrow();
+    expect(() => expectDecisionPinned(d, { fingerprint: d.fingerprint, version: `2026-09-26.z|${JEV_MODEL}|kit-0.9.1` })).toThrow(/decide engine/);
+    expect(() => expectDecisionPinned(d, { fingerprint: d.fingerprint, version: `2026-09-27.a|${JEV_MODEL}|engine-2` })).toThrow(/re-run the eval/);
+  });
+
+  it('runs and eval reports carry kitVersion as metadata', async () => {
+    const d = defineDecision(config());
+    const run = await d.run({ apiKey: null, state: 'x' });
+    expect(run.version).toBe(d.version);
+    expect(run.kitVersion).toBe(KIT_VERSION);
   });
 });
