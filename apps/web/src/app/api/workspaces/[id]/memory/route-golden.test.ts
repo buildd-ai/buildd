@@ -16,7 +16,11 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: async () => ({ id: 'acct-1' }) },
-      workspaces: { findFirst: async () => ({ repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', teamId: teamIdForTest }) },
+      workspaces: {
+        findFirst: async () => ({ id: 'ws-1', repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', teamId: teamIdForTest, dataClass: 'standard' }),
+        // No sensitive workspace in the team: the memory key stays open.
+        findMany: async () => [],
+      },
     },
     insert: () => ({
       values: (values: unknown) => {

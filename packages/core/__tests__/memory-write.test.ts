@@ -136,3 +136,30 @@ describe('mirrorMemoryToIndex', () => {
     expect(res).toEqual({ mirrored: true, superseded: 0 });
   });
 });
+
+describe('supersession is recorded on the rows', () => {
+  it('marks the superseded rows even when the mirror failed', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const marked: Array<{ ids: string[]; by: string }> = [];
+    const client = {
+      save: async () => ({ memory: record({ id: 'new-1' }) as any }),
+      markSuperseded: async (ids: string[], by: string) => { marked.push({ ids, by }); return ids.length; },
+    };
+    const { store } = recordingStore({ fail: true });
+    await saveMemory(client, { type: 'gotcha', title: 'T', content: 'C' }, {
+      teamId: TEAM, knowledgeStore: store, via: 'learn', supersedes: ['old-1'],
+    });
+    expect(marked).toEqual([{ ids: ['old-1'], by: 'new-1' }]);
+    warn.mockRestore();
+  });
+
+  it('does not touch rows when nothing is superseded', async () => {
+    const marked: unknown[] = [];
+    const client = {
+      update: async () => ({ memory: record() as any }),
+      markSuperseded: async (ids: string[]) => { marked.push(ids); return 0; },
+    };
+    await updateMemory(client, 'mem-1', { content: 'x' }, { teamId: TEAM, knowledgeStore: recordingStore().store, via: 'dashboard:update' });
+    expect(marked).toEqual([]);
+  });
+});

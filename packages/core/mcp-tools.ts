@@ -1185,7 +1185,10 @@ async function checkWriteFence(
  * excluded: path-keyed supersession already covers them, and defines-sets from
  * regex extraction are too weak there to key replacement on.
  */
-const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['memory', 'task', 'plan', 'artifact']);
+// Not 'memory': that namespace is team-wide, and entity-keyed supersession
+// would flip other projects' memories. Memory supersession goes only through
+// explicit `supersedes` narrowed to the caller's project (ownSupersedes).
+const ENTITY_SUPERSEDABLE_CORPORA: ReadonlySet<string> = new Set(['task', 'plan', 'artifact']);
 
 /**
  * Validate an agent-supplied `supersedes` param.
@@ -6231,7 +6234,8 @@ export async function handleMemoryAction(
       const memSuperseded = saved.superseded;
 
       let memEntityBinding: EntityBinding | null = null;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      // Entity refs bind to the chunk, so only once the chunk exists.
+      if (ctx.teamId && ctx.knowledgeStore && saved.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
@@ -6302,7 +6306,7 @@ export async function handleMemoryAction(
       const updateSuperseded = updated.superseded;
 
       let updateEntityBinding: EntityBinding | null = null;
-      if (ctx.teamId && ctx.knowledgeStore) {
+      if (ctx.teamId && ctx.knowledgeStore && updated.mirrored) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
         // Layer 2: re-bind entity refs on update

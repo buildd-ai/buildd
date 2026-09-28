@@ -14,7 +14,23 @@ const updated: any[] = [];
 let deleted = 0;
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => currentUser }));
-mock.module('@/lib/team-access', () => ({ getUserTeamIds: async () => ['team-first'] }));
+// Workspace access: which workspaces user-1 can reach, and in which team.
+let access: Record<string, string> = { 'ws-mine': 'team-mine' };
+let userTeams: string[] = ['team-first', 'team-mine'];
+type Home = { workspaceId: string; teamId?: undefined } | { workspaceId: null; teamId: string } | null;
+let entityHome: Home = { workspaceId: 'ws-mine' };
+const resolvedRefs: Array<{ entityType: string; entityId: string }> = [];
+mock.module('@/lib/team-access', () => ({
+  getUserTeamIds: async () => userTeams,
+  verifyWorkspaceAccess: async (_userId: string, wsId: string) =>
+    access[wsId] ? { teamId: access[wsId], role: 'member' } : null,
+}));
+mock.module('@/lib/feedback-entity-workspace', () => ({
+  resolveFeedbackEntityHome: async (entityType: string, entityId: string) => {
+    resolvedRefs.push({ entityType, entityId });
+    return entityHome;
+  },
+}));
 mock.module('@/lib/chat/turn-feedback', () => ({ rateableTurnTeam: async () => turnTeam }));
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -39,6 +55,10 @@ beforeEach(() => {
   inserted.length = 0;
   updated.length = 0;
   deleted = 0;
+  access = { 'ws-mine': 'team-mine' };
+  userTeams = ['team-first', 'team-mine'];
+  entityHome = { workspaceId: 'ws-mine' };
+  resolvedRefs.length = 0;
 });
 
 describe('POST /api/feedback — conversation_message', () => {
@@ -85,13 +105,69 @@ describe('POST /api/feedback — conversation_message', () => {
   it('other entity types keep their behaviour', async () => {
     const res = await post({ entityType: 'note', entityId: 'n1', signal: 'up', comment: 'nice' });
     expect(res.status).toBe(201);
-    expect(inserted[0]).toMatchObject({ teamId: 'team-first', comment: 'nice' });
+    expect(inserted[0]).toMatchObject({ comment: 'nice' });
     expect(inserted[0].reason).toBeUndefined();
   });
 
   it('requires a session', async () => {
     currentUser = null;
     expect((await post({ entityType: 'conversation_message', entityId: MSG, signal: 'up' })).status).toBe(401);
+  });
+});
+
+// Invariant: feedback on workspace content is only accepted from someone who
+// can access that workspace, and it is recorded under that workspace's team.
+describe('POST /api/feedback: rated entity must be in a workspace the rater can access', () => {
+  it('records feedback under the rated workspace team, not the rater\'s first team', async () => {
+    const res = await post({ entityType: 'artifact', entityId: 'a-1', signal: 'down', comment: 'meh' });
+    expect(res.status).toBe(201);
+    expect(resolvedRefs).toEqual([{ entityType: 'artifact', entityId: 'a-1' }]);
+    expect(inserted[0]).toMatchObject({ teamId: 'team-mine', entityType: 'artifact', entityId: 'a-1' });
+  });
+
+  it('refuses an entity in a workspace the rater cannot access, and writes nothing', async () => {
+    entityHome = { workspaceId: 'ws-theirs' };
+    const res = await post({ entityType: 'note', entityId: 'n-1', signal: 'down', comment: 'x' });
+    expect(res.status).toBe(404);
+    expect(inserted).toEqual([]);
+    expect(updated).toEqual([]);
+  });
+
+  it('refuses an entity that resolves to no workspace, with the same reply', async () => {
+    entityHome = { workspaceId: 'ws-theirs' };
+    const foreign = await post({ entityType: 'summary', entityId: 'task-x-summary', signal: 'down' });
+    entityHome = null;
+    const missing = await post({ entityType: 'summary', entityId: 'task-x-summary', signal: 'down' });
+    expect(missing.status).toBe(foreign.status);
+    expect(await missing.json()).toEqual(await foreign.json());
+    expect(inserted).toEqual([]);
+  });
+
+  it('does not let a toggle on an inaccessible entity reach the existing row', async () => {
+    existing = { id: 'fb-1', signal: 'down', reason: null };
+    entityHome = { workspaceId: 'ws-theirs' };
+    const res = await post({ entityType: 'heartbeat', entityId: 't-1', signal: 'down' });
+    expect(res.status).toBe(404);
+    expect(deleted).toBe(0);
+  });
+});
+
+describe('POST /api/feedback: team-level content (no workspace)', () => {
+  it('accepts a team member and records it under the content team', async () => {
+    entityHome = { workspaceId: null, teamId: 'team-mine' };
+    const res = await post({ entityType: 'note', entityId: 'n-team', signal: 'down' });
+    expect(res.status).toBe(201);
+    expect(inserted[0]).toMatchObject({ teamId: 'team-mine', entityType: 'note' });
+  });
+
+  it('refuses a non-member with the same reply as a missing entity', async () => {
+    entityHome = { workspaceId: null, teamId: 'team-other' };
+    const foreign = await post({ entityType: 'artifact', entityId: 'a-team', signal: 'down' });
+    entityHome = null;
+    const missing = await post({ entityType: 'artifact', entityId: 'a-team', signal: 'down' });
+    expect(foreign.status).toBe(404);
+    expect(await foreign.json()).toEqual(await missing.json());
+    expect(inserted).toEqual([]);
   });
 });
 

@@ -15,7 +15,7 @@ import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { saveMemory } from '@buildd/core/memory-write';
-import { workspaceProjectKey } from '@buildd/core/project-scope';
+import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
 
 async function authenticateRequest(req: NextRequest) {
@@ -49,22 +49,22 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
 }
 
 /**
- * Canonical project scope key for this workspace. `workspaces.repo` is itself
- * inconsistent (mostly full URLs, at least one bare `owner/repo`), so it is
- * reduced to the same canonical form the memories rows carry — otherwise the
- * list scoped a URL against short-form rows and returned nothing.
+ * The workspace's memory project key, by the rule every memory read uses
+ * (memoryProjectKey): null for a sensitive workspace, or one whose key is
+ * shared with a sensitive workspace in the team. The store is team-wide, so
+ * this key is the only thing keeping the dashboard inside the workspace.
  */
-async function getWorkspaceProject(id: string): Promise<string | undefined> {
-  return (await getWorkspaceScope(id)).project;
+async function getWorkspaceProject(id: string): Promise<string | null> {
+  return resolveMemoryProjectKey(id);
 }
 
-/** The project key plus the team id the memory ledger needs, in one lookup. */
-async function getWorkspaceScope(id: string): Promise<{ project: string | undefined; teamId: string | null }> {
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
-    columns: { repo: true, name: true, teamId: true },
-  });
-  return { project: workspaceProjectKey(ws?.repo, ws?.name) ?? undefined, teamId: ws?.teamId ?? null };
+/** The project key plus the team id the memory ledger needs. */
+async function getWorkspaceScope(id: string): Promise<{ project: string | null; teamId: string | null }> {
+  const [project, ws] = await Promise.all([
+    getWorkspaceProject(id),
+    db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } }),
+  ]);
+  return { project, teamId: ws?.teamId ?? null };
 }
 
 export async function GET(
@@ -87,6 +87,11 @@ export async function GET(
   }
 
   const { project, teamId } = await getWorkspaceScope(id);
+  // No key means no memory: never fall back to a team-wide list.
+  if (!project) {
+    // Flagged so the page can say memory is off here, rather than "no memories".
+    return NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
+  }
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
   const type = searchParams.get('type') || undefined;
@@ -166,7 +171,12 @@ export async function POST(
   }
 
   const body = await req.json();
+  // Filed under this workspace's key only (a project named in the body is
+  // ignored); a workspace with no key gets no memory writes.
   const project = await getWorkspaceProject(id);
+  if (!project) {
+    return NextResponse.json({ error: 'Memory is disabled for this workspace' }, { status: 403 });
+  }
 
   try {
     // Saved and mirrored into the index recall reads; a failed mirror is logged
@@ -175,7 +185,7 @@ export async function POST(
       type: body.type,
       title: body.title,
       content: body.content,
-      project: project || undefined,
+      project,
       tags: body.tags || body.concepts || [],
       files: body.files || [],
       source: body.source || 'dashboard',
