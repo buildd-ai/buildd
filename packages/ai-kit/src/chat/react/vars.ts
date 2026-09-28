@@ -28,3 +28,11 @@ export const KIT_CSS_VARS = [
   '--kit-scrim',
 ] as const;
 export type KitCssVar = (typeof KIT_CSS_VARS)[number];
+
+/**
+ * Set by `Menu` on its desktop popover, not by the app (0.9.1):
+ * `--kit-menu-room` is the height left between the trigger and the viewport
+ * edge on the side it opens (caps the panel's max-height), `--kit-menu-shift`
+ * a sideways nudge off a viewport edge. Never carried to the phone sheet.
+ */
+export const KIT_MENU_FIT_VARS = ['--kit-menu-room', '--kit-menu-shift'] as const;
