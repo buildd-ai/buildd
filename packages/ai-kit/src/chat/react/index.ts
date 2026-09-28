@@ -25,7 +25,7 @@ export {
   ThinkingPanel, ApprovalCard, HandoffCard, ChatEmpty, ChatSetupCard,
   type ThinkingPanelProps, type ApprovalCardProps, type HandoffCardProps, type ChatEmptyProps, type ChatEmptyChip, type ChatSetupCardProps,
 } from './cards';
-export { Menu, MenuOption, type MenuProps } from './Menu';
+export { Menu, MenuOption, KIT_SHEET_QUERY, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
 export {
   createComposerStore, useComposerState, applyComposerSeed,

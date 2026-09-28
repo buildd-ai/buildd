@@ -854,7 +854,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. */
-export const KIT_VERSION = '0.3.0';
+export const KIT_VERSION = '0.3.1';
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 

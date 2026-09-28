@@ -88,15 +88,23 @@
 .kit-menu { position: relative; display: flex; align-items: stretch; }
 .kit-menu-trigger { min-height: 48px; min-width: 48px; padding: 0 12px; border: 0; background: transparent; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-family: var(--kit-font-mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .kit-badge { color: var(--kit-accent); font-weight: 600; }
-.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
+/* The desktop panel sizes to its content between 260px and its max-width. It
+   is absolutely positioned inside a trigger-sized .kit-menu, so without
+   `width: max-content` shrink-to-fit resolves to the 260px min-width and a
+   long tool-group label squeezes the toggle out of view. */
+.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; width: max-content; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
 .kit-menu[data-align="end"] .kit-menu-panel { left: auto; right: 0; }
 .kit-menu-title { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); padding: 6px 14px; margin: 0; }
 .kit-rows { list-style: none; margin: 0; padding: 0; }
 .kit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 0 14px; font-size: 14px; }
+/* The label takes the room that is left and wraps; the lock and the Ask first /
+   Allow toggle keep their full width. */
+.kit-row > .kit-row-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; padding-block: 6px; }
+.kit-row > .kit-toggle, .kit-row > .kit-row-lock { flex: none; }
 .kit-row[data-locked="true"] > .kit-row-label { color: var(--kit-muted); }
 .kit-row-lock { font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--kit-muted); }
 .kit-toggle { display: inline-flex; border: 1.5px solid var(--kit-rule); border-radius: var(--kit-radius-hard); overflow: hidden; }
-.kit-toggle > button { min-height: 36px; padding: 0 10px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--kit-muted); }
+.kit-toggle > button { min-height: 36px; padding: 0 10px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--kit-muted); white-space: nowrap; }
 .kit-toggle > button[aria-pressed="true"] { background: var(--kit-ink); color: var(--kit-bg); }
 .kit-option { width: 100%; min-height: 48px; padding: 0 14px; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; font-size: 14px; }
 .kit-option[aria-checked="true"] { font-weight: 600; }
