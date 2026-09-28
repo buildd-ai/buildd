@@ -15,6 +15,7 @@ let selectRows: any[][] = [];
 let executed: any[] = [];
 let executeRows: any[] = [];
 let updateError: unknown = null;
+let executeError: unknown = null;
 
 function chain(c: Captured): any {
   const p: any = {
@@ -35,7 +36,7 @@ mock.module('@buildd/core/db', () => ({
     update: () => { const c = { op: 'update' }; calls.push(c); return chain(c); },
     delete: () => { const c = { op: 'delete' }; calls.push(c); return chain(c); },
     insert: () => { const c = { op: 'insert' }; calls.push(c); return chain(c); },
-    execute: async (q: any) => { executed.push(q); return { rows: executeRows }; },
+    execute: async (q: any) => { executed.push(q); if (executeError) throw executeError; return { rows: executeRows }; },
   },
 }));
 
@@ -46,7 +47,7 @@ const whereSql = (c: Captured) => {
   return { sql: norm(q.sql), params: q.params };
 };
 
-beforeEach(() => { calls.length = 0; returning = []; selectRows = []; executed = []; executeRows = []; updateError = null; });
+beforeEach(() => { calls.length = 0; returning = []; selectRows = []; executed = []; executeRows = []; updateError = null; executeError = null; });
 
 describe('directives store: every query is keyed by the caller', () => {
   it('list and turn load filter by user id', async () => {
@@ -125,5 +126,55 @@ describe('directives store: every query is keyed by the caller', () => {
     expect(w.sql).toContain('"conversation_messages"."conversation_id" = $2');
     expect(w.sql).toContain('"conversation_messages"."role" = $3');
     expect(w.params.slice(0, 3)).toEqual(['m-1', 'c-1', 'assistant']);
+  });
+});
+
+/**
+ * The count in the insert's WHERE reads the statement's snapshot, so under
+ * READ COMMITTED two saves racing at the last free slot both see room. The
+ * cap is held by a trigger that serializes a person's inserts and recounts
+ * after the lock; a save that loses the race is refused the same way as one
+ * that arrived at a full list.
+ */
+describe('directives store: the per-person cap holds under concurrent saves', () => {
+  const capError = Object.assign(new Error('Failed query'), {
+    cause: { code: '23514', constraint: 'chat_directives_per_user_cap' },
+  });
+
+  it('a save the cap trigger refused is a limit, not a 500', async () => {
+    executeError = capError;
+    selectRows = [[]];
+    expect(await store.createDirective({ userId: 'u-1', text: 'x', workspaceId: null, source: 'chat' }))
+      .toEqual({ ok: false, reason: 'limit' });
+  });
+
+  it('refused by the cap but already saved (the same rule racing itself): the copy wins', async () => {
+    executeError = capError;
+    selectRows = [[{ id: 'd-1', text: 'x' }]];
+    expect(await store.createDirective({ userId: 'u-1', text: 'x', workspaceId: null, source: 'chat' }))
+      .toMatchObject({ ok: true, existed: true, row: { id: 'd-1' } });
+  });
+
+  it('any other insert failure still throws', async () => {
+    executeError = Object.assign(new Error('boom'), { cause: { code: '57014' } });
+    await expect(store.createDirective({ userId: 'u-1', text: 'x', workspaceId: null, source: 'chat' })).rejects.toThrow('boom');
+  });
+
+  it('the trigger locks per person, recounts after the lock, and uses the same cap as the app', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { MAX_DIRECTIVES_PER_USER } = await import('@buildd/core/chat-directives');
+    const dir = join(import.meta.dir, '../../../../../packages/core/drizzle');
+    const file = readdirSync(dir).find(f => f.endsWith('_chat_directives_per_user_cap.sql'));
+    expect(file).toBeDefined();
+    const text = norm(readFileSync(join(dir, file!), 'utf8').replace(/--[^\n]*/g, '')).toLowerCase();
+    expect(text).toContain('before insert on chat_directives');
+    expect(text).toContain('for each row');
+    expect(text).toMatch(/pg_advisory_xact_lock\([^;]*new\.user_id/);
+    // The count is its own statement after the lock, so it takes a fresh snapshot.
+    expect(text.indexOf('pg_advisory_xact_lock')).toBeLessThan(text.indexOf('count(*)'));
+    expect(text).toContain(`>= ${MAX_DIRECTIVES_PER_USER}`);
+    expect(text).toContain("errcode = 'check_violation'");
+    expect(text).toContain("constraint = 'chat_directives_per_user_cap'");
   });
 });
