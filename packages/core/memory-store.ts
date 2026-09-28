@@ -32,6 +32,8 @@ export interface MemoryRecord {
   tags: string[];
   files: string[];
   source: string | null;
+  /** Id of the memory that replaced this one, when it was superseded. */
+  supersededBy?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -79,6 +81,7 @@ function toRecord(row: typeof memories.$inferSelect): MemoryRecord {
     tags: row.tags,
     files: row.files,
     source: row.source,
+    supersededBy: row.supersededBy ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -302,6 +305,20 @@ export class MemoryStore {
 
     if (!row) throw new Error(`Memory not found: ${id}`);
     return { memory: toRecord(row) };
+  }
+
+  /**
+   * Record that `byId` replaced these memories. Team-bound; the new row itself
+   * is never marked. Callers pass ids already narrowed to their own project.
+   */
+  async markSuperseded(ids: string[], byId: string): Promise<number> {
+    const targets = [...new Set(ids.filter(id => id && id !== byId))];
+    if (targets.length === 0) return 0;
+    const rows = await db.update(memories)
+      .set({ supersededBy: byId })
+      .where(and(eq(memories.teamId, this.teamId), inArray(memories.id, targets)))
+      .returning({ id: memories.id });
+    return rows.length;
   }
 
   /** Delete a memory. */

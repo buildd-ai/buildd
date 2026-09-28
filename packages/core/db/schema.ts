@@ -3964,6 +3964,12 @@ export const memories = pgTable('memories', {
   tags: text('tags').array().notNull().default([]),
   files: text('files').array().notNull().default([]),
   source: text('source'),
+  // Id of the memory that replaced this one. Recorded on the row (not only in
+  // the index) so the index reconcile pass never re-indexes it as current.
+  supersededBy: uuid('superseded_by'),
+  // Consecutive failed reconcile attempts to mirror this row into the index.
+  // Rows past the cap drop out of reconcile so they cannot block the backlog.
+  indexFailures: integer('index_failures').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

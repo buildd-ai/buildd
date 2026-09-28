@@ -112,25 +112,44 @@ export interface MemoryWriteResult {
   superseded: number;
 }
 
+/** Optional row-level supersession; `MemoryStore` has it. */
+type SupersedeRows = { markSuperseded?(ids: string[], byId: string): Promise<number> };
+
+/**
+ * Record supersession on the memories rows, whether or not the mirror worked,
+ * so reconcile can never re-index a replaced memory as current. Never throws.
+ */
+async function recordSupersession(client: SupersedeRows, memoryId: string, opts: MemoryWriteOpts): Promise<void> {
+  if (!opts.supersedes || opts.supersedes.length === 0 || !client.markSuperseded) return;
+  try {
+    await client.markSuperseded(opts.supersedes, memoryId);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`${MEMORY_MIRROR_FAILED_TAG} via=${opts.via} memory=${memoryId} step=mark-superseded error=${reason.slice(0, 200)}`);
+  }
+}
+
 /** Save a memory row, then mirror it. */
 export async function saveMemory(
-  client: { save(input: SaveMemoryInput): Promise<{ memory: MemoryRecord }> },
+  client: { save(input: SaveMemoryInput): Promise<{ memory: MemoryRecord }> } & SupersedeRows,
   input: SaveMemoryInput,
   opts: MemoryWriteOpts,
 ): Promise<MemoryWriteResult> {
   const { memory } = await client.save(input);
   const mirror = await mirrorMemoryToIndex(opts.knowledgeStore, opts.teamId, memory, opts);
+  await recordSupersession(client, memory.id, opts);
   return { memory, mirrored: mirror.mirrored, superseded: mirror.superseded };
 }
 
 /** Update a memory row, then re-mirror it. */
 export async function updateMemory(
-  client: { update(id: string, fields: UpdateMemoryInput): Promise<{ memory: MemoryRecord }> },
+  client: { update(id: string, fields: UpdateMemoryInput): Promise<{ memory: MemoryRecord }> } & SupersedeRows,
   id: string,
   fields: UpdateMemoryInput,
   opts: MemoryWriteOpts,
 ): Promise<MemoryWriteResult> {
   const { memory } = await client.update(id, fields);
   const mirror = await mirrorMemoryToIndex(opts.knowledgeStore, opts.teamId, memory, opts);
+  await recordSupersession(client, memory.id, opts);
   return { memory, mirrored: mirror.mirrored, superseded: mirror.superseded };
 }
