@@ -4678,6 +4678,87 @@ describe('path-overlap claim guard', () => {
     });
   }
 
+  // A task whose title/description names a PR as its subject (e.g. "rebase and
+  // land PR #2659") gets subjectKind='pull_request' + subjectPrNumber stamped
+  // at creation (packages/core/subject-anchor-extractor.ts). Its job IS that
+  // PR, so an overlap with exactly that PR must not defer it forever — the
+  // friction this guards against: a task with no *RetryPrNumber but a subject
+  // anchor naming the PR sat deferred on every poll since only the retry
+  // columns were exempted.
+  it('claims a task whose subject anchor names the blocking PR despite the pathManifest overlap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+      ]);
+
+    const takeoverTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'takeover-task',
+      title: 'Rebase and land PR #2659',
+      subjectKind: 'pull_request',
+      subjectPrNumber: 2659,
+      context: null,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([takeoverTask])
+      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('takeover-task');
+  });
+
+  it('still defers a task with a subject anchor whose manifest overlaps a DIFFERENT open PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    const takeoverTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'takeover-task',
+      title: 'Rebase and land PR #2659',
+      subjectKind: 'pull_request',
+      subjectPrNumber: 2659,
+      context: null,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([takeoverTask])
+      .mockResolvedValueOnce([
+        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
   // A loopUntilMerged parent re-queues as pending while its own earlier worker's
   // PR is still open. It carries no *RetryPrNumber, so without a task-id check
   // its own PR deferred it on every claim and the fleet sat idle.
