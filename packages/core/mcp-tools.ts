@@ -406,7 +406,7 @@ export const recallToolDefinition = {
       },
       id: {
         type: "string" as const,
-        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored. Accepts the full ID or the 8-char short ID a memory index line shows (m:1a2b3c4d).",
       },
     },
   },
@@ -1647,7 +1647,17 @@ export async function handleBuilddAction(
             attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
             ledger: ctx.memoryLedger,
           });
-          if (memories.length > 0) {
+          if (isMemoryIndexEnabled(claimedWs.gitConfig)) {
+            // Index injection (see ./memory-claim-index): the claim route's entries
+            // first, since this reply is the only place an MCP agent sees
+            // them, then this search's, deduped, under one budget.
+            const entries: MemoryIndexEntry[] = [
+              ...readMemoryIndexEntries(claimedTask.context),
+              ...memories.map((m: any) => ({ id: String(m.id), type: String(m.type ?? 'memory'), title: String(m.title ?? ''), why: 'title' as const })),
+            ];
+            const index = buildMemoryIndex(entries, { budgetTokens: memoryIndexTokenBudget(claimedWs.gitConfig) });
+            if (index.lines.length > 0) memorySection = `\n\n## Relevant Memory\n${index.lines.join('\n')}`;
+          } else if (memories.length > 0) {
             const memoryLines = memories.map((m: any) => {
               const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
               return `- **[${m.type}] ${m.title}**: ${truncContent}`;
@@ -5469,7 +5479,15 @@ import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
-import { retrieveMemory, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import {
+  buildMemoryIndex,
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  parseMemoryIdRef,
+  readMemoryIndexEntries,
+  type MemoryIndexEntry,
+} from './memory-claim-index';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5867,12 +5885,37 @@ export async function handleRecallAction(
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
-  // id present → direct fetch, all other params ignored.
+  // id present → direct fetch, all other params ignored. Accepts a full id or
+  // the claim-time index's 8-char short id (`m:<id>` too); see ./memory-claim-index.
   if (params.id) {
-    const data = await memoryClient.get(params.id as string);
-    const m = data.memory;
+    const notFound = () => errorResult(`Memory not found: ${params.id}`);
+    const ref = parseMemoryIdRef(params.id);
+    let m: Awaited<ReturnType<MemoryStore['get']>>['memory'] | null | undefined;
+    if (ref?.kind === 'prefix') {
+      // Resolved inside the caller's own project, so a prefix can never reach
+      // another workspace's memory, and a foreign one reads as a miss.
+      const own = normalizeProject(ctx.project);
+      if (!own || typeof memoryClient.findByIdPrefix !== 'function') return notFound();
+      const rows = await memoryClient.findByIdPrefix(ref.value, own, 2).catch(() => []);
+      if (rows.length > 1) {
+        return errorResult(`Memory id ${params.id} matches more than one memory; pass more characters or the full id`);
+      }
+      m = rows[0];
+    } else {
+      // A miss throws in the store; a foreign row is returned and refused
+      // below. Both end as the same message.
+      m = (await memoryClient.get(ref ? ref.value : params.id as string).catch(() => null))?.memory;
+    }
     // Same message as a miss, so a foreign id is not confirmed to exist.
-    if (!isOwnMemory(m, ctx)) return errorResult(`Memory not found: ${params.id}`);
+    if (!m || !isOwnMemory(m, ctx)) return notFound();
+    recordMemoryPulls({
+      memoryIds: [m.id],
+      teamId: ctx.teamId,
+      workspaceId: ctx.workspaceId,
+      caller: 'recall',
+      attribution: { workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
+    });
     const meta = [
       `Type: ${m.type}`,
       m.project && `Project: ${m.project}`,

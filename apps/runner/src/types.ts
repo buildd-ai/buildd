@@ -628,6 +628,10 @@ export interface WorkspaceGitConfig {
   // Permission mode
   bypassPermissions?: boolean;
 
+  // Claim-time memory as an index; see @buildd/core/memory-claim-index
+  memoryIndexInjection?: boolean;
+  memoryIndexTokenBudget?: number;
+
   // Maximum budget in USD per worker session
   maxBudgetUsd?: number;
 

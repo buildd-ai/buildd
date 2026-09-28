@@ -260,6 +260,35 @@ function writeLedger(
   }
 }
 
+/**
+ * Record memories the agent pulled by id (`recall` id=, the claim-time index's
+ * pull path): one `via: pull` row each, same writer and verification as a
+ * retrieval. Never throws.
+ */
+export function recordMemoryPulls(args: {
+  memoryIds: readonly string[];
+  teamId: string | null | undefined;
+  workspaceId?: string | null;
+  caller: Extract<MemoryCaller, 'recall'>;
+  attribution?: MemoryAttribution;
+  ledger?: MemoryLedgerWriter | false;
+}): void {
+  writeLedger(args.ledger, buildMemoryUseRows({
+    hits: args.memoryIds.map((memoryId, i) => ({
+      chunkId: memoryId,
+      memoryId,
+      rank: i + 1,
+      score: null,
+      gated: false,
+      gatedBy: null,
+    })),
+    teamId: args.teamId,
+    workspaceId: args.workspaceId,
+    caller: args.caller,
+    attribution: args.attribution,
+  }));
+}
+
 // ── Hybrid (knowledge store) retrieval ───────────────────────────────────────
 
 export interface MemoryRetrievalScope {

@@ -7,6 +7,7 @@ import { HEARTBEAT_PROTOCOL_BLOCK } from '@buildd/shared';
 import {
   buildMemoryBlock,
   byteLength,
+  type MemoryBlockInput,
   type MemoryBlockResult,
   type PromptSectionRecord,
 } from './memory-digest-policy';
@@ -265,6 +266,8 @@ export interface PromptContext {
   compactResult: { count: number; markdown?: string };
   taskSearchResults: Array<{ id: string }>;
   fullObservations: Array<{ type: string; title: string; content: string }>;
+  /** Render the task matches as a memory index; see MemoryBlockInput.index. Absent = bodies. */
+  memoryIndex?: MemoryBlockInput['index'];
   inputPolicy: string;
   hasApiKey: boolean;
   inputAsRetry?: boolean;
@@ -424,6 +427,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     compactResult,
     taskSearchResults,
     fullObservations,
+    ...(ctx.memoryIndex ? { index: ctx.memoryIndex } : {}),
   });
   addSection('workspace-memory', memory.block, memory.digestTruncated);
 

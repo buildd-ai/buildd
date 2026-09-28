@@ -37,7 +37,26 @@ import {
   type MemoryLedgerWriter,
   type RetrieveMemoryResult,
 } from '@buildd/core/memory-retrieval';
+import {
+  buildMemoryIndex,
+  memoryIndexEntriesFromHits,
+  renderMemoryIndexLine,
+  MEMORY_INDEX_HEADER,
+  type MemoryIndexEntry,
+  type MemoryIndexWhy,
+} from '@buildd/core/memory-claim-index';
 import { afterResponseMemoryLedger } from './memory-ledger';
+
+/**
+ * Render claim-time memory as an index (see @buildd/core/memory-claim-index)
+ * instead of body lines. Absent = the body rendering, byte-identical to before
+ * the flag existed. Only the claim route passes it.
+ */
+export type MemoryIndexOption = {
+  budgetTokens: number;
+  /** Receives the entries the index showed, in order, so the claim route can mirror them. */
+  onEntries?: (entries: MemoryIndexEntry[]) => void;
+};
 
 /**
  * Minimum score for a claim-time prior-work hit to be worth a worker's
@@ -130,6 +149,7 @@ export async function buildKnowledgeContext(
     attribution?: MemoryAttribution;
     /** Memory ledger writer; default the DB. Injectable for tests. */
     ledger?: MemoryLedgerWriter | false;
+    memoryIndex?: MemoryIndexOption;
   },
 ): Promise<string[]> {
   if (!query.trim()) return [];
@@ -151,8 +171,43 @@ export async function buildKnowledgeContext(
     // Cap at 3 hits per corpus to bound prompt growth. Memory is a push and
     // is measured by the ledger (see retrieveMemory); the other corpora have
     // no ledger yet, so their hit_count still counts these queries.
-    const sources: Array<{ label: string; run: () => Promise<QueryResult[]> }> = [];
-    if (teamId && hasMemoryScope(memoryScope)) {
+    const memoryIndex = opts?.memoryIndex;
+    const sources: Array<{
+      label: string;
+      run: () => Promise<QueryResult[]>;
+      /** Replaces the body rendering for this section (memory, in index mode). */
+      render?: (strong: QueryResult[]) => Promise<string[]>;
+    }> = [];
+    if (teamId && hasMemoryScope(memoryScope) && memoryIndex) {
+      // Index mode: the same retrieval, rendered one line per memory. The
+      // ledger waits for the budget so it records what the index left out.
+      let retrieval: RetrieveMemoryResult | null = null;
+      sources.push({
+        label: 'Team memory',
+        run: async () => {
+          retrieval = await retrieveMemory({
+            query,
+            scope: { teamId, workspaceId, memoryScope },
+            caller: opts?.caller ?? 'claim_context',
+            budget: { topK: 3 },
+            store: ks,
+            gate: { minScore: PRECISION_FLOOR, exclude: excluded },
+            attribution: opts?.attribution,
+            ledger: opts?.ledger ?? afterResponseMemoryLedger,
+            deferLedger: true,
+          });
+          return retrieval.results;
+        },
+        render: async (strong) => {
+          const entries = await memoryIndexEntriesFromHits(strong, 'title', memoryScope.lookup);
+          const index = buildMemoryIndex(entries, { budgetTokens: memoryIndex.budgetTokens });
+          const shown = new Set(index.shown.map(e => e.id));
+          (retrieval as RetrieveMemoryResult | null)?.commitLedger(h => (shown.has(h.memoryId) ? null : 'char_budget'));
+          memoryIndex.onEntries?.(index.shown);
+          return index.lines;
+        },
+      });
+    } else if (teamId && hasMemoryScope(memoryScope)) {
       sources.push({
         label: 'Team memory',
         run: async () => (await retrieveMemory({
@@ -186,6 +241,10 @@ export async function buildKnowledgeContext(
           sources.map(async (s) => {
             const results = await s.run().catch(() => [] as QueryResult[]);
             const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR && !excluded?.has(r.id));
+            if (s.render) {
+              const rendered = await s.render(strong).catch(() => [] as string[]);
+              return rendered.length > 0 ? [`\n### ${s.label}`, ...rendered] : [];
+            }
             if (strong.length === 0) return [];
             const lines = [`\n### ${s.label}`];
             for (const r of strong) lines.push(...renderHitLines(r));
@@ -258,9 +317,17 @@ export type ClusterRetrievalInput = {
     memoryScope?: MemoryHitScope | null;
     /** Memory ledger writer; default the DB. Injectable for tests. */
     ledger?: MemoryLedgerWriter | false;
+    memoryIndex?: MemoryIndexOption;
   };
   store?: KnowledgeQuerier;
 };
+
+/** What a recipe step's key was, as the index's "why it matched". */
+function indexWhyForStep(step: ClusterStep): MemoryIndexWhy {
+  if (step.keyKind === 'signature') return 'signature';
+  if (step.keyKind === 'paths') return 'path';
+  return 'title';
+}
 
 /** Cap on paths joined into one query key — mirrors the existing path lookup. */
 const MAX_KEY_PATHS = 20;
@@ -333,10 +400,17 @@ function applyBudget(
   sections: string[][][],
   budgetChars: number,
   keptGroups?: Set<string[]>,
+  /**
+   * Index mode: memory index groups also draw on one token budget (chars/4),
+   * shared across every memory section. A group over it is dropped like a
+   * group over the char budget.
+   */
+  index?: { groups: ReadonlyMap<string[], MemoryIndexEntry>; budgetTokens: number },
 ): string[] {
   const kept: string[] = [];
   let total = 0;
   let truncated = false;
+  let indexChars = 0;
 
   for (const groups of sections) {
     const [header, ...hitGroups] = groups;
@@ -350,6 +424,11 @@ function applyBudget(
       if (total + headerLen + pendingLen + groupLen > budgetChars) {
         truncated = true;
         break;
+      }
+      if (index?.groups.has(group)) {
+        const withHeader = indexChars === 0 ? MEMORY_INDEX_HEADER.length + 1 : 0;
+        if (Math.ceil((indexChars + withHeader + groupLen) / 4) > index.budgetTokens) break;
+        indexChars += withHeader + groupLen;
       }
       pending.push(...group);
       pendingLen += groupLen;
@@ -427,6 +506,9 @@ export async function buildClusteredKnowledgeContext(
     const memoryRetrievals: RetrieveMemoryResult[] = [];
     /** Memory hit id behind each rendered memory group, by group identity. */
     const memoryGroupIds = new Map<string[], string>();
+    const memoryIndex = input.opts?.memoryIndex;
+    /** Index entry behind each rendered memory group (index mode only). */
+    const memoryGroupEntries = new Map<string[], MemoryIndexEntry>();
 
     /** Render + record one step's outcome. Returns the section's line groups, or null. */
     const runStep = async (step: ClusterStep): Promise<{ weak: boolean; groups: string[][] | null }> => {
@@ -503,11 +585,17 @@ export async function buildClusteredKnowledgeContext(
         return { weak: evaluation.weak, groups: null };
       }
 
-      const groups: string[][] = [[`\n### ${step.label}`]];
+      // Index mode: memory renders one index line per hit, the header line
+      // travelling with the section header so the recipe budget counts it.
+      const indexEntries = memoryIndex && step.corpus === 'memory'
+        ? await memoryIndexEntriesFromHits(results, indexWhyForStep(step), memoryScope?.lookup)
+        : null;
+      const groups: string[][] = [indexEntries ? [`\n### ${step.label}`, MEMORY_INDEX_HEADER] : [`\n### ${step.label}`]];
       results.forEach((r, i) => {
-        const group = renderHitLines(r);
+        const group = indexEntries ? [renderMemoryIndexLine(indexEntries[i])] : renderHitLines(r);
         groups.push(group);
         if (step.corpus === 'memory') memoryGroupIds.set(group, r.id);
+        if (indexEntries) memoryGroupEntries.set(group, indexEntries[i]);
         const seed = isSeedHit(r);
         const { value, signal } = strengthOf(r);
         const present: StrengthSignal[] = [];
@@ -579,7 +667,9 @@ export async function buildClusteredKnowledgeContext(
     // truncation notice carries no retrieved content, and treating it as a
     // result would suppress the fan-out in exchange for nothing.
     const keptGroups = new Set<string[]>();
-    const body = applyBudget(sections, recipe.budgetChars, keptGroups);
+    const body = applyBudget(sections, recipe.budgetChars, keptGroups, memoryIndex
+      ? { groups: memoryGroupEntries, budgetTokens: memoryIndex.budgetTokens }
+      : undefined);
     const hasContent = body.some(line => line.startsWith('- '));
     if (!hasContent) {
       assembly.fallbackFired = true;
@@ -594,6 +684,14 @@ export async function buildClusteredKnowledgeContext(
     }
     for (const r of memoryRetrievals) {
       r.commitLedger(h => (shownMemoryIds.has(h.result.id) ? null : 'char_budget'));
+    }
+    if (memoryIndex?.onEntries) {
+      const shownEntries: MemoryIndexEntry[] = [];
+      for (const g of keptGroups) {
+        const e = memoryGroupEntries.get(g);
+        if (e) shownEntries.push(e);
+      }
+      memoryIndex.onEntries(shownEntries);
     }
 
     const hint = await buildCorporaHint(workspaceId, ks, memoryScope);

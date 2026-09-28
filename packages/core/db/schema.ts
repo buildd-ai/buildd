@@ -271,6 +271,12 @@ export interface WorkspaceGitConfig {
   // Permission mode
   bypassPermissions?: boolean;        // Allow agent to bypass permission prompts (dangerous commands still blocked)
 
+  // Claim-time memory as an index (one line per memory, bodies pulled with
+  // `recall` id=) instead of pasted bodies. Absent / false = today's output.
+  // See packages/core/memory-claim-index.ts and docs/design/memory-done-right.md.
+  memoryIndexInjection?: boolean;
+  memoryIndexTokenBudget?: number;   // estimated tokens (chars/4); default 800
+
   // Default agent backend for tasks in this workspace, when neither the task
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.

@@ -17,7 +17,16 @@
  * advertises, and still renders even when nothing matched the task — that
  * pointer is behavioural instruction, not context, and dropping it would
  * change how often agents record knowledge.
+ *
+ * With the workspace flag `memoryIndexInjection` on, the task matches render
+ * as a memory index instead (see @buildd/core/memory-claim-index).
  */
+import {
+  buildMemoryIndex,
+  memoryIndexEntriesTokens,
+  type MemoryIndexEntry,
+  type MemoryIndexWhy,
+} from '@buildd/core/memory-claim-index';
 
 /**
  * Historical policy version. Bump whenever what reaches the `## Workspace
@@ -27,6 +36,20 @@
  * meaning "this is what the block rendered" even with no arm left to salt.
  */
 export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v4';
+
+/**
+ * Policy version for a block rendered as a memory index (workspace flag
+ * `memoryIndexInjection`, see @buildd/core/memory-claim-index). Separate so
+ * composition rows from the two renderings are never pooled.
+ */
+export const MEMORY_INDEX_POLICY_VERSION = 'memory-index-v1';
+
+/** The index's "why it matched" for the step that produced the task matches. */
+export function memoryIndexWhyFor(derivedBy: string | null | undefined): MemoryIndexWhy {
+  if (derivedBy === 'path_manifest' || derivedBy === 'inferred_paths') return 'path';
+  if (derivedBy === 'predicted_area') return 'area';
+  return 'title';
+}
 
 /** Per-observation cap on the task-specific matches. */
 export const MAX_OBSERVATION_CHARS = 300;
@@ -52,9 +75,15 @@ export interface MemoryBlockInput {
     rawContentBytes?: number;
   };
   /** Ids of the task-title matches — the outer render gate reads its length. */
-  taskSearchResults: ReadonlyArray<{ id: string }>;
+  taskSearchResults: ReadonlyArray<{ id: string; title?: string; type?: string }>;
   /** Hydrated content for those matches. */
   fullObservations: ReadonlyArray<{ type: string; title: string; content: string }>;
+  /**
+   * Render the task matches as a memory index instead of bodies. Absent = the
+   * body rendering, unchanged. `claimEntries` are what the claim-time block in
+   * the same prompt already showed: skipped here, and charged to the budget.
+   */
+  index?: { budgetTokens: number; why: MemoryIndexWhy; claimEntries: readonly MemoryIndexEntry[] };
 }
 
 export interface MemoryBlockResult {
@@ -81,6 +110,8 @@ export interface MemoryBlockResult {
    * `rawContentBytes` at all (nothing to compare against).
    */
   digestTruncated: boolean;
+  /** Set only when the block was rendered as a memory index. */
+  mode?: 'index';
 }
 
 /**
@@ -118,6 +149,32 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
   ];
 
   let taskMatchBytes = 0;
+  if (input.index) {
+    const { budgetTokens, why, claimEntries } = input.index;
+    const index = buildMemoryIndex(
+      taskSearchResults.map(r => ({ id: r.id, type: r.type ?? 'memory', title: r.title ?? '', why })),
+      {
+        budgetTokens: budgetTokens - memoryIndexEntriesTokens(claimEntries),
+        exclude: claimEntries.map(e => e.id),
+      },
+    );
+    if (index.lines.length > 0) {
+      const rendered = ['### Relevant to This Task', ...index.lines].join('\n');
+      parts.push(rendered);
+      taskMatchBytes = byteLength(rendered);
+    }
+    parts.push(RECALL_POINTER);
+    return {
+      block: parts.join('\n'),
+      digestBytes: 0,
+      digestBytesAvailable,
+      taskMatchBytes,
+      taskMatchCount: index.shown.length,
+      digestTruncated,
+      mode: 'index',
+    };
+  }
+
   if (fullObservations.length > 0) {
     const matchLines = ['### Relevant to This Task'];
     for (const obs of fullObservations) {
@@ -217,7 +274,7 @@ export function buildPromptCompositionRecord(args: {
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
   const promptBytes = byteLength(promptText);
   return {
-    policyVersion: MEMORY_DIGEST_POLICY_VERSION,
+    policyVersion: memory.mode === 'index' ? MEMORY_INDEX_POLICY_VERSION : MEMORY_DIGEST_POLICY_VERSION,
     arm: 'task_scoped',
     propensity: 1,
     fraction: 1,

@@ -37,6 +37,12 @@ import {
 } from '@buildd/core/task-area-prediction-source';
 import { PgVectorStore, getVoyageEmbedder } from '@buildd/core/knowledge-store';
 import { memoryScopeFor } from '@buildd/core/memory-hit-scope';
+import {
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  MEMORY_INDEX_CONTEXT_KEY,
+  type MemoryIndexEntry,
+} from '@buildd/core/memory-claim-index';
 import { buildSubjectPriorWork } from './subject-prior-work';
 import { CLAIM_FANOUT_CONCURRENCY, mapWithConcurrency } from './concurrency-limit';
 
@@ -338,6 +344,17 @@ export async function attachKnowledgeContext(
       ? await memoryScopeFor(undefined, task.workspaceId, teamId)
       : null;
 
+    // Index injection (@buildd/core/memory-claim-index), per workspace flag.
+    // Off: no option is passed and the block is what it always was. On: the
+    // entries the block showed are mirrored onto the claim response's
+    // task.context (never the tasks row), where the runner and the claim_task
+    // reply read them to dedupe against and to charge the same budget.
+    const wsGitConfig = (task as any).workspace?.gitConfig;
+    let indexEntries: MemoryIndexEntry[] = [];
+    const memoryIndex = isMemoryIndexEnabled(wsGitConfig)
+      ? { budgetTokens: memoryIndexTokenBudget(wsGitConfig), onEntries: (e: MemoryIndexEntry[]) => { indexEntries = e; } }
+      : undefined;
+
     let parts: string[] = [];
     let recipeAssembly: ContextAssembly | null = null;
     if (recipe) {
@@ -349,7 +366,7 @@ export async function attachKnowledgeContext(
         teamId,
         trigger,
         chain,
-        opts: { sensitive, excludedSourceIds: handoffExcludedSources, memoryScope },
+        opts: { sensitive, excludedSourceIds: handoffExcludedSources, memoryScope, ...(memoryIndex ? { memoryIndex } : {}) },
       });
       parts = clustered;
       recipeAssembly = assembly;
@@ -372,7 +389,16 @@ export async function attachKnowledgeContext(
         memoryScope,
         caller: 'claim_context',
         attribution: { taskId: task.id, workerId: cw.id },
+        ...(memoryIndex ? { memoryIndex } : {}),
       });
+    }
+
+    if (memoryIndex) {
+      const taskObj = cw.task as any;
+      if (taskObj) {
+        taskObj.context = taskObj.context ?? {};
+        taskObj.context[MEMORY_INDEX_CONTEXT_KEY] = indexEntries;
+      }
     }
 
     // One record per claim, always — the recipe's when it served the request,
