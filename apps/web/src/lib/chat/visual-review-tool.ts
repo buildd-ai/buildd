@@ -7,7 +7,8 @@
  * model) and `GET /api/missions/:id/artifacts` (manual visual evidence), all
  * as the signed-in user and inside the conversation's reach.
  *
- * Text only: never an image, a download link or a signed URL. The card in the
+ * Text only: each screen's artifact page link (/app/artifacts/<id>), never an
+ * image, a download link or a signed URL. The card in the
  * feed shows the screens; the assistant has not seen them and must not say so.
  * There is no write counterpart: decisions are the human's, on the card.
  */
@@ -17,7 +18,7 @@ import { formatVisualReview as formatShared, missionArtifacts, type VisualEviden
 
 const textOut = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
 
-/** The shared text (packages/core/visual-review-text.ts), chat audience: no links. */
+/** The shared text (packages/core/visual-review-text.ts), chat audience: page links, no images. */
 export function formatVisualReview(model: VisualReviewModel, missionTitle: string | null, artifacts: VisualEvidenceArtifact[] | null = null): string {
   return formatShared(model, missionTitle, { audience: 'chat', artifacts });
 }

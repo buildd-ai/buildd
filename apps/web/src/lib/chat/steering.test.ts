@@ -265,6 +265,19 @@ describe('the owner\'s examples', () => {
     expect(body.addGoalCriteria).toBeUndefined();
   });
 
+  it('"Turn off the automatic visual audit" → Edit mission card with an honest before/after, and the PATCH carries it', async () => {
+    const { preview } = await proposeAndApprove('manage_missions', { action: 'update', missionId: MISSION, autoSurfaceAudit: false });
+    expect(approvalHeadline(preview)).toBe('Edit mission: Multi-currency checkout (active)');
+    expect(preview.changes.map(approvalChangeLine)).toEqual(['Automatic visual audit: on → off']);
+    expect(writes).toEqual([`PATCH /api/missions/${MISSION.slice(0, 8)} {"autoSurfaceAudit":false}`]);
+  });
+
+  it('the typed manage_missions schema offers autoSurfaceAudit to the model', () => {
+    const shape = ((toolsFor().manage_missions as any).inputSchema as any).shape;
+    expect(shape.autoSurfaceAudit).toBeDefined();
+    expect(String(shape.autoSurfaceAudit.description)).toMatch(/update/);
+  });
+
   it('arming a held mission', async () => {
     const { preview } = await proposeAndApprove('manage_missions', { action: 'arm', missionId: MISSION_HELD });
     expect(approvalHeadline(preview)).toBe('Arm mission: Rounding rollout (held)');
