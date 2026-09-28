@@ -177,6 +177,15 @@ function previewOf(a: VisualEvidenceArtifact): string | null {
 }
 
 /**
+ * The bounded read: only the types the section can show, the newest
+ * EVIDENCE_LIMIT of them, and each body cut to 2KB in SQL (previewOf reads
+ * the first lines of at most REPORTS_SHOWN reports). A diff or plan body is
+ * never fetched.
+ */
+const EVIDENCE_LIMIT = 100;
+const EVIDENCE_QUERY = `types=${['screenshot', ...REPORT_TYPES].join(',')}&limit=${EVIDENCE_LIMIT}&preview=1`;
+
+/**
  * The mission's artifacts, for the evidence section: one list read
  * (GET /api/missions/:id/artifacts) through the caller's own api, so its
  * access check applies. A failure drops the section, never the review.
@@ -186,7 +195,7 @@ export async function missionArtifacts(
   encodedMissionId: string,
 ): Promise<VisualEvidenceArtifact[] | null> {
   try {
-    const data = await api(`/api/missions/${encodedMissionId}/artifacts`) as { artifacts?: unknown } | null;
+    const data = await api(`/api/missions/${encodedMissionId}/artifacts?${EVIDENCE_QUERY}`) as { artifacts?: unknown } | null;
     return Array.isArray(data?.artifacts) ? data.artifacts as VisualEvidenceArtifact[] : null;
   } catch {
     return null;

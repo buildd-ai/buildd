@@ -135,7 +135,7 @@ export function refsFromCall(call: ApiCall): BuilddObjectRef[] {
   } else if (p === '/api/releases') {
     return prRefsFromReleases(call.body).slice(0, MAX_PR_REFS);
   } else if (/\/artifacts$/.test(p)) {
-    // A mission's full artifact list is read for its visual evidence
+    // A mission's (type-filtered) artifact list is read for its visual evidence
     // (get_visual_review): a card for each piece of it, not for every diff.
     const list = listOf(call.body, 'artifacts');
     const items = /^\/api\/missions\/[^/]+\/artifacts$/.test(p) && call.method === 'GET'

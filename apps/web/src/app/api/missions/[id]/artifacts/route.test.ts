@@ -65,6 +65,9 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings: [...strings], values, as: (alias: string) => ({ sql: [...strings].join('?'), values, alias }) }), {}),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -75,6 +78,9 @@ mock.module('@buildd/core/db/schema', () => ({
     workspaceId: 'workspaceId',
     missionId: 'missionId',
     key: 'key',
+    type: 'type',
+    content: 'content',
+    updatedAt: 'updatedAt',
   },
 }));
 
@@ -86,13 +92,15 @@ function createRequest(options: {
   method?: string;
   body?: any;
   headers?: Record<string, string>;
+  query?: string;
 } = {}): NextRequest {
   const { method = 'GET', body, headers: extraHeaders } = options;
   const headers: Record<string, string> = { ...extraHeaders };
   if (body) headers['content-type'] = 'application/json';
   const init: RequestInit = { method, headers: new Headers(headers) };
   if (body) init.body = JSON.stringify(body);
-  return new NextRequest('http://localhost:3000/api/missions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/artifacts', init);
+  const qs = options.query ? `?${options.query}` : '';
+  return new NextRequest(`http://localhost:3000/api/missions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/artifacts${qs}`, init);
 }
 
 describe('POST /api/missions/[id]/artifacts', () => {
@@ -316,5 +324,79 @@ describe('GET /api/missions/[id]/artifacts', () => {
     const data = await res.json();
     expect(data.artifacts).toHaveLength(1);
     expect(data.artifacts[0].title).toBe('Plan');
+  });
+
+  describe('?types, ?limit and ?preview (the visual-review evidence read)', () => {
+    const auth = () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+      mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1' });
+    };
+    const get = (query: string) => GET(createRequest({ headers: { authorization: 'Bearer bld_test' }, query }), { params: mockParams });
+
+    it('no params: the unfiltered list, as before (no type predicate, no limit, content selected)', async () => {
+      auth();
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'art-1', type: 'diff', title: 'D', content: 'x'.repeat(5000) }]);
+      const res = await get('');
+      const data = await res.json();
+      const args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
+      expect(args.limit).toBeUndefined();
+      expect(args.columns).toBeUndefined();
+      expect(JSON.stringify(args.where)).not.toContain('inArray');
+      expect(data.artifacts[0].content).toHaveLength(5000);
+    });
+
+    it('types filters in SQL, and a diff the db returns anyway is never in the response', async () => {
+      auth();
+      mockArtifactsFindMany.mockResolvedValue([
+        { id: 'art-shot', type: 'screenshot', title: 'Phone' },
+        { id: 'art-diff', type: 'diff', title: 'A diff', content: 'secret diff body' },
+        { id: 'art-rep', type: 'report', title: 'Visual validation', content: 'Verdict: pass' },
+      ]);
+      const res = await get('types=screenshot,report');
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      const args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
+      expect(JSON.stringify(args.where)).toContain('"type":"inArray"');
+      expect(JSON.stringify(args.where)).toContain('["screenshot","report"]');
+      expect(data.artifacts.map((a: any) => a.id)).toEqual(['art-shot', 'art-rep']);
+      expect(JSON.stringify(data)).not.toContain('secret diff body');
+    });
+
+    it('an unknown type is a 400, not a silent empty list', async () => {
+      auth();
+      const res = await get('types=screenshot,bogus');
+      expect(res.status).toBe(400);
+      expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+    });
+
+    it('limit bounds the rows newest first, clamped to 200', async () => {
+      auth();
+      mockArtifactsFindMany.mockResolvedValue([]);
+      await get('types=report&limit=100');
+      let args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
+      expect(args.limit).toBe(100);
+      expect(JSON.stringify(args.orderBy)).toContain('desc');
+      await get('types=report&limit=100000');
+      args = (mockArtifactsFindMany.mock.calls[1] as any[])[0];
+      expect(args.limit).toBe(200);
+      await get('limit=nope');
+      expect((await get('limit=nope')).status).toBe(400);
+    });
+
+    it('preview=1 does not select the full body and returns at most 2KB of it', async () => {
+      auth();
+      mockArtifactsFindMany.mockResolvedValue([
+        { id: 'art-rep', type: 'report', title: 'Visual validation', contentPreview: 'y'.repeat(2048) },
+        { id: 'art-shot', type: 'screenshot', title: 'Phone', contentPreview: null },
+      ]);
+      const res = await get('types=screenshot,report&preview=1');
+      const data = await res.json();
+      const args = (mockArtifactsFindMany.mock.calls[0] as any[])[0];
+      expect(args.columns).toEqual({ content: false });
+      expect(JSON.stringify(args.extras)).toContain('2048');
+      expect(data.artifacts[0].content).toHaveLength(2048);
+      expect(data.artifacts[0].contentPreview).toBeUndefined();
+      expect(data.artifacts[1].content).toBeNull();
+    });
   });
 });

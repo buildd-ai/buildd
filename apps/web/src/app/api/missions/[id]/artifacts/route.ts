@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, artifacts, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -136,8 +136,43 @@ export async function POST(
   return NextResponse.json({ artifact: { ...artifact, shareUrl: null } });
 }
 
+/** `?limit` ceiling, and the body `?preview=1` keeps. */
+const MAX_LIST_LIMIT = 200;
+const PREVIEW_CHARS = 2048;
+
+type ListQuery = { types: string[] | null; limit: number | null; preview: boolean };
+
+/** Parse the optional list filters. A malformed one is an error, never ignored. */
+function parseListQuery(sp: URLSearchParams): ListQuery | string {
+  let types: string[] | null = null;
+  const rawTypes = sp.get('types');
+  if (rawTypes !== null) {
+    const list = rawTypes.split(',').map(t => t.trim()).filter(Boolean);
+    const bad = list.filter(t => !isArtifactType(t));
+    if (list.length === 0 || bad.length > 0) {
+      return `Invalid types: ${bad.join(', ') || '(empty)'}. Each must be one of: ${ARTIFACT_TYPES.join(', ')}`;
+    }
+    types = list;
+  }
+  let limit: number | null = null;
+  const rawLimit = sp.get('limit');
+  if (rawLimit !== null) {
+    const n = Number(rawLimit);
+    if (!Number.isInteger(n) || n < 1) return 'limit must be a positive integer';
+    limit = Math.min(n, MAX_LIST_LIMIT);
+  }
+  const preview = sp.get('preview') === '1' || sp.get('preview') === 'true';
+  return { types, limit, preview };
+}
+
 /**
- * GET /api/missions/[id]/artifacts — list artifacts for a mission
+ * GET /api/missions/[id]/artifacts — list artifacts for a mission.
+ *
+ * Optional, for callers that need a bounded read (get_visual_review):
+ * - `?types=screenshot,report` — only those types, filtered in SQL.
+ * - `?limit=N` — newest N by updatedAt (max 200).
+ * - `?preview=1` — `content` is its first 2KB, cut in SQL, never the full body.
+ * With none of them the response is the whole list, as it always was.
  */
 export async function GET(
   req: NextRequest,
@@ -181,9 +216,29 @@ export async function GET(
     }
   }
 
-  const missionArtifacts = await db.query.artifacts.findMany({
-    where: eq(artifacts.missionId, id),
-  });
+  const q = parseListQuery(req.nextUrl.searchParams);
+  if (typeof q === 'string') {
+    return NextResponse.json({ error: q }, { status: 400 });
+  }
 
-  return NextResponse.json({ artifacts: missionArtifacts });
+  const byMission = eq(artifacts.missionId, id);
+  const rows = await db.query.artifacts.findMany({
+    where: q.types ? and(byMission, inArray(artifacts.type, q.types)) : byMission,
+    ...(q.limit !== null ? { limit: q.limit, orderBy: [desc(artifacts.updatedAt)] } : {}),
+    ...(q.preview
+      ? {
+          columns: { content: false },
+          extras: { contentPreview: sql<string | null>`left(${artifacts.content}, ${PREVIEW_CHARS})`.as('content_preview') },
+        }
+      : {}),
+  }) as Array<Record<string, unknown> & { type: string; contentPreview?: string | null }>;
+
+  // The SQL predicate is the filter; this only guarantees the response honours it.
+  const types = q.types;
+  const typed = types ? rows.filter(a => types.includes(a.type)) : rows;
+  const out = q.preview
+    ? typed.map(({ contentPreview, ...a }) => ({ ...a, content: typeof contentPreview === 'string' ? contentPreview.slice(0, PREVIEW_CHARS) : null }))
+    : typed;
+
+  return NextResponse.json({ artifacts: out });
 }

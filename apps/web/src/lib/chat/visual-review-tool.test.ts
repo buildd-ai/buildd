@@ -50,15 +50,17 @@ describe('formatVisualReview', () => {
 describe('runGetVisualReview', () => {
   it('reads the mission, its review and its artifacts through three GETs and returns text plus a mission ref', async () => {
     const calls: ApiCall[] = [];
+    const endpoints: string[] = [];
     const m = deck();
     const api = async (endpoint: string, opts: { method?: string } = {}) => {
       const method = opts.method ?? 'GET';
+      endpoints.push(endpoint);
       const body = endpoint.endsWith('/visual-review')
         ? { model: m }
-        : endpoint.endsWith('/artifacts')
+        : endpoint.includes('/artifacts?')
           ? { artifacts: [{ id: 'fixture-diff', type: 'diff', title: 'A diff', workspaceId: 'ws' }] }
           : { id: 'fixture-mission', title: 'Fixture mission', workspaceId: 'ws', status: 'active' };
-      calls.push({ method, path: endpoint, status: 200, body });
+      calls.push({ method, path: endpoint.split('?')[0], status: 200, body });
       return body;
     };
     const out = await runGetVisualReview(api as never, { missionId: 'fixture-mission' });
@@ -67,6 +69,8 @@ describe('runGetVisualReview', () => {
       'GET /api/missions/fixture-mission/visual-review',
       'GET /api/missions/fixture-mission/artifacts',
     ]);
+    // Bounded read: only evidence types, newest 100, bodies cut to 2KB in SQL.
+    expect(endpoints[2]).toBe('/api/missions/fixture-mission/artifacts?types=screenshot,report,analysis,summary,walkthrough&limit=100&preview=1');
     expect(out.content[0].text).toContain('Fixture mission');
     expect(refsFromCalls(calls)).toEqual([expect.objectContaining({ kind: 'mission', id: 'fixture-mission' })]);
   });
@@ -80,9 +84,9 @@ describe('runGetVisualReview', () => {
     ];
     const api = async (endpoint: string) => {
       const body = endpoint.endsWith('/visual-review') ? { model: off }
-        : endpoint.endsWith('/artifacts') ? { artifacts }
+        : endpoint.includes('/artifacts?') ? { artifacts }
           : { id: 'fixture-mission', title: 'Fixture mission', workspaceId: 'ws', status: 'completed' };
-      calls.push({ method: 'GET', path: endpoint, status: 200, body });
+      calls.push({ method: 'GET', path: endpoint.split('?')[0], status: 200, body });
       return body;
     };
     const out = await runGetVisualReview(api as never, { missionId: 'fixture-mission' });
