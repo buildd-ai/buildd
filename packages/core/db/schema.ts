@@ -2034,7 +2034,7 @@ export const visualShotReviews = pgTable('visual_shot_reviews', {
   /** `route|viewport|variant`, the model's cell key (visual-review-model.ts). */
   cellKey: text('cell_key').notNull(),
   route: text('route').notNull(),
-  viewport: text('viewport').notNull(),
+  viewport: text('viewport').$type<'mobile' | 'desktop'>().notNull(),
   /** The agent's verdict when the human decided: the stale guard compares it. */
   agentVerdict: text('agent_verdict').$type<'ok' | 'issue' | 'unsure'>().notNull(),
   decision: text('decision').$type<'looks_right' | 'needs_fix'>().notNull(),

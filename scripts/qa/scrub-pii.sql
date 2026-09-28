@@ -436,6 +436,14 @@ UPDATE artifacts a SET
   metadata = pg_temp.qa_json(a.metadata)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.id = s.id;
 
+-- Human visual-review decisions: the route pattern goes through qa_str, as the
+-- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
+UPDATE visual_shot_reviews SET
+  route = pg_temp.qa_str(route),
+  cell_key = pg_temp.qa_str(cell_key),
+  note = pg_temp.qa_text(note),
+  reviewer_label = pg_temp.qa_hash('Reviewer ', reviewer_label);
+
 UPDATE task_schedules ts SET
   name = pg_temp.qa_title('Schedule', s.n, ts.name),
   task_template = pg_temp.qa_json(ts.task_template),
