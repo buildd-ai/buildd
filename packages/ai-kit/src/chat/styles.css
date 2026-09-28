@@ -244,3 +244,57 @@
 @media (hover: hover) and (min-width: 640px) {
   .kit-menu:not([data-open]):hover > .kit-menu-hover { display: block; }
 }
+
+/* ── Rich tool rows (0.10.0) ─────────────────────────────────────────────── */
+/* `ToolCallRow` / `ToolCallGroup` (`ChatThread toolRows="rich"`). A row is a
+   one-line button that expands to the raw input and output; the running call
+   is the one row that takes the accent. Rows in a group have no frame of
+   their own (`data-flush`). Compact on wide screens, 44px to touch below. */
+.kit-toolcall, .kit-toolcall *, .kit-toolcalls, .kit-toolcalls * { box-sizing: border-box; }
+.kit-toolcall { overflow: hidden; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); }
+.kit-toolcall[data-flush] { overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.kit-toolcall[data-live] { background: var(--kit-accent-soft); }
+button.kit-toolcall-head { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 44px; margin: 0; padding: 6px 14px; border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 12.5px; font-weight: inherit; line-height: inherit; letter-spacing: inherit; }
+.kit-toolcall-mark { width: 12px; flex: none; text-align: center; font-weight: 600; color: var(--kit-muted); }
+.kit-toolcall[data-state="running"] .kit-toolcall-mark, .kit-toolcall[data-state="approved"] .kit-toolcall-mark { color: var(--kit-accent-text); animation: kit-pulse 1.5s ease-in-out infinite; }
+.kit-toolcall[data-state="awaiting"] .kit-toolcall-mark { color: var(--kit-warn); }
+.kit-toolcall[data-state="done"] .kit-toolcall-mark { color: var(--kit-ok); }
+.kit-toolcall[data-state="failed"] .kit-toolcall-mark { color: var(--kit-danger); }
+.kit-toolcall-name { flex: none; font-weight: 600; color: var(--kit-ink); }
+.kit-toolcall[data-live] .kit-toolcall-name { color: var(--kit-accent-text); }
+.kit-toolcall-action { flex: none; color: var(--kit-ink-soft); }
+.kit-toolcall-badge { flex: none; border: 1px solid var(--kit-rule); padding: 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--kit-muted); }
+.kit-toolcall-args, .kit-toolcall-note { display: none; color: var(--kit-muted); }
+.kit-toolcall-args { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-toolcall-note { flex: none; }
+.kit-toolcall-result { flex: 1 1 0%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--kit-ink-soft); }
+.kit-toolcall[data-state="failed"] .kit-toolcall-result { color: var(--kit-danger); }
+.kit-toolcall-arrow { color: var(--kit-muted); }
+.kit-toolcall-chevron { margin-left: auto; flex: none; color: var(--kit-muted); transition: rotate 150ms cubic-bezier(0.4, 0, 0.2, 1); }
+[aria-expanded="true"] > .kit-toolcall-chevron { rotate: 90deg; }
+.kit-toolcall-raw { display: grid; gap: 8px; border-top: 1px solid var(--kit-rule); padding: 10px 14px; font-family: var(--kit-font-mono); font-size: 11.5px; }
+.kit-toolcall-raw-label { margin-bottom: 4px; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: var(--kit-ink); }
+.kit-toolcall-pre { margin: 0; max-height: 256px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-bg); padding: 8px; font-family: var(--kit-font-mono); font-size: 1em; color: var(--kit-ink-soft); }
+.kit-toolcalls { overflow: hidden; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); }
+button.kit-toolcalls-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; margin: 0; padding: 0 14px; border: 0; background: transparent; color: var(--kit-muted); cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 11.5px; font-weight: inherit; line-height: inherit; letter-spacing: inherit; }
+.kit-toolcalls[data-open] > .kit-toolcalls-head { border-bottom: 1px solid var(--kit-rule); }
+.kit-toolcalls-count { font-weight: 600; color: var(--kit-ink-soft); }
+.kit-toolcalls-tail { color: var(--kit-accent-text); }
+.kit-toolcalls-tail[data-tone="failed"] { color: var(--kit-danger); }
+.kit-toolcalls-body > * + * { border-top: 1px solid var(--kit-rule); }
+@keyframes kit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (hover: hover) {
+  button.kit-toolcall-head:hover { background: var(--kit-raised); }
+  button.kit-toolcalls-head:hover { color: var(--kit-ink); }
+}
+@media (min-width: 640px) {
+  .kit-toolcall-args, .kit-toolcall-note { display: inline; }
+}
+@media (min-width: 768px) {
+  button.kit-toolcall-head, button.kit-toolcalls-head { min-height: 36px; }
+  .kit-toolcall-badge { font-size: 10.5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kit-toolcall[data-state] .kit-toolcall-mark { animation: none; }
+  .kit-toolcall-chevron { transition: none; }
+}

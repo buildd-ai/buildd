@@ -26,6 +26,14 @@ export const KIT_CSS_VARS = [
   '--kit-font-mono',
   '--kit-sheet-bottom-offset',
   '--kit-scrim',
+  // 0.10.0: the rich tool rows (`ToolCallRow`, `ToolCallGroup`).
+  '--kit-ink-soft',
+  '--kit-accent-text',
+  '--kit-accent-soft',
+  '--kit-raised',
+  '--kit-ok',
+  '--kit-warn',
+  '--kit-danger',
 ] as const;
 export type KitCssVar = (typeof KIT_CSS_VARS)[number];
 
