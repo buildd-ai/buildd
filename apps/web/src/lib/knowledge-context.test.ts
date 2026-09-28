@@ -1,11 +1,37 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  buildKnowledgeContext,
+  buildKnowledgeContext as buildKnowledgeContextRaw,
   buildEntityCatalogContext,
   type KnowledgeQuerier,
   type EntityCatalogFetcher,
 } from './knowledge-context';
 import type { QueryResult } from '@buildd/core/knowledge-store';
+import type { MemoryHitScope } from '@buildd/core/memory-hit-scope';
+
+const OWN = 'acme/widgets';
+const FOREIGN = 'acme/other-thing';
+
+/**
+ * A memory scope for the caller's own project. `projects` maps a memory id to
+ * the project its row carries; ids not listed belong to OWN, so fixtures that
+ * are not about scoping keep reading as the caller's own memory.
+ */
+function scopeFor(projects: Record<string, string | null> = {}, count?: number): MemoryHitScope {
+  return {
+    project: OWN,
+    lookup: async (ids) => ({
+      memories: ids.map(id => ({ id, project: id in projects ? projects[id] : OWN })),
+    }),
+    ...(count !== undefined ? { count: async () => count } : {}),
+  };
+}
+
+/** Injects an own-project scope unless the test supplies one (including null). */
+const buildKnowledgeContext: typeof buildKnowledgeContextRaw = (q, ws, team, store, opts) =>
+  buildKnowledgeContextRaw(q, ws, team, store, {
+    ...opts,
+    memoryScope: opts && 'memoryScope' in opts ? opts.memoryScope : scopeFor(),
+  });
 
 function mockStore(
   byNs: Record<string, Array<Partial<QueryResult>>>,
@@ -278,11 +304,12 @@ describe('buildKnowledgeContext', () => {
 describe('buildKnowledgeContext corpora hint', () => {
   it('includes corpora hint when countNamespace is available', async () => {
     const store = mockStore({}, {
-      'team-1:memory': 208,
       'ws-1:code': 12431,
       'ws-1:docs': 340,
     });
-    const lines = await buildKnowledgeContext('fix auth bug', 'ws-1', 'team-1', store);
+    const lines = await buildKnowledgeContext('fix auth bug', 'ws-1', 'team-1', store, {
+      memoryScope: scopeFor({}, 208),
+    });
     const text = lines.join('\n');
     expect(text).toContain('knowledge:');
     expect(text).toContain('memory 208');
@@ -293,7 +320,6 @@ describe('buildKnowledgeContext corpora hint', () => {
 
   it('shows code not indexed when no code chunks', async () => {
     const store = mockStore({}, {
-      'team-1:memory': 50,
       'ws-1:code': 0,
       'ws-1:docs': 0,
     });
@@ -308,7 +334,6 @@ describe('buildKnowledgeContext corpora hint', () => {
     // being refreshed on every merged PR. A count over a namespace with no
     // writer is not a measurement.
     const store = mockStore({}, {
-      'team-1:memory': 10,
       'ws-1:code': 1200,
       'ws-1:docs': 340,
     });
@@ -327,8 +352,10 @@ describe('buildKnowledgeContext corpora hint', () => {
   });
 
   it('hint appears even when no prior work is found', async () => {
-    const store = mockStore({}, { 'team-1:memory': 100, 'ws-1:code': 500, 'ws-1:spec': 0 });
-    const lines = await buildKnowledgeContext('fix bug', 'ws-1', 'team-1', store);
+    const store = mockStore({}, { 'ws-1:code': 500, 'ws-1:spec': 0 });
+    const lines = await buildKnowledgeContext('fix bug', 'ws-1', 'team-1', store, {
+      memoryScope: scopeFor({}, 100),
+    });
     const text = lines.join('\n');
     expect(text).toContain('knowledge:');
     expect(text).toContain('memory 100');
@@ -395,7 +422,7 @@ describe('buildEntityCatalogContext', () => {
 // ── Clustered retrieval ───────────────────────────────────────────────────────
 
 import {
-  buildClusteredKnowledgeContext,
+  buildClusteredKnowledgeContext as buildClusteredKnowledgeContextRaw,
   buildFanOutAssembly,
   logContextAssembly,
   type ClusterKeys,
@@ -408,6 +435,16 @@ import {
   DEFAULT_FAN_OUT_RECIPE,
   type ClusterRecipe,
 } from '@buildd/core/retrieval-clusters';
+
+/** Same injection as buildKnowledgeContext above. */
+const buildClusteredKnowledgeContext: typeof buildClusteredKnowledgeContextRaw = (input) =>
+  buildClusteredKnowledgeContextRaw({
+    ...input,
+    opts: {
+      ...input.opts,
+      memoryScope: input.opts && 'memoryScope' in input.opts ? input.opts.memoryScope : scopeFor(),
+    },
+  });
 
 /**
  * A hit shaped like one the real pipeline produces.
@@ -495,7 +532,7 @@ const DEFAULT_KEYS: ClusterKeys = {
 function runCluster(
   byNs: Record<string, Array<Partial<QueryResult>>>,
   keys: ClusterKeys = DEFAULT_KEYS,
-  opts?: { sensitive?: boolean; excludedSourceIds?: ReadonlySet<string> },
+  opts?: { sensitive?: boolean; excludedSourceIds?: ReadonlySet<string>; memoryScope?: MemoryHitScope | null },
   recipe: ClusterRecipe = TOOL_INFRA_ERROR_V1,
 ) {
   const { store, calls } = clusterStore(byNs);
@@ -984,7 +1021,9 @@ describe('buildClusteredKnowledgeContext — rendering, budget, and failure', ()
   it('truncates at the section budget, and honours it', async () => {
     const many = Array.from({ length: 40 }, (_, i) => hit({ content: `# hit ${i} ${'x'.repeat(200)}` }));
     const tight: ClusterRecipe = { ...TOOL_INFRA_ERROR_V1, budgetChars: 600 };
-    const { parts } = await runCluster({ 'team-1:memory': many }, undefined, undefined, tight);
+    // Memory is trimmed back to the step's topK after project narrowing, so the
+    // overflow comes from a workspace corpus whose fixture ignores topK.
+    const { parts } = await runCluster({ 'team-1:memory': many, 'ws-1:task': many }, undefined, undefined, tight);
     const body = parts.join('\n');
     expect(body).toContain('truncated at the 600-char section budget');
     // The budget is the accounted length of the rendered hits and headers, so
@@ -1070,5 +1109,110 @@ describe('buildClusteredKnowledgeContext — rendering, budget, and failure', ()
     });
     expect(parts).toEqual([]);
     expect(assembly.items.every(i => i.reason === 'step_skipped_no_keys')).toBe(true);
+  });
+});
+
+// ── Memory project scoping ────────────────────────────────────────────────────
+//
+// Invariant: memory surfaced to an agent comes only from the requesting
+// workspace's project. `{teamId}:memory` is team-wide, so these fixtures put a
+// memory from another workspace's project in the same namespace and assert it
+// never reaches the rendered context.
+
+describe('buildKnowledgeContext — memory is pinned to the caller project', () => {
+  const mixed = () => mockStore({
+    'team-1:memory': [
+      { id: 'own-1', content: '# own lesson' },
+      { id: 'foreign-1', content: '# foreign lesson' },
+      { id: 'digest-1', content: '# unscoped digest' },
+    ],
+  });
+
+  it('drops a memory whose row belongs to another project', async () => {
+    const text = (await buildKnowledgeContext('lesson', 'ws-1', 'team-1', mixed(), {
+      memoryScope: scopeFor({ 'foreign-1': FOREIGN, 'digest-1': null }),
+    })).join('\n');
+    expect(text).toContain('own lesson');
+    expect(text).not.toContain('foreign lesson');
+  });
+
+  it('drops a memory with no project (feedback digests fail closed)', async () => {
+    const text = (await buildKnowledgeContext('lesson', 'ws-1', 'team-1', mixed(), {
+      memoryScope: scopeFor({ 'foreign-1': FOREIGN, 'digest-1': null }),
+    })).join('\n');
+    expect(text).not.toContain('unscoped digest');
+  });
+
+  it('drops a hit with no backing memory row', async () => {
+    const scope: MemoryHitScope = { project: OWN, lookup: async () => ({ memories: [] }) };
+    const text = (await buildKnowledgeContext('lesson', 'ws-1', 'team-1', mixed(), { memoryScope: scope })).join('\n');
+    expect(text).not.toContain('Team memory');
+  });
+
+  it('never queries the team memory namespace without a project scope', async () => {
+    const seen: string[] = [];
+    const store: KnowledgeQuerier = { async query(ns) { seen.push(ns); return []; } };
+    await buildKnowledgeContext('goal', 'ws-1', 'team-1', store, { memoryScope: null });
+    expect(seen).not.toContain('team-1:memory');
+    expect(seen).toContain('ws-1:plan');
+  });
+
+  it('over-fetches the memory namespace so narrowing does not starve the section', async () => {
+    const topKs: Record<string, number | undefined> = {};
+    const store: KnowledgeQuerier = { async query(ns, p) { topKs[ns] = p.topK; return []; } };
+    await buildKnowledgeContext('goal', 'ws-1', 'team-1', store);
+    expect(topKs['team-1:memory']).toBeGreaterThan(3);
+    expect(topKs['ws-1:plan']).toBe(3);
+  });
+
+  it('counts only own-project memories in the corpora hint, never the team namespace', async () => {
+    const counted: string[] = [];
+    const store: KnowledgeQuerier = {
+      async query() { return []; },
+      async countNamespace(ns) { counted.push(ns); return ns === 'team-1:memory' ? 999 : 1; },
+    };
+    const text = (await buildKnowledgeContext('goal', 'ws-1', 'team-1', store, {
+      memoryScope: scopeFor({}, 3),
+    })).join('\n');
+    expect(text).toContain('memory 3');
+    expect(text).not.toContain('999');
+    expect(counted).not.toContain('team-1:memory');
+  });
+
+  it('omits memory from the corpora hint when there is no project scope', async () => {
+    const store = mockStore({}, { 'team-1:memory': 999, 'ws-1:code': 1, 'ws-1:docs': 1 });
+    const text = (await buildKnowledgeContext('goal', 'ws-1', 'team-1', store, { memoryScope: null })).join('\n');
+    expect(text).toContain('knowledge:');
+    expect(text).not.toMatch(/memory \d/);
+  });
+});
+
+describe('buildClusteredKnowledgeContext — memory is pinned to the caller project', () => {
+  it('drops a memory-step hit whose row belongs to another project', async () => {
+    const { parts, assembly } = await runCluster(
+      {
+        'team-1:memory': [
+          hit({ id: 'own-1', content: '# own oom gotcha', rerank: STRONG }),
+          hit({ id: 'foreign-1', content: '# foreign oom gotcha', rerank: STRONG }),
+        ],
+      },
+      undefined,
+      { memoryScope: scopeFor({ 'foreign-1': FOREIGN }) },
+    );
+    const text = parts.join('\n');
+    expect(text).toContain('own oom gotcha');
+    expect(text).not.toContain('foreign oom gotcha');
+    expect(assembly.items.some(i => i.chunkId === 'foreign-1')).toBe(false);
+  });
+
+  it('skips the memory step without a project scope, never queries it, and says so', async () => {
+    const { calls, assembly } = await runCluster(
+      { 'team-1:memory': [hit({ id: 'foreign-1', content: '# should never be read', rerank: STRONG })] },
+      undefined,
+      { memoryScope: null },
+    );
+    expect(calls.some(c => c.ns === 'team-1:memory')).toBe(false);
+    const memStep = TOOL_INFRA_ERROR_V1.steps.find(st => st.corpus === 'memory')!;
+    expect(assembly.items.find(i => i.step === memStep.step)!.reason).toBe('memory_skipped_no_scope');
   });
 });

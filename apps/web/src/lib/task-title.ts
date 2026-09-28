@@ -21,7 +21,7 @@ import { stripTaskTitlePrefixes } from '@buildd/core/task-title';
 export { stripTaskTitlePrefixes };
 
 /** Attempt reason for a builder retry after reviewer feedback. */
-export type AttemptReason = 'after review' | 'after conflict' | 'after CI';
+export type AttemptReason = 'after review' | 'after conflict' | 'after CI' | 'migration collision';
 
 /**
  * Format a task title with the role and attempt context.

@@ -36,7 +36,38 @@ describe('inspectPullRequestMigrations', () => {
     );
   });
 
-  it('finds a same-number migration in another open PR', async () => {
+  it('finds a same-number migration in another open PR and owns the fix (higher PR number)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0094_safe.sql', status: 'added' },
+      ])
+      .mockResolvedValueOnce({
+        encoding: 'base64',
+        content: Buffer.from('CREATE TABLE "safe" ("id" uuid);').toString('base64'),
+      })
+      .mockResolvedValueOnce([{ number: 42 }, { number: 40 }])
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0094_collision.sql', status: 'added' },
+      ]);
+
+    await expect(
+      inspectPullRequestMigrations({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'abc123',
+        files: [],
+      }),
+    ).resolves.toEqual({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason:
+        'migration number collision: 0094_safe.sql conflicts with open PR #40 migration 0094_collision.sql',
+      collision: { file: '0094_safe.sql', otherFile: '0094_collision.sql', otherPrNumber: 40 },
+    });
+  });
+
+  it('does not report a collision when this PR is not the deterministic owner (lower PR number)', async () => {
     mockGithubApi
       .mockResolvedValueOnce([
         { filename: 'packages/core/drizzle/0094_safe.sql', status: 'added' },
@@ -58,12 +89,37 @@ describe('inspectPullRequestMigrations', () => {
         headSha: 'abc123',
         files: [],
       }),
-    ).resolves.toEqual({
-      safe: false,
-      operationClass: 'CONTRACT',
-      reason:
-        'migration number collision: 0094_safe.sql conflicts with open PR migration 0094_collision.sql',
-    });
+    ).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('excludes a migration path already present on the base branch — inherited, not a real collision (PR #2540 gotcha)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0094_safe.sql', status: 'added' },
+      ])
+      .mockResolvedValueOnce({
+        encoding: 'base64',
+        content: Buffer.from('CREATE TABLE "safe" ("id" uuid);').toString('base64'),
+      })
+      .mockResolvedValueOnce([{ number: 42 }, { number: 40 }])
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/0093_inherited.sql', status: 'added' },
+      ])
+      .mockResolvedValueOnce({
+        encoding: 'base64',
+        content: Buffer.from('CREATE TABLE "inherited" ("id" uuid);').toString('base64'),
+      });
+
+    await expect(
+      inspectPullRequestMigrations({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'abc123',
+        files: [],
+        baseRef: 'dev',
+      }),
+    ).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
   });
 
   it('escalates deleting a generated migration', async () => {

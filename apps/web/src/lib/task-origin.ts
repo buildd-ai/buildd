@@ -124,6 +124,7 @@ const FAILURE_REASON: Record<string, string> = {
   ci_failure: 'check_suite failed',
   reviewer_request_changes: 'reviewer requested changes',
   merge_conflict: 'merge conflict',
+  migration_collision: 'migration number collision',
 };
 
 function num(value: unknown): number | null {
