@@ -3,7 +3,8 @@ import { db } from '@buildd/core/db';
 import { userFeedback } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, verifyWorkspaceAccess } from '@/lib/team-access';
+import { resolveFeedbackEntityHome } from '@/lib/feedback-entity-workspace';
 import { rateableTurnTeam } from '@/lib/chat/turn-feedback';
 import { isChatFeedbackReason, type ChatFeedbackReason } from '@buildd/core/tier-pool';
 
@@ -58,11 +59,21 @@ export async function POST(req: NextRequest) {
       reason = body.reason ?? null;
       note = null; // Labels and numbers only: chat thumbs never store text.
     } else {
-      const teamIds = await getUserTeamIds(user.id);
-      if (teamIds.length === 0) {
-        return NextResponse.json({ error: 'No team found' }, { status: 403 });
+      // Invariant: feedback on content comes only from someone who can reach
+      // it (workspace access, or team membership for team-level content with
+      // no workspace), and belongs to that content's team. Content outside the
+      // rater's reach reads the same as missing content.
+      const home = await resolveFeedbackEntityHome(entityType, entityId);
+      let contentTeam: string | null = null;
+      if (home?.workspaceId) {
+        contentTeam = (await verifyWorkspaceAccess(user.id, home.workspaceId))?.teamId ?? null;
+      } else if (home && home.workspaceId === null) {
+        contentTeam = (await getUserTeamIds(user.id)).includes(home.teamId) ? home.teamId : null;
       }
-      teamId = teamIds[0];
+      if (!contentTeam) {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      }
+      teamId = contentTeam;
     }
 
     // Upsert: if user already gave feedback on this entity, update it
