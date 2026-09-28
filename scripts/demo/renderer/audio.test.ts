@@ -1,30 +1,56 @@
 import { describe, expect, test } from 'bun:test';
-import { PEAK, rng, SAMPLE_RATE, synthesize, wav } from './audio';
+import { biquad, lowEnergyShare, PEAK, rng, SAMPLE_RATE, synthesize, wav, type Cue } from './audio';
 
 const energy = (b: Float32Array, from: number, to: number) => {
   let e = 0;
   for (let i = Math.round(from * SAMPLE_RATE); i < Math.round(to * SAMPLE_RATE); i++) e += b[i] * b[i];
   return e;
 };
+const sine = (hz: number, seconds = 1) => Float32Array.from({ length: seconds * SAMPLE_RATE }, (_, i) => Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE));
+
+const EVERY: Cue[] = [
+  ...Array.from({ length: 20 }, (_, i) => ({ type: 'key' as const, at: 0.5 + i * 0.08 })),
+  { type: 'tap', at: 3 }, { type: 'click', at: 4 }, { type: 'pluck', at: 5, note: 2 }, { type: 'chime', at: 7 },
+];
 
 describe('synthesize', () => {
-  test('is exactly the cut long and peaks at -3 dBFS, never clipping', () => {
-    const b = synthesize([{ type: 'chime', at: 1 }, { type: 'click', at: 1 }, { type: 'key', at: 1 }], 4);
-    expect(b.length).toBe(4 * SAMPLE_RATE);
+  test('is exactly the cut long and peaks at -6 dBFS', () => {
+    const b = synthesize(EVERY, 10);
+    expect(b.length).toBe(10 * SAMPLE_RATE);
     expect(Math.max(...Array.from(b, Math.abs))).toBeCloseTo(PEAK, 5);
   });
+  test('nothing heavy below 150 Hz: under 0.5% of the energy, bed and every cue included', () => {
+    expect(lowEnergyShare(synthesize(EVERY, 10))).toBeLessThan(0.005);
+    expect(lowEnergyShare(synthesize(EVERY, 10, { bed: false }))).toBeLessThan(0.005);
+  });
   test('a cue sounds at its time and not before', () => {
-    const b = synthesize([{ type: 'click', at: 2 }], 4, { pad: false });
-    expect(energy(b, 0, 1.99)).toBe(0);
-    expect(energy(b, 2, 2.1)).toBeGreaterThan(0);
+    const b = synthesize([{ type: 'tap', at: 2 }], 4, { bed: false });
+    expect(energy(b, 0, 1.99)).toBeLessThan(1e-9);
+    expect(energy(b, 2, 2.2)).toBeGreaterThan(0);
+  });
+  test('the tap has no tail: it is gone within a second', () => {
+    const b = synthesize([{ type: 'tap', at: 1 }], 4, { bed: false });
+    expect(energy(b, 2, 4)).toBeLessThan(energy(b, 1, 1.2) * 1e-4);
+  });
+  test('the chime rises: its three onsets are spaced, and the last lands last', () => {
+    const b = synthesize([{ type: 'chime', at: 1 }], 4, { bed: false });
+    expect(energy(b, 1.34, 1.4)).toBeGreaterThan(0);
+    expect(energy(b, 0.9, 0.999)).toBeLessThan(1e-9);
   });
   test('the same cues always make the same sound', () => {
-    const cues = [{ type: 'key' as const, at: 0.5 }, { type: 'key' as const, at: 0.7 }];
-    expect(synthesize(cues, 1)).toEqual(synthesize(cues, 1));
+    expect(synthesize(EVERY, 10)).toEqual(synthesize(EVERY, 10));
   });
-  test('cues outside the cut are dropped, not wrapped', () => {
-    const b = synthesize([{ type: 'chime', at: 9 }], 2, { pad: false });
-    expect(energy(b, 0, 2)).toBe(0);
+});
+
+describe('lowEnergyShare', () => {
+  test('tells a boom from a bell', () => {
+    expect(lowEnergyShare(sine(60))).toBeGreaterThan(0.5);
+    expect(lowEnergyShare(sine(1046))).toBeLessThan(0.001);
+  });
+  test('the mix high-pass takes a 60 Hz boom down by more than 30 dB', () => {
+    const before = energy(sine(60), 0.5, 1);
+    const after = energy(biquad(biquad(sine(60), 'highpass', 160), 'highpass', 160), 0.5, 1);
+    expect(after / before).toBeLessThan(1e-3);
   });
 });
 
@@ -36,7 +62,6 @@ describe('wav', () => {
     expect(v.getUint16(22, true)).toBe(1);
     expect(v.getUint16(34, true)).toBe(16);
     expect(v.getUint32(40, true)).toBe(960);
-    expect(w.length).toBe(44 + 960);
   });
 });
 

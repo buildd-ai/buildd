@@ -6,7 +6,9 @@
  * `get_visual_review` tool and by the MCP `get_visual_review` action.
  *
  * Audience:
- * - `chat` (default): no links, no image references. The chat card shows the
+ * - `chat` (default): the artifact page link per screenshot (relative to the
+ *   app, or on `baseUrl` when given), so the assistant can hand the user a
+ *   link, but never an image or download reference. The chat card shows the
  *   screens; the assistant has not seen them and must not say so.
  * - `mcp`: a link per screenshot (the artifact page and the download route
  *   the app already uses), full task ids.
@@ -81,7 +83,7 @@ export function describeVisualPhase(
 export interface FormatVisualReviewOptions {
   /** Default `chat`. */
   audience?: 'chat' | 'mcp';
-  /** `mcp`: the app origin the links are built on. */
+  /** The app origin the links are built on (`chat`: optional, links are app-relative without it). */
   baseUrl?: string;
   missionId?: string;
   missionStatus?: string | null;
@@ -204,8 +206,7 @@ export async function missionArtifacts(
 
 function evidenceLines(ev: ReturnType<typeof otherVisualEvidence>, o: FormatVisualReviewOptions): string[] {
   const mcp = o.audience === 'mcp';
-  const base = (o.baseUrl ?? '').replace(/\/+$/, '');
-  const link = (a: VisualEvidenceArtifact) => (mcp ? ` (${base}/app/artifacts/${encodeURIComponent(a.id)})` : '');
+  const link = (a: VisualEvidenceArtifact) => ` (${pageLink(o, a.id)})`;
   const title = (a: VisualEvidenceArtifact) => `"${one(a.title || a.key || 'Untitled')}"`;
   const parts = [ev.screenshots.length > 0 && plural(ev.screenshots.length, 'screenshot'), ev.reports.length > 0 && plural(ev.reports.length, 'report')].filter(Boolean);
   const out = [`Other visual evidence (${parts.join(', ')}):`];
@@ -240,6 +241,10 @@ const RANK: Record<string, number> = { unsure: 0, issue: 1, ok: 2 };
 
 const one = (s: string) => s.replace(/\s+/g, ' ').trim();
 
+/** An artifact's page in the app: a link a person opens, never the image itself. */
+const pageLink = (o: FormatVisualReviewOptions, id: string) =>
+  `${(o.baseUrl ?? '').replace(/\/+$/, '')}/app/artifacts/${encodeURIComponent(id)}`;
+
 function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
   const mcp = o.audience === 'mcp';
   const who = mcp ? 'human' : 'you';
@@ -260,8 +265,10 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
   }
   if (mcp) {
     const base = (o.baseUrl ?? '').replace(/\/+$/, '');
-    const id = encodeURIComponent(e.shot.id);
-    bits.push(`shot ${base}/app/artifacts/${id} (image ${base}/api/artifacts/${id}/download)`);
+    bits.push(`shot ${pageLink(o, e.shot.id)} (image ${base}/api/artifacts/${encodeURIComponent(e.shot.id)}/download)`);
+  } else {
+    // A link the user can open; the image itself never reaches the model.
+    bits.push(`link ${pageLink(o, e.shot.id)}`);
   }
   return `  - ${bits.join('; ')}`;
 }
@@ -338,7 +345,7 @@ export function formatVisualReview(
   const evidence = [...ev.screenshots, ...ev.reports];
   const hasEvidence = evidence.length > 0;
   const q3 = mcp && opts.missionStatus === 'completed' ? `\n${checkedBeforeDone(audits, opts.missionCompletedAt, evidence)}` : '';
-  const unseen = ev.screenshots.length > 0 ? 'You have not seen these screenshots; the user opens them from the mission\'s artifacts.' : null;
+  const unseen = ev.screenshots.length > 0 ? 'You have not seen these screenshots; the user opens them from the links above or the mission\'s artifacts.' : null;
   if (model.phase === 'off' && audits.length === 0) {
     if (!hasEvidence) return `${head}: No visual audit on this mission.${q3}`;
     const lines = [`${head}: No automatic visual audit ran; manual visual evidence below.`];
@@ -388,7 +395,7 @@ export function formatVisualReview(
     if (opts.missionId && opts.baseUrl) lines.push(`Decide on the mission page: ${opts.baseUrl.replace(/\/+$/, '')}/app/missions/${encodeURIComponent(opts.missionId)}`);
   } else {
     if (unseen) lines.push(unseen);
-    lines.push('You have not seen these images; the card in the chat shows them. The user decides each screen there (Looks right / Needs fix).');
+    lines.push('You have not seen these images, only their text: give the links when the user asks for the screenshots, and never describe what a screen looks like. The card in the chat shows them; the user decides each screen there (Looks right / Needs fix).');
   }
   return lines.join('\n');
 }

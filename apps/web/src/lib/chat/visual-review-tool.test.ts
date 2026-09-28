@@ -41,6 +41,12 @@ describe('formatVisualReview', () => {
     expect(text).toMatch(/You have not seen these images/);
   });
 
+  it('gives the artifact page link of every current screen, so the user can ask for links', () => {
+    const m = deck();
+    const text = formatVisualReview(m, 'Fixture mission');
+    for (const c of m.cells) expect(text).toContain(`/app/artifacts/${encodeURIComponent(c.current.shot.id)}`);
+  });
+
   it('says so plainly when there is no audit, or no shots yet', () => {
     expect(formatVisualReview(buildVisualReviewFixtureModel('off'), 'M')).toMatch(/No visual audit/);
     expect(formatVisualReview(buildVisualReviewFixtureModel('no_browser_runner'), 'M')).toMatch(/no browser runner/i);
@@ -75,7 +81,7 @@ describe('runGetVisualReview', () => {
     expect(refsFromCalls(calls)).toEqual([expect.objectContaining({ kind: 'mission', id: 'fixture-mission' })]);
   });
 
-  it('adds manual visual evidence (no links) and a card for the validation report only', async () => {
+  it('adds manual visual evidence (page links, no image links) and a card for the validation report only', async () => {
     const calls: ApiCall[] = [];
     const off = buildVisualReviewFixtureModel('off');
     const artifacts = [
@@ -93,7 +99,8 @@ describe('runGetVisualReview', () => {
     const text = out.content[0].text;
     expect(text).not.toMatch(/No visual audit on this mission/);
     expect(text).toContain('Verdict: all checks passed.');
-    expect(text).not.toMatch(/\/app\/artifacts\/|\/download/);
+    expect(text).toContain('/app/artifacts/fixture-report');
+    expect(text).not.toMatch(/\/download|\/api\/artifacts\//);
     const refs = refsFromCalls(calls);
     expect(refs.map(r => `${r.kind}:${r.id}`)).toEqual(['mission:fixture-mission', 'artifact:fixture-report']);
   });
