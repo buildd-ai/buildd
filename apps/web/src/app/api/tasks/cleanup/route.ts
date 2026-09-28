@@ -12,6 +12,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
+import { runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -163,12 +164,17 @@ export async function POST(req: NextRequest) {
   let stalledWorkers = 0;
   let orphanedTasks = 0;
 
-  // 1. Workers stuck in running/starting with no update for > 1 hour
+  // 1. Workers stuck in running/starting with no update for > 1 hour.
+  // Runner workers only: an interactive (MCP-claimed) worker's updatedAt moves
+  // on MCP activity, not runner syncs, and it has its own longer TTL in
+  // cleanupStaleWorkers (step 3). One hour of a person's local agent working
+  // without an MCP call is normal (friction 92866723).
   const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
     where: and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
-      lt(workers.updatedAt, oneHourAgo)
+      lt(workers.updatedAt, oneHourAgo),
+      runnerWorkerOnly(),
     ),
     columns: { id: true, taskId: true },
   });
@@ -339,11 +345,15 @@ export async function POST(req: NextRequest) {
   if (staleHeartbeats.length > 0) {
     const staleAccountIds = staleHeartbeats.map(hb => hb.accountId);
 
-    // Find active workers belonging to accounts with stale heartbeats
+    // Find active workers belonging to accounts with stale heartbeats. A
+    // runner heartbeat only vouches for that runner's workers; an interactive
+    // (MCP-claimed) worker on the same account has no runner and must not die
+    // because the account's runner went offline.
     const orphanedWorkers = await db.query.workers.findMany({
       where: and(
         inArray(workers.accountId, staleAccountIds),
         inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+        runnerWorkerOnly(),
       ),
       columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
     });

@@ -5,6 +5,7 @@ import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -1852,6 +1853,13 @@ export async function POST(req: NextRequest) {
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
+    // Who holds an interactive claim: the MCP liveness touch is scoped to the
+    // session user that made it (lib/interactive-worker-liveness.ts). Rewritten
+    // on every claim so a stamp never outlives the claim it described.
+    delete (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_USER_KEY];
+    if (interactiveSession?.userId) {
+      (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_USER_KEY] = interactiveSession.userId;
+    }
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     lockAttempts++;

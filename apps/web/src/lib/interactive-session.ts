@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, hkdfSync, timingSafeEqual } from 'crypto';
 
 /**
  * A server-signed marker that says "this request came from buildd's own MCP
@@ -37,15 +37,39 @@ export interface InteractiveSession {
   userId: string | null;
 }
 
-function signingSecret(): string | null {
-  return process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.ENCRYPTION_KEY || null;
+/** HKDF info label: the marker key is dedicated to this use, never the raw secret. */
+const KEY_LABEL = 'interactive-session';
+
+let warnedNoSecret = false;
+
+/** Test hook. */
+export function resetInteractiveSessionWarning(): void {
+  warnedNoSecret = false;
+}
+
+/**
+ * The marker's HMAC key: HKDF-SHA256 over the existing server secret with the
+ * label 'interactive-session', so the marker never signs with a secret other
+ * features also use directly. Null (with a one-time warning) when no secret is
+ * configured: every claim is then treated as a runner's.
+ */
+export function interactiveSessionKey(): Buffer | null {
+  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.ENCRYPTION_KEY || null;
+  if (!secret) {
+    if (!warnedNoSecret) {
+      warnedNoSecret = true;
+      console.warn('[interactive-session] no signing secret (AUTH_SECRET / NEXTAUTH_SECRET / ENCRYPTION_KEY): MCP claims cannot be marked interactive and get runner rules.');
+    }
+    return null;
+  }
+  return Buffer.from(hkdfSync('sha256', secret, Buffer.alloc(0), KEY_LABEL, 32));
 }
 
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
 const unb64 = (s: string) => Buffer.from(s, 'base64url').toString('utf8');
 
-function mac(secret: string, payload: string): string {
-  return createHmac('sha256', secret).update(`interactive-session:${payload}`).digest('base64url');
+function mac(key: Buffer, payload: string): string {
+  return createHmac('sha256', key).update(`interactive-session:${payload}`).digest('base64url');
 }
 
 /** `v1.<ts>.<account>.<user>.<mac>`; null when no secret is configured. */
@@ -53,7 +77,7 @@ export function signInteractiveSession(
   input: { accountId: string; userId: string | null | undefined },
   now: number = Date.now(),
 ): string | null {
-  const secret = signingSecret();
+  const secret = interactiveSessionKey();
   if (!secret) return null;
   const payload = `v1.${now}.${b64(input.accountId)}.${b64(input.userId ?? '')}`;
   return `${payload}.${mac(secret, payload)}`;
@@ -64,8 +88,9 @@ export function verifyInteractiveSession(
   accountId: string,
   now: number = Date.now(),
 ): InteractiveSession | null {
-  const secret = signingSecret();
-  if (!secret || !header) return null;
+  if (!header) return null;
+  const secret = interactiveSessionKey();
+  if (!secret) return null;
   const parts = header.split('.');
   if (parts.length !== 5 || parts[0] !== 'v1') return null;
   const [v, ts, acc, user, sig] = parts;
