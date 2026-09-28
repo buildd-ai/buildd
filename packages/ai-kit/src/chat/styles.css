@@ -7,7 +7,7 @@
  * `data-*` attributes, so an app can target either. No Tailwind.
  *
  * Mobile-first: tap targets are at least 44px, the menus become bottom sheets
- * below 640px.
+ * below 640px (portaled to <body> by `Menu`, above --kit-sheet-bottom-offset).
  */
 
 .kit-chat, .kit-chat * { box-sizing: border-box; }
@@ -66,7 +66,7 @@
 .kit-btn:disabled, .kit-btn[aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
 
 /* ── Composer ───────────────────────────────────────────────────────────── */
-.kit-composer { border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-bg); overflow: hidden; }
+.kit-composer { position: relative; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-bg); }
 .kit-composer[data-busy="true"] { border-color: var(--kit-accent); }
 .kit-composer-input { display: block; width: 100%; min-height: 64px; max-height: 12rem; resize: none; field-sizing: content; border: 0; background: transparent; color: var(--kit-ink); padding: 12px 14px; font: inherit; font-size: 16px; line-height: 1.4; }
 .kit-composer-input:focus { outline: none; }
@@ -75,6 +75,8 @@
 .kit-toolbar > * + * { border-left: 1px solid var(--kit-rule); }
 .kit-toolbar-slot { display: flex; align-items: stretch; min-width: 0; }
 .kit-toolbar-slot[data-slot="scope"] { flex: 1 1 auto; }
+/* The composer doesn't clip (its menus open out of it), so the last control rounds its own corner. */
+.kit-send, .kit-stop { border-bottom-right-radius: calc(var(--kit-radius-soft) - 1px); }
 .kit-send { width: 56px; flex: none; border: 0; background: var(--kit-accent); color: var(--kit-accent-ink); font-size: 20px; font-weight: 700; cursor: pointer; }
 .kit-send[aria-disabled="true"] { cursor: not-allowed; }
 .kit-stop { width: 56px; flex: none; border: 0; background: var(--kit-ink); cursor: pointer; display: grid; place-items: center; }
@@ -86,7 +88,7 @@
 .kit-menu { position: relative; display: flex; align-items: stretch; }
 .kit-menu-trigger { min-height: 48px; min-width: 48px; padding: 0 12px; border: 0; background: transparent; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-family: var(--kit-font-mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .kit-badge { color: var(--kit-accent); font-weight: 600; }
-.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; min-width: 260px; max-width: min(92vw, 380px); background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
+.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
 .kit-menu[data-align="end"] .kit-menu-panel { left: auto; right: 0; }
 .kit-menu-title { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); padding: 6px 14px; margin: 0; }
 .kit-rows { list-style: none; margin: 0; padding: 0; }
@@ -100,9 +102,19 @@
 .kit-option[aria-checked="true"] { font-weight: 600; }
 .kit-option-meta { font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
 .kit-menu-error { margin: 0; padding: 8px 14px; font-size: 13px; border-top: 1px solid var(--kit-rule); }
-@media (max-width: 639px) {
-  .kit-menu-panel { position: fixed; left: 0; right: 0; bottom: 0; top: auto; max-width: none; min-width: 0; border-radius: var(--kit-radius-soft) var(--kit-radius-soft) 0 0; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .kit-menu[data-align="end"] .kit-menu-panel { right: 0; }
+/* Phone sheet: `Menu` portals it to <body> inside .kit-sheet-layer, so no
+   ancestor's transform, overflow or stacking context can capture it. It sits
+   on top of the app's bottom chrome (--kit-sheet-bottom-offset); the safe-area
+   inset is only padded for when that chrome doesn't already cover it. */
+.kit-sheet-layer { position: fixed; inset: 0; z-index: 1000; }
+.kit-sheet-scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--kit-ink) 28%, transparent); }
+.kit-sheet-layer > .kit-menu-panel[data-sheet] {
+  position: fixed; left: 0; right: 0; top: auto; bottom: var(--kit-sheet-bottom-offset);
+  width: auto; min-width: 0; max-width: none;
+  max-height: calc(100dvh - var(--kit-sheet-bottom-offset) - 48px);
+  border-width: 1px 0 0; border-radius: var(--kit-radius-soft) var(--kit-radius-soft) 0 0;
+  padding-bottom: max(12px, calc(env(safe-area-inset-bottom) - var(--kit-sheet-bottom-offset)));
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent);
 }
 
 /* ── Empty state ────────────────────────────────────────────────────────── */

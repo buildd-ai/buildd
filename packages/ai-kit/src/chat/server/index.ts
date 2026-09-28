@@ -13,6 +13,8 @@
  * - `handoffResult` / `handoffEventMessage`: filing a runner task from chat
  *   and reporting back into the conversation (./handoff).
  * - `SteerQueue` / `memorySteerQueue`: the steering queue adapter.
+ * - `classifyTurnError`: a provider failure as a typed, readable `TurnErrorData`
+ *   (./errors); the turn writes it as `data-turn-error`.
  */
 
 export * from './permissions';
@@ -23,3 +25,4 @@ export * from './handoff';
 export * from './model';
 export * from './permissions-api';
 export * from './turn';
+export * from './errors';

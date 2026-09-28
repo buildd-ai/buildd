@@ -92,7 +92,7 @@ export function packageOf(spec: string): string | null {
  * lazily on the first turn; `/decide` loads the SDK on the first call).
  */
 export const ENTRY_PEERS: Record<string, readonly string[]> = {
-  'chat/react/': ['react', '@ai-sdk/react', 'ai'],
+  'chat/react/': ['react', 'react-dom', '@ai-sdk/react', 'ai'],
 };
 
 function entryAllows(file: string, name: string): boolean {
