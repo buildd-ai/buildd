@@ -95,8 +95,8 @@ describe('the client\'s copy of the classes matches the registry', () => {
 });
 
 describe('visual review from chat (docs/design/visual-qa-human-review.md, Chat)', () => {
-  it('get_visual_review is a chat-native read that reaches only GET routes, the visual-review read among them', () => {
-    const spec = CHAT_NATIVE_TOOL_SPECS.get_visual_review;
+  it('get_visual_review (the MCP action, run by chat\'s own link-free version) is a read that reaches only GET routes, the visual-review read among them', () => {
+    const spec = CHAT_TOOL_SPECS.get_visual_review;
     expect(spec).toBeDefined();
     const op = spec.ops[''];
     expect(op.class).toBe('read');

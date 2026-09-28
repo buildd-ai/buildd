@@ -61,6 +61,8 @@ export interface VisualReviewWorkerInput {
   prUrl?: string | null;
   prNumber?: number | null;
   mergedAt?: string | Date | null;
+  /** `workers.error`: an audit's `why` when its task has no summary. */
+  error?: string | null;
 }
 
 /** Any mission task: audits, the work they depend on, and `[surface fix]` tasks. */
@@ -78,6 +80,8 @@ export interface VisualReviewTaskInput {
   result?: unknown;
   /** The same, pre-projected by a query that does not load `result`. */
   errorType?: string | null;
+  /** `result.summary`, pre-projected the same way: an audit's `why`. */
+  resultSummary?: string | null;
   workers?: readonly VisualReviewWorkerInput[] | null;
 }
 
@@ -174,6 +178,41 @@ export function auditAwaitingRunner(tasks: readonly VisualReviewTaskInput[], now
   if (!latest || latest.status !== 'pending') return false;
   const since = claimableSince(latest, new Map(tasks.map(t => [t.id, t])));
   return since != null && now - since > NO_BROWSER_RUNNER_AFTER_MS;
+}
+
+function summaryOf(t: VisualReviewTaskInput): string | null {
+  if (typeof t.resultSummary === 'string') return t.resultSummary;
+  const r = t.result;
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
+    const v = (r as Record<string, unknown>).summary;
+    if (typeof v === 'string') return v;
+  }
+  return null;
+}
+
+/** Why an audit ended as it did: its result summary, else its newest worker's error. Capped. */
+function auditWhy(t: VisualReviewTaskInput): string | null {
+  let newest: VisualReviewWorkerInput | null = null;
+  for (const w of t.workers ?? []) if (!newest || ms(w.startedAt) > ms(newest.startedAt)) newest = w;
+  const raw = summaryOf(t)?.trim() || newest?.error?.trim() || null;
+  if (!raw) return null;
+  const flat = raw.replace(/\s+/g, ' ');
+  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
+}
+
+const TERMINAL_AUDIT = new Set(['completed', 'failed', 'cancelled']);
+
+function auditView(t: VisualReviewTaskInput): VisualReviewAuditTask {
+  return {
+    id: t.id,
+    title: t.title ?? '',
+    status: t.status,
+    round: surfaceAuditRound(t),
+    createdAt: iso(t.createdAt ?? null),
+    endedAt: TERMINAL_AUDIT.has(t.status) ? iso(t.updatedAt ?? null) : null,
+    errorType: errorTypeOf(t),
+    why: auditWhy(t),
+  };
 }
 
 function fixTaskView(t: VisualReviewTaskInput, origin: VisualReviewFixTask['origin']): VisualReviewFixTask {
@@ -424,22 +463,17 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     openFixes,
   };
 
-  const audit: VisualReviewAuditTask | null = latest
-    ? {
-        id: latest.id,
-        title: latest.title ?? '',
-        status: latest.status,
-        round: surfaceAuditRound(latest),
-        createdAt: iso(latest.createdAt ?? null),
-        errorType: errorTypeOf(latest),
-      }
-    : null;
+  const audit: VisualReviewAuditTask | null = latest ? auditView(latest) : null;
+  const audits = [...auditTasks]
+    .sort((a, b) => surfaceAuditRound(a) - surfaceAuditRound(b) || ms(a.createdAt) - ms(b.createdAt))
+    .map(auditView);
 
   return {
     missionId: input.missionId,
     phase,
     progress,
     audit,
+    audits,
     bootFailure,
     roundCapOpen,
     needsYou,
@@ -480,61 +514,5 @@ function bootFailureOf(auditTasks: readonly VisualReviewTaskInput[]): VisualRevi
 
 // ── Phase copy ──────────────────────────────────────────────────────────────
 
-const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
-
-/**
- * The one place phase copy is written. `label` is the short line (a Band
- * cell, a chip); `detail` the sentence under it. Plain words, no dash
- * placeholders.
- */
-export function describeVisualPhase(
-  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null },
-): { label: string; detail: string } {
-  const { summary: s, progress } = model;
-  switch (model.phase) {
-    case 'off':
-      return { label: 'Off', detail: 'No visual audit on this mission.' };
-    case 'waiting_deps':
-      return { label: 'Waiting', detail: 'The visual audit starts when the work it checks has landed.' };
-    case 'queued':
-      return { label: 'Queued', detail: 'Waiting for a browser runner to pick up the visual audit.' };
-    case 'no_browser_runner':
-      return { label: 'No browser runner', detail: 'The visual audit is waiting: no browser runner is online for this workspace.' };
-    case 'capturing': {
-      const captured = progress?.captured ?? 0;
-      const label = progress?.expected != null ? `Capturing ${captured} of ${progress.expected}` : `Capturing ${captured}`;
-      return { label, detail: `${plural(captured, 'screen')} captured so far.` };
-    }
-    case 'boot_failed':
-      return { label: 'App did not boot', detail: 'The app did not boot for the visual audit, so nothing was checked.' };
-    case 'stalled':
-      return { label: 'Stalled', detail: 'The visual audit stalled on its runner. Retry it, or skip this audit.' };
-    case 'failed':
-      return { label: 'Failed', detail: 'The visual audit failed before it finished. Retry it, or skip this audit.' };
-    case 'needs_you': {
-      const n = s.awaitingHuman;
-      // Older callers pass no reason: infer it from the counts.
-      const reason = model.needsYou?.reason ?? (n > 0 ? 'unsure' : 'round_cap');
-      if (reason === 'question') {
-        const prompt = model.needsYou?.prompt?.trim();
-        return { label: 'Question', detail: prompt ? `The visual audit has a question for you: ${prompt}` : 'The visual audit has a question for you.' };
-      }
-      if (reason === 'unsure' && n > 0) {
-        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} your call.` };
-      }
-      return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
-    }
-    case 'fixing':
-      return { label: `Fixing ${s.openFixes}`, detail: `${plural(s.openFixes, 'fix', 'fixes')} in progress. The audit re-checks after they land.` };
-    case 'reviewed': {
-      // What the human decided wins over the agent's verdict here.
-      const ok = s.effectiveOk ?? s.ok;
-      const issues = s.effectiveIssues ?? s.issues;
-      const head = `${ok} of ${s.shots} ok`;
-      const parts = [head];
-      if (issues > 0) parts.push(plural(issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
-      return { label: head, detail: `${parts.join(', ')}.` };
-    }
-  }
-}
+/** Phase copy lives with the text rendering, so the MCP action and chat read one source. */
+export { describeVisualPhase } from '@buildd/core/visual-review-text';

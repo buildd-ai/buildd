@@ -29,6 +29,8 @@ import {
   visualReviewWorkersQuery,
   visualShotReviewsQuery,
   visualShotsQuery,
+  WORKSPACE_AWAITING_MISSIONS_LIMIT,
+  workspaceAwaitingMissionsQuery,
 } from './visual-review-query';
 
 const iso = (d: Date | string | null | undefined): string | null =>
@@ -139,4 +141,43 @@ export async function loadVisualReview(
     ),
     now,
   });
+}
+
+export interface WorkspaceAwaitingMission {
+  id: string;
+  title: string;
+  status: string;
+  phase: VisualReviewModel['phase'];
+  /** Why it waits on a human (`needsYou.reason`): unsure screens, the round cap, or a question. */
+  reason: 'unsure' | 'round_cap' | 'question';
+  /** Current screens the agent was unsure about that no human has decided. */
+  awaitingHuman: number;
+}
+
+/**
+ * A workspace's missions waiting on a human (unsure screens, the round cap or
+ * a question), each with its reason and exact count from its own model. Candidates come from
+ * `workspaceAwaitingMissionsQuery` (newest first, the caller's teams only);
+ * `more` says candidates past the limit were not checked.
+ *
+ * Authorization is the caller's: GET /api/workspaces/[id]/visual-review.
+ */
+export async function loadWorkspaceAwaitingReview(
+  workspaceId: string,
+  teamIds: readonly string[],
+  opts: { now?: number } = {},
+): Promise<{ missions: WorkspaceAwaitingMission[]; more: boolean }> {
+  if (teamIds.length === 0) return { missions: [], more: false };
+  const rows = await workspaceAwaitingMissionsQuery(db, workspaceId, teamIds) as Array<{ id: string; title: string; status: string; workspaceId: string | null }>;
+  const more = rows.length > WORKSPACE_AWAITING_MISSIONS_LIMIT;
+  const candidates = rows.slice(0, WORKSPACE_AWAITING_MISSIONS_LIMIT);
+  const models = await Promise.all(candidates.map(m => loadVisualReview({ id: m.id, workspaceId: m.workspaceId }, opts)));
+  const missions: WorkspaceAwaitingMission[] = [];
+  candidates.forEach((m, i) => {
+    const { phase, needsYou, summary } = models[i];
+    const reason = needsYou?.reason ?? (summary.awaitingHuman > 0 ? 'unsure' : null);
+    if (!reason || (phase !== 'needs_you' && summary.awaitingHuman === 0)) return;
+    missions.push({ id: m.id, title: m.title, status: m.status, phase, reason, awaitingHuman: summary.awaitingHuman });
+  });
+  return { missions, more };
 }

@@ -174,6 +174,7 @@ Rules for filing and undoing:
   - "Round 2: /app/tasks/:id looks right"
   - "Issues remain after 2 rounds: your call"
 - `get_visual_review {missionId}` is a text-only chat read tool. It reads the same GET route, so it is auditor-scoped and never sees images. There is **no** assistant write tool for decisions.
+- The MCP `buildd` action of the same name (admin level, like the route) takes `missionId` or `missionTitle`, and prints the same text (`packages/core/visual-review-text.ts`) plus every audit task with its status and why, and a link per screenshot. With only a workspace it lists the missions with screens awaiting review (`GET /api/workspaces/[id]/visual-review`).
 
 ### 4. The server loop
 
