@@ -73,6 +73,27 @@ describe('resolveChatModel — OpenRouter as the fallback route', () => {
     });
     expect(r).toMatchObject({ ok: false, reason: 'no_key', provider: 'anthropic' });
   });
+
+  it('falls back to the team LiteLLM gateway, keeping the planned model for pricing', async () => {
+    const r = await resolveChatModel(base, {
+      resolveTierEntry: tier('anthropic', 'claude-sonnet-5'),
+      resolveInferenceCredential: keys({}) as never,
+      resolveLiteLLMGateway: async () => ({ baseURL: 'https://litellm.example.test/v1', apiKey: 'sk-lite' }),
+    });
+    expect(r).toMatchObject({ ok: true, provider: 'anthropic', modelId: 'claude-sonnet-5', via: 'litellm', keyScope: 'team' });
+    expect(r.ok && (r.model as { modelId?: string }).modelId).toBe('anthropic/claude-sonnet-5');
+  });
+
+  it('prefers the provider key and OpenRouter over the gateway', async () => {
+    let asked = false;
+    const r = await resolveChatModel(base, {
+      resolveTierEntry: tier('anthropic', 'claude-sonnet-5'),
+      resolveInferenceCredential: keys({ openrouter: 'sk-or-x' }) as never,
+      resolveLiteLLMGateway: async () => { asked = true; return { baseURL: 'https://litellm.example.test/v1', apiKey: 'k' }; },
+    });
+    expect(r.ok && r.provider).toBe('openrouter');
+    expect(asked).toBe(false);
+  });
 });
 
 // docs/design/tier-model-pools.md: a chat turn in a split pool runs its drawn

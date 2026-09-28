@@ -68,8 +68,10 @@ import {
   type DecisionAnswers,
   type DecisionQuestions,
   type DecisionUsage,
+  type DecisionEndpoint,
 } from '@builddai/ai-kit/decide';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
+import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
 
 // The question/answer types, request and response validation, `gateChoice` and
 // the transport live in `@builddai/ai-kit/decide` (docs/design/shared-ai-kit.md
@@ -174,19 +176,51 @@ export async function resolveDecisionKey(opts: {
   });
 }
 
-/** Fails closed: a failed lookup means "not enabled", never "spend anyway". */
-async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<boolean> {
+/**
+ * The team row the call needs: may it spend on this capability, and which
+ * decision model answers. Fails closed: a failed lookup means "not enabled",
+ * never "spend anyway".
+ */
+async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability): Promise<{ allowed: boolean; model: DecisionModelConfig | null }> {
   try {
     const { db } = await import('./db');
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceFeatureModes: true },
+      columns: { inferenceFeatureModes: true, decisionModel: true },
     });
-    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null);
+    return {
+      allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null),
+      model: readDecisionModel(team?.decisionModel),
+    };
   } catch (e) {
     console.warn(`[decision] capability lookup failed for team ${teamId}:`, e);
-    return false;
+    return { allowed: false, model: null };
   }
+}
+
+/**
+ * Key, endpoint and model for a team's decision model. Null key ⇒ nothing to
+ * spend: no OpenRouter key, or (via the gateway) no gateway.
+ */
+export async function resolveDecisionRoute(
+  config: DecisionModelConfig | null,
+  scope: { teamId: string; workspaceId?: string | null; accountId?: string | null; userId?: string | null },
+): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
+  if (!config) return { apiKey: await resolveDecisionKey(scope), model: DEFAULT_DECISION_MODEL };
+  if (config.via === 'litellm') {
+    const { resolveLiteLLMGateway } = await import('./litellm-gateway');
+    const gateway = await resolveLiteLLMGateway({ teamId: scope.teamId, workspaceId: scope.workspaceId });
+    return {
+      apiKey: gateway?.apiKey ?? null,
+      endpoint: gateway ? { kind: 'chat', baseURL: gateway.baseURL, provider: 'openai' } : undefined,
+      model: config.model,
+    };
+  }
+  return {
+    apiKey: await resolveDecisionKey(scope),
+    endpoint: config.endpoint === 'chat' ? { kind: 'chat', baseURL: OPENROUTER_CHAT_BASE_URL, provider: 'openrouter' } : undefined,
+    model: config.model,
+  };
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -218,6 +252,8 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   timeoutMs?: number;
   /** Pre-resolved key (the offline eval passes one; skips DB lookup + policy). */
   apiKey?: string;
+  /** With `apiKey` only: where to send it (default Jev on OpenRouter). A team call uses the team's decision model. */
+  endpoint?: DecisionEndpoint;
   /** Test seams. */
   fetcher?: Fetcher;
   sleep?: (ms: number) => Promise<void>;
@@ -245,14 +281,21 @@ export async function decisionCall<Q extends DecisionQuestions>(
   if (invalid) return fail({ kind: 'invalid_request', message: invalid }, 0);
 
   let apiKey = params.apiKey ?? null;
+  let endpoint = params.apiKey ? params.endpoint : undefined;
+  let model = params.model ?? DEFAULT_DECISION_MODEL;
   if (!apiKey) {
-    if (!(await teamAllowsCapability(params.teamId, params.capability))) {
+    const settings = await loadTeamDecisionSettings(params.teamId, params.capability);
+    if (!settings.allowed) {
       return fail({ kind: 'capability_disabled', capability: params.capability }, 0);
     }
-    apiKey = await resolveDecisionKey({
+    const route = await resolveDecisionRoute(settings.model, {
       teamId: params.teamId, workspaceId: params.workspaceId, accountId: params.accountId,
       userId: params.userId,
     });
+    apiKey = route.apiKey;
+    endpoint = route.endpoint;
+    // An explicit model is the caller's; otherwise the team's decision model.
+    model = params.model ?? route.model;
     if (!apiKey) return fail({ kind: 'missing_key' }, 0);
   }
 
@@ -263,7 +306,8 @@ export async function decisionCall<Q extends DecisionQuestions>(
     apiKey,
     state: params.state,
     questions: params.questions,
-    model: params.model ?? DEFAULT_DECISION_MODEL,
+    model,
+    ...(endpoint ? { endpoint } : {}),
     timeoutMs,
     startedAt: started,
     maxAttempts: 2,

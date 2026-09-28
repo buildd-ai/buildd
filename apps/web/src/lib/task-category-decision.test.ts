@@ -122,6 +122,13 @@ describe('gateTaskCategory', () => {
 });
 
 describe('categorizeTask', () => {
+  it('records, but never applies, a pick from a team\'s own (non-Jev) decision model', async () => {
+    const w = writer();
+    const res = await categorizeTask({ ...INPUT, stored: null }, deps(async () => ({ ...okResult('feature', 0.99), model: 'qwen3-8b' }), w, null));
+    expect(res.outcome).toBe('kept');
+    expect(w.calls[0]).toMatchObject({ category: null, record: { jev: 'feature', source: 'keyword', v: 'tc1|qwen3-8b' } });
+  });
+
   it('asks with a short deadline and the task text, and writes a confident fill with its provenance', async () => {
     const decide = mock(async () => okResult('docs', 0.93));
     const w = writer();
