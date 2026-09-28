@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.6.1
+npm i -E @builddai/ai-kit@0.7.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -78,6 +78,26 @@ await models.flush(); // before a serverless function returns (e.g. in waitUntil
 - **Storage.** `PlanStore` is `{ get(key), set(key, value) }`, sync or async.
   A failing store is treated as a miss. Default: in memory.
 - `onError` receives every absorbed failure, for logs.
+
+**Through a LiteLLM gateway (0.7.0).** buildd's plan still names the real
+provider and model; pass `gateway` and the call goes to your proxy instead,
+on its OpenAI-compatible API. `cfg.via` is `litellm`, so build an
+OpenAI-compatible client whatever `cfg.provider` says:
+
+```ts
+const cfg = toCallConfig(plan, { gateway: { kind: 'litellm', baseURL: env.LITELLM_URL, apiKey: env.LITELLM_KEY } });
+const litellm = createOpenAICompatible({ name: 'litellm', apiKey: cfg.apiKey, baseURL: cfg.baseURL });
+streamText({ model: litellm(cfg.model), ... }); // cfg.model === 'anthropic/claude-…'
+```
+
+- The model is sent as `provider/model` (LiteLLM's convention). `models` maps
+  a `provider/model` or bare `model` to your proxy's alias; `prefix: false`
+  sends the bare id.
+- Receipts keep `plan.provider` and `plan.model`, so buildd prices the call as
+  the model it is. List in `providers` what the gateway can reach.
+- Chat: `modelFromPlan({ models, gateway, create })`. The gateway's `apiKey`
+  pays for the turn (none ⇒ `409 no_key`); a `gateway` function returning null
+  takes the direct `key` path, so one app can serve both.
 
 ## Chat
 
@@ -410,9 +430,32 @@ const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: to
 - **Transport** (`decide`): never throws; one deadline (default 5s) over every
   attempt; retries 408, 429 and 5xx once by default. The SDK's own retry is off
   and every SDK option is explicit, so no `TYPESAFE_*` env var can redirect the
-  key. The kit never reads env vars: pass your OpenRouter key.
+  key. The kit never reads env vars: pass your key (OpenRouter's, for Jev).
 - **Model**: `JEV_MODEL` is pinned (not `~typesafe/jev-latest`) and is not a
   tier. A Jev bump is a kit release; re-run your eval before taking it.
+- **Custom models and endpoints (0.7.0)**: `model` takes any id, and
+  `endpoint` says where it is answered:
+  - `{ kind: 'systemone', baseURL? }` (default): the System One API, on
+    OpenRouter unless `baseURL` names another host.
+  - `{ kind: 'chat', baseURL, provider? }`: any model behind an
+    OpenAI-compatible `/chat/completions`, e.g. an open-weights model on a
+    LiteLLM proxy, vLLM or Ollama. `model` is required. Each question is one
+    request: lettered options, one token at temperature 0, `top_logprobs`, so
+    the answer has Jev's shape (label, probabilities, confidence). A model that
+    returns no logprobs fails with `uncalibrated`; the kit never invents a
+    confidence. At most 20 options per question. `provider` names who is paid,
+    for the receipt (default `openrouter` on openrouter.ai, else `openai`).
+
+  ```ts
+  const triage = defineDecision({
+    id: 'app.triage', promptVersion: '2026-09-28.a', questions, mode: 'shadow',
+    model: 'qwen3-8b', endpoint: { kind: 'chat', baseURL: env.LITELLM_URL },
+  });
+  ```
+
+  A chat endpoint changes the fingerprint (its host does not), and thresholds
+  never transfer between models: run the eval for each one. `baseURL` must be
+  https, except for localhost.
 - **Versioning**: pin the fingerprint in a test. It covers the questions,
   modes, thresholds and model, so a changed definition fails until you bump
   `promptVersion` and re-pin:

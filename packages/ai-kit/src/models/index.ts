@@ -24,4 +24,4 @@ export {
 } from './client';
 export { memoryPlanStore, type PlanStore, type StoredPlan } from './store';
 export { toWireReceipt, USAGE_RECORD_KEYS, USAGE_TOKEN_KEYS, MAX_USAGE_RECORDS } from './receipt';
-export { toCallConfig, PROVIDER_BASE_URLS, type CallConfig, type CallConfigOptions } from './call-config';
+export { toCallConfig, gatewayModel, PROVIDER_BASE_URLS, type CallConfig, type CallConfigOptions, type GatewayConfig } from './call-config';

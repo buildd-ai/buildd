@@ -4,6 +4,33 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.7.0 — 2026-09-28
+
+LiteLLM gateways and custom decision models. Minor: all additive; an app that
+passes neither `gateway` nor `endpoint` behaves exactly as on 0.6.1, and every
+existing decision fingerprint is unchanged.
+
+- `/models` `toCallConfig(plan, { gateway: { kind: 'litellm', baseURL, apiKey?, models?, prefix? } })`:
+  the call goes to a LiteLLM proxy's OpenAI-compatible API, model
+  `provider/model` or a mapped alias. New `CallConfig.via` (`direct` |
+  `litellm`); `provider` stays the planned one, so receipts price the model
+  it is. New `gatewayModel(gateway, provider, model)` and `GatewayConfig`.
+- `/chat/server` `modelFromPlan({ gateway })`: a gateway (or a function of the
+  turn returning one, or null for the direct path) pays for the turn. `key` is
+  now optional when a gateway is given.
+- `/decide` `endpoint` on `decide` and `defineDecision`:
+  `{ kind: 'systemone', baseURL? }` (default OpenRouter) or
+  `{ kind: 'chat', baseURL, provider? }` for any model behind an
+  OpenAI-compatible API, with confidence from token logprobs. `model` takes
+  any id (required for `chat`). New error kind `uncalibrated` (no logprobs).
+  New exports `resolveDecisionEndpoint`, `DecisionEndpoint`,
+  `DecisionEndpointKind`, `DecisionProvider`.
+- `DecisionReceipt.provider` widens from `'openrouter'` to `DecisionProvider`
+  and gains optional `endpoint`; `toModelsUsage` passes the provider through.
+- `describeDecideError({ kind: 'missing_key' })` reads "no decision key
+  configured" (it no longer assumes OpenRouter).
+- `KIT_VERSION` is `0.7.0`, so pinned decision versions read `…|kit-0.7.0`.
+
 ## 0.6.1 — 2026-09-28
 
 Gaps found moving buildd's own chat onto the kit. Patch: every addition is
