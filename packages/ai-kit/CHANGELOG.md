@@ -4,6 +4,12 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+Releasing: bump `version` in package.json and `KIT_VERSION` in
+`src/decide/index.ts`, add a `## <version>` heading here, and merge to dev.
+The merge publishes to npm and tags the commit `ai-kit-v<version>`
+(`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
+the publish.
+
 ## 0.9.0 — 2026-09-28
 
 The thread slots an app with its own feed needs, found moving buildd's
