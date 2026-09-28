@@ -7,7 +7,8 @@
  * mission's Pusher channels.
  */
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, type ComponentProps } from 'react';
+import type { VisualReviewModel } from '@buildd/shared';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
@@ -18,6 +19,8 @@ import { useChatActions } from '../ChatActions';
 import { useObjectStore } from './ObjectStoreProvider';
 import type { MissionObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
+import { refKey } from '../chat-contract';
+import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
   waiting: { text: 'needs you', cls: 'text-status-warning' },
@@ -90,6 +93,9 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         <OpenButton inPane={inPane} onOpen={open} />
       </div>
       {model.landed.total > 0 && <LandedMeter model={model} variant="strip" />}
+      {hasVisualReview(view.visual) && (
+        <MissionVisualRow objRef={objRef} visual={view.visual} className="border-t border-border-default pt-2.5" />
+      )}
     </div>
   );
 
@@ -128,6 +134,9 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
                 </p>
               )}
               {more > 0 && <p className="border-t border-border-default pt-2 font-mono text-[12px] text-text-muted">{`+${more} more`}</p>}
+              {hasVisualReview(view.visual) && (
+                <MissionVisualRow objRef={objRef} visual={view.visual} tray className="mt-3 border-t border-border-default pt-3" />
+              )}
             </div>
             <footer className="flex flex-wrap items-center gap-2.5 border-t border-border-default bg-surface-2 px-5 py-3">
               <span className="mr-auto font-mono text-[11.5px] text-text-muted">Live</span>
@@ -146,12 +155,45 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
   );
 }
 
+/**
+ * Whether MissionBoard / MissionLanes take `visual: VisualReviewModel` and
+ * `reviewLayout` yet (visual-review slice S4, built in parallel). Before S4
+ * their `visual` is the legacy `{ shots, taskId }` run and would throw on the
+ * model, so nothing is passed. The literal must match the type: the day S4
+ * lands this line stops compiling until it reads `true`.
+ */
+type BoardVisualProp = NonNullable<ComponentProps<typeof MissionBoard>['visual']>;
+type BoardTakesReviewModel = [VisualReviewModel] extends [BoardVisualProp] ? true : false;
+const BOARD_TAKES_REVIEW_MODEL: BoardTakesReviewModel = false;
+
 /** The docked pane / phone sheet: the mission board itself. */
 export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: BuilddObjectRef; view: MissionObjectView; variant?: 'pane' | 'sheet' }) {
   const store = useObjectStore();
+  const actions = useChatActions();
   const [layout, setLayout] = useState<'board' | 'lanes'>('board');
   const tone = missionTone(view.stateLabel, view.status);
   const link = { missionId: view.id, from: null, initiativeId: null };
+  const visual = view.visual ?? null;
+  // The shared Board / Lanes contract (visual-review slice S4): they take the
+  // model and wire review themselves; inside the chat's pane and sheet the
+  // deck renders inline, never as a Dialog over the BottomSheet. Passed only
+  // once the Board takes the model (see BOARD_TAKES_REVIEW_MODEL).
+  const boardVisual: Record<string, unknown> = BOARD_TAKES_REVIEW_MODEL ? { visual, reviewLayout: 'sheet' } : {};
+
+  // "Review" on the card or the pinned strip: the deck takes the pane (desktop)
+  // or the sheet (phone) until it is closed.
+  const r = actions.visualReview;
+  const reviewing = r && r.surface === (variant === 'sheet' ? 'sheet' : 'pane') && refKey(r.ref) === refKey(objRef) ? r : null;
+  if (reviewing && visual && visual.cells.length > 0) {
+    return (
+      <MissionLiveContext.Provider value={store.live(objRef)}>
+        <div data-testid="object-pane" data-kind="mission" data-reviewing="true">
+          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} closable={variant === 'pane'} />
+        </div>
+      </MissionLiveContext.Provider>
+    );
+  }
+
   return (
     <MissionLiveContext.Provider value={store.live(objRef)}>
       <div data-testid="object-pane" data-kind="mission" className={variant === 'pane' ? 'px-6 pb-10 pt-5' : 'pb-6'}>
@@ -185,8 +227,8 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
         {/* Board and Lanes lay the live store's progress over the model themselves.
             The pane and the sheet are always narrow: the Board's compact layout. */}
         {variant === 'pane' && layout === 'lanes'
-          ? <MissionLanes model={view.board} {...link} />
-          : <MissionBoard model={view.board} compact {...link} />}
+          ? <MissionLanes model={view.board} {...link} {...boardVisual} />
+          : <MissionBoard model={view.board} compact {...link} {...boardVisual} />}
       </div>
     </MissionLiveContext.Provider>
   );

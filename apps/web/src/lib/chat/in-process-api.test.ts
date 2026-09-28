@@ -26,6 +26,15 @@ describe('matchChatRoute (the reachable surface)', () => {
     expect(matchChatRoute('PUT', '/api/github/pr')).toBeNull();
   });
 
+  it('the visual review read is GET only and checked against the mission (get_visual_review)', () => {
+    const m = matchChatRoute('GET', '/api/missions/m1/visual-review');
+    expect(m?.entry.pattern).toBe('/api/missions/:id/visual-review');
+    expect(m?.entry.methods).toEqual(['GET']);
+    expect(m?.entry.reach.path).toEqual([{ param: 'id', is: 'mission' }]);
+    expect(matchChatRoute('POST', '/api/missions/m1/visual-review/decisions')).toBeNull();
+    expect(matchChatRoute('DELETE', '/api/missions/m1/visual-review/decisions/r1')).toBeNull();
+  });
+
   it('a static segment wins over a param one (capabilities is not a mission id)', () => {
     expect(matchChatRoute('GET', '/api/missions/capabilities')?.entry.pattern).toBe('/api/missions/capabilities');
     expect(matchChatRoute('GET', '/api/releases/status')?.entry.pattern).toBe('/api/releases/status');

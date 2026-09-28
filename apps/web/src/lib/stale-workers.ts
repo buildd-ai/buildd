@@ -1210,3 +1210,58 @@ export async function cleanupUnresumedAnswers(
 
   return { degraded };
 }
+
+// ── Visual audits waiting on a browser runner ────────────────────────────────
+
+/**
+ * Pending visual audits old enough to be `no_browser_runner`
+ * (docs/design/visual-qa-human-review.md, "Runner availability") on a
+ * mission filed from chat, not yet announced there. Deliberately loose: the
+ * model decides the phase (dependencies done, the claimable window, no
+ * browser heartbeat); this only keeps the candidates few.
+ */
+/** Mirrors NO_BROWSER_RUNNER_AFTER_MS (lib/visual-review-model.ts); a test holds them equal. */
+export const STALLED_VISUAL_AUDIT_AFTER_MS = 10 * 60 * 1000;
+
+export function stalledVisualAuditCandidatesWhere(now: Date, missionsTable: typeof import('@buildd/core/db/schema').missions) {
+  return and(
+    eq(tasks.roleSlug, VISUAL_AUDITOR_ROLE_SLUG),
+    eq(tasks.status, 'pending'),
+    lt(tasks.createdAt, new Date(now.getTime() - STALLED_VISUAL_AUDIT_AFTER_MS)),
+    isNotNull(missionsTable.conversationId),
+    sql`(${tasks.context} -> 'visualQa' ->> 'stallNotifiedAt') is null`,
+  )!;
+}
+
+/**
+ * Tell a chat-filed mission's conversation, once per audit, that its visual
+ * audit is waiting with no browser runner online. Runs from the stale-worker
+ * sweep (no new cron). Display only: nothing is cancelled. The once-only mark
+ * is the atomic `context.visualQa.stallNotifiedAt` claim in
+ * postVisualReviewEvent. Returns how many were posted.
+ */
+export async function notifyStalledVisualAudits(now = new Date(), limit = 20): Promise<number> {
+  const { missions } = await import('@buildd/core/db/schema');
+  const rows = await db
+    .select({ taskId: tasks.id, missionId: missions.id, workspaceId: missions.workspaceId })
+    .from(tasks)
+    .innerJoin(missions, eq(missions.id, tasks.missionId))
+    .where(stalledVisualAuditCandidatesWhere(now, missions))
+    .limit(limit);
+  if (rows.length === 0) return 0;
+  const [{ loadVisualReview }, { postVisualReviewEvent }] = await Promise.all([
+    import('@/lib/visual-review-load'),
+    import('@/lib/chat/mission-events'),
+  ]);
+  let posted = 0;
+  for (const r of rows) {
+    try {
+      const model = await loadVisualReview({ id: r.missionId, workspaceId: r.workspaceId ?? null }, { now: now.getTime() });
+      if (model.phase !== 'no_browser_runner' || model.audit?.id !== r.taskId) continue;
+      if (await postVisualReviewEvent({ missionId: r.missionId, moment: 'no_browser_runner', model, auditTaskId: r.taskId })) posted += 1;
+    } catch (e) {
+      console.warn('[stale-workers] visual audit stall check failed:', e instanceof Error ? e.message : e);
+    }
+  }
+  return posted;
+}

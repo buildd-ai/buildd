@@ -262,6 +262,11 @@ async function followUpSurfaceFix(opts: {
       ].join('\n\n'),
       status: 'open',
     });
+    // The round-cap question also reaches the conversation the mission was
+    // filed from, once per audit (docs/design/visual-qa-human-review.md, Chat).
+    await import('@/lib/chat/mission-events')
+      .then(m => m.postVisualReviewEvent({ missionId, moment: 'round_cap', auditTaskId: latestAudit.id }))
+      .catch(err => console.error('[surface-audit] chat event failed:', err));
     return;
   }
 

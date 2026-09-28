@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { allActions } from '@buildd/core/mcp-tools';
 import { CHAT_APPROVAL_TOOLS, CHAT_READ_OPS, CHAT_READ_TOOLS } from '@buildd/shared';
-import { CHAT_ROUTES } from './in-process-api';
+import { CHAT_ROUTES, matchChatRoute } from './in-process-api';
 import {
   ALL_CHAT_TOOL_SPECS, CHAT_NATIVE_TOOL_SPECS, CHAT_TOOL_SPECS, NOT_IN_CHAT, SELF_SCOPED_ALLOWLIST, TOOL_GROUPS, isExposed, opsOf,
 } from './registry';
@@ -91,5 +91,36 @@ describe('the client\'s copy of the classes matches the registry', () => {
   it('CHAT_APPROVAL_TOOLS = the write ops chat offers', () => {
     const fromShared = Object.entries(CHAT_APPROVAL_TOOLS).flatMap(([t, ops]) => ops.map(op => (op ? `${t}.${op}` : t))).sort();
     expect(fromShared).toEqual([...ENABLED_WRITE_OPS].sort());
+  });
+});
+
+describe('visual review from chat (docs/design/visual-qa-human-review.md, Chat)', () => {
+  it('get_visual_review is a chat-native read that reaches only GET routes, the visual-review read among them', () => {
+    const spec = CHAT_NATIVE_TOOL_SPECS.get_visual_review;
+    expect(spec).toBeDefined();
+    const op = spec.ops[''];
+    expect(op.class).toBe('read');
+    expect(op.routes).toContain('GET /api/missions/:id/visual-review');
+    expect(op.routes.every(r => r.startsWith('GET '))).toBe(true);
+    expect(CHAT_READ_TOOLS as readonly string[]).toContain('get_visual_review');
+    expect(Object.keys(CHAT_APPROVAL_TOOLS)).not.toContain('get_visual_review');
+  });
+
+  it('the decisions routes are not reachable by any assistant tool, of any class', () => {
+    const decisions = /\/visual-review\/decisions/;
+    for (const [tool, spec] of Object.entries(ALL_CHAT_TOOL_SPECS)) {
+      for (const [op, o] of opsOf(spec)) {
+        const hit = o.routes.filter(r => decisions.test(r));
+        expect(hit.length === 0 ? 'none' : `${tool}.${op} reaches ${hit.join(', ')}`).toBe('none');
+      }
+    }
+    expect(CHAT_ROUTES.filter(r => decisions.test(r.pattern))).toEqual([]);
+    for (const method of ['GET', 'POST', 'PATCH', 'PUT', 'DELETE']) {
+      expect(matchChatRoute(method, '/api/missions/m1/visual-review/decisions')).toBeNull();
+      expect(matchChatRoute(method, '/api/missions/m1/visual-review/decisions/r1')).toBeNull();
+    }
+    // The read route is GET only from chat.
+    expect(matchChatRoute('POST', '/api/missions/m1/visual-review')).toBeNull();
+    expect(matchChatRoute('GET', '/api/missions/m1/visual-review')?.entry.pattern).toBe('/api/missions/:id/visual-review');
   });
 });

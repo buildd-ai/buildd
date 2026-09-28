@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { Clock } from '@/lib/realtime-throttle';
 import type { BuilddObjectRef } from '../chat-contract';
-import { createObjectStore, watchedTaskIds, type ObjectSource } from './object-store';
+import { MISSION_OBJECT_EXTRA_EVENTS, createObjectStore, watchedTaskIds, type ObjectSource } from './object-store';
 import type { MissionObjectView, TaskObjectView } from './object-views';
 
 function fakeClock(): Clock & { advance(ms: number): void } {
@@ -159,6 +159,63 @@ describe('object store', () => {
       await flush();
       h.emit('task:claimed', { task: { id: 'fresh', missionId: 'm1' }, worker: { id: 'w2', status: 'idle' } });
       h.emit('task:claimed', { task: { id: 'elsewhere', missionId: 'm9' }, worker: { id: 'w3', status: 'idle' } });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(2);
+    });
+  });
+
+  // Visual review (docs/design/visual-qa-human-review.md, Chat): a decision
+  // or a new shot changes the mission object's `visual`, so the card, the
+  // pinned strip and the pane refetch.
+  describe('mission: visual review', () => {
+    const mref: BuilddObjectRef = { kind: 'mission', id: 'm1', workspaceId: 'ws', fallbackText: 'mission' };
+    const mview = (): MissionObjectView => ({
+      kind: 'mission', id: 'm1', workspaceId: 'ws', title: 'm', goal: null, status: 'active', stateLabel: 'Running',
+      workspaceName: null, renderedAt: 0, taskIds: ['audit'], workerStatuses: {},
+      board: { tasks: {}, phases: [], planning: null } as unknown as MissionObjectView['board'],
+    });
+    function vharness() {
+      let loads = 0;
+      let emit: ((e: string, d: unknown) => void) | null = null;
+      const clock = fakeClock();
+      const store = createObjectStore({
+        load: async () => { loads += 1; return mview(); },
+        watch: (_r, _v, e) => { emit = e; return () => { emit = null; }; },
+      }, { clock, windowMs: 1000 });
+      return { store, clock, get loads() { return loads; }, emit: (e: string, d: unknown) => emit?.(e, d) };
+    }
+
+    it('the mission channel carries the visual review events', () => {
+      expect(MISSION_OBJECT_EXTRA_EVENTS).toContain('mission:visual_review');
+      expect(MISSION_OBJECT_EXTRA_EVENTS).toContain('worker:artifact');
+    });
+
+    it('mission:visual_review triggers a refetch', async () => {
+      const h = vharness();
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.emit('mission:visual_review', { missionId: 'm1', decision: 'looks_right' });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(2);
+    });
+
+    it("another mission's visual review is ignored", async () => {
+      const h = vharness();
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.emit('mission:visual_review', { missionId: 'm9' });
+      h.clock.advance(1000);
+      await flush();
+      expect(h.loads).toBe(1);
+    });
+
+    it('a new audit shot (worker:artifact naming the mission) triggers a refetch', async () => {
+      const h = vharness();
+      h.store.subscribe(mref, () => {});
+      await flush();
+      h.emit('worker:artifact', { artifact: { id: 'a1', workerId: 'w-new', missionId: 'm1' } });
       h.clock.advance(1000);
       await flush();
       expect(h.loads).toBe(2);

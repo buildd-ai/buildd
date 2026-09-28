@@ -12,6 +12,9 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import type { BuilddObjectRef } from './chat-contract';
 import { MissionContextCard } from './MissionSheet';
+import { useChatActions } from './ChatActions';
+import { refKey } from './chat-contract';
+import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './objects/mission-visual';
 import { ObjectPane } from './objects/registry';
 import { useObjectEntry } from './objects/ObjectStoreProvider';
 import { popOutHref } from './pane-state';
@@ -52,9 +55,11 @@ export interface ChatDockProps {
   onSend(text: string): void;
   /** Open another object in the panel (Answer it → the question). */
   onOpen(ref: BuilddObjectRef): void;
+  /** The visual review deck is open here: the panel widens to fit both viewports. */
+  wide?: boolean;
 }
 
-export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpen }: ChatDockProps) {
+export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpen, wide = false }: ChatDockProps) {
   const lead = mode === 'history' ? 'History' : mode === 'needs' ? 'Needs you' : 'About';
   const open = objRef ? popOutHref(objRef) : null;
   return (
@@ -64,7 +69,8 @@ export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpe
       data-ref={objRef ? `${objRef.kind}:${objRef.id}` : undefined}
       aria-label={mode === 'history' ? 'Chat history' : `${lead}: ${kindWord(objRef)}`}
       // Needs you docks only where there is room (1280+); below that the pinned strip carries it.
-      className={`hidden min-h-0 shrink-0 flex-col border-l border-[var(--chat-rule)] bg-[var(--chat-bar)] lg:w-[420px] ${mode === 'needs' ? 'xl:flex' : 'lg:flex'}`}
+      data-wide={wide ? 'true' : undefined}
+      className={`hidden min-h-0 shrink-0 flex-col border-l border-[var(--chat-rule)] bg-[var(--chat-bar)] ${wide ? 'lg:w-[min(820px,58vw)]' : 'lg:w-[420px]'} ${mode === 'needs' ? 'xl:flex' : 'lg:flex'}`}
     >
       <header className="flex h-14 shrink-0 items-stretch border-b border-[var(--chat-rule)]">
         <p data-testid="chat-dock-crumbs" className="flex min-w-0 flex-1 items-center gap-1.5 px-5 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
@@ -91,7 +97,7 @@ export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpe
           <span aria-hidden="true">✕</span>
         </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
+      <div className={`min-h-0 flex-1 overflow-y-auto ${wide ? '' : 'px-5 py-6'}`}>
         {mode === 'history'
           ? history ?? <p data-testid="dock-history-empty" className="font-voice text-[17px] italic text-[var(--chat-muted)]">No chats yet.</p>
           : objRef && <DockObject objRef={objRef} onSend={onSend} onOpen={onOpen} />}
@@ -109,10 +115,22 @@ function DockObject({ objRef, onSend, onOpen }: { objRef: BuilddObjectRef; onSen
 
 function MissionDock({ objRef }: { objRef: BuilddObjectRef }) {
   const { view } = useObjectEntry(objRef);
+  const actions = useChatActions();
   const rows = view?.kind === 'mission' ? atWorkRows(view.board) : [];
+  // "Review" from the thread: the deck takes the panel (inline, never a Dialog).
+  const r = actions.visualReview;
+  const reviewing = r && r.surface === 'dock' && refKey(r.ref) === refKey(objRef) ? r : null;
+  if (reviewing && view?.kind === 'mission' && view.visual && view.visual.cells.length > 0) {
+    return <ChatVisualDeck objRef={objRef} view={{ ...view, visual: view.visual }} startKey={reviewing.startKey} />;
+  }
   return (
     <>
       <MissionContextCard objRef={objRef} />
+      {view?.kind === 'mission' && hasVisualReview(view.visual) && (
+        <section data-testid="dock-visual" className="mt-6 border border-[var(--chat-rule)] bg-[var(--chat-ground)] p-3">
+          <MissionVisualRow objRef={objRef} visual={view.visual} />
+        </section>
+      )}
       {rows.length > 0 && (
         <section data-testid="dock-at-work" className="mt-6">
           <h3 className={`mb-2 ${OVERLINE}`}>At work</h3>

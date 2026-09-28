@@ -41,6 +41,9 @@ mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockCancelSideEffects,
 }));
 
+const mockPostVisualReviewEvent = mock((_i: any) => Promise.resolve(true));
+mock.module('@/lib/chat/mission-events', () => ({ postVisualReviewEvent: mockPostVisualReviewEvent }));
+
 const { ensureMissionSurfaceAudit, detachFixFromPendingAudit } = await import('./mission-surface-audit');
 
 const MISSION_ID = 'mission-1';
@@ -71,6 +74,7 @@ beforeEach(() => {
   mockDispatchNewTask.mockReset(); mockDispatchNewTask.mockResolvedValue(undefined);
   notesFindFirst.mockReset(); notesFindFirst.mockResolvedValue(null);
   notesInsertValues.mockClear();
+  mockPostVisualReviewEvent.mockClear();
 });
 
 describe('ensureMissionSurfaceAudit', () => {
@@ -329,6 +333,9 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     expect(note.taskId).toBe('fix-9');
     expect(note.title).toContain('2 audit rounds');
     expect(note.body).toContain('fix-9');
+    // The mission's conversation hears it too, once per audit.
+    expect(mockPostVisualReviewEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostVisualReviewEvent.mock.calls[0][0]).toEqual({ missionId: MISSION_ID, moment: 'round_cap', auditTaskId: round2('completed').id });
   });
 
   it('bound: an in-progress round 2 filing several fixes raises the question once, not per fix', async () => {
@@ -338,6 +345,7 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     await run(fixTask('fix-10'));
 
     expect(notesInsertValues).not.toHaveBeenCalled();
+    expect(mockPostVisualReviewEvent).not.toHaveBeenCalled();
     expect(tasksInsertValues).not.toHaveBeenCalled();
   });
 
