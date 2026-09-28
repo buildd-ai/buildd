@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { DEFAULT_ROLES, defaultRoleMetadata } from './default-roles';
+import { createHash } from 'crypto';
+import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
@@ -59,9 +60,11 @@ describe('DEFAULT_ROLES', () => {
           notFor: (bySlug.builder.routing as { notFor?: string }).notFor,
           updatedAt: now.toISOString(),
         },
+        defaultRoleVersion: bySlug.builder.version,
       });
       expect(defaultRoleMetadata(bySlug.reviewer, now)).toEqual({
         routing: { disabled: true, updatedAt: now.toISOString() },
+        defaultRoleVersion: bySlug.reviewer.version,
       });
     });
   });
@@ -116,7 +119,7 @@ describe('DEFAULT_ROLES', () => {
     // The fix-task title is parsed by ensureMissionSurfaceAudit
     // (surfaceFixRoute) to scope the round-2 re-check, so its shape is
     // load-bearing, not a style preference.
-    it('prompt files each issue as a routed [surface fix] task in this mission, and asks about unsure shots', () => {
+    it('prompt files each issue as a routed [surface fix] task in this mission', () => {
       const c = role().content;
       const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## 5. Complete'));
       expect(act).toContain('create_task');
@@ -125,15 +128,42 @@ describe('DEFAULT_ROLES', () => {
       expect(act).toMatch(/route pattern/i);
       expect(act).toContain('fixTaskId');
       expect(act).toMatch(/one fix task per (distinct )?defect/i);
-      expect(act).toMatch(/unsure[\s\S]*post_note[\s\S]*type: 'question'/);
       expect(act).toMatch(/does not block/i);
     });
 
-    it('prompt explains re-check rounds and that the server, not the auditor, bounds them', () => {
+    // visual-qa-human-review.md, "Auditor prompt": the review queue is the
+    // question, and the artifact PATCH now merges metadata.qa.
+    it('prompt posts no note for unsure: the human review queue asks instead', () => {
       const c = role().content;
-      expect(c).toMatch(/Round 2/);
-      expect(c).toMatch(/at most 2 rounds/i);
+      const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## 5. Complete'));
+      const unsure = act.slice(act.indexOf('- **unsure**'));
+      expect(unsure).toMatch(/review queue/i);
+      expect(unsure).toMatch(/do not\s+`?post_note`?/i);
+      expect(c).not.toMatch(/unsure[^\n]*post_note`? with `type: 'question'`/);
+    });
+
+    it('prompt sends only { qa: { fixTaskId } } in update_artifact, which the server merges', () => {
+      const act = role().content.slice(role().content.indexOf('## 4. Act on verdicts'));
+      expect(act).toContain('update_artifact');
+      expect(act).toMatch(/metadata: \{ qa: \{ fixTaskId/);
+      expect(act).toMatch(/only/i);
+      expect(act).toMatch(/merges/i);
+    });
+
+    it('prompt explains re-check rounds, human rounds, and prior-finding resolution', () => {
+      const c = role().content;
+      expect(c).toMatch(/round 2/i);
+      expect(c).toMatch(/at most 2 automatic rounds/i);
+      expect(c).toMatch(/human/i);
+      expect(c).toContain('Resolved:');
+      expect(c).toContain('Still there:');
       expect(c).toMatch(/do not (open|create) (another|a new) (\[surface audit\]|audit)/i);
+    });
+
+    it('bumps the role version for the prompt change, and knows the v1 content so an unedited row can be re-synced', () => {
+      expect(role().version).toBeGreaterThanOrEqual(2);
+      expect(role().supersededContentHashes.length).toBeGreaterThan(0);
+      expect(role().supersededContentHashes).not.toContain(roleContentHash(role().content));
     });
 
     // post_note is non-blocking: the session would end, the runner's fallback
@@ -156,6 +186,33 @@ describe('DEFAULT_ROLES', () => {
       const { BOOT_FAILURE_QUESTION_PREFIX } = await import('./mission-visual-review');
       const c = role().content.replace(/\s+/g, ' ');
       expect(c).toContain(`question "${BOOT_FAILURE_QUESTION_PREFIX}:`);
+    });
+  });
+
+  describe('planDefaultRoleResync (a role version bump reaches existing teams)', () => {
+    const auditor = bySlug[VISUAL_AUDITOR_ROLE_SLUG];
+    const v1Hash = auditor.supersededContentHashes[0];
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: 'row-1', slug: auditor.slug, source: 'system', contentHash: v1Hash, metadata: { defaultRoleVersion: 1 }, ...over,
+    });
+
+    it('updates an unedited system row still on an older version', () => {
+      const plan = planDefaultRoleResync([row()]);
+      expect(plan).toHaveLength(1);
+      expect(plan[0]).toMatchObject({ id: 'row-1', slug: auditor.slug, version: auditor.version });
+      expect(plan[0].content).toBe(auditor.content);
+      expect(plan[0].contentHash).toBe(createHash('sha256').update(auditor.content).digest('hex'));
+    });
+
+    it('treats a row with no version stamp as version 1', () => {
+      expect(planDefaultRoleResync([row({ metadata: {} })])).toHaveLength(1);
+    });
+
+    it('never overwrites a row a team edited, one already current, or a non-system row', () => {
+      expect(planDefaultRoleResync([row({ contentHash: 'edited' })])).toEqual([]);
+      expect(planDefaultRoleResync([row({ metadata: { defaultRoleVersion: auditor.version } })])).toEqual([]);
+      expect(planDefaultRoleResync([row({ source: 'user' })])).toEqual([]);
+      expect(planDefaultRoleResync([row({ slug: 'custom-role' })])).toEqual([]);
     });
   });
 

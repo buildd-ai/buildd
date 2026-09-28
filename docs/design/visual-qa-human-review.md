@@ -1,8 +1,11 @@
 ---
-status: proposed
-# The model, the scoped loader and its GET route ship in slice 1. The
-# decisions route is the next slice and fails until it lands, which is what
-# keeps this doc honestly `proposed`.
+status: partially
+# Slice 1 (model, scoped loader, GET route) and slice 2 (the decisions route,
+# rounds, the shadow completion hold) have shipped. Slices 3-5 (the review
+# component family, mission-page wiring, chat integration) have not, so this
+# assertion set includes one deliberately-failing symbol from slice 3 —
+# review-deck-component — to keep the derived status honestly `partial`
+# instead of `implemented`.
 assertions:
   - id: "cell-matrix-model"
     type: "symbol"
@@ -22,11 +25,15 @@ assertions:
     method: "POST"
     path: "/api/missions/[id]/visual-review/decisions"
     file: "apps/web/src/app/api/missions/[id]/visual-review/decisions/route.ts"
+  - id: "review-deck-component"
+    type: "symbol"
+    name: "VisualReviewDeck"
+    path: "apps/web/src/components/visual-review/VisualReviewDeck.tsx"
 ---
 
 # Visual QA: human review loop
 
-**Status:** Proposed
+**Status:** Partially Implemented — foundation and decisions route shipped (slices 1-2: the cell-matrix model, the scoped GET loader, the decisions/undo routes, human rounds and the shadow completion hold). The review component family, mission-page wiring and chat integration (slices 3-5) have not been built yet.
 **Related:** `docs/design/visual-qa-auditor.md` (the auditor this builds on), `apps/web/src/lib/mission-visual-review.ts`, `apps/web/src/lib/mission-surface-audit.ts`, `packages/core/surface-audit.ts`, `apps/web/src/lib/visual-audit-evidence.ts`, `apps/web/src/lib/mission-completion.ts`, `apps/web/src/app/app/(protected)/missions/[id]/`, `apps/web/src/components/chat/objects/`, `apps/web/src/lib/chat/mission-events.ts`
 
 ## Problem
@@ -109,7 +116,7 @@ Rules for filing and undoing:
 - The server always builds the fix title with `surfaceFixTitle(route, note || finding)`, using the recorded route pattern. The client never builds it.
 - The fix id is stored on the review row. It is never written to `qa.fixTaskId`, which stays the auditor's field.
 - Both viewports of one route can be decided together ("apply to both", on by default when their verdicts match), and that files one fix task.
-- Every decision shows a 5-second Undo. Undo supersedes the review. It reopens a fix that it cancelled, or cancels a fix it filed, **only while that task is pending and unclaimed**. Otherwise it returns `409 fix_started`.
+- Every decision shows a 5-second Undo. Undo returns the cells to their state before the tap: it supersedes every row of the tap, brings back the reviews the tap replaced, and reopens every fix it cancelled or cancels every fix it filed (unless a restored or other active review still links it), **only while each task is pending and unclaimed**. Every fix is checked before any write; if one has moved on it returns `409 fix_started`.
 - At the end of the queue the human is offered one batch action: "The agent marked 9 fine. Accept all 9."
 
 ### 2. The review surfaces: one component family

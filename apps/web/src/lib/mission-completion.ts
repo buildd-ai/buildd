@@ -12,6 +12,8 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/co
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 /**
  * The one mission-completion predicate.
@@ -131,6 +133,44 @@ export interface MissionCompletionDecision {
     supersededByPrUrl: string | null;
     supersededReason: string | null;
   }>;
+  /**
+   * The visual review wants a human (docs/design/visual-qa-human-review.md,
+   * part 5): `cells` current unsure shots nobody decided, or the round-cap
+   * question is open. Set whenever the check ran and found something, in
+   * shadow too, so a surface can say "N screens want your review" without
+   * the gate blocking. `enforced` is true only under VISUAL_REVIEW_GATE=enforce,
+   * where the refusal code is `visual_review_open`.
+   */
+  visualReviewHold?: VisualReviewHold | null;
+}
+
+export interface VisualReviewHold {
+  cells: number;
+  roundCapOpen: boolean;
+  enforced: boolean;
+}
+
+/** Opt-in until the shadow logs are read. Anything but `enforce` is shadow. */
+export function visualReviewGateEnforced(): boolean {
+  return process.env.VISUAL_REVIEW_GATE === 'enforce';
+}
+
+/**
+ * Whether the visual review holds the mission. Reads the same model every
+ * surface reads. Only called when the mission has an audit task, so a
+ * mission without one costs no query. Fails open: a read error never blocks.
+ */
+async function visualReviewHoldFor(mission: { id: string; workspaceId?: string | null }): Promise<VisualReviewHold | null> {
+  try {
+    const { loadVisualReview } = await import('@/lib/visual-review-load');
+    const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null });
+    const cells = model.summary.awaitingHuman;
+    if (cells === 0 && !model.roundCapOpen) return null;
+    return { cells, roundCapOpen: model.roundCapOpen, enforced: visualReviewGateEnforced() };
+  } catch (err) {
+    console.error(`[visual-review-shadow] ${mission.id.slice(0, 8)} hold check failed (not blocking):`, err);
+    return null;
+  }
 }
 
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -215,6 +255,8 @@ export async function canCompleteMission(
       // Option A′ — see the mission-integration-PR gate below.
       workingBranch: true,
       integrationBranchEnabled: true,
+      // The visual review hold reads the model, which scopes by workspace.
+      workspaceId: true,
     },
   });
 
@@ -231,6 +273,7 @@ export async function canCompleteMission(
     awaitingMergeDetails: [] as MissionCompletionDecision['awaitingMergeDetails'],
     supersededCount: 0,
     supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
+    visualReviewHold: null as VisualReviewHold | null,
   };
 
   if (!mission) {
@@ -272,6 +315,8 @@ export async function canCompleteMission(
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
       taskClass: true, creationSource: true, category: true, result: true,
+      // Finds the visual audit, so a mission without one skips the hold check.
+      roleSlug: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
@@ -507,6 +552,35 @@ export async function canCompleteMission(
           reason:
             `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} is open and unmerged. `
             + `The mission's work is on \`${mission.workingBranch}\` and has not reached trunk.`,
+        };
+      }
+    }
+  }
+
+  // The visual review hold (docs/design/visual-qa-human-review.md, part 5):
+  // a current unsure screen nobody decided, or the open round-cap question.
+  // Open fixes already hold above through pending_deliverables, and ok and
+  // issue screens never need a human. Shadow unless VISUAL_REVIEW_GATE=enforce.
+  const hasAudit = allTasks.some(t =>
+    (t as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? ''));
+  if (hasAudit) {
+    const hold = await visualReviewHoldFor(mission as { id: string; workspaceId?: string | null });
+    if (hold) {
+      base.visualReviewHold = hold;
+      const what = [
+        ...(hold.cells > 0 ? [`${hold.cells} ${hold.cells === 1 ? 'cell' : 'cells'}`] : []),
+        ...(hold.roundCapOpen ? ['the round-cap question'] : []),
+      ].join(' and ');
+      if (!hold.enforced) {
+        console.log(`[visual-review-shadow] ${mission.id.slice(0, 8)} would hold: ${what}`);
+      } else {
+        const screens = hold.cells > 0 ? `${hold.cells} ${hold.cells === 1 ? 'screen wants' : 'screens want'} your review` : '';
+        const text = [screens, hold.roundCapOpen ? 'the visual audit round-cap question is open' : ''].filter(Boolean).join(', and ');
+        return {
+          ...base,
+          ok: false,
+          code: 'visual_review_open',
+          reason: `${text.charAt(0).toUpperCase()}${text.slice(1)}.`,
         };
       }
     }

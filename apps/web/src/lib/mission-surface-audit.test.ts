@@ -5,7 +5,8 @@ const tasksFindFirst = mock(() => Promise.resolve(null as any));
 const tasksFindMany = mock(() => Promise.resolve([] as any[]));
 const tasksInsertReturning = mock(() => Promise.resolve([{ id: 'audit-1', title: '[surface audit] Mission' }] as any[]));
 const tasksInsertValues = mock((_values: any) => ({ returning: tasksInsertReturning }));
-const tasksUpdateWhere = mock(() => Promise.resolve());
+const tasksUpdateReturning = mock(() => Promise.resolve([{ id: 'audit-2' }] as any[]));
+const tasksUpdateWhere = mock((_w?: any) => Object.assign(Promise.resolve(), { returning: tasksUpdateReturning }));
 const tasksUpdateSet = mock((_values: any) => ({ where: tasksUpdateWhere }));
 const notesFindFirst = mock(() => Promise.resolve(null as any));
 const notesInsertValues = mock((_values: any) => Promise.resolve());
@@ -35,7 +36,12 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
-const { ensureMissionSurfaceAudit } = await import('./mission-surface-audit');
+const mockCancelSideEffects = mock((_t: any) => Promise.resolve());
+mock.module('@/lib/task-cancel', () => ({
+  applyTaskCancelSideEffects: mockCancelSideEffects,
+}));
+
+const { ensureMissionSurfaceAudit, detachFixFromPendingAudit } = await import('./mission-surface-audit');
 
 const MISSION_ID = 'mission-1';
 const WORKSPACE_ID = 'ws-1';
@@ -58,7 +64,9 @@ beforeEach(() => {
   tasksFindMany.mockReset(); tasksFindMany.mockResolvedValue([]);
   tasksInsertReturning.mockReset(); tasksInsertReturning.mockResolvedValue([{ id: 'audit-1', title: '[surface audit] Mobile nav redesign' }]);
   tasksInsertValues.mockClear();
-  tasksUpdateWhere.mockReset(); tasksUpdateWhere.mockResolvedValue(undefined);
+  tasksUpdateReturning.mockReset(); tasksUpdateReturning.mockResolvedValue([{ id: 'audit-2' }]);
+  tasksUpdateWhere.mockClear();
+  mockCancelSideEffects.mockClear();
   tasksUpdateSet.mockClear();
   mockDispatchNewTask.mockReset(); mockDispatchNewTask.mockResolvedValue(undefined);
   notesFindFirst.mockReset(); notesFindFirst.mockResolvedValue(null);
@@ -85,6 +93,9 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.outputRequirement).toBe('artifact_required');
     // Routed to the browser-gated auditor, not any builder runner.
     expect(inserted.roleSlug).toBe('visual-auditor');
+    // Observation work: the glyph and the model router read kind.
+    expect(inserted.kind).toBe('observation');
+    expect(inserted.context).toEqual({ surfaceAuditTrigger: 'auto' });
     expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
   });
 
@@ -268,7 +279,8 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
       expect(inserted.roleSlug).toBe('visual-auditor');
       expect(inserted.outputRequirement).toBe('artifact_required');
       expect(inserted.taskClass).toBe('work');
-      expect(inserted.context).toEqual({ surfaceAuditRound: 2, visualQa: { requiredRoutes: ['/app/tasks/:id'] } });
+      expect(inserted.context).toEqual({ surfaceAuditRound: 2, surfaceAuditTrigger: 'auto', visualQa: { requiredRoutes: ['/app/tasks/:id'] } });
+      expect(inserted.kind).toBe('observation');
       expect(inserted.description).toContain('Round 2');
       expect(inserted.description).toContain('- `/app/tasks/:id`');
       // The finished round is not touched: extending it would be inert.
@@ -382,6 +394,112 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     const q = render((tasksFindFirst.mock.calls[0] as any)[0].where);
     expect(q.sql).toContain('"tasks"."mission_id" = $');
     expect(q.params).toContain(MISSION_ID);
+  });
+});
+
+describe('ensureMissionSurfaceAudit — human-origin fixes (visual review decisions)', () => {
+  const audit = (round: number, status: string, dependsOn: string[] = ['fix-1']) => ({
+    id: `audit-${round}`,
+    title: round > 1 ? `[surface audit] round ${round}: Mobile nav redesign` : '[surface audit] Mobile nav redesign',
+    status,
+    dependsOn,
+    context: round > 1 ? { surfaceAuditRound: round, visualQa: { requiredRoutes: ['/app/tasks/:id'] } } : {},
+  });
+  const humanFix = (id: string, route = '/app/missions') => ({
+    id, title: `[surface fix] ${route}: the header wraps`, taskClass: 'work', pathManifest: null,
+  });
+  const run = (createdTask: ReturnType<typeof humanFix>) => ensureMissionSurfaceAudit({
+    missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask, targetWorkspace, origin: 'human',
+  });
+
+  it('bypasses the automatic cap: after round 2 a human fix opens round 3, recorded as human, with no question', async () => {
+    tasksFindFirst.mockResolvedValue(audit(2, 'completed'));
+    await run(humanFix('fix-h1'));
+    expect(notesInsertValues).not.toHaveBeenCalled();
+    expect(tasksInsertValues).toHaveBeenCalledTimes(1);
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.title).toBe('[surface audit] round 3: Mobile nav redesign');
+    expect(inserted.dependsOn).toEqual(['fix-h1']);
+    expect(inserted.kind).toBe('observation');
+    expect(inserted.context).toEqual({ surfaceAuditRound: 3, surfaceAuditTrigger: 'human', visualQa: { requiredRoutes: ['/app/missions'] } });
+    expect(inserted.description).toContain('opened by a human review');
+    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second human fix while that round is still pending extends it (one open human round)', async () => {
+    tasksFindFirst.mockResolvedValue({ ...audit(3, 'pending', ['fix-h1']), context: { surfaceAuditRound: 3, surfaceAuditTrigger: 'human', visualQa: { requiredRoutes: ['/app/missions'] } } });
+    await run(humanFix('fix-h2', '/app/tasks/:id'));
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    const set = tasksUpdateSet.mock.calls[0][0];
+    expect(set.dependsOn).toEqual(['fix-h1', 'fix-h2']);
+    expect(set.context.visualQa.requiredRoutes).toEqual(['/app/missions', '/app/tasks/:id']);
+    expect(set.context.surfaceAuditTrigger).toBe('human');
+  });
+
+  it('writes nothing at the round ceiling (the decisions route refuses first)', async () => {
+    tasksFindFirst.mockResolvedValue(audit(5, 'completed'));
+    await run(humanFix('fix-h9'));
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+    expect(notesInsertValues).not.toHaveBeenCalled();
+  });
+});
+
+describe('detachFixFromPendingAudit (a waived or withdrawn fix)', () => {
+  const pendingRound2 = (dependsOn: string[], routes = ['/app/missions', '/app/tasks/:id']) => ({
+    id: 'audit-2', title: '[surface audit] round 2: M', status: 'pending', dependsOn,
+    context: { surfaceAuditRound: 2, visualQa: { requiredRoutes: routes } },
+  });
+  const detach = () => detachFixFromPendingAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, fixTaskId: 'fix-1', route: '/app/tasks/:id' });
+
+  it('drops the fix and its route from a pending re-check that still has other fixes', async () => {
+    tasksFindFirst.mockResolvedValue(pendingRound2(['fix-1', 'fix-2']));
+    tasksFindMany.mockResolvedValue([{ id: 'fix-2', title: '[surface fix] /app/missions: overflow' }]);
+    const out = await detach();
+    expect(out).toEqual({ action: 'detached', auditTaskId: 'audit-2' });
+    const set = tasksUpdateSet.mock.calls[0][0];
+    expect(set.dependsOn).toEqual(['fix-2']);
+    expect(set.context.visualQa.requiredRoutes).toEqual(['/app/missions']);
+    // Only while it is still pending: the guard is in the WHERE.
+    const q = render(tasksUpdateWhere.mock.calls[0][0]);
+    expect(q.sql).toContain('"tasks"."status" = $');
+    expect(q.params).toContain('pending');
+    expect(q.params).toContain('audit-2');
+  });
+
+  it('keeps a route another remaining fix still names', async () => {
+    tasksFindFirst.mockResolvedValue(pendingRound2(['fix-1', 'fix-2']));
+    tasksFindMany.mockResolvedValue([{ id: 'fix-2', title: '[surface fix] /app/tasks/:id: second defect' }]);
+    await detach();
+    const set = tasksUpdateSet.mock.calls[0][0];
+    expect(set.dependsOn).toEqual(['fix-2']);
+    // The route list is left as it was.
+    expect(set.context).toBeUndefined();
+  });
+
+  it('cancels a pending re-check left with nothing to re-check, atomically', async () => {
+    tasksFindFirst.mockResolvedValue(pendingRound2(['fix-1']));
+    const out = await detach();
+    expect(out).toEqual({ action: 'cancelled', auditTaskId: 'audit-2' });
+    expect(tasksUpdateSet.mock.calls[0][0].status).toBe('cancelled');
+    const q = render(tasksUpdateWhere.mock.calls[0][0]);
+    expect(q.sql).toContain('"tasks"."status" = $');
+    expect(q.sql).toContain('"tasks"."claimed_by" is null');
+    expect(mockCancelSideEffects).toHaveBeenCalledTimes(1);
+  });
+
+  it('never touches an audit that has started', async () => {
+    tasksFindFirst.mockResolvedValue({ ...pendingRound2(['fix-1']), status: 'in_progress' });
+    expect(await detach()).toEqual({ action: 'none' });
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('on round 1 only removes the dependency: the audit still checks the builder work', async () => {
+    tasksFindFirst.mockResolvedValue({ id: 'audit-1', title: '[surface audit] M', status: 'pending', dependsOn: ['builder-1', 'fix-1'], context: {} });
+    await detach();
+    const set = tasksUpdateSet.mock.calls[0][0];
+    expect(set.dependsOn).toEqual(['builder-1']);
+    expect(set.status).toBeUndefined();
   });
 });
 
