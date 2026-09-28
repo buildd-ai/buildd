@@ -25,6 +25,12 @@ import {
 } from '@buildd/core/retrieval-clusters';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { renderHitLines } from '@buildd/core/prior-work-render';
+import {
+  memoryScopeFor,
+  queryOwnProjectMemory,
+  hasMemoryScope,
+  type MemoryHitScope,
+} from '@buildd/core/memory-hit-scope';
 
 /**
  * Minimum score for a claim-time prior-work hit to be worth a worker's
@@ -53,22 +59,24 @@ export type KnowledgeQuerier = {
  * Organizer sees prior plans, task outcomes, and team memory related to the
  * mission goal — so it can avoid redundant or already-failed approaches.
  *
- * Memory is team-scoped (`{teamId}:memory`); plans and task outcomes are
- * workspace-scoped. Best-effort — returns [] on any failure (no embeddings
+ * Memory lives in the team namespace (`{teamId}:memory`) and is narrowed to the
+ * caller's project (see @buildd/core/memory-hit-scope); plans and task outcomes
+ * are workspace-scoped. Best-effort — returns [] on any failure (no embeddings
  * configured, store down, empty goal) so planning never breaks.
  */
 async function buildCorporaHint(
   workspaceId: string | null | undefined,
-  teamId: string | null | undefined,
   ks: KnowledgeQuerier,
-  sensitive?: boolean,
+  memoryScope: MemoryHitScope | null,
 ): Promise<string> {
   if (!ks.countNamespace) return '';
   try {
     const parts: string[] = [];
 
-    if (teamId && !sensitive) {
-      const memCount = await ks.countNamespace(buildNamespace(teamId, 'memory')).catch(() => 0);
+    // The caller's own-project memories, never the team namespace total: a
+    // team-wide count would describe other workspaces' memory.
+    if (hasMemoryScope(memoryScope) && memoryScope.count) {
+      const memCount = await memoryScope.count().catch(() => 0);
       parts.push(`memory ${memCount}`);
     }
 
@@ -96,31 +104,50 @@ export async function buildKnowledgeContext(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store?: KnowledgeQuerier,
-  opts?: { sensitive?: boolean; paths?: string[]; excludedSourceIds?: ReadonlySet<string> },
+  opts?: {
+    sensitive?: boolean;
+    paths?: string[];
+    excludedSourceIds?: ReadonlySet<string>;
+    /** Resolved from the DB when omitted; `null` means no memory. */
+    memoryScope?: MemoryHitScope | null;
+  },
 ): Promise<string[]> {
   if (!query.trim()) return [];
   const sensitive = opts?.sensitive ?? false;
   const excluded = opts?.excludedSourceIds;
   try {
     const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    const memoryScope = teamId && !sensitive
+      ? await memoryScopeFor(opts?.memoryScope, workspaceId, teamId)
+      : null;
 
-    const hint = await buildCorporaHint(workspaceId, teamId, ks, sensitive);
+    const hint = await buildCorporaHint(workspaceId, ks, memoryScope);
 
-    // Query memory (team-scoped), plans, task outcomes, PRs, and code (workspace-scoped).
+    // Query memory (team namespace, narrowed to the caller's project), plans,
+    // task outcomes, PRs, and code (workspace-scoped).
     // Cap at 3 hits per corpus to bound prompt growth.
-    const sources: Array<{ label: string; ns: string }> = [];
-    if (teamId && !sensitive) sources.push({ label: 'Team memory', ns: buildNamespace(teamId, 'memory') });
+    const sources: Array<{ label: string; run: () => Promise<QueryResult[]> }> = [];
+    if (teamId && hasMemoryScope(memoryScope)) {
+      sources.push({
+        label: 'Team memory',
+        run: () => queryOwnProjectMemory(ks, teamId, memoryScope, { text: query, topK: 3 }),
+      });
+    }
     if (workspaceId) {
-      sources.push({ label: 'Prior plans', ns: buildNamespace(workspaceId, 'plan') });
-      sources.push({ label: 'Past task outcomes', ns: buildNamespace(workspaceId, 'task') });
-      sources.push({ label: 'Pull requests', ns: buildNamespace(workspaceId, 'pr') });
-      sources.push({ label: 'Code index', ns: buildNamespace(workspaceId, 'code') });
+      const ws = (label: string, ns: string) => ({
+        label,
+        run: () => ks.query(ns, { text: query, topK: 3 }),
+      });
+      sources.push(ws('Prior plans', buildNamespace(workspaceId, 'plan')));
+      sources.push(ws('Past task outcomes', buildNamespace(workspaceId, 'task')));
+      sources.push(ws('Pull requests', buildNamespace(workspaceId, 'pr')));
+      sources.push(ws('Code index', buildNamespace(workspaceId, 'code')));
     }
 
     const sectioned = sources.length > 0
       ? await Promise.all(
           sources.map(async (s) => {
-            const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
+            const results = await s.run().catch(() => [] as QueryResult[]);
             const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR && !excluded?.has(r.id));
             if (strong.length === 0) return [];
             const lines = [`\n### ${s.label}`];
@@ -185,7 +212,13 @@ export type ClusterRetrievalInput = {
   teamId?: string | null;
   trigger: ContextAssembly['trigger'];
   chain: AssemblyChain;
-  opts?: { sensitive?: boolean; source?: 'live' | 'eval'; excludedSourceIds?: ReadonlySet<string> };
+  opts?: {
+    sensitive?: boolean;
+    source?: 'live' | 'eval';
+    excludedSourceIds?: ReadonlySet<string>;
+    /** Resolved from the DB when omitted; `null` means no memory. */
+    memoryScope?: MemoryHitScope | null;
+  };
   store?: KnowledgeQuerier;
 };
 
@@ -339,6 +372,10 @@ export async function buildClusteredKnowledgeContext(
   try {
     assembly.assemblyId = crypto.randomUUID();
     const ks: KnowledgeQuerier = input.store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    // Resolved once: memory steps and the corpora hint both use it.
+    const memoryScope = teamId && !sensitive
+      ? await memoryScopeFor(input.opts?.memoryScope, workspaceId, teamId)
+      : null;
 
     /** Render + record one step's outcome. Returns the section's line groups, or null. */
     const runStep = async (step: ClusterStep): Promise<{ weak: boolean; groups: string[][] | null }> => {
@@ -363,10 +400,19 @@ export async function buildClusteredKnowledgeContext(
         return { weak: true, groups: null };
       }
 
+      // The memory namespace is team-wide; with no project key to narrow it
+      // to, the step does not run.
+      if (step.corpus === 'memory' && !hasMemoryScope(memoryScope)) {
+        assembly.items.push({ step: step.step, corpus: step.corpus, reason: 'memory_skipped_no_scope' });
+        return { weak: true, groups: null };
+      }
+
       const results = (
-        await ks
-          .query(ns, { text, topK: step.topK, mode: step.mode })
-          .catch(() => [] as QueryResult[])
+        step.corpus === 'memory' && teamId
+          ? await queryOwnProjectMemory(ks, teamId, memoryScope, { text, topK: step.topK, mode: step.mode })
+          : await ks
+              .query(ns, { text, topK: step.topK, mode: step.mode })
+              .catch(() => [] as QueryResult[])
       ).filter(r => !excluded?.has(r.id));
 
       // Strength is judged over SEED hits only. A graph neighbour was not
@@ -470,7 +516,7 @@ export async function buildClusteredKnowledgeContext(
       return { parts: [], assembly };
     }
 
-    const hint = await buildCorporaHint(workspaceId, teamId, ks, sensitive);
+    const hint = await buildCorporaHint(workspaceId, ks, memoryScope);
     const parts = [
       ...(hint ? [hint] : []),
       `\n## Related prior work — ${recipe.name}`,

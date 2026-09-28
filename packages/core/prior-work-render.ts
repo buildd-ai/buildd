@@ -8,6 +8,7 @@
 
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { KnowledgeStore, QueryResult } from './knowledge-store/types';
+import { memoryScopeFor, queryOwnProjectMemory, type MemoryHitScope } from './memory-hit-scope';
 
 export const STALE_BASELINE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -86,7 +87,8 @@ const AUTHORING_MAX_PATHS = 20;
 /**
  * Retrieve prior work at task/mission AUTHORING time (create_task, manage_missions
  * action=create) and render it as a compact "## Prior work" block using the same
- * renderer as buildKnowledgeContext. Queries memory (team-scoped) + task + pr
+ * renderer as buildKnowledgeContext. Queries memory (team namespace, narrowed to
+ * the caller's project; see ./memory-hit-scope) + task + pr
  * (workspace-scoped), plus a path-scoped pr supplement when `opts.paths` is given
  * (from the new row's pathManifest).
  *
@@ -103,15 +105,14 @@ export async function buildAuthoringPriorWork(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store: PriorWorkQuerier | undefined,
-  opts?: { paths?: string[] },
+  opts?: { paths?: string[]; memoryScope?: MemoryHitScope | null },
 ): Promise<string> {
   if (!queryText.trim() || !store) return '';
   try {
     const queries: Promise<QueryResult[]>[] = [];
     if (teamId) {
-      queries.push(
-        store.query(buildNamespace(teamId, 'memory'), { text: queryText, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []),
-      );
+      const scope = await memoryScopeFor(opts?.memoryScope, workspaceId, teamId);
+      queries.push(queryOwnProjectMemory(store, teamId, scope, { text: queryText, topK: AUTHORING_TOPK_PER_CORPUS }));
     }
     if (workspaceId) {
       queries.push(
