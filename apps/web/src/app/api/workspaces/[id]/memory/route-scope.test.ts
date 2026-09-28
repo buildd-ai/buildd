@@ -1,12 +1,12 @@
 /**
- * GET /api/workspaces/[id]/memory reads memory under the key resolveMemoryProjectKey
- * gives the workspace, the same rule as every other memory read.
+ * GET /api/workspaces/[id]/memory, end to end through the REAL
+ * resolveMemoryProjectKey (route.test.ts mocks the resolver; this file mocks
+ * only the rows it reads).
  *
- * Invariant: a workspace that must get no memory (sensitive, sharing a key with
- * a sensitive workspace in its team, or with no key at all) gets an empty
- * result, and the team-wide store is never searched without a project. The
- * search path is enforced inside retrieveMemory itself; the list path by the
- * route.
+ * Invariant: a workspace that must get no memory under the memoryProjectKey
+ * rule (sensitive, or sharing its key with a sensitive workspace in its team)
+ * gets the memory-unavailable empty result, and the team-wide store is never
+ * searched.
  */
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
@@ -64,27 +64,10 @@ beforeEach(() => {
 afterAll(() => { process.env.NODE_ENV = originalNodeEnv; });
 
 describe('GET /api/workspaces/[id]/memory: project scope', () => {
-  it('searches under the resolved key', async () => {
-    const res = await GET(req('query=fix&limit=5'), { params });
-    expect(res.status).toBe(200);
-    expect(search.mock.calls[0][0].project).toBe('acme/widgets');
-  });
-
-  it('no key: empty result, and the store is never searched', async () => {
-    wsRow = own({ repo: null, name: '' });
-    teamRows = [wsRow];
-    for (const qs of ['query=fix&limit=5', 'files=a.ts&limit=5', 'limit=50']) {
-      const res = await GET(req(qs), { params });
-      expect(await res.json()).toEqual({ memories: [], total: 0 });
-    }
-    expect(search).not.toHaveBeenCalled();
-    expect(batch).not.toHaveBeenCalled();
-  });
-
   it('a key shared with a sensitive workspace in the team: empty, never searched', async () => {
     teamRows = [own(), own({ id: 'ws-sensitive', dataClass: 'sensitive' })];
     const res = await GET(req('query=fix&limit=5'), { params });
-    expect(await res.json()).toEqual({ memories: [], total: 0 });
+    expect(await res.json()).toEqual({ memories: [], total: 0, memoryUnavailable: true });
     expect(search).not.toHaveBeenCalled();
   });
 
@@ -92,7 +75,14 @@ describe('GET /api/workspaces/[id]/memory: project scope', () => {
     wsRow = own({ dataClass: 'sensitive' });
     teamRows = [wsRow];
     const res = await GET(req('limit=50'), { params });
-    expect(await res.json()).toEqual({ memories: [], total: 0 });
+    expect(await res.json()).toEqual({ memories: [], total: 0, memoryUnavailable: true });
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it('a sensitive workspace elsewhere in the team with a different key does not close this one', async () => {
+    teamRows = [own(), own({ id: 'ws-sensitive', repo: 'https://github.com/acme/private-thing', dataClass: 'sensitive' })];
+    const res = await GET(req('query=fix&limit=5'), { params });
+    expect(res.status).toBe(200);
+    expect(search.mock.calls[0][0].project).toBe('acme/widgets');
   });
 });

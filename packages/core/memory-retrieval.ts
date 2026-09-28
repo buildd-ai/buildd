@@ -378,6 +378,11 @@ export interface RetrieveStoreMemoryResult<M> {
   /** The search's total (0 when it matched nothing). */
   total: number;
   hits: MemoryHit[];
+  /**
+   * True when the workspace gets no memory at all (no key under the
+   * memoryProjectKey rule), as opposed to a search that matched nothing.
+   */
+  unavailable?: true;
 }
 
 // ── The door ─────────────────────────────────────────────────────────────────
@@ -488,7 +493,7 @@ async function retrieveStoreMemory(
   // team-wide, and a search with no project, or another project, would read
   // other workspaces' memory. No key means no memory and no search.
   const project = await resolveStoreProject(input.scope.workspaceId);
-  if (!project) return empty;
+  if (!project) return { ...empty, unavailable: true };
 
   const searchData = await input.searcher.search({ ...input.search, project });
   const results = searchData.results || [];

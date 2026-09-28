@@ -225,7 +225,8 @@ describe('retrieveMemory (store-search)', () => {
       strategy: 'store-search', searcher: s, search: { query: 'fix', project: OWN },
       scope: { teamId: TEAM, workspaceId: WS }, caller: 'runner_workspace_memory', ledger: l.write,
     });
-    expect(res).toEqual({ memories: [], total: 0, hits: [] });
+    // Flagged, so a caller can say memory is off rather than "no matches".
+    expect(res).toEqual({ memories: [], total: 0, hits: [], unavailable: true });
     expect(searches).toEqual([]);
     expect(batches).toEqual([]);
     expect(l.batches).toEqual([]);

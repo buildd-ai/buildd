@@ -7,10 +7,12 @@
  * mirrored were never indexed at all. Without this, `recall` cannot see them,
  * or keeps serving text the row no longer holds. Per run it:
  *
- * - mirrors rows with no chunk, and re-mirrors rows whose chunk is stale
- *   (content, title, project, type, tags or files differ from the row);
+ * - mirrors live rows with no chunk, and re-mirrors live rows whose chunk is
+ *   stale (content, title, project, type, tags or files differ from the row);
  * - flips the chunk of a row recorded as superseded (`memories.superseded_by`)
- *   to not current, so a replaced memory is never indexed as current;
+ *   to not current, so a replaced memory is never indexed as current. A
+ *   superseded row is never embedded: with no chunk there is nothing to fix,
+ *   and a stale chunk only needs flipping;
  * - leaves alone rows with no project and rows under a key that a sensitive
  *   workspace in the team resolves to (no read can serve them);
  * - counts failed attempts on the row; a row that keeps failing sinks behind
@@ -81,9 +83,9 @@ export function reconcileCandidatesQuery(limit: number, excluded: readonly Exclu
   return sql`
     SELECT m.id, m.team_id, m.type, m.title, m.content, m.project, m.tags, m.files,
            m.superseded_by, m.index_failures,
-           CASE WHEN kc.id IS NULL THEN 'missing'
-                WHEN ${stale} THEN 'stale'
-                ELSE 'superseded' END AS chunk_state
+           CASE WHEN m.superseded_by IS NOT NULL THEN 'superseded'
+                WHEN kc.id IS NULL THEN 'missing'
+                ELSE 'stale' END AS chunk_state
     FROM memories m
     LEFT JOIN knowledge_chunks kc
       ON kc.namespace = m.team_id::text || ':memory'
@@ -91,7 +93,10 @@ export function reconcileCandidatesQuery(limit: number, excluded: readonly Exclu
     WHERE m.project IS NOT NULL
       AND m.index_failures < ${MEMORY_RECONCILE_MAX_ATTEMPTS}
       ${exclusion}
-      AND (kc.id IS NULL OR ${stale} OR (m.superseded_by IS NOT NULL AND kc.is_current))
+      AND (
+        (m.superseded_by IS NULL AND (kc.id IS NULL OR ${stale}))
+        OR (m.superseded_by IS NOT NULL AND kc.is_current)
+      )
     ORDER BY m.index_failures ASC, m.updated_at DESC
     LIMIT ${clampLimit(limit)}
   `;
@@ -182,9 +187,12 @@ export async function reconcileMemoryIndex(opts: {
   let superseded = 0;
   let failed = 0;
   for (const m of rows) {
+    // A replaced memory with no chunk has nothing to reconcile: embedding it
+    // would only index text that no read may serve.
+    if (m.supersededBy && m.chunkState === 'missing') continue;
     let ok = true;
     try {
-      if (m.chunkState !== 'superseded') {
+      if (!m.supersededBy && m.chunkState !== 'superseded') {
         const out = await mirrorMemoryToIndex(opts.knowledgeStore, m.teamId, m, { via: 'reconcile' });
         ok = out.mirrored;
         if (ok) mirrored++;
