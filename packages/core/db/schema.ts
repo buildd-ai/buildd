@@ -15,6 +15,13 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
   },
 });
 
+// Custom tsvector column type — used for the stored generated lexical search column below.
+const tsvectorType = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
+
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
@@ -2697,7 +2704,7 @@ export const deviceCodes = pgTable('device_codes', {
 
 // Knowledge chunks — unified semantic + lexical retrieval store.
 // namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
-// HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
+// HNSW index on embedding is added in the migration SQL.
 export const knowledgeChunks = pgTable('knowledge_chunks', {
   id: uuid('id').primaryKey().defaultRandom(),
   sourceId: text('source_id').notNull(),
@@ -2708,6 +2715,12 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceUrl: text('source_url'),
   content: text('content').notNull(),
   lexicalText: text('lexical_text'),
+  // Stored generated column so lexical search ranks against a precomputed
+  // tsvector instead of recomputing to_tsvector(...) per row on every query.
+  // Expression MUST stay identical to the one it replaces.
+  lexicalTsv: tsvectorType('lexical_tsv').generatedAlwaysAs(
+    sql`to_tsvector('english', coalesce(lexical_text, content))`,
+  ),
   embedding: vectorType('embedding', { dimensions: 1024 }),
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
