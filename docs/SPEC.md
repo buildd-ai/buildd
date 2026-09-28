@@ -311,8 +311,16 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   Settings → Budgets shows each person's spend split into Interactive and Agent runs
   (agent runs attributed to the mission's creator), per person for admins.
 - **Providers per path** — chat: `anthropic | openai | openrouter`. `inferenceCall`:
-  `anthropic | openrouter` (`openai` returns `unsupported_provider`). Decision calls:
-  OpenRouter.
+  `anthropic | openrouter` (`openai` returns `unsupported_provider` unless a gateway
+  serves it). Decision calls: OpenRouter, or the team's decision model.
+  A team **LiteLLM gateway** (`packages/core/litellm-gateway.ts`) is the fallback
+  after the provider's own key (and, for chat, OpenRouter): the same model as
+  `provider/model` on the proxy's OpenAI-compatible API.
+- **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
+  null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
+  with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
+  Thresholds were measured on Jev, so a call site that auto-applies (task
+  category) records another model's pick without applying it.
 - **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
   to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
   with all tools. The task-category check is shadow only

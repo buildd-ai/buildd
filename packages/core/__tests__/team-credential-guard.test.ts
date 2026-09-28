@@ -17,6 +17,8 @@ const ALLOWED = new Set([
   'packages/core/secrets/postgres-provider.ts', // exact NULL-aware scope incl. user_id
   'packages/core/inference-keys.ts', // personal-aware resolver: serves a personal row to its owner only
   'apps/web/src/lib/provider-keys.ts', // manages inference keys, scope 'user' | 'team' explicit
+  'packages/core/litellm-gateway.ts', // team gateway (inference_key/litellm): isNull(userId) explicit, never personal
+  'apps/web/src/lib/litellm-gateway-settings.ts', // manages that team row: isNull(userId) explicit
 ]);
 
 /** Call sites that read connector / MCP / role-env / webhook credentials by label or purpose. */

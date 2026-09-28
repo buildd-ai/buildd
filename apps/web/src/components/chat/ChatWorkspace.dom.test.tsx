@@ -459,7 +459,10 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
   it('the composer scope is locked to the mission and its workspace', async () => {
     await render(overlay());
     const cell = q('[data-testid="composer-scope-locked"]');
-    expect(cell?.textContent).toBe(`mission · ${fixtures.WS.name}`);
+    // Phones show the workspace alone, wider screens `mission · <workspace>` (#3080).
+    expect(cell?.querySelector('.hidden.md\\:inline')?.textContent).toBe(`mission · ${fixtures.WS.name}`);
+    expect(cell?.querySelector('.md\\:hidden')?.textContent).toBe(fixtures.WS.name);
+    expect(cell?.getAttribute('aria-label')).toBe(`Scope locked to mission · ${fixtures.WS.name}`);
     expect(q('[data-testid="composer-scope-lock"]')).not.toBeNull();
     expect(q('[data-testid="composer-scope-chip"]')).toBeNull();
   });
