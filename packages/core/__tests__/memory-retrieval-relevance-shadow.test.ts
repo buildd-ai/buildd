@@ -2,12 +2,16 @@
  * The relevance shadow hook in retrieveMemory (task 66ddcb3c): it sees every
  * pushed, task-attributed retrieval's shown hits and never changes a result.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
-import {
-  retrieveMemory,
-  setMemoryRelevanceShadow,
-  type MemoryRelevanceShadowInput,
-} from '../memory-retrieval';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
+
+// The store search resolves its project from the workspace; answer it here.
+mock.module('../memory-scope', () => ({
+  resolveMemoryProjectKey: async () => 'acme/widgets',
+  resolveMemoryHitScope: async () => null,
+}));
+
+const { retrieveMemory, setMemoryRelevanceShadow } = await import('../memory-retrieval');
+import type { MemoryRelevanceShadowInput } from '../memory-retrieval';
 import type { MemoryHitScope, MemoryQuerier } from '../memory-hit-scope';
 import type { QueryResult } from '../knowledge-store/types';
 
@@ -61,6 +65,43 @@ describe('relevance shadow hook', () => {
     await retrieveMemory({ ...base, caller: 'recall', attribution: { taskId: TASK } });
     await retrieveMemory({ ...base, caller: 'claim_context' });
     expect(seen).toHaveLength(0);
+  });
+
+  it('sees exactly the ids the ledger writes, on a deferred commit (hybrid)', async () => {
+    const seen: MemoryRelevanceShadowInput[] = [];
+    const ledgerRows: any[] = [];
+    setMemoryRelevanceShadow(i => { seen.push(i); });
+    const res = await retrieveMemory({
+      ...base, gate: undefined, ledger: rows => { ledgerRows.push(...rows); },
+      caller: 'claim_context', attribution: { taskId: TASK }, deferLedger: true,
+    });
+    expect(seen).toHaveLength(0);
+    res.commitLedger(h => (h.memoryId === 'm2' ? 'char_budget' : null));
+    const shownInLedger = ledgerRows.filter(r => r.gatedBy === null).map(r => r.memoryId);
+    expect(seen[0].hits.map(h => h.memoryId)).toEqual(shownInLedger);
+    expect(shownInLedger).toEqual(['m1']);
+  });
+
+  it('covers store-search pushes (claim_task reply) at their deferred commit, with the row text', async () => {
+    const seen: MemoryRelevanceShadowInput[] = [];
+    const ledgerRows: any[] = [];
+    setMemoryRelevanceShadow(i => { seen.push(i); });
+    const searcher = {
+      search: async () => ({ results: [{ id: 'a' }, { id: 'b' }], total: 2 }),
+      batch: async (ids: string[]) => ({ memories: ids.map(id => ({ id, title: `T ${id}`, content: `C ${id}` })) }),
+    };
+    const res = await retrieveMemory({
+      strategy: 'store-search', searcher, search: { query: 'claim route' },
+      scope: { teamId: TEAM, workspaceId: WS }, caller: 'claim_task_reply',
+      attribution: { taskId: TASK }, ledger: rows => { ledgerRows.push(...rows); }, deferLedger: true,
+    });
+    expect((res as any).unavailable).toBeUndefined();
+    expect(seen).toHaveLength(0);
+    res.commitLedger(h => (h.memoryId === 'b' ? 'char_budget' : null));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ caller: 'claim_task_reply', query: 'claim route', taskId: TASK });
+    expect(seen[0].hits.map(h => h.memoryId)).toEqual(ledgerRows.filter(r => r.gatedBy === null).map(r => r.memoryId));
+    expect(seen[0].hits[0].content).toContain('C a');
   });
 
   it('runs once, at ledger commit, with the post-processing gate applied', async () => {

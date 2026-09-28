@@ -226,7 +226,7 @@ describe('retrieveMemory (store-search)', () => {
       scope: { teamId: TEAM, workspaceId: WS }, caller: 'runner_workspace_memory', ledger: l.write,
     });
     // Flagged, so a caller can say memory is off rather than "no matches".
-    expect(res).toEqual({ memories: [], total: 0, hits: [], unavailable: true });
+    expect({ ...res, commitLedger: undefined }).toEqual({ memories: [], total: 0, hits: [], unavailable: true, commitLedger: undefined });
     expect(searches).toEqual([]);
     expect(batches).toEqual([]);
     expect(l.batches).toEqual([]);
@@ -246,7 +246,7 @@ describe('retrieveMemory (store-search)', () => {
     const { s, batches } = searcher([], []);
     const l = ledger();
     const res = await retrieveMemory({ strategy: 'store-search', searcher: s, search: { query: 'x' }, scope: { teamId: TEAM, workspaceId: WS }, caller: 'runner_workspace_memory', ledger: l.write });
-    expect(res).toEqual({ memories: [], total: 0, hits: [] });
+    expect({ ...res, commitLedger: undefined }).toEqual({ memories: [], total: 0, hits: [], commitLedger: undefined });
     expect(batches).toHaveLength(0);
     expect(l.batches).toHaveLength(0);
   });
