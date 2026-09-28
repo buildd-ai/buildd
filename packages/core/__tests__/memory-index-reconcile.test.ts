@@ -16,6 +16,7 @@
 import { describe, it, expect, spyOn } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
+  excludedKeysSql,
   reconcileCandidatesQuery,
   reconcileMemoryIndex,
   sensitiveMemoryKeys,
@@ -119,16 +120,41 @@ describe('sensitiveMemoryKeys', () => {
   });
 });
 
+describe('excludedKeysSql', () => {
+  it('renders one bound (team, project) pair per key on the given alias, and nothing for none', () => {
+    const q = dialect.sqlToQuery(excludedKeysSql('m2', [{ teamId: 't-1', project: 'acme/a' }, { teamId: 't-2', project: 'acme/b' }]));
+    expect(q.sql.replace(/\s+/g, ' ')).toBe('AND (m2.team_id::text, m2.project) NOT IN (($1, $2), ($3, $4))');
+    expect(q.params).toEqual(['t-1', 'acme/a', 't-2', 'acme/b']);
+    expect(dialect.sqlToQuery(excludedKeysSql('m', [])).sql).toBe('');
+  });
+});
+
 describe('reconcileMemoryIndex', () => {
   it('mirrors missing and stale rows into their own team namespace', async () => {
     const { ks, upserts } = store();
     const { d } = deps([row('m1', { teamId: 'team-a' }), row('m2', { teamId: 'team-b', chunkState: 'stale', content: 'redacted' })]);
     const res = await reconcileMemoryIndex({ knowledgeStore: ks, deps: d });
-    expect(res).toEqual({ scanned: 2, mirrored: 2, superseded: 0, failed: 0 });
+    expect(res).toEqual({ scanned: 2, mirrored: 2, superseded: 0, failed: 0, timedOut: false });
     expect(upserts.map(u => [u.ns, u.chunk.id, u.chunk.content])).toEqual([
       ['team-a:memory', 'm1', 'C m1'],
       ['team-b:memory', 'm2', 'redacted'],
     ]);
+  });
+
+  it('stops between rows when its time budget runs out (fake clock), leaving the rest for the next run', async () => {
+    const { ks, upserts } = store();
+    const { d } = deps([row('m1'), row('m2'), row('m3')]);
+    let t = 0;
+    // Each row costs 6s on this slow provider; the budget is 15s.
+    const slow = { ...ks, upsert: async (ns: string, chunks: any) => { t += 6_000; return ks.upsert(ns, chunks); } };
+    const res = await reconcileMemoryIndex({ knowledgeStore: slow as any, deps: d, budgetMs: 15_000, now: () => t });
+    expect(res).toMatchObject({ scanned: 3, mirrored: 3, timedOut: false });
+    t = 0;
+    upserts.length = 0;
+    const { d: d2 } = deps([row('a'), row('b'), row('c'), row('d')]);
+    const cut = await reconcileMemoryIndex({ knowledgeStore: slow as any, deps: d2, budgetMs: 10_000, now: () => t });
+    expect(cut).toMatchObject({ mirrored: 2, timedOut: true });
+    expect(upserts.map(u => u.chunk.id)).toEqual(['a', 'b']);
   });
 
   it('a superseded row with no chunk is skipped: nothing is embedded or written', async () => {
@@ -138,7 +164,7 @@ describe('reconcileMemoryIndex', () => {
     expect(upserts).toHaveLength(0);
     expect(flipped).toHaveLength(0);
     expect(outcomes).toHaveLength(0);
-    expect(res).toEqual({ scanned: 1, mirrored: 0, superseded: 0, failed: 0 });
+    expect(res).toEqual({ scanned: 1, mirrored: 0, superseded: 0, failed: 0, timedOut: false });
   });
 
   it('a stale chunk of a superseded row is flipped, not re-embedded', async () => {
@@ -163,7 +189,7 @@ describe('reconcileMemoryIndex', () => {
     const { ks, upserts } = store(['m1']);
     const { d, outcomes } = deps([row('m1'), row('m2', { indexFailures: 2 })]);
     const res = await reconcileMemoryIndex({ knowledgeStore: ks, deps: d });
-    expect(res).toEqual({ scanned: 2, mirrored: 1, superseded: 0, failed: 1 });
+    expect(res).toEqual({ scanned: 2, mirrored: 1, superseded: 0, failed: 1, timedOut: false });
     expect(upserts.map(u => u.chunk.id)).toEqual(['m2']);
     // m1 counts a failure; m2 had failures before and is reset on success.
     expect(outcomes).toEqual([{ id: 'm1', ok: false }, { id: 'm2', ok: true }]);

@@ -129,7 +129,7 @@ export default function StandingRulesSection() {
       </div>
       <div className="card">
         <p className="border-b border-border-default px-4 py-3 text-xs leading-relaxed text-text-secondary">
-          Chat follows these in every reply. Only you see them. Say &ldquo;always&rdquo; or &ldquo;never&rdquo; in chat and tap Remember this to add one there.
+          Chat follows these in every reply, and only you can see or change this list. When chat files a task or mission for you, the rules that apply are attached to it, so people in that workspace can see them on the task. Say &ldquo;always&rdquo; or &ldquo;never&rdquo; in chat and tap Remember this to add one there.
         </p>
         {adding && (
           <div className="border-b border-border-default px-4 py-3">
