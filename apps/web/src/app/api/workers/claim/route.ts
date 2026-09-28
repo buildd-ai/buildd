@@ -4,6 +4,7 @@ import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkill
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -139,6 +140,12 @@ export async function POST(req: NextRequest) {
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
+  // A person's interactive MCP session, proven by the marker the MCP routes
+  // sign server-side (lib/interactive-session.ts). `runner: 'mcp'` alone is
+  // client-supplied and proves nothing, so without the marker it is recorded
+  // as a runner id and gets every runner rule (cooldown, reaper liveness).
+  const interactiveSession = verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), account.id);
+
   // Admin force-claim of ONE named task: the MCP equivalent of the dashboard's
   // "Start with override" (friction cad81659). Only for an admin token and only
   // with a taskId; any other combination is an ordinary claim. It lifts the
@@ -159,6 +166,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
+  runner = resolveClaimRunner(runner, interactiveSession);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire

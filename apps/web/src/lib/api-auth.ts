@@ -109,7 +109,10 @@ async function authenticateOauthJwt(jwt: string) {
   });
   if (!account) return null;
 
-  return { ...account, level: levelForTeamRole(membership.role) };
+  // sessionUserId: the person behind this session. The account is shared by
+  // the whole team, so this is the only per-person identity a request carries
+  // (used to scope interactive-worker liveness and to attribute force claims).
+  return { ...account, level: levelForTeamRole(membership.role), sessionUserId: userId as string };
 }
 
 /**

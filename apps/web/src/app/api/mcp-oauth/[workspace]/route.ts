@@ -47,6 +47,7 @@ import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/cor
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
@@ -69,7 +70,8 @@ function unauthorized(workspace: string) {
   });
 }
 
-function createApi(jwt: string): ApiFn {
+/** See createApi in /api/mcp: `interactiveMarker` is the server-signed session marker. */
+function createApi(jwt: string, interactiveMarker?: string | null): ApiFn {
   const baseUrl = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : process.env.NEXTAUTH_URL || 'https://buildd.dev';
@@ -80,6 +82,7 @@ function createApi(jwt: string): ApiFn {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${jwt}`,
+        ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
         ...options.headers,
       },
     });
@@ -286,7 +289,10 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
-  const api = createApi(jwt);
+  const api = createApi(jwt, signInteractiveSession({
+    accountId: account.id,
+    userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
+  }));
   const isSensitive = (ws.dataClass as string) === 'sensitive';
   // Same project key /api/mcp resolves, so `learn` writes land in the same
   // scope from either transport. None (memory closed) for a sensitive

@@ -6783,3 +6783,56 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('#7');
   });
 });
+// ── Interactive session marker: runner 'mcp' is honoured only when signed ────
+describe('claim route: interactive session marker', () => {
+  const { signInteractiveSession, INTERACTIVE_SESSION_HEADER } = require('@/lib/interactive-session');
+  let savedSecret: string | undefined;
+
+  function account() {
+    return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1', level: 'admin' };
+  }
+  /** The runner id the conditional worker INSERT carried. */
+  function insertedRunner(): unknown {
+    const insert = (mockDbExecute.mock.calls as any[]).map(c => c[0]).find((q: any) =>
+      Array.isArray(q?.strings) && q.strings.join('').includes('INSERT INTO'));
+    // values: task_id, workspace_id, account_id, name, runner, branch
+    return insert?.values?.[5];
+  }
+
+  beforeEach(() => {
+    savedSecret = process.env.AUTH_SECRET;
+    process.env.AUTH_SECRET = 'marker-test-secret';
+    for (const m of [mockAuthenticateApiKey, mockWorkersFindMany, mockWorkspacesFindMany, mockTasksFindMany,
+      mockMissionsFindMany, mockDbExecute, mockGetAccountWorkspacePermissions] as any[]) m.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: {}, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })) });
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'b', status: 'idle' }] }));
+  });
+  afterEach(() => {
+    if (savedSecret === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = savedSecret;
+  });
+
+  it('a client-supplied runner "mcp" without the marker is recorded as a runner', async () => {
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp' } }));
+    expect(insertedRunner()).toBe('mcp-unverified');
+  });
+
+  it('a marker signed for another account does not count', async () => {
+    const marker = signInteractiveSession({ accountId: 'someone-else', userId: null });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedRunner()).toBe('mcp-unverified');
+  });
+
+  it('runner "mcp" with a marker the MCP route signed for this account is interactive', async () => {
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(insertedRunner()).toBe('mcp');
+  });
+});
