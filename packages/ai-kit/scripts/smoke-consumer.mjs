@@ -18,10 +18,10 @@
  *      `decide` returns `sdk_missing` instead of throwing. `/chat/server` must
  *      load and declare tool groups without `ai` (it loads `ai` on the first
  *      turn). `/chat/react` is the one entry that needs its peers to load
- *      (react, @ai-sdk/react, ai); bare, it must fail to load by naming one of
+ *      (react, react-dom, @ai-sdk/react, ai); bare, it must fail to load by naming one of
  *      them, not crash on something else,
  *   4. PEERS: installs every declared peer at its declared range, as a consumer
- *      would (plus react-dom, which every React app has), and imports every
+ *      would, and imports every
  *      entry again; `decide` must now reach the SDK; a `createChatTurn` turn
  *      runs on a mock model over the real SSE wire and gates a write behind
  *      one approval card; and `/chat/react` renders on the server.
@@ -89,7 +89,7 @@ const phase = process.argv[2];
 const pkg = JSON.parse((await import('node:fs')).readFileSync(new URL('./node_modules/@builddai/ai-kit/package.json', import.meta.url), 'utf8'));
 let bad = 0;
 // Entries that exist to wrap a peer: bare, they must fail by naming it.
-const NEEDS_PEERS = { './chat/react': ['react', '@ai-sdk/react', 'ai'] };
+const NEEDS_PEERS = { './chat/react': ['react', 'react-dom', '@ai-sdk/react', 'ai'] };
 for (const [entry, target] of Object.entries(pkg.exports)) {
   const spec = pkg.name + entry.slice(1);
   if (entry === './package.json') continue;
@@ -197,8 +197,8 @@ process.exit(bad ? 1 : 0);
   };
 
   phase('bare');
-  // react-dom is not a peer (the kit never imports it) but every React app has it; the SSR check needs it.
-  const specs = [...Object.entries(peers).map(([n, range]) => `${n}@${range}`), ...(peers.react ? [`react-dom@${peers.react}`] : [])];
+  // react-dom is a peer since 0.3.0 (the phone menu sheet portals with it).
+  const specs = Object.entries(peers).map(([n, range]) => `${n}@${range}`);
   if (specs.length) {
     console.log(`\ninstalling declared peers: ${specs.join(' ')}`);
     run('npm', ['install', '--no-package-lock', ...specs], project);

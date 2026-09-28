@@ -100,7 +100,7 @@
     },
     "packages/ai-kit": {
       "name": "@builddai/ai-kit",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@ai-sdk/react": "^4.0.119",
         "@happy-dom/global-registrator": "^20.14.5",
@@ -119,12 +119,14 @@
         "@typesafe-ai/sdk": "0.6.0",
         "ai": "^7.0.0",
         "react": "^19.0.0",
+        "react-dom": "^19.0.0",
       },
       "optionalPeers": [
         "@ai-sdk/react",
         "@typesafe-ai/sdk",
         "ai",
         "react",
+        "react-dom",
       ],
     },
     "packages/core": {

@@ -27,6 +27,7 @@ import {
   isToolPart,
   STEER_PART_TYPE,
   STEP_PART_TYPE,
+  TURN_ERROR_PART_TYPE,
   toolNameOf,
   type ApprovalPreview,
   type ChatMessage,
@@ -38,7 +39,9 @@ import {
   type HandoffData,
   type StepData,
   type SteerData,
+  type TurnErrorData,
 } from '@builddai/ai-kit/chat/contract';
+import { classifyTurnError } from './errors';
 import { contentInContext, toolOutputInHistory, ToolGroupsError, type ToolGroups } from './permissions';
 import { approvalRequestsIn, previewMatches, reconcileApprovals, type ApprovalRequestRow } from './approvals';
 import type { ChatStore, StoredMessage } from './store';
@@ -59,6 +62,13 @@ export const DEFAULT_TURN_LIMITS = {
   storedLimit: 500,
   /** Longest user message accepted. */
   maxUserText: 8_000,
+  /**
+   * Output tokens per model step (`maxOutputTokens`). Without a cap OpenRouter
+   * reserves the model's whole output window (often 100k+ tokens) against the
+   * key, and a key with a daily or credit limit refuses every call. A chat
+   * answer plus a tool call fits in a few thousand. `0` sends no cap.
+   */
+  maxOutputTokens: 4_096,
 } as const;
 
 export type TurnLimits = { [K in keyof typeof DEFAULT_TURN_LIMITS]: number };
@@ -529,6 +539,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       messages: modelMessages,
       tools,
       ...(activeTools ? { activeTools } : {}),
+      ...(limits.maxOutputTokens > 0 ? { maxOutputTokens: limits.maxOutputTokens } : {}),
       stopWhen: ai.isStepCount(limits.maxSteps),
       abortSignal: signal,
       toolApproval: toolApproval as never,
@@ -538,6 +549,14 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
 
     const toolNames = new Map<string, string>();
     const handoffs: HandoffData[] = [];
+    // A provider failure, in words: the stream's errorText and a saved data-turn-error part.
+    let turnError: TurnErrorData | null = null;
+    let turnErrorWritten = false;
+    const streamFailure = (e: unknown): string => {
+      report('stream')(e);
+      turnError ??= classifyTurnError(e);
+      return turnError.message;
+    };
     const persist = async ({ responseMessage, isContinuation, isAborted }: { responseMessage: UIMessage; isContinuation: boolean; isAborted: boolean }) => {
       const parts = [...(responseMessage.parts as ChatPart[])];
       if (isAborted) parts.push({ type: 'text', text: STOPPED_NOTE });
@@ -610,19 +629,26 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     const stream = ai.createUIMessageStream({
       originalMessages: uiMessages,
       generateId: genId,
-      onError: (e) => { report('stream')(e); return 'The turn failed.'; },
+      onError: streamFailure,
       execute: async ({ writer }) => {
+        const writeTurnError = () => {
+          if (!turnError || turnErrorWritten) return;
+          turnErrorWritten = true;
+          writer.write({ type: TURN_ERROR_PART_TYPE, id: 'turn-error', data: turnError } as never);
+        };
         const ui = ai.toUIMessageStream({
           stream: result.stream,
           tools,
           sendFinish: false,
           messageMetadata: ({ part }: { part: { type: string } }) => (part.type === 'start' ? turnMetadata : undefined),
-          onError: (e: unknown) => { report('stream')(e); return 'The turn failed.'; },
+          onError: streamFailure,
         } as never) as ReadableStream<UIMessageChunk>;
         const reader = ui.getReader();
         for (;;) {
           const { done, value: chunk } = await reader.read();
           if (done) break;
+          // The typed part goes before the error chunk, so it is in the saved message.
+          if (chunk.type === 'error') writeTurnError();
           writer.write(chunk as never);
           if (chunk.type === 'start' && !writeChunk) {
             // Steps emitted before the message started (a tool factory's step()) go right after it.
