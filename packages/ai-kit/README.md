@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.3.1
+npm i -E @builddai/ai-kit@0.5.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -181,6 +181,22 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 
 **Steering (flag).** With `steering: { queue }`, `turn.steer(...)` queues text against the conversation; the running turn injects it at the next step boundary (`prepareStep`) and streams a `data-steer` part (`applied`). Up to `maxPerTurn` (3) apply; the rest, and any that arrive after the last step, come back `deferred` and `useKitChat` sends them as the next message. A steer never extends `turnMs`, and only the turn owner's steers apply. `memorySteerQueue()` is single-process; on serverless use a shared queue (KV list, DB table) since the steer request and the turn usually hit different instances.
 
+**Titles (opt-in).** Pass `title` and the runner names the conversation after a new question's turn is saved. Cheapest step first: your `rules` (e.g. the name of the object the chat was opened about), then the built-in rule (a first message of 2–7 words on one line, filler like "can you" dropped, is its own title), then one call on `model`. Leave `model` out for rules only.
+
+```ts
+createChatTurn({
+  // ...
+  title: {
+    needed: ({ conversationId }) => db.untitled(conversationId),        // none yet, and the person never named it
+    save: ({ conversationId, title }) => db.setAutoTitle(conversationId, title), // must not replace a person's title
+    model: modelFromPlan({ models, key, create, tier: 'budget', kind: 'chat_title' }),
+    later: fn => after(fn),                                               // Next; default is fire-and-forget
+  },
+});
+```
+
+The model step caps output at 512 tokens, not ~30: budget models often reason first, and a small cap is spent on the reasoning, leaving empty text. An empty answer, a refused plan or a failed call goes to `onError(e, 'title')`, and the conversation keeps no title so the next turn tries again. Its receipt is `kind: 'inference'`. `titleConversation(...)` is the same pipeline for apps with their own turn loop; `ruleTitle` and `normalizeTitle` are exported.
+
 ### Persistence: `ChatStore`
 
 ```ts
@@ -245,8 +261,8 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 |---|---|
 | `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, turnError, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable`; a mid-stream provider failure in `turnError` |
 | `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderEvent? renderHandoff? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after) |
-| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. Ref: `{ focus(), prefill(text) }` |
-| `<ToolsMenu rows onChange busyKey? error?>` | The `···` control; the badge is `allowedBadgeCount(rows)` (`··· 2`). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
+| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
+| `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
 | `<TierPicker value onChange last? options?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
@@ -255,6 +271,17 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface` |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
 | `createComposerStore` / `useComposerState` | the shared new-chat draft, remembered scope and tier (below) |
+| `<TurnFeedbackProvider onFeedback initial? loadVotes? messageIds? pendingId? reasons? title?>` + `<TurnFeedback messageId>` | Thumbs under a turn. Down opens one optional reason (popover; a sheet on phones). `onFeedback({ messageId, signal, reason, previous, cleared })`: resolve `false` or throw to roll back. No fetch in the kit |
+| `<SteerComposer onSend messages blockedReason? title? presence? onClose?>` | Tell a running agent something (no model turn): your `onSend` queues it, `messages[].status` is `sent` / `delivered`. `steerTitle(role, runner, label)`, `canSteer(...)` |
+| `createObjectStore(source, { sidecar?, classify?, clock?, windowMs? })` | One live copy per `ObjectRef`: load on first reader, trailing refetch on the source's events, unwatch with the last reader |
+| `<ObjectStoreProvider store\|source>`, `useObjectEntry(ref)`, `<ObjectCard objRef renderers>`, `<ObjectPane objRef renderers variant?>` | Your renderers per kind (`{ card, pane?, matches? }`); an unknown kind or a failed load shows `fallbackText` |
+| `<PinnedObject objRef onOpen titleOf? state? meta? extra? detail? openLabel? hideOnDesktop?>` | The object the chat is about, pinned on top: one button on phones, "Open beside" and Show / Hide on wide screens |
+| `paneReducer`, `parsePaneSide`, `dockChoice` | The docked pane's side / pin state, and which one thing a side panel shows |
+| `createPendingMessages({ prefix?, storage? })` | Park a new chat's first message across the navigation; `take` reads and clears |
+| `approvalDraft(part, { custom? })`, `approvalLabel(part, labels)` | An approval card as data (preview, else fields); "New order" from a `tool` / `tool:action` map |
+| `formatCost`, `formatPer1k` | `$0.42`, `<$0.01`, `$0.003` |
+
+`/chat/contract` also gains `refKey(ref)`, `parseChatUnavailable(err)`, `chatErrorLine(err, lines?)` and `applyTurnVote(votes, id, signal, reason?)` (0.5.0).
 
 **Shared new-chat composer (remembered scope and tier, one draft).** Where an app starts chats from several places (a home card, the chat page, a canvas), keep one module-level store so the draft, scope and tier follow the person between them, and seed it from their last choices:
 
@@ -298,7 +325,7 @@ export const groups = defineToolGroups({
   keys:   { label: 'Keys',                                                     fixed: 'never' },
 });
 
-groups.rows(groups.parseAllowed(storedPreference)); // menu rows; badge = allowedBadgeCount(rows)
+groups.rows(groups.parseAllowed(storedPreference)); // the tools menu rows
 
 // In your tool-approval hook:
 if (groups.canSkipCard({ tool, input, allowedGroups, tainted, docked, skippedThisTurn })) {

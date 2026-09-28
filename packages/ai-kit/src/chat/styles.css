@@ -83,6 +83,11 @@
 .kit-stop-mark { width: 12px; height: 12px; background: var(--kit-bg); border-radius: 2px; }
 .kit-form-fallback { display: block; margin-top: 8px; font-size: 14px; color: var(--kit-muted); text-decoration: underline; text-underline-offset: 3px; }
 .kit-steer-hint { padding: 0 14px 8px; font-size: 12px; color: var(--kit-muted); }
+/* Extension slots (0.5.0). */
+.kit-composer-edge { position: absolute; left: 0; right: 0; top: -1px; height: 2px; overflow: hidden; pointer-events: none; }
+.kit-composer-leading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px 0; min-width: 0; }
+.kit-composer[data-compact="true"] .kit-composer-input { min-height: 48px; }
+.kit-composer-footer { margin-top: 8px; font-size: 12px; color: var(--kit-muted); }
 
 /* ── Menus (tools, scope, tier) ─────────────────────────────────────────── */
 .kit-menu { position: relative; display: flex; align-items: stretch; }
@@ -130,3 +135,57 @@
 .kit-greeting { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 600; }
 .kit-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .kit-chip { min-height: 44px; padding: 0 14px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-surface); cursor: pointer; font-size: 14px; }
+
+/* ── Turn feedback ──────────────────────────────────────────────────────── */
+.kit-feedback { position: relative; display: flex; align-items: center; gap: 4px; }
+.kit-thumb-btn { min-width: 44px; min-height: 44px; display: inline-grid; place-items: center; border: 1px solid transparent; border-radius: var(--kit-radius-hard); background: transparent; color: var(--kit-muted); cursor: pointer; }
+.kit-thumb-btn[aria-pressed="true"] { color: var(--kit-ink); border-color: var(--kit-rule); background: var(--kit-surface); }
+.kit-thumb[data-down] { transform: rotate(180deg); }
+.kit-feedback-reason { margin-left: 4px; font-family: var(--kit-font-mono); font-size: 11.5px; color: var(--kit-muted); }
+.kit-feedback > .kit-feedback-panel:not([data-sheet]) { min-width: 280px; }
+.kit-feedback-actions { padding: 8px 14px 4px; justify-content: flex-end; }
+.kit-feedback-actions .kit-btn[aria-disabled="true"] { cursor: not-allowed; }
+
+/* ── Steer ──────────────────────────────────────────────────────────────── */
+.kit-steer { display: flex; flex-direction: column; min-height: 0; gap: 0; }
+.kit-steer-header { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 14px; border-bottom: 1px solid var(--kit-rule); }
+.kit-steer-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-steer-presence { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 14px; overflow-x: auto; border-bottom: 1px solid var(--kit-rule); background: var(--kit-surface); font-family: var(--kit-font-mono); font-size: 12px; }
+.kit-steer-presence-item { flex: none; color: var(--kit-muted); }
+.kit-steer-presence-item[data-tone="strong"] { color: var(--kit-ink); font-weight: 600; }
+.kit-steer-presence-item[data-tone="live"] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--kit-accent); }
+.kit-steer-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
+.kit-steer-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.kit-steer-msg { display: grid; gap: 6px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-bg); padding: 8px 12px; }
+.kit-steer-status { justify-self: start; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-steer-status[data-status="delivered"] { color: var(--kit-ink); }
+.kit-steer > .kit-composer { margin: 8px 14px 0; }
+.kit-steer > .kit-error { margin: 8px 14px 0; }
+.kit-send.kit-steer-send { width: auto; padding: 0 16px; font-size: 14px; }
+
+/* ── Objects ────────────────────────────────────────────────────────────── */
+.kit-object-placeholder { display: grid; gap: 4px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
+.kit-object-placeholder[data-loading="true"] { color: var(--kit-muted); }
+.kit-object-pane { min-width: 0; }
+.kit-pinned { border-bottom: 2px solid var(--kit-rule); background: var(--kit-surface); }
+.kit-pinned-bar { display: flex; align-items: center; min-height: 48px; min-width: 0; padding: 4px 14px; }
+.kit-pinned-phone { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; cursor: pointer; text-align: left; padding: 0; }
+.kit-pinned-desk { display: none; flex: 1 1 auto; min-width: 0; align-items: center; gap: 12px; }
+.kit-pinned-kind { flex: none; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-pinned-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 13px; font-weight: 600; }
+.kit-pinned-phone > .kit-pinned-title { flex: 1 1 auto; }
+.kit-pinned-go { flex: none; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-pinned-spacer { flex: 1 1 auto; }
+.kit-pinned-meta { flex: none; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-pinned-open, .kit-pinned-toggle { flex: none; min-height: 36px; padding: 0 8px; border: 0; background: transparent; cursor: pointer; font-family: var(--kit-font-mono); font-size: 12px; }
+.kit-pinned-open { color: var(--kit-accent); font-weight: 600; }
+.kit-pinned-toggle { color: var(--kit-muted); }
+.kit-pinned-extra { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 14px 8px; }
+.kit-pinned-detail { display: none; padding: 0 14px 14px; overflow-x: auto; }
+/* Wide screens (the kit's sheet breakpoint): the desk bar replaces the phone button, and the detail shows. */
+@media (min-width: 640px) {
+  .kit-pinned[data-hide-desktop="true"] { display: none; }
+  .kit-pinned-phone { display: none; }
+  .kit-pinned-desk { display: flex; }
+  .kit-pinned-detail { display: block; }
+}
