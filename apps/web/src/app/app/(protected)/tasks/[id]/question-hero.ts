@@ -60,12 +60,13 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
  * The agent's own words for what an option means, when its explanation names
  * the option: "…Per line: the total equals… Total only: matches…". Only the
- * option's lead phrase (before an em dash) is matched, and only a phrase
- * followed by a colon, so nothing is invented when the body doesn't say.
+ * option's lead phrase is matched (the label up to a dash or a colon: "Per
+ * line — match Stripe", "Per line: match Stripe"), and only a phrase followed
+ * by a colon, so nothing is invented when the body doesn't say.
  */
 function consequenceMatch(label: string, body: string | null | undefined): { text: string; span: string } | undefined {
   if (!body) return undefined;
-  const lead = label.split(/\s+[—–-]\s+/)[0]?.trim();
+  const lead = label.split(/\s+[—–-]\s+|:\s+/)[0]?.trim();
   if (!lead || lead.length < 2) return undefined;
   const re = new RegExp(`(?:^|[.!?\\n]\\s*)(${escapeRe(lead)}\\s*:\\s*([^.!?\\n]+[.!?]?))`, 'i');
   const hit = re.exec(body);

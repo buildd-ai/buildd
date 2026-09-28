@@ -30,6 +30,7 @@ export interface ReplyNoteRow {
 export interface QuestionWorkerRow {
   id: string;
   waitingFor: unknown;
+  status?: string | null;
   updatedAt?: Date | string | null;
 }
 
@@ -49,6 +50,8 @@ export interface ShapedQuestion {
   question: UnifiedQuestion;
   askedAt: number | null;
   answer: string | null;
+  /** Answered, but the worker is still `waiting_input`: the resume hasn't happened yet. */
+  awaitingAgent: boolean;
 }
 
 /**
@@ -78,6 +81,7 @@ export function shapeQuestion(input: {
       question: unifyWorkerQuestion(pending.waitingFor as WorkerWaitingFor, note),
       askedAt: epoch(note?.createdAt) ?? epoch(pending.updatedAt),
       answer: null,
+      awaitingAgent: false,
     };
   }
   const last = input.notes[input.notes.length - 1];
@@ -88,6 +92,7 @@ export function shapeQuestion(input: {
     question: last ? unifyNoteQuestion(last) : { headline: input.taskTitle, body: null, options: [], noteId: null },
     askedAt: epoch(last?.createdAt),
     answer: reply?.title ?? null,
+    awaitingAgent: input.workers[0]?.status === 'waiting_input',
   };
 }
 
@@ -126,7 +131,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
     db.query.workers.findMany({
       where: eq(workers.taskId, taskId),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, waitingFor: true, updatedAt: true },
+      columns: { id: true, waitingFor: true, status: true, updatedAt: true },
     }),
     db
       .select({
@@ -181,6 +186,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
       askedAt: shaped.askedAt,
       question: shaped.question,
       answer: shaped.answer,
+      awaitingAgent: shaped.awaitingAgent,
       renderedAt: Date.now(),
     },
   };

@@ -1,41 +1,16 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, getPusherClient, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { needsInputEventAction, createReconnectDetector } from '@/lib/realtime-throttle';
 import { missionTaskHref } from '@/lib/mission-task-href';
 
-interface WaitingTask {
-  id: string;
-  title: string;
-  workspaceId: string;
-  /** The task's mission, so a link can open it in mission context. */
-  missionId?: string | null;
-  waitingFor: { type: string; prompt: string; options?: string[] } | null;
-}
+import { NeedsInputContext, type AlertPermission, type WaitingTask } from './needs-input-context';
 
-type AlertPermission = NotificationPermission | 'unsupported';
-
-interface NeedsInputContextValue {
-  tasks: WaitingTask[];
-  count: number;
-  /** Browser notification permission; 'default' means the user hasn't been asked. */
-  alertPermission: AlertPermission;
-  /** Ask for notification permission. Must run from a user gesture (the 'Enable alerts' control). */
-  enableAlerts: () => void;
-}
-
-export const NeedsInputContext = createContext<NeedsInputContextValue>({
-  tasks: [],
-  count: 0,
-  alertPermission: 'unsupported',
-  enableAlerts: () => {},
-});
-
-export function useNeedsInput() {
-  return useContext(NeedsInputContext);
-}
+// The context lives in its own module so an answer surface can mark a task
+// answered without importing this provider (and its Pusher wiring).
+export { NeedsInputContext, useNeedsInput } from './needs-input-context';
 
 interface Props {
   workspaceIds: string[];
@@ -66,7 +41,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
         if (initialFetchDone.current) {
           const prevIds = prevTaskIdsRef.current;
           for (const task of newTasks) {
-            if (!prevIds.has(task.id)) {
+            if (!prevIds.has(task.id) && !task.answerSent) {
               showToast(task, router);
             }
           }
@@ -153,8 +128,15 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceIdsKey, fetchWaitingTasks]);
 
+  // Answered here, before the next fetch says so: the banner reads "sent" at once.
+  const markAnswerSent = useCallback((taskId: string) => {
+    setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, answerSent: true } : t)));
+  }, []);
+
+  const count = tasks.filter(t => !t.answerSent).length;
+
   return (
-    <NeedsInputContext.Provider value={{ tasks, count: tasks.length, alertPermission, enableAlerts }}>
+    <NeedsInputContext.Provider value={{ tasks, count, alertPermission, enableAlerts, markAnswerSent }}>
       {children}
     </NeedsInputContext.Provider>
   );

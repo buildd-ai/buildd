@@ -52,6 +52,28 @@ describe('unifyWorkerQuestion', () => {
     expect(q).toMatchObject({ headline: 'Which?', body: null, noteId: null, options: [{ label: 'X', description: 'd', recommended: false }] });
   });
 
+  test.each([
+    ['colon', 'Per line: match Stripe', 'Total only: match the ledger'],
+    ['spaced hyphen', 'Per line - match Stripe', 'Total only - match the ledger'],
+    ['en dash', 'Per line – match Stripe', 'Total only – match the ledger'],
+  ])('a label whose lead is set off by a %s still finds its consequence', (_sep, a, b) => {
+    const q = unifyWorkerQuestion({ type: 'question', prompt: 'p', options: [a, b] }, note);
+    expect(q.options.map(o => o.description)).toEqual([
+      'The total equals exactly what the card is charged.',
+      'Matches the ledger, but the charge can be off by a cent.',
+    ]);
+    expect(q.body).toBe('Rounding each line can differ from rounding the total. Which one?');
+  });
+
+  test('a structured description still takes its paragraph out of the body', () => {
+    const q = unifyWorkerQuestion(
+      { type: 'question', prompt: 'p', options: [{ label: 'Per line: match Stripe', description: 'mine' }, { label: 'Total only', description: 'theirs' }] },
+      note,
+    );
+    expect(q.options.map(o => o.description)).toEqual(['mine', 'theirs']);
+    expect(q.body).toBe('Rounding each line can differ from rounding the total. Which one?');
+  });
+
   test('an explicit option description is never overwritten from the note body', () => {
     const q = unifyWorkerQuestion({ type: 'question', prompt: 'p', options: [{ label: 'Per line — match Stripe', description: 'mine' }] }, note);
     expect(q.options[0].description).toBe('mine');

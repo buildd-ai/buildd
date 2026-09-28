@@ -116,6 +116,8 @@ export interface QuestionObjectView {
   question: UnifiedQuestion;
   /** Set once answered, when known. */
   answer?: string | null;
+  /** Answered, but the asking worker has not picked the answer up yet. */
+  awaitingAgent?: boolean;
   renderedAt: number;
 }
 

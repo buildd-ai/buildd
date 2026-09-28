@@ -153,6 +153,8 @@ export const questionView = (open = true): QuestionObjectView => ({
     noteId: null,
   },
   answer: open ? null : 'Per line: match Stripe',
+  // Answered, and the Builder has not resumed yet: the sheet says the answer went.
+  awaitingAgent: !open,
 });
 
 export const taskView = (): TaskObjectView => ({
