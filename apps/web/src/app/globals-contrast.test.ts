@@ -76,6 +76,16 @@ describe('globals.css contrast', () => {
         });
       }
 
+      // Error text (text-status-error) sits on cards and panels: a Remove
+      // button, an inline "couldn't save". Dark: every text surface. Light:
+      // the card only; on the light page grounds it is below AA and the chat
+      // card uses --chat-text for its error line instead.
+      for (const bg of theme === 'dark' ? ['surface-1', 'surface-2', 'card'] : ['card']) {
+        it(`--status-error on --${bg} >= ${AA}:1`, () => {
+          expect(contrast(tokens['status-error'], tokens[bg])).toBeGreaterThanOrEqual(AA);
+        });
+      }
+
       it('keeps the hierarchy: secondary > desc > muted', () => {
         const bg = tokens['surface-1'];
         const r = (t: string) => contrast(tokens[t], bg);

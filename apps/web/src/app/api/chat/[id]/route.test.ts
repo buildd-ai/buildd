@@ -55,8 +55,12 @@ const judged: any[] = [];
 mock.module('@/lib/chat/directives-store', () => ({
   loadStandingRules: async (userId: string) => { ruleLoads.push(userId); return []; },
 }));
+const decisionDeps: any[] = [];
 mock.module('@/lib/memory-decisions', () => ({
-  memoryDeciderFor: () => ({ judgeChatDirective: async (input: any) => { judged.push(input); return null; } }),
+  webMemoryDecisionDeps: (opts: any) => { decisionDeps.push(opts); return { opts }; },
+}));
+mock.module('@buildd/core/memory-decisions', () => ({
+  createMemoryDecider: (deps: any) => ({ judgeChatDirective: async (input: any) => { judged.push({ ...input, deps }); return null; } }),
 }));
 mock.module('@/lib/memory-helper', () => ({ getMemoryStoreForTeam: async () => ({ fake: 'store' }) }));
 mock.module('@buildd/core/knowledge-store', () => ({ PgVectorStore: class {}, getVoyageEmbedder: () => null, getVoyageReranker: () => null }));
@@ -175,6 +179,9 @@ describe('/api/chat/[id]: tier pin and tool permissions', () => {
     expect(ruleLoads).toEqual(['u-1']);
     await d.judge({ message: 'Always x', previous: null, workspace: { id: 'ws-ok', name: 'ok' }, rule: true });
     expect(judged[0]).toMatchObject({ scope: { teamId: 't-1', workspaceId: 'ws-ok' }, message: 'Always x', workspace: { name: 'ok' }, rule: true });
+    // Log rows and receipts are collected for the request's own after() flush, not scheduled mid-stream.
+    expect(Array.isArray(decisionDeps.at(-1).pending)).toBe(true);
+    expect(judged[0].deps.opts.pending).toBe(decisionDeps.at(-1).pending);
   });
 });
 

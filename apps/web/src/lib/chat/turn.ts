@@ -255,18 +255,6 @@ export async function runChatTurn(args: {
   const actionContext = scoped?.actionContext ?? deps.actionContext;
   const memory = scoped?.memory ?? deps.memory;
 
-  // A rule stated in this message: its card is proposed off the critical path
-  // and lands just before the stream finishes (./directives.ts).
-  const directiveCard = message.role === 'user' && deps.directives
-    ? proposeDirectiveCard({
-      conversationId: conv.id,
-      message: text!,
-      previous: lastAssistantText(stored),
-      workspace: scopeWs ? { id: scopeWs.id, name: scopeWs.name, hint: routedWs?.hint ?? null } : null,
-      judge: deps.directives.judge,
-    })
-    : null;
-
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
   // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
   // a turn continuing the previous turn's chain keeps its arm.
@@ -284,6 +272,20 @@ export async function runChatTurn(args: {
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
   const resolved = model;
+
+  // A rule stated in this message: its card is proposed off the critical path
+  // and lands just before the stream finishes (./directives.ts). Only once the
+  // turn has a model, so a refused turn spends no decision call.
+  const directiveCard = message.role === 'user' && deps.directives
+    ? proposeDirectiveCard({
+      conversationId: conv.id,
+      message: text!,
+      previous: lastAssistantText(stored),
+      workspace: scopeWs ? { id: scopeWs.id, name: scopeWs.name, hint: routedWs?.hint ?? null } : null,
+      judge: deps.directives.judge,
+    })
+    : null;
+  const standingRules = await rulesPromise;
 
   let uiMessages: UIMessage[];
   if (message.role === 'user') {
@@ -331,6 +333,8 @@ export async function runChatTurn(args: {
     resolveTask: ref => resolveTaskRef(read, ref, previewEnv.scope),
     conversationId: conv.id,
     memory,
+    // Filed tasks and missions carry the person's applicable rules.
+    standingRules,
     // Unscoped: scoped reads span these rather than ask which workspace.
     ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
     now: () => now.getTime(),
@@ -393,7 +397,7 @@ export async function runChatTurn(args: {
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
     entry,
-  })}${dockedBlock}${rulesBlock(await rulesPromise, scopeWs?.id ?? null)}`;
+  })}${dockedBlock}${rulesBlock(standingRules, scopeWs?.id ?? null)}`;
 
   const startedAt = Date.now();
   const result = (deps.streamTextImpl ?? streamText)({

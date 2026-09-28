@@ -24,6 +24,7 @@ import { memoryDeciderFor } from '@/lib/memory-decisions';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
 import { asBool, previewMatches, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
+import { renderStandingRulesForTask, withStandingRules, type StandingRule } from '@buildd/core/chat-directives';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
@@ -283,6 +284,30 @@ export interface ChatToolDeps {
   workspaces?: ReadonlyArray<WorkspaceActivity>;
   now?: () => number;
   handle?: typeof handleBuilddAction;
+  /**
+   * The chatting person's own standing rules (chat-directives.ts). A task or
+   * mission chat files carries the ones that apply to its workspace in its
+   * description, so the agent follows them and a reader can see why.
+   */
+  standingRules?: readonly StandingRule[];
+}
+
+/** create_task, or manage_missions create: the writes that file work for an agent. */
+function filesWork(action: string, op: string): boolean {
+  return action === 'create_task' || (action === 'manage_missions' && op === 'create');
+}
+
+/** The call input with the person's applicable rules appended to its description. */
+export function withRulesForFiledWork(
+  input: Record<string, unknown>,
+  rules: readonly StandingRule[] | undefined,
+  defaultWorkspaceId: string | null,
+): Record<string, unknown> {
+  if (!rules || rules.length === 0) return input;
+  const ws = typeof input.workspaceId === 'string' && isUuid(input.workspaceId) ? input.workspaceId : defaultWorkspaceId;
+  const block = renderStandingRulesForTask(rules, { workspaceId: ws });
+  const description = withStandingRules(input.description, block);
+  return description === input.description ? input : { ...input, description };
 }
 
 /**
@@ -383,6 +408,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
             target = now.preview.target;
           }
         }
+
+        // After the card check, so the approval still binds to what was shown.
+        if (isWrite && filesWork(action, op)) callInput = withRulesForFiledWork(callInput, deps.standingRules, deps.ctx.workspaceId ?? null);
 
         const calls: ApiCall[] = [];
         const api = deps.makeApi(c => calls.push(c), { routes: routesFor(o.routes) });

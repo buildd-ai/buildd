@@ -146,7 +146,12 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
         ) : (
           <p data-testid="directive-scope-fixed" className="mt-2.5 font-mono text-[12px] text-[var(--chat-muted)]">Applies in every chat.</p>
         )}
-        {error && <p role="alert" className="mt-2 font-mono text-[12px] text-status-error">{error}</p>}
+        {/* The words in --chat-text (status-error is below AA on the light chat surface); the square carries the colour. */}
+        {error && (
+          <p role="alert" className="mt-2 flex items-center gap-2 font-mono text-[12px] text-[var(--chat-text)]">
+            <span aria-hidden="true" className="h-2 w-2 shrink-0 bg-status-error" />{error}
+          </p>
+        )}
       </div>
       <footer className="relative flex items-center gap-2 px-4 pb-4 pt-1 md:gap-2.5 md:px-5">
         <button

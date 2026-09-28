@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { UpdateChatDirectiveRequest } from '@buildd/shared';
 import { requireChatCaller } from '@/lib/chat/session';
 import { deleteDirective, toDirectiveDTO, updateDirective } from '@/lib/chat/directives-store';
-import { checkText, checkWorkspace } from '../validate';
+import { checkRuleId, checkText, checkWorkspace } from '../validate';
 
 /**
  * PATCH  /api/chat/directives/[id] { text?, workspaceId? } → { directive }
@@ -17,7 +17,9 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   const r = await requireChatCaller(req);
   if ('response' in r) return r.response;
-  const { id } = await ctx.params;
+  const rid = checkRuleId((await ctx.params).id);
+  if ('response' in rid) return rid.response;
+  const { id } = rid;
   let body: UpdateChatDirectiveRequest;
   try { body = (await req.json()) ?? {}; } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
@@ -35,6 +37,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (Object.keys(patch).length === 0) return NextResponse.json({ error: 'Nothing to change' }, { status: 400 });
 
   const row = await updateDirective(r.caller.user.id, id, patch);
+  if (row === 'duplicate') return NextResponse.json({ error: 'duplicate_rule', message: 'You already have that rule in that scope.' }, { status: 409 });
   if (!row) return NextResponse.json({ error: 'Rule not found' }, { status: 404 });
   return NextResponse.json({ directive: toDirectiveDTO(row, null) });
 }
@@ -42,8 +45,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
 export async function DELETE(req: NextRequest, ctx: Ctx) {
   const r = await requireChatCaller(req);
   if ('response' in r) return r.response;
-  const { id } = await ctx.params;
-  const ok = await deleteDirective(r.caller.user.id, id);
+  const rid = checkRuleId((await ctx.params).id);
+  if ('response' in rid) return rid.response;
+  const ok = await deleteDirective(r.caller.user.id, rid.id);
   if (!ok) return NextResponse.json({ error: 'Rule not found' }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

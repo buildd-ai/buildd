@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { CreateChatDirectiveRequest, ListChatDirectivesResponse } from '@buildd/shared';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { requireChatCaller } from '@/lib/chat/session';
-import { createDirective, listDirectives, listScopableWorkspaces, markDirectiveCard, toDirectiveDTO } from '@/lib/chat/directives-store';
+import { createDirective, listDirectives, listScopableWorkspaces, loadDirectiveCard, markDirectiveCard, toDirectiveDTO } from '@/lib/chat/directives-store';
+import { normalizeDirectiveText } from '@buildd/core/chat-directives';
 import { checkCard, checkText, checkWorkspace } from './validate';
 
 /**
@@ -37,8 +38,22 @@ export async function POST(req: NextRequest) {
   if ('response' in t) return t.response;
   const w = await checkWorkspace(r.caller, body.workspaceId);
   if ('response' in w) return w.response;
-  const card = body.from !== undefined ? await checkCard(r.caller, body.from) : null;
-  if (card && 'response' in card) return card.response;
+  const from = body.from !== undefined ? await checkCard(r.caller, body.from) : null;
+  if (from && 'response' in from) return from.response;
+
+  // Saving from a card saves what the card proposed, in a scope it offered.
+  // A message with no card (not yet persisted, or never had one) still saves,
+  // as an ordinary rule from the person, and answers nothing.
+  const proposed = from ? await loadDirectiveCard(from.conversationId, from.messageId) : null;
+  if (proposed) {
+    if (normalizeDirectiveText(proposed.text) !== t.text) {
+      return NextResponse.json({ error: 'text_mismatch', message: 'That is not the rule the card proposed.' }, { status: 400 });
+    }
+    if (w.workspaceId !== null && w.workspaceId !== proposed.workspace?.id) {
+      return NextResponse.json({ error: 'scope_mismatch', message: 'The card did not offer that workspace.' }, { status: 400 });
+    }
+  }
+  const card = proposed ? from : null;
 
   const res = await createDirective({
     userId: r.caller.user.id,

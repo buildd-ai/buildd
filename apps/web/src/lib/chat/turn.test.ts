@@ -224,6 +224,15 @@ describe('standing rules (docs/design/memory-done-right.md, Chat)', () => {
     });
   });
 
+  it('a turn refused for no key never asks Jev about a rule', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('x') as any });
+    let asked = 0;
+    const { turn } = harness({ key: false, model, directives: { load: async () => [], judge: async () => { asked++; return null; } } });
+    const { res } = await turn(userMsg('Always open PRs as drafts.'));
+    expect(res.status).toBe(409);
+    expect(asked).toBe(0);
+  });
+
   it('an ordinary message: no card, and Jev is not asked', async () => {
     const model = new MockLanguageModelV4({ doStream: textStream('Two tasks.') as any });
     let asked = 0;

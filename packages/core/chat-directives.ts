@@ -22,10 +22,21 @@ export const STANDING_RULES_CHAR_BUDGET = 2_400;
 const SENTENCE_SPLIT = /(?<=[.!?])\s+|\n+/;
 
 /**
- * Words that might start a standing rule. Wide on purpose: it only decides
- * whether Jev is asked at all, so an ordinary turn spends nothing.
+ * Words that start a standing rule. They only decide whether Jev is asked at
+ * all, so an ordinary turn spends nothing.
  */
-const CUE_RE = /\b(always|never|remember|from now on|going forward|in (?:the )?future|prefer|make sure|every time|whenever|by default|no more|stop \w+ing)\b/i;
+const STRONG_CUE_RE = /\b(always|never|remember|from now on|going forward|in (?:the )?future|don'?t ever|do not ever)\b/i;
+/**
+ * Weaker words ("I prefer", "make sure", "whenever") count only next to a
+ * verb an agent would act on: "whenever you open a PR, run the tests" asks,
+ * "I prefer mornings" does not.
+ */
+const WEAK_CUE_RE = /\b(prefer|make sure|whenever|every time|by default)\b/i;
+const RULE_VERB_RE = /\b(use|open|run|write|keep|add|avoid|include|ask|check|test|name|squash|rebase|merge|commit|push|deploy|tag|label|mention|reply|respond|file|split|link|review)\b/i;
+
+function cued(s: string): boolean {
+  return STRONG_CUE_RE.test(s) || (WEAK_CUE_RE.test(s) && RULE_VERB_RE.test(s));
+}
 
 /**
  * The deterministic rule, used when Jev is unavailable or below its threshold:
@@ -42,7 +53,7 @@ function sentences(text: string): string[] {
 
 /** Does this message carry a rule cue worth asking Jev about? */
 export function mentionsRule(text: string | null | undefined): boolean {
-  return !!text && CUE_RE.test(text);
+  return !!text && sentences(text).some(cued);
 }
 
 function ruleSentence(s: string): boolean {
@@ -81,7 +92,7 @@ function tidy(s: string): string {
 export function directiveText(message: string): string {
   const all = sentences(message);
   const picked = all.filter(ruleSentence);
-  const chosen = picked.length > 0 ? picked : all.filter(s => CUE_RE.test(s) && !s.endsWith('?'));
+  const chosen = picked.length > 0 ? picked : all.filter(s => cued(s) && !s.endsWith('?'));
   const text = (chosen.length > 0 ? chosen.slice(0, 2) : all).map(tidy).join(' ');
   return normalizeDirectiveText(text) ?? '';
 }
@@ -169,4 +180,30 @@ export function renderStandingRules(
   const head = 'The user\'s standing rules. They saved these themselves; follow them in every reply and every draft you propose, unless one conflicts with the rules above. Newest first.';
   const tail = hidden > 0 ? `\n(${hidden} older ${hidden === 1 ? 'rule' : 'rules'} not shown. The user can see every rule in Settings.)` : '';
   return `${head}\n${lines.join('\n')}${tail}`;
+}
+
+/** The heading of the block a chat-filed task or mission carries; also its idempotency marker. */
+export const TASK_RULES_HEADING = '### Standing rules (from chat)';
+
+/**
+ * The block appended to the description of a task or mission that chat files,
+ * so the agent that runs it follows the requester's rules and a person reading
+ * the task can see why. Same selection and caps as the chat load (everywhere
+ * rules plus the task's workspace, never another workspace's). '' when none apply.
+ */
+export function renderStandingRulesForTask(
+  rules: readonly StandingRule[],
+  opts: { workspaceId: string | null; max?: number; charBudget?: number },
+): string {
+  const block = renderStandingRules(rules, opts);
+  if (!block) return '';
+  const body = block.split('\n').slice(1).join('\n');
+  return `${TASK_RULES_HEADING}\nThe person who asked for this in chat saved these rules. Follow them unless this task says otherwise.\n${body}`;
+}
+
+/** The description with the rules block added once. Unchanged when there is nothing to add or it is already there. */
+export function withStandingRules(description: unknown, block: string): string | undefined {
+  const base = typeof description === 'string' ? description : undefined;
+  if (!block || base?.includes(TASK_RULES_HEADING)) return base;
+  return base && base.trim() ? `${base.trimEnd()}\n\n${block}` : block;
 }
