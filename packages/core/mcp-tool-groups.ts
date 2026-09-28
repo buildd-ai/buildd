@@ -56,6 +56,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   list_runners: 'workers',
   // PRs, reviews, releases
   get_pr: 'prs',
+  list_prs: 'prs',
   get_pr_review: 'prs',
   merge_pr: 'prs',
   close_pr: 'prs',
@@ -187,7 +188,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -263,6 +264,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   list_connectors: 'mounted connectors and their health',
   list_runners: 'runners: slots, branch, build, heartbeat',
   get_pr: 'PR state, CI, reviews, body',
+  list_prs: 'open PRs (conflicts and red CI first), or merged ones',
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',

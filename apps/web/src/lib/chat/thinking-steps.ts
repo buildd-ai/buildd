@@ -28,6 +28,7 @@ const VERBS: Record<string, Verb> = {
   get_budget_forecast: v('Checking', 'Checked', 'the budget', undefined, "Couldn't check the budget"),
   list_connectors: v('Checking', 'Checked', 'the connected services', undefined, "Couldn't check the connected services"),
   get_pr: v('Checking', 'Checked', 'the change', 'changes', "Couldn't check the change"),
+  list_prs: v('Looking over', 'Looked over', 'open changes', undefined, "Couldn't list the changes"),
   get_pr_review: v('Reading', 'Read', 'the review', 'reviews', "Couldn't read the review"),
   list_releases: v('Looking over', 'Looked over', 'recent releases', undefined, "Couldn't list the releases"),
   get_release: v('Reading', 'Read', 'a release', 'releases', "Couldn't read the release"),
