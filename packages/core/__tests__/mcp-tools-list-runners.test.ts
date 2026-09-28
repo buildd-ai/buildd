@@ -206,7 +206,7 @@ describe('list_runners', () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: 'Nope' }, ctx());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/Workspace "Nope" not found/);
+    expect(res.content[0].text).toMatch(/"Nope"/);
     expect(mockApi.mock.calls.some((c: unknown[]) => String(c[0]).startsWith('/api/workers/active'))).toBe(false);
   });
 });

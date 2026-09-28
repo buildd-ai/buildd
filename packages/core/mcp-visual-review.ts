@@ -21,22 +21,20 @@ export type WorkspaceResolver = (param: unknown) => Promise<string | null>;
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 const notVisible = (raw: string) => errorResult(`Workspace "${raw}" not found or not visible to this token. manage_workspaces action=list shows the ones you can use.`);
 
-/** Most missions the title lookup reads (the API's cap). */
-const TITLE_LOOKUP_LIMIT = 100;
+/** Most title matches the lookup reads; the API ranks an exact title first. */
+const TITLE_LOOKUP_LIMIT = 10;
 
 type MissionRow = { id: string; title?: string; status?: string };
 
 /**
  * A mission id from a title, case-insensitively: an exact title wins, else a
- * unique partial match. Ambiguity and misses are errors that name what was
- * searched, never a guess.
- *
- * TODO: switch to the shared mission title resolver once it lands in
- * mcp-tools.ts; this reads the newest TITLE_LOOKUP_LIMIT missions only.
+ * unique partial match. The API filters by title (`q`, every status, exact
+ * title first), so a mission is found however old it is. Ambiguity and misses
+ * are errors that name what was searched, never a guess.
  */
 async function missionIdFromTitle(api: ApiFn, title: string, ws: { id: string; raw: string } | null): Promise<{ id: string } | { error: ToolResult }> {
   const wsId = ws?.id ?? null;
-  const qs = new URLSearchParams({ limit: String(TITLE_LOOKUP_LIMIT) });
+  const qs = new URLSearchParams({ q: title, sort: 'recent', limit: String(TITLE_LOOKUP_LIMIT) });
   if (wsId) qs.set('workspaceId', wsId);
   const data = await api(`/api/missions?${qs}`);
   const rows = ((data?.missions ?? []) as MissionRow[]).filter(m => typeof m.title === 'string');
@@ -47,7 +45,7 @@ async function missionIdFromTitle(api: ApiFn, title: string, ws: { id: string; r
   const where = ws ? ` in workspace "${ws.raw}"` : '';
   if (hits.length === 0) {
     const widen = ws ? ' Or omit workspaceId to search every workspace.' : '';
-    return { error: errorResult(`No mission titled "${title}" among the ${rows.length} missions${where} this token can see (every status). Pass missionId, or check the title with manage_missions action=list status="all".${widen}`) };
+    return { error: errorResult(`No mission title contains "${title}"${where} (every status searched). Check it with manage_missions action=list query="<words>".${widen}`) };
   }
   const shown = hits.slice(0, 5).map(m => `- "${m.title}" (${m.id}, ${m.status ?? 'unknown'})`);
   const left = hits.length - shown.length;
@@ -66,11 +64,17 @@ export async function runGetVisualReview(
   // is team-wide. The no-mission listing also takes the URL-pinned one. The
   // resolver is never called without a param, so its guess never applies.
   const rawWs = str(params.workspaceId);
-  const explicitWs = rawWs ? await resolveWorkspace(rawWs) : null;
-  if (rawWs && !explicitWs) return notVisible(rawWs);
+  let explicitWs: string | null = null;
+  if (rawWs) {
+    // The resolver throws for a name this key cannot see, listing the ones it can.
+    try { explicitWs = await resolveWorkspace(rawWs); } catch (e) { return errorResult(e instanceof Error ? e.message : String(e)); }
+    if (!explicitWs) return notVisible(rawWs);
+  }
 
   let missionId = str(params.missionId);
-  const missionTitle = str(params.missionTitle);
+  // A title passed as missionId is looked up, as manage_missions does.
+  const missionTitle = str(params.missionTitle) || (missionId && !UUID_RE.test(missionId) ? missionId : '');
+  if (missionTitle && missionId && !UUID_RE.test(missionId)) missionId = '';
   if (!missionId && missionTitle) {
     const found = await missionIdFromTitle(api, missionTitle, explicitWs ? { id: explicitWs, raw: rawWs } : null);
     if ('error' in found) return found.error;
@@ -158,7 +162,7 @@ export async function runListRunners(
   const rawWs = str(params.workspaceId);
   let wsId: string | null = null;
   if (rawWs) {
-    wsId = await resolveWorkspace(rawWs);
+    try { wsId = await resolveWorkspace(rawWs); } catch (e) { return errorResult(e instanceof Error ? e.message : String(e)); }
     if (!wsId) return notVisible(rawWs);
   }
   const data = await api(wsId ? `/api/workers/active?workspaceId=${encodeURIComponent(wsId)}` : '/api/workers/active');

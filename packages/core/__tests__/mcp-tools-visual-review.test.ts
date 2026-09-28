@@ -115,6 +115,15 @@ describe('get_visual_review', () => {
     const qs = new URLSearchParams(list.split('?')[1]);
     expect(qs.get('workspaceId')).toBe(WS);
     expect(qs.get('status')).toBeNull();
+    // The server filters by title, so an old mission is found however many newer ones exist.
+    expect(qs.get('q')).toBe('desktop CHAT v3');
+    expect(calls).toContain(`/api/missions/${MISSION}/visual-review`);
+  });
+
+  it('by title: a title passed as missionId is looked up, like manage_missions', async () => {
+    const { api, calls } = apiOf(missionsRoute);
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionId: 'Desktop chat v3' }, ctx());
+    expect(res.isError).toBeFalsy();
     expect(calls).toContain(`/api/missions/${MISSION}/visual-review`);
   });
 
@@ -130,7 +139,7 @@ describe('get_visual_review', () => {
     const { api, calls } = apiOf(missionsRoute);
     const res = await handleBuilddAction(api, 'get_visual_review', { missionTitle: 'Memory done right' }, ctx());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/No mission titled "Memory done right"/);
+    expect(res.content[0].text).toMatch(/No mission title contains "Memory done right"/);
     expect(calls.some(c => c.endsWith('/visual-review'))).toBe(false);
   });
 
@@ -138,7 +147,7 @@ describe('get_visual_review', () => {
     const { api, calls } = apiOf(missionsRoute);
     const res = await handleBuilddAction(api, 'get_visual_review', { missionTitle: 'Desktop chat v3', workspaceId: 'Nope' }, ctx());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/Workspace "Nope" not found/);
+    expect(res.content[0].text).toMatch(/"Nope"/);
     expect(calls.some(c => c.startsWith('/api/missions?'))).toBe(false);
   });
 

@@ -17,6 +17,8 @@ const UNKNOWN = 'not-a-visible-ws';
 /** Minimal params that get each action as far as workspace resolution. */
 const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['list_tasks', {}],
+  ['get_visual_review', {}],
+  ['list_runners', {}],
   ['claim_task', {}],
   ['create_task', { title: 'T', description: 'D' }],
   ['create_schedule', { name: 'n', cronExpression: '0 * * * *', title: 't' }],
