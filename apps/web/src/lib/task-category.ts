@@ -7,7 +7,10 @@ const CATEGORY_KEYWORDS: Record<Exclude<TaskCategoryValue, 'research'>, RegExp[]
   feature: [/\badd\b/i, /\bimplement\b/i, /\bnew\b/i, /\bcreate\b/i, /\bbuild\b/i],
   refactor: [/\brefactor/i, /\brename\b/i, /\brestructure/i, /\bcleanup\b/i, /\bmigrat/i],
   chore: [/\bupdate deps/i, /\bbump\b/i, /\bupgrade\b/i, /\bmaintenance\b/i],
-  docs: [/\bdocs?\b/i, /\breadme\b/i, /\bdocumentation\b/i, /\bjsdoc\b/i],
+  // `docs` and `readme` only as words, never as a path segment: engineering
+  // tasks cite the spec they implement (`docs/specs/x.md`, `apps/docs/README`),
+  // and that citation said nothing about the shape of the work.
+  docs: [/(?<![\w./-])docs?(?![\w/-]|\.\w)/i, /(?<![\w/-])readme\b/i, /\bdocumentation\b/i, /\bjsdoc\b/i],
   test: [/\btest/i, /\bspec\b/i, /\bcoverage\b/i, /\be2e\b/i],
   infra: [/\bci\b/i, /\bdeploy/i, /\bdocker/i, /\bpipeline\b/i, /\binfra\b/i, /\bconfig\b/i],
   design: [/\bdesign\b/i, /\bui\b/i, /\bux\b/i, /\blayout\b/i, /\bstyle/i, /\bcss\b/i],
@@ -21,6 +24,18 @@ const CATEGORY_ORDER: Array<keyof typeof CATEGORY_KEYWORDS> = [
 
 /** `type(scope)!: rest` — a conventional-commit style prefix on the title. */
 const CONVENTIONAL_PREFIX = /^([a-z]+)(?:\([^)]*\))?!?:\s*/i;
+
+/** Conventional-commit types that name a category outright. */
+const PREFIX_CATEGORIES: Record<string, TaskCategoryValue> = {
+  feat: 'feature', feature: 'feature',
+  fix: 'bug', bug: 'bug', hotfix: 'bug',
+  docs: 'docs', doc: 'docs',
+  refactor: 'refactor',
+  chore: 'chore', deps: 'chore',
+  test: 'test', tests: 'test',
+  ci: 'infra', infra: 'infra', build: 'infra',
+  design: 'design',
+};
 
 /** Prefixes that declare the task research outright. */
 const RESEARCH_PREFIXES = new Set(['research', 'spike', 'investigate', 'investigation', 'explore', 'rfc']);
@@ -48,9 +63,12 @@ function classifyFromTitle(title: string): TaskCategoryValue | null {
   const trimmed = title.trim();
   const prefix = CONVENTIONAL_PREFIX.exec(trimmed);
   if (prefix) {
-    // The filer declared a type. Honour a research one; otherwise leave the
-    // title to the keyword pass (a `docs:` prefix is not overruled by "compare").
-    return RESEARCH_PREFIXES.has(prefix[1].toLowerCase()) ? 'research' : null;
+    // The filer declared a type — honour it over any keyword ("feat:" is a
+    // feature even when the description cites docs/, a "docs:" prefix is not
+    // overruled by "compare"). An unknown type falls through to keywords.
+    const type = prefix[1].toLowerCase();
+    if (RESEARCH_PREFIXES.has(type)) return 'research';
+    return PREFIX_CATEGORIES[type] ?? null;
   }
   const failing = FAILURE_SIGNAL.test(trimmed);
   // "Investigate why …" is debugging; "Research why …" is still research.
@@ -67,14 +85,26 @@ export function classifyTask(title: string, description?: string | null): TaskCa
   const fromTitle = classifyFromTitle(title);
   if (fromTitle) return fromTitle;
 
-  const text = `${title} ${description || ''}`;
+  // The title is the filer's own summary of the work, so it outranks a keyword
+  // that only turns up in the description ("Add X" whose description says
+  // "then update the docs" is a feature).
+  return matchKeywords(title) ?? matchKeywords(stripPaths(`${title} ${description || ''}`));
+}
 
+/**
+ * File paths name where the work is, not what it is: `docs/design/x.md` is
+ * neither docs nor design work. A token counts as a path when it has two
+ * slashes or a slash plus a file extension, so `CI/CD` survives.
+ */
+const PATH_TOKEN = /\S*\/\S*\/\S*|\S*\/\S*\.[a-z0-9]+\b\S*/gi;
+
+function stripPaths(text: string): string {
+  return text.replace(PATH_TOKEN, ' ');
+}
+
+function matchKeywords(text: string): TaskCategoryValue | null {
   for (const category of CATEGORY_ORDER) {
-    const patterns = CATEGORY_KEYWORDS[category];
-    if (patterns.some(p => p.test(text))) {
-      return category;
-    }
+    if (CATEGORY_KEYWORDS[category].some(p => p.test(text))) return category;
   }
-
   return null;
 }

@@ -552,7 +552,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
-    correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
+    correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR or the task already records a different one; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -2567,23 +2567,49 @@ export async function handleBuilddAction(
 
     case 'correct_task_result': {
       requireFullUuid(params.taskId, 'taskId');
-      if (typeof params.summary !== 'string' || params.summary.trim() === '') {
+      const hasSummary = params.summary !== undefined;
+      const hasPr = params.prUrl !== undefined || params.prNumber !== undefined;
+      if (!hasSummary && !hasPr) {
+        throw new Error('summary, prUrl or prNumber is required');
+      }
+      if (hasSummary && (typeof params.summary !== 'string' || params.summary.trim() === '')) {
         throw new Error('summary is required and must be a non-empty string');
       }
 
-      const correctedBy = ctx.workerId ? `worker:${ctx.workerId}` : 'admin_token';
-      const updated = await api(`/api/tasks/${params.taskId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ resultSummary: params.summary, correctedBy }),
-      });
+      const lines: string[] = [];
+      // PR first: if the PR cannot be verified, the summary (which usually
+      // cites it) is left untouched rather than half-applied.
+      if (hasPr) {
+        const attached = await api(`/api/tasks/${params.taskId}/attach-pr`, {
+          method: 'POST',
+          body: JSON.stringify({
+            ...(params.prUrl !== undefined ? { prUrl: params.prUrl } : {}),
+            ...(params.prNumber !== undefined ? { prNumber: params.prNumber } : {}),
+          }),
+        });
+        lines.push(
+          `PR #${attached.prNumber} (${attached.prState}) ${attached.alreadyAttached ? 'was already attached' : 'attached'} `
+          + `to task "${attached.title}" (ID: ${attached.taskId}).`,
+          `PR: ${attached.prUrl}`,
+        );
+      }
 
-      const previous = updated.result?.previousSummary;
-      return text(
-        `Result summary corrected for task "${updated.title}" (ID: ${updated.id}).\n`
-        + `New summary: ${updated.result?.summary}\n`
-        + (previous ? `Previous summary: ${previous}\n` : '')
-        + `Corrected at: ${updated.result?.summaryCorrectedAt}`,
-      );
+      if (hasSummary) {
+        const correctedBy = ctx.workerId ? `worker:${ctx.workerId}` : 'admin_token';
+        const updated = await api(`/api/tasks/${params.taskId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ resultSummary: params.summary, correctedBy }),
+        });
+        const previous = updated.result?.previousSummary;
+        lines.push(
+          `Result summary corrected for task "${updated.title}" (ID: ${updated.id}).`,
+          `New summary: ${updated.result?.summary}`,
+          ...(previous ? [`Previous summary: ${previous}`] : []),
+          `Corrected at: ${updated.result?.summaryCorrectedAt}`,
+        );
+      }
+
+      return text(lines.join('\n'));
     }
 
     case 'create_task': {

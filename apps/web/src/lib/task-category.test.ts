@@ -69,6 +69,33 @@ describe('classifyTask — research does not steal other work', () => {
   }
 });
 
+describe('classifyTask — engineering work citing a docs path is not docs', () => {
+  const cases: Array<[string, string | null, string | null]> = [
+    // Mission tasks routinely cite the spec they implement by path.
+    ['Wire the attach-PR route into the mission view', 'Per docs/specs/missions.md, add a PR link to each task row.', 'feature'],
+    ['Wire the attach-PR route into the mission view', 'Contract lives in docs/design/attach-pr.md.', null],
+    ['Tighten claim gating', 'See apps/docs/README for context, then implement the check.', 'feature'],
+    // A conventional-commit type is the filer's own declaration.
+    ['feat(tasks): attach a PR to a task closed without a worker', 'Spec: docs/specs/tasks.md', 'feature'],
+    ['fix(ui): mission page shows no PRs', 'Documented in docs/reports/foo.md', 'bug'],
+    ['refactor(core): split the adoption helper', null, 'refactor'],
+    ['ci: cache bun install', null, 'infra'],
+    ['test(api): cover attach-pr', null, 'test'],
+    ['chore: tidy scripts', null, 'chore'],
+    // The title outranks keywords that only appear in the description.
+    ['Add PR attach path', 'Also update the docs afterwards.', 'feature'],
+    // Real docs work still classifies as docs.
+    ['Update the docs for attach-pr', null, 'docs'],
+    ['Write documentation for the MCP server', 'See docs/specs/mcp.md', 'docs'],
+  ];
+
+  for (const [title, description, expected] of cases) {
+    it(`"${title}" → ${expected}`, () => {
+      expect(classifyTask(title, description)).toBe(expected as any);
+    });
+  }
+});
+
 describe('classifyTask — existing categories unchanged', () => {
   const cases: Array<[string, string | null]> = [
     ['Fix crash when saving settings', 'bug'],
