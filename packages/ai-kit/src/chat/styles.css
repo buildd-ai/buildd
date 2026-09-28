@@ -28,6 +28,9 @@
 .kit-tool-summary { overflow-wrap: anywhere; }
 .kit-steer-note { font-size: 13px; color: var(--kit-muted); font-style: italic; }
 .kit-error { font-size: 13px; color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); padding: 8px 12px; }
+/* 0.9.0: an app's header and footer on a message (rendered only when the app passes them). */
+.kit-msg-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--kit-muted); }
+.kit-msg-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
 /* ── Thinking ───────────────────────────────────────────────────────────── */
 .kit-thinking { border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 8px 12px; }
@@ -127,7 +130,7 @@
    on top of the app's bottom chrome (--kit-sheet-bottom-offset); the safe-area
    inset is only padded for when that chrome doesn't already cover it. */
 .kit-sheet-layer { position: fixed; inset: 0; z-index: 1000; }
-.kit-sheet-scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--kit-ink) 28%, transparent); }
+.kit-sheet-scrim { position: absolute; inset: 0; background: var(--kit-scrim, color-mix(in srgb, var(--kit-ink) 28%, transparent)); }
 .kit-sheet-layer > .kit-menu-panel[data-sheet] {
   position: fixed; left: 0; right: 0; top: auto; bottom: var(--kit-sheet-bottom-offset);
   width: auto; min-width: 0; max-width: none;
@@ -195,4 +198,46 @@
   .kit-pinned-phone { display: none; }
   .kit-pinned-desk { display: flex; }
   .kit-pinned-detail { display: block; }
+}
+
+/* ── 0.8.0 slots ────────────────────────────────────────────────────────── */
+/* Approval card: a head row (status, the write, its meta), an app body, a
+   phone fold for the details, and a one-line settled row. */
+.kit-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.kit-card-tag { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.kit-card-meta { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-approval-body { min-width: 0; overflow-wrap: anywhere; }
+.kit-fold-toggle { display: none; }
+@media (max-width: 639px) {
+  /* `button.` so it wins over `.kit-chat button { font: inherit }` inside a thread (0.9.0). */
+  button.kit-fold-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+  .kit-fold-label { flex: none; font-weight: 600; color: var(--kit-ink); }
+  .kit-fold-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kit-fold:not([data-open]) { display: none; }
+}
+/* One line of text that wraps as prose: "Title · discarded · nothing changed". */
+.kit-card.kit-approval-row { display: block; padding: 8px 14px; border-top-width: 1px; font-family: var(--kit-font-mono); font-size: 12.5px; line-height: 1.5; color: var(--kit-muted); overflow-wrap: anywhere; }
+.kit-approval-row > .kit-card-title, .kit-approval-row > .kit-note { display: inline; font-size: inherit; line-height: inherit; }
+.kit-approval-row > .kit-card-title { color: var(--kit-ink); }
+.kit-approval-row > .kit-note::before { content: " · "; }
+/* Empty state: overline with a mood dot, a sub line, a chips header, rows. */
+.kit-empty-overline { margin: 0; display: flex; align-items: center; gap: 8px; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-mood-dot { width: 8px; height: 8px; flex: none; background: var(--kit-accent); }
+.kit-mood-dot[data-mood="calm"] { background: var(--kit-muted); }
+.kit-empty-sub { margin: 0; font-size: 16px; line-height: 1.45; color: var(--kit-muted); }
+.kit-chips-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-chips-aside { text-transform: none; letter-spacing: 0; }
+.kit-chips[data-variant="rows"] { display: block; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); }
+.kit-chips[data-variant="rows"] > li + li { border-top: 1px solid var(--kit-rule); }
+.kit-chips[data-variant="rows"] .kit-chip { display: flex; align-items: center; width: 100%; min-height: 48px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.kit-chip[data-tone="accent"] { color: var(--kit-accent); }
+/* Menus: an option's second line, the trigger's extra, the hover detail. */
+.kit-option-text { display: grid; min-width: 0; }
+.kit-option-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 400; color: var(--kit-muted); }
+.kit-trigger-extra { color: var(--kit-muted); }
+.kit-menu-hover { display: none; position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 40; width: max-content; max-width: 300px; pointer-events: none; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 8px 12px; font-size: 12px; }
+.kit-menu[data-align="end"] > .kit-menu-hover { left: auto; right: 0; }
+.kit-menu[data-placement="down"] > .kit-menu-hover { bottom: auto; top: calc(100% + 6px); }
+@media (hover: hover) and (min-width: 640px) {
+  .kit-menu:not([data-open]):hover > .kit-menu-hover { display: block; }
 }

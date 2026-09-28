@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.6.1
+npm i -E @builddai/ai-kit@0.9.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -78,6 +78,26 @@ await models.flush(); // before a serverless function returns (e.g. in waitUntil
 - **Storage.** `PlanStore` is `{ get(key), set(key, value) }`, sync or async.
   A failing store is treated as a miss. Default: in memory.
 - `onError` receives every absorbed failure, for logs.
+
+**Through a LiteLLM gateway (0.7.0).** buildd's plan still names the real
+provider and model; pass `gateway` and the call goes to your proxy instead,
+on its OpenAI-compatible API. `cfg.via` is `litellm`, so build an
+OpenAI-compatible client whatever `cfg.provider` says:
+
+```ts
+const cfg = toCallConfig(plan, { gateway: { kind: 'litellm', baseURL: env.LITELLM_URL, apiKey: env.LITELLM_KEY } });
+const litellm = createOpenAICompatible({ name: 'litellm', apiKey: cfg.apiKey, baseURL: cfg.baseURL });
+streamText({ model: litellm(cfg.model), ... }); // cfg.model === 'anthropic/claude-…'
+```
+
+- The model is sent as `provider/model` (LiteLLM's convention). `models` maps
+  a `provider/model` or bare `model` to your proxy's alias; `prefix: false`
+  sends the bare id.
+- Receipts keep `plan.provider` and `plan.model`, so buildd prices the call as
+  the model it is. List in `providers` what the gateway can reach.
+- Chat: `modelFromPlan({ models, gateway, create })`. The gateway's `apiKey`
+  pays for the turn (none ⇒ `409 no_key`); a `gateway` function returning null
+  takes the direct `key` path, so one app can serve both.
 
 ## Chat
 
@@ -260,15 +280,15 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | Export | |
 |---|---|
 | `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, turnError, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable`; a mid-stream provider failure in `turnError` |
-| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderEvent? renderHandoff? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after) |
-| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
+| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderToolGroup? renderEvent? eventPartType? renderHandoff? renderMessageHeader? renderMessageFooter? steps? thinkingTitle? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer; it gets the text part too), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after). An app with its own feed adds a header and footer per message, draws each run of tool calls as one group, supplies its own checklist and title, and names its own event part |
+| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact? inputId?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
-| `<TierPicker value onChange last? options? policy? auto?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
+| `<TierPicker value onChange last? options? policy? auto? autoMeta? autoDetail? footer? triggerExtra? hover?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta, `options[].detail` / `autoDetail` as a second line under the name. `triggerExtra` rides on the trigger, `hover` shows on pointer hover. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
-| `<ApprovalCard part onRespond onEdit? approverName?>` | before → after from the server preview; typed confirm for `confirmText` |
+| `<ApprovalCard part onRespond onEdit? approverName? headline? eyebrow? meta? body? details? fold? confirmLabel? busyLabel? settled? deniedNote?>` | before → after from the server preview; typed confirm for `confirmText`. `eyebrow` / `meta` join the status in a head row; `body` and `details` are yours (e.g. a draft); `fold` folds the details behind "Show details · N changes" below 640px; `settled: 'row'` folds a decided or discarded card to one line |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
-| `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface` |
+| `<ChatEmpty name chips onChip greeting? overline? mood? sub? chipsHeader? chipsAside? variant?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send, tone? }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface`. An overline (with a mood dot), a sub line, a header over the chips; `variant: 'rows'` for full-width rows |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
 | `createComposerStore` / `useComposerState` | the shared new-chat draft, remembered scope and tier (below) |
 | `<TurnFeedbackProvider onFeedback initial? loadVotes? messageIds? pendingId? reasons? title?>` + `<TurnFeedback messageId>` | Thumbs under a turn. Down opens one optional reason (popover; a sheet on phones). `onFeedback({ messageId, signal, reason, previous, cleared })`: resolve `false` or throw to roll back. No fetch in the kit |
@@ -339,7 +359,7 @@ const tier = tiers.resolve(body.tier, await savedTier(userId)) ?? 'standard';   
 - `tierPrefs({ load, save, peek? })` turns a tier-only adapter into a `ComposerPrefsAdapter`. Any `ComposerPrefsAdapter` may also have `peek(key)`: a synchronous seed for the first paint, which `load`'s answer replaces unless the person picked meanwhile.
 - `store.initial` is the unseeded snapshot (tier = the app default), also the server render's snapshot.
 
-**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
+**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`, `--kit-sheet-bottom-offset`, and `--kit-scrim`, unset by default: the phone sheet's scrim, which a dark theme should set, e.g. `rgb(0 0 0 / 0.5)`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }` or on a wrapper); the kit's defaults are on `:where(:root)`, so any mapping of yours wins regardless of stylesheet order. Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; `prefers-reduced-motion` is honoured.
 
 **Menus.** On wide screens the tools / scope / tier panels open above the composer (which doesn't clip them) and scroll past `min(70vh, 520px)`. Below 640px they are bottom sheets portaled to `<body>`, so a transformed, clipped or stacked ancestor can't capture them; the sheet carries the `--kit-*` values from where it was opened. If your app has a fixed bottom tab bar, set `--kit-sheet-bottom-offset` to its height (including the safe-area padding it already has) and the sheet sits on top of it; the safe-area inset is padded only for what the offset doesn't cover.
 
@@ -410,9 +430,32 @@ const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: to
 - **Transport** (`decide`): never throws; one deadline (default 5s) over every
   attempt; retries 408, 429 and 5xx once by default. The SDK's own retry is off
   and every SDK option is explicit, so no `TYPESAFE_*` env var can redirect the
-  key. The kit never reads env vars: pass your OpenRouter key.
+  key. The kit never reads env vars: pass your key (OpenRouter's, for Jev).
 - **Model**: `JEV_MODEL` is pinned (not `~typesafe/jev-latest`) and is not a
   tier. A Jev bump is a kit release; re-run your eval before taking it.
+- **Custom models and endpoints (0.7.0)**: `model` takes any id, and
+  `endpoint` says where it is answered:
+  - `{ kind: 'systemone', baseURL? }` (default): the System One API, on
+    OpenRouter unless `baseURL` names another host.
+  - `{ kind: 'chat', baseURL, provider? }`: any model behind an
+    OpenAI-compatible `/chat/completions`, e.g. an open-weights model on a
+    LiteLLM proxy, vLLM or Ollama. `model` is required. Each question is one
+    request: lettered options, one token at temperature 0, `top_logprobs`, so
+    the answer has Jev's shape (label, probabilities, confidence). A model that
+    returns no logprobs fails with `uncalibrated`; the kit never invents a
+    confidence. At most 20 options per question. `provider` names who is paid,
+    for the receipt (default `openrouter` on openrouter.ai, else `openai`).
+
+  ```ts
+  const triage = defineDecision({
+    id: 'app.triage', promptVersion: '2026-09-28.a', questions, mode: 'shadow',
+    model: 'qwen3-8b', endpoint: { kind: 'chat', baseURL: env.LITELLM_URL },
+  });
+  ```
+
+  A chat endpoint changes the fingerprint (its host does not), and thresholds
+  never transfer between models: run the eval for each one. `baseURL` must be
+  https, except for localhost.
 - **Versioning**: pin the fingerprint in a test. It covers the questions,
   modes, thresholds and model, so a changed definition fails until you bump
   `promptVersion` and re-pin:

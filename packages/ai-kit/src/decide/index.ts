@@ -14,8 +14,12 @@
  *   its version is bumped.
  * - `runDecisionEval`: accuracy and coverage at thresholds over labelled rows.
  * - Receipts (`DecisionReceipt`) are metadata only; `toModelsUsage` feeds `/models`' `recordUsage`.
+ * - Endpoints (0.7.0): `systemone` (default: Jev on OpenRouter, or another
+ *   System One host via `baseURL`) or `chat` (any model behind an
+ *   OpenAI-compatible API: a LiteLLM proxy, vLLM, Ollama, an open-weights
+ *   model), with any model id. See `./chat-transport`.
  *
- * The caller passes its OpenRouter key; the kit never reads env vars.
+ * The caller passes its key; the kit never reads env vars.
  *
  * Splitting this file is fine: relative imports in the kit are extensionless
  * (`./x`) and `scripts/build.ts` rewrites them to `.js` for the published ESM.
@@ -27,6 +31,7 @@
 // runtime import is lazy (`loadSdk`, in the transport section): this module
 // loads without it, and only `decide` fails, with `sdk_missing`.
 import type { TypeSafeClient, Fetch } from '@typesafe-ai/sdk';
+import { decideViaChat, validateChatQuestions } from './chat-transport';
 
 // ══ Types ═════════════════════════════════════════════════════════════════════
 
@@ -109,7 +114,9 @@ export type DecideError =
   | { kind: 'provider_error'; status: number; body: string }
   | { kind: 'parse'; message: string }
   /** The optional peer `@typesafe-ai/sdk` is not installed (or failed to load). No request was made. */
-  | { kind: 'sdk_missing'; message: string };
+  | { kind: 'sdk_missing'; message: string }
+  /** A `chat` endpoint's model returned no token logprobs, so there is no confidence to report. */
+  | { kind: 'uncalibrated'; message: string };
 
 export type DecideResult<Q extends DecisionQuestions> =
   | {
@@ -126,7 +133,7 @@ export type DecideResult<Q extends DecisionQuestions> =
 export function describeDecideError(error: DecideError): string {
   switch (error.kind) {
     case 'missing_key':
-      return 'no OpenRouter decision key configured';
+      return 'no decision key configured';
     case 'invalid_request':
       return `decision request rejected locally: ${error.message}`;
     case 'timeout':
@@ -141,6 +148,8 @@ export function describeDecideError(error: DecideError): string {
       return `decision response did not match the questions: ${error.message}`;
     case 'sdk_missing':
       return `decide needs the optional peer dependency ${DECIDE_SDK_PACKAGE}; install it (npm install ${DECIDE_SDK_PACKAGE}): ${error.message}`;
+    case 'uncalibrated':
+      return `decision model gave no probabilities (a chat endpoint needs logprobs): ${error.message}`;
   }
 }
 
@@ -315,11 +324,17 @@ export function gateChoice<L extends string>(
  * is structural, and a test asserts it stays assignable.
  */
 
+/** Who is paid for a decision: `/models`' providers, restated so `/decide` needs no import from it. */
+export type DecisionProvider = 'anthropic' | 'openai' | 'openrouter';
+
 export interface DecisionReceipt {
   kind: 'decision';
   /** `defineDecision` id, or null for a bare `decide` call. */
   decisionId: string | null;
-  provider: 'openrouter';
+  /** `openrouter` for Jev; for a `chat` endpoint, the endpoint's `provider`. */
+  provider: DecisionProvider;
+  /** Set by the kit (0.7.0+). Absent reads as `systemone`. */
+  endpoint?: DecisionEndpointKind;
   /** The versioned model that answered, or the requested model on failure. */
   model: string;
   usage: { inputTokens: number; outputTokens: number; costUsd: number | null };
@@ -332,12 +347,13 @@ export type UsageSink = (receipt: DecisionReceipt) => void | Promise<void>;
 
 export function toDecisionReceipt<Q extends DecisionQuestions>(
   result: DecideResult<Q>,
-  opts: { model: string; decisionId?: string | null },
+  opts: { model: string; decisionId?: string | null; provider?: DecisionProvider; endpoint?: DecisionEndpointKind },
 ): DecisionReceipt {
   return {
     kind: 'decision',
     decisionId: opts.decisionId ?? null,
-    provider: 'openrouter',
+    provider: opts.provider ?? 'openrouter',
+    endpoint: opts.endpoint ?? 'systemone',
     model: result.ok ? result.model : opts.model,
     usage: result.ok ? { ...result.usage } : { inputTokens: 0, outputTokens: 0, costUsd: null },
     latencyMs: result.latencyMs,
@@ -356,7 +372,7 @@ export interface ModelsUsageInput {
     planId: string | null;
     planSource: 'registry' | 'pool' | 'catalog' | 'default' | 'cached' | 'fallback';
     model: string;
-    provider: 'openrouter';
+    provider: DecisionProvider;
     /** Only when the app asked for one; Jev has no tier. */
     tier?: ModelsTier;
   };
@@ -385,7 +401,7 @@ export function toModelsUsage(
       planId: opts.planId ?? null,
       planSource: opts.planId ? 'default' : 'fallback',
       model: receipt.model,
-      provider: 'openrouter',
+      provider: receipt.provider,
       ...(opts.tier ? { tier: opts.tier } : {}),
     },
     kind: 'decision',
@@ -458,13 +474,60 @@ export function isRetryableStatus(status: number): boolean {
 /** The SDK's fetch shape; the global `fetch` fits it. */
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
+export type DecisionEndpointKind = 'systemone' | 'chat';
+
+/**
+ * Where a decision is answered.
+ *
+ * - `systemone` (default): the System One API. `baseURL` defaults to
+ *   OpenRouter (`DECIDE_BASE_URL`); point it at another System One host
+ *   (TypeSafe's own, a self-hosted one) with the key that host takes.
+ * - `chat`: any model behind an OpenAI-compatible `/chat/completions` API: a
+ *   LiteLLM proxy, vLLM, Ollama, OpenRouter's chat API. `baseURL` is the API
+ *   root (e.g. `https://litellm.example.com/v1`) and `model` is required.
+ *   `provider` is who is paid, for the receipt (default: `openrouter` on
+ *   openrouter.ai, else `openai`).
+ *
+ * `baseURL` must be https, except for localhost.
+ */
+export type DecisionEndpoint =
+  | { kind: 'systemone'; baseURL?: string }
+  | { kind: 'chat'; baseURL: string; provider?: DecisionProvider };
+
+/** Endpoint → base URL, receipt provider; or why it is refused. Pure. */
+export function resolveDecisionEndpoint(
+  endpoint: DecisionEndpoint | undefined,
+): { ok: true; kind: DecisionEndpointKind; baseURL: string; provider: DecisionProvider } | { ok: false; message: string } {
+  const kind = endpoint?.kind ?? 'systemone';
+  if (kind !== 'systemone' && kind !== 'chat') return { ok: false, message: `unknown endpoint kind '${String(kind)}'` };
+  const raw = endpoint?.baseURL ?? (kind === 'systemone' ? DECIDE_BASE_URL : '');
+  if (!raw) return { ok: false, message: 'a chat endpoint needs a baseURL' };
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, message: `baseURL '${raw}' is not a URL` };
+  }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) {
+    return { ok: false, message: 'baseURL must be https (http only for localhost)' };
+  }
+  const onOpenRouter = /(^|\.)openrouter\.ai$/.test(url.hostname);
+  const provider = kind === 'chat'
+    ? (endpoint as { provider?: DecisionProvider }).provider ?? (onOpenRouter ? 'openrouter' : 'openai')
+    : 'openrouter';
+  return { ok: true, kind, baseURL: raw.replace(/\/+$/, ''), provider };
+}
+
 export interface DecideParams<Q extends DecisionQuestions> {
-  /** The caller's OpenRouter key. Empty or missing ⇒ `missing_key`, no request. */
+  /** The key for the endpoint (OpenRouter's, by default). Empty or missing ⇒ `missing_key`, no request. */
   apiKey: string | null | undefined;
+  /** Default: Jev over OpenRouter's System One API. */
+  endpoint?: DecisionEndpoint;
   /** Keep it small: accuracy falls as irrelevant state grows. */
   state: string | Record<string, unknown> | unknown[];
   questions: Q;
-  /** Default `JEV_MODEL`. */
+  /** Default `JEV_MODEL`. Any id the endpoint serves; required for a `chat` endpoint. */
   model?: string;
   /** Whole-call deadline across all attempts (default 5s). */
   timeoutMs?: number;
@@ -519,10 +582,10 @@ function loadSdk(): Promise<Sdk> {
   return sdkLoad;
 }
 
-function makeClient(sdk: Sdk, apiKey: string, model: string, fetcher: Fetcher, headers: Record<string, string>): TypeSafeClient {
+function makeClient(sdk: Sdk, apiKey: string, model: string, fetcher: Fetcher, headers: Record<string, string>, baseURL: string): TypeSafeClient {
   return new sdk.TypeSafeClient({
     apiKey,
-    baseURL: DECIDE_BASE_URL,
+    baseURL,
     defaultModel: model,
     logLevel: 'warn',
     retry: { maxRetries: 0 },
@@ -582,18 +645,36 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
   const retryable = params.retryable ?? isRetryableStatus;
   const backoff = params.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
   const minRetryBudget = params.minRetryBudgetMs ?? DEFAULT_MIN_RETRY_BUDGET_MS;
-  const model = params.model ?? JEV_MODEL;
+  const ep = resolveDecisionEndpoint(params.endpoint);
+  const model = params.model?.trim() || (ep.ok && ep.kind === 'chat' ? '' : JEV_MODEL);
 
   const finish = (result: DecideResult<Q>): DecideResult<Q> => {
-    if (result.attempts > 0) emitReceipt(params.onUsage, toDecisionReceipt(result, { model, decisionId: params.decisionId }));
+    if (result.attempts > 0 && ep.ok) {
+      emitReceipt(params.onUsage, toDecisionReceipt(result, { model, decisionId: params.decisionId, provider: ep.provider, endpoint: ep.kind }));
+    }
     return result;
   };
   const fail = (error: DecideError, attempts: number): DecideResult<Q> =>
     finish({ ok: false, error, latencyMs: now() - started, attempts });
 
-  const invalid = validateDecisionRequest(params.state, params.questions);
+  if (!ep.ok) return fail({ kind: 'invalid_request', message: ep.message }, 0);
+  if (!model) return fail({ kind: 'invalid_request', message: 'a chat endpoint needs a model id' }, 0);
+  if (/\s/.test(model)) return fail({ kind: 'invalid_request', message: `model id '${model}' has whitespace` }, 0);
+  const invalid = validateDecisionRequest(params.state, params.questions)
+    ?? (ep.kind === 'chat' ? validateChatQuestions(params.questions) : null);
   if (invalid) return fail({ kind: 'invalid_request', message: invalid }, 0);
   if (!params.apiKey) return fail({ kind: 'missing_key' }, 0);
+
+  if (ep.kind === 'chat') {
+    const r = await decideViaChat<Q>({
+      baseURL: ep.baseURL, apiKey: params.apiKey, model, state: params.state, questions: params.questions,
+      headers: params.headers ?? {}, fetch: fetcher, now, sleep, started, timeoutMs,
+      attemptTimeoutMs: params.attemptTimeoutMs, maxAttempts, retryable, backoff, minRetryBudget,
+    });
+    return r.ok
+      ? finish({ ok: true, answers: r.answers, model: r.model, usage: r.usage, latencyMs: now() - started, attempts: r.attempts })
+      : fail(r.error, r.attempts);
+  }
 
   let sdk: Sdk;
   try {
@@ -604,7 +685,7 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
 
   let client: TypeSafeClient;
   try {
-    client = makeClient(sdk, params.apiKey, model, fetcher, params.headers ?? {});
+    client = makeClient(sdk, params.apiKey, model, fetcher, params.headers ?? {}, ep.baseURL);
   } catch (e) {
     return fail({ kind: 'transport', message: e instanceof Error ? e.message : String(e) }, 0);
   }
@@ -854,7 +935,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. */
-export const KIT_VERSION = '0.6.1';
+export const KIT_VERSION = '0.9.0';
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 
@@ -872,8 +953,13 @@ export interface DecisionConfig<Q extends DecisionQuestions> {
   modes?: PerQuestion<Q, DecisionMode>;
   /** One threshold for every question, or per question. Required for every `gated` question. */
   minConfidence?: number | PerQuestion<Q, number>;
-  /** Default `JEV_MODEL`. Part of the fingerprint. */
+  /** Default `JEV_MODEL`. Any id the endpoint serves. Part of the fingerprint. */
   model?: string;
+  /**
+   * Default: Jev on OpenRouter. A `chat` endpoint (an open-weights model behind
+   * LiteLLM, say) is part of the fingerprint; its host is not.
+   */
+  endpoint?: DecisionEndpoint;
   /** Default per-call deadline (5s). Not part of the fingerprint. */
   timeoutMs?: number;
 }
@@ -889,7 +975,7 @@ export interface DecisionRun<Q extends DecisionQuestions> {
 }
 
 export type RunOptions<Q extends DecisionQuestions> =
-  Omit<DecideParams<Q>, 'questions' | 'model' | 'decisionId'> & {
+  Omit<DecideParams<Q>, 'questions' | 'model' | 'decisionId' | 'endpoint'> & {
     /** Persist the run (shadow rows, suggestions). Awaited; a throw is swallowed. */
     onDecision?: (run: DecisionRun<Q>) => void | Promise<void>;
   };
@@ -956,7 +1042,10 @@ export function shortHash(text: string): string {
 /** The fingerprint of a config: what Jev is asked, how answers are acted on, and which model. */
 export function decisionFingerprint<Q extends DecisionQuestions>(config: DecisionConfig<Q>): string {
   const policies = Object.fromEntries(Object.keys(config.questions).map(name => [name, resolvePolicy(config, name)]));
-  return shortHash(canonicalJson({ questions: config.questions, policies, model: config.model ?? JEV_MODEL }));
+  // The endpoint kind joins only when it is not the default, so every existing
+  // fingerprint is unchanged.
+  const endpoint = config.endpoint?.kind === 'chat' ? 'chat' : undefined;
+  return shortHash(canonicalJson({ questions: config.questions, policies, model: config.model ?? JEV_MODEL, endpoint }));
 }
 
 function resolvePolicy<Q extends DecisionQuestions>(config: DecisionConfig<Q>, name: string): QuestionPolicy {
@@ -1018,6 +1107,15 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
     }
   }
 
+  if (config.endpoint?.kind === 'chat' && !config.model) {
+    throw new Error(`decision '${config.id}': a chat endpoint needs a model`);
+  }
+  const endpointCheck = resolveDecisionEndpoint(config.endpoint);
+  if (!endpointCheck.ok) throw new Error(`decision '${config.id}': ${endpointCheck.message}`);
+  if (endpointCheck.kind === 'chat') {
+    const tooMany = validateChatQuestions(config.questions);
+    if (tooMany) throw new Error(`decision '${config.id}': ${tooMany}`);
+  }
   const model = config.model ?? JEV_MODEL;
   const version = `${config.promptVersion}|${model}|kit-${KIT_VERSION}`;
   const policyOf = (name: keyof Q & string) => resolvePolicy(config, name);
@@ -1027,6 +1125,7 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
     const result = await decide<Q>({
       timeoutMs: config.timeoutMs ?? DEFAULT_DECIDE_TIMEOUT_MS,
       ...rest,
+      ...(config.endpoint ? { endpoint: config.endpoint } : {}),
       questions: config.questions,
       model,
       decisionId: config.id,
@@ -1037,7 +1136,9 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
       version,
       outcomes: applyDecisionPolicy(config.questions, result, policyOf),
       result,
-      receipt: result.attempts > 0 ? toDecisionReceipt(result, { model, decisionId: config.id }) : null,
+      receipt: result.attempts > 0
+        ? toDecisionReceipt(result, { model, decisionId: config.id, provider: endpointCheck.provider, endpoint: endpointCheck.kind })
+        : null,
     };
     if (onDecision) {
       try {

@@ -4,6 +4,121 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.9.0 — 2026-09-28
+
+The thread slots an app with its own feed needs, found moving buildd's
+conversation onto `ChatThread`. Minor: every addition is optional; without
+them the thread renders the same markup as on 0.8.0 (checked against the 0.8
+component, and pinned in `thread-slots.dom.test.tsx`).
+
+- `/chat/react` `ChatThread`:
+  - `renderMessageHeader(message, ctx)` / `renderMessageFooter(message, ctx)`:
+    a node above and after a message's parts (`.kit-msg-head` /
+    `.kit-msg-foot`, only when not null). `ctx` is `{ index, streaming,
+    messages }` (`ThreadMessageContext`, exported).
+  - `renderToolGroup(parts, message, ctx)`: each run of consecutive tool
+    calls as one node. Text, approvals, hand-offs, steers and turn errors end
+    a run; parts that render nothing don't. `renderTool` still wins; a group
+    drawn as null leaves no frame.
+  - `steps(message, streaming)`: the app's own checklist (an empty list: no
+    panel), also for the pending turn; `thinkingTitle` for its summary.
+  - `eventPartType`: an app's own event part (e.g. `data-buildd-event`),
+    passed to `renderEvent` as is.
+  - `renderText(text, message, part)`: the text part (its `streaming` state).
+- `ThinkingPanel` `title` takes a node.
+- `ChatComposer` `inputId`: the message box's id, for a focus shortcut.
+- `/chat/styles.css`: the approval card's fold toggle keeps its mono face
+  inside a thread (`button.kit-fold-toggle`; it lost to `.kit-chat button`).
+- `KIT_VERSION` is `0.9.0` (pinned decision versions read `…|kit-0.9.0`;
+  fingerprints unchanged).
+
+## 0.8.0 — 2026-09-28
+
+The approval, empty-state, tier and menu slots buildd's own chat needed.
+Minor: every addition is optional and off by default, so an app that passes
+none of them renders exactly as on 0.7.0 (tests pin the default markup).
+
+**Upgrading: what you can delete**
+
+- **A copy of your tool part with a made-up `type`** to title an approval
+  card: pass `headline`.
+- **CSS `content` tricks for the card's verb or workspace**: pass `eyebrow`
+  and `meta`.
+- **Your own card for a draft** (a new record with its fields and criteria):
+  the kit card takes `body`, `details`, `fold`, `confirmLabel` / `busyLabel`.
+- **`display: contents` / `order` on `.kit-empty`** to place an overline, a
+  sub line or a header over the chips: pass `overline`, `mood`, `sub`,
+  `chipsHeader` / `chipsAside`. A chip id prefix used as a styling hook:
+  `tone`.
+- **An override of `.kit-sheet-scrim` for a dark theme**: set `--kit-scrim`.
+- **A hover tooltip wrapped around a menu**: `Menu` / `ToolsMenu` /
+  `TierPicker` take `hover`.
+- **A cast on `effectiveClass`** returning your own classes, and **leaving
+  deferred tools out of a read group**: see below.
+
+**Changes**
+
+- `/chat/react` `ApprovalCard`: `headline` (the title; default as before),
+  `eyebrow` and `meta` (a head row, `.kit-card-head` with `.kit-card-tag` /
+  `.kit-card-meta`, only when either is set), `body` (`.kit-approval-body`,
+  always shown), `details` (replaces the change list and the raw fields),
+  `fold` (`true` or `{ summary }`: "Show details · N changes" below 640px,
+  `kit-approval-fold` / `kit-approval-details`, `.kit-fold[data-open]`),
+  `confirmLabel` (default "Confirm"), `busyLabel` (default "Applying…"),
+  `settled: 'card' | 'row'` (default `card`; `row` is one line,
+  `.kit-approval-row`) and `deniedNote`. The `+` marker is
+  `.kit-change-mark[data-mark="add"]` and the arrow `.kit-change-arrow`,
+  same text as before.
+- `ChatEmpty`: `overline` (`.kit-empty-overline`), `mood` (`data-mood`, and a
+  `.kit-mood-dot` leading the overline), `sub` (`.kit-empty-sub`),
+  `chipsHeader` / `chipsAside` (`.kit-chips-head`, read before the chips),
+  `variant: 'chips' | 'rows'` and a chip's `tone` (`data-tone`).
+- `TierPicker`: `options[].detail` and `autoDetail` (a second line under the
+  name, `.kit-option-detail`), `triggerExtra` (`.kit-trigger-extra`), `hover`;
+  `autoMeta={null}` drops Auto's meta. `MenuOption` takes `detail`.
+- `Menu`: `hover` (`${testId}-hover`, `.kit-menu-hover`): shown on a hovering
+  pointer at 640px and up, never while open, on the side the panel opens.
+  `ToolsMenu` passes it through.
+- `--kit-scrim`: the phone sheet's scrim, carried into the sheet with the
+  other `--kit-*`. Unset (the default) it is the 0.7 ink mix.
+- `/chat/server` `KitToolDecl.effectiveClass` returns
+  `SkipCardFacts['callClass']` (your own classes, or `undefined` for an
+  unknown input) instead of `ToolCallClass`; only `'write'` ever skips.
+- `KitToolDecl.deferred`: declared but not registered with the model yet.
+  Not in `registeredToolNames` (a turn that passes it still throws), class
+  `'deferred'` (never skips), not the write a toggleable group needs, and
+  allowed in a `fixed: 'read'` group whatever its `class`. A read group still
+  throws on a registered write.
+- `KIT_VERSION` is `0.8.0`, so pinned decision versions read `…|kit-0.8.0`
+  (fingerprints are unchanged).
+
+## 0.7.0 — 2026-09-28
+
+LiteLLM gateways and custom decision models. Minor: all additive; an app that
+passes neither `gateway` nor `endpoint` behaves exactly as on 0.6.1, and every
+existing decision fingerprint is unchanged.
+
+- `/models` `toCallConfig(plan, { gateway: { kind: 'litellm', baseURL, apiKey?, models?, prefix? } })`:
+  the call goes to a LiteLLM proxy's OpenAI-compatible API, model
+  `provider/model` or a mapped alias. New `CallConfig.via` (`direct` |
+  `litellm`); `provider` stays the planned one, so receipts price the model
+  it is. New `gatewayModel(gateway, provider, model)` and `GatewayConfig`.
+- `/chat/server` `modelFromPlan({ gateway })`: a gateway (or a function of the
+  turn returning one, or null for the direct path) pays for the turn. `key` is
+  now optional when a gateway is given.
+- `/decide` `endpoint` on `decide` and `defineDecision`:
+  `{ kind: 'systemone', baseURL? }` (default OpenRouter) or
+  `{ kind: 'chat', baseURL, provider? }` for any model behind an
+  OpenAI-compatible API, with confidence from token logprobs. `model` takes
+  any id (required for `chat`). New error kind `uncalibrated` (no logprobs).
+  New exports `resolveDecisionEndpoint`, `DecisionEndpoint`,
+  `DecisionEndpointKind`, `DecisionProvider`.
+- `DecisionReceipt.provider` widens from `'openrouter'` to `DecisionProvider`
+  and gains optional `endpoint`; `toModelsUsage` passes the provider through.
+- `describeDecideError({ kind: 'missing_key' })` reads "no decision key
+  configured" (it no longer assumes OpenRouter).
+- `KIT_VERSION` is `0.7.0`, so pinned decision versions read `…|kit-0.7.0`.
+
 ## 0.6.1 — 2026-09-28
 
 Gaps found moving buildd's own chat onto the kit. Patch: every addition is

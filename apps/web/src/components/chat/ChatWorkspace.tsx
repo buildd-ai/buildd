@@ -296,7 +296,6 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
   const busy = status === 'submitted' || status === 'streaming';
-  const lastIsUser = messages[messages.length - 1]?.role === 'user';
   // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
   // "Mission sheet"). An opaque sheet with a context card; the title shows once.
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
@@ -447,10 +446,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   };
 
   // The empty canvas (docs/design/chat-canvas.md): an overline with the mood,
-  // a hero line in the voice face, and two picked questions as square rows.
-  // The hero and the rows are the kit's ChatEmpty (its greeting and chips);
-  // the overline, the sea gap and the rows' header are buildd's, placed around
-  // them by `order` (globals.css, "Chat on the kit").
+  // a hero line in the voice face, and two picked questions as square rows
+  // under their own header. All of it is the kit's ChatEmpty (overline, mood,
+  // greeting, sub line, chips header and rows); globals.css ("Chat on the kit")
+  // gives it buildd's faces and, when anchored, the open sea above the rows.
   const hero = messages.length === 0
     ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
     : null;
@@ -462,9 +461,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // Desktop keeps the anchored canvas under ?view=history: the list is in the panel.
   const anchoredPhone = !!hero && plainCanvas && !overlay && !historyOpen;
   const anchoredDesk = !!hero && plainCanvas && !overlay;
-  const anchored = anchoredPhone || anchoredDesk;
-  // `needs-…` ids let the row waiting on the viewer be drawn copper.
-  const chips: ChatEmptyChip[] = suggestions.map((sg, i) => ({ id: `${sg.tone ?? 'row'}-${i}`, label: sg.label, text: sg.text, send: sg.send }));
+  const chips: ChatEmptyChip[] = suggestions.map((sg, i) => ({ id: `${sg.tone ?? 'row'}-${i}`, label: sg.label, text: sg.text, send: sg.send, tone: sg.tone }));
   const emptyCanvas = hero && (
     <div
       data-testid="canvas-empty"
@@ -472,32 +469,18 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
       data-layout={anchoredPhone ? 'anchored' : undefined}
       className={`mb-8 mt-2 flex flex-col md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex-1' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
     >
-      <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
-        {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
-        {hero.overline}
-      </p>
       <ChatEmpty
-        className={`buildd-empty${plainCanvas ? ' buildd-empty-plain' : ''}`}
+        className={`buildd-empty flex flex-col${plainCanvas ? ' buildd-empty-plain' : ''}${anchoredPhone ? ' buildd-empty-anchor-phone max-md:flex-1' : ''}${anchoredDesk ? ' buildd-empty-anchor-desk lg:flex-1' : ''}`}
         chips={chips}
         onChip={pick}
-        greeting={(
-          <>
-            {hero.hero}
-            {hero.sub && (
-              <span data-testid="canvas-hero-sub" suppressHydrationWarning className="mt-3 block font-voice text-[20px] italic leading-snug tracking-normal text-[var(--chat-muted)] lg:mt-4 lg:max-w-[640px] lg:text-[22px]">{hero.sub}</span>
-            )}
-          </>
-        )}
+        variant="rows"
+        mood={hero.mood}
+        overline={<span data-testid="canvas-overline" suppressHydrationWarning>{hero.overline}</span>}
+        greeting={hero.hero}
+        sub={hero.sub ? <span data-testid="canvas-hero-sub" suppressHydrationWarning className="block lg:max-w-[640px]">{hero.sub}</span> : undefined}
+        chipsHeader={<span data-testid="canvas-suggestions">{plainCanvas ? 'Picked for you' : 'Ask about'}</span>}
+        chipsAside={pickedLine ? <span data-testid="canvas-picked-status">{pickedLine}</span> : undefined}
       />
-      {/* Phone: open sea between the hero and the picked rows, which sit
-          right above the composer (the v3 frames). */}
-      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className={`order-3 ${anchoredPhone ? 'max-md:min-h-7 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:min-h-7 lg:flex-1' : ''}`} />}
-      {suggestions.length > 0 && (
-        <div data-testid="canvas-suggestions" className={`order-4 ${anchored ? `${anchoredPhone ? '' : 'max-md:mt-7'} md:mt-7 ${anchoredDesk ? 'lg:mt-0' : ''}` : 'mt-7'} flex h-[31px] items-center justify-between gap-3 border border-[var(--chat-rule)] bg-[var(--chat-panel)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]`}>
-          <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
-          {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
-        </div>
-      )}
     </div>
   );
 
@@ -538,7 +521,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && (
             <div data-testid="chat-empty-state" className={historyOpen ? 'lg:hidden' : 'hidden md:block lg:hidden'}>{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
+          <ChatFeed messages={messages} agent={agent} status={status} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>

@@ -413,3 +413,23 @@ export const FIXTURE_TIERS: GetChatTiersResponse = {
   pinned: null,
   conversationCostUsd: 0.0421,
 };
+
+/**
+ * `?steer=1`: steering the running rates-service Builder (SteerConversation),
+ * served by the page's stand-in for the task's messages, its object view and
+ * the instruct route. One instruction delivered, one still queued.
+ */
+export const STEER_TASK_ID = 'task-fx';
+export const STEER_WORKER_ID = 'w-fx';
+export const steerTaskView = (): TaskObjectView => ({
+  ...taskView(),
+  status: 'in_progress',
+  worker: {
+    ...taskView().worker!, status: 'running', completedAt: null, mergedAt: null, prLifecycleStatus: null, prNumber: null, prUrl: null,
+    currentAction: 'Editing fx/rates.ts', turns: 9, updatedAt: Date.now() - 12_000,
+  },
+});
+export const STEER_MESSAGES = [
+  { type: 'instruction' as const, message: 'Snapshot the rate at issue time, not at payment.', timestamp: at(12), deliveryState: 'delivered' as const, turnAtSend: 4 },
+  { type: 'instruction' as const, message: 'Keep the cache at 15 minutes.', timestamp: at(14) },
+];

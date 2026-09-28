@@ -1,7 +1,8 @@
 /**
- * The Steer canvas, mounted (happy-dom): sends go straight to the worker's
- * instruction queue (not a chat turn), each message's status reads
- * sent → delivered, and only a caller who may send gets a composer.
+ * The Steer canvas, mounted (happy-dom): the kit's SteerComposer over buildd's
+ * instruct route. Sends go straight to the worker's instruction queue (not a
+ * chat turn), each message's status reads sent → delivered, only a caller
+ * who may send gets a composer, and the presence strip names the runner.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -73,10 +74,10 @@ async function render() {
 describe('SteerConversation — send', () => {
   it('sends through POST /api/workers/[id]/instruct with priority urgent, not a chat turn', async () => {
     await render();
-    const textarea = q('#steer-composer-input') as HTMLTextAreaElement;
+    const textarea = q('[data-testid="kit-steer-input"]') as HTMLTextAreaElement;
     await act(async () => { typeInto(textarea, 'Stop and check the rounding'); });
     await settle();
-    (q('[data-testid="steer-send"]') as HTMLButtonElement).click();
+    (q('[data-testid="kit-steer-send"]') as HTMLButtonElement).click();
     await settle();
 
     expect(posted).toHaveLength(1);
@@ -87,14 +88,14 @@ describe('SteerConversation — send', () => {
   it('the composer is disabled with no worker to send to', async () => {
     messagesResponse = { workerId: null, canSend: true, messages: [] };
     await render();
-    const textarea = q('#steer-composer-input') as HTMLTextAreaElement;
+    const textarea = q('[data-testid="kit-steer-input"]') as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
   });
 
   it('a member who can read but not send gets a disabled composer that says why', async () => {
     messagesResponse = { workerId: WORKER_ID, canSend: false, messages: [] };
     await render();
-    const textarea = q('#steer-composer-input') as HTMLTextAreaElement;
+    const textarea = q('[data-testid="kit-steer-input"]') as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
     expect(textarea.placeholder).toBe('Only workspace admins can steer this agent.');
   });
@@ -111,7 +112,7 @@ describe('SteerConversation — message status', () => {
       ],
     };
     await render();
-    const rows = Array.from(container.querySelectorAll('[data-testid="steer-message"]'));
+    const rows = Array.from(container.querySelectorAll('[data-testid="kit-steer-message"]'));
     expect(rows).toHaveLength(2);
     expect(rows[0].getAttribute('data-status')).toBe('sent');
     expect(rows[0].textContent).toContain('Sent');
