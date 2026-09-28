@@ -15,7 +15,7 @@ import { isTextPart, messageMeta, type ChatMessage } from './chat-contract';
 import { feedSegments, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
-import { ObjectsSegment } from './objects/registry';
+import { MoreObjects, ObjectsSegment } from './objects/registry';
 import TurnFeedback from './TurnFeedback';
 import { intentTag, thinkingSteps, type ThinkingStep } from './thinking-model';
 import WatchNotice from './WatchNotice';
@@ -60,6 +60,8 @@ function Segment({ seg }: { seg: FeedSegment }) {
       return <ApprovalCard part={seg.part} />;
     case 'objects':
       return <ObjectsSegment refs={seg.refs} />;
+    case 'more':
+      return <MoreObjects refs={seg.refs} />;
     case 'watch':
       return <WatchNotice text={seg.text} notice={seg.notice} />;
     case 'event':

@@ -70,7 +70,8 @@ describe('feedSegments', () => {
       tool('get_task', { output: { data: {}, objects: [ref('task', 't1')] } }),
       { type: 'text', text: 'Three are in.' },
     ]);
-    expect(segs.map(s => s.kind)).toEqual(['tools', 'objects', 'text']);
+    // Answer first: a read's objects follow the reply, not the tool rows.
+    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects']);
     const tools = segs[0];
     expect(tools.kind === 'tools' && tools.calls).toHaveLength(2);
   });
@@ -101,6 +102,50 @@ describe('feedSegments', () => {
     ]);
     const objs = segs.filter(s => s.kind === 'objects');
     expect(objs).toHaveLength(1);
+  });
+
+  it('a list read shows cards only for what the answer names; the rest stay in the tool row', () => {
+    const T1 = '514a1539-0000-4000-8000-000000000001';
+    const titled = (kind: BuilddObjectRef['kind'], id: string, title: string): BuilddObjectRef => ({ ...ref(kind, id), title });
+    const segs = feedSegments([
+      tool('list_tasks', { output: { objects: [titled('task', T1, 'Delta review includes inherited dev changes'), ref('task', 'q1'), ref('task', 'q2')] } }),
+      tool('manage_missions', { input: { action: 'list' }, output: { objects: [
+        titled('mission', 'm-kit', 'Shared AI kit'), titled('mission', 'm-done', 'Deep UI pass for the web app'),
+      ] } }),
+      { type: 'text', text: 'Running: task 514a1539. The Shared AI kit mission is held.' },
+    ]);
+    const shown = segs.filter(s => s.kind === 'objects').flatMap(s => (s.kind === 'objects' ? s.refs.map(r => r.id) : []));
+    expect(shown).toEqual([T1, 'm-kit']);
+    const more = segs.find(s => s.kind === 'more');
+    expect(more?.kind === 'more' && more.refs.map(r => r.id)).toEqual(['q1', 'q2', 'm-done']);
+    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
+  });
+
+  it('PRs a list returned stay shown: they stack as one compact list', () => {
+    const segs = feedSegments([
+      tool('list_tasks', { output: { objects: [ref('pr', 'p1'), ref('pr', 'p2'), ref('task', 'q1')] } }),
+      { type: 'text', text: 'Two PRs merged today.' },
+    ]);
+    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
+    expect(segs[2].kind === 'objects' && segs[2].refs.map(r => r.id)).toEqual(['p1', 'p2']);
+  });
+
+  it('an object fetched on its own is shown even when the answer does not name it', () => {
+    const segs = feedSegments([
+      tool('list_tasks', { output: { objects: [ref('task', 'q1'), ref('task', 'q2')] } }),
+      tool('get_task', { output: { objects: [ref('task', 't9')] } }),
+      { type: 'text', text: 'One is running.' },
+    ]);
+    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'objects', 'more']);
+    expect(segs[2].kind === 'objects' && segs[2].refs.map(r => r.id)).toEqual(['t9']);
+  });
+
+  it('a list with nothing named renders no cards, only the collapsed row', () => {
+    const segs = feedSegments([
+      tool('list_tasks', { output: { objects: [ref('task', 'q1'), ref('task', 'q2')] } }),
+      { type: 'text', text: 'Nothing is running.' },
+    ]);
+    expect(segs.map(s => s.kind)).toEqual(['tools', 'text', 'more']);
   });
 
   it('skips empty text and flags streaming text', () => {

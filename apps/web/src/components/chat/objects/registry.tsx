@@ -5,7 +5,7 @@
  * phone sheet render refs through. A ref with no renderer yet (schedule,
  * artifact, directive arrive in P2) shows its `fallbackText`.
  */
-import type { ComponentType } from 'react';
+import { useState, type ComponentType } from 'react';
 import type { BuilddObjectRef } from '../chat-contract';
 import { MissionCard, MissionPane } from './MissionObject';
 import { PrPane, PrRow } from './PrObject';
@@ -97,6 +97,42 @@ export function ObjectsSegment({ refs }: { refs: readonly BuilddObjectRef[] }) {
       ) : (
         <ObjectCard key={`${run.refs[0].kind}-${run.refs[0].id}`} objRef={run.refs[0]} />
       ))}
+    </div>
+  );
+}
+
+const KIND_NOUN: Record<string, [string, string]> = {
+  task: ['task', 'tasks'], mission: ['mission', 'missions'], pr: ['pull request', 'pull requests'], question: ['question', 'questions'],
+};
+
+/** "8 tasks · 8 missions": what the collapsed row holds, most common kind first. */
+export function moreLabel(refs: readonly BuilddObjectRef[]): string {
+  const counts = new Map<string, number>();
+  for (const r of refs) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${(KIND_NOUN[k] ?? [k, `${k}s`])[n === 1 ? 0 : 1]}`).join(' · ');
+}
+
+/**
+ * The rest of what a turn's list reads returned (feed-model.ts `more`): one
+ * collapsed row after the answer. Cards mount only when opened, so a long list
+ * neither pushes the reply off a phone screen nor loads live state unasked.
+ */
+export function MoreObjects({ refs }: { refs: readonly BuilddObjectRef[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid="feed-more-objects" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        className="flex min-h-11 md:min-h-9 w-full items-center gap-2 border border-[var(--chat-rule)] bg-[var(--chat-surface)] px-3.5 font-mono text-[11.5px] text-text-muted hover:text-text-primary"
+      >
+        <span className="font-semibold text-text-secondary">Also read</span>
+        <span>{`· ${moreLabel(refs)}`}</span>
+        <span aria-hidden="true" className={`ml-auto transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+      </button>
+      {open && <ObjectsSegment refs={refs} />}
     </div>
   );
 }

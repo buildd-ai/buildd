@@ -173,6 +173,26 @@ describe('objects', () => {
     expect(q('[data-testid="object-card"][data-kind="schedule"]')?.textContent).toContain('Every weekday at 9');
   });
 
+  it('a list read the answer does not name folds into one collapsed row after the reply', async () => {
+    const ghost = { kind: 'task' as const, id: 'task-ghost', workspaceId: null, fallbackText: 'Task: queued thing' };
+    await render([{
+      id: 'a', role: 'assistant' as const,
+      parts: [
+        { type: 'tool-manage_missions', toolCallId: 'c1', state: 'output-available', input: { action: 'list' },
+          output: { summary: '2 results', data: '', objects: [fixtures.missionRef, ghost] } },
+        { type: 'text', text: 'One task is running.' },
+      ],
+    }] as Msgs);
+    expect(qa('[data-testid="object-card"]')).toHaveLength(0);
+    const more = q('[data-testid="feed-more-objects"] button')!;
+    expect(more.textContent).toContain('1 mission · 1 task');
+    // The reply comes before the row, in document order.
+    expect(q('[data-testid="feed-text"]')!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { more.click(); });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(qa('[data-testid="feed-more-objects"] [data-testid="object-card"]').length).toBeGreaterThan(0);
+  });
+
   it('a run of PRs stacks as one list', async () => {
     await render(fixtures.chatFixture('shipped').messages as Msgs, 'shipped');
     expect(q('[data-testid="pr-list"]')?.textContent).toContain('7 pull requests');
