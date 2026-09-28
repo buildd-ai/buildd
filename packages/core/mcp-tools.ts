@@ -6309,6 +6309,16 @@ export async function handleMemoryAction(
     case 'delete': {
       if (ctx.isSensitive) return errorResult('workspace is sensitive — memory writes disabled');
       if (!params.id) throw new Error('id is required');
+
+      // Only the caller's own memories. The store is team-wide, so without
+      // this any id in the team was deletable. A foreign id and a missing one
+      // get the same reply, so the reply does not confirm the id exists.
+      const deleteScope = ownMemoryProject(ctx);
+      if ('error' in deleteScope) return errorResult(deleteScope.error);
+      const notFound = errorResult(`Memory not found: ${params.id}`);
+      const target = await mc.get(params.id as string).catch(() => null);
+      if (!target || !isOwnMemory(target.memory, ctx)) return notFound;
+
       await mc.delete(params.id as string);
 
       // Remove from KnowledgeStore (team-scoped)
