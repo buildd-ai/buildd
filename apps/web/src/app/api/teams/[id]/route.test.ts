@@ -242,6 +242,25 @@ describe('PATCH /api/teams/[id] — key policy', () => {
   });
 });
 
+describe('PATCH /api/teams/[id] — decision model', () => {
+  it('stores a chat model via the LiteLLM gateway', async () => {
+    const res = await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0]).toMatchObject({ decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } });
+  });
+
+  it('clears back to Jev with null', async () => {
+    await PATCH(patchReq({ decisionModel: null }), ctx);
+    expect(capturedUpdates[0]).toMatchObject({ decisionModel: null });
+  });
+
+  it('rejects a System One model through the gateway, and a bad model id', async () => {
+    expect((await PATCH(patchReq({ decisionModel: { endpoint: 'systemone', model: 'typesafe/jev-1.13', via: 'litellm' } }), ctx)).status).toBe(400);
+    expect((await PATCH(patchReq({ decisionModel: { endpoint: 'chat', model: 'has space', via: 'openrouter' } }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+});
+
 describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
   it('stores overrides, dropping unknown features and "default"', async () => {
     const res = await PATCH(patchReq({ inferenceFeatureModes: { criteria_grading: 'runner', visual_qa: 'default', chat: 'runner' } }), ctx);

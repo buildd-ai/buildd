@@ -327,6 +327,48 @@ describe('inferenceCall — provider routing', () => {
   });
 });
 
+// ── LiteLLM gateway fallback ──────────────────────────────────────────────────
+
+describe('inferenceCall through the team LiteLLM gateway', () => {
+  const gatewayRow = () => secretRow({
+    id: 's-gw', label: 'litellm',
+    encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
+  });
+  const chatReply = (text: string) => new Response(JSON.stringify({
+    choices: [{ message: { content: text } }], usage: { prompt_tokens: 10, completion_tokens: 5 },
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  it('serves the tier model as provider/model when the provider has no key', async () => {
+    secretRows = [gatewayRow()];
+    const calls: Array<{ url: string; init: any }> = [];
+    const fetcher = mock((url: string, init: any) => { calls.push({ url, init }); return Promise.resolve(chatReply('{"verdicts":[]}')); }) as any;
+    const res = await inferenceCall(baseParams({ fetcher }));
+    expect(res.ok).toBe(true);
+    expect(calls[0].url).toBe('https://litellm.example.test/v1/chat/completions');
+    expect(calls[0].init.headers.authorization).toBe('Bearer sk-lite');
+    expect(calls[0].init.headers['x-title']).toBeUndefined();
+    expect(JSON.parse(calls[0].init.body).model).toBe('anthropic/claude-haiku-4-5-20251001');
+    expect(res.ok && res.provider).toBe('anthropic');
+  });
+
+  it('prefers the provider key over the gateway', async () => {
+    secretRows = [secretRow(), gatewayRow()];
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
+    await inferenceCall(baseParams({ fetcher }));
+    expect((fetcher.mock.calls[0] as any[])[0]).toContain('api.anthropic.com');
+  });
+
+  it('serves an OpenAI tier only through the gateway', async () => {
+    tierEntry = { provider: 'openai', model: 'gpt-5.6-terra', source: 'team' };
+    secretRows = [gatewayRow()];
+    const fetcher = mock(() => Promise.resolve(chatReply('{"verdicts":[]}'))) as any;
+    expect((await inferenceCall(baseParams({ fetcher }))).ok).toBe(true);
+    secretRows = [];
+    const res = await inferenceCall(baseParams({ fetcher }));
+    expect(!res.ok && res.error).toEqual({ kind: 'unsupported_provider', provider: 'openai' });
+  });
+});
+
 // ── Multimodal ────────────────────────────────────────────────────────────────
 
 describe('inferenceCall — multimodal', () => {

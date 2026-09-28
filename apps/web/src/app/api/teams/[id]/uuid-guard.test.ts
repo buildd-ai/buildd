@@ -23,6 +23,11 @@ describe('/api/teams/[id] non-UUID guard', () => {
     expect(uuidGuardViolations(src, 'id')).toEqual([]);
   });
 
+  it('litellm-gateway/route.ts checks isUuid before querying', () => {
+    const src = readFileSync(join(ROOT, 'litellm-gateway/route.ts'), 'utf8');
+    expect(uuidGuardViolations(src, 'id')).toEqual([]);
+  });
+
   it('invitations/[invitationId]/route.ts checks isUuid(id) before querying', () => {
     const src = readFileSync(join(ROOT, 'invitations/[invitationId]/route.ts'), 'utf8');
     expect(uuidGuardViolations(src, 'id')).toEqual([]);
