@@ -120,7 +120,11 @@ export {
  * `key` is a fixed name (VISUAL_REVIEW_MOMENT_KEYS), bound as a parameter.
  */
 export function visualQaMomentClaim(taskId: string, key: VisualReviewMomentKey, at: Date): { set: SQL; where: SQL } {
-  const set = sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), '{visualQa}', coalesce(${tasks.context} -> 'visualQa', '{}'::jsonb) || jsonb_build_object(${key}::text, ${at.toISOString()}::text))`;
+  // A context or visualQa that is not an object (SQL NULL, JSON null, an
+  // array) is treated as empty rather than failing the sweep.
+  const ctx = sql`(case when jsonb_typeof(${tasks.context}) = 'object' then ${tasks.context} else '{}'::jsonb end)`;
+  const qa = sql`(case when jsonb_typeof(${tasks.context} -> 'visualQa') = 'object' then ${tasks.context} -> 'visualQa' else '{}'::jsonb end)`;
+  const set = sql`jsonb_set(${ctx}, '{visualQa}', ${qa} || jsonb_build_object(${key}::text, ${at.toISOString()}::text))`;
   const where = and(eq(tasks.id, taskId), sql`(${tasks.context} -> 'visualQa' ->> ${key}) is null`)!;
   return { set, where };
 }

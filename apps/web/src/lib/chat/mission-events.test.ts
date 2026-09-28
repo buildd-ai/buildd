@@ -171,6 +171,7 @@ describe('visual review events', () => {
     expect(w.params).toEqual(['t-audit', 'stallNotifiedAt']);
     const s = d.sqlToQuery(set);
     expect(s.sql).toContain('jsonb_set');
+    expect(s.sql).toContain(`jsonb_typeof("tasks"."context") = 'object'`);
     expect(s.sql).toContain("'{visualQa}'");
     expect(s.params).toContain('stallNotifiedAt');
     expect(s.params).toContain('2026-01-01T00:00:00.000Z');
