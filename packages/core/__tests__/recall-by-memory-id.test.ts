@@ -105,6 +105,17 @@ describe('recall id= accepts the index short id', () => {
     expect(res.content[0].text).not.toContain('Twin');
   });
 
+  it('a sensitive workspace reads as a miss and looks nothing up', async () => {
+    for (const id of [OWN_ID, OWN_ID.slice(0, 8)]) {
+      const mc = memStore();
+      const res = await handleRecallAction(mc as any, { id }, { ...ctx, isSensitive: true });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toBe(`Memory not found: ${id}`);
+      expect(mc.calls).toHaveLength(0);
+    }
+    expect(batches).toHaveLength(0);
+  });
+
   it('with no project key there is no prefix lookup at all', async () => {
     const mc = memStore();
     const res = await handleRecallAction(mc as any, { id: OWN_ID.slice(0, 8) }, { ...ctx, project: undefined });
@@ -122,7 +133,8 @@ describe('recall id= records a pull', () => {
       workspaceId: WS,
       taskId: null,
       workerId: WORKER,
-      chunkId: OWN_ID,
+      // A fetch by id reads the memories row, not a knowledge chunk.
+      chunkId: null,
       memoryId: OWN_ID,
       caller: 'recall',
       via: 'pull',
@@ -130,6 +142,12 @@ describe('recall id= records a pull', () => {
       score: null,
       gatedBy: null,
     }]);
+  });
+
+  it('attributes the pull to the task when the context carries one', async () => {
+    const TASK = '33333333-3333-4333-8333-333333333333';
+    await handleRecallAction(memStore() as any, { id: OWN_ID }, { ...ctx, taskId: TASK } as any);
+    expect(batches[0][0].taskId).toBe(TASK);
   });
 
   it('uses the context ledger when one is injected', async () => {

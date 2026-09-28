@@ -1638,7 +1638,8 @@ export async function handleBuilddAction(
           ? await ctx.getMemoryClient(claimedWsId)
           : null;
         if (memClient) {
-          const { memories } = await retrieveMemory<any>({
+          const indexOn = isMemoryIndexEnabled(claimedWs.gitConfig);
+          const { memories, commitLedger } = await retrieveMemory<any>({
             strategy: 'store-search',
             searcher: memClient,
             search: { query: claimedTask.title, limit: 5 },
@@ -1646,8 +1647,10 @@ export async function handleBuilddAction(
             caller: 'claim_task_reply',
             attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
             ledger: ctx.memoryLedger,
+            // Index mode holds the ledger until the budget has decided what shows.
+            ...(indexOn ? { deferLedger: true } : {}),
           });
-          if (isMemoryIndexEnabled(claimedWs.gitConfig)) {
+          if (indexOn) {
             // Index injection (see ./memory-claim-index): the claim route's entries
             // first, since this reply is the only place an MCP agent sees
             // them, then this search's, deduped, under one budget.
@@ -1656,6 +1659,9 @@ export async function handleBuilddAction(
               ...memories.map((m: any) => ({ id: String(m.id), type: String(m.type ?? 'memory'), title: String(m.title ?? ''), why: 'title' as const })),
             ];
             const index = buildMemoryIndex(entries, { budgetTokens: memoryIndexTokenBudget(claimedWs.gitConfig) });
+            // Shown here, or already shown by the claim-time block (a dedupe, not a drop).
+            const shownIds = new Set(index.shown.map(e => e.id));
+            commitLedger(h => (shownIds.has(h.memoryId) ? null : 'char_budget'));
             if (index.lines.length > 0) memorySection = `\n\n## Relevant Memory\n${index.lines.join('\n')}`;
           } else if (memories.length > 0) {
             const memoryLines = memories.map((m: any) => {
@@ -5614,6 +5620,8 @@ function formatKnowledgeResult(
 type MemoryActionCtx = {
   project?: string;
   workerId?: string;
+  /** The caller's task, when known; attributes ledger rows. */
+  taskId?: string;
   workspaceId?: string;
   teamId?: string;
   knowledgeStore?: KnowledgeStore;
@@ -5889,6 +5897,8 @@ export async function handleRecallAction(
   // the claim-time index's 8-char short id (`m:<id>` too); see ./memory-claim-index.
   if (params.id) {
     const notFound = () => errorResult(`Memory not found: ${params.id}`);
+    // Memory is off for a sensitive workspace; say so the way a miss does.
+    if (ctx.isSensitive) return notFound();
     const ref = parseMemoryIdRef(params.id);
     let m: Awaited<ReturnType<MemoryStore['get']>>['memory'] | null | undefined;
     if (ref?.kind === 'prefix') {
@@ -5913,7 +5923,7 @@ export async function handleRecallAction(
       teamId: ctx.teamId,
       workspaceId: ctx.workspaceId,
       caller: 'recall',
-      attribution: { workerId: ctx.workerId },
+      attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
       ledger: ctx.memoryLedger,
     });
     const meta = [

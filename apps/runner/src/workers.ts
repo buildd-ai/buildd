@@ -80,9 +80,8 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord, appendPromptCompositionEvent, memoryIndexWhyFor } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunnerMemoryIndex } from './memory-digest-policy';
 import { retrieveTaskMemory } from './task-memory-retrieval';
-import { isMemoryIndexEnabled, memoryIndexTokenBudget, readMemoryIndexEntries } from '@buildd/core/memory-claim-index';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -2755,13 +2754,8 @@ export class WorkerManager {
       // Index injection (workspace flag, see @buildd/core/memory-claim-index):
       // the task matches render as index lines, so their bodies are not
       // fetched, and what the claim-time block already listed is skipped.
-      const memoryIndex = isMemoryIndexEnabled(gitConfig)
-        ? {
-            budgetTokens: memoryIndexTokenBudget(gitConfig),
-            why: memoryIndexWhyFor(taskMemory.derivedBy),
-            claimEntries: readMemoryIndexEntries((task as any).context),
-          }
-        : undefined;
+      // Needs the server's signal too; see resolveRunnerMemoryIndex.
+      const memoryIndex = resolveRunnerMemoryIndex(gitConfig, (task as any).context, taskMemory.derivedBy);
 
       // Fetch full content for task-specific memory matches
       const fullObservations = taskSearchResults.length > 0 && !memoryIndex

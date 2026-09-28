@@ -126,4 +126,35 @@ describe('buildClusteredKnowledgeContext, index mode', () => {
     expect(text).toContain('- [0.30] | Task: oom | task');
     expect(entries.map(e => e.id)).toEqual([M1]);
   });
+
+  it('a recipe with two memory steps carries one header and each memory once', async () => {
+    const recipe = {
+      ...TOOL_INFRA_ERROR_V1,
+      steps: [
+        TOOL_INFRA_ERROR_V1.steps[0],
+        { ...TOOL_INFRA_ERROR_V1.steps[0], step: 2, label: 'Team memory for these paths', keyKind: 'paths' as const, derivedBy: 'path_manifest' as const },
+      ],
+    };
+    const { parts } = await buildClusteredKnowledgeContext({
+      recipe,
+      keys: { signature: 'oom_killed', paths: ['apps/runner/src/workers.ts'], pathsDerivedBy: 'path_manifest' },
+      workspaceId: 'ws-1',
+      teamId: TEAM,
+      trigger: { layer: 'exec', subjectKind: 'error', signature: 'oom_killed' },
+      chain: { taskId: 'task-1', workerId: 'worker-1', missionId: null },
+      opts: { memoryScope: scope(), ledger: false, memoryIndex: { budgetTokens: 800 } },
+      store: store({
+        [`${TEAM}:memory`]: [
+          { id: M1, content: 'OOM body', score: 0.5, scoreBreakdown: { rerank: STRONG } },
+          { id: M2, content: 'Other body', score: 0.5, scoreBreakdown: { rerank: STRONG } },
+        ],
+      }),
+    });
+    const text = parts.join('\n');
+    expect(text.split(MEMORY_INDEX_HEADER)).toHaveLength(2);
+    expect(text.match(/m:1a2b3c4d/g)).toHaveLength(1);
+    expect(text.match(/m:2b3c4d5e/g)).toHaveLength(1);
+    // The header sits directly above the first index line.
+    expect(text).toContain(`${MEMORY_INDEX_HEADER}\n- gotcha m:1a2b3c4d`);
+  });
 });

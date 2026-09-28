@@ -411,6 +411,7 @@ function applyBudget(
   let total = 0;
   let truncated = false;
   let indexChars = 0;
+  const indexIds = new Set<string>();
 
   for (const groups of sections) {
     const [header, ...hitGroups] = groups;
@@ -425,10 +426,22 @@ function applyBudget(
         truncated = true;
         break;
       }
-      if (index?.groups.has(group)) {
-        const withHeader = indexChars === 0 ? MEMORY_INDEX_HEADER.length + 1 : 0;
-        if (Math.ceil((indexChars + withHeader + groupLen) / 4) > index.budgetTokens) break;
-        indexChars += withHeader + groupLen;
+      const entry = index?.groups.get(group);
+      if (index && entry) {
+        // One index per block: a memory two steps both found is listed once.
+        if (indexIds.has(entry.id)) continue;
+        const headerLen = indexChars === 0 ? MEMORY_INDEX_HEADER.length + 1 : 0;
+        if (Math.ceil((indexChars + headerLen + groupLen) / 4) > index.budgetTokens) break;
+        if (total + headerLen + pendingLen + groupLen > budgetChars) {
+          truncated = true;
+          break;
+        }
+        if (headerLen > 0) {
+          pending.push(MEMORY_INDEX_HEADER);
+          pendingLen += headerLen;
+        }
+        indexIds.add(entry.id);
+        indexChars += headerLen + groupLen;
       }
       pending.push(...group);
       pendingLen += groupLen;
@@ -585,12 +598,12 @@ export async function buildClusteredKnowledgeContext(
         return { weak: evaluation.weak, groups: null };
       }
 
-      // Index mode: memory renders one index line per hit, the header line
-      // travelling with the section header so the recipe budget counts it.
+      // Index mode: memory renders one index line per hit. The header line is
+      // added once per block by applyBudget, above the first index line kept.
       const indexEntries = memoryIndex && step.corpus === 'memory'
         ? await memoryIndexEntriesFromHits(results, indexWhyForStep(step), memoryScope?.lookup)
         : null;
-      const groups: string[][] = [indexEntries ? [`\n### ${step.label}`, MEMORY_INDEX_HEADER] : [`\n### ${step.label}`]];
+      const groups: string[][] = [[`\n### ${step.label}`]];
       results.forEach((r, i) => {
         const group = indexEntries ? [renderMemoryIndexLine(indexEntries[i])] : renderHitLines(r);
         groups.push(group);

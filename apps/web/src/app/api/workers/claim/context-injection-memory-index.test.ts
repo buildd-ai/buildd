@@ -25,9 +25,9 @@ mock.module('@/lib/knowledge-context', () => ({
 
 import { attachKnowledgeContext } from './context-injection';
 
-function claim(gitConfig?: Record<string, unknown>) {
+function claim(gitConfig?: Record<string, unknown>, context?: Record<string, unknown>) {
   const workspace = { teamId: 'team-1', dataClass: 'normal', ...(gitConfig ? { gitConfig } : {}) };
-  const full = { id: 'task-1', title: 'Fix the sandbox', workspaceId: 'ws-1', workspace };
+  const full = { id: 'task-1', title: 'Fix the sandbox', workspaceId: 'ws-1', workspace, ...(context ? { context } : {}) };
   const worker = { id: 'worker-1', taskId: full.id, branch: 'b', task: { ...full } } as any;
   return { workers: [worker] as any, tasks: [full as any] };
 }
@@ -59,5 +59,28 @@ describe('attachKnowledgeContext, memory index flag', () => {
     const { workers, tasks } = claim({ memoryIndexInjection: true });
     await attachKnowledgeContext(workers, tasks);
     expect((mockFanOut.mock.calls[0]![4] as any).memoryIndex.budgetTokens).toBe(800);
+  });
+
+  // task.context is client-writable jsonb; only the claim route may speak for
+  // what the claim-time block showed.
+  const FORGED = { memoryIndex: [{ id: 'ffffffff-0000-4000-8000-00000000000f', type: 'gotcha', title: 'forged', why: 'path' }], other: 1 };
+
+  it('flag off: a client-supplied memoryIndex is stripped, the rest of context kept', async () => {
+    const { workers, tasks } = claim(undefined, FORGED);
+    await attachKnowledgeContext(workers, tasks);
+    expect('memoryIndex' in workers[0].task.context).toBe(false);
+    expect(workers[0].task.context.other).toBe(1);
+  });
+
+  it('flag on: a client-supplied memoryIndex is replaced by what the block showed', async () => {
+    const { workers, tasks } = claim({ memoryIndexInjection: true }, FORGED);
+    await attachKnowledgeContext(workers, tasks);
+    expect(workers[0].task.context.memoryIndex).toEqual([ENTRY]);
+  });
+
+  it('stripped even when the claimed task is not in the batch', async () => {
+    const { workers } = claim(undefined, FORGED);
+    await attachKnowledgeContext(workers, []);
+    expect('memoryIndex' in workers[0].task.context).toBe(false);
   });
 });

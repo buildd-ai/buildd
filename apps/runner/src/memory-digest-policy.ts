@@ -23,6 +23,10 @@
  */
 import {
   buildMemoryIndex,
+  isMemoryIndexEnabled,
+  memoryIndexTokenBudget,
+  readMemoryIndexEntries,
+  MEMORY_INDEX_CONTEXT_KEY,
   memoryIndexEntriesTokens,
   type MemoryIndexEntry,
   type MemoryIndexWhy,
@@ -43,6 +47,31 @@ export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v4';
  * composition rows from the two renderings are never pooled.
  */
 export const MEMORY_INDEX_POLICY_VERSION = 'memory-index-v1';
+
+/**
+ * Whether this prompt renders the index, and with what. Needs BOTH the
+ * workspace flag and the server's signal (`task.context.memoryIndex` present
+ * as an array, set by a claim route that knows the flag). Either alone is a
+ * version skew between runner and server: then the block stays bodies, since
+ * a runner that indexes while the claim block still pastes bodies (or the
+ * reverse) would show the agent two shapes and no dedupe.
+ */
+export function resolveRunnerMemoryIndex(
+  gitConfig: unknown,
+  taskContext: unknown,
+  derivedBy: string | null | undefined,
+): MemoryBlockInput['index'] {
+  if (!isMemoryIndexEnabled(gitConfig)) return undefined;
+  const signal = taskContext && typeof taskContext === 'object'
+    ? (taskContext as Record<string, unknown>)[MEMORY_INDEX_CONTEXT_KEY]
+    : undefined;
+  if (!Array.isArray(signal)) return undefined;
+  return {
+    budgetTokens: memoryIndexTokenBudget(gitConfig),
+    why: memoryIndexWhyFor(derivedBy),
+    claimEntries: readMemoryIndexEntries(taskContext),
+  };
+}
 
 /** The index's "why it matched" for the step that produced the task matches. */
 export function memoryIndexWhyFor(derivedBy: string | null | undefined): MemoryIndexWhy {
@@ -156,6 +185,8 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
       {
         budgetTokens: budgetTokens - memoryIndexEntriesTokens(claimEntries),
         exclude: claimEntries.map(e => e.id),
+        // The claim-time block in the same prompt already carries the header.
+        continued: claimEntries.length > 0,
       },
     );
     if (index.lines.length > 0) {

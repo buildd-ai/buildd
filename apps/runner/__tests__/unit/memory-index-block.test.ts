@@ -11,6 +11,7 @@ import {
   buildMemoryBlock,
   buildPromptCompositionRecord,
   memoryIndexWhyFor,
+  resolveRunnerMemoryIndex,
 } from '../../src/memory-digest-policy';
 import { MEMORY_INDEX_HEADER, memoryIndexEntriesTokens } from '@buildd/core/memory-claim-index';
 
@@ -53,7 +54,9 @@ describe('buildMemoryBlock, index mode', () => {
       index: { budgetTokens: 800, why: 'title', claimEntries },
     });
     expect(r.block).not.toContain('m:1a2b3c4d');
-    expect(r.block).toContain('- pattern m:2b3c4d5e Use bun run test (title)');
+    // The claim-time block in the same prompt carries the header; this continues it.
+    expect(r.block).not.toContain(MEMORY_INDEX_HEADER);
+    expect(r.block).toContain('### Relevant to This Task\n- pattern m:2b3c4d5e Use bun run test (title)');
     expect(r.block).toContain('- decision m:3c4d5e6f Third (title)');
     expect(r.taskMatchCount).toBe(2);
 
@@ -102,5 +105,29 @@ describe('buildPromptWithComposition, index mode', () => {
     const off = buildPromptWithComposition(base);
     expect(off.promptText).toContain('BODY TEXT');
     expect(off.promptText).not.toContain(MEMORY_INDEX_HEADER);
+  });
+});
+
+describe('resolveRunnerMemoryIndex, version skew', () => {
+  const on = { memoryIndexInjection: true };
+  const entries = [{ id: M1, type: 'gotcha', title: 'Neon has no transactions', why: 'title' }];
+
+  test('flag on and the server sent memoryIndex: index mode', () => {
+    expect(resolveRunnerMemoryIndex(on, { memoryIndex: entries }, 'path_manifest')).toEqual({
+      budgetTokens: 800, why: 'path', claimEntries: entries,
+    });
+    // An empty array is still the server saying it runs index mode.
+    expect(resolveRunnerMemoryIndex(on, { memoryIndex: [] }, 'title_phrase')?.claimEntries).toEqual([]);
+  });
+
+  test('flag on but an older server sent no memoryIndex: bodies, as before', () => {
+    expect(resolveRunnerMemoryIndex(on, {}, 'path_manifest')).toBeUndefined();
+    expect(resolveRunnerMemoryIndex(on, undefined, 'path_manifest')).toBeUndefined();
+    expect(resolveRunnerMemoryIndex(on, { memoryIndex: 'x' }, 'path_manifest')).toBeUndefined();
+  });
+
+  test('server sent memoryIndex but the flag is off here: bodies', () => {
+    expect(resolveRunnerMemoryIndex({}, { memoryIndex: entries }, 'path_manifest')).toBeUndefined();
+    expect(resolveRunnerMemoryIndex(undefined, { memoryIndex: entries }, 'path_manifest')).toBeUndefined();
   });
 });

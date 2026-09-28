@@ -18,7 +18,10 @@ const M1 = '1a2b3c4d-0000-4000-8000-000000000001';
 const M2 = '2b3c4d5e-0000-4000-8000-000000000002';
 const M3 = '3c4d5e6f-0000-4000-8000-000000000003';
 
-async function claim(gitConfig: Record<string, unknown> | undefined, context?: Record<string, unknown>) {
+const TEAM_UUID = '11111111-1111-4111-8111-111111111111';
+const WS_UUID = '22222222-2222-4222-8222-222222222222';
+
+async function claim(gitConfig: Record<string, unknown> | undefined, context?: Record<string, unknown>, ledgerRows?: any[][]) {
   const memories = [
     { id: M2, type: 'pattern', title: 'Second', content: 'x'.repeat(250) },
     { id: M1, type: 'gotcha', title: 'First', content: 'short' },
@@ -34,9 +37,9 @@ async function claim(gitConfig: Record<string, unknown> | undefined, context?: R
           branch: 'buildd/x',
           openPRs: [],
           task: {
-            id: 'task-1', title: 'Fix the login bug', description: 'd', workspaceId: WS,
+            id: 'task-1', title: 'Fix the login bug', description: 'd', workspaceId: ledgerRows ? WS_UUID : WS,
             ...(context ? { context } : {}),
-            workspace: { id: WS, teamId: TEAM, repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', dataClass: 'standard', ...(gitConfig ? { gitConfig } : {}) },
+            workspace: { id: ledgerRows ? WS_UUID : WS, teamId: ledgerRows ? TEAM_UUID : TEAM, repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', dataClass: 'standard', ...(gitConfig ? { gitConfig } : {}) },
           },
         }],
       };
@@ -49,7 +52,7 @@ async function claim(gitConfig: Record<string, unknown> | undefined, context?: R
     getWorkspaceId: async () => WS,
     getLevel: async () => 'worker',
     getMemoryClient: async () => ({ search, batch }) as any,
-    memoryLedger: () => {},
+    memoryLedger: rows => { ledgerRows?.push(rows); },
   };
   const res = await handleBuilddAction(api as any, 'claim_task', {}, actx);
   return res.content[0].text as string;
@@ -88,5 +91,19 @@ describe('claim_task Relevant Memory, index injection', () => {
     const text = await claim({ memoryIndexInjection: true, memoryIndexTokenBudget: 40 });
     expect(text).toContain('m:2b3c4d5e');
     expect(text).not.toContain('m:1a2b3c4d');
+  });
+
+  it('ledgers what the budget left out as char_budget, once', async () => {
+    const rows: any[][] = [];
+    await claim({ memoryIndexInjection: true, memoryIndexTokenBudget: 40 }, undefined, rows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].map((r: any) => [r.memoryId, r.gatedBy])).toEqual([[M1, 'char_budget'], [M2, null]]);
+  });
+
+  it('flag off still ledgers every hit as shown', async () => {
+    const rows: any[][] = [];
+    await claim(undefined, undefined, rows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].map((r: any) => r.gatedBy)).toEqual([null, null]);
   });
 });

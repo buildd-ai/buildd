@@ -16,8 +16,11 @@
  *
  * Flag: `gitConfig.memoryIndexInjection` (default off). Off means every surface
  * renders exactly what it did before this module existed; the golden tests pin
- * that. Pure: no DB, no store, safe to import from the runner.
+ * that. Pure: no DB, no store, safe to import from the runner (./memory-hit-scope
+ * loads its DB resolver lazily).
  */
+
+import { memoryIdOfHit } from './memory-hit-scope';
 
 /** The workspace flag's key in `workspaces.git_config`. */
 export const MEMORY_INDEX_FLAG = 'memoryIndexInjection';
@@ -224,9 +227,7 @@ export async function memoryIndexEntriesFromHits(
   lookup?: MemoryIndexRowLookup,
 ): Promise<MemoryIndexEntry[]> {
   if (hits.length === 0) return [];
-  const idOf = (h: MemoryIndexHit) =>
-    typeof h.metadata?.memoryId === 'string' ? (h.metadata.memoryId as string) : h.id;
-  const ids = hits.map(idOf);
+  const ids = hits.map(memoryIdOfHit);
   const rows = new Map<string, { title?: string | null; type?: string | null }>();
   if (lookup) {
     try {

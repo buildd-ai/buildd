@@ -314,6 +314,14 @@ export async function attachKnowledgeContext(
   // one Voyage embed+rerank round trip at a time. Capped for the same reason
   // as predictTaskAreas' batch — see ./concurrency-limit.
   await mapWithConcurrency(claimedWorkers, CLAIM_FANOUT_CONCURRENCY, async (cw) => {
+    // task.context is client-writable jsonb, so a memoryIndex already on it is
+    // not the claim route's and must not reach the runner or the claim_task
+    // reply as if it were. Cleared on every claim, set again below only when
+    // the flag is on.
+    const ctxObj = (cw.task as any)?.context;
+    if (ctxObj && typeof ctxObj === 'object' && MEMORY_INDEX_CONTEXT_KEY in ctxObj) {
+      delete ctxObj[MEMORY_INDEX_CONTEXT_KEY];
+    }
     const task = claimedTasks.find(t => t.id === cw.taskId);
     if (!task) return;
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
