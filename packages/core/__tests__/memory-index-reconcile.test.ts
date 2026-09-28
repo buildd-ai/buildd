@@ -75,12 +75,17 @@ describe('reconcileCandidatesQuery', () => {
     expect(sql).toContain('kc.source_id = m.id::text');
   });
 
-  it('selects missing, stale and superseded-but-current chunks', () => {
+  it('selects missing and stale chunks of live rows, and superseded-but-current chunks', () => {
     const { sql } = render(7);
-    expect(sql).toContain('kc.id IS NULL');
+    expect(sql).toContain('(m.superseded_by IS NULL AND (kc.id IS NULL OR (');
     expect(sql).toContain('kc.content IS DISTINCT FROM m.content');
     expect(sql).toContain("kc.metadata->>'project' IS DISTINCT FROM m.project");
-    expect(sql).toContain('m.superseded_by IS NOT NULL AND kc.is_current');
+    expect(sql).toContain('OR (m.superseded_by IS NOT NULL AND kc.is_current)');
+  });
+
+  it('a superseded row is never classed missing or stale, so it is never embedded', () => {
+    const { sql } = render(7);
+    expect(sql).toContain("CASE WHEN m.superseded_by IS NOT NULL THEN 'superseded' WHEN kc.id IS NULL THEN 'missing'");
   });
 
   it('skips projectless rows and rows past the attempt cap, lowest failures first', () => {
@@ -126,11 +131,21 @@ describe('reconcileMemoryIndex', () => {
     ]);
   });
 
-  it('a superseded row is indexed as not current, never resurrected', async () => {
+  it('a superseded row with no chunk is skipped: nothing is embedded or written', async () => {
     const { ks, upserts } = store();
-    const { d, flipped } = deps([row('old', { supersededBy: 'new', chunkState: 'missing' })]);
+    const { d, flipped, outcomes } = deps([row('old', { supersededBy: 'new', chunkState: 'missing' })]);
     const res = await reconcileMemoryIndex({ knowledgeStore: ks, deps: d });
-    expect(upserts.map(u => u.chunk.id)).toEqual(['old']);
+    expect(upserts).toHaveLength(0);
+    expect(flipped).toHaveLength(0);
+    expect(outcomes).toHaveLength(0);
+    expect(res).toEqual({ scanned: 1, mirrored: 0, superseded: 0, failed: 0 });
+  });
+
+  it('a stale chunk of a superseded row is flipped, not re-embedded', async () => {
+    const { ks, upserts } = store();
+    const { d, flipped } = deps([row('old', { supersededBy: 'new', chunkState: 'stale' })]);
+    const res = await reconcileMemoryIndex({ knowledgeStore: ks, deps: d });
+    expect(upserts).toHaveLength(0);
     expect(flipped).toEqual([{ teamId: 'team-a', id: 'old', by: 'new' }]);
     expect(res.superseded).toBe(1);
   });

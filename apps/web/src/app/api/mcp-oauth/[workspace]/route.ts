@@ -43,6 +43,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from '@buildd/core/mcp-tools';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
@@ -113,6 +114,9 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
 
   const embedder = getVoyageEmbedder();
   const ctx: ActionContext = {
+    // Memory reads record their use after the response, not in a promise
+    // the platform may freeze.
+    memoryLedger: afterResponseMemoryLedger,
     workspaceId,
     teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,

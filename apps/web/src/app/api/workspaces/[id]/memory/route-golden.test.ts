@@ -11,6 +11,7 @@ import { NextRequest } from 'next/server';
 
 const inserts: Array<{ values: unknown }> = [];
 let teamIdForTest = 'team-1';
+let attributionVerdict = { task_ok: true, worker_ok: true };
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -28,6 +29,8 @@ mock.module('@buildd/core/db', () => ({
         return Promise.resolve();
       },
     }),
+    // The ledger's attribution check (memoryAttributionCheckSql).
+    execute: async () => ({ rows: [attributionVerdict] }),
   },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => null }));
@@ -179,27 +182,45 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
     expect(batch).not.toHaveBeenCalled();
   });
 
+  const TEAM = '11111111-1111-4111-8111-111111111111';
+  const WS = '22222222-2222-4222-8222-222222222222';
+  const TASK = '33333333-3333-4333-8333-333333333333';
+  const WORKER = '44444444-4444-4444-8444-444444444444';
+  const wsParams = Promise.resolve({ id: WS });
+  const ledgerRows = () => (inserts[0].values as any[]).map(r => [r.memoryId, r.rank, r.caller, r.via, r.taskId, r.workerId, r.teamId, r.chunkId]);
+
   it('a runner search carrying its task writes one ledger INSERT; a dashboard search writes none', async () => {
-    const TEAM = '11111111-1111-4111-8111-111111111111';
-    const TASK = '33333333-3333-4333-8333-333333333333';
-    const WORKER = '44444444-4444-4444-8444-444444444444';
     teamIdForTest = TEAM;
+    attributionVerdict = { task_ok: true, worker_ok: true };
     try {
-      await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params });
+      await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
       await new Promise(r => setTimeout(r, 10));
       expect(inserts).toHaveLength(1);
       // Ranked by the search's order (mem-1 first), not the batch's.
-      expect((inserts[0].values as any[]).map(r => [r.memoryId, r.rank, r.caller, r.via, r.taskId, r.workerId, r.teamId, r.chunkId])).toEqual([
+      expect(ledgerRows()).toEqual([
         ['mem-1', 1, 'runner_workspace_memory', 'push', TASK, WORKER, TEAM, null],
         ['mem-2', 2, 'runner_workspace_memory', 'push', TASK, WORKER, TEAM, null],
       ]);
 
       inserts.length = 0;
-      await GET(req('query=fix&limit=5'), { params });
+      await GET(req('query=fix&limit=5'), { params: wsParams });
       await new Promise(r => setTimeout(r, 10));
       expect(inserts).toHaveLength(0);
     } finally {
       teamIdForTest = 'team-1';
+    }
+  });
+
+  it('a task id the database does not confirm for this workspace is written unattributed', async () => {
+    teamIdForTest = TEAM;
+    attributionVerdict = { task_ok: false, worker_ok: true };
+    try {
+      await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
+      await new Promise(r => setTimeout(r, 10));
+      expect(ledgerRows().map(r => [r[4], r[5]])).toEqual([[null, null], [null, null]]);
+    } finally {
+      teamIdForTest = 'team-1';
+      attributionVerdict = { task_ok: true, worker_ok: true };
     }
   });
 

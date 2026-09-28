@@ -37,6 +37,7 @@ import {
   type MemoryLedgerWriter,
   type RetrieveMemoryResult,
 } from '@buildd/core/memory-retrieval';
+import { afterResponseMemoryLedger } from './memory-ledger';
 
 /**
  * Minimum score for a claim-time prior-work hit to be worth a worker's
@@ -147,8 +148,9 @@ export async function buildKnowledgeContext(
 
     // Query memory (team namespace, narrowed to the caller's project), plans,
     // task outcomes, PRs, and code (workspace-scoped).
-    // Cap at 3 hits per corpus to bound prompt growth. A push, so none of
-    // these count as retrieval hits (see retrieveMemory).
+    // Cap at 3 hits per corpus to bound prompt growth. Memory is a push and
+    // is measured by the ledger (see retrieveMemory); the other corpora have
+    // no ledger yet, so their hit_count still counts these queries.
     const sources: Array<{ label: string; run: () => Promise<QueryResult[]> }> = [];
     if (teamId && hasMemoryScope(memoryScope)) {
       sources.push({
@@ -164,14 +166,14 @@ export async function buildKnowledgeContext(
           // no-op for memory.
           gate: { minScore: PRECISION_FLOOR, exclude: excluded },
           attribution: opts?.attribution,
-          ledger: opts?.ledger,
+          ledger: opts?.ledger ?? afterResponseMemoryLedger,
         })).results,
       });
     }
     if (workspaceId) {
       const ws = (label: string, ns: string) => ({
         label,
-        run: () => ks.query(ns, { text: query, topK: 3, trackHits: false }),
+        run: () => ks.query(ns, { text: query, topK: 3 }),
       });
       sources.push(ws('Prior plans', buildNamespace(workspaceId, 'plan')));
       sources.push(ws('Past task outcomes', buildNamespace(workspaceId, 'task')));
@@ -209,7 +211,7 @@ export async function buildKnowledgeContext(
       const pathQuery = paths.slice(0, 20).join('\n');
       const pathResults = (
         await ks
-          .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3, trackHits: false })
+          .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3 })
           .catch(() => [] as QueryResult[])
       ).filter(r => !excluded?.has(r.id));
       if (pathResults.length > 0) {
@@ -327,7 +329,11 @@ function isSeedHit(r: QueryResult): boolean {
  * what the type says it means. A section whose hits were all dropped is dropped
  * with them rather than left as a dangling header.
  */
-function applyBudget(sections: string[][][], budgetChars: number): string[] {
+function applyBudget(
+  sections: string[][][],
+  budgetChars: number,
+  keptGroups?: Set<string[]>,
+): string[] {
   const kept: string[] = [];
   let total = 0;
   let truncated = false;
@@ -347,6 +353,7 @@ function applyBudget(sections: string[][][], budgetChars: number): string[] {
       }
       pending.push(...group);
       pendingLen += groupLen;
+      keptGroups?.add(group);
     }
 
     if (pending.length > 0) {
@@ -418,6 +425,8 @@ export async function buildClusteredKnowledgeContext(
     // Memory retrievals held until the block is assembled, so the ledger can
     // say which hits the char budget or the fan-out fallback kept out.
     const memoryRetrievals: RetrieveMemoryResult[] = [];
+    /** Memory hit id behind each rendered memory group, by group identity. */
+    const memoryGroupIds = new Map<string[], string>();
 
     /** Render + record one step's outcome. Returns the section's line groups, or null. */
     const runStep = async (step: ClusterStep): Promise<{ weak: boolean; groups: string[][] | null }> => {
@@ -460,7 +469,7 @@ export async function buildClusteredKnowledgeContext(
           mode: step.mode,
           gate: { exclude: excluded },
           attribution: { taskId: chain.taskId, workerId: chain.workerId },
-          ledger: input.opts?.ledger,
+          ledger: input.opts?.ledger ?? afterResponseMemoryLedger,
           deferLedger: true,
         });
         memoryRetrievals.push(retrieval);
@@ -468,7 +477,7 @@ export async function buildClusteredKnowledgeContext(
       } else {
         results = (
           await ks
-            .query(ns, { text, topK: step.topK, mode: step.mode, trackHits: false })
+            .query(ns, { text, topK: step.topK, mode: step.mode })
             .catch(() => [] as QueryResult[])
         ).filter(r => !excluded?.has(r.id));
       }
@@ -496,7 +505,9 @@ export async function buildClusteredKnowledgeContext(
 
       const groups: string[][] = [[`\n### ${step.label}`]];
       results.forEach((r, i) => {
-        groups.push(renderHitLines(r));
+        const group = renderHitLines(r);
+        groups.push(group);
+        if (step.corpus === 'memory') memoryGroupIds.set(group, r.id);
         const seed = isSeedHit(r);
         const { value, signal } = strengthOf(r);
         const present: StrengthSignal[] = [];
@@ -567,16 +578,22 @@ export async function buildClusteredKnowledgeContext(
     // Budget first, emptiness after. A block whose only surviving line is the
     // truncation notice carries no retrieved content, and treating it as a
     // result would suppress the fan-out in exchange for nothing.
-    const body = applyBudget(sections, recipe.budgetChars);
+    const keptGroups = new Set<string[]>();
+    const body = applyBudget(sections, recipe.budgetChars, keptGroups);
     const hasContent = body.some(line => line.startsWith('- '));
     if (!hasContent) {
       assembly.fallbackFired = true;
       for (const r of memoryRetrievals) r.commitLedger(() => 'recipe_fallback');
       return { parts: [], assembly };
     }
-    const kept = new Set(body);
+    // By hit id, not by rendered text: two hits can render the same line.
+    const shownMemoryIds = new Set<string>();
+    for (const g of keptGroups) {
+      const id = memoryGroupIds.get(g);
+      if (id !== undefined) shownMemoryIds.add(id);
+    }
     for (const r of memoryRetrievals) {
-      r.commitLedger(h => (kept.has(renderHitLines(h.result)[0]) ? null : 'char_budget'));
+      r.commitLedger(h => (shownMemoryIds.has(h.result.id) ? null : 'char_budget'));
     }
 
     const hint = await buildCorporaHint(workspaceId, ks, memoryScope);

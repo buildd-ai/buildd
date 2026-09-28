@@ -137,21 +137,34 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * `memory_uses` row shows an agent pulling it (recall, query_knowledge) or a
  * completed task acting on it. Pushes do not count; a memory injected into a
  * hundred prompts and ignored in all of them is exactly what this test exists
- * to find, and `hit_count` used to count every one of those pushes.
+ * to find.
  *
- * Every other corpus has no ledger and keeps `hit_count = 0`, which since
- * retrieveMemory only counts pulls too. A memory namespace whose scope id is
- * not a UUID cannot match a ledger row, so it falls back the same way.
+ * Warm-up. A young ledger has not yet seen most use, so "no ledger row" would
+ * flag memories that are in use. The ledger's epoch is its team's first row
+ * (`min(memory_uses.created_at)`). Until one memory half-life has passed since
+ * that epoch, a memory the index recorded a hit on after the epoch
+ * (`hit_count > 0 AND last_hit_at > epoch`) also counts as used; with no
+ * ledger rows at all, any recorded hit does. After warm-up, only the ledger
+ * decides.
+ *
+ * Every other corpus has no ledger and keeps `hit_count = 0`. A memory
+ * namespace whose scope id is not a UUID cannot match a ledger row, so it
+ * falls back the same way.
  */
-export function decayedUnusedClause(namespace: string, corpus: Corpus): SQL {
+export function decayedUnusedClause(namespace: string, corpus: Corpus, now: Date = new Date()): SQL {
   const teamId = namespace.split(':')[0];
   if (corpus === 'memory' && UUID_RE.test(teamId)) {
-    return sql`NOT EXISTS (
+    const epoch = sql`(SELECT min(mu_e.created_at) FROM memory_uses mu_e WHERE mu_e.team_id = ${teamId}::uuid)`;
+    const warmupCutoff = new Date(now.getTime() - HALF_LIFE_DAYS.memory * 24 * 60 * 60 * 1000).toISOString();
+    return sql`(NOT EXISTS (
       SELECT 1 FROM memory_uses mu
       WHERE mu.team_id = ${teamId}::uuid
         AND mu.memory_id = knowledge_chunks.source_id
         AND (mu.via = 'pull' OR mu.outcome = 'used')
-    )`;
+    ) AND NOT (
+      hit_count > 0
+      AND (${epoch} IS NULL OR (${epoch} > ${warmupCutoff}::timestamptz AND last_hit_at > ${epoch}))
+    ))`;
   }
   return sql`hit_count = 0`;
 }
@@ -202,7 +215,7 @@ export async function findDecayedUnused(
   const cutoffClauses = sql.join(
     scoped.map(({ ns, corpus }) => {
       const cutoff = new Date(now.getTime() - multiple * HALF_LIFE_DAYS[corpus] * 24 * 60 * 60 * 1000);
-      return sql`(namespace = ${ns} AND source_ts < ${cutoff.toISOString()} AND ${decayedUnusedClause(ns, corpus)})`;
+      return sql`(namespace = ${ns} AND source_ts < ${cutoff.toISOString()} AND ${decayedUnusedClause(ns, corpus, now)})`;
     }),
     sql` OR `,
   );
@@ -292,7 +305,7 @@ Step 2 — merge true duplicates:
 - task corpus: task outcomes have no upstream service; archive the older chunk of the pair via \`buildd\` action=consolidate_knowledge op=archive.
 
 Step 3 — archive decayed noise:
-Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with \`buildd\` action=consolidate_knowledge op=archive (corpus + sourceIds).
+Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits; pass corpora including memory to also check memories, which are judged by the memory use ledger: no agent pulled them or acted on them). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with \`buildd\` action=consolidate_knowledge op=archive (corpus + sourceIds).
 
 Step 4 — emit a consolidation report:
 Create a report artifact via \`buildd\` action=create_artifact type=report title "Knowledge consolidation <date>" listing: pairs merged (survivor ← loser), chunks archived (id + reason), and pairs/candidates deliberately left alone. The report is itself indexed and is the audit trail for this run.`,

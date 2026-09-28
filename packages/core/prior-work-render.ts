@@ -134,9 +134,10 @@ export async function buildAuthoringPriorWork(
         }),
       );
     }
-    // Authoring prior work is a push, so none of these count as retrieval hits.
+    // Memory is measured by the ledger; these corpora have none yet, so their
+    // hit_count still counts this query.
     const wsQuery = (ns: string, text: string) =>
-      store.query(ns, { text, topK: AUTHORING_TOPK_PER_CORPUS, trackHits: false }).catch(() => []);
+      store.query(ns, { text, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []);
     if (workspaceId) {
       queries.push(wsQuery(buildNamespace(workspaceId, 'task'), queryText));
       queries.push(wsQuery(buildNamespace(workspaceId, 'pr'), queryText));

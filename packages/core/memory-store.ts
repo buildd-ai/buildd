@@ -12,7 +12,7 @@
 
 import { db } from './db';
 import { memories } from './db/schema';
-import { eq, and, inArray, or, ilike, desc, count as dbCount } from 'drizzle-orm';
+import { eq, and, inArray, or, ilike, desc, isNull, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
 import { normalizeMemoryFileScope } from './memory-file-scope';
 import { tokenizeMemoryQuery } from './memory-query-tokens';
@@ -106,6 +106,8 @@ export class MemoryStore {
       where: and(
         eq(memories.teamId, this.teamId),
         ...(scope ? [eq(memories.project, scope)] : []),
+        // A memory recorded as replaced is not current knowledge.
+        isNull(memories.supersededBy),
       ),
       orderBy: [desc(memories.updatedAt), desc(memories.id)],
       limit: 20,
@@ -142,7 +144,10 @@ export class MemoryStore {
     const limit = Math.min(params.limit ?? 50, 200);
     const offset = params.offset ?? 0;
 
-    const conditions = [eq(memories.teamId, this.teamId)];
+    // A memory recorded as replaced (`superseded_by`) is not served: the
+    // replacement is. Its row stays for history and for the index's own
+    // supersession, and `get`/`batch` by id still reach it.
+    const conditions = [eq(memories.teamId, this.teamId), isNull(memories.supersededBy)];
 
     if (params.type) {
       conditions.push(eq(memories.type, params.type as MemoryRecord['type']));

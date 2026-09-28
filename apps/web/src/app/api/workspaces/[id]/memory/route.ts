@@ -17,6 +17,7 @@ import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper'
 import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -58,13 +59,10 @@ async function getWorkspaceProject(id: string): Promise<string | null> {
   return resolveMemoryProjectKey(id);
 }
 
-/** The project key plus the team id the memory ledger needs. */
-async function getWorkspaceScope(id: string): Promise<{ project: string | null; teamId: string | null }> {
-  const [project, ws] = await Promise.all([
-    getWorkspaceProject(id),
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } }),
-  ]);
-  return { project, teamId: ws?.teamId ?? null };
+/** The team id the memory ledger rows are filed under. */
+async function getWorkspaceTeamId(id: string): Promise<string | null> {
+  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } });
+  return ws?.teamId ?? null;
 }
 
 export async function GET(
@@ -86,12 +84,6 @@ export async function GET(
     return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
-  const { project, teamId } = await getWorkspaceScope(id);
-  // No key means no memory: never fall back to a team-wide list.
-  if (!project) {
-    // Flagged so the page can say memory is off here, rather than "no memories".
-    return NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
-  }
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
   const type = searchParams.get('type') || undefined;
@@ -108,32 +100,39 @@ export async function GET(
     .filter(Boolean);
 
   const search = {
-    query, type, project, limit, offset,
+    query, type, limit, offset,
     files: files.length > 0 ? files : undefined,
   };
+  // Flagged so the page can say memory is off here, rather than "no memories".
+  const unavailable = () => NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
 
   try {
     // A search (a query or a file scope) is a memory read an agent receives:
     // the runner's `## Workspace Memory` block is built from it. It goes
-    // through the one door so it shares the ledger; the output is the store's
-    // own token search, unchanged. The ledger row needs the task it was for,
+    // through the one door, which resolves the workspace's project key itself
+    // (no key, no search) and shares the ledger. The ledger row needs the task it was for,
     // which the runner sends as `taskId` / `workerId`; without one (a
     // dashboard search) nothing is recorded.
     if (query || search.files) {
       const taskId = searchParams.get('taskId');
-      const { memories, total } = await retrieveMemory({
+      const teamId = await getWorkspaceTeamId(id);
+      const { memories, total, unavailable: noMemory } = await retrieveMemory({
         strategy: 'store-search',
         searcher: memClient,
         search,
         scope: { teamId, workspaceId: id },
         caller: 'runner_workspace_memory',
         attribution: { taskId, workerId: searchParams.get('workerId') },
-        ledger: taskId ? undefined : false,
+        ledger: taskId ? afterResponseMemoryLedger : false,
       });
+      if (noMemory) return unavailable();
       return NextResponse.json({ memories, total });
     }
 
-    const searchData = await memClient.search(search);
+    // No key means no memory: never fall back to a team-wide list.
+    const project = await getWorkspaceProject(id);
+    if (!project) return unavailable();
+    const searchData = await memClient.search({ ...search, project });
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });
