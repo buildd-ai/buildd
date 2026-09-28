@@ -137,7 +137,9 @@ const SAFE: Record<string, string[]> = {
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
   release_tasks: ['commit_sha'],
-  worker_terminal_records: ['exit_cause', 'summary_provenance'],
+  // exit_cause is NOT safe: normalizeErrorSignature() keeps words from the
+  // error text, and the scrub guard caught identifying text surviving there.
+  worker_terminal_records: ['summary_provenance'],
   migration_log: ['phase'], // multi-line literal-union $type
   credential_leases: ['held_by_runner_id'], // wiped via secrets cascade too
   user_feedback: ['entity_id'],
@@ -196,6 +198,7 @@ describe('scrub-pii.sql covers the schema', () => {
       task_schedules: ['name', 'task_template', 'last_error'],
       releases: ['run_url', 'deploy_url', 'failure_reason'],
       memories: ['title', 'content', 'tags', 'files'],
+      worker_terminal_records: ['exit_cause', 'detail'],
     };
     const missing = Object.entries(must).flatMap(([t, cs]) =>
       cs.filter(c => !cov.assigned.get(t)?.has(c)).map(c => `${t}.${c}`));
