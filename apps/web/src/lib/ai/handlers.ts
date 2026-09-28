@@ -15,9 +15,9 @@
 
 import { NextResponse } from 'next/server';
 import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
-import type { TokenPrice } from '@buildd/core/model-catalog';
+import type { CatalogEntry, TokenPrice } from '@buildd/core/model-catalog';
 import {
-  validatePlanRequest, routeEntry, tiersFrom, decidePlan, buildPlanResponse,
+  validatePlanRequest, routeEntry, routeChatEntry, tiersFrom, decidePlan, buildPlanResponse,
   type PlanOption, type PoolArmPick, type PlanProvider, type PlanSurface, type PlanSource, type PlanAction,
 } from './plan';
 import { validateUsageBody, receiptCost, type UsageOutcome, type UsageFeedback } from './usage';
@@ -61,6 +61,11 @@ export interface PlanDeps extends AiAuthDeps {
   /** The tier's chat-pool arm for this plan, or null (no pool, not eligible, error). Never throws. */
   drawPoolArm(args: { teamId: string; workspaceId: string | null; tier: Tier; planId: string; workspaceOverride: boolean; now: Date }): Promise<PoolArmPick | null>;
   price(provider: PlanProvider, model: string): Promise<TokenPrice>;
+  /**
+   * The normalized OpenRouter catalog (tool-capable, text-output models), for
+   * the chat-surface check. Never throws; empty = unknown, and allows.
+   */
+  chatCatalog(): Promise<readonly CatalogEntry[]>;
   loadBudget(account: AiApiAccount, now: Date): Promise<{ dailyCapUsd: number | null; spentTodayUsd: number }>;
   savePlan(row: PlanRow): Promise<void>;
   now(): Date;
@@ -156,14 +161,23 @@ export async function handlePlanRequest(req: Request, deps: PlanDeps): Promise<R
     const planId = deps.newId();
     const tiers = tiersFrom(request.tier);
     const entries: Partial<Record<Tier, TierEntry>> = {};
+    // A chat plan only serves models that call tools and answer in text.
+    const catalog = request.surface === 'chat' ? await deps.chatCatalog() : null;
     const options: PlanOption[] = await Promise.all(tiers.map(async (tier): Promise<PlanOption> => {
-      const entry = await deps.resolveEntry(tier, account.teamId, workspaceId);
-      entries[tier] = entry;
+      const resolved = await deps.resolveEntry(tier, account.teamId, workspaceId);
       const arm = await deps.drawPoolArm({
         teamId: account.teamId, workspaceId, tier, planId,
-        workspaceOverride: entry.source === 'workspace', now,
+        workspaceOverride: resolved.source === 'workspace', now,
       });
-      const routed = routeEntry(entry, arm, request.providers);
+      let entry = resolved;
+      let routed = routeEntry(resolved, arm, request.providers);
+      if (catalog) {
+        const chat = routeChatEntry(tier, resolved, arm, request.providers, catalog);
+        entry = chat.entry;
+        routed = chat.routed;
+        if (chat.excluded) console.warn(`[ai/plan] ${tier}: ${chat.excluded} is not chat-capable; serving ${routed?.model ?? 'nothing'}`);
+      }
+      entries[tier] = entry;
       const price = routed ? await deps.price(routed.provider, routed.model) : null;
       return { tier, routed, price };
     }));
