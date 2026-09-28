@@ -179,6 +179,21 @@ export async function setConversationTitle(id: string, raw: string, source: 'aut
   return rows.length > 0 ? title : null;
 }
 
+/**
+ * Replace an automatic title with a newer automatic one (chat/retitle.ts).
+ * Compare-and-set on the title it replaces: a rename the person made, or
+ * another re-title, since the turn read `from` wins.
+ */
+export async function replaceAutoTitle(id: string, from: string, raw: string): Promise<string | null> {
+  const title = normalizeConversationTitle(raw);
+  if (!title || title === from) return null;
+  const rows = await db.update(conversations)
+    .set({ title })
+    .where(and(eq(conversations.id, id), eq(conversations.titleSource, 'auto'), eq(conversations.title, from)))
+    .returning({ id: conversations.id });
+  return rows.length > 0 ? title : null;
+}
+
 /** Pin the conversation to a workspace, or null for all workspaces (routed per turn). */
 export async function setConversationWorkspace(id: string, workspaceId: string | null): Promise<void> {
   await db.update(conversations).set({ workspaceId }).where(eq(conversations.id, id));
