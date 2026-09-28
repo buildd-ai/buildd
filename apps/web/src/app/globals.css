@@ -1,4 +1,9 @@
 @import "tailwindcss";
+/* The shared AI kit's chat components (@builddai/ai-kit/chat/react): its
+   neutral defaults and its layout, each in a layer so buildd's own mapping
+   ("Chat on the kit", at the end of this file) and Tailwind utilities win. */
+@import "@builddai/ai-kit/chat/theme.css" layer(base);
+@import "@builddai/ai-kit/chat/styles.css" layer(components);
 @config "../../tailwind.config.ts";
 
 /* ── Z-Index Scale ──
@@ -846,4 +851,191 @@ textarea[data-composer-input]:focus-visible { outline: none; }
   .composer-sweep { animation: none; }
   .composer-sweep::after { width: 100%; box-shadow: none; }
   .thinking-tick, .step-active { animation: none; }
+}
+
+/* ── Chat on the kit (docs/design/shared-ai-kit.md, 1c "Theming"). buildd's
+ * tools menu, tier picker, approval and setup cards and the empty canvas are
+ * the kit's components (@builddai/ai-kit/chat/react). They read only these
+ * --kit-* properties, mapped here once from the chat roles above, so they
+ * follow the day/night switch. Objects stay square: --kit-radius-hard is 0;
+ * only the conversation's bubbles are soft (--kit-radius-soft). Declared on
+ * every [data-theme] too, so a subtree pinned to a theme resolves its own. */
+:root, [data-theme] {
+  --kit-bg: var(--chat-ground);
+  --kit-surface: var(--chat-surface);
+  --kit-ink: var(--chat-text);
+  --kit-muted: var(--chat-muted);
+  --kit-rule: var(--chat-rule);
+  --kit-accent: var(--accent);
+  --kit-accent-ink: var(--on-accent);
+  --kit-radius-soft: 18px;
+  --kit-radius-hard: 0;
+  --kit-font-body: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --kit-font-mono: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  --kit-sheet-bottom-offset: 0px;
+}
+
+/* buildd's look for the kit's classes: the v3 chat foreground
+ * (docs/design/chat-canvas.md). Same layer as the kit's styles.css and later
+ * in source, so these win without !important, and Tailwind utilities still
+ * win over both. */
+@layer components {
+  /* ── Composer control cells (tools, tier): square, filling their toolbar
+     slot, split by the toolbar's 1px rules. At least 44px to touch. */
+  .buildd-menu-cell > .kit-menu { height: 100%; width: 100%; }
+  .buildd-menu-cell .kit-menu-trigger {
+    height: 100%; width: 100%; min-height: 44px; min-width: 0; padding: 0 8px;
+    justify-content: center; gap: 6px;
+    font-size: 12.5px; font-weight: 500; color: var(--chat-muted);
+  }
+  .buildd-menu-cell .kit-menu-trigger:hover,
+  .buildd-menu-cell .kit-menu-trigger[aria-expanded="true"] { background: var(--chat-raised); color: var(--chat-text); }
+  .buildd-menu-cell [data-testid="kit-tier-trigger"] > span[aria-hidden="true"] { color: var(--chat-dim); }
+  /* The tools cell is just `···` (the kit's ToolsMenu carries no count). */
+  .buildd-menu-cell [data-testid="kit-tools-trigger"] { font-size: 13px; letter-spacing: .08em; }
+  /* Same label on every viewport, lowercase in the cell (`auto ▾`,
+     `auto · standard`); the menu keeps sentence case. */
+  .buildd-menu-cell [data-testid="kit-tier-trigger"] { text-transform: lowercase; }
+
+  /* The popover, anchored to its cell: it opens up (the chat composer sits at
+     the bottom), or down when there is room below and little above (Home's). */
+  .buildd-menu-cell .kit-menu > .kit-menu-panel {
+    width: 300px; min-width: 0; max-width: calc(100vw - 2rem); padding: 0;
+    border: 2px solid var(--border-strong); background: var(--surface-2); color: var(--text-primary);
+    box-shadow: var(--card-shadow);
+  }
+  .buildd-menu-cell[data-drop="down"] .kit-menu > .kit-menu-panel { bottom: auto; top: calc(100% + 6px); }
+  /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
+  .kit-sheet-layer > .kit-sheet-scrim { background: rgb(0 0 0 / 0.5); }
+  .kit-sheet-layer > .kit-menu-panel[data-sheet] {
+    border-radius: 0; border-top: 2px solid var(--border-strong);
+    background: var(--surface-2); color: var(--text-primary); padding-top: 0;
+  }
+  .kit-menu-panel .kit-menu-title {
+    margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-size: 11px; letter-spacing: 2px; color: var(--text-muted);
+  }
+  .kit-menu-panel .kit-rows { padding: 4px 0; }
+  .kit-menu-panel .kit-row { min-height: 44px; padding: 0 12px; font-family: var(--kit-font-mono); font-size: 12.5px; color: var(--text-primary); }
+  .kit-menu-panel .kit-row[data-locked="true"] > .kit-row-label { color: var(--text-muted); }
+  .kit-menu-panel .kit-row-lock { font-size: 11.5px; letter-spacing: 1.2px; color: var(--text-muted); }
+  .kit-menu-panel .kit-toggle { border: 1.5px solid var(--border-strong); }
+  .kit-menu-panel .kit-toggle > button { min-height: 32px; font-size: 11.5px; color: var(--text-secondary); }
+  .kit-menu-panel .kit-toggle > button:hover:not([aria-pressed="true"]) { background: var(--surface-3); }
+  .kit-menu-panel .kit-toggle > button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+  .kit-menu-panel .kit-menu-error { padding: 8px 12px; border-top: 1px solid var(--border); font-family: var(--kit-font-mono); font-size: 12px; color: var(--status-error); }
+  /* Tier options: the name over its model and price, a tick on the pinned one. */
+  .kit-menu-panel .kit-option {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; align-content: center;
+    min-height: 44px; padding: 6px 12px; font-family: var(--kit-font-mono); color: var(--text-secondary);
+  }
+  @media (hover: hover) { .kit-menu-panel .kit-option:hover { background: var(--surface-3); } }
+  .kit-menu-panel .kit-option > span:first-child { grid-column: 1; font-size: 13px; font-weight: 600; }
+  .kit-menu-panel .kit-option > .kit-option-meta { grid-column: 1; min-width: 0; font-size: 11px; font-weight: 400; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kit-menu-panel .kit-option[aria-checked="true"] { color: var(--text-primary); }
+  .kit-menu-panel .kit-option[aria-checked="true"]::after { content: "✓"; grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--accent-text); }
+  /* A cell's detail on hover (desktop pointers only), never while it is open. */
+  .buildd-menu-hover { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); }
+  @media (hover: hover) and (min-width: 640px) {
+    .buildd-menu-cell:hover > .buildd-menu-hover { display: block; }
+  }
+  .buildd-menu-cell:has(.kit-menu[data-open]) > .buildd-menu-hover { display: none; }
+  .buildd-menu-cell[data-drop="down"] > .buildd-menu-hover { bottom: auto; top: calc(100% + 6px); }
+
+  /* ── Approval card: a fleet object (square, 1px rule, 3px offset shadow,
+     2px copper top edge for "needs you"), mono chrome, what changes said in
+     Newsreader. */
+  .kit-card.buildd-approval {
+    gap: 10px; padding: 0 16px 16px;
+    border: 1px solid var(--chat-rule-strong); border-top: 2px solid var(--mood-needs);
+    background: var(--chat-surface); box-shadow: 3px 3px 0 0 var(--chat-rule);
+  }
+  .buildd-approval > .kit-eyebrow {
+    display: flex; align-items: center; gap: 8px; margin: 0 -16px; padding: 10px 16px;
+    border-bottom: 1px solid var(--chat-rule); letter-spacing: .16em; color: var(--mood-needs);
+  }
+  .buildd-approval > .kit-eyebrow::before { content: ""; width: 8px; height: 8px; flex: none; background: var(--mood-needs); }
+  /* What the write is ("TELL ME WHEN"), set by ApprovalCard.tsx; on a phone
+     the workspace rides along (`· billing-web`). */
+  .buildd-approval > .kit-eyebrow { flex-wrap: wrap; row-gap: 6px; }
+  .buildd-approval > .kit-eyebrow::after {
+    content: var(--buildd-approval-tag, none); margin-left: 4px; min-width: 0;
+    font-size: 12px; letter-spacing: .12em; color: var(--chat-text);
+  }
+  .buildd-approval > .kit-card-title {
+    margin-top: 2px; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 19px; font-weight: 400; line-height: 1.3; color: var(--chat-text);
+  }
+  .buildd-approval .kit-changes { border-top: 1px solid var(--chat-rule); }
+  .buildd-approval .kit-change { gap: 2px 16px; padding: 8px 0; border-bottom: 1px solid var(--chat-rule); }
+  .buildd-approval .kit-change-label { letter-spacing: .14em; color: var(--chat-muted); overflow-wrap: anywhere; }
+  .buildd-approval .kit-change > span:last-child {
+    min-width: 0; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 16.5px; line-height: 1.4; color: var(--chat-text); overflow-wrap: anywhere;
+  }
+  .buildd-approval .kit-change del { color: var(--chat-muted); }
+  .buildd-approval .kit-change > span:last-child > span[aria-hidden="true"] { padding: 0 6px; font-family: var(--kit-font-mono); color: var(--chat-muted); }
+  .buildd-approval .kit-note { font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 15px; font-style: italic; color: var(--chat-muted); }
+  .buildd-approval .kit-confirm-field .kit-note { font-family: var(--kit-font-mono); font-size: 12px; font-style: normal; color: var(--text-secondary); }
+  .buildd-approval .kit-confirm-field strong { color: var(--text-primary); }
+  .buildd-approval .kit-input { min-height: 40px; border: 2px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary); font-family: var(--kit-font-mono); font-size: 13px; }
+  .buildd-approval .kit-actions { flex-wrap: nowrap; gap: 8px; padding-top: 4px; }
+  .buildd-approval .kit-btn {
+    min-height: 44px; padding: 0 14px; white-space: nowrap;
+    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;
+    border: 1.5px solid var(--border-strong); color: var(--text-primary);
+  }
+  .buildd-approval .kit-btn:hover:not(:disabled) { background: var(--surface-3); }
+  .buildd-approval .kit-btn[data-variant="primary"] { padding: 0 16px; font-weight: 600; border: 2px solid var(--on-accent); background: var(--accent); color: var(--on-accent); }
+  .buildd-approval .kit-btn[data-variant="primary"]:hover:not(:disabled) { background: var(--primary-hover); }
+  .buildd-approval .kit-btn[data-variant="quiet"] { padding: 0 8px; border-color: transparent; color: var(--text-secondary); }
+  .buildd-approval .kit-btn[data-variant="quiet"]:hover:not(:disabled) { background: transparent; color: var(--text-primary); }
+  @media (min-width: 768px) {
+    .kit-card.buildd-approval { padding: 0 20px 16px; }
+    .buildd-approval > .kit-eyebrow { margin: 0 -20px; padding: 12px 20px; }
+    .buildd-approval > .kit-eyebrow::after { content: var(--buildd-approval-verb, none); }
+    [data-ws] > .buildd-approval > .kit-eyebrow { padding-right: calc(40% + 28px); }
+    .buildd-approval > .kit-card-title { font-size: 20px; }
+    .buildd-approval .kit-change { grid-template-columns: 110px minmax(0, 1fr); align-items: baseline; }
+    .buildd-approval .kit-actions { gap: 10px; }
+  }
+
+  /* ── Setup card: the one inline "chat can't start yet" state. */
+  .kit-card.buildd-setup { gap: 6px; padding: 16px 20px; border: 2px dashed var(--border-strong); background: var(--card); }
+  .buildd-setup > .kit-eyebrow { font-weight: 700; letter-spacing: 2px; color: var(--accent-text); }
+  .buildd-setup > .kit-note { font-size: 14px; line-height: 1.625; color: var(--text-secondary); }
+  .buildd-setup > .kit-actions { margin-top: 6px; align-items: center; gap: 12px; }
+
+  /* ── The empty canvas (ChatWorkspace): the greeting in the voice face and
+     the picked questions as square numbered rows under their own header. The
+     kit's box is `display: contents`, so its greeting and rows take their
+     place in the canvas column (`order`) around buildd's overline, sea gap and
+     rows header. */
+  .kit-empty.buildd-empty { display: contents; }
+  .buildd-empty > .kit-greeting {
+    order: 1; margin: 16px 0 0; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 28px; font-weight: 400; line-height: 1.1; letter-spacing: -0.01em; color: var(--chat-text);
+  }
+  .buildd-empty-plain > .kit-greeting { font-size: 44px; line-height: 1.02; letter-spacing: -0.02em; }
+  .buildd-empty > .kit-chips {
+    order: 5; display: block; counter-reset: picked;
+    border: 1px solid var(--chat-rule); border-top: 0; background: var(--chat-panel);
+  }
+  .buildd-empty > .kit-chips > li + li { border-top: 1px solid var(--chat-rule); }
+  .buildd-empty .kit-chip {
+    counter-increment: picked; display: flex; width: 100%; min-height: 56px; align-items: center; gap: 12px;
+    padding: 8px 12px; border: 0; border-radius: 0; background: transparent; text-align: left;
+    font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 19px; line-height: 1.25; color: var(--chat-text);
+  }
+  .buildd-empty .kit-chip:hover { background: var(--chat-raised); }
+  .buildd-empty .kit-chip::before { content: counter(picked, decimal-leading-zero); flex: none; font-family: var(--kit-font-mono); font-size: 11px; color: var(--chat-dim); }
+  .buildd-empty .kit-chip::after { content: "→"; flex: none; margin-left: auto; font-family: var(--kit-font-mono); font-size: 14px; color: var(--chat-muted); }
+  /* The row that is the thing waiting on the viewer is drawn copper. */
+  .buildd-empty .kit-chip[data-chip^="needs"],
+  .buildd-empty .kit-chip[data-chip^="needs"]::before,
+  .buildd-empty .kit-chip[data-chip^="needs"]::after { color: var(--mood-needs); }
+  @media (min-width: 1024px) {
+    .buildd-empty-plain > .kit-greeting { font-size: 64px; }
+    .buildd-empty:not(.buildd-empty-plain) > .kit-greeting { max-width: 640px; }
+  }
 }

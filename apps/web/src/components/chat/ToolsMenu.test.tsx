@@ -1,23 +1,34 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ToolRows, ToolsTrigger } from './ToolsMenu';
+import { ToolsMenu as KitToolsMenu, ToolRows } from '@builddai/ai-kit/chat/react';
+import ToolsMenu from './ToolsMenu';
+import { dropSide } from './KitMenuCell';
 import { TierDetail } from './TierSwitch';
 
+const rows = [
+  { key: 'tasks', label: 'Tasks', mode: 'allow' as const, locked: false },
+  { key: 'admin', label: 'Admin', mode: 'ask' as const, locked: true },
+  { key: 'secrets', label: 'Secrets', mode: 'never' as const, locked: true },
+];
+
 describe('tools cell', () => {
-  it('is just the dots, with no count', () => {
-    const html = renderToStaticMarkup(<ToolsTrigger />);
-    expect(html).toContain('···');
-    expect(html.replace(/<[^>]*>/g, '')).toBe('···');
+  it('is the kit menu in a composer cell, the trigger just the dots', () => {
+    const html = renderToStaticMarkup(<ToolsMenu teamId="t1" />);
+    expect(html).toContain('data-testid="composer-tools"');
+    expect(html).toContain('buildd-menu-cell');
+    const trigger = html.slice(html.indexOf('data-testid="kit-tools-trigger"'), html.indexOf('</button>'));
+    expect(trigger.replace(/<[^>]*>/g, '').replace(/^[^>]*>/, '')).toBe('···');
+  });
+
+  it('never shows an Allow count, even with a group allowed', () => {
+    const html = renderToStaticMarkup(<KitToolsMenu rows={rows} onChange={() => {}} />);
+    const trigger = html.slice(html.indexOf('data-testid="kit-tools-trigger"'), html.indexOf('</button>'));
+    expect(trigger).not.toMatch(/\d/);
+    expect(html).toContain('aria-label="Tools"');
   });
 });
 
-describe('ToolRows', () => {
-  const rows = [
-    { key: 'tasks', label: 'Tasks', mode: 'allow' as const, locked: false },
-    { key: 'admin', label: 'Admin', mode: 'ask' as const, locked: true },
-    { key: 'secrets', label: 'Secrets', mode: 'never' as const, locked: true },
-  ];
-
+describe('ToolRows (the kit\'s, as buildd shows them)', () => {
   it('switchable rows get Ask first / Allow with the current one pressed; locked rows get a label only', () => {
     const html = renderToStaticMarkup(<ToolRows rows={rows} onChange={() => {}} />);
     expect(html).toMatch(/data-group="tasks"[\s\S]*aria-pressed="true"[^>]*>Allow</);
@@ -25,6 +36,15 @@ describe('ToolRows', () => {
     expect(admin).not.toContain('<button');
     expect(admin).toContain('Ask first');
     expect(html).toContain('Never');
+  });
+});
+
+describe('dropSide: which way a composer menu opens', () => {
+  it('up at the bottom of the screen (the chat composer), down near the top (Home)', () => {
+    expect(dropSide({ top: 800, bottom: 848 }, 900)).toBe('up');
+    expect(dropSide({ top: 120, bottom: 168 }, 900)).toBe('down');
+    // Little room below but even less above: down.
+    expect(dropSide({ top: 100, bottom: 700 }, 900)).toBe('down');
   });
 });
 

@@ -34,6 +34,7 @@ import { dockChoice, needsDockRef, NEEDS_DOCK_CLOSED_KEY } from './dock-model';
 import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
+import { ChatEmpty, type ChatEmptyChip } from '@builddai/ai-kit/chat/react';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
 import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
 import { objectSheetTitle } from './mission-sheet';
@@ -447,6 +448,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   // The empty canvas (docs/design/chat-canvas.md): an overline with the mood,
   // a hero line in the voice face, and two picked questions as square rows.
+  // The hero and the rows are the kit's ChatEmpty (its greeting and chips);
+  // the overline, the sea gap and the rows' header are buildd's, placed around
+  // them by `order` (globals.css, "Chat on the kit").
   const hero = messages.length === 0
     ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
     : null;
@@ -459,53 +463,40 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const anchoredPhone = !!hero && plainCanvas && !overlay && !historyOpen;
   const anchoredDesk = !!hero && plainCanvas && !overlay;
   const anchored = anchoredPhone || anchoredDesk;
+  // `needs-…` ids let the row waiting on the viewer be drawn copper.
+  const chips: ChatEmptyChip[] = suggestions.map((sg, i) => ({ id: `${sg.tone ?? 'row'}-${i}`, label: sg.label, text: sg.text, send: sg.send }));
   const emptyCanvas = hero && (
     <div
       data-testid="canvas-empty"
       data-mood={hero.mood ?? undefined}
       data-layout={anchoredPhone ? 'anchored' : undefined}
-      className={`mb-8 mt-2 md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex lg:flex-1 lg:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+      className={`mb-8 mt-2 flex flex-col md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex-1' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
     >
       <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
         {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
         {hero.overline}
       </p>
-      <p className={`mt-4 font-voice text-[var(--chat-text)] ${plainCanvas ? 'text-[44px] leading-[1.02] tracking-[-0.02em] lg:text-[64px]' : 'text-[28px] leading-[1.1] tracking-[-0.01em] lg:max-w-[640px]'}`}>
-        {hero.hero}
-      </p>
-      {hero.sub && (
-        <p data-testid="canvas-hero-sub" suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)] lg:mt-4 lg:max-w-[640px] lg:text-[22px]">{hero.sub}</p>
-      )}
+      <ChatEmpty
+        className={`buildd-empty${plainCanvas ? ' buildd-empty-plain' : ''}`}
+        chips={chips}
+        onChip={pick}
+        greeting={(
+          <>
+            {hero.hero}
+            {hero.sub && (
+              <span data-testid="canvas-hero-sub" suppressHydrationWarning className="mt-3 block font-voice text-[20px] italic leading-snug tracking-normal text-[var(--chat-muted)] lg:mt-4 lg:max-w-[640px] lg:text-[22px]">{hero.sub}</span>
+            )}
+          </>
+        )}
+      />
       {/* Phone: open sea between the hero and the picked rows, which sit
           right above the composer (the v3 frames). */}
-      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className={`${anchoredPhone ? 'max-md:min-h-7 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:min-h-7 lg:flex-1' : ''}`} />}
+      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className={`order-3 ${anchoredPhone ? 'max-md:min-h-7 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:min-h-7 lg:flex-1' : ''}`} />}
       {suggestions.length > 0 && (
-        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? `${anchoredPhone ? '' : 'max-md:mt-7'} md:mt-7 ${anchoredDesk ? 'lg:mt-0' : ''}` : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
-          <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
-            <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
-            {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
-          </div>
-          <ul className="divide-y divide-[var(--chat-rule)]">
-            {suggestions.map((sg, i) => {
-              const copper = sg.tone === 'needs';
-              return (
-                <li key={sg.label}>
-                  <button
-                    type="button"
-                    data-testid="canvas-suggestion"
-                    data-tone={sg.tone}
-                    onClick={() => pick(sg)}
-                    className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--chat-raised)]"
-                  >
-                    <span aria-hidden="true" className={`shrink-0 font-mono text-[11px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-dim)]'}`}>{String(i + 1).padStart(2, '0')}</span>
-                    <span data-testid="canvas-suggestion-label" className={`min-w-0 flex-1 font-voice text-[19px] leading-tight ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-text)]'}`}>{sg.label}</span>
-                    <span aria-hidden="true" className={`shrink-0 font-mono text-[14px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-muted)]'}`}>→</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        <div data-testid="canvas-suggestions" className={`order-4 ${anchored ? `${anchoredPhone ? '' : 'max-md:mt-7'} md:mt-7 ${anchoredDesk ? 'lg:mt-0' : ''}` : 'mt-7'} flex h-[31px] items-center justify-between gap-3 border border-[var(--chat-rule)] bg-[var(--chat-panel)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]`}>
+          <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
+          {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
+        </div>
       )}
     </div>
   );

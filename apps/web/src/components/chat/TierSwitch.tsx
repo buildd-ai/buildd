@@ -2,15 +2,36 @@
 
 /**
  * The composer's tier switch: Auto (routed per turn) or one of the chat tiers
- * for this conversation. Hover (desktop) or the open menu shows each tier's
- * model, its expected price per 1k tokens (averaged over the tier's models when
- * it's pooled) and what this conversation has cost so far. A tier, never a
- * model: which model backs a tier is the team admin's.
+ * for this conversation. A tier, never a model: which model backs a tier is
+ * the team admin's.
+ *
+ * The picker is the kit's (`TierPicker` from @builddai/ai-kit/chat/react); this
+ * owns buildd's `/api/chat/tiers` fetch and the pricing detail: each option
+ * names its model and its expected price per 1k tokens (averaged over the
+ * tier's models when it's pooled), and hovering the cell (desktop) shows the
+ * shown tier's detail plus what this conversation has cost so far.
  */
 import { useEffect, useState } from 'react';
+import { TierPicker, formatCost, formatPer1k, type TierOption } from '@builddai/ai-kit/chat/react';
 import type { ChatTierInfo, ChatTierName, GetChatTiersResponse } from '@buildd/shared';
-import ComposerMenu from './ComposerMenu';
-import { formatCost, formatPer1k, tierChipLabel, tierDisplayName } from './composer-format';
+import KitMenuCell from './KitMenuCell';
+
+const TIERS: readonly ChatTierName[] = ['budget', 'standard', 'premium'];
+
+/** A tier's model (`+N` when pooled). */
+function modelLine(info: ChatTierInfo): string {
+  return info.models.length > 1 ? `${info.model} +${info.models.length - 1}` : info.model;
+}
+
+/** The kit's options, each with "model · $in / $out per 1k" once the tiers load. */
+export function tierOptions(tiers: readonly ChatTierInfo[] | null | undefined): TierOption[] {
+  return TIERS.map(tier => {
+    const info = tiers?.find(t => t.tier === tier);
+    return info
+      ? { tier, price: `${modelLine(info)} · ${formatPer1k(info.inputPer1kUsd)} / ${formatPer1k(info.outputPer1kUsd)} per 1k` }
+      : { tier };
+  });
+}
 
 export function TierDetail({ info, cost }: { info: ChatTierInfo | null; cost: number | null }) {
   const spent = formatCost(cost);
@@ -19,7 +40,7 @@ export function TierDetail({ info, cost }: { info: ChatTierInfo | null; cost: nu
       {info && (
         <>
           <dt className="text-text-muted">Model</dt>
-          <dd className="min-w-0 truncate text-text-primary">{info.models.length > 1 ? `${info.model} +${info.models.length - 1}` : info.model}</dd>
+          <dd className="min-w-0 truncate text-text-primary">{modelLine(info)}</dd>
           <dt className="text-text-muted">Per 1k</dt>
           <dd className="text-text-primary">{`${formatPer1k(info.inputPer1kUsd)} in · ${formatPer1k(info.outputPer1kUsd)} out`}</dd>
         </>
@@ -52,62 +73,18 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
     return () => { live = false; };
   }, [teamId, conversationId, refreshKey]);
 
-  const cost = data?.conversationCostUsd ?? null;
   const shown = pinned ?? last ?? 'standard';
   const info = data?.tiers.find(t => t.tier === shown) ?? null;
-  const spent = formatCost(cost);
 
   return (
-    <ComposerMenu
-      label={`Tier: ${tierChipLabel({ pinned, last })}`}
-      title="Tier"
-      testId="composer-tier-chip"
-      align="right"
-      hover={<TierDetail info={info} cost={cost} />}
-      trigger={(
-        <>
-          {/* Same label on every viewport, lowercase in the cell like the v3
-              frame (`auto ▾`, `auto · standard`); the menu keeps sentence case. */}
-          <span data-testid="composer-tier-label" className="whitespace-nowrap">{tierChipLabel({ pinned, last }).toLowerCase()}</span>
-          {spent && <span data-testid="composer-tier-cost" className="hidden text-[var(--chat-dim)] md:inline lg:hidden">{spent}</span>}
-          <span aria-hidden="true" className="text-[var(--chat-dim)]">▾</span>
-        </>
-      )}
-    >
-      {(close) => (
-        <div>
-          <div className="hidden border-b border-border-default px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted sm:block">Tier</div>
-          <ul role="listbox" aria-label="Tier" className="py-1">
-            {([null, 'budget', 'standard', 'premium'] as const).map(t => {
-              const selected = t === pinned;
-              const tInfo = t ? data?.tiers.find(x => x.tier === t) ?? null : null;
-              return (
-                <li key={t ?? 'auto'}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    data-tier={t ?? 'auto'}
-                    onClick={() => { onChange(t); close(); }}
-                    className={`flex min-h-11 w-full items-center justify-between gap-3 px-3 py-1.5 text-left font-mono hover:bg-surface-3 ${selected ? 'text-text-primary' : 'text-text-secondary'}`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block text-[13px] font-semibold">{tierDisplayName(t)}</span>
-                      <span className="block truncate text-[11px] text-text-muted">
-                        {t ? (tInfo ? `${tInfo.model} · ${formatPer1k(tInfo.inputPer1kUsd)} / ${formatPer1k(tInfo.outputPer1kUsd)} per 1k` : '') : 'Routed per message'}
-                      </span>
-                    </span>
-                    {selected && <span aria-hidden="true" className="shrink-0 text-accent-text">✓</span>}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <div className="border-t border-border-default px-3 py-2 font-mono text-[12px] text-text-secondary">
-            {`This chat: ${spent || '$0'}`}
-          </div>
-        </div>
-      )}
-    </ComposerMenu>
+    <KitMenuCell testId="composer-tier" hover={<TierDetail info={info} cost={data?.conversationCostUsd ?? null} />}>
+      <TierPicker
+        value={pinned}
+        last={last}
+        onChange={t => onChange(t as ChatTierName | null)}
+        options={tierOptions(data?.tiers)}
+        title="Tier"
+      />
+    </KitMenuCell>
   );
 }

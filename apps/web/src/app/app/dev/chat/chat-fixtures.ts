@@ -8,7 +8,7 @@ import type { BuilddObjectRef, ChatMessage, ChatToolPart } from '@/components/ch
 import type { MissionObjectView, ObjectView, PrObjectView, QuestionObjectView, TaskObjectView } from '@/components/chat/objects/object-views';
 import { CHAT_EVENT_PART_TYPE } from '@/components/chat/chat-contract';
 import { watchNotice } from '@/lib/watch-notice';
-import { encodeApprovalPreview, type ChatApprovalPreview, type VisualReviewModel } from '@buildd/shared';
+import { encodeApprovalPreview, type ChatApprovalPreview, type ChatToolPermissionRow, type GetChatTiersResponse, type VisualReviewModel } from '@buildd/shared';
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 
@@ -387,3 +387,29 @@ export function fixtureViews(state: ChatFixtureState): Record<string, ObjectView
   ];
   return Object.fromEntries(pairs.map(([r, v]) => [`${r.kind}:${r.id}`, v]));
 }
+
+// ── Composer controls (`&controls=1`): the tools menu and the tier switch,
+// with fictional rows and prices served by the page's fetch stand-in. ──
+
+export const FIXTURE_TOOL_ROWS: ChatToolPermissionRow[] = [
+  { key: 'missions', label: 'Missions', mode: 'ask', locked: false },
+  { key: 'tasks', label: 'Tasks', mode: 'allow', locked: false },
+  { key: 'workers', label: 'Agents', mode: 'ask', locked: false },
+  { key: 'prs', label: 'PRs', mode: 'read', locked: true },
+  { key: 'memory', label: 'Knowledge', mode: 'ask', locked: false },
+  { key: 'schedules', label: 'Schedules', mode: 'ask', locked: false },
+  { key: 'artifacts', label: 'Artifacts', mode: 'ask', locked: false },
+  { key: 'notifications', label: 'Watches', mode: 'ask', locked: false },
+  { key: 'admin', label: 'Admin', mode: 'ask', locked: true },
+  { key: 'secrets', label: 'Secrets', mode: 'never', locked: true },
+];
+
+export const FIXTURE_TIERS: GetChatTiersResponse = {
+  tiers: [
+    { tier: 'budget', model: 'example/small', models: ['example/small', 'example/small-alt'], inputPer1kUsd: 0.0002, outputPer1kUsd: 0.0008 },
+    { tier: 'standard', model: 'example/medium', models: ['example/medium'], inputPer1kUsd: 0.002, outputPer1kUsd: 0.01 },
+    { tier: 'premium', model: 'example/large', models: ['example/large'], inputPer1kUsd: 0.005, outputPer1kUsd: 0.025 },
+  ],
+  pinned: null,
+  conversationCostUsd: 0.0421,
+};

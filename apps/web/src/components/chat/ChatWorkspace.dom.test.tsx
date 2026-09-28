@@ -135,7 +135,7 @@ describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the co
       await render({ pulse });
       const canvas = q('[data-testid="canvas-empty"]')!;
       expect(canvas.dataset.layout).toBe('anchored');
-      expect(cls(canvas)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:flex-1', 'max-md:flex-col']));
+      expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'max-md:flex-1']));
       const gap = q('[data-testid="canvas-sea-gap"]')!;
       expect(cls(gap)).toContain('max-md:flex-1');
       expect(gap.nextElementSibling?.getAttribute('data-testid')).toBe('canvas-suggestions');
@@ -244,7 +244,10 @@ describe('sea', () => {
 });
 
 describe('empty canvas', () => {
-  const labels = () => qa('[data-testid="canvas-suggestion-label"]').map(c => c.textContent);
+  // The picked rows are the kit's ChatEmpty chips; a `needs-` id draws one copper.
+  const chips = () => qa('[data-testid="canvas-empty"] .kit-chip');
+  const labels = () => chips().map(c => c.textContent);
+  const copper = (c: HTMLElement) => c.dataset.chip?.startsWith('needs-') ?? false;
   const placeholder = () => (q('#chat-composer-input') as HTMLTextAreaElement).placeholder;
 
   it('without a pulse: greets by name, claims no mood, and offers no needs-you prompt', async () => {
@@ -252,7 +255,7 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Hi Maya, what are we working on?');
     expect(q('[data-testid="canvas-mood-dot"]')).toBeNull();
     expect(labels()).toEqual(["What's running right now?", 'Start something new']);
-    await act(async () => { qa('[data-testid="canvas-suggestion"]')[0].click(); });
+    await act(async () => { chips()[0].click(); });
     expect(sent).toEqual(["What's running right now?"]);
   });
 
@@ -261,8 +264,8 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('calm');
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('All quiet.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('nothing blocked');
-    expect(qa('[data-testid="canvas-suggestion"]')).toHaveLength(2);
-    expect(qa('[data-testid="canvas-suggestion"][data-tone="needs"]')).toHaveLength(0);
+    expect(chips()).toHaveLength(2);
+    expect(chips().filter(copper)).toHaveLength(0);
     expect(placeholder()).toBe('Start something new…');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('calm');
   });
@@ -272,9 +275,10 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
-    const rows = qa('[data-testid="canvas-suggestion"]');
+    const rows = chips();
     expect(rows).toHaveLength(2);
-    expect(rows[0].dataset.tone).toBe('needs');
+    expect(copper(rows[0])).toBe(true);
+    expect(copper(rows[1])).toBe(false);
     expect(placeholder()).toBe('Answer the waiting question');
     expect(q('[data-testid="chat-composer"]')?.dataset.mood).toBe('needs');
     await act(async () => { rows[0].click(); });
@@ -283,7 +287,7 @@ describe('empty canvas', () => {
 
   it('a starter fills the box instead of sending', async () => {
     await render({ pulse: { needsYou: [], live: 0 } });
-    const starter = qa('[data-testid="canvas-suggestion"]').find(c => c.textContent?.includes('Start something new'))!;
+    const starter = chips().find(c => c.textContent?.includes('Start something new'))!;
     await act(async () => { starter.click(); });
     expect(sent).toEqual([]);
     expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe('I want to build ');
@@ -515,7 +519,7 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
   it('the picked panel sits just above the composer, as on a phone', async () => {
     await render({ pulse: calm });
     const canvas = q('[data-testid="canvas-empty"]')!;
-    expect(cls(canvas)).toEqual(expect.arrayContaining(['lg:flex', 'lg:flex-1', 'lg:flex-col', 'lg:mb-0']));
+    expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'lg:flex-1', 'lg:mb-0']));
     expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['lg:flex', 'lg:min-h-full', 'lg:flex-col']));
     expect(cls(q('[data-testid="canvas-sea-gap"]'))).toContain('lg:flex-1');
     expect(cls(q('[data-testid="canvas-suggestions"]'))).toContain('lg:mt-0');
