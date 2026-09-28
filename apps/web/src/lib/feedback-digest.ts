@@ -4,13 +4,22 @@
  * Analyzes recent user feedback (down-votes & dismissals) on AI content,
  * identifies patterns, and persists distilled learnings to the memory service
  * so future agent runs produce more relevant output.
+ *
+ * Each memory is filed under the project key of the workspace the rated
+ * content belongs to (memoryProjectKey, the rule every memory read uses) and
+ * mirrored into the recall index through the shared write helper. Feedback
+ * that cannot be tied to a workspace key writes nothing: a memory with no
+ * project is invisible to every project-scoped read.
  */
 
 import { db } from '@buildd/core/db';
-import { userFeedback, missionNotes, artifacts } from '@buildd/core/db/schema';
-import { and, gte, inArray, sql } from 'drizzle-orm';
+import { userFeedback, missionNotes, artifacts, missions, tasks, workspaces } from '@buildd/core/db/schema';
+import { and, eq, gte, inArray } from 'drizzle-orm';
 import { MemoryStore } from '@buildd/core/memory-store';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { memoryProjectKey } from '@buildd/core/project-scope';
+import { saveMemory, updateMemory } from '@buildd/core/memory-write';
+import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +38,8 @@ interface FeedbackRow {
 }
 
 interface PatternBucket {
+  /** memories.project key the pattern is filed under (memoryProjectKey of the rated workspace). */
+  project: string;
   entityType: EntityType;
   signal: Signal;
   count: number;
@@ -92,14 +103,18 @@ async function resolveEntityContext(entityType: EntityType, entityIds: string[])
 
 // ── Pattern analysis ──────────────────────────────────────────────────────────
 
-function bucketFeedback(rows: FeedbackRow[]): PatternBucket[] {
-  const key = (r: FeedbackRow) => `${r.entityType}::${r.signal}`;
+function bucketFeedback(rows: FeedbackRow[], projectOf: Map<string, string>): PatternBucket[] {
   const map = new Map<string, PatternBucket>();
 
   for (const r of rows) {
-    const k = key(r);
+    // A memory with no project is invisible to every project-scoped read, so
+    // feedback that cannot be tied to a workspace key is not written at all.
+    const project = projectOf.get(r.id);
+    if (!project) continue;
+    const k = `${project}::${r.entityType}::${r.signal}`;
     if (!map.has(k)) {
       map.set(k, {
+        project,
         entityType: r.entityType,
         signal: r.signal,
         count: 0,
@@ -114,6 +129,98 @@ function bucketFeedback(rows: FeedbackRow[]): PatternBucket[] {
   }
 
   return Array.from(map.values());
+}
+
+// ── Workspace / project resolution ────────────────────────────────────────────
+
+/** Task id inside a summary entity id (`task-<uuid>-summary` / `task-<uuid>-suggestion`). */
+const SUMMARY_ENTITY_RE = /^task-([0-9a-f-]{36})-(?:summary|suggestion)$/i;
+
+/** The workspace each feedback row's rated entity belongs to, by feedback row id. */
+async function resolveFeedbackWorkspaces(rows: FeedbackRow[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const idsOf = (type: EntityType) => rows.filter(r => r.entityType === type).map(r => r.entityId);
+
+  const noteIds = idsOf('note');
+  const artifactIds = idsOf('artifact');
+  const heartbeatTaskIds = idsOf('heartbeat');
+  const orchestrationMissionIds = idsOf('orchestration');
+  const summaryTaskIds = rows
+    .filter(r => r.entityType === 'summary')
+    .map(r => SUMMARY_ENTITY_RE.exec(r.entityId)?.[1])
+    .filter((id): id is string => !!id);
+
+  const noteMission = new Map<string, string>();
+  if (noteIds.length > 0) {
+    const notes = await db.query.missionNotes.findMany({
+      where: inArray(missionNotes.id, noteIds),
+      columns: { id: true, missionId: true },
+    });
+    for (const n of notes) if (n.missionId) noteMission.set(n.id, n.missionId);
+  }
+
+  const missionIds = [...new Set([...noteMission.values(), ...orchestrationMissionIds])];
+  const missionWs = new Map<string, string>();
+  if (missionIds.length > 0) {
+    const ms = await db.query.missions.findMany({
+      where: inArray(missions.id, missionIds),
+      columns: { id: true, workspaceId: true },
+    });
+    for (const m of ms) if (m.workspaceId) missionWs.set(m.id, m.workspaceId);
+  }
+
+  const artifactWs = new Map<string, string>();
+  if (artifactIds.length > 0) {
+    const arts = await db.query.artifacts.findMany({
+      where: inArray(artifacts.id, artifactIds),
+      columns: { id: true, workspaceId: true },
+    });
+    for (const a of arts) if (a.workspaceId) artifactWs.set(a.id, a.workspaceId);
+  }
+
+  const taskIds = [...new Set([...heartbeatTaskIds, ...summaryTaskIds])];
+  const taskWs = new Map<string, string>();
+  if (taskIds.length > 0) {
+    const ts = await db.query.tasks.findMany({
+      where: inArray(tasks.id, taskIds),
+      columns: { id: true, workspaceId: true },
+    });
+    for (const t of ts) if (t.workspaceId) taskWs.set(t.id, t.workspaceId);
+  }
+
+  for (const r of rows) {
+    let ws: string | undefined;
+    if (r.entityType === 'note') ws = missionWs.get(noteMission.get(r.entityId) ?? '');
+    else if (r.entityType === 'orchestration') ws = missionWs.get(r.entityId);
+    else if (r.entityType === 'artifact') ws = artifactWs.get(r.entityId);
+    else if (r.entityType === 'heartbeat') ws = taskWs.get(r.entityId);
+    else if (r.entityType === 'summary') ws = taskWs.get(SUMMARY_ENTITY_RE.exec(r.entityId)?.[1] ?? '');
+    if (ws) out.set(r.id, ws);
+  }
+  return out;
+}
+
+/**
+ * The memory project key for each feedback row, by the same rule every memory
+ * read uses (memoryProjectKey): only workspaces in the row's own team, never a
+ * sensitive one, and never a key shared with a sensitive workspace.
+ */
+async function resolveFeedbackProjects(teamId: string, rows: FeedbackRow[]): Promise<Map<string, string>> {
+  const wsOf = await resolveFeedbackWorkspaces(rows);
+  const out = new Map<string, string>();
+  if (wsOf.size === 0) return out;
+  const teamWorkspaces = await db.query.workspaces.findMany({
+    where: eq(workspaces.teamId, teamId),
+    columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
+  });
+  const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
+  for (const [rowId, wsId] of wsOf) {
+    const ws = byId.get(wsId);
+    if (!ws || ws.teamId !== teamId) continue;
+    const key = memoryProjectKey(ws, teamWorkspaces);
+    if (key) out.set(rowId, key);
+  }
+  return out;
 }
 
 /** Build human-readable memory content from a pattern bucket */
@@ -173,44 +280,50 @@ async function buildMemoryContent(bucket: PatternBucket): Promise<string> {
 
 async function persistPattern(
   memClient: MemoryStore,
+  index: KnowledgeStore,
+  teamId: string,
   bucket: PatternBucket,
 ): Promise<'saved' | 'updated' | 'skipped'> {
   const action = bucket.signal === 'dismiss' ? 'dismissed' : 'downvoted';
   const title = `User feedback: ${bucket.entityType} content frequently ${action}`;
   const tags = [DIGEST_TAG, 'user-preference', bucket.entityType, bucket.signal];
 
-  // Check for existing memory with same tag combo
+  // Check for an existing digest memory for this pattern in this project
   const existing = await memClient.search({
     query: `feedback ${bucket.entityType} ${action}`,
     type: 'pattern',
+    project: bucket.project,
   });
 
   const content = await buildMemoryContent(bucket);
+  const writeOpts = { teamId, knowledgeStore: index, via: 'feedback-digest' as const };
 
   // Find an existing digest memory for this exact pattern
   if (existing.results.length > 0) {
     const fullMemories = await memClient.batch(existing.results.map(r => r.id));
     const match = fullMemories.memories.find(m =>
       m.source === DIGEST_SOURCE &&
+      m.project === bucket.project &&
       m.tags.includes(DIGEST_TAG) &&
       m.tags.includes(bucket.entityType) &&
       m.tags.includes(bucket.signal)
     );
 
     if (match) {
-      await memClient.update(match.id, { content, tags });
+      await updateMemory(memClient, match.id, { content, tags }, writeOpts);
       return 'updated';
     }
   }
 
-  // Save new memory
-  await memClient.save({
+  // Save new memory (mirrored into the recall index by the write helper)
+  await saveMemory(memClient, {
     type: 'pattern',
     title,
     content,
+    project: bucket.project,
     tags,
     source: DIGEST_SOURCE,
-  });
+  }, writeOpts);
   return 'saved';
 }
 
@@ -247,6 +360,7 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
 
   // 3. Process each team
   const results: DigestResult[] = [];
+  const index = getMemoryIndexStore();
 
   for (const [teamId, teamRows] of byTeam) {
     const memClient = await getMemoryStoreForTeam(null, teamId);
@@ -255,14 +369,14 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
       continue;
     }
 
-    const buckets = bucketFeedback(teamRows);
+    const buckets = bucketFeedback(teamRows, await resolveFeedbackProjects(teamId, teamRows));
     let saved = 0;
     let updated = 0;
 
     for (const bucket of buckets) {
       if (bucket.count < MIN_SIGNALS_FOR_PATTERN) continue;
 
-      const result = await persistPattern(memClient, bucket);
+      const result = await persistPattern(memClient, index, teamId, bucket);
       if (result === 'saved') saved++;
       if (result === 'updated') updated++;
     }

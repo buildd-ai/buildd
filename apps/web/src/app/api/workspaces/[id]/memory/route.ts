@@ -2,7 +2,7 @@
  * Proxy route for workspace memory — forwards to memory service.
  *
  * GET  /api/workspaces/:id/memory  → list/search memories (scoped by workspace repo as project)
- * POST /api/workspaces/:id/memory  → save a memory
+ * POST /api/workspaces/:id/memory  → save a memory (mirrored into the recall index)
  *
  * Auth: session user or API key with workspace access.
  */
@@ -13,7 +13,8 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { saveMemory } from '@buildd/core/memory-write';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 
 async function authenticateRequest(req: NextRequest) {
@@ -140,7 +141,9 @@ export async function POST(
   const project = await getWorkspaceProject(id);
 
   try {
-    const data = await memClient.save({
+    // Saved and mirrored into the index recall reads; a failed mirror is logged
+    // and re-tried by the reconcile pass, it does not fail the save.
+    const data = await saveMemory(memClient, {
       type: body.type,
       title: body.title,
       content: body.content,
@@ -148,7 +151,7 @@ export async function POST(
       tags: body.tags || body.concepts || [],
       files: body.files || [],
       source: body.source || 'dashboard',
-    });
+    }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:create' });
 
     // Return in observation-compatible shape for backward compat
     return NextResponse.json({
