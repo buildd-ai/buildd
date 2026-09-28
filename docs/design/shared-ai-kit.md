@@ -70,7 +70,7 @@ This section is the recon the proposal leans on. Where the target mockup and bui
 | Mockup element | In buildd today | In this design |
 |---|---|---|
 | `@ all ▾` scope picker | Yes, as the workspace chip ("All workspaces", "→ name" when routed) | `<ScopePicker>` |
-| `··· 2` control | Yes: the tools permission popover; the count is groups set to Allow | `<ToolsMenu>`, first class (§1c) |
+| `···` control | Yes: the tools permission popover (no count on the trigger) | `<ToolsMenu>`, first class (§1c) |
 | `auto ▾` tier picker | Yes, `TierSwitch` ("Auto", "Auto · Standard", with price) | `<TierPicker>` |
 | Orange send, Stop while busy | Yes | Yes |
 | Bottom tabs HOME · CHAT · MISSIONS · ACTIVITY · HEALTH | Yes for operators (`apps/web/src/lib/nav-config.tsx`) | App navigation, not the kit |
