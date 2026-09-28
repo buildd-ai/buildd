@@ -707,6 +707,24 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
    * queue, and re-enters the candidate window `MISSION_PR_SWEEP_WINDOW_MS` from
    * THIS attempt rather than from whatever `updatedAt` happens to say.
    */
+  /**
+   * Hand a mission whose mission PR has merged to the one completion writer.
+   * Dynamic import: mission-completion pulls in the criteria and Pusher graph,
+   * which nothing else in this module needs. Best effort — a failure here must
+   * not count as a sweep error for a mission that has, in fact, shipped.
+   */
+  const completeShippedMission = async (missionId: string) => {
+    try {
+      const { completeMissionIfVerified } = await import('@/lib/mission-completion');
+      await completeMissionIfVerified(missionId, {
+        path: 'dormancy',
+        predicate: 'mission PR merged',
+      });
+    } catch (err) {
+      console.error(`[pr-reconcile] completing shipped mission ${missionId} failed:`, err);
+    }
+  };
+
   const recordMissionSweepCheck = async (missionId: string) => {
     await db.update(missions)
       .set({ prSweepLastCheckedAt: new Date() })
@@ -734,11 +752,13 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
       // a branch GitHub no longer has, and count an `api_error` on every sweep,
       // forever. That is what this branch's absence was doing.
       //
-      // Advancing `missions.status` past `active` on merge is a separate concern
-      // and deliberately not done here — this sweep opens PRs, it does not own
-      // mission lifecycle.
+      // A shipped mission still sitting `active` reads as unfinished everywhere,
+      // and nothing else re-asks once its last planning cycle has run — so ask
+      // the completion writer here. This sweep does not decide lifecycle: the
+      // writer's own predicate (criteria, open tasks) may still refuse.
       if (owner?.state === 'merged') {
         result.alreadyShipped++;
+        await completeShippedMission(mission.id);
         continue;
       }
 
@@ -759,7 +779,11 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
         // Opted out between the query and here.
         result.notReady++;
       } else if (opened.ok) {
-        if (opened.created) result.opened++;
+        if (opened.merged) {
+          // Opened and merged outside buildd; the opener just recorded it.
+          result.alreadyShipped++;
+          await completeShippedMission(mission.id);
+        } else if (opened.created) result.opened++;
         else result.alreadyOpen++;
       } else if (opened.reason === 'mission_pr_closed') {
         result.prClosed++;

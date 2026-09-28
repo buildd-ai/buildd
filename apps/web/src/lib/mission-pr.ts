@@ -406,7 +406,17 @@ export async function evaluateMissionWorkState(
 }
 
 export type OpenMissionPrResult =
-  | { ok: true; prNumber: number; prUrl: string; created: boolean }
+  | {
+      ok: true;
+      prNumber: number;
+      prUrl: string;
+      created: boolean;
+      /**
+       * True when the PR adopted here was already MERGED on GitHub — opened and
+       * merged outside buildd. The mission has shipped; nothing is left to open.
+       */
+      merged?: boolean;
+    }
   | {
       ok: false;
       reason:
@@ -509,6 +519,25 @@ export async function openMissionIntegrationPr(
     repo.defaultBranch ||
     'main';
 
+  const trunk = trunkBranches(workspace.gitConfig, repo.defaultBranch);
+
+  // Nothing ahead of trunk, and buildd has never recorded a mission PR: the
+  // likeliest reason is that someone opened and merged it by hand. Adopt that
+  // merged PR so the mission reads as shipped instead of "not opened" forever —
+  // the completion gate refuses a mission with no mission PR on record, and no
+  // amount of retrying can open a PR from a branch with nothing on it.
+  const nothingToShip = async (detail: string): Promise<OpenMissionPrResult> => {
+    if (!owner) {
+      const merged = await findMergedPrForBranch(installationId, repo.fullName, branch, base);
+      if (merged) {
+        return adoptMergedMissionPr({
+          missionId, mission, workspaceId: workspace.id, branch, base, trunk, pr: merged,
+        });
+      }
+    }
+    return { ok: false, reason: 'no_commits', detail };
+  };
+
   // Nothing to ship is not an error, and it is not a PR either.
   try {
     const cmp = await githubApi(
@@ -516,7 +545,7 @@ export async function openMissionIntegrationPr(
       `/repos/${repo.fullName}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`,
     );
     if (typeof cmp?.ahead_by === 'number' && cmp.ahead_by === 0) {
-      return { ok: false, reason: 'no_commits', detail: `${branch} is not ahead of ${base}` };
+      return nothingToShip(`${branch} is not ahead of ${base}`);
     }
   } catch (err) {
     // A 404 here means GitHub has no such head branch — it was deleted on merge
@@ -529,7 +558,7 @@ export async function openMissionIntegrationPr(
     // second PR — so this must stay a per-attempt classification, not a
     // short-circuit on merge.
     if (githubErrorStatus(err) === 404) {
-      return { ok: false, reason: 'no_commits', detail: `${branch} no longer exists on the remote` };
+      return nothingToShip(`${branch} no longer exists on the remote`);
     }
     return {
       ok: false,
@@ -550,61 +579,9 @@ export async function openMissionIntegrationPr(
   // supposed to make recoverable and did not.
   const adoptable = await findOpenPrForBranch(installationId, repo.fullName, branch, base);
 
-  // Reuse the mission's existing owner rows rather than adding a pair per
-  // attempt. Without this, a failed `POST /pulls` leaves a row with no `prUrl`,
-  // the next attempt does not recognise it as an owner, and the mission
-  // accumulates one dead task+worker pair per retrigger — one of which the
-  // completion gate may then pick and refuse on forever.
-  const reusableTask = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
-    columns: { id: true, title: true, taskClass: true },
-  }))?.find(isMissionPrTask) ?? null;
-
-  const [ownerTask] = reusableTask ? [reusableTask] : await db
-    .insert(tasks)
-    .values({
-      workspaceId: workspace.id,
-      missionId,
-      title: `${MISSION_PR_TASK_PREFIX}${mission.title}`,
-      description:
-        `Integration PR for this mission: merges \`${branch}\` into \`${base}\`.\n\n` +
-        `This task exists to own the mission PR so it appears in the merge queue and can be ` +
-        `merged from the dashboard. It performs no work of its own and is never claimed by a runner.`,
-      mode: 'execution',
-      // Bookkeeping with no role, deliberately (role-routing §1 row 9, same as
-      // the adopted-PR row, row 7): it runs no worker, so a role would only
-      // count a placeholder as work. The mission's review carries its own role.
-      taskClass: 'bookkeeping',
-      creationSource: 'orchestrator',
-      // Terminal on creation: nothing should ever claim this row. Leaving it
-      // claimable would hand a runner a task with no work in it, and would make
-      // it count toward the mission's unfinished-work total.
-      status: 'completed',
-      outputRequirement: 'none',
-      priority: 0,
-    })
-    .returning({ id: tasks.id });
-
-  // An owner worker with no `prUrl` is a previous attempt that never reached
-  // GitHub — attach to it instead of adding another.
-  const orphan = reusableTask
-    ? (await db.query.workers.findFirst({
-        where: and(eq(workers.taskId, reusableTask.id), isNull(workers.prUrl)),
-        columns: { id: true },
-      })) ?? null
-    : null;
-
-  const ownerWorker = orphan ?? (await db
-    .insert(workers)
-    .values({
-      workspaceId: workspace.id,
-      taskId: ownerTask.id,
-      name: `mission-pr-${missionId.slice(0, 8)}`,
-      runner: 'system',
-      branch,
-      status: 'completed',
-    })
-    .returning({ id: workers.id }))[0];
+  const ownerWorker = await ensureMissionPrOwnerRows({
+    missionId, missionTitle: mission.title, workspaceId: workspace.id, branch, base,
+  });
 
   let prData: { number?: number; html_url?: string; base?: { ref?: string } } | null = adoptable;
   if (!prData) {
@@ -667,7 +644,7 @@ export async function openMissionIntegrationPr(
 
   await claimMissionPrimaryPr(missionId, prNumber, prUrl, {
     baseRef: recordedBaseRef,
-    trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
+    trunk,
     isMissionPr: true,
   });
 
@@ -685,6 +662,139 @@ export async function openMissionIntegrationPr(
 
   console.log(`[mission-pr] opened mission PR #${prNumber} (${branch} → ${base}) for mission ${missionId}`);
   return { ok: true, prNumber, prUrl, created: true };
+}
+
+/**
+ * The mission-PR owner task + worker pair, reusing what an earlier attempt left.
+ *
+ * Reuse rather than add a pair per attempt: without it, a failed `POST /pulls`
+ * leaves a row with no `prUrl`, the next attempt does not recognise it as an
+ * owner, and the mission accumulates one dead task+worker pair per retrigger —
+ * one of which the completion gate may then pick and refuse on forever.
+ */
+async function ensureMissionPrOwnerRows(args: {
+  missionId: string;
+  missionTitle: string;
+  workspaceId: string;
+  branch: string;
+  base: string;
+}): Promise<{ id: string }> {
+  const { missionId, missionTitle, workspaceId, branch, base } = args;
+  const reusableTask = (await db.query.tasks.findMany({
+    where: eq(tasks.missionId, missionId),
+    columns: { id: true, title: true, taskClass: true },
+  }))?.find(isMissionPrTask) ?? null;
+
+  const [ownerTask] = reusableTask ? [reusableTask] : await db
+    .insert(tasks)
+    .values({
+      workspaceId,
+      missionId,
+      title: `${MISSION_PR_TASK_PREFIX}${missionTitle}`,
+      description:
+        `Integration PR for this mission: merges \`${branch}\` into \`${base}\`.\n\n` +
+        `This task exists to own the mission PR so it appears in the merge queue and can be ` +
+        `merged from the dashboard. It performs no work of its own and is never claimed by a runner.`,
+      mode: 'execution',
+      // Bookkeeping with no role, deliberately (role-routing §1 row 9, same as
+      // the adopted-PR row, row 7): it runs no worker, so a role would only
+      // count a placeholder as work. The mission's review carries its own role.
+      taskClass: 'bookkeeping',
+      creationSource: 'orchestrator',
+      // Terminal on creation: nothing should ever claim this row. Leaving it
+      // claimable would hand a runner a task with no work in it, and would make
+      // it count toward the mission's unfinished-work total.
+      status: 'completed',
+      outputRequirement: 'none',
+      priority: 0,
+    })
+    .returning({ id: tasks.id });
+
+  // An owner worker with no `prUrl` is a previous attempt that never reached
+  // GitHub — attach to it instead of adding another.
+  const orphan = reusableTask
+    ? (await db.query.workers.findFirst({
+        where: and(eq(workers.taskId, reusableTask.id), isNull(workers.prUrl)),
+        columns: { id: true },
+      })) ?? null
+    : null;
+
+  return orphan ?? (await db
+    .insert(workers)
+    .values({
+      workspaceId,
+      taskId: ownerTask.id,
+      name: `mission-pr-${missionId.slice(0, 8)}`,
+      runner: 'system',
+      branch,
+      status: 'completed',
+    })
+    .returning({ id: workers.id }))[0];
+}
+
+/**
+ * Record a mission PR that was opened AND merged outside buildd.
+ *
+ * Reachable when a person opens the integration → trunk PR by hand and merges
+ * it. The integration branch is then usually deleted, so there is nothing for
+ * buildd to open — and because the opener only ever adopted OPEN PRs, the
+ * mission had no owner row at all: every surface read "mission PR not opened"
+ * and the completion gate refused the mission indefinitely, for work that was
+ * already on trunk (and often already released).
+ *
+ * The owner row is stamped merged, exactly as the merge webhook would have
+ * stamped a buildd-opened mission PR, so the mission reads as shipped and the
+ * completion gate's mission-PR check passes.
+ */
+async function adoptMergedMissionPr(args: {
+  missionId: string;
+  mission: { title: string };
+  workspaceId: string;
+  branch: string;
+  base: string;
+  trunk: string[];
+  pr: { number: number; html_url: string; merged_at: string; base?: { ref?: string } };
+}): Promise<OpenMissionPrResult> {
+  const { missionId, mission, workspaceId, branch, base, trunk, pr } = args;
+  const ownerWorker = await ensureMissionPrOwnerRows({
+    missionId, missionTitle: mission.title, workspaceId, branch, base,
+  });
+  const recordedBaseRef = pr.base?.ref ?? base;
+  const mergedAt = new Date(pr.merged_at);
+
+  await db
+    .update(workers)
+    .set({
+      prUrl: pr.html_url,
+      prNumber: pr.number,
+      prBaseRef: recordedBaseRef,
+      prLifecycleStatus: 'merged',
+      mergedAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(workers.id, ownerWorker.id));
+
+  await claimMissionPrimaryPr(missionId, pr.number, pr.html_url, {
+    baseRef: recordedBaseRef,
+    trunk,
+    isMissionPr: true,
+  });
+
+  await db.insert(missionNotes).values({
+    missionId,
+    authorType: 'system',
+    type: 'decision',
+    title: `Mission PR #${pr.number} recorded as merged`,
+    body:
+      `\`${branch}\` was already merged into \`${recordedBaseRef}\` by ${pr.html_url}, opened outside ` +
+      `buildd. It is now recorded as this mission's PR, so the mission reads as shipped.`,
+    status: 'open',
+  });
+
+  console.log(
+    `[mission-pr] adopted already-merged mission PR #${pr.number} (${branch} → ${recordedBaseRef}) for mission ${missionId}`,
+  );
+  return { ok: true, prNumber: pr.number, prUrl: pr.html_url, created: false, merged: true };
 }
 
 /**
@@ -887,6 +997,39 @@ async function findOpenPrForBranch(
       + `&base=${encodeURIComponent(base)}`,
     );
     return Array.isArray(prs) && prs.length > 0 ? prs[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The newest PR from `branch` into `base` that GitHub reports as MERGED.
+ *
+ * Closed-unmerged PRs are skipped: only a merge means the branch's work reached
+ * trunk. Best effort, like {@link findOpenPrForBranch}: a failure returns null
+ * and the caller reports `no_commits` as it did before.
+ */
+async function findMergedPrForBranch(
+  installationId: number,
+  repoFullName: string,
+  branch: string,
+  base: string,
+): Promise<{ number: number; html_url: string; merged_at: string; base?: { ref?: string } } | null> {
+  const owner = repoFullName.split('/')[0];
+  try {
+    const prs = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/pulls?state=closed`
+      + `&head=${encodeURIComponent(`${owner}:${branch}`)}`
+      + `&base=${encodeURIComponent(base)}`,
+    );
+    if (!Array.isArray(prs)) return null;
+    const merged = prs.filter(
+      (p): p is { number: number; html_url: string; merged_at: string; base?: { ref?: string } } =>
+        typeof p?.number === 'number' && typeof p?.html_url === 'string' && typeof p?.merged_at === 'string',
+    );
+    if (merged.length === 0) return null;
+    return merged.reduce((a, b) => (Date.parse(b.merged_at) > Date.parse(a.merged_at) ? b : a));
   } catch {
     return null;
   }
