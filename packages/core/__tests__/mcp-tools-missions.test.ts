@@ -28,7 +28,7 @@ describe('manage_missions — workspace resolution', () => {
     });
     // Second call: POST /api/missions
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Test Mission',
       status: 'active',
       priority: 5,
@@ -60,7 +60,7 @@ describe('manage_missions — workspace resolution', () => {
     mockApi.mockResolvedValueOnce({
       workspaces: [{ id: MOCK_WORKSPACE_ID, name: 'build', repo: 'buildd-ai/buildd' }],
     });
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'T', status: 'active', priority: 5 });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'T', status: 'active', priority: 5 });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
@@ -78,7 +78,7 @@ describe('manage_missions — workspace resolution', () => {
 
   it('passes UUID workspaceId directly on create', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Test Mission',
       status: 'active',
       priority: 5,
@@ -104,7 +104,7 @@ describe('manage_missions — workspace resolution', () => {
 
   it('passes status to body on create when provided', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Paused Mission',
       status: 'paused',
       priority: 0,
@@ -156,7 +156,7 @@ describe('manage_missions — workspace resolution', () => {
       capabilities: ['startMode', 'pacing'],
     });
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Controlled Mission',
       status: 'active',
       priority: 5,
@@ -214,7 +214,7 @@ describe('manage_missions — workspace resolution', () => {
     });
     // Second call: PATCH /api/missions/:id
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Updated Mission',
       status: 'active',
     });
@@ -224,7 +224,7 @@ describe('manage_missions — workspace resolution', () => {
       'manage_missions',
       {
         action: 'update',
-        missionId: 'mission-1',
+        missionId: '00000000-0000-0000-0000-000000000001',
         workspaceId: 'build',
       },
       createMockContext(),
@@ -232,7 +232,7 @@ describe('manage_missions — workspace resolution', () => {
 
     expect(mockApi.mock.calls[0][0]).toBe('/api/workspaces');
     const [endpoint, opts] = mockApi.mock.calls[1];
-    expect(endpoint).toBe('/api/missions/mission-1');
+    expect(endpoint).toBe('/api/missions/00000000-0000-0000-0000-000000000001');
     const body = JSON.parse(opts.body);
     expect(body.workspaceId).toBe(MOCK_WORKSPACE_ID);
   });
@@ -289,7 +289,7 @@ describe('manage_missions — prior work retrieval on create', () => {
 
   it('renders a "## Prior work" block with the stale-baseline flag for a task whose PR merged in the last 14 days', async () => {
     const api = async () => ({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Fix CTA state drift',
       status: 'active',
       priority: 5,
@@ -325,7 +325,7 @@ describe('manage_missions — prior work retrieval on create', () => {
 
   it('still returns the created mission when the knowledge store query throws', async () => {
     const api = async () => ({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Fix CTA state drift',
       status: 'active',
       priority: 5,
@@ -349,7 +349,7 @@ describe('manage_missions — prior work retrieval on create', () => {
 
   it('renders nothing when there is no knowledge store in context', async () => {
     const api = async () => ({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Fix CTA state drift',
       status: 'active',
       priority: 5,
@@ -376,7 +376,7 @@ describe('manage_missions — branchStrategy', () => {
   });
 
   it('passes branchStrategy through on create', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active', priority: 5 });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'Ship v2', status: 'active', priority: 5 });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
@@ -390,7 +390,7 @@ describe('manage_missions — branchStrategy', () => {
   });
 
   it('omits branchStrategy from the create body when not provided (workspace default applies)', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active', priority: 5 });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'Ship v2', status: 'active', priority: 5 });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
@@ -404,12 +404,12 @@ describe('manage_missions — branchStrategy', () => {
   });
 
   it('passes branchStrategy through on update', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active' });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'Ship v2', status: 'active' });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'update', missionId: 'mission-1', branchStrategy: 'direct' },
+      { action: 'update', missionId: '00000000-0000-0000-0000-000000000001', branchStrategy: 'direct' },
       createMockContext(),
     );
 
@@ -441,7 +441,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
   it('passes goalCriteria array in create body', async () => {
     const criteria = [{ type: 'all_prs_merged', requireBranchDeleted: false }];
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Ship v2',
       status: 'active',
       priority: 5,
@@ -459,12 +459,12 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
   });
 
   it('passes goalCriteria=null to clear criteria on update', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active' });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'Ship v2', status: 'active' });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'update', missionId: 'mission-1', goalCriteria: null },
+      { action: 'update', missionId: '00000000-0000-0000-0000-000000000001', goalCriteria: null },
       createMockContext(),
     );
 
@@ -473,12 +473,12 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
   });
 
   it('passes autoVerify=false in update body (toggling off auto-evaluation)', async () => {
-    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active' });
+    mockApi.mockResolvedValueOnce({ id: '00000000-0000-0000-0000-000000000001', title: 'Ship v2', status: 'active' });
 
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'update', missionId: 'mission-1', autoVerify: false },
+      { action: 'update', missionId: '00000000-0000-0000-0000-000000000001', autoVerify: false },
       createMockContext(),
     );
 
@@ -508,12 +508,12 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'evaluate', missionId: 'mission-1' },
+      { action: 'evaluate', missionId: '00000000-0000-0000-0000-000000000001' },
       createMockContext(),
     );
 
     // Should have POSTed to the evaluate endpoint
-    expect(mockApi.mock.calls[0][0]).toBe('/api/missions/mission-1/evaluate');
+    expect(mockApi.mock.calls[0][0]).toBe('/api/missions/00000000-0000-0000-0000-000000000001/evaluate');
     expect(mockApi.mock.calls[0][1]?.method).toBe('POST');
 
     const text = (result as any).content[0].text;
@@ -532,7 +532,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'evaluate', missionId: 'mission-1' },
+      { action: 'evaluate', missionId: '00000000-0000-0000-0000-000000000001' },
       createMockContext(),
     );
 
@@ -555,12 +555,12 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'get_criteria_state', missionId: 'mission-1' },
+      { action: 'get_criteria_state', missionId: '00000000-0000-0000-0000-000000000001' },
       createMockContext(),
     );
 
     // Should GET (not POST) the evaluate endpoint
-    expect(mockApi.mock.calls[0][0]).toBe('/api/missions/mission-1/evaluate');
+    expect(mockApi.mock.calls[0][0]).toBe('/api/missions/00000000-0000-0000-0000-000000000001/evaluate');
     expect(mockApi.mock.calls[0][1]?.method).toBeUndefined(); // GET by default
 
     const text = (result as any).content[0].text;
@@ -570,7 +570,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
 
   it('get response includes goalCriteria section when criteria are set and evaluated', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-1',
+      id: '00000000-0000-0000-0000-000000000001',
       title: 'Ship v2',
       status: 'active',
       progress: 80,
@@ -596,7 +596,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'get', missionId: 'mission-1' },
+      { action: 'get', missionId: '00000000-0000-0000-0000-000000000001' },
       createMockContext(),
     );
 
@@ -611,7 +611,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
 
   it('get response shows unevaluated criteria when no goalCriteriaState yet', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-2',
+      id: '00000000-0000-0000-0000-000000000002',
       title: 'New mission',
       status: 'active',
       progress: 0,
@@ -626,7 +626,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'get', missionId: 'mission-2' },
+      { action: 'get', missionId: '00000000-0000-0000-0000-000000000002' },
       createMockContext(),
     );
 
@@ -639,7 +639,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
 
   it('get response omits goalCriteria section when no criteria set', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-3',
+      id: '00000000-0000-0000-0000-000000000003',
       title: 'Plain mission',
       status: 'active',
       progress: 100,
@@ -653,7 +653,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'get', missionId: 'mission-3' },
+      { action: 'get', missionId: '00000000-0000-0000-0000-000000000003' },
       createMockContext(),
     );
 
@@ -663,7 +663,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
 
   it('get response shows description fallback for criteria without type (malformed legacy data)', async () => {
     mockApi.mockResolvedValueOnce({
-      id: 'mission-4',
+      id: '00000000-0000-0000-0000-000000000004',
       title: 'Legacy mission',
       status: 'completed',
       progress: 100,
@@ -682,7 +682,7 @@ describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
     const result = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'manage_missions',
-      { action: 'get', missionId: 'mission-4' },
+      { action: 'get', missionId: '00000000-0000-0000-0000-000000000004' },
       createMockContext(),
     );
 

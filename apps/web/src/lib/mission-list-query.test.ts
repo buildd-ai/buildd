@@ -55,10 +55,34 @@ describe('missionListOrderBy', () => {
     expect(render(first as SQL).sql).toBe('"missions"."priority" desc');
   });
 
-  it('recent orders by latest activity (task start or update), newest first', () => {
+  it('recent orders by the lastActivityAt the list prints (task start or latest task update), newest first', () => {
     const [first, second] = missionListOrderBy('recent');
-    expect(render(first as SQL).sql).toBe('greatest("missions"."last_task_started_at", "missions"."updated_at") desc');
+    // Same value the route prints as lastActivityAt; missions with no task
+    // activity fall back to updatedAt so they never sort as NULL (first).
+    expect(render(first as SQL).sql).toBe(
+      'coalesce(greatest("missions"."last_task_started_at", (select max(t.updated_at) from tasks t where t.mission_id = "missions"."id")), "missions"."updated_at") desc',
+    );
     expect(render(second as SQL).sql).toBe('"missions"."created_at" desc');
+  });
+
+  it('the task subquery uses raw identifiers (the relational builder re-aliases every column to the root table)', () => {
+    const [first] = missionListOrderBy('recent');
+    expect(render(first as SQL).sql).not.toContain('"tasks"."');
+  });
+
+  it('with q, an exact (case-insensitive) title match ranks first, before the sort', () => {
+    const [exact, activity] = missionListOrderBy('recent', 'Memory');
+    const q = render(exact as SQL);
+    expect(q.sql).toBe('lower("missions"."title") = lower($1) desc');
+    expect(q.params).toEqual(['Memory']);
+    expect(render(activity as SQL).sql).toStartWith('coalesce(greatest(');
+    const [pExact, pFirst] = missionListOrderBy('priority', ' Memory ');
+    expect(render(pExact as SQL).params).toEqual(['Memory']);
+    expect(render(pFirst as SQL).sql).toBe('"missions"."priority" desc');
+  });
+
+  it('blank q adds no exact-match ranking', () => {
+    expect(missionListOrderBy('recent', '  ')).toHaveLength(2);
   });
 
   it('parseMissionListSort accepts only "recent"', () => {

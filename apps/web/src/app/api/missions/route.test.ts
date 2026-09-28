@@ -891,12 +891,19 @@ describe('GET /api/missions', () => {
     expect(args.where.type).toBe('inArray');
   });
 
-  it('q filters by title substring and sort=recent orders by latest activity', async () => {
+  it('q filters by title substring, ranks the exact title first, then sort=recent orders by latest activity', async () => {
     await GET(new NextRequest('http://localhost/api/missions?q=Memory&sort=recent&limit=5'));
     const args = mockMissionsFindMany.mock.calls[0][0];
     expect(args.where).toContainEqual({ field: undefined, value: '%Memory%', type: 'ilike' });
     expect(args.orderBy[0].field.type).toBe('sql');
-    expect(args.orderBy[0].field.strings[0]).toBe('greatest(');
+    expect(args.orderBy[0].field.strings[0]).toBe('lower(');
+    expect(args.orderBy[1].field.strings[0]).toBe('coalesce(greatest(');
+  });
+
+  it('sort=recent without q has no exact-title ranking', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?sort=recent'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.orderBy[0].field.strings[0]).toBe('coalesce(greatest(');
   });
 
   it('default order is still priority first (the dashboard relies on it)', async () => {

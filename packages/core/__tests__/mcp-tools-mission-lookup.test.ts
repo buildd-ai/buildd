@@ -25,6 +25,8 @@ function api(routes: (url: string, opts?: RequestInit) => unknown) {
   }) as unknown as ApiFn;
   return { fn, calls };
 }
+const MID = '00000000-0000-0000-0000-00000000000a';
+const WS_W = '00000000-0000-0000-0000-0000000000ee';
 const qsOf = (url: string) => new URLSearchParams(url.split('?')[1]);
 const textOf = (r: any) => String(r.content[0].text);
 
@@ -126,9 +128,85 @@ describe('manage_missions update by title', () => {
   });
 
   it('with missionId, title is still a rename', async () => {
-    const { fn, calls } = api(() => ({ ...M('m-3', 'New name') }));
-    await handleBuilddAction(fn, 'manage_missions', { action: 'update', missionId: 'm-3', title: 'New name' }, ctx);
+    const { fn, calls } = api(() => ({ ...M(MID, 'New name') }));
+    await handleBuilddAction(fn, 'manage_missions', { action: 'update', missionId: MID, title: 'New name' }, ctx);
     expect(calls).toHaveLength(1);
     expect(JSON.parse(String(calls[0].opts!.body)).title).toBe('New name');
+  });
+});
+
+describe('manage_missions update by title + workspaceId', () => {
+  const routes = (url: string) => {
+    if (url === '/api/workspaces') return { workspaces: [{ id: WS_W, name: 'recut' }] };
+    if (url.startsWith('/api/missions?')) return { missions: [M('m-9', 'Memory done right')], total: 1 };
+    return { ...M('m-9', 'Memory done right') };
+  };
+
+  it('workspaceId scopes the lookup and is NOT sent as a move', async () => {
+    const { fn, calls } = api(routes);
+    await handleBuilddAction(fn, 'manage_missions', { action: 'update', title: 'Memory done right', workspaceId: 'recut', autoSurfaceAudit: false }, ctx);
+    const lookup = calls.find((c) => c.url.startsWith('/api/missions?'))!;
+    expect(qsOf(lookup.url).get('workspaceId')).toBe(WS_W);
+    const patch = calls.find((c) => c.opts?.method === 'PATCH')!;
+    expect(patch.url).toBe('/api/missions/m-9');
+    expect(JSON.parse(String(patch.opts!.body))).toEqual({ autoSurfaceAudit: false });
+  });
+
+  it('an unresolvable workspaceId in lookup mode errors, nothing patched', async () => {
+    const { fn, calls } = api(routes);
+    await expect(
+      handleBuilddAction(fn, 'manage_missions', { action: 'update', title: 'Memory done right', workspaceId: 'nope', autoSurfaceAudit: false }, ctx),
+    ).rejects.toThrow(/"nope"[\s\S]*recut/);
+    expect(calls.some((c) => c.opts?.method === 'PATCH')).toBe(false);
+  });
+
+  it('with a real missionId, workspaceId is still a move', async () => {
+    const { fn, calls } = api(routes);
+    await handleBuilddAction(fn, 'manage_missions', { action: 'update', missionId: MID, workspaceId: 'recut' }, ctx);
+    const patch = calls.find((c) => c.opts?.method === 'PATCH')!;
+    expect(JSON.parse(String(patch.opts!.body))).toEqual({ workspaceId: WS_W });
+  });
+});
+
+describe('a title passed as missionId is looked up, not fetched as an id', () => {
+  const routes = (url: string) =>
+    url.startsWith('/api/missions?') ? { missions: [M('m-9', 'Memory done right')], total: 1 } : { ...M('m-9', 'Memory done right'), tasks: [] };
+
+  it('get { missionId: <title> } resolves the mission', async () => {
+    const { fn, calls } = api(routes);
+    const r = await handleBuilddAction(fn, 'manage_missions', { action: 'get', missionId: 'Memory done right' }, ctx);
+    expect(qsOf(calls[0].url).get('q')).toBe('Memory done right');
+    expect(calls[1].url).toBe('/api/missions/m-9');
+    expect(textOf(r)).toContain('ID: m-9');
+  });
+
+  it('update { missionId: <title> } patches the found id without renaming', async () => {
+    const { fn, calls } = api(routes);
+    await handleBuilddAction(fn, 'manage_missions', { action: 'update', missionId: 'Memory done right', autoSurfaceAudit: false }, ctx);
+    const patch = calls.find((c) => c.opts?.method === 'PATCH')!;
+    expect(patch.url).toBe('/api/missions/m-9');
+    expect(JSON.parse(String(patch.opts!.body))).toEqual({ autoSurfaceAudit: false });
+  });
+
+  it('update { missionId: <title>, title: <new> } looks up by missionId and renames to title', async () => {
+    const { fn, calls } = api(routes);
+    await handleBuilddAction(fn, 'manage_missions', { action: 'update', missionId: 'Memory done right', title: 'Memory, done' }, ctx);
+    const patch = calls.find((c) => c.opts?.method === 'PATCH')!;
+    expect(patch.url).toBe('/api/missions/m-9');
+    expect(JSON.parse(String(patch.opts!.body))).toEqual({ title: 'Memory, done' });
+  });
+});
+
+describe('exact title beats newer partial matches', () => {
+  it('10 newer "Memory ..." missions and an older exact "Memory": the exact one resolves', async () => {
+    // The server ranks the exact title first (mission-list-query.test.ts); the
+    // page therefore carries it even when newer partial matches fill the limit.
+    const partial = Array.from({ length: 9 }, (_, i) => M(`m-p${i}`, `Memory follow-up ${i}`));
+    const { fn, calls } = api((url) =>
+      url.startsWith('/api/missions?')
+        ? { missions: [M('m-exact', 'Memory', 'completed'), ...partial], total: 11 }
+        : { ...M('m-exact', 'Memory', 'completed'), tasks: [] });
+    await handleBuilddAction(fn, 'manage_missions', { action: 'get', title: 'memory' }, ctx);
+    expect(calls[1].url).toBe('/api/missions/m-exact');
   });
 });

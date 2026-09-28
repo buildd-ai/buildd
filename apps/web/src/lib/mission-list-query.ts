@@ -32,10 +32,24 @@ export function buildMissionListWhere(opts: {
   return parts.length === 1 ? parts[0] : and(...parts)!;
 }
 
-export function missionListOrderBy(sort: MissionListSort): SQL[] {
+/**
+ * `recent` sorts by what the list prints as lastActivityAt (latest task start or
+ * task update), falling back to updatedAt so a mission with no tasks is not NULL
+ * (NULLs sort first under desc). With `q`, an exact title match ranks first so a
+ * full title is reachable however many newer missions contain it.
+ */
+export function missionListOrderBy(sort: MissionListSort, q?: string | null): SQL[] {
+  const title = q?.trim();
+  const exactFirst = title ? [desc(sql`lower(${missions.title}) = lower(${title})`)] : [];
   if (sort === 'recent') {
-    // greatest() skips NULLs, so a mission with no task start sorts by updatedAt.
-    return [desc(sql`greatest(${missions.lastTaskStartedAt}, ${missions.updatedAt})`), desc(missions.createdAt)];
+    // Raw identifiers inside the subquery: db.query re-aliases every Column
+    // chunk in orderBy to the root table, which would turn tasks.x into missions.x.
+    const lastTaskUpdate = sql`(select max(t.updated_at) from tasks t where t.mission_id = ${missions.id})`;
+    return [
+      ...exactFirst,
+      desc(sql`coalesce(greatest(${missions.lastTaskStartedAt}, ${lastTaskUpdate}), ${missions.updatedAt})`),
+      desc(missions.createdAt),
+    ];
   }
-  return [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)];
+  return [...exactFirst, desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)];
 }

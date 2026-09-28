@@ -62,16 +62,17 @@ export async function GET(req: NextRequest) {
     // grows with the team's whole history. Unset keeps the dashboard's full list.
     const limitParam = Number(searchParams.get('limit'));
     const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : undefined;
+    const q = searchParams.get('q');
     const where = buildMissionListWhere({
       teamIds: scopedTeamIds,
       status: statusFilter,
       workspaceId: workspaceIdFilter,
-      q: searchParams.get('q'),
+      q,
     });
 
     const results = await db.query.missions.findMany({
       where,
-      orderBy: missionListOrderBy(parseMissionListSort(searchParams.get('sort'))),
+      orderBy: missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q),
       ...(limit ? { limit } : {}),
       with: {
         workspace: { columns: { id: true, name: true } },
