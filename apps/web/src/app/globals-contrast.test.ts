@@ -76,6 +76,15 @@ describe('globals.css contrast', () => {
         });
       }
 
+      // Error copy (`text-status-error`) lands on page backgrounds, cards and
+      // popovers alike, so it gets no elevation exemption.
+      const surfaces = Object.keys(tokens).filter(t => t.startsWith('surface-') || t.startsWith('card'));
+      for (const bg of surfaces) {
+        it(`--status-error on --${bg} >= ${AA}:1`, () => {
+          expect(contrast(tokens['status-error'], tokens[bg])).toBeGreaterThanOrEqual(AA);
+        });
+      }
+
       it('keeps the hierarchy: secondary > desc > muted', () => {
         const bg = tokens['surface-1'];
         const r = (t: string) => contrast(tokens[t], bg);

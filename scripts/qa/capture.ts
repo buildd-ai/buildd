@@ -120,6 +120,13 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
 }
 
 const context = await browser.newContext(contextOptions);
+// QA_THEME=light|dark seeds the theme the app's boot script reads, before any
+// page script runs. Unset keeps the app default (dark).
+const QA_THEME = process.env.QA_THEME?.trim();
+if (QA_THEME) {
+  await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
+  console.log(`[capture] theme ${QA_THEME}`);
+}
 const page = await context.newPage();
 
 // --- Auth ---
