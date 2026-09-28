@@ -10,6 +10,7 @@ import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import {
   computeUsageStats,
   describeScan,
+  isUnassignedWork,
   parseWindowMs,
   UNASSIGNED_ROLE,
   type GroupEntry,
@@ -267,7 +268,7 @@ export default async function HealthPage({
           sql`${tasks.createdAt} >= ${windowStart}`,
           isNull(tasks.parentTaskId),
         ),
-        columns: { roleSlug: true, status: true },
+        columns: { roleSlug: true, status: true, taskClass: true },
       });
 
       if (recentTasks.length === 0) return null;
@@ -278,7 +279,7 @@ export default async function HealthPage({
       for (const t of recentTasks) {
         if (t.status === 'completed') completed++;
         if (t.status === 'failed') failed++;
-        if (!t.roleSlug) unassigned++;
+        if (isUnassignedWork(t)) unassigned++;
       }
 
       return { total: recentTasks.length, completed, failed, unassigned };

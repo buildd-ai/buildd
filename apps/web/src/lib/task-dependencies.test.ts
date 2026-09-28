@@ -131,6 +131,17 @@ mock.module('@/lib/mission-feed', () => ({
   systemActor: (label: string) => ({ kind: 'system', id: null, label }),
 }));
 
+// Roles effective for the parent's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
 import {
   resolveCompletedTask,
   checkDependsOnResolved,
@@ -166,6 +177,8 @@ function resetMocks() {
   findFirstResults = [];
   missionsFindFirstCallCount = 0;
   missionsFindFirstResults = [];
+  effectiveRoles = new Set();
+  pickRoleCalls.length = 0;
 }
 
 describe('task-dependencies', () => {
@@ -1050,5 +1063,43 @@ describe('resolveCompletedTask — stringified plan shape', () => {
 
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ── Aggregator role (role-routing §1 row 9) ───────────────────────────────────
+
+describe('task-dependencies aggregation — role', () => {
+  beforeEach(resetMocks);
+
+  function givenPlanningParent(roleSlug: string | null) {
+    findFirstResults[0] = { parentTaskId: 'parent-1' };
+    findFirstResults[1] = { id: 'parent-1', mode: 'planning', title: 'Plan feature X', workspaceId: 'ws-1', missionId: null, roleSlug };
+    mockFindMany.mockResolvedValue([
+      { id: 'child-1', status: 'completed', workspaceId: 'ws-1', title: 'Step 1', result: { summary: 'Done step 1' } },
+      { id: 'child-2', status: 'completed', workspaceId: 'ws-1', title: 'Step 2', result: { summary: 'Done step 2' } },
+    ]);
+    selectWhereResults = [[], []];
+  }
+
+  it("inherits the parent's role when the workspace still has it", async () => {
+    givenPlanningParent('researcher');
+    effectiveRoles = new Set(['researcher', 'organizer']);
+    await resolveCompletedTask('child-1', 'ws-1');
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['researcher', 'organizer'] }]);
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'researcher', taskClass: 'bookkeeping' }));
+  });
+
+  it('falls back to the Organizer for a role-less parent', async () => {
+    givenPlanningParent(null);
+    effectiveRoles = new Set(['organizer']);
+    await resolveCompletedTask('child-1', 'ws-1');
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'organizer' }));
+  });
+
+  it('files role-less when neither the parent role nor the Organizer resolves', async () => {
+    givenPlanningParent('ops');
+    effectiveRoles = new Set(['builder']);
+    await resolveCompletedTask('child-1', 'ws-1');
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: null }));
   });
 });

@@ -47,6 +47,10 @@ import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
+import {
+  extractVerdictFromProse,
+  constructFallbackStructuredOutput,
+} from '@/lib/reviewer-prose-fallback';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
@@ -2910,13 +2914,36 @@ export async function PATCH(
         Boolean(reviewTaskCtx.reviewerFor)
       );
       const hasVerdictKey = Boolean((body.structuredOutput as { verdict?: unknown } | undefined)?.verdict);
-      const parsedReview = isReviewerCompletion ? parseReviewerOutput(body.structuredOutput) : null;
-      const reviewContractViolation = isReviewerCompletion && parsedReview?.ok === false;
+      let parsedReview = isReviewerCompletion ? parseReviewerOutput(body.structuredOutput) : null;
+      let reviewContractViolation = isReviewerCompletion && parsedReview?.ok === false;
       // Prose (no verdict at all) and a malformed verdict fail the same
       // contract; only the message differs.
       const malformedVerdictReason = reviewContractViolation && hasVerdictKey && parsedReview?.ok === false
         ? parsedReview.reason
         : null;
+
+      // Fallback: if structured output parsing failed and it's due to missing
+      // verdict (not malformed), try to extract from prose summary.
+      if (reviewContractViolation && !malformedVerdictReason && !isSilentStartCompletion) {
+        const proseExtraction = extractVerdictFromProse(body.summary);
+        if (proseExtraction.verdict) {
+          const fallbackOutput = constructFallbackStructuredOutput(body.summary, proseExtraction);
+          if (fallbackOutput) {
+            // Use the fallback verdict instead of failing.
+            parsedReview = { ok: true, output: fallbackOutput };
+            reviewContractViolation = false;
+            // Update body.structuredOutput so that handleReviewerOutcomeIfNeeded
+            // and other downstream code see the fallback verdict.
+            body.structuredOutput = fallbackOutput;
+            console.log(
+              `[reviewer-prose-fallback] task ${worker.taskId} (worker ${id}) ` +
+              `extracted '${proseExtraction.verdict}' verdict from prose: ${proseExtraction.reason}. ` +
+              `PR #${reviewTaskCtx.prNumber ?? '?'}`
+            );
+          }
+        }
+      }
+
       // A reviewer task is dispatched only on pull_request action='opened', so
       // nothing re-reviews a PR whose review ended without a verdict. Requeue the
       // same task once — it re-reads the PR from scratch, so a second attempt is
@@ -4434,17 +4461,18 @@ async function handleReviewerOutcomeIfNeeded(
   // merge into a mission integration branch below. An approval under the
   // workspace threshold is an escalation. Checked after the file gates so a
   // file-list reason, the more specific one, wins when both apply.
-  if (effectiveVerdict === 'approve') {
-    const gated = applyConfidenceGate({
-      verdict: effectiveVerdict,
-      confidence: output.confidence,
-      threshold: reviewPolicy?.agentReview?.maxConfidenceThreshold,
-    });
-    if (gated.overrideReason) {
-      effectiveVerdict = gated.verdict;
-      serverOverrideReason = gated.overrideReason;
-      serverOverrideSource = 'confidence';
-    }
+  // For request-changes and escalate from prose extraction: apply the gate so
+  // low-confidence verdicts (from fallback parsing) are escalated for human
+  // confirmation rather than triggering automated actions immediately.
+  const gated = applyConfidenceGate({
+    verdict: effectiveVerdict,
+    confidence: output.confidence,
+    threshold: reviewPolicy?.agentReview?.maxConfidenceThreshold,
+  });
+  if (gated.overrideReason) {
+    effectiveVerdict = gated.verdict;
+    serverOverrideReason = gated.overrideReason;
+    serverOverrideSource = 'confidence';
   }
 
   if (serverOverrideReason) {

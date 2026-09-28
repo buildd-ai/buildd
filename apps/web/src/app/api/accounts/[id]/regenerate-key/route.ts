@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { isUuid } from '@/lib/uuid';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -17,6 +18,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid account id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({

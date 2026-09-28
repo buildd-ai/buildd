@@ -26,6 +26,7 @@ const { handleLearnAction, handleRecallAction, handleMemoryAction } = await impo
 
 const TEAM_ID = '00000000-0000-0000-0000-000000000011';
 const WS_ID   = '00000000-0000-0000-0000-000000000022';
+const PROJECT = 'acme/widgets';
 
 function makeMemoryClient(overrides: Record<string, any> = {}) {
   const saved: any[] = [];
@@ -39,13 +40,13 @@ function makeMemoryClient(overrides: Record<string, any> = {}) {
       return { memory: { id: _id, ...fields, tags: [], files: [] } };
     },
     async get(id: string) {
-      return { memory: { id, title: 'T', content: 'C', type: 'gotcha' } };
+      return { memory: { id, title: 'T', content: 'C', type: 'gotcha', project: PROJECT } };
     },
     async search() {
       return { results: [{ id: 'mem-1', title: 'T', type: 'gotcha', files: [], tags: [] }], total: 1 };
     },
     async batch(ids: string[]) {
-      return { memories: ids.map(id => ({ id, title: 'T', content: 'C', type: 'gotcha', files: [], tags: [] })) };
+      return { memories: ids.map(id => ({ id, title: 'T', content: 'C', type: 'gotcha', files: [], tags: [], project: PROJECT })) };
     },
     async delete(id: string) {},
     async getContext() {
@@ -74,6 +75,7 @@ function sensitiveCtx(extra: Record<string, any> = {}) {
     workerId: 'w-1',
     workspaceId: WS_ID,
     teamId: TEAM_ID,
+    project: PROJECT,
     isSensitive: true,
     knowledgeStore: makeStore() as any,
     embedder: null,
@@ -86,6 +88,7 @@ function standardCtx(extra: Record<string, any> = {}) {
     workerId: 'w-1',
     workspaceId: WS_ID,
     teamId: TEAM_ID,
+    project: PROJECT,
     isSensitive: false,
     knowledgeStore: makeStore() as any,
     embedder: null,
@@ -301,7 +304,7 @@ describe('fail-closed: undefined isSensitive treated as NOT sensitive', () => {
   // This test just confirms the standard path isn't broken by absence of the flag.
   it('allows learn when isSensitive is absent (treated as false)', async () => {
     const mc = makeMemoryClient();
-    const ctx: any = { workspaceId: WS_ID, teamId: TEAM_ID, knowledgeStore: makeStore() as any, embedder: null };
+    const ctx: any = { workspaceId: WS_ID, teamId: TEAM_ID, project: PROJECT, knowledgeStore: makeStore() as any, embedder: null };
     const result = await handleLearnAction(mc as any, {
       type: 'gotcha', title: 'T', content: 'C',
     }, ctx);

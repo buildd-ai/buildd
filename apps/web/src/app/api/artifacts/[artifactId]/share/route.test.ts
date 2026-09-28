@@ -13,7 +13,7 @@ const mockArtifactsUpdate = mock(() => ({
     capturedSet = vals;
     return {
       where: mock(() => ({
-        returning: mock(() => [{ id: 'artifact-1', ...vals }]),
+        returning: mock(() => [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ...vals }]),
       })),
     };
   }),
@@ -65,7 +65,7 @@ function createRequest(method: string, apiKey?: string): NextRequest {
   });
 }
 
-const mockParams = Promise.resolve({ artifactId: 'artifact-1' });
+const mockParams = Promise.resolve({ artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
 
 describe('POST /api/artifacts/[artifactId]/share', () => {
   beforeEach(() => {
@@ -88,9 +88,16 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 for a non-UUID artifact id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await POST(createRequest('POST', 'bld_test'), { params: Promise.resolve({ artifactId: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 401 when unauthenticated', async () => {
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: null,
       visibility: 'private',
@@ -105,7 +112,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: null,
       visibility: 'private',
@@ -119,7 +126,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
   it('makes public and returns a shareUrl containing a token (API-key owner)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: null,
       visibility: 'private',
@@ -138,7 +145,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: null,
       visibility: 'private',
@@ -153,7 +160,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
   it('preserves an existing token when already shared', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: 'existing-token',
       visibility: 'public',
@@ -172,7 +179,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
   it('refuses (409) to publish a screenshot in the qa/ audit area, even for its owner', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       type: 'screenshot',
       storageKey: 'qa/ws-1/u1/tasks-mobile.png',
@@ -192,7 +199,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       type: 'screenshot',
       storageKey: 'artifacts/ws-1/u1/tasks-mobile.png',
@@ -211,7 +218,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-2' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-other']);
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       type: 'screenshot',
       storageKey: 'qa/ws-1/u1/tasks-mobile.png',
@@ -228,7 +235,7 @@ describe('POST /api/artifacts/[artifactId]/share', () => {
   it('still publishes an ordinary screenshot', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       type: 'screenshot',
       storageKey: 'artifacts/ws-1/u1/shot.png',
@@ -265,9 +272,16 @@ describe('DELETE /api/artifacts/[artifactId]/share', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 for a non-UUID artifact id (e.g. a short 8-hex id) without querying the db', async () => {
+    const res = await DELETE(createRequest('DELETE', 'bld_test'), { params: Promise.resolve({ artifactId: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 401 when unauthenticated', async () => {
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: 'existing-token',
       visibility: 'public',
@@ -281,7 +295,7 @@ describe('DELETE /api/artifacts/[artifactId]/share', () => {
   it('makes private and nulls the token (API-key owner)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       shareToken: 'existing-token',
       visibility: 'public',
@@ -299,7 +313,7 @@ describe('DELETE /api/artifacts/[artifactId]/share', () => {
   it('still lets an owner make an audit screenshot private', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockArtifactsFindFirst.mockResolvedValue({
-      id: 'artifact-1',
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       workspaceId: 'ws-1',
       type: 'screenshot',
       storageKey: 'qa/ws-1/u1/tasks-mobile.png',

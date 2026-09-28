@@ -204,6 +204,10 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
     const created = mockCreateReviewerTask.mock.calls[0][0] as any;
     expect(created.priorVerdict).toEqual(priorVerdict);
+    // baseRef must reach buildDeltaReviewerContext, or it falls back to the
+    // weaker pulls/files bound, which misattributes base-history churn (like
+    // an already-merged migration) to this PR — see PR #2907.
+    expect(created.baseRef).toBe('dev');
 
     // The PR activity entry says this was a delta, not a full re-read.
     const activity = mockAppendPrActivity.mock.calls[0][0] as any;

@@ -7,6 +7,7 @@ import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
+import { isChatTierName } from '@buildd/shared';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -96,6 +97,8 @@ export async function GET(
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
+        chatDefaultTier: true,
+        chatCapNewSessionTier: true,
         timezone: true,
       },
     });
@@ -152,7 +155,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -223,6 +226,20 @@ export async function PATCH(
         return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
       }
       updates.inferenceKeyPolicy = inferenceKeyPolicy;
+    }
+    // The tier a new chat caps at, and whether the cap is on
+    // (apps/web/src/lib/chat/composer-prefs.ts). `null` default = auto: no cap.
+    if (chatDefaultTier !== undefined) {
+      if (chatDefaultTier !== null && !isChatTierName(chatDefaultTier)) {
+        return NextResponse.json({ error: 'chatDefaultTier must be "budget", "standard", "premium" or null for auto' }, { status: 400 });
+      }
+      updates.chatDefaultTier = chatDefaultTier;
+    }
+    if (chatCapNewSessionTier !== undefined) {
+      if (typeof chatCapNewSessionTier !== 'boolean') {
+        return NextResponse.json({ error: 'chatCapNewSessionTier must be a boolean' }, { status: 400 });
+      }
+      updates.chatCapNewSessionTier = chatCapNewSessionTier;
     }
     // Chat is always on: there is no switch. A `chatDisabled` field (the old
     // kill switch; teams.chat_disabled is deprecated) is ignored.

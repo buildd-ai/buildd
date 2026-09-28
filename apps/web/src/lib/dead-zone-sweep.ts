@@ -32,6 +32,7 @@ import {
   isAutoResolveMergeConflictsEnabled,
 } from '@/lib/conflict-retry';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
@@ -377,6 +378,10 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
+        // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+        // of the task it re-attempts — same as conflict-retry.ts's own insert.
+        const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
+
         const [newTask] = await db
           .insert(tasks)
           .values({
@@ -385,6 +390,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
             description: retryTask.description,
             parentTaskId: retryTask.parentTaskId,
             missionId: retryTask.missionId,
+            ...identity,
             context: retryTask.context,
             creationSource: retryTask.creationSource,
             taskClass: 'attempt',

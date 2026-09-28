@@ -64,8 +64,8 @@ const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET, POST, DELETE } from './route';
 
-const PARAMS = Promise.resolve({ id: 'conn-1' });
-const CONNECTOR = { id: 'conn-1', teamId: 'team-1', name: 'github', url: 'https://mcp.example.com', authMode: 'oauth' as const };
+const PARAMS = Promise.resolve({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+const CONNECTOR = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', teamId: 'team-1', name: 'github', url: 'https://mcp.example.com', authMode: 'oauth' as const };
 
 function makeReq(method = 'GET', body?: any, url = 'http://localhost:3000/api/connectors/conn-1/shares') {
   return new NextRequest(url, {
@@ -119,7 +119,7 @@ describe('GET /api/connectors/[id]/shares', () => {
 
   it('lists shares with resolved team names', async () => {
     mockSharesFindMany.mockResolvedValue([
-      { connectorId: 'conn-1', sharedWithTeamId: 'team-2', grantedByAccountId: 'acc-1', createdAt: new Date('2026-01-01') },
+      { connectorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sharedWithTeamId: 'team-2', grantedByAccountId: 'acc-1', createdAt: new Date('2026-01-01') },
     ]);
     mockTeamsFindMany.mockResolvedValue([{ id: 'team-2', name: 'Team Two' }]);
     const res = await GET(makeReq(), { params: PARAMS });
@@ -170,7 +170,7 @@ describe('POST /api/connectors/[id]/shares', () => {
   });
 
   it('is idempotent: duplicate share returns 200 with the existing row and does not insert', async () => {
-    const existing = { connectorId: 'conn-1', sharedWithTeamId: 'team-2', grantedByAccountId: null, createdAt: new Date('2026-01-01') };
+    const existing = { connectorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sharedWithTeamId: 'team-2', grantedByAccountId: null, createdAt: new Date('2026-01-01') };
     mockSharesFindFirst.mockResolvedValue(existing);
     const res = await POST(makeReq('POST', { teamId: 'team-2' }), { params: PARAMS });
     expect(res.status).toBe(200);
@@ -186,7 +186,7 @@ describe('POST /api/connectors/[id]/shares', () => {
     expect(data.share.sharedWithTeamId).toBe('team-2');
     expect(insertCalls).toHaveLength(1);
     expect(insertCalls[0].table).toBe(connectorSharesTable);
-    expect(insertCalls[0].values.connectorId).toBe('conn-1');
+    expect(insertCalls[0].values.connectorId).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
     expect(insertCalls[0].values.sharedWithTeamId).toBe('team-2');
   });
 });
@@ -216,7 +216,7 @@ describe('DELETE /api/connectors/[id]/shares', () => {
   });
 
   it('revokes an existing share via body teamId', async () => {
-    mockDeleteReturning.mockReturnValue([{ connectorId: 'conn-1', sharedWithTeamId: 'team-2' }]);
+    mockDeleteReturning.mockReturnValue([{ connectorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sharedWithTeamId: 'team-2' }]);
     const res = await DELETE(makeReq('DELETE', { teamId: 'team-2' }), { params: PARAMS });
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -226,7 +226,7 @@ describe('DELETE /api/connectors/[id]/shares', () => {
   });
 
   it('revokes an existing share via ?teamId= query param', async () => {
-    mockDeleteReturning.mockReturnValue([{ connectorId: 'conn-1', sharedWithTeamId: 'team-2' }]);
+    mockDeleteReturning.mockReturnValue([{ connectorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sharedWithTeamId: 'team-2' }]);
     const res = await DELETE(
       makeReq('DELETE', undefined, 'http://localhost:3000/api/connectors/conn-1/shares?teamId=team-2'),
       { params: PARAMS },

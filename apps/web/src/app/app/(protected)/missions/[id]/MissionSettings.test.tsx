@@ -23,7 +23,7 @@ mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: 'test-',
 }));
 
-const { default: MissionSettings } = await import('./MissionSettings');
+const { default: MissionSettings, quickAddTaskBody, quickAddRoleOptions } = await import('./MissionSettings');
 
 function render(overrides: Partial<Parameters<typeof MissionSettings>[0]> = {}) {
   return renderToStaticMarkup(
@@ -124,5 +124,43 @@ describe('touch targets and input size on a phone', () => {
     const html = render({ displayState: 'active' });
     const input = html.match(/<input\b[^>]*placeholder="Add a task to this mission…"[^>]*>/)![0];
     expect(cls(input)).toContain('text-base');
+  });
+});
+
+// ── Quick-add role picker (role-routing §1 row 3) ─────────────────────────────
+
+describe('quick-add role picker', () => {
+  const ROLES = [
+    { slug: 'builder', name: 'Builder', color: '#000' },
+    { slug: 'writer', name: 'Writer', color: '#111' },
+  ];
+
+  it('renders the picker showing "Any role" by default', () => {
+    const html = render({ displayState: 'active', roles: ROLES });
+    const trigger = html.match(/<button\b[^>]*data-testid="quick-task-role"[^>]*>[\s\S]*?<\/button>/)![0];
+    expect(trigger).toContain('Any role');
+  });
+
+  it('offers "Any role" first, then each workspace role', () => {
+    expect(quickAddRoleOptions(ROLES)).toEqual([
+      { value: '', label: 'Any role' },
+      { value: 'builder', label: 'Builder' },
+      { value: 'writer', label: 'Writer' },
+    ]);
+  });
+
+  it('renders no picker when the workspace has no roles', () => {
+    expect(render({ displayState: 'active', roles: [] })).not.toContain('quick-task-role');
+  });
+
+  it('sends the selected role with the task', () => {
+    expect(quickAddTaskBody({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: 'writer' }))
+      .toEqual({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: 'writer' });
+  });
+
+  it('sends no role at all when "Any role" is left selected', () => {
+    const body = quickAddTaskBody({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1', roleSlug: '' });
+    expect(body).toEqual({ title: 'Fix the thing', workspaceId: 'ws-1', missionId: 'm-1' });
+    expect('roleSlug' in body).toBe(false);
   });
 });

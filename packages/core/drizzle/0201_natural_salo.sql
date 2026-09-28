@@ -1,0 +1,1 @@
+ALTER TABLE "tier_pools" ADD COLUMN "weights" jsonb DEFAULT '{}'::jsonb NOT NULL;

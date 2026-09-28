@@ -40,7 +40,7 @@
 import { recordEvent, prMergedEvent } from '@/lib/subscriptions';
 import { db } from '@buildd/core/db';
 import { missions, workers, workspaces } from '@buildd/core/db/schema';
-import { and, isNull, isNotNull, eq, gt, or, notInArray, sql } from 'drizzle-orm';
+import { and, isNull, isNotNull, eq, or, notInArray, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
@@ -576,22 +576,48 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 /**
  * Missions considered per run.
  *
- * Ordered least-recently-updated first, so a mission that stalled sits at the
- * head of the queue rather than being starved by busier ones. Small on purpose:
- * opting in is per-mission, and every candidate costs a handful of indexed
- * reads.
+ * Ordered least-recently-CHECKED first (`prSweepLastCheckedAt`), so a mission
+ * this sweep has not looked at in a while sits at the head of the queue rather
+ * than being starved by busier ones. Small on purpose: opting in is
+ * per-mission, and every candidate costs a handful of indexed reads.
  */
 export const MISSION_PR_SWEEP_CAP = 20;
 
 /**
- * How long after its last update a mission remains a sweep candidate.
+ * How long after this sweep's own last attempt a mission remains a candidate.
  *
  * This is the retry bound. A mission that genuinely has nothing to ship — every
  * deliverable cancelled, or an integration branch nothing ever landed on — would
  * otherwise be re-examined every hour forever. When it goes quiet it leaves the
  * candidate set, and the sweep stops thinking about it.
+ *
+ * Gated on `missions.prSweepLastCheckedAt`, NOT `updatedAt`. `updatedAt` is
+ * bumped by any unrelated write to the row (a task completing touches it via
+ * `maybeRetriggerMission`'s debounce), so a mission that keeps genuinely
+ * failing to open its PR — a dead GitHub installation token, a severed
+ * workspace/repo link — could ride that clock forever and never leave the
+ * window, while a mission nothing else ever touches again ages out with no
+ * re-entry mechanism. This is the exact staleness pattern
+ * `reconcileStalePrWorkers` above already replaced with a per-row
+ * `prLastCheckedAt` ATTEMPT clock; `prSweepLastCheckedAt` is that same fix
+ * applied to the mission-level sweep. See `recordMissionSweepCheck`, which
+ * advances it for every candidate this sweep looks at, on every outcome.
  */
 export const MISSION_PR_SWEEP_WINDOW_MS = 7 * DAY_MS;
+
+/**
+ * SQL for the mission sweep's staleness gate: never checked, or checked longer
+ * ago than the window. Mirrors `tieredStalenessCondition` above but with one
+ * fixed window rather than an age tier — the mission sweep has no equivalent
+ * of "hot vs cold PR age" to tier against.
+ */
+function missionSweepStalenessCondition() {
+  const secs = sql.raw(String(Math.round(MISSION_PR_SWEEP_WINDOW_MS / 1000)));
+  return sql`(
+    ${missions.prSweepLastCheckedAt} IS NULL
+    OR ${missions.prSweepLastCheckedAt} < now() - (${secs} * interval '1 second')
+  )`;
+}
 
 export interface MissionPrSweepResult {
   /** Candidates the bounded query selected. */
@@ -664,15 +690,29 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
       // Live missions only. A paused mission is a human stop signal, and a
       // completed or archived one has no PR left to open.
       eq(missions.status, 'active'),
-      gt(missions.updatedAt, new Date(Date.now() - MISSION_PR_SWEEP_WINDOW_MS)),
+      missionSweepStalenessCondition(),
     ),
     columns: { id: true },
-    orderBy: sql`${missions.updatedAt} ASC NULLS FIRST`,
+    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
     limit: MISSION_PR_SWEEP_CAP,
   });
 
   result.total = candidates.length;
   if (candidates.length === 0) return result;
+
+  /**
+   * Advance the ATTEMPT clock for a mission this sweep just examined, on every
+   * outcome including a thrown error — so a persistently-failing mission still
+   * rotates off the head of the `ORDER BY prSweepLastCheckedAt ASC NULLS FIRST`
+   * queue, and re-enters the candidate window `MISSION_PR_SWEEP_WINDOW_MS` from
+   * THIS attempt rather than from whatever `updatedAt` happens to say.
+   */
+  const recordMissionSweepCheck = async (missionId: string) => {
+    await db.update(missions)
+      .set({ prSweepLastCheckedAt: new Date() })
+      .where(eq(missions.id, missionId))
+      .catch(() => {});
+  };
 
   for (const mission of candidates) {
     try {
@@ -743,6 +783,8 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
     } catch (err) {
       result.errors++;
       console.error(`[pr-reconcile] mission PR sweep failed for mission ${mission.id}:`, err);
+    } finally {
+      await recordMissionSweepCheck(mission.id);
     }
   }
 

@@ -45,7 +45,14 @@ import {
 
 /** The slice of the knowledge store this needs, so tests can stub it. */
 export interface TaskAreaQuerier {
-  query(ns: string, params: { text: string; topK?: number; mode?: QueryMode; filters?: { corpus?: Corpus } }): Promise<QueryResult[]>;
+  query(ns: string, params: {
+    text: string;
+    topK?: number;
+    mode?: QueryMode;
+    filters?: { corpus?: Corpus };
+    useGraph?: boolean;
+    trackHits?: boolean;
+  }): Promise<QueryResult[]>;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -140,6 +147,14 @@ export async function findNeighbourTasks(
     // budget, and a topK of exactly `topK` would silently return fewer.
     topK: config.topK + 2,
     filters: { corpus: 'task' },
+    // This only needs neighbour task ids + scores to union their paths — the
+    // lexical query (hybrid mode), the graph expansion and the rerank pass all
+    // exist to improve human-facing retrieval quality, none of which this
+    // consumes. Skipping them drops the extra Neon round trips and the Voyage
+    // rerank call from every prediction.
+    mode: 'vector',
+    useGraph: false,
+    trackHits: false,
   });
 
   const seen = new Set<string>();

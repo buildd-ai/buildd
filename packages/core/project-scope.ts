@@ -90,3 +90,39 @@ export function workspaceProjectKey(
 ): string | null {
   return normalizeProject(repo) ?? normalizeProject(name);
 }
+
+type ScopedWorkspace = {
+  id: string;
+  repo?: string | null;
+  name?: string | null;
+  dataClass?: string | null;
+};
+
+/**
+ * The `memories.project` key a workspace may read and write, or null when it
+ * gets no memory at all.
+ *
+ * Memory rows carry a project key, not a workspace id, and the key comes from
+ * the repo (or name) — so two workspaces in one team on the same repo share a
+ * key. That is harmless between standard workspaces, but a sensitive
+ * workspace's memories (written by any path) would then surface in its
+ * standard sibling. So a key that any sensitive workspace in the team also
+ * resolves to is closed to every workspace, and a sensitive workspace never
+ * gets a key of its own.
+ *
+ * `teamWorkspaces` must be the workspace's own team; it may include `ws`.
+ */
+export function memoryProjectKey(
+  ws: ScopedWorkspace,
+  teamWorkspaces: readonly ScopedWorkspace[],
+): string | null {
+  if (ws.dataClass === 'sensitive') return null;
+  const key = workspaceProjectKey(ws.repo, ws.name);
+  if (!key) return null;
+  const shared = teamWorkspaces.some(
+    (other) => other.id !== ws.id
+      && other.dataClass === 'sensitive'
+      && workspaceProjectKey(other.repo, other.name) === key,
+  );
+  return shared ? null : key;
+}

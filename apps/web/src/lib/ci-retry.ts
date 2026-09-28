@@ -160,8 +160,8 @@ function buildRetryDescription(
   // followed it, got nothing, and reconstructed the failure by hand. Point at
   // the jobs-logs API, which returns the log.
   const logCommand = ciFailedJobId
-    ? `gh api /repos/${repoFullName}/actions/jobs/${ciFailedJobId}/logs`
-    : `# find the failing job, then read its log\ngh api /repos/${repoFullName}/actions/runs/${ciRunId}/jobs \\\n  -q '.jobs[] | select(.conclusion=="failure") | .id'\ngh api /repos/${repoFullName}/actions/jobs/<JOB_ID>/logs`;
+    ? `gh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/${ciFailedJobId}/logs`
+    : `# find the failing job, then read its log\ngh api /repos/${repoFullName}/actions/runs/${ciRunId}/jobs \\\n  -q '.jobs[] | select(.conclusion=="failure") | .id'\ngh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/<JOB_ID>/logs`;
 
   const logSection = ciRunId
     ? `## Pull the failing log
@@ -172,7 +172,7 @@ ${logCommand}
 The log is long. Strip the timestamp prefix and read the tail, or pull just the
 test digest:
 \`\`\`bash
-gh api /repos/${repoFullName}/actions/jobs/${ciFailedJobId ?? '<JOB_ID>'}/logs \\
+gh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/${ciFailedJobId ?? '<JOB_ID>'}/logs \\
   | sed 's/^[0-9T:.-]*Z //' | awk '/unit test files? failed:/,/Full output/'
 \`\`\`${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
 `

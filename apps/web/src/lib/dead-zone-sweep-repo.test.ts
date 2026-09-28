@@ -24,6 +24,7 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
+const mockInsertValues: any[] = [];
 const mockDbUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
 }));
@@ -37,6 +38,12 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockDbUpdate(),
+    insert: () => ({
+      values: (vals: any) => {
+        mockInsertValues.push(vals);
+        return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ id: 'retry-1' }]) }) };
+      },
+    }),
   },
 }));
 
@@ -74,6 +81,11 @@ mock.module('@/lib/conflict-retry', () => ({
 }));
 
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mock(() => Promise.resolve()) }));
+
+const mockInheritAttemptIdentity = mock((_parentTaskId: string | null | undefined) => Promise.resolve({
+  roleSlug: null as string | null, kind: null, complexity: null, missionPhaseIndex: null, missionPhaseLabel: null,
+}));
+mock.module('@/lib/attempt-identity', () => ({ inheritAttemptIdentity: mockInheritAttemptIdentity }));
 
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
@@ -119,6 +131,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
     mockBuildConflictRetryTask.mockReset();
+    mockInsertValues.length = 0;
     mockDbUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
     mockTasksFindMany.mockResolvedValue([]);
     mockGithubApi.mockResolvedValue(DIRTY_PR);
@@ -217,5 +230,44 @@ describe('sweepDeadZonePrs repo resolution', () => {
 
     expect(mockGithubApi).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
+  });
+});
+
+describe('sweepDeadZonePrs retry identity', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockBuildConflictRetryTask.mockReset();
+    mockInheritAttemptIdentity.mockClear();
+    mockInsertValues.length = 0;
+    mockTasksFindMany.mockResolvedValue([]);
+    mockGithubApi.mockResolvedValue(DIRTY_PR);
+  });
+
+  it('inherits the parent task\'s roleSlug on the conflict retry it sparks', async () => {
+    // role-routing §1 row 8: this insert hand-enumerated its columns and
+    // dropped the role that conflict-retry.ts's own insert carries.
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker()]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws1', repo: 'owner/repo', gitConfig: {},
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    mockBuildConflictRetryTask.mockReturnValue({
+      workspaceId: 'ws1', title: '[builder · after conflict #1] T', description: 'd',
+      parentTaskId: 't1', missionId: null, creationSource: 'webhook',
+      context: { conflictIteration: 1, maxConflictIterations: 3 },
+      conflictRetryPrNumber: 42, conflictRetryHeadSha: 'deadbeef',
+    });
+    mockInheritAttemptIdentity.mockResolvedValueOnce({
+      roleSlug: 'builder', kind: null, complexity: null, missionPhaseIndex: null, missionPhaseLabel: null,
+    });
+
+    await sweepDeadZonePrs();
+
+    expect(mockInheritAttemptIdentity).toHaveBeenCalledWith('t1');
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0]).toMatchObject({ roleSlug: 'builder', taskClass: 'attempt', parentTaskId: 't1' });
   });
 });

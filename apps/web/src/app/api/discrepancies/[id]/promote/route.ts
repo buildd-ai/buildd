@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { assertPromotable } from '@buildd/core/spec-discrepancy-ledger';
+import { isUuid } from '@/lib/uuid';
 
 // POST /api/discrepancies/[id]/promote — §13 promote_discrepancy backing route.
 //
@@ -19,6 +20,9 @@ import { assertPromotable } from '@buildd/core/spec-discrepancy-ledger';
 // cannot be bypassed by a caller that talks to this route directly.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid discrepancy id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

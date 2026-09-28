@@ -5,6 +5,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
@@ -253,6 +254,11 @@ export async function dispatchCommandCriterionTask(opts: {
   if (!workspace) return { ok: false, reason: 'Command criterion cannot run: workspace not found' };
 
   const verificationContext: CriteriaVerificationContext = { missionId, criterionIndex, command };
+  // Observe and report, never change the repo: Researcher work, when this
+  // workspace has the role (role-routing §1 row 9, §3.1). Else role-less.
+  // `tier: 'budget'` below still wins over the role's model floor at claim,
+  // so the role changes the persona, not the cost.
+  const roleSlug = await pickEffectiveRole(mission.workspaceId, ['researcher']);
 
   const [task] = await db
     .insert(tasks)
@@ -276,6 +282,7 @@ export async function dispatchCommandCriterionTask(opts: {
       taskClass: 'bookkeeping',
       creationSource: 'orchestrator',
       missionId,
+      roleSlug,
       outputRequirement: 'none',
       tier: 'budget',
       loopConfig: {
