@@ -329,7 +329,15 @@ export function useVisualReviewDecisions(
     try {
       let last: VisualReviewModel | null = null;
       try {
-        for (const r of reviewIds) last = (await transport.undo(r)).model;
+        // The server takes back the whole tap (every viewport) on one call and
+        // lists what it superseded; only ids it did not cover need a call.
+        const done = new Set<string>();
+        for (const r of reviewIds) {
+          if (done.has(r)) continue;
+          const u = await transport.undo(r);
+          for (const s of u.supersededIds ?? [u.superseded]) done.add(s);
+          last = u.model;
+        }
       } finally {
         if (last) adopt(last);
       }

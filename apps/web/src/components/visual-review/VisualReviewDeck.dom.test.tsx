@@ -19,7 +19,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
 const { default: VisualReviewDeck, swipeStep, verdictEffects } = await import('./VisualReviewDeck');
-const { useVisualReviewDecisions, VisualReviewRequestError, applyOptimisticDecision } = await import('./review-transport');
+const { useVisualReviewDecisions, VisualReviewRequestError, applyOptimisticDecision, buildDecisionRequest } = await import('./review-transport');
 const { createFixtureVisualReviewTransport } = await import('./fixture-transport');
 type Transport = import('./review-transport').VisualReviewTransport;
 type DecideInput = import('./review-transport').DecideInput;
@@ -433,5 +433,28 @@ describe('optimistic apply with rollback', () => {
     await flush();
     expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${m.cells.length} reviewed`);
     expect(t.model().fixTasks.filter(f => f.title.startsWith('[surface fix] /app/missions/:id:')).every(f => f.status === 'cancelled')).toBe(true);
+  });
+});
+
+describe('undo over the real server contract', () => {
+  it('takes back a two-viewport tap with one call, not one per row', async () => {
+    const base = createFixtureVisualReviewTransport('needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    const calls: string[] = [];
+    const transport: Transport = { ...base, undo: async (id: string) => { calls.push(id); return base.undo(id); } };
+    let api: ReturnType<typeof useVisualReviewDecisions> | null = null;
+    const initial = base.model();
+    function Harness() { api = useVisualReviewDecisions(initial, transport); return null; }
+    act(() => root.render(<Harness />));
+    const pair = base.model().cells.filter(c => c.route === '/app/missions/:id');
+    let ids: string[] = [];
+    await act(async () => {
+      const res = await transport.decide(buildDecisionRequest({ cells: pair, decision: 'needs_fix' }));
+      ids = res.reviews.map(r => r.id);
+    });
+    expect(ids).toHaveLength(2);
+    let out: Awaited<ReturnType<NonNullable<typeof api>['undo']>> | null = null;
+    await act(async () => { out = await api!.undo(ids); });
+    expect(out).toEqual({ ok: true });
+    expect(calls).toEqual([ids[0]]);
   });
 });

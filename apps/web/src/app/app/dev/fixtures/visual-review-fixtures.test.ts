@@ -110,10 +110,10 @@ describe('fixture transport', () => {
     expect(res.fixTaskId).not.toBeNull();
     const fix = res.model.fixTasks.find(f => f.id === res.fixTaskId)!;
     expect(fix.title).toBe('[surface fix] /app/missions/:id: Drop the second heading.');
-    for (const r of res.reviews) {
-      const u = await t.undo(r.id);
-      expect(u.superseded).toBe(r.id);
-    }
+    // One undo takes back the whole tap, both viewports, like the server.
+    const u = await t.undo(res.reviews[0].id);
+    expect([...u.supersededIds].sort()).toEqual(res.reviews.map(r => r.id).sort());
+    expect(u.cancelledFixTaskIds).toEqual([res.fixTaskId!]);
     const after = t.model();
     expect(after.fixTasks.find(f => f.id === res.fixTaskId)!.status).toBe('cancelled');
     expect(after.cells.filter(c => c.route === '/app/missions/:id').every(c => !c.current.review)).toBe(true);
