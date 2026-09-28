@@ -15,6 +15,7 @@ import { useChatActions } from '../ChatActions';
 import { useObjectStore } from './ObjectStoreProvider';
 import type { QuestionObjectView } from './object-views';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
+import { useNeedsInput } from '@/components/needs-input-context';
 
 /** "The builder asks" → "The Builder": who the answer went to. */
 export function askerName(askerLabel: string): string {
@@ -26,6 +27,7 @@ export function askerName(askerLabel: string): string {
 export function QuestionCard({ objRef, view, variant = 'card' }: { objRef: BuilddObjectRef; view: QuestionObjectView; variant?: 'card' | 'pane' }) {
   const actions = useChatActions();
   const store = useObjectStore();
+  const { markAnswerSent } = useNeedsInput();
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [answered, setAnswered] = useState<string | null>(null);
@@ -42,8 +44,9 @@ export function QuestionCard({ objRef, view, variant = 'card' }: { objRef: Build
     try {
       await actions.answerQuestion({ workerId: view.workerId, taskId: view.taskId, noteId: view.question.noteId, message });
       setAnswered(message);
+      markAnswerSent?.(view.taskId);
       // Optimistic: the card reads answered right away; the refetch confirms it.
-      store.set(objRef, { ...view, open: false, answer: message });
+      store.set(objRef, { ...view, open: false, answer: message, awaitingAgent: true });
       store.refresh(objRef);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to send answer');

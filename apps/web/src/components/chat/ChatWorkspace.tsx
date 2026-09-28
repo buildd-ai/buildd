@@ -26,6 +26,7 @@ import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from '.
 import ChatFeed, { type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
 import { ObjectPane } from './objects/registry';
+import { useObjectEntry } from './objects/ObjectStoreProvider';
 import PinnedObject from './objects/PinnedObject';
 import SeaLayer from './SeaLayer';
 import { useHideNeedsInputBannerOnPhone, useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
@@ -557,16 +558,24 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           />
         )}
       </div>
-      <BottomSheet
-        open={sheet !== null}
-        onClose={closeSheet}
-        title={sheet ? (sheetReviewing ? 'Review screens' : objectSheetTitle(sheet)) : ''}
-        height="tall"
-        testId="chat-object-sheet"
-        flush={sheetReviewing}
-      >
-        {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
-      </BottomSheet>
+      {sheet && <ObjectSheet objRef={sheet} reviewing={sheetReviewing} onClose={closeSheet} />}
     </ChatActionsProvider>
+  );
+}
+
+/** The phone object sheet. Its title reads the live view: an answered question stops saying it waits. */
+function ObjectSheet({ objRef, reviewing, onClose }: { objRef: BuilddObjectRef; reviewing: boolean; onClose: () => void }) {
+  const { view } = useObjectEntry(objRef);
+  return (
+    <BottomSheet
+      open
+      onClose={onClose}
+      title={reviewing ? 'Review screens' : objectSheetTitle(objRef, view)}
+      height="tall"
+      testId="chat-object-sheet"
+      flush={reviewing}
+    >
+      <ObjectPane objRef={objRef} variant="sheet" />
+    </BottomSheet>
   );
 }

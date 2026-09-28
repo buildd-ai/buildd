@@ -103,9 +103,18 @@ export function missionAskRows(s: MissionSheetState | null): CanvasSuggestion[] 
 /**
  * The phone object sheet's title bar. A mission's pane leads with its own
  * title, so the bar names only the kind ("Mission", not "Mission: X" above X).
+ * A question stops saying it is waiting once it has been answered: the answer
+ * is on its way until the agent picks it up.
  */
-export function objectSheetTitle(ref: { kind: string; fallbackText: string }): string {
-  return ref.kind === 'mission' ? 'Mission' : ref.fallbackText;
+export function objectSheetTitle(
+  ref: { kind: string; fallbackText: string },
+  view?: { kind: string; open?: boolean; awaitingAgent?: boolean } | null,
+): string {
+  if (ref.kind === 'mission') return 'Mission';
+  if (ref.kind === 'question' && view?.kind === 'question' && view.open === false) {
+    return view.awaitingAgent ? 'Answer sent, waiting for the agent' : 'Question answered';
+  }
+  return ref.fallbackText;
 }
 
 /** The composer's locked scope cell. */

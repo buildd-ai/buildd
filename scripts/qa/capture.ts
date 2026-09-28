@@ -134,6 +134,12 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
 
 const context = await browser.newContext(contextOptions);
 const page = await context.newPage();
+// Hydration mismatches and other client errors land in the run log, so a shot
+// that looks fine but threw on load (React #418) is still visible.
+page.on('pageerror', (err) => console.warn(`[capture] page error on ${page.url()}: ${err.message}`));
+page.on('console', (msg) => {
+  if (msg.type() === 'error') console.warn(`[capture] console error on ${page.url()}: ${msg.text().slice(0, 2000)}`);
+});
 
 // --- Auth ---
 // If a storage state was loaded, we're already signed in. Otherwise fall back to
