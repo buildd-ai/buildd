@@ -136,33 +136,45 @@ export function createFixtureVisualReviewTransport(
         live.push(review);
         reviews.push(review);
       }
-      return { reviews, fixTaskId, cancelledFixTaskId, guidanceTaskId, model: build() };
+      return {
+        reviews, fixTaskId, cancelledFixTaskId, guidanceTaskId,
+        fixTaskIds: fixTaskId ? [fixTaskId] : [],
+        cancelledFixTaskIds: cancelledFixTaskId ? [cancelledFixTaskId] : [],
+        guidanceTaskIds: guidanceTaskId ? [guidanceTaskId] : [],
+        annotated: guidanceTaskId ? [{ fixTaskId: guidanceTaskId, reason: 'started' }] : [],
+        model: build(),
+      };
     },
 
     async undo(reviewId: string): Promise<VisualReviewUndoResponse> {
       await wait();
       const review = reviewsNow().find(r => r.id === reviewId);
       if (!review || review.supersededAt) throw new VisualReviewRequestError(404, { error: 'not_found' });
-      let cancelledFixTaskId: string | null = null;
-      let reopenedFixTaskId: string | null = null;
-      if (review.fixTaskId) {
-        // Another review of the same decision may have cancelled it already.
-        const status = statusOf.get(review.fixTaskId) ?? added.find(t => t.id === review.fixTaskId)?.status;
+      // One tap writes a row per viewport; the server takes the whole tap back.
+      const group = reviewsNow().filter(r => !r.supersededAt && r.createdAt === review.createdAt);
+      const filed = [...new Set(group.map(r => r.fixTaskId).filter((id): id is string => !!id))];
+      const withdrawn = [...new Set(group.map(r => r.cancelledFixTaskId).filter((id): id is string => !!id))];
+      for (const id of filed) {
+        const status = statusOf.get(id) ?? added.find(t => t.id === id)?.status;
         if (status !== 'pending' && status !== 'cancelled') {
-          throw new VisualReviewRequestError(409, { error: 'fix_started', fixTaskId: review.fixTaskId });
-        }
-        if (status === 'pending') {
-          statusOf.set(review.fixTaskId, 'cancelled');
-          cancelledFixTaskId = review.fixTaskId;
+          throw new VisualReviewRequestError(409, { error: 'fix_started', fixTaskId: id });
         }
       }
-      if (review.cancelledFixTaskId) {
-        statusOf.set(review.cancelledFixTaskId, 'pending');
-        reopenedFixTaskId = review.cancelledFixTaskId;
-      }
+      const cancelledFixTaskIds = filed.filter(id => (statusOf.get(id) ?? added.find(t => t.id === id)?.status) === 'pending');
+      for (const id of cancelledFixTaskIds) statusOf.set(id, 'cancelled');
+      for (const id of withdrawn) statusOf.set(id, 'pending');
       seq++;
-      superseded.add(reviewId);
-      return { superseded: reviewId, reopenedFixTaskId, cancelledFixTaskId, model: build() };
+      for (const r of group) superseded.add(r.id);
+      return {
+        superseded: reviewId,
+        supersededIds: group.map(r => r.id),
+        restoredIds: [],
+        reopenedFixTaskId: withdrawn[0] ?? null,
+        cancelledFixTaskId: cancelledFixTaskIds[0] ?? null,
+        reopenedFixTaskIds: withdrawn,
+        cancelledFixTaskIds,
+        model: build(),
+      };
     },
   };
 }
