@@ -6,9 +6,76 @@ bumps; new optional data parts are minor.
 
 Releasing: bump `version` in package.json and `KIT_VERSION` in
 `src/decide/index.ts`, add a `## <version>` heading here, and merge to dev.
+A kit release does not change decision versions (0.10.0); only a
+`DECIDE_ENGINE_VERSION` bump does, and it needs its own note here.
 The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
+
+## 0.10.0 — 2026-09-28
+
+Decision identity no longer changes with the kit release. Minor: every
+decision's `version` string changes format once, and nothing else about a
+decision does.
+
+**Why.** A decision's `version` ended `|kit-<kit version>`, so every kit
+release (even a CSS fix) changed every pinned version and every stored
+`classifier_version`-style row, and apps had to re-pin tests and alias old
+rows by hand. From 0.3.0 to 0.9.1 no fingerprint moved. The kit version was
+there to catch a kit change that alters a decision's behaviour; an explicit
+engine version does that now, and only when the behaviour actually changes.
+
+**What is in a decision's identity now**
+
+- `version` is `promptVersion|model|engine-<DECIDE_ENGINE_VERSION>`, e.g.
+  `2026-09-27.a|typesafe/jev-1.13|engine-1`.
+- `fingerprint` covers the questions, modes, thresholds, model and a
+  non-default endpoint kind, as before, plus the engine from engine 2 on.
+  Engine 1 adds nothing to the hash, so **every fingerprint pinned on 0.9.1
+  or earlier is unchanged**.
+- `DECIDE_ENGINE_VERSION` (new, `1`) moves only when the kit changes what a
+  decision does for the same definition and model: the request sent (System
+  One body; the chat endpoint's prompt, lettering and sampling), how responses
+  become answers (validation, logprobs → probabilities), how answers become
+  outcomes (modes, thresholds, noul confidence) or the `/surfaces` ranker. A
+  bump changes every decision's version and fingerprint, so a fingerprint-only
+  pin fails too.
+- `engine.test.ts` runs those paths over fixed fixtures and pins a digest per
+  engine version; a change to them fails the kit's CI until the engine is
+  bumped. Engine 1's digest was computed against the 0.9.1 source and matches
+  it: engine 1 is the behaviour of every release through 0.9.1.
+- The kit release is metadata: `KIT_VERSION` stays exported and is on
+  `decision.kitVersion`, `DecisionRun.kitVersion` and `EvalReport.kitVersion`.
+  New `decision.engine`.
+
+**Upgrading**
+
+- Pins: `expectDecisionPinned(d, { fingerprint })` needs no change. A pinned
+  `version: '…|kit-0.9.1'` still passes (legacy pins are compared normalised);
+  re-pin it to `'…|engine-1'` when convenient. Tests asserting
+  `` `${promptVersion}|${model}|kit-${KIT_VERSION}` `` should assert
+  `` `…|engine-${DECIDE_ENGINE_VERSION}` `` instead.
+- Stored rows: rows written from now on read `…|engine-1`; older rows keep
+  `…|kit-x.y.z`. Don't rewrite them. To group history, read versions through
+  `normalizeDecisionVersion(v)`, which maps any `…|kit-x.y.z` to
+  `…|engine-1` (every pre-0.10.0 release ran engine 1) and leaves any other
+  string untouched. `parseDecisionVersion(v)` returns `{ promptVersion,
+  model, engine, kitVersion, legacy }` or null.
+- A hand-kept alias map from one kit suffix to the next can go: the
+  normaliser covers every kit release, and future kit releases add no suffix.
+- An eval log entry is only needed when `DECIDE_ENGINE_VERSION` moves (the
+  CHANGELOG says so), not on every kit bump.
+
+**Changes**
+
+- `/decide`: `DECIDE_ENGINE_VERSION`, `normalizeDecisionVersion`,
+  `parseDecisionVersion`, `ParsedDecisionVersion`; `decisionFingerprint(config,
+  engine?)`; `Decision.engine`, `Decision.kitVersion`,
+  `DecisionRun.kitVersion`, `EvalReport.kitVersion`.
+- `expectDecisionPinned` compares versions normalised; its version-mismatch
+  message names the prompt version, model or decide engine instead of the kit
+  release.
+- `/surfaces` `RankPick.version` follows the decision (`…|engine-1`).
 
 ## 0.9.1 — 2026-09-28
 
