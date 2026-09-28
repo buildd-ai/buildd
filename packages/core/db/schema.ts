@@ -2811,10 +2811,13 @@ export const memoryUses = pgTable('memory_uses', {
 // (packages/core/scripts/memory-decision-readout.ts) can compare Jev, the rule
 // and the use ledger's outcome per decision. Content-free: ids, labels and
 // numbers only. Spend is also receipted in ai_usage (surface 'decision').
-// Written fire-and-forget after the response; no FKs, same as memory_uses.
+// Written after the response, so a failed insert costs log rows and nothing
+// else. Only the team is a FK (cascade, like ai_usage): the other ids point at
+// rows the log outlives, same as memory_uses. Pruned after 90 days by the
+// memory-digest-guardrail cron (packages/core/memory-uses-retention.ts).
 export const memoryDecisions = pgTable('memory_decisions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  teamId: uuid('team_id').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   workspaceId: uuid('workspace_id'),
   taskId: uuid('task_id'),
   /** The memory the verdict is about; null when none was written (a NOOP, a failed save). */
@@ -2842,6 +2845,8 @@ export const memoryDecisions = pgTable('memory_decisions', {
 }, (t) => ({
   teamDecisionIdx: index('memory_decisions_team_decision_idx').on(t.teamId, t.decision, t.createdAt),
   taskIdx: index('memory_decisions_task_idx').on(t.taskId),
+  memoryIdx: index('memory_decisions_memory_idx').on(t.memoryId),
+  createdIdx: index('memory_decisions_created_idx').on(t.createdAt),
 }));
 
 // Phase 2: knowledge entities — canonical nodes for the entity graph.
@@ -3762,8 +3767,10 @@ export const aiPlans = pgTable('ai_plans', {
 export const aiUsage = pgTable('ai_usage', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  // The account that reported the receipt (the app's service account).
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
+  // The account that reported the receipt (the app's service account). NULL
+  // for a buildd-internal decision with no acting account (memory relevance
+  // shadow, OAuth MCP, chat): attributed to the team only.
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   // NULL when the app ran on its own fallback plan (buildd was unreachable).
   planId: uuid('plan_id').references(() => aiPlans.id, { onDelete: 'set null' }),
   // NULL only for a planless Jev decision receipt: Jev has no tier.

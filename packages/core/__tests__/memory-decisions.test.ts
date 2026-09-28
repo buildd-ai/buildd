@@ -185,6 +185,30 @@ describe('judgeLearn', () => {
     expect(j.addTags).toEqual([]);
   });
 
+  it('a hanging key lookup still returns the fallback within the deadline, and logs the timeout', async () => {
+    const rows: MemoryDecisionRow[] = [];
+    let fetched = 0;
+    const d = createMemoryDecider({
+      resolveKey: () => new Promise<string | null>(() => {}),
+      record: r => { rows.push(...r); },
+      fetch: async () => { fetched++; return new Response('{}'); },
+      timeoutMs: 120,
+    });
+    const t0 = Date.now();
+    const j = await d.judgeLearn({ scope, title: 'T', content: 'C', type: 'pattern' });
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(j.type).toMatchObject({ type: 'pattern', overridden: false });
+    expect(j.addTags).toEqual([]);
+    j.record('m');
+    expect(fetched).toBe(0);
+    expect(rows.map(r => [r.decision, r.error, r.applied])).toEqual([['keep', 'timeout', false], ['type', 'timeout', false]]);
+
+    const u = await d.judgeUpdate({ scope, incoming: { content: 'a' }, existing: { id: 'old', content: 'b' } });
+    expect(u.action).toBeNull();
+    await d.shadowRelevance({ scope, task: 't', caller: 'claim_context', hits: [{ memoryId: 'm1', content: 'c', gatedBy: null }] });
+    expect(rows.at(-1)).toMatchObject({ decision: 'relevance', error: 'timeout' });
+  });
+
   it('a record sink that throws never fails the decision', async () => {
     const d = createMemoryDecider({
       resolveKey: async () => 'k',
@@ -263,6 +287,21 @@ describe('labelTaskMemoryUses', () => {
     });
     expect(out).toEqual({ labelled: 1, considered: 2 });
     expect(writes).toEqual([{ taskId: TASK, labels: [{ memoryId: 'a', outcome: 'used' }] }]);
+  });
+
+  it('does not ask again for a task already labelled', async () => {
+    const h = harness({ used: noulAns(0.9) });
+    let loaded = 0;
+    const out = await labelTaskMemoryUses({ taskId: TASK, summary: 's' }, {
+      decider: h.decider,
+      attempted: async () => true,
+      loadUses: async () => { loaded++; return [{ teamId: TEAM, workspaceId: WS, memoryId: 'a' }]; },
+      loadMemories: async () => [{ id: 'a', content: 'x' }],
+      writeOutcomes: async () => {},
+    });
+    expect(out).toEqual({ labelled: 0, considered: 0 });
+    expect(loaded).toBe(0);
+    expect(h.requests).toHaveLength(0);
   });
 
   it('never throws, and does nothing without a summary', async () => {

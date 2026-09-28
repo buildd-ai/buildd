@@ -19,5 +19,9 @@ CREATE TABLE "memory_decisions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "ai_usage" ALTER COLUMN "account_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "memory_decisions" ADD CONSTRAINT "memory_decisions_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "memory_decisions_team_decision_idx" ON "memory_decisions" USING btree ("team_id","decision","created_at");--> statement-breakpoint
-CREATE INDEX "memory_decisions_task_idx" ON "memory_decisions" USING btree ("task_id");
+CREATE INDEX "memory_decisions_task_idx" ON "memory_decisions" USING btree ("task_id");--> statement-breakpoint
+CREATE INDEX "memory_decisions_memory_idx" ON "memory_decisions" USING btree ("memory_id");--> statement-breakpoint
+CREATE INDEX "memory_decisions_created_idx" ON "memory_decisions" USING btree ("created_at");

@@ -54,7 +54,8 @@ function memClient() {
       updates.push({ id, fields });
       return { memory: { ...EXISTING, ...fields, id } };
     },
-    markSuperseded: async () => 1,
+    superseded: [] as Array<{ ids: string[]; byId: string }>,
+    markSuperseded: async (ids: string[], byId: string) => { client.superseded.push({ ids, byId }); return ids.length; },
   };
   return client;
 }
@@ -138,16 +139,28 @@ describe('learn: the 0.88 to 0.94 band', () => {
     expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'SUPERSEDE', rule: 'conflict', applied: true, memoryId: 'new-id' });
   });
 
-  it('UPDATE merges into the existing row (keeps its id and type, unions tags and files)', async () => {
-    const { d } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+  it('UPDATE writes a NEW merged row and supersedes the old one, which stays readable', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
     const mc = memClient();
-    const res = await handleLearnAction(mc as any, { ...LEARN, files: ['b.ts'] }, ctx(store(0.9), d));
-    expect(mc.saves).toHaveLength(0);
-    expect(mc.updates).toHaveLength(1);
-    expect(mc.updates[0].id).toBe(EXISTING.id);
-    expect(mc.updates[0].fields).toMatchObject({ title: 'T', content: 'C', tags: ['old', 'mine'], files: ['a.ts', 'b.ts'] });
-    expect(mc.updates[0].fields.type).toBeUndefined();
-    expect(res.content[0].text).toContain(`ID: ${EXISTING.id}`);
+    const s = store(0.9);
+    const res = await handleLearnAction(mc as any, { ...LEARN, files: ['b.ts'] }, { ...ctx(s, d), workerId: 'w-new' });
+    // Never an overwrite.
+    expect(mc.updates).toHaveLength(0);
+    expect(mc.saves).toHaveLength(1);
+    const saved = mc.saves[0];
+    expect(saved).toMatchObject({ type: 'gotcha', title: 'T', project: PROJECT, source: 'worker:w-new', tags: ['old', 'mine'], files: ['a.ts', 'b.ts'] });
+    expect(saved.content).toContain(EXISTING.content);
+    expect(saved.content).toContain('C');
+    // Supersession goes through the normal path: index flag + row mark.
+    expect(s.upserts[0].supersedes).toEqual([EXISTING.id]);
+    expect(mc.superseded).toEqual([{ ids: [EXISTING.id], byId: 'new-id' }]);
+    // The original is still recoverable by id, unchanged.
+    const old = await mc.get(EXISTING.id);
+    expect(old.memory.content).toBe(EXISTING.content);
+    expect(old.memory.title).toBe(EXISTING.title);
+    expect(res.content[0].text).toContain('ID: new-id');
+    expect(res.content[0].text).toContain('superseded: 1');
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'UPDATE', applied: true, memoryId: 'new-id' });
   });
 
   it('NOOP returns the existing id and writes nothing', async () => {
@@ -184,6 +197,41 @@ describe('learn: the 0.88 to 0.94 band', () => {
     const mc = memClient();
     const res = await handleLearnAction(mc as any, LEARN, ctx(store(0.9), d));
     expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+  });
+
+  it('a closest match that turns out to be another project\'s is never acted on: conflict reply, no Jev call', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    // The index scope check passed (batch), but the row itself belongs elsewhere.
+    mc.get = async (id: string) => ({ memory: { ...EXISTING, id, project: 'acme/other' } });
+    const s = store(0.91);
+    const res = await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+    expect(asked).toEqual(['learn']);
+    expect(mc.saves).toHaveLength(0);
+    expect(s.upserts).toHaveLength(0);
+  });
+
+  it('a foreign-project neighbour is dropped before the band: written as new, nothing superseded', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    mc.batch = async (ids: string[]) => ({ memories: ids.map(id => ({ ...EXISTING, id, project: 'acme/other' })) });
+    const s = store(0.91);
+    await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(asked).toEqual(['learn']);
+    expect(mc.saves).toHaveLength(1);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+  });
+
+  it('a sensitive workspace asks nothing: no keep/type, no band decision', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    const learnRes = await handleLearnAction(mc as any, LEARN, { ...ctx(store(0.91), d), isSensitive: true });
+    expect(learnRes.isError).toBe(true);
+    const saveRes = await handleMemoryAction(mc as any, 'save', LEARN, { ...ctx(store(null), d), isSensitive: true });
+    expect(saveRes.isError).toBe(true);
+    expect(asked).toEqual([]);
+    expect(mc.saves).toHaveLength(0);
   });
 
   it('above 0.94 still auto-supersedes without asking about the band', async () => {

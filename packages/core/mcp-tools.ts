@@ -6127,26 +6127,38 @@ export async function handleLearnAction(
             ` | nothing new to add (decision: NOOP). To replace it anyway, re-call learn with supersedes: ${JSON.stringify([band.existing.id])}`,
           );
         } else if (band.action === 'UPDATE' && band.existing) {
+          // A merge is a new row, never an overwrite: the new row carries the
+          // existing text plus the incoming text, and the old row is only
+          // superseded (reversible, still readable by id).
           const existing = band.existing;
           const judgement = await judging;
-          let updated: Awaited<ReturnType<typeof updateMemory>>;
+          const mergeSupersedes = await ownSupersedes(memoryClient, ctx, [existing.id]);
+          if (!mergeSupersedes) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            return text(`Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement.\n\n- ID: ${existing.id}`);
+          }
+          let merged: Awaited<ReturnType<typeof saveMemory>>;
           try {
-            updated = await updateMemory(memoryClient, existing.id, {
+            merged = await saveMemory(memoryClient, {
+              type: existing.type,
               title,
-              content,
-              tags: unionStrings(existing.tags, params.tags as string[] | undefined),
+              content: mergeMemoryContent(existing.content, content),
+              project: learnScope.project,
+              tags: unionStrings(existing.tags, params.tags as string[] | undefined, judgement.addTags),
               files: unionStrings(existing.files, params.files as string[] | undefined),
-            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn' });
+              source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: mergeSupersedes });
           } catch (err) {
             band.judgement.record(existing.id, false);
             judgement.record(null);
             throw err;
           }
-          band.judgement.record(existing.id, true);
-          judgement.record(null);
+          band.judgement.record(merged.memory.id, true);
+          judgement.record(merged.memory.id);
           return text(
-            `Memory updated: "${updated.memory.title}" (${updated.memory.type})\nID: ${updated.memory.id}` +
-            ` | merged into a near-duplicate (decision: UPDATE)`,
+            `Memory saved: "${merged.memory.title}" (${merged.memory.type})\nID: ${merged.memory.id}` +
+            ` | merged with near-duplicate ${existing.id}, which is superseded (decision: UPDATE) | superseded: ${merged.superseded}`,
           );
         } else {
           band.judgement.record(null, false);
@@ -6222,6 +6234,18 @@ async function resolveNearDuplicateBand(
     existing: { id: existing.id, title: existing.title, content: existing.content || match.content, type: existing.type },
   }).catch(() => FALLBACK_UPDATE_JUDGEMENT);
   return { action: judgement.action, judgement, existing };
+}
+
+/**
+ * The text of a merged memory: the existing memory, then what the new write
+ * adds. No generative merge here; the superseded original stays readable.
+ */
+function mergeMemoryContent(existing: string, incoming: string): string {
+  const a = (existing ?? '').trim();
+  const b = (incoming ?? '').trim();
+  if (!a) return b;
+  if (!b || a.includes(b)) return a;
+  return `${a}\n\nUpdate:\n${b}`;
 }
 
 type MemoryRecordShape = { id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[] };

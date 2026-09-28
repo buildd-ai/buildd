@@ -1,5 +1,5 @@
 {
-  "id": "49801934-b669-4025-8bdc-e15f8d14b634",
+  "id": "39418e40-12b6-4ce4-b336-519befc8340a",
   "prevId": "06586fe1-2b9f-4fee-ad5f-55d7f7f93997",
   "version": "7",
   "dialect": "postgresql",
@@ -718,7 +718,7 @@
           "name": "account_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "plan_id": {
           "name": "plan_id",
@@ -5489,9 +5489,53 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "memory_decisions_memory_idx": {
+          "name": "memory_decisions_memory_idx",
+          "columns": [
+            {
+              "expression": "memory_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memory_decisions_created_idx": {
+          "name": "memory_decisions_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "memory_decisions_team_id_teams_id_fk": {
+          "name": "memory_decisions_team_id_teams_id_fk",
+          "tableFrom": "memory_decisions",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

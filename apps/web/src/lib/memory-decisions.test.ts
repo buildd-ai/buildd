@@ -5,6 +5,9 @@ import {
   scheduleAfter,
   scheduleMemoryUseLabels,
   webMemoryDecisionDeps,
+  shouldLabelMemoryUses,
+  relevanceShadowSampleRate,
+  memoryDecisionsDisabled,
 } from './memory-decisions';
 import type { MemoryDecider } from '@buildd/core/memory-decisions';
 
@@ -41,6 +44,12 @@ describe('decisionUsageRow', () => {
       latencyMs: 1, outcome: 'error', attempts: 1,
     }, { teamId: TEAM, accountId: ACCOUNT });
     expect(unpriced).toMatchObject({ costUsd: '0.000000', costSource: 'estimated' });
+    // No acting account: attributed to the team alone.
+    const teamOnly = decisionUsageRow({
+      kind: 'decision', decisionId: 'buildd.memory_relevance', provider: 'openrouter', model: 'm', usage: { inputTokens: 1, outputTokens: 0, costUsd: 0 },
+      latencyMs: 1, outcome: 'ok', attempts: 1,
+    }, { teamId: TEAM, accountId: null });
+    expect(teamOnly).toMatchObject({ teamId: TEAM, accountId: null });
   });
 });
 
@@ -61,12 +70,27 @@ describe('defaults are inert under test', () => {
   });
 });
 
+const SHADOW_INPUT = { teamId: TEAM, workspaceId: WS, taskId: TASK, caller: 'claim_context' as const, query: 'fix it', hits: [{ memoryId: 'm1', rank: 1, score: 0.8, gatedBy: null, content: 'body' }] };
+
+function shadowHarness(over: Record<string, unknown> = {}) {
+  const { tasks, schedule } = collectSchedule();
+  const calls: any[] = [];
+  const hook = createRelevanceShadow({
+    deciderFor: () => stubDecider({ shadowRelevance: async (i) => { calls.push(i); } }),
+    loadWorkspace: async () => ({ dataClass: 'standard', gitConfig: null }),
+    taskInWorkspace: async () => true,
+    sampleRate: () => 1,
+    random: () => 0,
+    disabled: () => false,
+    ...over,
+  } as any, schedule);
+  return { hook, tasks, calls };
+}
+
 describe('createRelevanceShadow', () => {
   it('returns at once and runs the verdicts in one scheduled task', async () => {
-    const { tasks, schedule } = collectSchedule();
-    const calls: any[] = [];
-    const hook = createRelevanceShadow(() => stubDecider({ shadowRelevance: async (i) => { calls.push(i); } }), schedule);
-    hook({ teamId: TEAM, workspaceId: WS, taskId: TASK, caller: 'claim_context', query: 'fix it', hits: [{ memoryId: 'm1', rank: 1, score: 0.8, gatedBy: null, content: 'body' }] });
+    const { hook, tasks, calls } = shadowHarness();
+    hook(SHADOW_INPUT);
     expect(calls).toHaveLength(0);
     expect(tasks).toHaveLength(1);
     await tasks[0]();
@@ -76,6 +100,62 @@ describe('createRelevanceShadow', () => {
       caller: 'claim_context',
       hits: [{ memoryId: 'm1', content: 'body', gatedBy: null }],
     });
+  });
+
+  it('refuses a sensitive workspace, by either marker, and a missing one', async () => {
+    for (const ws of [{ dataClass: 'sensitive' }, { dataClass: 'standard', gitConfig: { dataClass: 'sensitive' } }, null]) {
+      const { hook, tasks, calls } = shadowHarness({ loadWorkspace: async () => ws });
+      hook(SHADOW_INPUT);
+      await tasks[0]();
+      expect(calls).toHaveLength(0);
+    }
+    const { hook, tasks, calls } = shadowHarness();
+    hook({ ...SHADOW_INPUT, workspaceId: null });
+    await tasks[0]();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('logs nothing for a task that fails the ledger attribution check', async () => {
+    const { hook, tasks, calls } = shadowHarness({ taskInWorkspace: async () => false });
+    hook(SHADOW_INPUT);
+    await tasks[0]();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('samples, and the kill switch stops it before anything is scheduled', () => {
+    const sampled = shadowHarness({ sampleRate: () => 0.25, random: () => 0.5 });
+    sampled.hook(SHADOW_INPUT);
+    expect(sampled.tasks).toHaveLength(0);
+    const off = shadowHarness({ disabled: () => true });
+    off.hook(SHADOW_INPUT);
+    expect(off.tasks).toHaveLength(0);
+  });
+});
+
+describe('config', () => {
+  it('sample rate defaults to 0.25 and is clamped; the kill switch reads truthy values', () => {
+    expect(relevanceShadowSampleRate({})).toBe(0.25);
+    expect(relevanceShadowSampleRate({ MEMORY_RELEVANCE_SHADOW_SAMPLE: '0.5' })).toBe(0.5);
+    expect(relevanceShadowSampleRate({ MEMORY_RELEVANCE_SHADOW_SAMPLE: '7' })).toBe(1);
+    expect(relevanceShadowSampleRate({ MEMORY_RELEVANCE_SHADOW_SAMPLE: 'nope' })).toBe(0.25);
+    expect(memoryDecisionsDisabled({ MEMORY_DECISIONS_DISABLED: '1' })).toBe(true);
+    expect(memoryDecisionsDisabled({})).toBe(false);
+  });
+});
+
+describe('shouldLabelMemoryUses (the worker route gate)', () => {
+  const base = { status: 'completed', previousStatus: 'running', taskId: TASK, workspace: { dataClass: 'standard', gitConfig: null }, serverRefusal: false };
+  it('labels on the transition into completed for a standard workspace', () => {
+    expect(shouldLabelMemoryUses(base)).toBe(true);
+  });
+  it('skips sensitive (either marker), a missing workspace, repeats, refusals and other statuses', () => {
+    expect(shouldLabelMemoryUses({ ...base, workspace: { dataClass: 'sensitive' } })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, workspace: { dataClass: 'standard', gitConfig: { dataClass: 'sensitive' } } })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, workspace: null })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, previousStatus: 'completed' })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, serverRefusal: true })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, status: 'failed' })).toBe(false);
+    expect(shouldLabelMemoryUses({ ...base, taskId: null })).toBe(false);
   });
 });
 

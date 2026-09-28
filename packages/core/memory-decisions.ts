@@ -497,37 +497,61 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
   const timeoutMs = deps.timeoutMs ?? MEMORY_DECISION_TIMEOUT_MS;
   const now = deps.now ?? (() => Date.now());
 
-  /** Key, then one call, inside one deadline. Null run = not configured. */
+  const KEY_TIMEOUT = Symbol('key-timeout');
+
+  /**
+   * A failed run that never reached `decide`: the deadline fired first (a
+   * hanging key lookup included) or the work threw. Logged like any other
+   * failure, so a timeout is visible in the readout rather than silent.
+   */
+  function failedRun<Q extends DecisionQuestions>(decision: Decision<Q>, kind: 'timeout' | 'transport', started: number): DecisionRun<Q> {
+    const error = kind === 'timeout' ? { kind: 'timeout' as const, timeoutMs } : { kind: 'transport' as const, message: 'decision failed before the call' };
+    return {
+      ok: false,
+      decisionId: decision.id,
+      version: decision.version,
+      outcomes: {} as DecisionRun<Q>['outcomes'],
+      result: { ok: false, error, latencyMs: now() - started, attempts: 0 },
+      receipt: null,
+    };
+  }
+
+  /** Key, then one call, inside one deadline. Null = not configured (nothing is logged). */
   async function runOne<Q extends DecisionQuestions>(
     decision: Decision<Q>,
     scope: MemoryDecisionScope,
     state: Record<string, unknown>,
   ): Promise<DecisionRun<Q> | null> {
     const started = now();
-    const work = (async () => {
+    const work = (async (): Promise<DecisionRun<Q> | null> => {
       const apiKey = await deps.resolveKey(scope);
       if (!apiKey) return null;
       const remaining = timeoutMs - (now() - started);
-      if (remaining <= 0) return null;
+      if (remaining <= 0) return failedRun(decision, 'timeout', started);
       return decision.run({ apiKey, state, timeoutMs: remaining, headers: { ...ATTRIBUTION_HEADERS }, ...(deps.fetch ? { fetch: deps.fetch } : {}), now });
-    })();
-    return bounded(work, timeoutMs, null);
+    })().catch(() => failedRun(decision, 'transport', started));
+    const timedOut = Symbol('timeout');
+    const res = await bounded<DecisionRun<Q> | null | typeof timedOut>(work, timeoutMs, timedOut);
+    return res === timedOut ? failedRun(decision, 'timeout', started) : res;
   }
 
-  /** Key once, then a bounded pool of calls. */
+  /** Key once, then a bounded pool of calls. Null = not configured. */
   async function runMany<T, Q extends DecisionQuestions>(
     decision: Decision<Q>,
     scope: MemoryDecisionScope,
     items: readonly T[],
     stateOf: (item: T) => Record<string, unknown>,
-  ): Promise<Array<{ item: T; run: DecisionRun<Q> | null }> | null> {
-    const apiKey = await bounded(deps.resolveKey(scope), timeoutMs, null);
+  ): Promise<Array<{ item: T; run: DecisionRun<Q> }> | null> {
+    const started = now();
+    const apiKey = await bounded<string | null | typeof KEY_TIMEOUT>(deps.resolveKey(scope), timeoutMs, KEY_TIMEOUT);
+    if (apiKey === KEY_TIMEOUT) return items.map(item => ({ item, run: failedRun(decision, 'timeout', started) }));
     if (!apiKey) return null;
     const res = await decision.runEach(items, {
       apiKey, stateOf, headers: { ...ATTRIBUTION_HEADERS }, ...(deps.fetch ? { fetch: deps.fetch } : {}), now,
       timeoutMs, budgetMs: MEMORY_DECISION_POOL_BUDGET_MS,
     });
-    return res.items.map(r => ({ item: r.item, run: r.run }));
+    // Items the pool budget cut off are logged as timeouts, not dropped.
+    return res.items.map(r => ({ item: r.item, run: r.run ?? failedRun(decision, 'timeout', started) }));
   }
 
   const receiptsOf = (runs: Array<DecisionRun<DecisionQuestions> | null>) =>
@@ -665,6 +689,12 @@ export interface UseLabelDeps {
   loadMemories: (teamId: string, ids: string[]) => Promise<Array<MemoryText & { id: string }>>;
   /** Write outcome on the task's unlabelled rows for each memory. */
   writeOutcomes: (taskId: string, labels: Array<{ memoryId: string; outcome: 'used' | 'ignored' }>) => Promise<void>;
+  /**
+   * Has this task already been labelled (a `use` verdict logged)? A repeated
+   * completion must not ask again, including for rows left unlabelled below
+   * threshold. Omitted: always ask.
+   */
+  attempted?: (taskId: string) => Promise<boolean>;
 }
 
 /**
@@ -678,6 +708,7 @@ export async function labelTaskMemoryUses(
 ): Promise<{ labelled: number; considered: number }> {
   try {
     if (!uuidOrNull(input.taskId) || !input.summary?.trim()) return { labelled: 0, considered: 0 };
+    if (deps.attempted && await deps.attempted(input.taskId)) return { labelled: 0, considered: 0 };
     const uses = await deps.loadUses(input.taskId);
     if (uses.length === 0) return { labelled: 0, considered: 0 };
     const { teamId, workspaceId } = uses[0];
