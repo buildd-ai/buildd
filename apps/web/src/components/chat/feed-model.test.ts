@@ -3,7 +3,7 @@ import type { BuilddObjectRef, ChatMessage, ChatToolPart } from './chat-contract
 import { objectsOf } from './chat-contract';
 import {
   canvasPin, conversationRefs, eventRefsShownLater, feedSegments, keyArgs, paneFocus, provisionalTitle, toolGroupSummary,
-  routedScope, toolResultLine, toolRowState, toolRowView,
+  intentTag, routedScope, toolResultLine, toolRowState, toolRowView,
 } from './feed-model';
 
 const ref = (kind: BuilddObjectRef['kind'], id: string): BuilddObjectRef => ({ kind, id, workspaceId: 'ws-1', fallbackText: `${kind} ${id}` });
@@ -268,5 +268,26 @@ describe('canvas pin', () => {
   it('PRs and questions alone pin nothing', () => {
     expect(canvasPin([withRefs(ref('pr', 'p1'), ref('question', 'q1'))], null)).toBeNull();
     expect(canvasPin([], null)).toBeNull();
+  });
+});
+
+describe('intentTag', () => {
+  const user = (id: string): ChatMessage => ({ id, role: 'user', parts: [{ type: 'text', text: 'hi' }] });
+  const reply = (id: string, scope: unknown): ChatMessage => ({ id, role: 'assistant', metadata: { scope }, parts: [{ type: 'text', text: 'ok' }] });
+
+  it('names the workspace the turn after this message went to', () => {
+    const msgs = [user('u1'), reply('a1', { id: 'w1', name: 'billing-web', source: 'routed' })];
+    expect(intentTag(msgs, 0)).toEqual({ label: 'routed · billing-web', workspaceId: 'w1' });
+  });
+
+  it('a pinned scope reads as pinned', () => {
+    const msgs = [user('u1'), reply('a1', { id: 'w1', name: 'billing-web', source: 'pinned' })];
+    expect(intentTag(msgs, 0)?.label).toBe('pinned · billing-web');
+  });
+
+  it('no reply yet, or an unscoped reply: no tag', () => {
+    expect(intentTag([user('u1')], 0)).toBeNull();
+    expect(intentTag([user('u1'), reply('a1', null)], 0)).toBeNull();
+    expect(intentTag([user('u1'), user('u2'), reply('a1', { id: 'w', name: 'x', source: 'routed' })], 0)).toBeNull();
   });
 });

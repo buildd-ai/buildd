@@ -62,6 +62,8 @@ async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureV
 
 const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
+/** A Thinking panel row's visible label (the kit adds a screen-reader state after it). */
+const stepText = (li: HTMLElement) => li.querySelector('.kit-step-mark + span')?.textContent?.trim();
 
 describe('approval card', () => {
   it('once filed, the row names it in words and nothing around it says it is unfiled', async () => {
@@ -203,6 +205,37 @@ describe('tool rows', () => {
     expect(first.textContent).toContain('3 open, none touch currency');
     await act(async () => { (first.querySelector('button') as HTMLButtonElement).click(); });
     expect(first.querySelector('[data-testid="tool-call-raw"]')?.textContent).toContain('"action": "list"');
+  });
+
+  it('while a turn streams, the Thinking panel shows the server\'s steps, in plain words', async () => {
+    await act(async () => {
+      root.render(<ChatFeed messages={fixtures.chatFixture('streaming').messages as Msgs} agent={fixtures.ORGANIZER} status="streaming" />);
+    });
+    const steps = qa('.kit-step');
+    expect(steps.map(s => [stepText(s), s.dataset.state])).toEqual([
+      ['Looked over the missions', 'done'],
+      ['Searching what buildd remembers', 'active'],
+    ]);
+    expect(container.textContent).not.toContain('recall');
+  });
+
+  it('the panel reads only data-step parts: a streaming message\'s labels come from the server, not its tool names', async () => {
+    const msgs = [
+      { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'a', role: 'assistant', parts: [
+        { type: 'tool-get_task', toolCallId: 'c1', state: 'output-available', input: {}, output: {} },
+        { type: 'data-step', id: 'c1', data: { id: 'c1', label: 'Read a task', state: 'done' } },
+      ] },
+    ] as unknown as Msgs;
+    await act(async () => { root.render(<ChatFeed messages={msgs} agent={fixtures.ORGANIZER} status="streaming" />); });
+    expect(qa('.kit-step').map(stepText)).toEqual(['Read a task', 'Thinking it through']);
+  });
+
+  it('a settled turn shows no panel', async () => {
+    await act(async () => {
+      root.render(<ChatFeed messages={fixtures.chatFixture('streaming').messages as Msgs} agent={fixtures.ORGANIZER} status="ready" />);
+    });
+    expect(qa('.kit-step')).toHaveLength(0);
   });
 
   it('a call still in flight reads as running', async () => {

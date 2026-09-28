@@ -358,6 +358,19 @@ export function routedScope(messages: readonly ChatMessage[]): { id: string; nam
 }
 
 /**
+ * The tiny tag under a person's message: where the reply to it was scoped.
+ * Read from the assistant message that directly follows; null when there is
+ * none yet or it was unscoped. Pure.
+ */
+export function intentTag(messages: readonly ChatMessage[], index: number): { label: string; workspaceId: string } | null {
+  const next = messages[index + 1];
+  if (!next || next.role !== 'assistant') return null;
+  const scope = messageMeta(next).scope;
+  if (!scope) return null;
+  return { label: `${scope.source} · ${scope.name}`, workspaceId: scope.id };
+}
+
+/**
  * What the canvas pins at its top (objects/PinnedObject.tsx): the object the
  * chat was opened about, else the latest mission the conversation touched,
  * else the latest task. PRs and questions render in the feed only. Pure.

@@ -16,24 +16,24 @@
  *   first), the collapsed "Also read" row, the thumbs, or a message's tag.
  * - `eventPartType` / `renderEvent`: lifecycle events (`data-buildd-event`)
  *   as their line or a fired watch's notice, with their objects.
- * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel
- *   (thinking-model.ts), steps in plain words, never a tool's name.
+ * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel, drawn
+ *   from the `data-step` parts the server streams (lib/chat/thinking-steps.ts):
+ *   steps in plain words, never a tool's name.
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
  * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo } from 'react';
-import { ChatThread, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
+import { ChatThread, thinkingSteps, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
 import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
-import { eventRefsShownLater, feedSegments, isApprovalPart, type FeedSegment } from './feed-model';
+import { eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
-import { intentTag, thinkingSteps } from './thinking-model';
 import WatchNotice from './WatchNotice';
 import DirectiveCards from './DirectiveCard';
 import TurnFeedback from './TurnFeedback';
@@ -160,10 +160,13 @@ const THINKING_TITLE = (
   </span>
 );
 
-/** The steps of the turn in flight (thinking-model.ts); a settled turn shows no panel. */
+/**
+ * The steps of the turn in flight: its `data-step` parts, which the server
+ * streams (a continuation of an older message gets them backfilled there), so
+ * every message that can be streaming carries them. A settled turn shows no panel.
+ */
 function liveSteps(m: KitMessage, streaming: boolean): StepData[] {
-  if (!streaming) return [];
-  return thinkingSteps(m.parts).map(s => ({ id: s.key, label: s.label, state: s.state }));
+  return streaming ? thinkingSteps(m.parts, true) : [];
 }
 
 export default function ChatFeed({
