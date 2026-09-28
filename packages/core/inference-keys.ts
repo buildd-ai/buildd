@@ -233,8 +233,8 @@ export async function resolveInferenceKey(opts: ResolveInferenceKeyOptions): Pro
 
 /**
  * The team's billing model for server-side features: does team work (no
- * person) resolve a pay-per-token key for any provider under the team's key
- * policy? True → server-side by default; false (subscription only, or `own`)
+ * person) resolve a pay-per-token key for any provider, or a LiteLLM gateway,
+ * under the team's key policy? True → server-side by default; false (subscription only, or `own`)
  * → the runner. Personal keys never count.
  */
 export async function hasTeamInferenceKey(teamId: string): Promise<boolean> {
@@ -242,7 +242,9 @@ export async function hasTeamInferenceKey(teamId: string): Promise<boolean> {
   for (const provider of INFERENCE_KEY_PROVIDERS) {
     if (await resolveInferenceCredential({ provider, teamId, keyPolicy })) return true;
   }
-  return false;
+  // A LiteLLM gateway serves the tier models too (litellm-gateway.ts).
+  const { resolveLiteLLMGateway } = await import('./litellm-gateway');
+  return (await resolveLiteLLMGateway({ teamId })) !== null;
 }
 
 // ── Display and health ────────────────────────────────────────────────────────
