@@ -49,6 +49,7 @@ import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
 import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirectiveHooks } from './directives';
 import { renderStandingRules } from '@buildd/core/chat-directives';
+import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -414,7 +415,11 @@ export async function runChatTurn(args: {
   });
 
   const turnMetadata: ChatTurnMetadata = { tier: resolved.tier, scope: scopeWs };
-  const stream = withDirectiveCard(toUIMessageStream({
+  // The Thinking panel's steps, from the tool lifecycle (./thinking-steps.ts).
+  // A continuation of a message saved before steps existed gets them first.
+  const backfill = continuing ? backfillSteps(continuing.parts) : [];
+  const steps = createStepTracker({ known: continuing ? knownCalls(continuing.parts) : [], seed: backfill });
+  const stream = withDirectiveCard(withThinkingSteps(toUIMessageStream({
     stream: result.stream,
     tools,
     originalMessages: uiMessages,
@@ -423,7 +428,7 @@ export async function runChatTurn(args: {
     messageMetadata: ({ part }) => (part.type === 'start' ? turnMetadata : undefined),
     onEnd: async ({ responseMessage, isContinuation, isAborted }) => {
       try {
-        const parts = [...(responseMessage.parts as ChatMessagePart[])];
+        let parts = [...(responseMessage.parts as ChatMessagePart[])];
         if (isAborted) parts.push({ type: 'text', text: '_Stopped: this turn hit its time limit._' });
         const card = directiveCard ? await directiveCard : null;
         if (card) parts.push(directivePart(card));
@@ -438,6 +443,9 @@ export async function runChatTurn(args: {
             latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }
+        // The steps were added downstream of this stream, so its message lacks
+        // them; read the tracker last, once those chunks have passed through.
+        parts = mergeStepParts(parts, steps.steps());
 
         const messageId = isContinuation && continuing ? continuing.id : responseMessage.id;
         if (isContinuation && continuing) {
@@ -472,7 +480,7 @@ export async function runChatTurn(args: {
         console.error(`[chat] failed to persist turn for conversation ${conv.id}:`, e);
       }
     },
-  }), directiveCard);
+  }), { tracker: steps, backfill }), directiveCard);
 
   return createUIMessageStreamResponse({
     stream,
