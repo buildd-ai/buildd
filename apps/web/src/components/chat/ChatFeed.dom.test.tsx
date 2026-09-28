@@ -38,7 +38,7 @@ afterEach(() => {
   container.remove();
 });
 
-async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureViews>[0] = 'split') {
+async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureViews>[0] = 'split', extra: Record<string, unknown> = {}) {
   const views = fixtures.fixtureViews(state);
   const source = { load: async (r: { kind: string; id: string }) => { const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v; } };
   const actions = {
@@ -46,6 +46,7 @@ async function render(messages: Msgs, state: Parameters<typeof fixtures.fixtureV
     respondToApproval: (id: string, ok: boolean) => { calls.push([id, ok]); },
     answerQuestion: async (i: { workerId: string; message: string }) => { answers.push(i); },
     viewerName: 'Maya',
+    ...extra,
   };
   await act(async () => {
     root.render(
@@ -128,6 +129,36 @@ describe('approval card', () => {
     const row = qa('[data-testid="tool-call-row"]').find(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'));
     expect(row?.dataset.state).toBe('done');
     expect(q('[data-testid="object-card"][data-kind="mission"]')?.textContent).toContain('Multi-currency invoices');
+  });
+});
+
+// A change to something that exists (here a watch on a PR) carries the
+// server's before → after preview, and its card is the kit's ApprovalCard.
+describe('approval card: a previewed change is the kit card', () => {
+  it('shows the preview headline and each change, then echoes the approval id once', async () => {
+    await render(fixtures.chatFixture('watch').messages as Msgs, 'watch');
+    const card = q('[data-testid="approval-card"]')!;
+    expect(card.dataset.kind).toBe('preview');
+    expect(card.dataset.state).toBe('awaiting');
+    const kit = card.querySelector('[data-testid="kit-approval"]') as HTMLElement;
+    expect(kit.className).toContain('buildd-approval');
+    expect(kit.textContent).toContain('Watch: PR #421 (billing-web)');
+    expect(kit.querySelectorAll('.kit-change')).toHaveLength(3);
+    const confirm = () => card.querySelector('[data-testid="kit-approval-confirm"]') as HTMLButtonElement;
+    await act(async () => { confirm().click(); });
+    await act(async () => { confirm().click(); });
+    expect(calls).toEqual([['approval-watch', true]]);
+    expect(q('[data-testid="approval-card"]')!.dataset.state).toBe('deciding');
+    expect((card.querySelector('[data-testid="kit-approval-deny"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('Discard answers false; Edit prefills a change request', async () => {
+    const prefills: string[] = [];
+    await render(fixtures.chatFixture('watch').messages as Msgs, 'watch', { prefillComposer: (t: string) => { prefills.push(t); } });
+    await act(async () => { (q('[data-testid="kit-approval-edit"]') as HTMLButtonElement).click(); });
+    expect(prefills).toEqual(['Change it: ']);
+    await act(async () => { (q('[data-testid="kit-approval-deny"]') as HTMLButtonElement).click(); });
+    expect(calls).toEqual([['approval-watch', false]]);
   });
 });
 

@@ -13,7 +13,7 @@ const read = (f: string) => readFileSync(join(SRC, f), 'utf8');
 
 const FOREGROUND = [
   'components/chat/ChatComposer.tsx',
-  'components/chat/ComposerMenu.tsx',
+  'components/chat/KitMenuCell.tsx',
   'components/chat/TierSwitch.tsx',
   'components/chat/ToolsMenu.tsx',
   'components/chat/ChatWorkspace.tsx',

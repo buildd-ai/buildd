@@ -16,6 +16,8 @@ import { CAPABILITY_BROWSER } from '@buildd/shared';
 import { isRunnerOnline } from './runner-heartbeats-shared';
 
 export interface BrowserRunnerHeartbeat {
+  /** The runner's account, when the loader knows it (GET /api/workers/active matches rows on it). */
+  accountId?: string;
   lastHeartbeatAt: string | Date;
   environment: { envKeys?: string[] | null } | null;
   /** Workspaces this runner's account can claim in. */

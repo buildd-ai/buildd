@@ -186,6 +186,17 @@ mock.module('@/lib/heartbeat-circuit-breaker', () => ({
   resolveHeartbeatPlanningBackoffNote: mockResolvePlanningBackoffNote,
 }));
 
+// Heartbeat triage runs only for a mission with a teamId; the fixtures above
+// have none, so every other heartbeat test dispatches exactly as before.
+const shadowTriage = { v: 'ht1', pick: 'act', confidence: 0.8, skipped: false, reason: 'act', at: '2026-01-01T00:00:00.000Z' };
+const mockTriage = mock(() => Promise.resolve(shadowTriage as any));
+const mockTriageFacts = mock(() => Promise.resolve({ lastOrganizerAt: new Date(), dataClass: null }));
+mock.module('@/lib/heartbeat-triage', () => ({
+  triageHeartbeat: mockTriage,
+  loadHeartbeatTriageFacts: mockTriageFacts,
+  formatTriageLog: () => '[heartbeat-triage] test',
+}));
+
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
 mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMission,
@@ -291,6 +302,8 @@ describe('GET /api/cron/schedules', () => {
     mockResolvePlanningBackoffNote.mockResolvedValue(undefined);
     mockCompleteMission.mockReset();
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
+    mockTriage.mockReset();
+    mockTriage.mockResolvedValue(shadowTriage as any);
     mockApplyCriteriaRearm.mockReset();
     mockApplyCriteriaRearm.mockResolvedValue({
       action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
@@ -824,6 +837,61 @@ describe('GET /api/cron/schedules', () => {
       expect(tasksInsertValues).not.toBeNull();
       const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_waiting');
       expect(deferral).toBeUndefined();
+    });
+  });
+
+  describe('heartbeat triage', () => {
+    function heartbeatSchedule() {
+      return makeSchedule({
+        workspaceId: 'ws-1',
+        lastHeartbeatStateHash: 'sk-prev',
+        taskTemplate: { title: 'Mission: Triage', description: 'heartbeat context', mode: 'planning', priority: 0, context: { heartbeat: true } },
+      });
+    }
+    const mission = { id: 'mission-1', workspaceId: 'ws-1', teamId: 'team-1', status: 'active' };
+
+    it('dispatches the organizer with the look recorded on the task (shadow)', async () => {
+      const { buildMissionContext } = await import('@/lib/mission-context');
+      (buildMissionContext as ReturnType<typeof mock>).mockResolvedValue({ description: 'heartbeat context', context: {} });
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(mockTriage).toHaveBeenCalledTimes(1);
+      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', description: 'heartbeat context' });
+      expect(tasksInsertValues?.context?.heartbeatTriage).toEqual(shadowTriage);
+      expect(body.triageHeartbeatSkips).toBe(0);
+    });
+
+    it('skips the organizer on an applied wait, restoring the no-change hash', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockTriage.mockResolvedValue({ ...shadowTriage, pick: 'wait', confidence: 0.97, skipped: true, reason: null } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(body.triageHeartbeatSkips).toBe(1);
+      expect(body.llmHeartbeatInvocations).toBe(0);
+      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_triage_wait');
+      expect(deferral?.set?.lastHeartbeatStateHash).toBe('sk-prev');
+      expect(deferral?.set?.nextRunAt).toBeInstanceOf(Date);
+    });
+
+    it('never triages a criteria re-arm', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockPrepass.mockResolvedValue({ action: 'skip_complete' } as any);
+      mockCompleteMission.mockResolvedValue({ completed: false, decision: { code: 'criteria_failed', reason: 'r', criteriaVerdict: { kind: 'value', value: 'fail' } } } as any);
+      mockApplyCriteriaRearm.mockResolvedValue({ action: 'rearm', reason: 'r', verdictLines: 'v', nextCycles: 0, fingerprint: 'fp' } as any);
+
+      await GET(makeRequest());
+
+      expect(mockTriage).not.toHaveBeenCalled();
+      expect(tasksInsertValues).not.toBeNull();
     });
   });
 

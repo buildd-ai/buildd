@@ -8,10 +8,10 @@
  * (which re-exports it): it is the one scoping rule for audit shots, and
  * every surface reaches it through the loader.
  */
-import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
-import { artifacts, missionNotes, tasks, visualShotReviews, workers } from '@buildd/core/db/schema';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { artifacts, missionNotes, missions, tasks, visualShotReviews, workers } from '@buildd/core/db/schema';
 import { ArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
-import { SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
 
 // ── Shots ───────────────────────────────────────────────────────────────────
 
@@ -101,6 +101,8 @@ export const VISUAL_REVIEW_TASK_SELECTION = {
   updatedAt: tasks.updatedAt,
   context: sql<Record<string, unknown> | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then jsonb_build_object('surfaceAuditRound', ${tasks.context} -> 'surfaceAuditRound', 'visualQa', ${tasks.context} -> 'visualQa') else null end`.as('visual_context'),
   errorType: sql<string | null>`${tasks.result} ->> 'errorType'`.as('error_type'),
+  // An audit's `why` (cancelled, failed): the summary only, never the whole result.
+  resultSummary: sql<string | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),
 };
 
 export function visualReviewTasksQuery(q: Selectable, missionId: string) {
@@ -122,6 +124,7 @@ export function visualReviewWorkersQuery(q: Selectable, missionId: string) {
       prUrl: workers.prUrl,
       prNumber: workers.prNumber,
       mergedAt: workers.mergedAt,
+      error: workers.error,
     })
     .from(workers)
     .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" = ${missionId} and ("t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
@@ -143,4 +146,36 @@ export function roundCapNoteQuery(q: Selectable, missionId: string, title: strin
     .from(missionNotes)
     .where(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, title), eq(missionNotes.status, 'open')))
     .limit(1);
+}
+
+// ── A workspace's missions with screens awaiting a human ────────────────────
+
+/** How many candidate missions GET /api/workspaces/[id]/visual-review loads a model for. */
+export const WORKSPACE_AWAITING_MISSIONS_LIMIT = 10;
+
+/**
+ * Candidate missions of a workspace for "what waits on me": one with an
+ * auditor-scoped (`missionVisualShotsWhere`'s rule) unsure screenshot and no
+ * active review, the open round-cap question, or an auditor worker waiting on
+ * a question. Newest first. A superset: a later round may have re-shot the
+ * cell, so the caller builds each mission's model for the exact answer.
+ * Scoped to the caller's teams as well as the workspace.
+ */
+export function workspaceAwaitingMissionsQuery(q: Selectable, workspaceId: string, teamIds: readonly string[], limit = WORKSPACE_AWAITING_MISSIONS_LIMIT) {
+  const auditorWorkers = sql`select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG}`;
+  return q
+    .select({
+      id: missions.id,
+      title: missions.title,
+      status: missions.status,
+      workspaceId: missions.workspaceId,
+    })
+    .from(missions)
+    .where(and(
+      eq(missions.workspaceId, workspaceId),
+      inArray(missions.teamId, [...teamIds]),
+      sql`(exists (select 1 from "artifacts" "a" where "a"."mission_id" = ${missions.id} and "a"."type" = 'screenshot' and "a"."metadata" -> 'qa' ->> 'verdict' = 'unsure' and "a"."worker_id" in (${auditorWorkers}) and not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)) or exists (select 1 from "mission_notes" "n" where "n"."mission_id" = ${missions.id} and "n"."title" = ${SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE} and "n"."status" = 'open') or exists (select 1 from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} and "w"."status" = 'waiting_input'))`,
+    ))
+    .orderBy(desc(missions.updatedAt))
+    .limit(limit + 1);
 }

@@ -36,7 +36,7 @@ mock.module('@buildd/core/db', () => ({
 const heartbeats = mock(async () => null as any);
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: heartbeats }));
 
-const { loadVisualReview, loadMissionVisualShotRows } = await import('./visual-review-load');
+const { loadVisualReview, loadMissionVisualShotRows, loadWorkspaceAwaitingReview } = await import('./visual-review-load');
 
 const MISSION = '11111111-1111-4111-8111-111111111111';
 const WS = '22222222-2222-4222-8222-222222222222';
@@ -153,5 +153,41 @@ describe('loadVisualReview', () => {
     const note = rendered.find(r => from(r) === 'mission_notes')!;
     expect(note.sql).toContain('"mission_notes"."status" = $');
     expect(note.params).toContain('open');
+  });
+});
+
+describe('loadWorkspaceAwaitingReview', () => {
+  const M2 = '55555555-5555-4555-8555-555555555555';
+  const M3 = '66666666-6666-4666-8666-666666666666';
+  const audit = (missionId: string) => ({ id: `a-${missionId}`, title: '[surface audit] M', status: 'completed', roleSlug: 'visual-auditor', dependsOn: [], pathManifest: null, createdAt: new Date(0), updatedAt: new Date(0), context: {}, errorType: null });
+  const shot = (missionId: string, verdict: string) => ({ id: `s-${missionId}`, workerId: 'w1', title: null, type: 'screenshot', createdAt: new Date('2026-03-10T10:05:00.000Z'), taskId: `a-${missionId}`, metadata: { qa: { runKey: 'r', route: '/app/x', viewport: 'mobile', verdict, finding: 'f' } } });
+
+  it('counts each candidate from its own model, keeps a round-cap decision, drops ones a later round already cleared', async () => {
+    rowsFor = (r) => {
+      if (from(r) === 'missions') return [
+        { id: MISSION, title: 'First', status: 'active', workspaceId: WS },
+        { id: M2, title: 'Second', status: 'completed', workspaceId: WS },
+        { id: M3, title: 'Third', status: 'active', workspaceId: WS },
+      ];
+      if (from(r) === 'mission_notes') return r.params.includes(M3) ? [{ id: 'note' }] : [];
+      const mission = r.params.includes(MISSION) ? MISSION : r.params.includes(M2) ? M2 : r.params.includes(M3) ? M3 : null;
+      if (!mission) return [];
+      if (from(r) === 'artifacts') return [shot(mission, mission === MISSION ? 'unsure' : mission === M3 ? 'issue' : 'ok')];
+      if (from(r) === 'tasks') return [audit(mission)];
+      return [];
+    };
+    const out = await loadWorkspaceAwaitingReview(WS, ['team-a'], { now: NOW });
+    expect(out).toEqual({ missions: [
+      { id: MISSION, title: 'First', status: 'active', phase: 'needs_you', reason: 'unsure', awaitingHuman: 1 },
+      { id: M3, title: 'Third', status: 'active', phase: 'needs_you', reason: 'round_cap', awaitingHuman: 0 },
+    ], more: false });
+    const cand = rendered.find(r => from(r) === 'missions')!;
+    expect(cand.params).toContain(WS);
+    expect(cand.params).toContain('team-a');
+  });
+
+  it('reads nothing without a team', async () => {
+    expect(await loadWorkspaceAwaitingReview(WS, [])).toEqual({ missions: [], more: false });
+    expect(rendered).toHaveLength(0);
   });
 });

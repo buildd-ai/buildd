@@ -499,3 +499,23 @@ describe('buildVisualReviewFixtureModel', () => {
     expect(JSON.stringify(buildVisualReviewFixtureModel('reviewed'))).toBe(JSON.stringify(buildVisualReviewFixtureModel('reviewed')));
   });
 });
+
+describe('buildVisualReviewModel: every audit task', () => {
+  it('lists every audit, cancelled and failed ones too, round then oldest first, with why when known', () => {
+    const m = buildVisualReviewModel(input({
+      tasks: [
+        audit('t2', 2, 'failed', 'w2', { errorType: 'max_turns', workers: [{ id: 'w2', status: 'failed', startedAt: at(5), error: 'Ran out of turns.' }] }),
+        audit('t1', 1, 'cancelled', 'w1', { workers: [] }),
+        audit('t0', 1, 'completed', 'w0', { createdAt: at(-5), resultSummary: 'Checked two routes.' }),
+        { id: 'b1', title: 'Build it', status: 'completed' },
+      ],
+    }));
+    expect(m.audits?.map(a => [a.id, a.status, a.round, a.why ?? null])).toEqual([
+      ['t0', 'completed', 1, 'Checked two routes.'],
+      ['t1', 'cancelled', 1, null],
+      ['t2', 'failed', 2, 'Ran out of turns.'],
+    ]);
+    expect(m.audit?.id).toBe('t2');
+    expect(m.audit?.errorType).toBe('max_turns');
+  });
+});

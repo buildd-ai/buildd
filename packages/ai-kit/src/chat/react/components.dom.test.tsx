@@ -384,3 +384,102 @@ describe('useComposerState (shared new-chat composer)', () => {
     expect(saves).toEqual([{ scope: 'w1' }]);
   });
 });
+
+// ── 0.6.1: menu placement and sheet close, tier footer and Auto line, setup title ──
+
+const phone = () => {
+  const real = window.matchMedia;
+  (window as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: q.includes('max-width: 639px'), media: q, addEventListener() {}, removeEventListener() {} });
+  return () => { (window as { matchMedia: unknown }).matchMedia = real; };
+};
+
+describe('Menu placement (0.6.1)', () => {
+  it('opens up by default, down when asked', async () => {
+    await render(h(kit.Menu, { label: 'M', trigger: 'm', testId: 'm' }, 'x'));
+    await click($('[data-testid="m-trigger"]'));
+    expect($('[data-testid="m"]')!.dataset.placement).toBe('up');
+    await render(h(kit.Menu, { label: 'N', trigger: 'n', testId: 'n', placement: 'down' }, 'x'));
+    await click($('[data-testid="n-trigger"]'));
+    expect($('[data-testid="n"]')!.dataset.placement).toBe('down');
+  });
+
+  it('auto: down with room below, up at the bottom of the screen', () => {
+    expect(kit.menuDropSide({ top: 800, bottom: 848 }, 900)).toBe('up');
+    expect(kit.menuDropSide({ top: 120, bottom: 168 }, 900)).toBe('down');
+    expect(kit.menuDropSide({ top: 100, bottom: 700 }, 900)).toBe('down');
+  });
+
+  it('auto measures the trigger when it opens', async () => {
+    await render(h(kit.Menu, { label: 'A', trigger: 'a', testId: 'a', placement: 'auto' }, 'x'));
+    // happy-dom lays nothing out: a zero rect near the top has room below.
+    await click($('[data-testid="a-trigger"]'));
+    expect($('[data-testid="a"]')!.dataset.placement).toBe('down');
+  });
+});
+
+describe('Menu sheet close (0.6.1)', () => {
+  it('off by default: the phone sheet has no close button', async () => {
+    const restore = phone();
+    try {
+      await render(h(kit.ToolsMenu, { rows, onChange() {} }));
+      await click($('[data-testid="kit-tools-trigger"]'));
+      expect(document.querySelector('[data-testid="kit-tools-close"]')).toBeNull();
+      expect(document.querySelector('[data-testid="kit-tools-panel"] .kit-menu-title')?.textContent).toBe('Tools');
+    } finally { restore(); }
+  });
+
+  it('sheetClose: a × beside the title closes the sheet', async () => {
+    const restore = phone();
+    try {
+      await render(h(kit.ToolsMenu, { rows, onChange() {}, sheetClose: true }));
+      await click($('[data-testid="kit-tools-trigger"]'));
+      const close = document.querySelector<HTMLButtonElement>('[data-testid="kit-tools-close"]')!;
+      expect(close.getAttribute('aria-label')).toBe('Close');
+      expect(close.closest('.kit-sheet-head')?.querySelector('.kit-menu-title')?.textContent).toBe('Tools');
+      await click(close);
+      expect(document.querySelector('[data-testid="kit-tools-sheet"]')).toBeNull();
+    } finally { restore(); }
+  });
+
+  it('sheetClose does nothing to the wide-screen popover', async () => {
+    await render(h(kit.ToolsMenu, { rows, onChange() {}, sheetClose: true }));
+    await click($('[data-testid="kit-tools-trigger"]'));
+    expect($('[data-testid="kit-tools-panel"]')).not.toBeNull();
+    expect($('[data-testid="kit-tools-close"]')).toBeNull();
+  });
+});
+
+describe('TierPicker footer and Auto line (0.6.1)', () => {
+  it('shows the footer under the options and the app\'s Auto line', async () => {
+    await render(h(kit.TierPicker, { value: null, onChange() {}, autoMeta: 'Routed per message', footer: 'This chat: $0.04' }));
+    await click($('[data-testid="kit-tier-trigger"]'));
+    const panel = $('[data-testid="kit-tier-panel"]')!;
+    expect(panel.querySelector('[role="radio"] .kit-option-meta')!.textContent).toBe('Routed per message');
+    const footer = panel.querySelector('[data-testid="kit-tier-footer"]')!;
+    expect(footer.textContent).toBe('This chat: $0.04');
+    expect(footer.previousElementSibling?.getAttribute('role')).toBe('radiogroup');
+  });
+
+  it('without them: "picks per turn" and no footer, as before', async () => {
+    await render(h(kit.TierPicker, { value: null, onChange() {} }));
+    await click($('[data-testid="kit-tier-trigger"]'));
+    expect($('[data-testid="kit-tier-panel"] [role="radio"] .kit-option-meta')!.textContent).toBe('picks per turn');
+    expect($('[data-testid="kit-tier-footer"]')).toBeNull();
+  });
+});
+
+describe('ChatSetupCard title (0.6.1)', () => {
+  it('is a heading between the eyebrow and the message', async () => {
+    await render(h(kit.ChatSetupCard, { reason: 'no_key', title: 'Connect a model provider', message: 'It starts once the team has a key.' }));
+    const t = $('[data-testid="kit-setup-title"]')!;
+    expect(t.tagName).toBe('H3');
+    expect(t.textContent).toBe('Connect a model provider');
+    expect(t.previousElementSibling?.className).toBe('kit-eyebrow');
+    expect(t.nextElementSibling?.textContent).toBe('It starts once the team has a key.');
+  });
+
+  it('no title: no heading', async () => {
+    await render(h(kit.ChatSetupCard, { reason: 'no_key', message: 'm' }));
+    expect($('[data-testid="kit-setup-title"]')).toBeNull();
+  });
+});
