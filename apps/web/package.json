@@ -6,6 +6,7 @@
     "dev": "bun --bun next dev",
     "build": "bun run db:migrate && next build",
     "build:only": "next build",
+    "chat-eval": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-eval/cli.ts",
     "db:migrate": "bun run ../../packages/core/db/migrate.ts",
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "next lint",
