@@ -130,6 +130,12 @@ export interface ToolResult<T = unknown, R extends ObjectRef = ObjectRef> {
   summary?: string;
   /** A write that ran without a card under the person's "Allow" for its tool group. */
   allowed?: boolean;
+  /**
+   * The tool filed a long-running job (a runner task). `/chat/server` turns
+   * this into a `data-handoff` part and a "Filed as a task" step. A tool that
+   * hands off must be declared `spends: true`, so it always asks first.
+   */
+  handoff?: { taskId: string; url: string; title?: string };
 }
 
 // ── Data parts ────────────────────────────────────────────────────────────────
@@ -146,6 +152,24 @@ export interface HandoffData {
   taskId: string;
   url: string;
   state: 'filed' | 'running' | 'completed' | 'failed';
+  /** Display title ("Draft the Q3 plan"). Optional; a UI falls back to "Task". */
+  title?: string;
+  /** The tool call that filed it, when it was filed from a turn. */
+  toolCallId?: string;
+  /** One line from the runner once it finishes ("PR #12 opened"). */
+  summary?: string;
+}
+
+/**
+ * A mid-turn steer: text the person typed while a turn was running.
+ * `queued` = waiting for the next step boundary; `applied` = injected into the
+ * running turn; `deferred` = the turn ended first, so the client sends it as
+ * the next user message.
+ */
+export interface SteerData {
+  id: string;
+  text: string;
+  state: 'queued' | 'applied' | 'deferred';
 }
 
 /** An update appended to the conversation by the app, outside a model turn. */
@@ -159,6 +183,7 @@ export interface EventData<R extends ObjectRef = ObjectRef> {
 export const STEP_PART_TYPE = 'data-step' as const;
 export const HANDOFF_PART_TYPE = 'data-handoff' as const;
 export const EVENT_PART_TYPE = 'data-event' as const;
+export const STEER_PART_TYPE = 'data-steer' as const;
 
 export function isStepPart(part: ChatPart): part is { type: typeof STEP_PART_TYPE; data: StepData } {
   if (part.type !== STEP_PART_TYPE) return false;
@@ -171,6 +196,67 @@ export function isHandoffPart(part: ChatPart): part is { type: typeof HANDOFF_PA
   if (part.type !== HANDOFF_PART_TYPE) return false;
   const d = (part as { data?: Partial<HandoffData> }).data;
   return !!d && typeof d.taskId === 'string' && typeof d.url === 'string' && typeof d.state === 'string';
+}
+
+export function isSteerPart(part: ChatPart): part is { type: typeof STEER_PART_TYPE; data: SteerData } {
+  if (part.type !== STEER_PART_TYPE) return false;
+  const d = (part as { data?: Partial<SteerData> }).data;
+  return !!d && typeof d.id === 'string' && typeof d.text === 'string'
+    && (d.state === 'queued' || d.state === 'applied' || d.state === 'deferred');
+}
+
+export function isEventPart(part: ChatPart): part is { type: typeof EVENT_PART_TYPE; data: EventData } {
+  if (part.type !== EVENT_PART_TYPE) return false;
+  const d = (part as { data?: Partial<EventData> }).data;
+  return !!d && typeof d.event === 'string' && typeof d.text === 'string' && Array.isArray(d.objects);
+}
+
+/**
+ * The latest state of every hand-off in a conversation, keyed by task id.
+ * A hand-off is filed in a turn (`filed`) and updated later by event messages
+ * the app appends (`running`, `completed`, `failed`); the newest part wins.
+ */
+export function latestHandoffs(messages: readonly Pick<ChatMessage, 'parts'>[]): Map<string, HandoffData> {
+  const out = new Map<string, HandoffData>();
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (isHandoffPart(p)) out.set(p.data.taskId, { ...out.get(p.data.taskId), ...p.data });
+    }
+  }
+  return out;
+}
+
+// ── Turn wire ─────────────────────────────────────────────────────────────────
+
+/**
+ * The body of one chat turn request. The client sends only the newest message:
+ * a `user` message for a new question, or the latest `assistant` message with
+ * approval answers filled in. The server loads history from its own store and
+ * treats the client's copy as an answer, never as history.
+ */
+export interface ChatTurnRequest {
+  message: ChatMessage;
+  /** App-defined extras (scope, entry point). The kit passes them through untouched. */
+  [key: string]: unknown;
+}
+
+/** Metadata on every assistant message a turn streams (the `start` chunk). */
+export interface ChatTurnMetadata {
+  /** The tier the turn ran on (after any downgrade). */
+  tier: string | null;
+  /** The model id, as planned. */
+  model: string | null;
+  /** Where the plan came from (`registry`, `cached`, `fallback`, ...). */
+  planSource: string | null;
+  /** App-defined extras (e.g. the scope the turn was routed to). */
+  [key: string]: unknown;
+}
+
+/** A turn refused before any model call: the JSON body of the 4xx response. */
+export interface ChatUnavailableBody {
+  error: ChatUnavailableReason;
+  message: string;
+  [key: string]: unknown;
 }
 
 // ── Approval previews ─────────────────────────────────────────────────────────
