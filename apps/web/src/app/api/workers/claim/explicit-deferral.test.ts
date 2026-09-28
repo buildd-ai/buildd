@@ -32,11 +32,11 @@ describe('describeExplicitDeferral', () => {
   });
 
   it('points at force: true only where the override actually applies', () => {
-    for (const reason of ['mission_concurrent', 'mission_paced', 'mission_budget', 'workspace_cap', 'path_overlap', 'advisory_manifest'] as const) {
+    for (const reason of ['mission_concurrent', 'mission_paced', 'workspace_cap', 'path_overlap'] as const) {
       expect(describeExplicitDeferral(reason).detail).toContain('force: true');
     }
-    // Capacity walls and routing are not person-overridable.
-    for (const reason of ['budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable'] as const) {
+    // Cost, scope serialization, capacity walls and routing are not overridable.
+    for (const reason of ['mission_budget', 'advisory_manifest', 'budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable'] as const) {
       expect(describeExplicitDeferral(reason).detail).not.toContain('force: true');
     }
   });

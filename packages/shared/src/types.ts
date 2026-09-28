@@ -1249,12 +1249,14 @@ export interface ClaimTasksInput {
    */
   runnerFeatures?: string[];
   /**
-   * Admin-only, and only with `taskId`: claim that one task past the gates a
-   * person may override, the MCP equivalent of the dashboard's "Start with
-   * override". Skips dependencies, a held mission, a dead subject, a future
-   * startAt, the mission budget, concurrency and pacing gates, path overlap and
-   * the workspace cap. Never skips a live worker, a person's hold on the task,
-   * role/runner routing, provider walls or account limits. Ignored otherwise.
+   * Admin-only, only with `taskId`, and only for a task in the admin's own
+   * team's workspace: claim that one task past the gates a person may override,
+   * the MCP equivalent of the dashboard's "Start with override". Skips
+   * dependencies, a held mission, a dead subject, a future startAt, mission
+   * concurrency and pacing, path overlap and the workspace cap. Never skips a
+   * live worker, a person's hold on the task, the mission budget,
+   * scope-undeclared serialization, role/runner routing, provider walls or
+   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
 }
@@ -1271,7 +1273,9 @@ export type ClaimDiagnosticReason =
   | 'budget_exhausted'
   | 'budget_exhausted_partial'
   | 'context_paused'
-  | 'path_overlap_blocked';
+  | 'path_overlap_blocked'
+  /** An interactive session's explicit claim of this task came too soon after its last one. */
+  | 'rate_limited';
 
 /**
  * Which gate excluded an explicitly requested task (claim with `taskId`). The
@@ -1304,6 +1308,8 @@ export type ClaimTaskExclusionCode =
   | 'account_cap'
   /** Every filter passes on re-check: the task changed between query and probe. Retry. */
   | 'state_changed'
+  /** An interactive session claimed this task too recently; retry after the window. */
+  | 'rate_limited'
   | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
 export interface ClaimTaskExclusion {

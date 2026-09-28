@@ -188,6 +188,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
         claimedBy: tasks.claimedBy,
         expiresAt: tasks.expiresAt,
         startAt: tasks.startAt,
+        workspaceId: tasks.workspaceId,
         dependsOn: tasks.dependsOn,
         pathManifest: tasks.pathManifest,
         ...gateColumns,
@@ -212,7 +213,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
     );
     if (exclusion.code === 'deps_blocked') {
       const dependsOn = Array.isArray(row.dependsOn) ? (row.dependsOn as string[]) : [];
-      const detail = await describeDepsForTask(dependsOn, (row.pathManifest as string[] | null) ?? null);
+      const detail = await describeDepsForTask(dependsOn, (row.pathManifest as string[] | null) ?? null, row.workspaceId ?? null);
       if (detail) return { code: exclusion.code, detail };
     }
     return exclusion;
@@ -222,13 +223,55 @@ export async function diagnoseExplicitTaskExclusion(opts: {
   }
 }
 
+/** Force-claim audit names for the SQL gates a force claim lifts. */
+export type ForcedGateName = 'deps' | 'missionHeld' | 'subject' | 'workspaceCap' | 'startAt';
+const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
+  deps: 'deps_blocked',
+  missionHeld: 'mission_held',
+  subject: 'subject_dead',
+  workspaceCap: 'workspace_cap',
+  startAt: 'deferred',
+};
+
+/**
+ * Which of the SQL gates a force claim lifted would have excluded the task:
+ * the audit half of the override (the claim query no longer applies them).
+ * Returns exclusion codes; empty on any failure. Never blocks the claim.
+ */
+export async function evaluateForcedGates(opts: {
+  taskId: string;
+  workspaceIds: string[];
+  gates: Record<ForcedGateName, SQL>;
+}): Promise<ClaimTaskExclusionCode[]> {
+  try {
+    const cols: Record<string, SQL<boolean>> = {};
+    for (const [name, predicate] of Object.entries(opts.gates)) {
+      cols[`g_${name}`] = sql<boolean>`COALESCE((${predicate}), false)`;
+    }
+    const rows = await db.select(cols).from(tasks).where(explicitTaskScope(opts.taskId, opts.workspaceIds)).limit(1);
+    const row = (rows as any[])[0];
+    if (!row) return [];
+    return (Object.keys(opts.gates) as ForcedGateName[])
+      .filter(name => {
+        const v = row[`g_${name}`];
+        return v === false || v === 'f' || v === 'false' || v === null;
+      })
+      .map(name => FORCED_GATE_CODES[name]);
+  } catch (err) {
+    console.warn(`[claim] force-claim gate audit failed for task ${opts.taskId}:`, err);
+    return [];
+  }
+}
+
 /**
  * Read the task's dependencies with the claim gate's own per-dependency
  * predicate and describe the ones holding it. Null on any failure: the
  * generic deps_blocked sentence still stands.
  */
-async function describeDepsForTask(dependsOn: string[], taskManifest: string[] | null): Promise<string | null> {
-  if (dependsOn.length === 0) return null;
+async function describeDepsForTask(dependsOn: string[], taskManifest: string[] | null, workspaceId: string | null): Promise<string | null> {
+  // Only the task's own workspace is described: a dependency id pointing
+  // anywhere else reads as "(not found)", never as another workspace's title.
+  if (dependsOn.length === 0 || !workspaceId) return null;
   // Wrapped in its own fragment on purpose: drizzle renders a column that sits
   // directly in a select field unqualified ("id"), which inside the correlated
   // subqueries below would bind to the subquery's own table (w.id, t2.id). A
@@ -252,7 +295,7 @@ async function describeDepsForTask(dependsOn: string[], taskManifest: string[] |
         )`,
       })
       .from(tasks)
-      .where(inArray(tasks.id, dependsOn))
+      .where(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)))
       .limit(dependsOn.length);
     return describeBlockingDependencies(taskManifest, dependsOn, rows as BlockingDependencyRow[]);
   } catch (err) {

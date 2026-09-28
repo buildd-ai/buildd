@@ -36,11 +36,11 @@ export function describeExplicitDeferral(
       const peer = str(detail.blockingPeer);
       return {
         code: reason,
-        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Declare a pathManifest, or wait for that task. ${FORCE_HINT}`,
+        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Declare a pathManifest, or wait for that task.`,
       };
     }
     case 'mission_budget':
-      return { code: reason, detail: `Its mission is budget_exhausted. Raise the mission budget. ${FORCE_HINT}` };
+      return { code: reason, detail: 'Its mission is budget_exhausted. Raise the mission budget to resume it.' };
     case 'mission_concurrent': {
       const active = num(detail.active);
       const cap = num(detail.cap);

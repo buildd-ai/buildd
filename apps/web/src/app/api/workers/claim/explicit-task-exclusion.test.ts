@@ -57,6 +57,7 @@ import {
   classifyExplicitTaskExclusion,
   describeBlockingDependencies,
   diagnoseExplicitTaskExclusion,
+  evaluateForcedGates,
   explicitTaskScope,
   stampLastClaimAttempt,
   type ExplicitTaskProbe,
@@ -157,6 +158,26 @@ describe('classifyExplicitTaskExclusion', () => {
   });
 });
 
+describe('evaluateForcedGates (force-claim audit)', () => {
+  beforeEach(() => { selectCalls = []; selectQueue = []; selectResult = []; selectThrows = false; selectThrowOnCall = null; });
+
+  it('returns the codes of the lifted gates that would have excluded the task', async () => {
+    selectResult = [{ g_deps: false, g_missionHeld: true, g_subject: null, g_workspaceCap: true, g_startAt: 'f' }];
+    const codes = await evaluateForcedGates({
+      taskId: 'task-1', workspaceIds: ['ws-a'],
+      gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspaceCap: sql`d`, startAt: sql`e` },
+    });
+    expect(codes.sort()).toEqual(['deferred', 'deps_blocked', 'subject_dead']);
+    expect(render(selectCalls[0].fields.g_deps as SQL).sql).toBe('COALESCE((a), false)');
+    expect(render(selectCalls[0].where!).params).toEqual(['task-1', 'ws-a']);
+  });
+
+  it('never throws; an audit failure records nothing rather than blocking', async () => {
+    selectThrows = true;
+    expect(await evaluateForcedGates({ taskId: 't', workspaceIds: ['w'], gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspaceCap: sql`d`, startAt: sql`e` } })).toEqual([]);
+  });
+});
+
 describe('describeBlockingDependencies', () => {
   it('names a missing dependency', () => {
     const d = describeBlockingDependencies(null, ['gone-1234-5678'], []);
@@ -238,7 +259,7 @@ describe('diagnoseExplicitTaskExclusion', () => {
   it('deps_blocked names each unsatisfied dependency and flags inferred overlap edges', async () => {
     selectQueue = [
       [{
-        status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false,
+        status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false, workspaceId: 'ws-a',
         dependsOn: ['dep-aaaa1111-0000', 'dep-bbbb2222-0000'], pathManifest: ['apps/web/src/a.ts'],
       }],
       [
@@ -258,7 +279,9 @@ describe('diagnoseExplicitTaskExclusion', () => {
     expect(r?.detail).toContain('force: true');
     // The dependency lookup is scoped to the ids on this task.
     const depWhere = render(selectCalls[1].where!);
-    expect(depWhere.params).toEqual(['dep-aaaa1111-0000', 'dep-bbbb2222-0000']);
+    // Scoped to the task's ids AND the task's own workspace (review of #3053).
+    expect(depWhere.params).toEqual(['dep-aaaa1111-0000', 'dep-bbbb2222-0000', 'ws-a']);
+    expect(depWhere.sql).toMatch(/"tasks"\."workspace_id" = \$3/);
     // Correlated to the dependency row: a bare "id" in a select field would bind
     // to the subquery's own table and silently read the wrong rows.
     // Rendered as a real select (a field rendered alone is always qualified).
@@ -268,8 +291,17 @@ describe('diagnoseExplicitTaskExclusion', () => {
     expect(selectSql).toContain('t2.id = "tasks"."id"');
   });
 
+  it('a dependency in another workspace is described only as "(not found)"', async () => {
+    selectQueue = [
+      [{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false, workspaceId: 'ws-a', dependsOn: ['dep-elsewhere-0000'], pathManifest: null }],
+      [], // the workspace-scoped lookup finds nothing
+    ];
+    const r = await diagnoseExplicitTaskExclusion({ taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`false` }, now: NOW });
+    expect(r?.detail).toContain('dep-else (not found)');
+  });
+
   it('a failed dependency lookup still returns deps_blocked', async () => {
-    selectQueue = [[{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false, dependsOn: ['d1'], pathManifest: null }]];
+    selectQueue = [[{ status: 'pending', claimedBy: null, expiresAt: null, startAt: null, g_deps: false, dependsOn: ['d1'], pathManifest: null, workspaceId: 'ws-a' }]];
     selectThrowOnCall = 2;
     const r = await diagnoseExplicitTaskExclusion({
       taskId: 'task-1', workspaceIds: ['ws-a'], gates: { deps: sql`false` }, now: NOW,

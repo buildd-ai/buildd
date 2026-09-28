@@ -7,6 +7,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import {
   ANSWER_PATH_REASONS,
@@ -163,7 +164,8 @@ async function resolveStaleTask(
             claimedAt: null,
             startAt,
             context: {
-              ...ctx,
+              // A requeue ends the claim, so its force audit goes with it.
+              ...withoutForceClaim(ctx),
               ...(staleWorker?.branch
                 ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
                 : {}),
@@ -315,7 +317,7 @@ async function resolveStaleTask(
             claimedAt: null,
             startAt,
             context: {
-              ...existingCtx,
+              ...withoutForceClaim(existingCtx),
               ...(staleWorker?.branch
                 ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
                 : {}),
