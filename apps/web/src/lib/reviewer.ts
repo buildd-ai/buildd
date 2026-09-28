@@ -47,6 +47,7 @@ import {
   type ReviewerCriterionRef,
 } from './criteria-reviewer-findings';
 import type { CriterionReviewerFinding } from '@buildd/shared';
+import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -528,6 +529,7 @@ export async function createReviewerTask(
         priorVerdict: params.priorVerdict,
         deltaFiles: params.deltaFiles,
         missionCriteria,
+        baseRef: params.baseRef,
       })
     : await buildReviewerContext({
         originalTaskId,
@@ -1208,6 +1210,75 @@ interface BuildDeltaContextParams {
   deltaFiles?: GithubPrFile[];
   /** The mission's `description` criteria. See BuildContextParams. */
   missionCriteria?: ReviewerCriterionRef[];
+  /**
+   * The PR's base branch. Bounds the delta against `baseRef` at both ends
+   * (see `boundDeltaFilenames`) instead of only against the PR's current
+   * file list. Omit only when the caller genuinely has no base ref — the
+   * bound then falls back to `pulls/{n}/files`, which is weaker.
+   */
+  baseRef?: string | null;
+}
+
+/**
+ * Which filenames genuinely changed between two points in this PR's OWN
+ * history, bounded against `baseRef` rather than against each other.
+ *
+ * `compare/fromSha...toSha` degenerates whenever toSha is a merge of the base
+ * branch into the PR branch: merge-base(fromSha, toSha) collapses to fromSha
+ * (toSha descends from it via first-parent), so the diff balloons to every
+ * file the base moved on in between. Filtering that against
+ * `pulls/{n}/files` (PR #2439's fix) does not fully cover it either — that
+ * endpoint carries the identical divergent-history caveat once the PR head
+ * has merged the base in more than once, and separately caps at 100 files
+ * per page regardless of the `per_page` value requested.
+ *
+ * `compare/baseRef...fromSha` and `compare/baseRef...toSha` don't have
+ * either problem: each is GitHub's own merge-base-aware diff of that one
+ * commit against the base branch directly, so a file the base changed on
+ * its own never appears — the PR's tree already matches base for that file
+ * at the merge-base, full stop. That's the same operation
+ * `pr-content-equivalence.ts` uses for the same reason. The delta is then
+ * the symmetric difference of the two resulting file sets: a filename
+ * present in one snapshot but not the other, or present in both with a
+ * different blob sha or status, is something that changed since the prior
+ * review; a filename identical in both was already reviewed and stays
+ * excluded no matter what the raw `fromSha...toSha` compare says about it.
+ *
+ * Returns null — skip the bound rather than trust a partial one — when
+ * either snapshot's file list may itself be truncated.
+ */
+async function boundDeltaFilenames(params: {
+  installationId: number;
+  repoFullName: string;
+  baseRef: string;
+  fromSha: string;
+  toSha: string;
+  api: (installationId: number, path: string) => Promise<unknown>;
+}): Promise<Set<string> | null> {
+  const read = (sha: string) =>
+    compareAgainstBase({
+      installationId: params.installationId,
+      repoFullName: params.repoFullName,
+      baseRef: params.baseRef,
+      sha,
+      api: params.api,
+    });
+
+  const [fromFiles, toFiles] = await Promise.all([read(params.fromSha), read(params.toSha)]);
+  if (!fromFiles || !toFiles) return null;
+  if (fromFiles.length >= COMPARE_FILE_LIMIT || toFiles.length >= COMPARE_FILE_LIMIT) return null;
+
+  const fromByName = new Map(fromFiles.map((f) => [f.filename, f]));
+  const toByName = new Map(toFiles.map((f) => [f.filename, f]));
+  const changed = new Set<string>();
+  for (const [name, f] of toByName) {
+    const prior = fromByName.get(name);
+    if (!prior || prior.sha !== f.sha || prior.status !== f.status) changed.add(name);
+  }
+  for (const name of fromByName.keys()) {
+    if (!toByName.has(name)) changed.add(name);
+  }
+  return changed;
 }
 
 /**
@@ -1241,24 +1312,47 @@ export async function buildDeltaReviewerContext(params: BuildDeltaContextParams)
       // base branch into the PR branch (a conflict resolved via `git merge
       // origin/dev` instead of a rebase), merge-base(A,B) is just A — so the
       // diff balloons to every file the base branch moved on in the meantime,
-      // even ones this PR never touches. Bound the delta to files the PR
-      // itself actually changes (its current diff against base, which GitHub
-      // already computes merge-base-aware) so a merge-based conflict
-      // resolution can never look like a scope explosion. Best-effort: a
+      // even ones this PR never touches. Bound the delta against `baseRef`
+      // at both ends (see `boundDeltaFilenames`) — immune to the same
+      // degeneracy, and immune to `pulls/{n}/files` inheriting it too, which
+      // is what made the plain filename-filter (PR #2439) insufficient on a
+      // PR whose head merged the base in more than once. Best-effort: any
       // failure here just skips the bound rather than losing the delta.
-      try {
-        const prFilesRaw = await githubApi(
-          params.installationId,
-          `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
-        );
-        if (Array.isArray(prFilesRaw)) {
-          const prFilenames = new Set(
-            normalizeGithubPrFiles(prFilesRaw as GithubPrFile[]).map((f) => f.filename),
-          );
-          files = files.filter((f) => prFilenames.has(f.filename));
+      if (params.baseRef) {
+        try {
+          const boundFilenames = await boundDeltaFilenames({
+            installationId: params.installationId,
+            repoFullName,
+            baseRef: params.baseRef,
+            fromSha: priorVerdict.headSha,
+            toSha: headSha,
+            api: githubApi,
+          });
+          if (boundFilenames) {
+            files = files.filter((f) => boundFilenames.has(f.filename));
+          }
+        } catch (err) {
+          console.warn(`[reviewer] Failed to bound delta files via base-anchored compare for #${prNumber}:`, err);
         }
-      } catch (err) {
-        console.warn(`[reviewer] Failed to bound delta files to PR diff for #${prNumber}:`, err);
+      } else {
+        // No base ref plumbed through — fall back to PR #2439's weaker bound
+        // (the PR's OWN current file list, capped at GitHub's real
+        // per-page max of 100; skip the bound entirely on a possibly-full
+        // page rather than trust a silently truncated one).
+        try {
+          const prFilesRaw = await githubApi(
+            params.installationId,
+            `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100`,
+          );
+          if (Array.isArray(prFilesRaw) && prFilesRaw.length < 100) {
+            const prFilenames = new Set(
+              normalizeGithubPrFiles(prFilesRaw as GithubPrFile[]).map((f) => f.filename),
+            );
+            files = files.filter((f) => prFilenames.has(f.filename));
+          }
+        } catch (err) {
+          console.warn(`[reviewer] Failed to bound delta files to PR diff for #${prNumber}:`, err);
+        }
       }
     }
 

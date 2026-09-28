@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
+import { isUuid } from '@/lib/uuid';
 
 // Note: PATCH (oauthToken write) removed — accounts.oauthToken column is deprecated.
 // Model credentials belong in the secrets table; set them via Agent Backends.
@@ -15,6 +16,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid account id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
     return NextResponse.json({ account: null });
@@ -49,6 +53,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid account id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
 
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ success: true });

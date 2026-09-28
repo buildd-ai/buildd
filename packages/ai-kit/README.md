@@ -1,4 +1,4 @@
-# @buildd/ai-kit
+# @builddai/ai-kit
 
 Shared chat contract, tool permissions, model plans and Jev decisions for apps
 that use [buildd](https://buildd.dev)'s model economy.
@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-bun add @buildd/ai-kit@0.0.1 --exact
+npm i -E @builddai/ai-kit@0.1.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -18,13 +18,13 @@ and you should re-run your evals before taking it.
 
 | Import | What | Status |
 |---|---|---|
-| `@buildd/ai-kit/chat/contract` | Wire types: parts, object refs, data parts, approval previews, tool-permission rows. No deps, isomorphic | Ready |
-| `@buildd/ai-kit/chat/server` | `defineToolGroups` + server-side Allow enforcement. Turn runner later (peer `ai@^7`) | Permissions ready |
-| `@buildd/ai-kit/chat/react` | UI components (peers `react@^19`, `@ai-sdk/react@^4`) | Types only |
-| `@buildd/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
-| `@buildd/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
-| `@buildd/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval (peer `@typesafe-ai/sdk`) | Ready |
-| `@buildd/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
+| `@builddai/ai-kit/chat/contract` | Wire types: parts, object refs, data parts, approval previews, tool-permission rows. No deps, isomorphic | Ready |
+| `@builddai/ai-kit/chat/server` | `defineToolGroups` + server-side Allow enforcement. Turn runner later (peer `ai@^7`) | Permissions ready |
+| `@builddai/ai-kit/chat/react` | UI components (peers `react@^19`, `@ai-sdk/react@^4`) | Types only |
+| `@builddai/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
+| `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
+| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
+| `@builddai/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
 
 ## Model plans
 
@@ -32,7 +32,7 @@ Ask buildd which model to call and whether it may spend; make the call with
 your own key; record a content-free receipt.
 
 ```ts
-import { createModelsClient, toCallConfig, isPlanDeniedError } from '@buildd/ai-kit/models';
+import { createModelsClient, toCallConfig, isPlanDeniedError } from '@builddai/ai-kit/models';
 
 const models = createModelsClient({
   apiKey: env.BUILDD_AI_KEY,                // a bld_ key for the app's service account
@@ -83,7 +83,7 @@ Declare your tool groups once. The same declaration drives the tools menu,
 the per-person preference and server-side enforcement.
 
 ```ts
-import { defineToolGroups } from '@buildd/ai-kit/chat/server';
+import { defineToolGroups } from '@builddai/ai-kit/chat/server';
 
 export const groups = defineToolGroups({
   notes:  { label: 'Notes',  tools: [{ name: 'create_note', class: 'write' }], modes: ['ask', 'allow'] },
@@ -114,7 +114,7 @@ never writes text. Use it as an accelerator in front of logic you already
 have, never as the only source of an answer.
 
 ```ts
-import { choice, noul, defineDecision, expectDecisionPinned } from '@buildd/ai-kit/decide';
+import { choice, noul, defineDecision, expectDecisionPinned } from '@builddai/ai-kit/decide';
 
 export const emailTriage = defineDecision({
   id: 'cue.email_triage',
@@ -170,7 +170,7 @@ Writing labels: define each one contrastively, avoid a catch-all label
 
 ## Theming
 
-Import `@buildd/ai-kit/chat/theme.css` and override the `--kit-*` variables
+Import `@builddai/ai-kit/chat/theme.css` and override the `--kit-*` variables
 with your own tokens.
 
 ## License

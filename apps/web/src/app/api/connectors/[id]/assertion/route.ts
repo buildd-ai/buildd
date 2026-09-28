@@ -15,6 +15,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getActiveSigningKey, signAssertion } from '@/lib/signing-keys';
 import { Redis } from '@upstash/redis';
 import { getIssuer } from '@/lib/oauth/config';
+import { isUuid } from '@/lib/uuid';
 
 // ---------------------------------------------------------------------------
 // Rate limiting via Redis (degrades to allow if Redis unavailable)
@@ -47,7 +48,11 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id: connectorId } = await params;
+  const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid connector id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
+  const connectorId = id;
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') ?? null;
@@ -67,6 +72,9 @@ export async function POST(
   const { workerId, taskId } = body;
   if (!workerId || !taskId) {
     return NextResponse.json({ error: 'invalid_request', error_description: 'workerId and taskId are required' }, { status: 400 });
+  }
+  if (!isUuid(workerId) || !isUuid(taskId)) {
+    return NextResponse.json({ error: 'invalid_request', error_description: 'workerId and taskId must be full UUIDs' }, { status: 400 });
   }
 
   // ── Validate worker belongs to this account and task ─────────────────────

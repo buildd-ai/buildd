@@ -9,6 +9,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { isUuid } from '@/lib/uuid';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -46,6 +47,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid connector id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   const auth = await authenticateRequest(req);
   if (!auth || auth.type === 'denied') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -69,6 +73,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid connector id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   const auth = await authenticateRequest(req);
   if (!auth || auth.type === 'denied') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -162,6 +169,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid connector id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   const auth = await authenticateRequest(req);
   if (!auth || auth.type === 'denied') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

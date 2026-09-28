@@ -571,6 +571,9 @@ export async function openMissionIntegrationPr(
         `This task exists to own the mission PR so it appears in the merge queue and can be ` +
         `merged from the dashboard. It performs no work of its own and is never claimed by a runner.`,
       mode: 'execution',
+      // Bookkeeping with no role, deliberately (role-routing §1 row 9, same as
+      // the adopted-PR row, row 7): it runs no worker, so a role would only
+      // count a placeholder as work. The mission's review carries its own role.
       taskClass: 'bookkeeping',
       creationSource: 'orchestrator',
       // Terminal on creation: nothing should ever claim this row. Leaving it

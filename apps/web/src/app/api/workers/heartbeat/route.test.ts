@@ -480,6 +480,153 @@ describe('POST /api/workers/heartbeat', () => {
     }
   });
 
+  it('stamps updateAvailableSince the moment updateAvailable first becomes true', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    // First heartbeat ever for this instance: no existing row.
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { onConflictDoUpdate: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://localhost:8766',
+        activeWorkerCount: 1,
+        currentCommit: 'aaa',
+        diskCommit: 'bbb',
+        commitDrift: true,
+        updating: false,
+        updateAvailable: true,
+        trackedBranch: 'main',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.updateAvailableSince).toBeInstanceOf(Date);
+  });
+
+  it('holds updateAvailableSince steady across heartbeats while updateAvailable stays true', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    const firstSeenAt = new Date('2026-09-20T12:00:00.000Z');
+    mockHeartbeatsFindFirst.mockResolvedValue({
+      viewerToken: 'existing-token',
+      updateAvailable: true,
+      updateAvailableSince: firstSeenAt,
+    });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://localhost:8766',
+        activeWorkerCount: 1,
+        currentCommit: 'aaa',
+        diskCommit: 'bbb',
+        commitDrift: false,
+        updating: false,
+        updateAvailable: true,
+        trackedBranch: 'main',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedConflictSet.updateAvailableSince).toBe(firstSeenAt);
+  });
+
+  it('clears updateAvailableSince once updateAvailable flips back to false', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({
+      viewerToken: 'existing-token',
+      updateAvailable: true,
+      updateAvailableSince: new Date('2026-09-20T12:00:00.000Z'),
+    });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://localhost:8766',
+        activeWorkerCount: 1,
+        currentCommit: 'aaa',
+        diskCommit: 'aaa',
+        commitDrift: false,
+        updating: false,
+        updateAvailable: false,
+        trackedBranch: 'main',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedConflictSet.updateAvailableSince).toBeNull();
+  });
+
+  it('does not overwrite a stored updateAvailableSince when a later heartbeat omits the bundle', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({
+      viewerToken: 'existing-token',
+      updateAvailable: true,
+      updateAvailableSince: new Date('2026-09-20T12:00:00.000Z'),
+    });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect('updateAvailableSince' in capturedConflictSet).toBe(false);
+  });
+
   it('sets the update-snapshot bundle to null on first insert when not provided (legacy runner)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
@@ -507,6 +654,7 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedValues.commitDrift).toBeNull();
     expect(capturedValues.updating).toBeNull();
     expect(capturedValues.updateAvailable).toBeNull();
+    expect(capturedValues.updateAvailableSince).toBeNull();
     expect(capturedValues.trackedBranch).toBeNull();
   });
 
@@ -537,7 +685,7 @@ describe('POST /api/workers/heartbeat', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(200);
-    for (const key of ['currentCommit', 'diskCommit', 'commitDrift', 'updating', 'updateAvailable', 'trackedBranch']) {
+    for (const key of ['currentCommit', 'diskCommit', 'commitDrift', 'updating', 'updateAvailable', 'updateAvailableSince', 'trackedBranch']) {
       expect(key in capturedConflictSet).toBe(false);
     }
   });

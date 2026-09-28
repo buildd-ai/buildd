@@ -1,15 +1,15 @@
 /**
- * `@buildd/ai-kit/chat/react`: UI components over `/chat/contract`
+ * `@builddai/ai-kit/chat/react`: UI components over `/chat/contract`
  * (peers `react@^19`, `@ai-sdk/react@^4`).
  *
  * P0 SKELETON: prop types only. The components (`ChatThread`, `ChatComposer`,
  * `ToolsMenu`, `TierPicker`, `ThinkingPanel`, `ApprovalCard`, `ChatEmpty`,
  * `ChatSetupCard`, …) ship with P3. They style themselves only through the
- * `--kit-*` custom properties in `@buildd/ai-kit/chat/theme.css`, plus
+ * `--kit-*` custom properties in `@builddai/ai-kit/chat/theme.css`, plus
  * `className` and `data-*` hooks. No Tailwind.
  */
 
-import type { ToolPermissionRow } from '@buildd/ai-kit/chat/contract';
+import type { ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
 
 /** A one-tap chip on the empty state. `send: false` prefills the composer instead of sending. */
 export interface ChatEmptyChip {

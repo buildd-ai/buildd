@@ -1,6 +1,6 @@
-name: Publish @buildd/ai-kit
+name: Publish @builddai/ai-kit
 
-# Publishes packages/ai-kit to public npm as @buildd/ai-kit, with provenance,
+# Publishes packages/ai-kit to public npm as @builddai/ai-kit, with provenance,
 # through npm trusted publishing (GitHub OIDC). No npm token is stored
 # anywhere: npm trusts this repo + this workflow file, configured once on the
 # package's npmjs.com settings page (Settings → Trusted publisher).
@@ -99,6 +99,10 @@ jobs:
         working-directory: packages/ai-kit
         run: node scripts/smoke-dist.mjs
 
+      - name: Install the packed tarball into a clean consumer project
+        working-directory: packages/ai-kit
+        run: node scripts/smoke-consumer.mjs
+
       - name: Publish (dry run)
         if: github.ref_type != 'tag' && inputs.publish != true
         working-directory: packages/ai-kit/dist
@@ -109,8 +113,8 @@ jobs:
         working-directory: packages/ai-kit/dist
         run: |
           set -euo pipefail
-          if npm view "@buildd/ai-kit@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
-            echo "::notice::@buildd/ai-kit@${{ steps.version.outputs.version }} is already on npm; nothing to publish."
+          if npm view "@builddai/ai-kit@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::notice::@builddai/ai-kit@${{ steps.version.outputs.version }} is already on npm; nothing to publish."
             exit 0
           fi
           npm publish --provenance --access public

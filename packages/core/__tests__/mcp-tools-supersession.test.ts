@@ -122,11 +122,16 @@ const completeTaskRoutes = {
   'GET /api/tasks/t-1': { title: 'Fix auth', description: 'd', result: { summary: 'done' } },
 };
 
+/** Memory handlers only act within the caller's own project key. */
+const PROJECT = 'acme/widgets';
+const memoryCtx = (store: KnowledgeStore) => ({ ...ctxWith(store, TEAM), project: PROJECT });
+
 function mockMemoryClient(): any {
   const mem = (over: any = {}) => ({
-    id: 'mem-1', title: 'T', content: 'C', type: 'gotcha', tags: [], files: [], project: null, ...over,
+    id: 'mem-1', title: 'T', content: 'C', type: 'gotcha', tags: [], files: [], project: PROJECT, ...over,
   });
   return {
+    async get(id: string) { return { memory: mem({ id }) }; },
     async save(input: any) { return { memory: mem(input) }; },
     async update(_id: string, fields: any) { return { memory: mem(fields) }; },
     async delete() {},
@@ -239,7 +244,7 @@ describe('entity-keyed supersession wiring', () => {
         content: 'Y',
         entities: [{ kind: 'concept', ref: 'budget reset', role: 'defines' }],
       },
-      ctxWith(store, TEAM),
+      memoryCtx(store),
     );
 
     expect(store.supersessionCalls).toHaveLength(1);
@@ -257,7 +262,7 @@ describe('buildd_memory — supersedes param', () => {
       mockMemoryClient(),
       'save',
       { type: 'gotcha', title: 'X', content: 'Y', supersedes: ['mem-old'] },
-      ctxWith(store, TEAM),
+      memoryCtx(store),
     );
 
     expect(store.upserts).toHaveLength(1);
@@ -271,7 +276,7 @@ describe('buildd_memory — supersedes param', () => {
       mockMemoryClient(),
       'update',
       { id: 'mem-1', content: 'Z', supersedes: ['mem-old'] },
-      ctxWith(store, TEAM),
+      memoryCtx(store),
     );
 
     expect(store.upserts).toHaveLength(1);
@@ -286,7 +291,7 @@ describe('buildd_memory — supersedes param', () => {
         mockMemoryClient(),
         'save',
         { type: 'gotcha', title: 'X', content: 'Y', supersedes: 'mem-old' },
-        ctxWith(store, TEAM),
+        memoryCtx(store),
       ),
     ).rejects.toThrow(/supersedes/);
     expect(store.upserts).toHaveLength(0);
@@ -298,7 +303,7 @@ describe('buildd_memory — supersedes param', () => {
         mockMemoryClient(),
         'update',
         { id: 'mem-1', content: 'Z', supersedes: [null] },
-        ctxWith(makeStore(), TEAM),
+        memoryCtx(makeStore()),
       ),
     ).rejects.toThrow(/supersedes/);
   });
@@ -308,7 +313,7 @@ describe('buildd_memory — supersedes param', () => {
       mockMemoryClient(),
       'save',
       { type: 'gotcha', title: 'X', content: 'Y' },
-      ctxWith(makeStore(), TEAM),
+      memoryCtx(makeStore()),
     );
     expect(res.content[0].text.toLowerCase()).not.toContain('superseded');
   });

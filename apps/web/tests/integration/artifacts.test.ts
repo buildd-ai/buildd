@@ -83,8 +83,11 @@ describe('Artifact Lifecycle', () => {
     expect(artifact.type).toBe('content');
     expect(artifact.title).toBe('Test Report');
     expect(artifact.content).toBe('This is the artifact content from the integration test.');
-    expect(artifact.shareUrl).toBeTruthy();
-    expect(artifact.shareToken).toBeTruthy();
+    // New artifacts are private: no share token is minted and no share URL is
+    // exposed until someone publishes the artifact (route + its unit test).
+    expect(artifact.visibility).toBe('private');
+    expect(artifact.shareToken).toBeNull();
+    expect(artifact.shareUrl).toBeNull();
   }, TIMEOUT);
 
   test('GET artifacts returns created artifact', async () => {

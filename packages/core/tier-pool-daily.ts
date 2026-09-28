@@ -23,6 +23,7 @@ import {
   type ExploreStepResult,
 } from './tier-explore';
 import { MAX_POOL_ARMS, type Allocation, type ArmRoute, type PoolSurface } from './tier-pool';
+import type { Weights } from './tier-weights';
 
 /** An explore arm whose model expires within this many days is capped to 0. */
 export const EXPIRY_HORIZON_DAYS = 14;
@@ -50,6 +51,8 @@ export interface DailyPool {
   policyVersion: number;
   allocation: Allocation;
   allocationVersion: number;
+  /** `split` only; a harm cut or expiry also flips the arm's level to `off` (tier-weights.md §1, §4b). */
+  weights: Weights;
   autoChallenger: boolean;
   /** Live arms in `armOrder`. */
   arms: DailyPoolArm[];
@@ -61,7 +64,7 @@ export interface SuccessionHold {
 }
 
 export type DailyAction =
-  | { type: 'allocate'; allocation: Allocation; actorSystem: string; evidence: Record<string, unknown> }
+  | { type: 'allocate'; allocation: Allocation; actorSystem: string; evidence: Record<string, unknown>; weights?: Weights }
   | { type: 'hold'; armId: string; hold: SuccessionHold }
   | { type: 'suggest'; key: string; actorSystem: string; evidence: Record<string, unknown> }
   | { type: 'add_challenger'; route: ArmRoute; model: string; evidence: Record<string, unknown> };
@@ -139,7 +142,14 @@ export function planPoolDay(args: {
         return { id: a.id, role: a.role, evidence: args.evidence.get(a.id) ?? EMPTY_EVIDENCE, expired: exp != null && exp <= nowS };
       }),
     });
-    if (g) actions.push({ type: 'allocate', allocation: g.allocation, actorSystem: g.actorSystem, evidence: g.evidence });
+    if (g) {
+      // A harm cut or an expiry also takes the arm's weight to `off` (§1,
+      // §4b): the admin's own control must show what actually happened,
+      // not the level from before the cut.
+      const weights: Weights = { ...pool.weights };
+      for (const armId of [...g.cut, ...g.expired]) weights[armId] = 'off';
+      actions.push({ type: 'allocate', allocation: g.allocation, actorSystem: g.actorSystem, evidence: g.evidence, weights });
+    }
     return { actions, step: null };
   }
 

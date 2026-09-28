@@ -39,7 +39,7 @@ const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET, DELETE } from './route';
 
-const mockParams = Promise.resolve({ id: 'account-1' });
+const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
 
 describe('GET /api/accounts/[id]', () => {
   beforeEach(() => {
@@ -75,8 +75,20 @@ describe('GET /api/accounts/[id]', () => {
     expect(data.error).toBe('Account not found');
   });
 
+  it('returns 404 for a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/accounts/a1b2c3d4');
+    const res = await GET(req, { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns account when found', async () => {
-    const mockAccount = { id: 'account-1', name: 'Test Account', type: 'user' };
+    const mockAccount = { id: '11111111-1111-4111-8111-111111111111', name: 'Test Account', type: 'user' };
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
@@ -128,7 +140,7 @@ describe('DELETE /api/accounts/[id]', () => {
 
   it('deletes account successfully', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-1' });
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111' });
 
     const req = new NextRequest('http://localhost:3000/api/accounts/account-1', { method: 'DELETE' });
     const res = await DELETE(req, { params: mockParams });

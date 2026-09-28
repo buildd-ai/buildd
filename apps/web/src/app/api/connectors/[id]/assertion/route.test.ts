@@ -61,14 +61,14 @@ function makeRequest(body: object, apiKey = 'bld_test'): NextRequest {
   });
 }
 
-const mockParams = Promise.resolve({ id: 'connector-1' });
+const mockParams = Promise.resolve({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
 
 // Healthy defaults
 const account = { id: 'account-1', teamId: 'team-1' };
-const worker = { id: 'worker-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', status: 'running' };
-const task = { id: 'task-1', workspaceId: 'ws-1', accountId: 'account-1' };
+const worker = { id: '22222222-2222-4222-8222-222222222222', accountId: 'account-1', taskId: '33333333-3333-4333-8333-333333333333', workspaceId: 'ws-1', status: 'running' };
+const task = { id: '33333333-3333-4333-8333-333333333333', workspaceId: 'ws-1', accountId: 'account-1' };
 const connector = {
-  id: 'connector-1',
+  id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
   teamId: 'team-1',
   authMode: 'assertion',
   assertionAudience: 'https://cue.buildd.dev/api/mcp',
@@ -107,7 +107,7 @@ describe('POST /api/connectors/[id]/assertion', () => {
     const req = new NextRequest('http://localhost/api/connectors/connector-1/assertion', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workerId: 'worker-1', taskId: 'task-1' }),
+      body: JSON.stringify({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }),
     });
     const res = await POST(req, { params: mockParams });
     expect(res.status).toBe(401);
@@ -123,25 +123,25 @@ describe('POST /api/connectors/[id]/assertion', () => {
 
   it('returns 401 when workerId belongs to a different account', async () => {
     mockWorkersQuery.mockResolvedValue({ ...worker, accountId: 'account-OTHER' });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(401);
   });
 
   it('returns 401 when worker status is completed (token revoked)', async () => {
     mockWorkersQuery.mockResolvedValue({ ...worker, status: 'completed' });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(401);
   });
 
   it('returns 401 when worker status is error (token revoked)', async () => {
     mockWorkersQuery.mockResolvedValue({ ...worker, status: 'error' });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(401);
   });
 
   it('returns 403 when taskId does not match worker active task', async () => {
     mockWorkersQuery.mockResolvedValue({ ...worker, taskId: 'task-OTHER' });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(403);
   });
 
@@ -149,50 +149,50 @@ describe('POST /api/connectors/[id]/assertion', () => {
 
   it('returns 404 when connector does not exist', async () => {
     mockConnectorsQuery.mockResolvedValue(null);
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(404);
   });
 
   it('returns 403 when connector authMode is not assertion', async () => {
     mockConnectorsQuery.mockResolvedValue({ ...connector, authMode: 'header' });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(403);
   });
 
   it('returns 403 when connector is explicitly disabled for workspace', async () => {
     mockConnectorWorkspacesQuery.mockResolvedValue({ enabled: false });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(403);
   });
 
   it('allows minting when no connectorWorkspaces row (missing = enabled)', async () => {
     mockConnectorWorkspacesQuery.mockResolvedValue(undefined);
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(200);
   });
 
   it('returns 500 when connector is missing assertionAudience', async () => {
     mockConnectorsQuery.mockResolvedValue({ ...connector, assertionAudience: null });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(500);
   });
 
   it('returns 500 when connector is missing assertionTokenEndpoint', async () => {
     mockConnectorsQuery.mockResolvedValue({ ...connector, assertionTokenEndpoint: null });
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(500);
   });
 
   it('returns 500 when no active signing key exists', async () => {
     mockGetActiveSigningKey.mockResolvedValue(null);
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(500);
   });
 
   // ── Successful mint ───────────────────────────────────────────────────────
 
   it('returns 200 with assertion and exchange metadata on happy path', async () => {
-    const res = await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.assertion).toBe('header.payload.sig');
@@ -207,7 +207,7 @@ describe('POST /api/connectors/[id]/assertion', () => {
   });
 
   it('signs assertion with correct claim shape', async () => {
-    await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
 
     expect(mockSignAssertion).toHaveBeenCalledTimes(1);
     const [payload, , kid] = mockSignAssertion.mock.calls[0];
@@ -215,8 +215,8 @@ describe('POST /api/connectors/[id]/assertion', () => {
     expect(payload.iss).toBe(getIssuer());
     expect(payload.sub).toBe('account-1:team-1'); // accountId:teamId
     expect(payload.aud).toBe('https://cue.buildd.dev/api/mcp');
-    expect(payload.act.sub).toBe('worker:worker-1');
-    expect(payload.act.tid).toBe('task-1');
+    expect(payload.act.sub).toBe('worker:22222222-2222-4222-8222-222222222222');
+    expect(payload.act.tid).toBe('33333333-3333-4333-8333-333333333333');
     expect(typeof payload.jti).toBe('string');
     expect(payload.jti).toHaveLength(32); // 16 bytes hex = 32 chars
     expect(payload.exp - payload.iat).toBe(300);
@@ -224,8 +224,8 @@ describe('POST /api/connectors/[id]/assertion', () => {
   });
 
   it('each mint call uses a unique jti', async () => {
-    await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
-    await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+    await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
+    await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
 
     const jti1 = mockSignAssertion.mock.calls[0][0].jti;
     const jti2 = mockSignAssertion.mock.calls[1][0].jti;
@@ -234,13 +234,25 @@ describe('POST /api/connectors/[id]/assertion', () => {
 
   // ── Input validation ──────────────────────────────────────────────────────
 
+  it('returns 404 for a non-UUID connector id without querying the db', async () => {
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect(mockWorkersQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a non-UUID workerId or taskId without querying the db', async () => {
+    const res = await POST(makeRequest({ workerId: 'a1b2c3d4', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
+    expect(res.status).toBe(400);
+    expect(mockWorkersQuery).not.toHaveBeenCalled();
+  });
+
   it('returns 400 when workerId is missing', async () => {
-    const res = await POST(makeRequest({ taskId: 'task-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
     expect(res.status).toBe(400);
   });
 
   it('returns 400 when taskId is missing', async () => {
-    const res = await POST(makeRequest({ workerId: 'worker-1' }), { params: mockParams });
+    const res = await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222' }), { params: mockParams });
     expect(res.status).toBe(400);
   });
 
@@ -254,7 +266,7 @@ describe('POST /api/connectors/[id]/assertion', () => {
     const prev = process.env.OAUTH_ISSUER;
     process.env.OAUTH_ISSUER = 'https://preview.example.test';
     try {
-      await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+      await POST(makeRequest({ workerId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333' }), { params: mockParams });
       const [payload] = mockSignAssertion.mock.calls[0];
       expect(payload.iss).toBe('https://preview.example.test');
       expect(payload.iss).not.toBe('https://buildd.dev');

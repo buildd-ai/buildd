@@ -28,6 +28,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -152,6 +153,10 @@ export async function POST(
   // request-changes are mutually exclusive verdicts for one headSha review, so a
   // second Apply call for the same (PR, headSha) is a true double-tap, not a
   // legitimate second dispatch.
+  // The fix re-attempts the escalated task, so it carries that task's backend,
+  // role, routing kind and phase (Rule P1-7).
+  const identity = await inheritAttemptIdentity(originalTask.id);
+
   const [applyTask] = await db
     .insert(tasks)
     .values({
@@ -160,6 +165,7 @@ export async function POST(
       description,
       missionId: originalTask.missionId,
       parentTaskId: originalTask.id,
+      ...identity,
       taskClass: 'attempt',
       reviewerRetryPrNumber: prNumber,
       reviewerRetryHeadSha: headSha,

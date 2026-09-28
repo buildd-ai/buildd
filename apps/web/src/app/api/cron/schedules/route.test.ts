@@ -218,6 +218,10 @@ mock.module('@/lib/schedule-skill-preflight', () => ({
   MissingScheduleSkillError: MockMissingScheduleSkillError,
 }));
 
+let effectiveRoles = new Set<string>();
+const mockResolveEffectiveRoleSlugs = mock((_ws: string) => Promise.resolve(effectiveRoles));
+mock.module('@/lib/effective-roles', () => ({ resolveEffectiveRoleSlugs: mockResolveEffectiveRoleSlugs }));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -300,6 +304,8 @@ describe('GET /api/cron/schedules', () => {
     mockSelectCount = 0;
     insertError = null;
     insertConflict = false;
+    effectiveRoles = new Set();
+    mockResolveEffectiveRoleSlugs.mockClear();
 
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -427,6 +433,40 @@ describe('GET /api/cron/schedules', () => {
     // contention eventually trips pauseAfterFailures and disables the schedule.
     const failureUpdate = taskSchedulesUpdateCalls.find(c => c.set?.consecutiveFailures === 1);
     expect(failureUpdate).toBeUndefined();
+  });
+
+  // role-routing §1 row 11: a schedule states its role once, on the template.
+  it('files the spawned task under the template roleSlug when the workspace has that role', async () => {
+    effectiveRoles = new Set(['researcher']);
+    mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule({
+      taskTemplate: { title: 'Weekly audit', mode: 'execution', priority: 0, roleSlug: 'researcher' },
+    })]);
+
+    await GET(makeRequest());
+
+    expect(mockResolveEffectiveRoleSlugs).toHaveBeenCalledWith('ws-1');
+    expect(tasksInsertValues.roleSlug).toBe('researcher');
+  });
+
+  it('files the spawned task role-less when the template roleSlug no longer resolves', async () => {
+    effectiveRoles = new Set(['builder']);
+    mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule({
+      taskTemplate: { title: 'Weekly audit', mode: 'execution', priority: 0, roleSlug: 'deleted-role' },
+    })]);
+
+    await GET(makeRequest());
+
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.roleSlug).toBeUndefined();
+  });
+
+  it('does not look up roles for a template with no roleSlug', async () => {
+    mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()]);
+
+    await GET(makeRequest());
+
+    expect(mockResolveEffectiveRoleSlugs).not.toHaveBeenCalled();
+    expect(tasksInsertValues.roleSlug).toBeUndefined();
   });
 
   it('does not crash dispatching a conflicted insert (no task row to dispatch)', async () => {

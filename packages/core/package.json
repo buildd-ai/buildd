@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.240.2",
+  "version": "0.241.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -44,6 +44,7 @@
     "./cbm-health": "./cbm-health.ts",
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",
+    "./memory-scope": "./memory-scope.ts",
     "./memory-store": "./memory-store.ts",
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
@@ -63,6 +64,8 @@
     "./model-succession": "./model-succession.ts",
     "./openrouter-rankings": "./openrouter-rankings.ts",
     "./openrouter-rankings-source": "./openrouter-rankings-source.ts",
+    "./tier-weights": "./tier-weights.ts",
+    "./model-quality": "./model-quality.ts",
     "./cbm-access-experiment": "./cbm-access-experiment.ts",
     "./cbm-access-experiment-source": "./cbm-access-experiment-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
@@ -140,7 +143,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.280",
     "@ast-grep/napi": "^0.45.0",
-    "@buildd/ai-kit": "workspace:*",
+    "@builddai/ai-kit": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.157.0",

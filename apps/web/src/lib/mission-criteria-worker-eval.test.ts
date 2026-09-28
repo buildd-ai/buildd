@@ -105,6 +105,17 @@ mock.module('@/lib/gate-ledger', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, prop) => String(prop).toLowerCase() }),
 }));
 
+// Roles effective for the task's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
 const {
   resolveCriteriaWorkerEval,
   handleCriteriaWorkerEvalOutcome,
@@ -563,5 +574,34 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     expect(c0.verdict).toBe('NOT_EVALUATED');
     expect(c0.verdict).not.toBe('pass');
     expect(firedGateEvents.some(e => e.reason === 'criterion_changed')).toBe(true);
+  });
+});
+
+// ── Role (role-routing §1 row 9) ──────────────────────────────────────────────
+
+describe('resolveCriteriaWorkerEval — role', () => {
+  beforeEach(() => { resetAll(); effectiveRoles = new Set(); pickRoleCalls.length = 0; });
+
+  const dispatch = () => {
+    missionRow = { id: 'm1', title: 'Mission', description: null, workspaceId: 'ws1', workingBranch: 'main' };
+    workspaceRow = { id: 'ws1', name: 'WS' };
+    taskFindManyRows = [];
+    return resolveCriteriaWorkerEval({
+      missionId: 'm1',
+      criteria: [{ index: 0, type: 'description', text: 'All tests pass', fingerprint: 'fp1' }],
+    });
+  };
+
+  it('runs the evaluator as Researcher when the workspace has the role', async () => {
+    effectiveRoles = new Set(['researcher']);
+    await dispatch();
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws1', candidates: ['researcher'] }]);
+    expect(insertedValues[0].roleSlug).toBe('researcher');
+  });
+
+  it('files it role-less when the workspace has no Researcher', async () => {
+    effectiveRoles = new Set(['builder']);
+    await dispatch();
+    expect(insertedValues[0].roleSlug).toBeNull();
   });
 });

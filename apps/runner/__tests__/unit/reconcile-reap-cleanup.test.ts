@@ -13,6 +13,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
 import * as realGitOps from '../../src/git-operations';
+import * as realBootstrap from '../../src/cbm-bootstrap';
 
 // An SDK stream that stays open until its abort controller fires — a session
 // that is still running when reconcile/purge reaches it.
@@ -135,6 +136,11 @@ mock.module('../../src/env-scan', () => ({
 mock.module('../../src/history-store', () => ({
   archiveSession: () => {},
   initHistoryStore: () => {},
+}));
+
+mock.module('../../src/cbm-bootstrap.js', () => ({
+  ...realBootstrap,
+  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');

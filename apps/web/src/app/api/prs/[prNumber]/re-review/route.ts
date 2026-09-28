@@ -182,6 +182,7 @@ export async function POST(
     installationId,
     repoFullName,
     policyConfig: (workspace as any).gitConfig?.policyConfig,
+    baseRef: baseRef ?? null,
     ...(plan.kind === 'delta' ? { priorVerdict: plan.priorVerdict } : {}),
   });
 

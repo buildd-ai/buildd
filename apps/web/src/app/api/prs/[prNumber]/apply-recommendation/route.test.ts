@@ -213,6 +213,23 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(inserted.creationSource).toBe('dashboard');
   });
 
+  // role-routing §1 row 8: the apply-recommendation fix dropped the role of
+  // the task it re-attempts.
+  it('the fix task inherits the escalated task\'s roleSlug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockTasksFindFirst.mockImplementation((opts?: any) =>
+      Promise.resolve(opts?.columns?.roleSlug
+        ? { backend: 'claude', roleSlug: 'builder', kind: 'engineering', complexity: null, missionPhaseIndex: null, missionPhaseLabel: null }
+        : null),
+    );
+    const [req, ctx] = makeRequest();
+    await POST(req, ctx);
+    const inserted = mockTasksValues.mock.calls[0][0];
+    expect(inserted.roleSlug).toBe('builder');
+    expect(inserted.taskClass).toBe('attempt');
+  });
+
   it('frames corrections as the authoritative instruction ahead of the recommendation', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
     mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);

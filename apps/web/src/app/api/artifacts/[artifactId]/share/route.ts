@@ -8,6 +8,7 @@ import { verifyAccountWorkspaceAccess, getUserWorkspaceIds } from '@/lib/team-ac
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
 import { isAuditScreenshot } from '@/lib/artifact-prominence';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Authorize a request against an artifact for share (make public / revoke) actions.
@@ -57,6 +58,9 @@ export async function POST(
   { params }: { params: Promise<{ artifactId: string }> }
 ) {
   const { artifactId } = await params;
+  if (!isUuid(artifactId)) {
+    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const artifact = await db.query.artifacts.findFirst({
     where: eq(artifacts.id, artifactId),
@@ -96,6 +100,9 @@ export async function DELETE(
   { params }: { params: Promise<{ artifactId: string }> }
 ) {
   const { artifactId } = await params;
+  if (!isUuid(artifactId)) {
+    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
+  }
 
   const artifact = await db.query.artifacts.findFirst({
     where: eq(artifacts.id, artifactId),

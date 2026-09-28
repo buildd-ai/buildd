@@ -68,7 +68,7 @@ function reset() {
   currentUser = { id: 'u-1', email: 'max@example.com' };
   apiAccountRow = null;
   discrepancyRow = {
-    id: 'd1',
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     workspaceId: 'ws-1',
     specPath: 'docs/design/x.md',
     assertionId: 'a1',
@@ -99,31 +99,31 @@ describe('POST /api/discrepancies/[id]/adjudicate', () => {
   it('401s with neither a session nor an API key', async () => {
     currentUser = null;
     apiAccountRow = null;
-    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('d1') });
+    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(401);
   });
 
   it('403s for a non-admin API key', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-1', level: 'worker' };
-    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('d1') });
+    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(403);
   });
 
   it('404s when the row does not exist', async () => {
     discrepancyRow = null;
-    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('missing') });
+    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('00000000-0000-4000-8000-000000000000') });
     expect(res.status).toBe(404);
   });
 
   it('404s when the user lacks access to the row\'s workspace', async () => {
     workspaceAccessResult = null;
-    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('d1') });
+    const res = await POST(req({ action: 'accept', reason: 'x' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(404);
   });
 
   it('400s accept without a reason', async () => {
-    const res = await POST(req({ action: 'accept' }), { params: params('d1') });
+    const res = await POST(req({ action: 'accept' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toMatch(/non-blank/);
@@ -131,7 +131,7 @@ describe('POST /api/discrepancies/[id]/adjudicate', () => {
 
   it('accepts with a reason', async () => {
     updateReturnRows = [{ ...discrepancyRow, status: 'accepted', acceptedReason: 'deferred' }];
-    const res = await POST(req({ action: 'accept', reason: 'deferred' }), { params: params('d1') });
+    const res = await POST(req({ action: 'accept', reason: 'deferred' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     expect(lastUpdateSet).toEqual({ status: 'accepted', acceptedReason: 'deferred' });
     const data = await res.json();
@@ -140,13 +140,13 @@ describe('POST /api/discrepancies/[id]/adjudicate', () => {
 
   it('400s flip_direction on a non-contradicted row', async () => {
     discrepancyRow.direction = 'code_ahead';
-    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('d1') });
+    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(400);
   });
 
   it('flips a contradicted row to spec_ahead', async () => {
     updateReturnRows = [{ ...discrepancyRow, direction: 'spec_ahead' }];
-    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('d1') });
+    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(200);
     expect(lastUpdateSet).toEqual({ direction: 'spec_ahead' });
     const data = await res.json();
@@ -156,7 +156,7 @@ describe('POST /api/discrepancies/[id]/adjudicate', () => {
   it('409s when the conditional update finds no matching row (race)', async () => {
     updateReturnRows = [];
     refetchedRow = { ...discrepancyRow, direction: 'code_ahead' };
-    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('d1') });
+    const res = await POST(req({ action: 'flip_direction', newDirection: 'spec_ahead' }), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(409);
     const data = await res.json();
     expect(data.discrepancy.direction).toBe('code_ahead');

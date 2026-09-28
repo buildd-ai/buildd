@@ -7,6 +7,7 @@ import {
   deriveSwipeCardType,
   gridTaskPrProps,
   selectMobileRunningTasks,
+  splitTaskRoots,
   type GridTask,
 } from './TaskGrid';
 
@@ -205,3 +206,24 @@ describe('selectMobileRunningTasks ("Running now" strip)', () => {
     expect(selectMobileRunningTasks(tasks).map(t => t.id)).toEqual(['r6', 'r5', 'r4', 'r3', 'r2']);
   });
 });
+
+describe('splitTaskRoots', () => {
+  it('nests an attempt under its work parent', () => {
+    const work = makeTask({ id: 'w', taskClass: 'work' });
+    const retry = makeTask({ id: 'r', taskClass: 'attempt', parentTaskId: 'w' });
+    const { rootTasks, childrenByParentId } = splitTaskRoots([work, retry]);
+    expect(rootTasks.map(t => t.id)).toEqual(['w']);
+    expect(childrenByParentId.get('w')?.map(t => t.id)).toEqual(['r']);
+  });
+
+  it('lists a review of an adopted PR as a root — its bookkeeping parent is never listed', () => {
+    // role-routing §1 row 7: the adopted placeholder is bookkeeping, so the
+    // attempt hanging off it must not vanish with it.
+    const adopted = makeTask({ id: 'a', taskClass: 'bookkeeping' });
+    const review = makeTask({ id: 'rv', taskClass: 'attempt', parentTaskId: 'a' });
+    const { rootTasks, childrenByParentId } = splitTaskRoots([adopted, review]);
+    expect(rootTasks.map(t => t.id)).toEqual(['rv']);
+    expect(childrenByParentId.size).toBe(0);
+  });
+});
+

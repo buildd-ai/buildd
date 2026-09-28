@@ -601,6 +601,21 @@ describe('openMissionIntegrationPr — mission PR body topology', () => {
     expect(ownerUpdate!.setValues.linesAdded).toBe(17);
     expect(ownerUpdate!.setValues.linesRemoved).toBe(3);
   });
+
+  it('files the owner task as role-less bookkeeping — a placeholder, not work (role-routing §1 row 9)', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ branch: 'buildd/t-1-thing', prUrl: 'u1', prNumber: 5, mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    await openMissionIntegrationPr(MISSION_ID);
+
+    const owner = inserts.find(i => i.values?.taskClass === 'bookkeeping');
+    expect(owner).toBeDefined();
+    expect(owner!.values.status).toBe('completed');
+    expect(owner!.values.roleSlug ?? null).toBeNull();
+  });
 });
 
 

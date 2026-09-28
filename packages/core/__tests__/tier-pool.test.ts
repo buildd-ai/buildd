@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CHAT_CHAIN_IDLE_MS,
   CHAT_FEEDBACK_REASONS,
+  DEFAULT_POOL_BOUNDS,
   agentUnitSeverity,
   chatTurnSeverity,
   continuesChain,
@@ -65,6 +66,18 @@ describe('validateAllocation', () => {
 
   it('refuses a pool with no incumbent', () => {
     expect(validateAllocation({ [C1]: 1 }, [arms[1]]).ok).toBe(false);
+  });
+
+  it("split mode bypasses the floor and cap — the admin's weights are final (tier-weights.md §1)", () => {
+    const r = validateAllocation({ [INC]: 0, [C1]: 1 }, arms, DEFAULT_POOL_BOUNDS, { mode: 'split' });
+    expect(r).toEqual({ ok: true, allocation: { [INC]: 0, [C1]: 1, [C2]: 0 } });
+  });
+
+  it('explore mode (the default) still enforces the floor and cap', () => {
+    const belowFloor = validateAllocation({ [INC]: 0.5, [C1]: 0.5 }, arms, DEFAULT_POOL_BOUNDS, { mode: 'explore' });
+    expect(belowFloor).toEqual({ ok: false, error: expect.stringContaining('60%') });
+    const overCap = validateAllocation({ [INC]: 0.65, [C1]: 0.35 }, arms, DEFAULT_POOL_BOUNDS, { mode: 'explore' });
+    expect(overCap).toEqual({ ok: false, error: expect.stringContaining('30%') });
   });
 });
 

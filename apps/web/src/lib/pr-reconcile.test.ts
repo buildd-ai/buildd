@@ -10,6 +10,21 @@ const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
 }));
 
+// A distinct table identity so `db.update(missions)` can be told apart from
+// `db.update(workers)` — both go through the same mocked `db.update`, and the
+// mission sweep's own ATTEMPT-clock write (`recordMissionSweepCheck`) must not
+// be conflated with worker-row updates in tests that assert on one or the other.
+const missionsSchema = {
+  id: 'id',
+  status: 'status',
+  workingBranch: 'workingBranch',
+  integrationBranchEnabled: 'integrationBranchEnabled',
+  prSweepLastCheckedAt: 'prSweepLastCheckedAt',
+};
+const mockMissionsUpdate = mock(() => ({
+  set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -18,7 +33,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
-    update: () => mockWorkersUpdate(),
+    update: (table: any) => (table === missionsSchema ? mockMissionsUpdate() : mockWorkersUpdate()),
   },
 }));
 
@@ -53,13 +68,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   workspaces: { id: 'id', repo: 'repo' },
   githubRepos: { id: 'id', fullName: 'fullName' },
-  missions: {
-    id: 'id',
-    status: 'status',
-    workingBranch: 'workingBranch',
-    integrationBranchEnabled: 'integrationBranchEnabled',
-    updatedAt: 'updatedAt',
-  },
+  missions: missionsSchema,
 }));
 
 const mockCheckDependsOnResolved = mock(() => Promise.resolve(undefined));
@@ -964,6 +973,8 @@ describe('sweepMissionIntegrationPrs', () => {
     mockEvaluateMissionWorkState.mockReset();
     mockEvaluateMissionWorkState.mockResolvedValue(workState());
     mockGithubApi.mockReset();
+    mockMissionsUpdate.mockReset();
+    mockMissionsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
   });
 
   it('returns zeros and asks nothing when there are no opted-in missions', async () => {
@@ -984,12 +995,48 @@ describe('sweepMissionIntegrationPrs', () => {
     expect(where).toContain('workingBranch');
     // Still-live missions only.
     expect(where).toContain('status');
-    // And a recency window, so a mission that has genuinely gone quiet leaves the
-    // candidate set instead of being retried until the end of time.
-    expect(where).toContain('updatedAt');
+    // A recency window keyed on THIS sweep's own attempt clock, so a mission that
+    // has genuinely gone quiet leaves the candidate set instead of being retried
+    // forever — and, unlike `updatedAt`, an unrelated write to the mission row
+    // (e.g. a task completing) cannot reset it and mask a persistently failing
+    // mission from ever becoming a candidate again.
+    expect(where).toContain('prSweepLastCheckedAt');
+    expect(where).not.toContain('updatedAt');
     expect(query.limit).toBe(MISSION_PR_SWEEP_CAP);
-    expect(query.orderBy).toBeDefined();
+    // Least-recently-CHECKED first, matching the worker sweep's own queue
+    // ordering — so a mission the sweep hasn't looked at recently surfaces
+    // before one it just examined.
+    expect(describePredicate(query.orderBy)).toContain('prSweepLastCheckedAt');
     expect(MISSION_PR_SWEEP_WINDOW_MS).toBeLessThanOrEqual(30 * DAY_MS);
+  });
+
+  it('advances the sweep attempt clock for a candidate it examines', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+
+    await sweepMissionIntegrationPrs();
+
+    // Regression: the old gate reused `missions.updatedAt`, which this sweep
+    // never wrote — so a persistently-failing mission had nothing to rotate it
+    // off the queue head or back into the window. `recordMissionSweepCheck`
+    // must fire for every candidate examined, on the success path too.
+    expect(mockMissionsUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('still advances the sweep attempt clock when the opener throws', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockMaybeOpenMissionIntegrationPr.mockRejectedValue(new Error('boom'));
+
+    const orig = console.error;
+    console.error = () => {};
+    await sweepMissionIntegrationPrs();
+    console.error = orig;
+
+    // This is the exact bug this task fixes: a mission whose every attempt
+    // fails must still leave the head of the queue and re-enter the window
+    // from this attempt, or it is retried every run forever (starving other
+    // candidates) or — under the old `updatedAt` gate — silently ages out with
+    // no way back in.
+    expect(mockMissionsUpdate).toHaveBeenCalledTimes(1);
   });
 
   it('opens the mission PR for a mission that reached completeness with no merge event', async () => {

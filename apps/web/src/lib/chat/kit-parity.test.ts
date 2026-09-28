@@ -1,12 +1,12 @@
 /**
- * @buildd/shared's chat contract and @buildd/ai-kit's must not drift while
+ * @buildd/shared's chat contract and @builddai/ai-kit's must not drift while
  * both exist (see the TODO(P6) at the top of packages/shared/src/chat.ts).
  * Type parity is checked at compile time by the assignments below; runtime
  * parity by the assertions.
  */
 import { describe, expect, it } from 'bun:test';
 import * as shared from '@buildd/shared';
-import * as kit from '@buildd/ai-kit/chat/contract';
+import * as kit from '@builddai/ai-kit/chat/contract';
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const typeParity: [
