@@ -80,6 +80,8 @@ export const planDeps: PlanDeps = {
 
   price,
 
+  chatCatalog: () => getCachedOpenRouterCatalog(),
+
   async loadBudget(account, now) {
     const [acct, team] = await Promise.all([
       db.query.accounts.findFirst({ where: eq(accounts.id, account.id), columns: { aiDailyBudgetUsd: true } }),
