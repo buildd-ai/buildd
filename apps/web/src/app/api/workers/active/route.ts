@@ -9,6 +9,9 @@ import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redi
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { getDeployIdentity } from '@/lib/deploy-identity';
+import { browserRunnerOnline } from '@/lib/visual-audit-runner';
+import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
+import { CAPABILITY_BROWSER } from '@buildd/shared';
 
 // Runner heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min)
 // to let Neon suspend. Stale threshold is 2.5× so a single dropped beat isn't fatal.
@@ -26,6 +29,14 @@ const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
  * - maxConcurrent: Maximum concurrent workers allowed
  * - capacity: Remaining capacity (maxConcurrent - activeWorkers)
  * - workspaceIds: Workspaces this runner can work on
+ * - browser: the heartbeat advertises the `browser` capability (envKeys)
+ * - browserOnline: `browser`, a heartbeat within `onlineWindowMs`, and (with
+ *   `?workspaceId=`) claim reach there: the same rule as `browserRunnerOnline`
+ *
+ * `?workspaceId=` (one the caller can see, else 404) adds `workspace` and
+ * `browserRunnerOnline` for it: `browserRunnerOnline` over heartbeats resolved
+ * by the claim rule (`loadBrowserRunnerHeartbeats`), the visual review's own
+ * answer; null when the lookup failed.
  */
 
 async function authenticateRequest(req: NextRequest) {
@@ -131,6 +142,11 @@ export async function GET(req: NextRequest) {
     const workspaceIds = userWorkspaces.map(w => w.id);
     const workspaceNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
 
+    const askedWorkspaceId = new URL(req.url).searchParams.get('workspaceId');
+    if (askedWorkspaceId && !workspaceIds.includes(askedWorkspaceId)) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
     if (workspaceIds.length === 0) {
       return NextResponse.json({ activeLocalUis: [] });
     }
@@ -203,6 +219,7 @@ export async function GET(req: NextRequest) {
         const reportedCount = hb.activeWorkerCount;
         const dbCount = actualWorkerCounts.get(hb.accountId) || 0;
         const effectiveActiveWorkers = Math.max(reportedCount, dbCount);
+        const envKeys = (hb.environment as { envKeys?: unknown } | null)?.envKeys;
 
         return {
           localUiUrl: hb.localUiUrl,
@@ -215,6 +232,7 @@ export async function GET(req: NextRequest) {
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
           environment: hb.environment || null,
+          browser: Array.isArray(envKeys) && envKeys.includes(CAPABILITY_BROWSER),
           runnerCommit: hb.runnerCommit || null,
           runnerVersion: hb.runnerVersion || null,
           // The runner's own live update-state — same fields it reports on
@@ -243,7 +261,33 @@ export async function GET(req: NextRequest) {
     const validLocalUis = activeLocalUis.filter((x): x is NonNullable<typeof x> => x !== null);
     validLocalUis.sort((a, b) => b.capacity - a.capacity);
 
-    return NextResponse.json({ activeLocalUis: validLocalUis });
+    // `browserOnline` per runner is the summary's rule (browserRunnerOnline):
+    // a heartbeat inside RUNNER_ONLINE_WINDOW_MS, the browser capability and,
+    // for an asked workspace, claim reach. `browser` alone is the capability.
+    const now = Date.now();
+    if (askedWorkspaceId) {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, askedWorkspaceId),
+        columns: { id: true, teamId: true, accessMode: true },
+      });
+      const { loadBrowserRunnerHeartbeats } = await import('@/lib/runner-heartbeats');
+      const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;
+      const claimers = hbs ? new Set(hbs.filter(h => h.workspaceIds.includes(askedWorkspaceId)).map(h => h.accountId)) : null;
+      return NextResponse.json({
+        activeLocalUis: validLocalUis.map(r => {
+          const canClaimInWorkspace = claimers ? claimers.has(r.accountId) : null;
+          return { ...r, canClaimInWorkspace, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now) && canClaimInWorkspace === true };
+        }),
+        onlineWindowMs: RUNNER_ONLINE_WINDOW_MS,
+        workspace: { id: askedWorkspaceId, name: workspaceNameMap.get(askedWorkspaceId) ?? null },
+        browserRunnerOnline: hbs ? browserRunnerOnline(hbs, askedWorkspaceId, now) : null,
+      });
+    }
+
+    return NextResponse.json({
+      activeLocalUis: validLocalUis.map(r => ({ ...r, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now) })),
+      onlineWindowMs: RUNNER_ONLINE_WINDOW_MS,
+    });
   } catch (error) {
     console.error('Get active workers error:', error);
     return NextResponse.json({ error: 'Failed to get active workers' }, { status: 500 });

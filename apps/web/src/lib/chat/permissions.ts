@@ -23,17 +23,19 @@
  * Pure. The stored preference lives in `team_members.chat_allowed_tool_groups`
  * (permissions-store.ts).
  *
- * The rule set itself (and the taint checks) lives in the shared AI kit
- * (`@builddai/ai-kit/chat/server`, `skipCardVerdict`), so every app that adopts
- * the kit enforces Allow exactly as buildd does. This file resolves buildd's
- * facts for a call (class, group, unattended work, skippable fields) from its
- * registry and hands them to the kit.
+ * The groups are a kit `defineToolGroups` declaration
+ * (`@builddai/ai-kit/chat/server`) built from buildd's registry: one
+ * declaration drives the menu rows, the stored preference and the skip rule
+ * (the kit's `skipCardVerdict`, with its taint checks), so every app on the kit
+ * enforces Allow exactly as buildd does. What stays buildd's are the per-tool
+ * hooks it carries: the effective class (a budget field makes a mission write
+ * admin), `startsUnattendedWork` and SKIPPABLE_FIELDS.
  */
 
 import type { ChatToolPermissionRow } from '@buildd/shared';
-import { canSkipCard as kitCanSkipCard } from '@builddai/ai-kit/chat/server';
+import { defineToolGroups, type KitToolDecl, type ToolCallClass, type ToolGroupDecl } from '@builddai/ai-kit/chat/server';
 import { effectiveClass, startsUnattendedWork } from './tools';
-import { ALL_CHAT_TOOL_SPECS, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ToolGroup } from './registry';
+import { ALL_CHAT_TOOL_SPECS, isExposed, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ChatToolSpec, type ToolGroup } from './registry';
 
 export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   missions: 'Missions',
@@ -47,40 +49,6 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   admin: 'Admin',
 };
 
-/** Groups with at least one card-gated write chat offers. Admin never qualifies. */
-export const ALLOWABLE_GROUPS: readonly ToolGroup[] = TOOL_GROUPS.filter(g => g !== 'admin' && Object.values(ALL_CHAT_TOOL_SPECS)
-  .some(spec => spec.group === g && opsOf(spec).some(([, o]) => o.class === 'write')));
-
-const allowable = new Set<string>(ALLOWABLE_GROUPS);
-
-/** A stored or requested list → the groups that may be allowed. Drops anything else. */
-export function parseAllowedGroups(raw: unknown): ReadonlySet<ToolGroup> {
-  const out = new Set<ToolGroup>();
-  if (!Array.isArray(raw)) return out;
-  for (const g of raw) if (typeof g === 'string' && allowable.has(g)) out.add(g as ToolGroup);
-  return out;
-}
-
-export function isAllowableGroup(g: unknown): g is ToolGroup {
-  return typeof g === 'string' && allowable.has(g);
-}
-
-/** The rows the composer's tools menu shows. */
-export function toolPermissionRows(allowed: ReadonlySet<ToolGroup>): ChatToolPermissionRow[] {
-  const rows: ChatToolPermissionRow[] = TOOL_GROUPS.map(g => {
-    if (g === 'admin') return { key: g, label: TOOL_GROUP_LABELS[g], mode: 'ask', locked: true };
-    if (!allowable.has(g)) return { key: g, label: TOOL_GROUP_LABELS[g], mode: 'read', locked: true };
-    return { key: g, label: TOOL_GROUP_LABELS[g], mode: allowed.has(g) ? 'allow' : 'ask', locked: false };
-  });
-  if (Object.values(NOT_IN_CHAT).some(n => n.reason === 'secret')) {
-    rows.push({ key: 'secrets', label: 'Secrets', mode: 'never', locked: true });
-  }
-  return rows;
-}
-
-/** Is anything a tool returned in the messages the model is reading? (the kit's taint check) */
-export { contentInContext, toolOutputInHistory } from '@builddai/ai-kit/chat/server';
-
 /**
  * Fields a skipped card may carry, for tools whose schema passes extra fields
  * through (`catchall`). Anything else (concurrency, model, schedule, pacing,
@@ -88,23 +56,94 @@ export { contentInContext, toolOutputInHistory } from '@builddai/ai-kit/chat/ser
  * it gets a card like a budget change does. An allowlist, so a field added to
  * the tool later asks until someone decides it is safe.
  */
-const SKIPPABLE_FIELDS: Record<string, ReadonlySet<string>> = {
-  manage_missions: new Set([
+const SKIPPABLE_FIELDS: Record<string, readonly string[]> = {
+  manage_missions: [
     'action', 'missionId', 'workspaceId', 'title', 'description',
     'goalCriteria', 'addGoalCriteria', 'removeGoalCriteria', 'priority',
-  ]),
-  create_task: new Set([
+  ],
+  create_task: [
     'title', 'description', 'missionId', 'dependsOn', 'baseBranch', 'pathManifest',
     'workspaceId', 'priority', 'roleSlug', 'kind', 'label', 'outputRequirement',
-  ]),
+  ],
 };
 
-function onlySkippableFields(tool: string, input: unknown): boolean {
-  const fields = SKIPPABLE_FIELDS[tool];
-  if (!fields) return true;
-  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
-  return Object.keys(i).every(k => i[k] === undefined || fields.has(k));
+/**
+ * The declared base class. Only the kit's startup validation reads it (a
+ * toggleable group needs a write, a read-only group holds none); every call is
+ * judged by its own op's class through `effectiveClass`.
+ */
+function baseClass(spec: ChatToolSpec): ToolCallClass {
+  const classes = opsOf(spec).map(([, o]) => o.class);
+  if (classes.includes('write')) return 'write';
+  return classes.every(c => c === 'read') ? 'read' : 'admin';
 }
+
+/**
+ * One tool, with buildd's per-call hooks. The class is the op's own (`self`
+ * and `deferred` included, and neither ever skips); an unknown op resolves to
+ * no class, which the kit treats as an unknown tool. A tool whose every op is
+ * deferred is declared `deferred`: in its group's row, never registered with
+ * the model.
+ */
+function toolDecl(name: string, spec: ChatToolSpec): KitToolDecl {
+  return {
+    name,
+    class: baseClass(spec),
+    ...(isExposed(spec) ? {} : { deferred: true }),
+    effectiveClass: (input) => {
+      const s = opSpec(name, input);
+      return s ? effectiveClass(name, s.op, s.spec, input) : undefined;
+    },
+    startsUnattendedWork: (input) => {
+      const s = opSpec(name, input);
+      return !!s && startsUnattendedWork(name, s.spec, input);
+    },
+    ...(SKIPPABLE_FIELDS[name] ? { skippableFields: SKIPPABLE_FIELDS[name] } : {}),
+  };
+}
+
+function groupDecl(group: ToolGroup): ToolGroupDecl {
+  const tools = Object.entries(ALL_CHAT_TOOL_SPECS)
+    .filter(([, spec]) => spec.group === group)
+    .map(([name, spec]) => toolDecl(name, spec));
+  const label = TOOL_GROUP_LABELS[group];
+  // The group's mode comes from what chat registers: a deferred-only tool is
+  // declared (the kit keeps it off the model) but is not a tool yet.
+  const live = tools.filter(t => !t.deferred);
+  // Admin-class calls (deletes, budgets, workspace config) always ask.
+  if (group === 'admin') return { label, tools, fixed: 'ask' };
+  if (live.some(t => t.class === 'write')) return { label, tools, modes: ['ask', 'allow'] };
+  return { label, tools, fixed: live.every(t => t.class === 'read') ? 'read' : 'ask' };
+}
+
+/**
+ * buildd's tool groups, in menu order. Secrets are a locked "Never" row: chat
+ * never offers them as a tool at all (NOT_IN_CHAT).
+ */
+export const CHAT_TOOL_GROUPS = defineToolGroups({
+  ...Object.fromEntries(TOOL_GROUPS.map(g => [g, groupDecl(g)])) as Record<ToolGroup, ToolGroupDecl>,
+  ...(Object.values(NOT_IN_CHAT).some(n => n.reason === 'secret') ? { secrets: { label: 'Secrets', fixed: 'never' as const } } : {}),
+});
+
+/** Groups with at least one card-gated write chat offers. Admin never qualifies. */
+export const ALLOWABLE_GROUPS = CHAT_TOOL_GROUPS.allowable as readonly ToolGroup[];
+
+/** A stored or requested list → the groups that may be allowed. Drops anything else. */
+export function parseAllowedGroups(raw: unknown): ReadonlySet<ToolGroup> {
+  return CHAT_TOOL_GROUPS.parseAllowed(raw) as ReadonlySet<ToolGroup>;
+}
+
+export function isAllowableGroup(g: unknown): g is ToolGroup {
+  return typeof g === 'string' && (ALLOWABLE_GROUPS as readonly string[]).includes(g);
+}
+
+/** The rows the composer's tools menu shows. */
+export function toolPermissionRows(allowed: ReadonlySet<ToolGroup>): ChatToolPermissionRow[] {
+  return CHAT_TOOL_GROUPS.rows(allowed);
+}
+
+/** Is anything a tool returned in the messages the model is reading? (the kit's taint check) */
+export { contentInContext, toolOutputInHistory } from '@builddai/ai-kit/chat/server';
 
 /** May this call run without its card for this person? */
 export function canSkipCard(args: {
@@ -116,18 +155,8 @@ export function canSkipCard(args: {
   /** An object is docked: its data is in the instructions. */
   docked: boolean;
 }): boolean {
-  const spec = ALL_CHAT_TOOL_SPECS[args.tool];
-  const s = opSpec(args.tool, args.input);
-  const known = !!spec && !!s;
-  return kitCanSkipCard({
-    callClass: known ? effectiveClass(args.tool, s.op, s.spec, args.input) : undefined,
-    group: known ? spec.group : undefined,
-    groupAllowable: known && allowable.has(spec.group),
-    allowedGroups: args.allowedGroups,
-    tainted: args.tainted,
-    docked: args.docked,
-    startsUnattendedWork: known && startsUnattendedWork(args.tool, s.spec, args.input),
-    inputSkippable: onlySkippableFields(args.tool, args.input),
+  return CHAT_TOOL_GROUPS.canSkipCard({
+    ...args,
     // turn.ts allows one skipped write per turn and checks that itself
     // (allowedThisTurn) before calling here.
     skippedThisTurn: 0,

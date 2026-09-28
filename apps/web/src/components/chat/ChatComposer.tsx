@@ -5,13 +5,21 @@
  * tools control (per-group "Ask first" / "Allow") and the tier switch. The
  * switch picks a tier for the conversation, never a model: the tier → model
  * mapping stays the team admin's (docs/design/agent-chat.md, "Models: tiers").
+ *
+ * The box, Enter / Shift+Enter, Send becoming Stop and the toolbar slots are
+ * the kit's `ChatComposer` (@builddai/ai-kit/chat/react). buildd fills the
+ * slots: `scope` (the workspace switcher or a locked scope), `tools`, `tier`,
+ * `edge` (the streaming sweep), `footer` (keyboard hints), `mood` and
+ * `compact`; globals.css ("Composer on the kit") draws it as buildd's slab.
  */
-import { forwardRef, useImperativeHandle, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
+import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
 import type { ChatTierName } from '@buildd/shared';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
 import { Kbd, KeyHintsOnly } from '@/components/KeyHints';
+import { COMPOSER_INPUT_ID } from './ChatEntry';
 
 export interface ComposerWorkspace { id: string; name: string }
 
@@ -62,126 +70,72 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
   workspaces, workspaceId, onWorkspaceChange, routedWorkspace = null, teamName = null, tier, compact = false,
   teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, mood = null, scopeLock,
 }, ref) {
-  const area = useRef<HTMLTextAreaElement>(null);
-  useImperativeHandle(ref, () => ({
-    focus() {
-      const el = area.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    },
-  }), []);
+  const kit = useRef<KitComposerHandle>(null);
+  useImperativeHandle(ref, () => ({ focus: () => kit.current?.focus() }), []);
 
-  const send = () => {
-    const text = value.trim();
-    if (!text || busy || disabled) return;
-    onSend(text);
-  };
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      send();
-    }
-  };
+  const scope = scopeLock ?? (workspaces.length > 0 ? (
+    <WorkspaceSwitcher
+      variant="chip"
+      workspaces={[...workspaces]}
+      selectedId={workspaceId}
+      onSelect={onWorkspaceChange}
+      routed={routedWorkspace}
+      teamName={teamName}
+    />
+  ) : null);
+  const tierCell = teamId && onTierChange ? (
+    <div className="min-w-[72px] shrink-0 lg:min-w-[88px]">
+      <TierSwitch
+        teamId={teamId}
+        conversationId={conversationId}
+        pinned={pinnedTier}
+        last={tier}
+        onChange={onTierChange}
+        refreshKey={costRefreshKey}
+      />
+    </div>
+  ) : tier ? (
+    <span data-testid="composer-tier-chip" className="flex w-[72px] shrink-0 items-center justify-center font-mono lg:w-[88px] text-[12px] text-[var(--chat-muted)]">
+      {tier}
+    </span>
+  ) : null;
 
-  const needs = mood === 'needs';
   return (
+    // A full-bleed slab on a phone, a square box on desktop: no radius
+    // anywhere in the foreground (docs/design/chat-canvas.md). The 2px top
+    // rule turns copper while something needs the viewer; while a turn
+    // streams a blue segment sweeps along it, the surface's one glow.
     <div data-testid="chat-composer" data-mood={mood ?? undefined}>
-      {/* A full-bleed slab on a phone, a square box on desktop: no radius
-          anywhere in the foreground (docs/design/chat-canvas.md). The 2px top
-          rule turns copper while something needs the viewer; while a turn
-          streams a blue segment sweeps along it, the surface's one glow. */}
-      <form
-        onSubmit={(e) => { e.preventDefault(); send(); }}
-        className={`relative border-t-2 bg-[var(--chat-surface)] transition-colors md:border-x md:border-b md:border-x-[var(--chat-rule)] md:border-b-[var(--chat-rule)] lg:shadow-[4px_4px_0_0_var(--chat-rule)] ${needs ? 'border-t-[var(--mood-needs)]' : 'border-t-[var(--chat-rule-strong)] md:focus-within:border-t-[var(--chat-text)]'}`}
-      >
-        {busy && (
-          <span aria-hidden="true" data-testid="composer-sweep" data-glow="true" className="composer-edge">
-            <span className="composer-sweep" />
-          </span>
-        )}
-        <label htmlFor="chat-composer-input" className="sr-only">Message your agent</label>
-        {/* At least 64px and two rows, and sized to its content where the
-            browser can, so a long placeholder wraps instead of clipping. */}
-        <textarea
-          id="chat-composer-input"
-          data-bare-input
-          data-composer-input
-          ref={area}
-          rows={2}
-          value={value}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={busy ? BUSY_PLACEHOLDER : placeholder}
-          className={`block max-h-48 min-h-16 w-full resize-none [field-sizing:content] ${compact ? '' : 'md:min-h-[76px]'} bg-transparent px-4 py-3 font-voice text-[17px] leading-[1.35] text-[var(--chat-text)] placeholder:text-[var(--chat-muted)] focus:outline-none focus-visible:outline-none md:text-[16px]`}
-        />
-        <div data-testid="composer-toolbar" className="flex h-12 items-stretch divide-x divide-[var(--chat-rule)] border-t border-[var(--chat-rule)]">
-          <div className="min-w-0 flex-1">
-            {scopeLock ?? (workspaces.length > 0 && (
-              <WorkspaceSwitcher
-                variant="chip"
-                workspaces={[...workspaces]}
-                selectedId={workspaceId}
-                onSelect={onWorkspaceChange}
-                routed={routedWorkspace}
-                teamName={teamName}
-              />
-            ))}
-          </div>
-          {teamId && <div data-testid="composer-tools-cell" className="w-14 shrink-0 lg:w-16"><ToolsMenu teamId={teamId} /></div>}
-          {teamId && onTierChange ? (
-            <div className="min-w-[72px] shrink-0 lg:min-w-[88px]">
-              <TierSwitch
-                teamId={teamId}
-                conversationId={conversationId}
-                pinned={pinnedTier}
-                last={tier}
-                onChange={onTierChange}
-                refreshKey={costRefreshKey}
-              />
+      <KitComposer
+        ref={kit}
+        className="buildd-composer"
+        inputId={COMPOSER_INPUT_ID}
+        label="Message your agent"
+        value={value}
+        onChange={onChange}
+        onSend={onSend}
+        onStop={onStop}
+        busy={busy}
+        disabled={disabled}
+        placeholder={busy ? BUSY_PLACEHOLDER : placeholder}
+        mood={mood}
+        compact={compact}
+        scope={scope}
+        tools={teamId ? <div data-testid="composer-tools-cell" className="w-14 shrink-0 lg:w-16"><ToolsMenu teamId={teamId} /></div> : undefined}
+        tier={tierCell}
+        edge={busy ? <span data-testid="composer-sweep" data-glow="true" className="composer-sweep" /> : undefined}
+        showFormFallback={false}
+        footer={(
+          // Power users only (Settings -> Profile -> Show keyboard hints).
+          <KeyHintsOnly>
+            <div data-testid="composer-key-hints" className="hidden flex-wrap items-center gap-x-4 gap-y-1 px-1 font-mono text-[11px] text-text-muted md:flex">
+              <span className="inline-flex items-center gap-1.5"><Kbd>↵</Kbd>send</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>⇧↵</Kbd>new line</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>C</Kbd>chat from any page</span>
             </div>
-          ) : tier ? (
-            <span data-testid="composer-tier-chip" className="flex w-[72px] shrink-0 items-center justify-center font-mono lg:w-[88px] text-[12px] text-[var(--chat-muted)]">
-              {tier}
-            </span>
-          ) : null}
-          {/* While a turn streams, send is Stop for the whole turn, disabled
-              only where the surface has nothing to stop it with. */}
-          {busy ? (
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={!onStop}
-              aria-label="Stop"
-              data-testid="composer-stop"
-              className="grid w-[60px] shrink-0 place-items-center bg-[var(--chat-text)] hover:opacity-90 lg:w-16"
-            >
-              <span aria-hidden="true" className="h-3 w-3 bg-[var(--chat-ground)]" />
-            </button>
-          ) : (
-            <button
-              type="submit"
-              aria-label="Send"
-              data-testid="composer-send"
-              // Nothing to send is not dimmed: a faded arrow fails AA. The block
-              // stays solid and says so to assistive tech; send() ignores it.
-              aria-disabled={disabled || !value.trim() ? true : undefined}
-              className="grid w-[60px] shrink-0 place-items-center bg-[var(--mood-needs-fill)] lg:w-16 font-mono text-[20px] font-bold text-[var(--on-mood-needs)] aria-disabled:cursor-not-allowed [&:not([aria-disabled])]:hover:brightness-110"
-            >
-              ↑
-            </button>
-          )}
-        </div>
-      </form>
-      {/* Power users only (Settings -> Profile -> Show keyboard hints). */}
-      <KeyHintsOnly>
-        <div data-testid="composer-key-hints" className="mt-2 hidden flex-wrap items-center gap-x-4 gap-y-1 px-1 font-mono text-[11px] text-text-muted md:flex">
-          <span className="inline-flex items-center gap-1.5"><Kbd>↵</Kbd>send</span>
-          <span className="inline-flex items-center gap-1.5"><Kbd>⇧↵</Kbd>new line</span>
-          <span className="inline-flex items-center gap-1.5"><Kbd>C</Kbd>chat from any page</span>
-        </div>
-      </KeyHintsOnly>
+          </KeyHintsOnly>
+        )}
+      />
     </div>
   );
 });

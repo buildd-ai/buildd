@@ -130,10 +130,10 @@ Timeline and Structure views are unchanged and are covered by
   the render order (`MissionDetailView`, `mastheadBack`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx` — the
   mobile list, the freeze gate and the reorder slide (`flipDeltas`).
-- `apps/web/src/app/app/(protected)/missions/[id]/MissionDelivery.tsx` and
-  `apps/web/src/lib/mission-delivery.ts` — the Delivery line
+- `apps/web/src/lib/mission-delivery.ts` — the Delivery steps
   (`buildDeliverySteps`, `formatDeliverySummary`, `deliveryReleaseInput`,
-  `missionTrunkMergedAt`).
+  `missionTrunkMergedAt`), rendered as the footer's Shipped row
+  (`MissionReleaseSection.tsx`) and Screens row (`MissionScreensRow.tsx`).
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-feed-view.ts` — the
   page's one feed derivation (`buildMissionFeedView`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.tsx` —

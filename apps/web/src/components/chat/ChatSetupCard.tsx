@@ -3,8 +3,12 @@
  * This is the one inline state for that. Nothing falls back to a subscription seat. Admins are pointed at the
  * screen that fixes it; members are told who can, or to add their own key when
  * the team's policy asks for one. The mission form is untouched either way.
+ *
+ * The card is the kit's (`ChatSetupCard` from @builddai/ai-kit/chat/react);
+ * the copy and the settings link are buildd's.
  */
 import Link from 'next/link';
+import { ChatSetupCard as KitChatSetupCard } from '@builddai/ai-kit/chat/react';
 
 export type ChatSetupReason = 'no_key';
 
@@ -32,22 +36,25 @@ export function chatSetupCopy(_reason: ChatSetupReason, canManage: boolean, poli
 export default function ChatSetupCard({ reason, canManage, policy }: { reason: ChatSetupReason; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own' }) {
   const copy = chatSetupCopy(reason, canManage, policy);
   return (
-    <section data-testid="chat-setup-card" data-reason={reason} className="border-2 border-dashed border-border-strong bg-card px-5 py-4">
-      <div className="font-mono text-[11px] font-bold uppercase tracking-[2px] text-accent-text">Agent chat</div>
-      <h2 className="mt-1.5 font-mono text-[16px] font-semibold text-text-primary">{copy.title}</h2>
-      <p className="mt-1 text-[14px] leading-relaxed text-text-secondary">{copy.body}</p>
-      {(copy.cta || copy.secondary) && (
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          {copy.cta && (
-            <Link href={copy.cta.href} data-testid="chat-setup-cta" className="inline-flex min-h-10 items-center border-2 border-[var(--on-accent)] bg-accent px-4 font-mono text-[13px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover">
-              {copy.cta.label}
-            </Link>
-          )}
-          {copy.secondary && (
-            <Link href={copy.secondary.href} className="font-mono text-[12.5px] text-text-secondary underline hover:text-text-primary">{copy.secondary.label}</Link>
-          )}
-        </div>
-      )}
-    </section>
+    <div data-testid="chat-setup-card" data-reason={reason}>
+      <KitChatSetupCard
+        reason={reason}
+        className="buildd-setup"
+        title={copy.title}
+        message={copy.body}
+        action={(copy.cta || copy.secondary) ? (
+          <>
+            {copy.cta && (
+              <Link href={copy.cta.href} data-testid="chat-setup-cta" className="inline-flex min-h-10 items-center border-2 border-[var(--on-accent)] bg-accent px-4 font-mono text-[13px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover">
+                {copy.cta.label}
+              </Link>
+            )}
+            {copy.secondary && (
+              <Link href={copy.secondary.href} className="font-mono text-[12.5px] text-text-secondary underline hover:text-text-primary">{copy.secondary.label}</Link>
+            )}
+          </>
+        ) : undefined}
+      />
+    </div>
   );
 }

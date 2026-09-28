@@ -3,6 +3,7 @@
  * of these, built from the same loaders the object's own page uses, so an
  * inline card, the docked pane and the full page never disagree.
  */
+import type { VisualReviewModel } from '@buildd/shared';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import type { NowState } from '@/app/app/(protected)/tasks/[id]/task-activity';
@@ -21,6 +22,12 @@ export interface MissionObjectView {
   /** The conversation the mission was filed from, when it was. */
   conversationId?: string | null;
   board: MissionBoardModel;
+  /**
+   * The mission's visual review (buildVisualReviewModel, read through
+   * visual-review-load, so auditor-scoped). Null when the mission has no
+   * visual audit. Absent on views built before it existed.
+   */
+  visual?: VisualReviewModel | null;
   /**
    * Every task on the mission, the planning task included. The Board only
    * draws deliverables, so realtime filtering must not key on its rows alone.

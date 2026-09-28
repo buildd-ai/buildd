@@ -202,7 +202,7 @@ describe('manage_missions — initiativeId', () => {
   it('threads initiativeId=null into the update body (unlink)', async () => {
     mockApi.mockResolvedValueOnce({ id: 'm-1', title: 'M', status: 'active' });
     await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions',
-      { action: 'update', missionId: 'm-1', initiativeId: null }, createMockContext());
+      { action: 'update', missionId: '00000000-0000-0000-0000-000000000001', initiativeId: null }, createMockContext());
     const body = JSON.parse(mockApi.mock.calls[0][1].body);
     expect(body.initiativeId).toBeNull();
   });

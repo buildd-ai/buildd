@@ -12,7 +12,8 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { normalizeProject } from './project-scope';
+import { runGetVisualReview, runListRunners } from './mcp-visual-review';
+import { normalizeProject, workspaceProjectKey } from './project-scope';
 import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
@@ -304,6 +305,8 @@ export const adminActions = [
   // promote mints a mission — same trust tier as approve_plan/manage_missions.
   'adjudicate_discrepancy', 'promote_discrepancy',
   'manage_missions',
+  // Read-only, but GET /api/missions/[id]/visual-review takes admin keys only.
+  'get_visual_review',
   'manage_initiatives',
   'link_tracker',
   'manage_workspaces',
@@ -480,7 +483,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID) } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override — OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies, a future startAt, mission pacing/concurrency and the workspace cap still apply (force-start from the dashboard to override those). When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
@@ -519,7 +522,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived; "all" for history), limit? (list: default 20), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "planned" | "active" | "paused" | "completed" | "archived" (set by a person; nothing derives or auto-advances it), priority?: number, ownerUserId?: string (a member of the initiative\'s team; null falls back to the creator; create defaults to the caller), targetDate?: "YYYY-MM-DD" | null (optional calendar target). Initiatives carry no KPIs: put checkable outcomes in mission goalCriteria. } — an initiative is an execution-free container above missions (initiative → mission → task), like a Linear initiative. Progress is missions done over missions. "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; gitConfig.criteriaGrader: "auto"|"api"|"runner" sets the workspace default grader for prose goal criteria; to apply a detected policyConfig from action=init, use gitConfig.policyConfig; merge-policy paths are detected by action=init, never typed), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Paths are grouped into named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -533,7 +536,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
-    list_runners: '{ } — read-only heartbeat snapshot for every runner the caller\'s account can see (same rows GET /api/workers/active serves): localUiUrl, accountName, capacity (maxConcurrent/activeWorkers), workspaceIds/workspaceNames, environment, runnerCommit/runnerVersion, the update-state bundle (currentCommit, diskCommit, commitDrift, updating, updateAvailable, updateAvailableSince — set the moment updateAvailable first flipped true, so "how long has it been behind" is measured, not inferred from boot age), trackedBranch, upToDateWithDeployed (only meaningful for a `main`-tracking runner), and lastHeartbeatAt. No params — scoping matches the caller\'s own workspace access, same as get_failure_analytics.',
+    list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
+    get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; every audit task (status, times, why); per route and viewport: round, agent verdict, finding, human decision, fix task, screenshot links; what needs you. missionTitle is team-wide unless workspaceId. No mission: the workspace\'s missions waiting on you. [admin]',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -1009,14 +1013,19 @@ export function renderReleaseList(
 
 /**
  * Resolve workspace ID from a UUID, repo name (e.g. "buildd-ai/buildd"), or workspace name.
- * Falls back to context workspace ID if no param given.
+ * No param → the connection's workspace (null when it has none).
+ * An explicit param that matches nothing the caller can see THROWS, naming the
+ * workspaces it can see: dropping the filter (or swapping in the connection's
+ * workspace) answers about the wrong workspace. UUIDs pass through; the API
+ * authorizes them.
  */
 async function resolveWorkspaceId(
   api: ApiFn,
   param: unknown,
   ctx: ActionContext,
 ): Promise<string | null> {
-  const raw = (param as string) || ctx.workspaceId;
+  const explicit = typeof param === 'string' ? param.trim() : '';
+  const raw = explicit || ctx.workspaceId;
   if (raw && UUID_RE.test(raw)) return raw;
 
   // Try context fallback first
@@ -1037,15 +1046,25 @@ async function resolveWorkspaceId(
 
   // Fall back to name match across accessible workspaces
   const wsData = await api('/api/workspaces');
-  const workspaces = wsData.workspaces || [];
+  const workspaces: Array<{ id: string; name: string; repo?: string | null }> = wsData?.workspaces || [];
   const match = workspaces.find((ws: any) =>
     ws.name.toLowerCase() === raw.toLowerCase() ||
     ws.repo?.toLowerCase() === raw.toLowerCase() ||
     ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
   );
   if (match) return match.id;
-
+  if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
+}
+
+/** `Could not resolve workspace "x": not visible to this key. You can see: a, b.` */
+export function unknownWorkspaceMessage(value: string, visible: Array<{ name: string }>): string {
+  const MAX = 20;
+  const names = visible.map((w) => w.name);
+  const seen = names.length === 0
+    ? 'This key can see no workspaces.'
+    : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
+  return `Could not resolve workspace "${value}": not visible to this key. ${seen}`;
 }
 
 /**
@@ -1064,6 +1083,49 @@ async function resolveMissionId(
   } catch {
     return null;
   }
+}
+
+/**
+ * Find missions whose title contains `query` (any status, newest activity
+ * first). One exact-title hit among several counts as the match.
+ */
+async function findMissionByTitle(
+  api: ApiFn,
+  query: string,
+  workspaceId: string | null,
+): Promise<{ id: string } | { message: string }> {
+  const LIMIT = 10;
+  const qs = new URLSearchParams({ q: query, sort: 'recent', limit: String(LIMIT) });
+  if (workspaceId) qs.set('workspaceId', workspaceId);
+  const data = await api(`/api/missions?${qs}`);
+  const rows: Array<{ id: string; title: string; status: string }> = data?.missions || [];
+  if (rows.length === 1) return { id: rows[0].id };
+  const exact = rows.filter((m) => m.title.toLowerCase() === query.trim().toLowerCase());
+  if (exact.length === 1) return { id: exact[0].id };
+  if (rows.length === 0) return { message: `No mission title contains "${query}" (all statuses searched).` };
+  const total = typeof data?.total === 'number' ? data.total : rows.length;
+  const lines = rows.map((m) => `- ${m.title} [${m.status}] ${m.id}`);
+  const more = total > rows.length ? `\nShowing ${rows.length} of ${total}. Narrow the title.` : '';
+  return { message: `${total} missions match "${query}"; pass missionId:\n${lines.join('\n')}${more}` };
+}
+
+/**
+ * manage_missions get/update target. A UUID missionId (or a hex id prefix, left
+ * for the API's prefix hint) is used as-is. Otherwise missionId, then title /
+ * query, is a title to look up, scoped to workspaceId when given.
+ */
+async function resolveMissionTarget(
+  api: ApiFn,
+  params: Record<string, unknown>,
+  ctx: ActionContext,
+): Promise<{ id: string; lookup: boolean } | { message: string }> {
+  const raw = typeof params.missionId === 'string' ? params.missionId.trim() : '';
+  if (raw && (UUID_RE.test(raw) || /^[0-9a-f]{1,35}$/i.test(raw))) return { id: raw, lookup: false };
+  const byTitle = raw || ((params.title ?? params.query) as string | undefined);
+  if (!byTitle) throw new Error('missionId or title is required');
+  const wsId = params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : null;
+  const found = await findMissionByTitle(api, byTitle, wsId);
+  return 'message' in found ? found : { id: found.id, lookup: true };
 }
 
 // Actions that require at least worker level (trigger tokens cannot use these)
@@ -1396,7 +1458,6 @@ export async function handleBuilddAction(
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
         : ctx.workspaceId || await ctx.getWorkspaceId();
-      if (params.workspaceId && !wsId) throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
       const rawLimit = params.limit;
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(Math.max(Math.trunc(rawLimit), 1), 50)
@@ -1616,6 +1677,9 @@ export async function handleBuilddAction(
           workspaceId: wsId,
           runner: 'mcp',
           ...(taskId ? { taskId } : {}),
+          // Admin-only on the server, and only with a taskId; see
+          // ClaimTasksInput.forceOverride.
+          ...(taskId && params.force === true ? { forceOverride: true } : {}),
         }),
       });
 
@@ -3707,9 +3771,7 @@ export async function handleBuilddAction(
       if (params.prNumber != null) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
       if (params.workspaceId) {
         const wsId = await resolveWorkspaceId(api, String(params.workspaceId), ctx);
-        if (!wsId) {
-          return errorResult(`Could not resolve workspace "${params.workspaceId}". Pass a workspace UUID.`);
-        }
+        if (!wsId) return errorResult('workspaceId did not resolve.');
         parts.push(`workspaceId=${encodeURIComponent(wsId)}`);
       }
       if (parts.length === 0) {
@@ -3984,33 +4046,11 @@ export async function handleBuilddAction(
       return text(lines.join('\n'));
     }
 
-    case 'list_runners': {
-      // No workspaceId param: scoping matches whatever GET /api/workers/active
-      // already resolves for this caller (API key → linked + open workspaces;
-      // OAuth → team + open workspaces) — narrowing further here would just
-      // duplicate that logic and risk drifting from it.
-      const data = await api('/api/workers/active');
-      const runners = (data?.activeLocalUis ?? []) as Array<Record<string, unknown>>;
-      if (runners.length === 0) return text('No active runners visible to this token.');
+    case 'list_runners':
+      return runListRunners(api, params, (p) => resolveWorkspaceId(api, p, ctx));
 
-      const lines = runners.map((r) => {
-        const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — capacity ${r.activeWorkers}/${r.maxConcurrent} — branch ${r.trackedBranch ?? 'unknown'}`;
-        const update = [
-          `currentCommit=${r.currentCommit ?? 'null'}`,
-          `diskCommit=${r.diskCommit ?? 'null'}`,
-          `commitDrift=${r.commitDrift ?? 'null'}`,
-          `updating=${r.updating ?? 'null'}`,
-          `updateAvailable=${r.updateAvailable ?? 'null'}`,
-        ];
-        if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
-        if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
-        const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'}`;
-        const workspaces = ((r.workspaceNames as string[]) ?? []).join(', ') || 'none';
-        return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
-      });
-
-      return text(`${runners.length} runner(s):\n\n${lines.join('\n\n')}`);
-    }
+    case 'get_visual_review':
+      return runGetVisualReview(api, params, (p) => resolveWorkspaceId(api, p, ctx), ctx.appBaseUrl || 'https://buildd.dev', ctx.workspaceId || null);
 
     case 'list_connectors': {
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -4041,9 +4081,6 @@ export async function handleBuilddAction(
       let wsId: string | null = null;
       if (rawWsId) {
         wsId = await resolveWorkspaceId(api, rawWsId, ctx);
-        if (!wsId) {
-          return errorResult(`Could not resolve workspace "${rawWsId}". Pass a workspace UUID, or omit workspaceId for a team-wide report.`);
-        }
       }
 
       // The route only ever normalizes the first line, so a long trace adds URL
@@ -4261,13 +4298,24 @@ export async function handleBuilddAction(
           // Default: open missions only. Unfiltered, this was the team's whole
           // history (every mission with all its tasks), for a question about now.
           // status "all" still reaches it.
-          const status = typeof params.status === 'string' && params.status ? params.status : 'open';
+          // A title query searches every status unless one is given.
+          const query = typeof params.query === 'string' ? params.query.trim() : '';
+          const status = typeof params.status === 'string' && params.status ? params.status : query ? 'all' : 'open';
           if (status !== 'all') qs.set('status', status);
           const rawLimit = typeof params.limit === 'number' && Number.isFinite(params.limit) ? Math.trunc(params.limit) : 20;
           qs.set('limit', String(Math.min(Math.max(rawLimit, 1), 100)));
+          if (query) qs.set('q', query);
+          qs.set('sort', 'recent');
           const data = await api(`/api/missions?${qs}`);
           const missions = data.missions || [];
-          if (missions.length === 0) return text(status === 'open' ? 'No open missions. Pass status: "all" (or "completed") for past ones.' : 'No missions found.');
+          if (missions.length === 0) {
+            const what = query ? `No ${status === 'all' ? '' : `${status} `}missions with "${query}" in the title.` : status === 'open' ? 'No open missions.' : 'No missions found.';
+            return text(status === 'all' ? what : `${what} Pass status: "all" for past ones.`);
+          }
+          const total = typeof data.total === 'number' ? data.total : missions.length;
+          const truncated = total > missions.length
+            ? `\n\nShowing ${missions.length} of ${total}. Raise limit (max 100) or pass query.`
+            : '';
           const summary = missions.map((m: any) => {
             const activityLine = m.lastActivityAt
               ? `\n  Last activity: ${new Date(m.lastActivityAt).toISOString()}`
@@ -4277,7 +4325,7 @@ export async function handleBuilddAction(
               : '';
             return `- **${m.title}** [${m.status}] — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
           }).join('\n\n');
-          return text(`${missions.length} mission(s):\n\n${summary}`);
+          return text(`${missions.length} mission(s), most recent activity first:\n\n${summary}${truncated}`);
         }
         case 'create': {
           if (!params.title) throw new Error('title is required');
@@ -4343,8 +4391,10 @@ export async function handleBuilddAction(
           return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
         }
         case 'get': {
-          if (!params.missionId) throw new Error('missionId is required');
-          const data = await api(`/api/missions/${params.missionId}`);
+          const target = await resolveMissionTarget(api, params, ctx);
+          if ('message' in target) return text(target.message);
+          const missionId = target.id;
+          const data = await api(`/api/missions/${missionId}`);
           const taskList = (data.tasks || []).map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
           ).join('\n');
@@ -4393,15 +4443,21 @@ export async function handleBuilddAction(
           return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
-          if (!params.missionId) throw new Error('missionId is required');
+          // No UUID missionId: the mission is FOUND by title (missionId, else
+          // title/query), scoped to workspaceId. Lookup mode never moves it,
+          // and title renames only when missionId carried the lookup.
+          const target = await resolveMissionTarget(api, params, ctx);
+          if ('message' in target) throw new Error(target.message);
+          const missionId = target.id;
+          const titleIsLookup = target.lookup && !(typeof params.missionId === 'string' && params.missionId.trim());
           await assertMissionControlCapabilities(api, requestedMissionControlCapabilities(params));
           const body: Record<string, unknown> = {};
-          if (params.title !== undefined) body.title = params.title;
+          if (params.title !== undefined && !titleIsLookup) body.title = params.title;
           if (params.description !== undefined) body.description = params.description;
           if (params.status !== undefined) body.status = params.status;
           if (params.cronExpression !== undefined) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
-          if (params.workspaceId !== undefined) {
+          if (params.workspaceId !== undefined && !target.lookup) {
             const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
@@ -4434,7 +4490,7 @@ export async function handleBuilddAction(
           // produces, so an in-task agent's edit reads as "agent (task X)"
           // instead of collapsing into an anonymous API call.
           if (ctx.workerId) body.actorWorkerId = ctx.workerId;
-          const data = await api(`/api/missions/${params.missionId}`, {
+          const data = await api(`/api/missions/${missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
           });
@@ -4953,13 +5009,9 @@ export async function handleBuilddAction(
 
       const body: Record<string, unknown> = {};
       if (params.workspaceId !== undefined) {
+        // An explicit workspaceId that does not resolve throws, even with repo.
         const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-        if (wsId) {
-          body.workspaceId = wsId;
-        } else if (!params.repo) {
-          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
-        }
-        // If wsId is null but params.repo is provided, fall through to repo param below.
+        if (wsId) body.workspaceId = wsId;
       }
       if (params.repo !== undefined) body.repo = params.repo;
       if (params.ref !== undefined) body.ref = params.ref;
@@ -5014,13 +5066,9 @@ export async function handleBuilddAction(
 
       const qs = new URLSearchParams();
       if (params.workspaceId) {
+        // An explicit workspaceId that does not resolve throws, even with repo.
         const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-        if (wsId) {
-          qs.set('workspaceId', wsId);
-        } else if (!params.repo) {
-          throw new Error(`Could not resolve workspace: ${params.workspaceId}`);
-        }
-        // If wsId is null but params.repo is provided, fall through to repo param below.
+        if (wsId) qs.set('workspaceId', wsId);
       }
       if (params.repo) qs.set('repo', String(params.repo));
       if (params.ref) qs.set('ref', String(params.ref));

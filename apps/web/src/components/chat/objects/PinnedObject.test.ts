@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { pinnedObjectTitle } from './PinnedObject';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
+import { PinnedVisualChip, pinnedObjectTitle, pinnedVisualChip } from './PinnedObject';
 import { missionCountsLine } from './MissionObject';
 import type { BuilddObjectRef } from '../chat-contract';
 import type { MissionObjectView, TaskObjectView } from './object-views';
@@ -46,5 +49,34 @@ describe('missionCountsLine', () => {
 
   it('counts landed work once there are tasks', () => {
     expect(missionCountsLine(board({ landed: { done: 1, total: 3 } }))).toBe('1 of 3 landed');
+  });
+});
+
+describe('the pinned visual review chip', () => {
+  it('"Review N" (the action, the card button\'s words) when unsure screens wait on you', () => {
+    const m = buildVisualReviewFixtureModel('needs_you');
+    expect(pinnedVisualChip(m)).toEqual({ label: `Review ${m.summary.awaitingHuman}`, tone: 'needs' });
+  });
+
+  it('red for no browser runner', () => {
+    expect(pinnedVisualChip(buildVisualReviewFixtureModel('no_browser_runner'))).toEqual({ label: 'No browser runner', tone: 'bad' });
+  });
+
+  it('nothing when there is no audit or nothing waits on you', () => {
+    expect(pinnedVisualChip(null)).toBeNull();
+    expect(pinnedVisualChip(buildVisualReviewFixtureModel('off'))).toBeNull();
+    expect(pinnedVisualChip(buildVisualReviewFixtureModel('reviewed'))).toBeNull();
+  });
+
+  it('shows at phone width: never hidden below a breakpoint, and a real tap target', () => {
+    const html = renderToStaticMarkup(createElement(PinnedVisualChip, { model: buildVisualReviewFixtureModel('needs_you'), onReview: () => {} }));
+    expect(html).toContain('data-testid="canvas-pinned-visual-chip"');
+    expect(html).toMatch(/Review 1/);
+    expect(html).not.toMatch(/to review/);
+    expect(html).not.toMatch(/class="[^"]*\bhidden\b/);
+    expect(html).toMatch(/min-h-(9|10|11)/);
+    expect(html).toContain('text-accent-text');
+    const red = renderToStaticMarkup(createElement(PinnedVisualChip, { model: buildVisualReviewFixtureModel('no_browser_runner'), onReview: () => {} }));
+    expect(red).toContain('text-status-error');
   });
 });

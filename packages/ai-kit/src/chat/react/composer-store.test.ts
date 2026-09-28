@@ -1,6 +1,7 @@
 /** Ported from buildd's components/chat/composer-store.test.ts, against the app adapter instead of fetch. */
 import { describe, expect, it } from 'bun:test';
-import { applyComposerSeed, createComposerStore, type ComposerSeed, type ComposerSnapshot } from './composer-store';
+import { applyComposerSeed, createComposerStore, tierPrefs, type ComposerSeed, type ComposerSnapshot } from './composer-store';
+import { defineTierPolicy } from '@builddai/ai-kit/chat/contract';
 
 const base: ComposerSnapshot = { key: 't', draft: '', scope: null, tier: null, seeded: false, touched: { scope: false, tier: false } };
 
@@ -77,5 +78,75 @@ describe('createComposerStore', () => {
     await store.seed('t');
     store.setScope('t', 'ws-9');
     expect(store.get()).toMatchObject({ seeded: true, scope: 'ws-9' });
+  });
+});
+
+describe('createComposerStore with a tier policy (0.6.0)', () => {
+  const policy = defineTierPolicy({ defaultTier: 'budget', auto: false, labels: { budget: 'Economy' } });
+
+  it('starts on the app default, then the saved choice (saved → app default → kit default)', async () => {
+    let saved: string | null = 'premium';
+    const store = createComposerStore({ tiers: policy, prefs: tierPrefs({ load: () => saved, save: t => { saved = t; } }) });
+    expect(store.initial.tier).toBe('budget');
+    await store.seed('t');
+    expect(store.get().tier).toBe('premium');
+
+    saved = null;
+    const fresh = createComposerStore({ tiers: policy, prefs: tierPrefs({ load: () => saved, save: () => {} }) });
+    await fresh.seed('t');
+    expect(fresh.get().tier).toBe('budget');
+
+    const kit = createComposerStore({ prefs: tierPrefs({ load: () => null, save: () => {} }) });
+    await kit.seed('t');
+    expect(kit.get().tier).toBeNull(); // no policy: Auto, as before
+  });
+
+  it('a saved tier the app no longer offers reads as the default', async () => {
+    const store = createComposerStore({ tiers: policy, prefs: tierPrefs({ load: () => 'premium-plus', save: () => {} }) });
+    await store.seed('t');
+    expect(store.get().tier).toBe('budget');
+  });
+
+  it('setTier saves an offered tier and ignores one that is not', async () => {
+    const saves: Array<string | null> = [];
+    const errors: unknown[] = [];
+    const store = createComposerStore({ tiers: policy, onError: e => errors.push(e), prefs: tierPrefs({ load: () => null, save: t => { saves.push(t); } }) });
+    store.setTier('t', 'standard');
+    store.setTier('t', null);
+    store.setTier('t', 'premium-plus');
+    expect(store.get().tier).toBe('standard');
+    expect(saves).toEqual(['standard']);
+    expect(errors).toHaveLength(2);
+  });
+
+  it('peek seeds at once for the first paint; load still wins; a pick in between wins over both', async () => {
+    let release: (v: string) => void = () => {};
+    const store = createComposerStore({
+      tiers: policy,
+      prefs: tierPrefs({ peek: () => 'standard', load: () => new Promise<string>(r => { release = r; }), save: () => {} }),
+    });
+    const p = store.seed('t');
+    expect(store.get()).toMatchObject({ tier: 'standard', seeded: false });
+    release('premium');
+    await p;
+    expect(store.get()).toMatchObject({ tier: 'premium', seeded: true });
+
+    const picked = createComposerStore({
+      tiers: policy,
+      prefs: tierPrefs({ peek: () => 'standard', load: () => new Promise<string>(r => { release = r; }), save: () => {} }),
+    });
+    const q = picked.seed('t');
+    picked.setTier('t', 'budget');
+    release('premium');
+    await q;
+    expect(picked.get().tier).toBe('budget');
+  });
+
+  it('tierPrefs ignores scope patches', () => {
+    const saves: Array<string | null> = [];
+    const a = tierPrefs({ load: () => null, save: t => { saves.push(t); } });
+    void a.save('t', { scope: 'ws' });
+    void a.save('t', { tier: 'budget' });
+    expect(saves).toEqual(['budget']);
   });
 });

@@ -17,8 +17,9 @@
  * kit honours; the hard ceiling is the app's own provider-key limit.
  */
 
-import { TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-defaults';
-import type { TokenPrice } from '@buildd/core/model-catalog';
+import { TIER_DEFAULTS, TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-defaults';
+import type { CatalogEntry, TokenPrice } from '@buildd/core/model-catalog';
+import { chatModelVerdict } from '@buildd/core/chat-model-eligibility';
 import { openRouterModelId } from '@/lib/chat/openrouter-id';
 import { isUuid } from '@/lib/uuid';
 
@@ -203,6 +204,37 @@ export function routeEntry(
     return { provider: 'openrouter', model: openRouterModelId(provider, entry.model), source, poolId, armId };
   }
   return null;
+}
+
+/**
+ * `routeEntry` for a chat plan: only models that call tools and answer in
+ * text (`chatModelVerdict`).
+ *
+ * - A pool challenger that isn't chat-capable is dropped: the incumbent is
+ *   served, with no pool link (the arm never ran).
+ * - A registry (or catalog) pick that isn't chat-capable is replaced by the
+ *   tier's built-in default (`TIER_DEFAULTS`, source `default`), routed the
+ *   same way. `entry` is what was served, for effort and turn limits.
+ */
+export function routeChatEntry(
+  tier: Tier,
+  entry: TierEntry,
+  arm: PoolArmPick | null,
+  providers: readonly PlanProvider[],
+  catalog: readonly CatalogEntry[],
+): { entry: TierEntry; routed: RoutedModel | null; excluded: string | null } {
+  let excluded: string | null = null;
+  let usableArm = arm;
+  if (arm && arm.role === 'challenger' && !chatModelVerdict(arm.route, arm.model, catalog).ok) {
+    usableArm = null;
+    excluded = arm.model;
+  }
+  const routed = routeEntry(entry, usableArm, providers);
+  if (!routed || routed.source === 'pool' || chatModelVerdict(routed.provider, routed.model, catalog).ok) {
+    return { entry, routed, excluded };
+  }
+  const fallback = TIER_DEFAULTS[tier];
+  return { entry: fallback, routed: routeEntry(fallback, null, providers), excluded: routed.model };
 }
 
 /** The requested tier, then every cheaper tier, in TIERS order. */

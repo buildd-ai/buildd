@@ -1,49 +1,54 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import TierSwitch from './TierSwitch';
+import TierSwitch, { tierOptions } from './TierSwitch';
 
 /**
  * The trigger chip's label used to differ by viewport: "auto · standard" on
  * desktop (the routed-to tier only showed from `sm:` up) but just "auto" on a
- * phone, and the menu mixed "Auto" with lowercase tier names. One format on
- * every viewport, lowercase in the cell (v3 frame), sentence case in the menu (composer-format.test.ts covers the pure
- * label logic; this covers the chip actually using it, unconditionally).
+ * phone. One format on every viewport, lowercase in the cell (v3 frame),
+ * sentence case in the menu. The label is the kit's `tierLabel`; the
+ * lowercase is buildd's CSS on the kit's trigger.
  */
-const cell = (html: string) => html.match(/data-testid="composer-tier-label"[^>]*>([^<]*)</)?.[1];
+const cell = (html: string) => html.match(/data-testid="kit-tier-trigger"[^>]*><span>([^<]*)</)?.[1];
+const render = (pinned: 'premium' | null, last: string | null) =>
+  renderToStaticMarkup(<TierSwitch teamId="t1" conversationId={null} pinned={pinned} last={last} onChange={() => {}} />);
 
 describe('TierSwitch: one label format on every viewport', () => {
-  it('the cell reads lowercase like the v3 frame (`auto ▾`); the accessible name keeps sentence case', () => {
-    const html = renderToStaticMarkup(
-      <TierSwitch teamId="t1" conversationId={null} pinned={null} last={null} onChange={() => {}} />,
-    );
-    expect(cell(html)).toBe('auto');
+  it('the cell reads "Auto" / "Auto · Standard"; the accessible name says Tier', () => {
+    const html = render(null, null);
+    expect(cell(html)).toBe('Auto');
     expect(html).toContain('aria-label="Tier: Auto"');
-    const routed = renderToStaticMarkup(
-      <TierSwitch teamId="t1" conversationId={null} pinned={null} last="standard" onChange={() => {}} />,
-    );
-    expect(cell(routed)).toBe('auto · standard');
+    expect(cell(render(null, 'standard'))).toBe('Auto · Standard');
+  });
+
+  it('lowercase in the cell, on every viewport', () => {
+    const css = readFileSync(join(import.meta.dir, '..', '..', 'app', 'globals.css'), 'utf8');
+    expect(css).toMatch(/\.buildd-menu-cell \[data-testid="kit-tier-trigger"\] \{ text-transform: lowercase; \}/);
   });
 
   it('pinned tier: no responsive class hiding part of it', () => {
-    const html = renderToStaticMarkup(
-      <TierSwitch teamId="t1" conversationId={null} pinned="premium" last="budget" onChange={() => {}} />,
-    );
-    expect(cell(html)).toBe('premium');
+    const html = render('premium', 'budget');
+    expect(cell(html)).toBe('Premium');
     expect(html).not.toContain('sm:inline');
+    expect(render(null, 'standard')).not.toContain('sm:inline');
   });
 
-  it('auto, routed to a tier: the routed tier is not gated behind a breakpoint', () => {
-    const html = renderToStaticMarkup(
-      <TierSwitch teamId="t1" conversationId={null} pinned={null} last="standard" onChange={() => {}} />,
-    );
-    expect(cell(html)).toBe('auto · standard');
-    expect(html).not.toContain('sm:inline');
+  it('the hover detail carries the running cost', () => {
+    expect(render(null, null)).toContain('data-testid="tier-chat-cost"');
   });
+});
 
-  it('auto, nothing routed yet: just "Auto"', () => {
-    const html = renderToStaticMarkup(
-      <TierSwitch teamId="t1" conversationId={null} pinned={null} last={null} onChange={() => {}} />,
-    );
-    expect(cell(html)).toBe('auto');
+describe('tierOptions', () => {
+  it('three tiers; each names its model and per-1k price on its second line once loaded', () => {
+    expect(tierOptions(null).map(o => o.tier)).toEqual(['budget', 'standard', 'premium']);
+    expect(tierOptions(null).every(o => o.detail === undefined && o.price === undefined)).toBe(true);
+    const opts = tierOptions([
+      { tier: 'standard', model: 'm-mid', models: ['m-mid', 'm-alt'], inputPer1kUsd: 0.003, outputPer1kUsd: 0.015 },
+    ]);
+    expect(opts.find(o => o.tier === 'standard')?.detail).toBe('m-mid +1 · $0.003 / $0.015 per 1k');
+    expect(opts.find(o => o.tier === 'standard')?.price).toBeUndefined();
+    expect(opts.find(o => o.tier === 'budget')?.detail).toBeUndefined();
   });
 });

@@ -18,6 +18,8 @@ import { useChatActions } from '../ChatActions';
 import { useObjectStore } from './ObjectStoreProvider';
 import type { MissionObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
+import { refKey } from '../chat-contract';
+import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
   waiting: { text: 'needs you', cls: 'text-status-warning' },
@@ -90,6 +92,9 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         <OpenButton inPane={inPane} onOpen={open} />
       </div>
       {model.landed.total > 0 && <LandedMeter model={model} variant="strip" />}
+      {hasVisualReview(view.visual) && (
+        <MissionVisualRow objRef={objRef} visual={view.visual} className="border-t border-border-default pt-2.5" />
+      )}
     </div>
   );
 
@@ -128,6 +133,9 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
                 </p>
               )}
               {more > 0 && <p className="border-t border-border-default pt-2 font-mono text-[12px] text-text-muted">{`+${more} more`}</p>}
+              {hasVisualReview(view.visual) && (
+                <MissionVisualRow objRef={objRef} visual={view.visual} tray className="mt-3 border-t border-border-default pt-3" />
+              )}
             </div>
             <footer className="flex flex-wrap items-center gap-2.5 border-t border-border-default bg-surface-2 px-5 py-3">
               <span className="mr-auto font-mono text-[11.5px] text-text-muted">Live</span>
@@ -149,9 +157,30 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
 /** The docked pane / phone sheet: the mission board itself. */
 export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: BuilddObjectRef; view: MissionObjectView; variant?: 'pane' | 'sheet' }) {
   const store = useObjectStore();
+  const actions = useChatActions();
   const [layout, setLayout] = useState<'board' | 'lanes'>('board');
   const tone = missionTone(view.stateLabel, view.status);
   const link = { missionId: view.id, from: null, initiativeId: null };
+  const visual = view.visual ?? null;
+  // Board / Lanes take the model and wire review themselves; inside the
+  // chat's pane and sheet the deck renders inline, never as a Dialog over the
+  // BottomSheet.
+  const boardVisual = { visual, reviewLayout: 'sheet' as const };
+
+  // "Review" on the card or the pinned strip: the deck takes the pane (desktop)
+  // or the sheet (phone) until it is closed.
+  const r = actions.visualReview;
+  const reviewing = r && r.surface === (variant === 'sheet' ? 'sheet' : 'pane') && refKey(r.ref) === refKey(objRef) ? r : null;
+  if (reviewing && visual && visual.cells.length > 0) {
+    return (
+      <MissionLiveContext.Provider value={store.live(objRef)}>
+        <div data-testid="object-pane" data-kind="mission" data-reviewing="true">
+          <ChatVisualDeck objRef={objRef} view={{ ...view, visual }} startKey={reviewing.startKey} showHeaderClose={variant === 'pane'} />
+        </div>
+      </MissionLiveContext.Provider>
+    );
+  }
+
   return (
     <MissionLiveContext.Provider value={store.live(objRef)}>
       <div data-testid="object-pane" data-kind="mission" className={variant === 'pane' ? 'px-6 pb-10 pt-5' : 'pb-6'}>
@@ -185,8 +214,8 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
         {/* Board and Lanes lay the live store's progress over the model themselves.
             The pane and the sheet are always narrow: the Board's compact layout. */}
         {variant === 'pane' && layout === 'lanes'
-          ? <MissionLanes model={view.board} {...link} />
-          : <MissionBoard model={view.board} compact {...link} />}
+          ? <MissionLanes model={view.board} {...link} {...boardVisual} />
+          : <MissionBoard model={view.board} compact {...link} {...boardVisual} />}
       </div>
     </MissionLiveContext.Provider>
   );

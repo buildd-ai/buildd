@@ -1,47 +1,29 @@
 /**
  * The docked pane's state: which side the object sits on (saved per user,
- * in this browser), whether it's closed, and what's pinned. Pure reducer plus
- * the href a pop-out opens.
+ * in this browser), whether it's closed, and what's pinned. The reducer is the
+ * kit's (`paneReducer` / `parsePaneSide` from @builddai/ai-kit/chat/react) over
+ * buildd's refs; buildd keeps its storage key and where Pop out goes.
  */
+import {
+  INITIAL_PANE as KIT_INITIAL_PANE,
+  paneReducer as kitPaneReducer,
+  parsePaneSide,
+  type PaneAction as KitPaneAction,
+  type PaneSide,
+  type PaneState as KitPaneState,
+} from '@builddai/ai-kit/chat/react';
 import type { BuilddObjectRef } from './chat-contract';
 import { taskPageHref } from '@/lib/mission-task-href';
 
-export type PaneSide = 'left' | 'right';
+export { parsePaneSide, type PaneSide };
+export type PaneState = KitPaneState<BuilddObjectRef>;
+export type PaneAction = KitPaneAction<BuilddObjectRef>;
 
-export interface PaneState {
-  /** Where the object goes. Default left: Board and Lanes read left to right, so they get the wide side. */
-  side: PaneSide;
-  closed: boolean;
-  pinned: BuilddObjectRef | null;
-}
-
-export type PaneAction =
-  | { type: 'open'; ref: BuilddObjectRef }
-  | { type: 'close' }
-  | { type: 'swap' }
-  | { type: 'unpin' }
-  | { type: 'side'; side: PaneSide };
-
-export const INITIAL_PANE: PaneState = { side: 'left', closed: false, pinned: null };
+export const INITIAL_PANE: PaneState = KIT_INITIAL_PANE;
 export const PANE_SIDE_KEY = 'buildd-chat-pane-side';
 
 export function paneReducer(state: PaneState, action: PaneAction): PaneState {
-  switch (action.type) {
-    case 'open':
-      return { ...state, closed: false, pinned: action.ref };
-    case 'close':
-      return { ...state, closed: true, pinned: null };
-    case 'swap':
-      return { ...state, side: state.side === 'left' ? 'right' : 'left' };
-    case 'unpin':
-      return { ...state, pinned: null };
-    case 'side':
-      return { ...state, side: action.side };
-  }
-}
-
-export function parsePaneSide(v: string | null | undefined): PaneSide {
-  return v === 'right' ? 'right' : 'left';
+  return kitPaneReducer(state, action);
 }
 
 /** The object's own full page, for Pop out. */

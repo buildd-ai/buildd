@@ -9,3 +9,11 @@ describe('CHAT_INSTRUCTIONS', () => {
     expect(CHAT_INSTRUCTIONS).toMatch(/don't say you'll wait for their OK/i);
   });
 });
+
+describe('CHAT_INSTRUCTIONS: visual review', () => {
+  it('leads with issues and unsure screens by route, and never claims to have seen a screenshot', () => {
+    expect(CHAT_INSTRUCTIONS).toMatch(/get_visual_review/);
+    expect(CHAT_INSTRUCTIONS).toMatch(/issues and the unsure screens, by route/);
+    expect(CHAT_INSTRUCTIONS).toMatch(/never claim to have looked at one/);
+  });
+});

@@ -13,7 +13,7 @@ const read = (f: string) => readFileSync(join(SRC, f), 'utf8');
 
 const FOREGROUND = [
   'components/chat/ChatComposer.tsx',
-  'components/chat/ComposerMenu.tsx',
+  'components/chat/KitMenuCell.tsx',
   'components/chat/TierSwitch.tsx',
   'components/chat/ToolsMenu.tsx',
   'components/chat/ChatWorkspace.tsx',
@@ -42,14 +42,14 @@ describe('chat foreground', () => {
     // the toolbar. The composer's focus cue is its own top rule instead.
     const css = read('app/globals.css');
     const ring = css.indexOf(':focus-visible {');
-    const off = css.search(/textarea\[data-composer-input\]:focus-visible\s*\{[^}]*outline:\s*none/);
+    const off = css.search(/textarea\.kit-composer-input:focus-visible\s*\{[^}]*outline:\s*none/);
     expect(ring).toBeGreaterThanOrEqual(0);
     expect(off).toBeGreaterThan(ring);
-    const composer = read('components/chat/ChatComposer.tsx');
-    expect(composer).toMatch(/<textarea[\s\S]*?data-composer-input[\s\S]*?\/>/);
+    // The box is the kit's (ChatComposer on @builddai/ai-kit).
+    expect(read('components/chat/ChatComposer.tsx')).toContain('className="buildd-composer"');
     // The toolbar's own rule is the quiet 1px one, never a mood colour.
-    const toolbar = composer.slice(composer.indexOf('data-testid="composer-toolbar"'), composer.indexOf('>', composer.indexOf('data-testid="composer-toolbar"')));
-    expect(toolbar).toContain('border-t border-[var(--chat-rule)]');
+    const toolbar = css.slice(css.indexOf('.buildd-composer .kit-toolbar {'), css.indexOf('}', css.indexOf('.buildd-composer .kit-toolbar {')));
+    expect(toolbar).toContain('border-top-color: var(--chat-rule)');
     expect(toolbar).not.toMatch(/mood-needs|accent/);
   });
 

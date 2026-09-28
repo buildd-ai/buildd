@@ -1,6 +1,6 @@
 # Shared AI kit: chat, Jev decisions and the model economy for sibling apps
 
-**Status:** Accepted. P0 (#2968), the P1 client (#2974) and P2 (#2977) have shipped; the package publishes as `@builddai/ai-kit` (#2991). The kit half of P3 (`/chat/server` `createChatTurn` and the `/chat/react` components) ships in 0.2.0; app adoption (money P3, store P4, Cue P5, buildd P6) is per app.
+**Status:** Accepted. P0 (#2968), the P1 client (#2974) and P2 (#2977) have shipped; the package publishes as `@builddai/ai-kit` (#2991). The kit half of P3 (`/chat/server` `createChatTurn` and the `/chat/react` components) ships in 0.2.0; app adoption (money P3, store P4, Cue P5, buildd P6) is per app. 0.5.0 lifts the generic half of buildd's chat into the kit (P6 slice 1, listed under P6).
 **Related:** `packages/core/model-tier-registry.ts` (`resolveTierEntry`, `resolveAllTiers`), `packages/core/model-tier-defaults.ts`, `packages/core/tier-pool-source.ts` (`drawChatPoolArm`), `packages/core/decision-client.ts` (`decisionCall`, `gateChoice`), `packages/core/inference-client.ts`, `packages/core/inference-keys.ts`, `packages/shared/src/chat.ts`, `apps/web/src/lib/chat/turn.ts`, `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/chat/routing.ts`, `apps/web/src/lib/chat/permissions.ts`, `apps/web/src/components/chat/`, `apps/web/src/app/api/model-tiers/route.ts`, `apps/web/src/lib/api-auth.ts`, `docs/SPEC.md` §3a, `docs/design/agent-chat.md`, `docs/design/chat-canvas.md`, `docs/design/decision-calls.md`, `docs/design/inference-calls-primitive.md`, `docs/design/model-tiers.md`, `docs/design/tier-model-pools.md`, `docs/design/tier-weights.md`, `docs/design/model-quality-signals.md`, `docs/design/cross-app-assertion-grant.md`
 
 External consumers (private repos, cited as `app:path`): Cue (`cue:`), and the two moa apps (`nextjs-app`, the store ops app; `money-app`, personal finance).
@@ -51,7 +51,7 @@ This section is the recon the proposal leans on. Where the target mockup and bui
   | Admin | Ask first, locked |
   | Secrets | Never |
 
-  The badge counts the groups set to Allow. The preference is per person per team (`team_members.chat_allowed_tool_groups`, `permissions-store.ts`).
+  The trigger carries no count (buildd dropped its Allow badge in #3054; the panel shows each group's mode). The preference is per person per team (`team_members.chat_allowed_tool_groups`, `permissions-store.ts`).
 
   Enforcement is server-side, in the turn's tool-approval hook in `turn.ts`, through `canSkipCard`. An Allowed write skips its card only when:
   - its effective class is `write`, not admin;
@@ -70,7 +70,7 @@ This section is the recon the proposal leans on. Where the target mockup and bui
 | Mockup element | In buildd today | In this design |
 |---|---|---|
 | `@ all ▾` scope picker | Yes, as the workspace chip ("All workspaces", "→ name" when routed) | `<ScopePicker>` |
-| `··· 2` control | Yes: the tools permission popover; the count is groups set to Allow | `<ToolsMenu>`, first class (§1c) |
+| `···` control | Yes: the tools permission popover (no count on the trigger) | `<ToolsMenu>`, first class (§1c) |
 | `auto ▾` tier picker | Yes, `TierSwitch` ("Auto", "Auto · Standard", with price) | `<TierPicker>` |
 | Orange send, Stop while busy | Yes | Yes |
 | Bottom tabs HOME · CHAT · MISSIONS · ACTIVITY · HEALTH | Yes for operators (`apps/web/src/lib/nav-config.tsx`) | App navigation, not the kit |
@@ -241,7 +241,7 @@ export const groups = defineToolGroups({
 
   At most one approval card is shown per turn. A `never` group's tools are never registered with the model. A `read` group's tools must declare `class: 'read'`, and the kit throws at startup if a `read` group contains a write.
 - **Storage.** The per-person preference goes through the `store` adapter (reference SQL column: the allowed group keys per person). The kit ships `GET` and `PATCH` handlers matching buildd's `/api/chat/permissions` contract.
-- **UI.** `<ToolsMenu groups>` renders the `⋯` trigger with a badge counting groups set to Allow, and a popover (a bottom sheet on phones) with one row per group: an Ask first / Allow toggle, or a locked label (READ ONLY / ASK FIRST / NEVER).
+- **UI.** `<ToolsMenu groups>` renders the `⋯` trigger, named plainly "Tools" with no Allow count (removed in kit 0.5.0, matching buildd), and a popover (a bottom sheet on phones) with one row per group: an Ask first / Allow toggle, or a locked label (READ ONLY / ASK FIRST / NEVER).
 
 Per-app groups. The store, money and Cue sets are starting proposals, to be confirmed when each app's phase lands:
 
@@ -502,7 +502,7 @@ Each phase ships on its own and leaves the others working.
 - AC:
   - The finance-exclusion test in §4 passes.
   - Every write tool defaults to Ask first.
-  - The `⋯` badge equals the number of groups set to Allow.
+  - The `⋯` panel shows each group's current mode (the trigger carries no count).
   - "What's stuck in shipping" answers from live shipment data.
 
 **P5: Cue interactive.**
@@ -523,6 +523,17 @@ Each phase ships on its own and leaves the others working.
 **P6: buildd dogfoods the kit.**
 - buildd's `ChatComposer`, `ChatFeed`, `ToolCallRows`, `ToolsMenu`, `TierSwitch`, `ApprovalCard` and empty state become kit components themed by buildd tokens. `permissions.ts` becomes a `defineToolGroups` declaration plus buildd-specific `startsUnattendedWork` / `SKIPPABLE_FIELDS` hooks.
 - buildd-specific pieces stay here: the tools themselves, reach rules, mission objects, `in-process-api.ts`, Pusher.
+- **Slice 1 (kit 0.5.0): the generic half of buildd's chat now lives in the kit**, so the adoption slices swap buildd's copies for these:
+  - `ToolsMenu` without the Allow count, as buildd's own (#3054).
+  - `ChatComposer` extension slots buildd's composer needs: `leading` (an object chip or a locked scope), `actions`, `edge` (the streaming sweep), `footer` (key hints), `mood`, `compact`.
+  - `TurnFeedbackProvider` / `TurnFeedback` (from `TurnFeedback.tsx`): the thumbs and one optional reason, behind `onFeedback` and `loadVotes`; buildd keeps `/api/feedback` and its reason list in `@buildd/core/tier-pool`.
+  - `SteerComposer` (from `SteerConversation.tsx`): the steer box, message list with sent / delivered, header and presence strip. buildd keeps the instruct route, the polling, `steerPresence` (runner display and heartbeat age) and `SteerButton` (a button bound to buildd's canvas context).
+  - Object dock primitives over `ObjectRef<K>`: `createObjectStore` (from `object-store.ts`, with buildd's mission-event policy becoming an app `classify` plus a `sidecar` for the live progress overlay), `ObjectStoreProvider` / `useObjectEntry`, `ObjectCard` / `ObjectPane` over app renderers, `PinnedObject` (the pin mechanism of `PinnedObject.tsx`), `paneReducer` / `parsePaneSide` (from `pane-state.ts`) and `dockChoice` (from `dock-model.ts`). The mission / task / PR / question renderers, `popOutHref`, `taskDockModel`, `atWorkRows`, `needsDockRef`, the mini board and the visual-review chip stay in buildd.
+  - Helpers: `createPendingMessages` (`pending-message.ts`), `parseChatUnavailable` / `chatErrorLine` (`chat-errors.ts`, wording overridable), `approvalDraft` / `approvalLabel` / `firstParagraph` (the preview and generic halves of `approval-draft.ts`; the mission draft becomes buildd's `custom`), `formatCost` / `formatPer1k` (`composer-format.ts`; its tier labels already exist as `tierLabel`), `refKey`, `applyTurnVote`.
+- **Slice 2 (#3063, kit 0.6.1):** buildd's tools menu, tier picker, approval and setup cards and empty canvas are the kit's, and `permissions.ts` is a `defineToolGroups` declaration.
+- **Slice 3, part 1 (kit 0.8.0):** the gaps slice 2 found. `ApprovalCard` takes an app body and details, a head row, a phone fold and a one-line settled row, so a new mission's draft is the kit card; `ChatEmpty` takes an overline, mood, sub line and a chips header with rows; `TierPicker` a second line per option and a trigger extra; `Menu` a hover detail and `--kit-scrim`; `defineToolGroups` an app's own call classes and `deferred` tools. buildd drops the CSS and casts that stood in for them.
+- **Slice 3, part 2 (kit 0.9.0):** buildd's thread and composer are the kit's `ChatThread` / `ChatComposer` on `useKitChat`, with buildd's renderers in the thread's slots (message header and footer, tool groups, its own checklist and event part). The thumbs, the steer box, the object store, provider and pinned strip, the pane and dock models and the parked first message are the kit's too. buildd keeps its tool rows, object renderers, mission-event policy (as `classify` / `sidecar`), Pusher, the sea, watch delivery, the mission sheet and visual review.
+- **Slice 3, part 2 (kit 0.9.0):** buildd's thread and composer are the kit's `ChatThread` / `ChatComposer` on `useKitChat`, with buildd's renderers in the thread's slots (message header and footer, tool groups, its own checklist and event part); the thumbs, the steer box, the object store, provider, pinned strip, pane and dock models and the parked first message are the kit's too. buildd keeps its tool rows, object renderers, mission-event policy (as `classify` / `sidecar`), Pusher, the sea, watch delivery, the mission sheet and visual review.
 - AC:
   - The chat fixture page (`apps/web/src/app/app/dev/chat/`) renders every state it does today.
   - The square-corners guard passes.

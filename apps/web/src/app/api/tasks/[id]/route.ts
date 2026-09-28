@@ -303,6 +303,26 @@ export async function PATCH(
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
+      // Same rule as POST /api/tasks: every dependency is a task in THIS task's
+      // workspace, and never the task itself. An edge into another workspace
+      // would gate the claim on a row the caller may not be able to see.
+      if (dependsOn.includes(task.id)) {
+        return NextResponse.json({ error: 'A task cannot depend on itself' }, { status: 400 });
+      }
+      if (dependsOn.length > 0) {
+        const found = await db.query.tasks.findMany({
+          where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, task.workspaceId)),
+          columns: { id: true },
+        });
+        const foundIds = new Set(found.map(t => t.id));
+        const missing = dependsOn.filter((id: string) => !foundIds.has(id));
+        if (missing.length > 0) {
+          return NextResponse.json(
+            { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
+            { status: 400 },
+          );
+        }
+      }
       updateData.dependsOn = dependsOn;
     }
     // Hold / resume one task (the claim route's taskNotHeld gate reads

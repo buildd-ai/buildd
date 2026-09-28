@@ -1,45 +1,32 @@
 /**
  * A refused turn comes back as JSON with a 4xx instead of a stream
  * (`ChatUnavailableResponse`). The AI SDK surfaces the body as the error's
- * message; this reads it back. Pure.
+ * message; the kit's `parseChatUnavailable` / `chatErrorLine`
+ * (@builddai/ai-kit/chat/contract) read it back. buildd keeps its own words and
+ * the typed fields of its refusal body. Pure.
  */
 import type { ChatUnavailableResponse } from '@buildd/shared';
+import { chatErrorLine as kitChatErrorLine, parseChatUnavailable as kitParse, type ChatErrorLines } from '@builddai/ai-kit/chat/contract';
 
-const REASONS = new Set(['no_key', 'budget_exhausted', 'rate_limited']);
+/** buildd's wording where a refusal carries no message of its own. */
+export const BUILDD_CHAT_ERROR_LINES: Partial<ChatErrorLines> = {
+  budget_exhausted: 'Today’s chat budget is used up. The mission form still works.',
+  failed: 'The turn didn’t finish. Your message is kept — send it again.',
+};
 
 export function parseChatUnavailable(err: unknown): ChatUnavailableResponse | null {
-  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : null;
-  if (!raw || raw[0] !== '{') return null;
-  try {
-    const v = JSON.parse(raw) as Partial<ChatUnavailableResponse>;
-    if (typeof v.error !== 'string' || !REASONS.has(v.error)) return null;
-    return {
-      error: v.error as ChatUnavailableResponse['error'],
-      message: typeof v.message === 'string' ? v.message : '',
-      ...(typeof v.canManageTeamKeys === 'boolean' ? { canManageTeamKeys: v.canManageTeamKeys } : {}),
-      ...(typeof v.retryAfterSeconds === 'number' ? { retryAfterSeconds: v.retryAfterSeconds } : {}),
-      ...(v.scope === 'team' || v.scope === 'user' ? { scope: v.scope } : {}),
-    };
-  } catch {
-    return null;
-  }
+  const v = kitParse(err) as (ReturnType<typeof kitParse> & Partial<ChatUnavailableResponse>) | null;
+  if (!v) return null;
+  return {
+    error: v.error,
+    message: v.message,
+    ...(typeof v.canManageTeamKeys === 'boolean' ? { canManageTeamKeys: v.canManageTeamKeys } : {}),
+    ...(typeof v.retryAfterSeconds === 'number' ? { retryAfterSeconds: v.retryAfterSeconds } : {}),
+    ...(v.scope === 'team' || v.scope === 'user' ? { scope: v.scope } : {}),
+  };
 }
 
 /** One line for a turn that failed for any other reason. Never echoes a stack. */
 export function chatErrorLine(err: unknown): string {
-  const u = parseChatUnavailable(err);
-  if (u) {
-    if (u.error === 'budget_exhausted') return u.message || 'Today’s chat budget is used up. The mission form still works.';
-    if (u.error === 'rate_limited') return u.message || 'Too many turns in a short time. Try again in a moment.';
-    return u.message || 'Chat is unavailable.';
-  }
-  const raw = err instanceof Error ? err.message : '';
-  if (raw.startsWith('{')) {
-    try {
-      const v = JSON.parse(raw) as { error?: unknown; message?: unknown };
-      if (typeof v.message === 'string') return v.message;
-      if (typeof v.error === 'string') return v.error;
-    } catch { /* fall through */ }
-  }
-  return 'The turn didn’t finish. Your message is kept — send it again.';
+  return kitChatErrorLine(err, BUILDD_CHAT_ERROR_LINES);
 }

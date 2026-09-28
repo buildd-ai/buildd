@@ -412,6 +412,11 @@ UPDATE worker_error_traces SET
   source = pg_temp.qa_str(source);
 
 UPDATE worker_terminal_records SET
+  -- Free text: recordSessionTerminal() runs normalizeErrorSignature() over a
+  -- raw exit cause (worker.error, a gate-refusal reason, ...) which strips
+  -- ids/urls/timestamps/paths/numbers but not identifying words, so this is
+  -- NOT the workers.exit_cause enum despite the shared column name.
+  exit_cause = pg_temp.qa_str(exit_cause),
   detail = pg_temp.qa_json(detail);
 
 UPDATE worker_prompt_composition_events SET
@@ -437,6 +442,14 @@ UPDATE artifacts a SET
   share_token = CASE WHEN a.share_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(a.id::text) END,
   metadata = pg_temp.qa_json(a.metadata)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.id = s.id;
+
+-- Human visual-review decisions: the route pattern goes through qa_str, as the
+-- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
+UPDATE visual_shot_reviews SET
+  route = pg_temp.qa_str(route),
+  cell_key = pg_temp.qa_str(cell_key),
+  note = pg_temp.qa_text(note),
+  reviewer_label = pg_temp.qa_hash('Reviewer ', reviewer_label);
 
 UPDATE task_schedules ts SET
   name = pg_temp.qa_title('Schedule', s.n, ts.name),

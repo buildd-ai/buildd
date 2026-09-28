@@ -246,6 +246,7 @@ export const CHAT_READ_TOOLS = [
   'list_artifacts', 'get_artifact', 'list_artifact_templates',
   'list_skills', 'get_skill',
   'list_watches',
+  'get_visual_review',
 ] as const;
 export type ChatReadTool = (typeof CHAT_READ_TOOLS)[number];
 
@@ -452,7 +453,8 @@ export type ChatEventKind =
   | 'question'         // a worker on that mission is waiting on input
   | 'mission_completed'
   | 'mission_failed'
-  | 'watch';           // something the person asked to be told about happened
+  | 'watch'            // something the person asked to be told about happened
+  | 'visual_review';   // the mission's visual audit moved (docs/design/visual-qa-human-review.md)
 
 /**
  * A watch firing (docs/design/subscriptions-and-notifications.md): what the
@@ -472,6 +474,23 @@ export interface ChatWatchNotice {
   tone: 'ok' | 'bad' | 'attention';
 }
 
+/**
+ * A visual review moment (`event: 'visual_review'`): the audit's phase and
+ * its screen counts when it was posted. The counts are also in `text`, which
+ * is all the model sees of an event.
+ */
+export interface ChatVisualReviewEvent {
+  /** A `VisualReviewPhase` (packages/shared/src/types.ts). */
+  phase: string;
+  round: number;
+  /** Current screens by effective verdict (the human decision where there is one). */
+  ok: number;
+  issues: number;
+  unsure: number;
+  /** Unsure screens nobody has decided. */
+  awaitingHuman: number;
+}
+
 export interface ChatEventData {
   event: ChatEventKind;
   objects: BuilddObjectRef[];
@@ -479,6 +498,8 @@ export interface ChatEventData {
   text: string;
   /** Present on `event: 'watch'`. */
   watch?: ChatWatchNotice;
+  /** Present on `event: 'visual_review'`. */
+  visual?: ChatVisualReviewEvent;
 }
 
 export const CHAT_EVENT_PART_TYPE = 'data-buildd-event' as const;

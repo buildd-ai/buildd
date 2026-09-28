@@ -2,7 +2,7 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-27
+last_verified: 2026-09-28
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
@@ -151,10 +151,17 @@ systematic — without ever blocking the normal claim path.
   `null`) THEN `updateAvailableSince` is cleared to `null`.
 - AC-25: The `list_runners` MCP action, reachable from every MCP transport
   (API-key, OAuth, in-process runner/chat) via `handleBuilddAction`, returns
-  the same per-runner fields as `GET /api/workers/active` — capacity,
-  workspaces, runner build, and the full update-snapshot bundle including
-  `updateAvailableSince` — scoped to whatever workspaces the calling token can
-  already see.
+  the same per-runner fields as `GET /api/workers/active` — slots as
+  "a busy of b slots", workspaces, runner build, and the full update-snapshot
+  bundle including `updateAvailableSince` — scoped to whatever workspaces the
+  calling token can already see.
+- AC-26: Each runner row carries `browser` (its heartbeat `envKeys` include
+  `browser`), printed by `list_runners` as `browser: yes/no`. WHEN
+  `workspaceId` is given (`GET /api/workers/active?workspaceId=`, 404 for a
+  workspace the caller cannot see) THEN the response adds
+  `browserRunnerOnline` by `browserRunnerOnline`'s claim rule (null when the
+  lookup failed) and `list_runners` leads with "Browser-capable runner online
+  for <ws>: yes/no/unknown", listing only that workspace's runners.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/workers/heartbeat/route.ts`
@@ -167,7 +174,7 @@ systematic — without ever blocking the normal claim path.
 - Dashboard surface: `apps/web/src/app/api/workers/active/route.ts`
 - MCP surface: `packages/core/mcp-tools.ts` (`list_runners` action, dispatched
   through `handleBuilddAction` — reachable from every transport, not just the
-  API-key one)
+  API-key one; text in `packages/core/mcp-visual-review.ts`)
 
 ---
 
@@ -317,6 +324,51 @@ branch in GitHub (`latestAvailable`).
 - Scopes: `heartbeatOrphanScope()`, `heartbeatFreshnessScope()` in
   `apps/web/src/lib/stale-workers.ts`
 - Query: uses `workerHeartbeats.lastHeartbeatAt` to find fresh beats
+
+---
+
+## Interactive (MCP-claimed) Workers
+
+A worker minted by an MCP `claim_task` has `runner = 'mcp'`. A person's own
+session (or its local agents) does the work; no runner ever starts a session
+for the row, syncs tokens or turns, or sends a heartbeat for it.
+
+`runner = 'mcp'` is recorded only for a claim carrying the server-signed
+interactive session marker the MCP routes add to their internal calls
+(`apps/web/src/lib/interactive-session.ts`). A client that sends
+`runner: 'mcp'` without it is recorded as `mcp-unverified`, an ordinary runner
+id, and every runner rule applies to its workers.
+
+**Invariants**:
+- No runner liveness rule applies to an interactive worker: the generic stale,
+  idle, silent-start and never-started arms of `cleanupStaleWorkers`, the
+  runner-heartbeat rule, and the cleanup route's 1h stalled and local-UI
+  heartbeat rules all exclude `runner = 'mcp'`.
+- Any MCP request from a `worker` or `admin` session (either transport) bumps
+  `updatedAt` on that session's interactive workers in `idle`, `running` or
+  `starting`, at most once a minute, after the response is sent. When the
+  session carries a user (OAuth `sub`), only workers whose task records that
+  user as the interactive claimer (`context.interactiveClaimUserId`) are
+  touched; a token with no user covers the account's interactive workers.
+  Trigger-level tokens touch nothing. `update_progress` bumps it as before.
+- An interactive worker with no MCP activity for
+  `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
+  booked with its own error text, and does not consume a retry attempt.
+- `waiting_input` interactive workers stay governed by the waiting_input timeout.
+
+**Acceptance criteria**:
+- AC-9a: GIVEN an interactive worker in `idle` with `updatedAt` 10 minutes ago
+  WHEN `cleanupStaleWorkers` runs THEN it is left untouched.
+- AC-9b: GIVEN an interactive worker whose account made no MCP call for over 2
+  hours WHEN `cleanupStaleWorkers` runs THEN it is marked `failed` with
+  `INTERACTIVE_ABANDONED_ERROR` and its task is reclaimed as below.
+
+**Code surface**:
+- `apps/web/src/lib/interactive-worker-liveness.ts`: `touchInteractiveWorkers()`,
+  `interactiveAbandonedScope()`, `runnerWorkerOnly()`
+- `apps/web/src/lib/stale-workers.ts`: `staleWorkerScope()`
+- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS` in
+  `packages/shared/src/runner-liveness.ts`
 
 ---
 

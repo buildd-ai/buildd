@@ -243,8 +243,18 @@ export type WaitingOnDescriptor =
    * verifying them, and saying "not yet verified" would hide that.
    */
   | { kind: 'criterion_unverified'; tone: WaitingOnTone; label: string; count: number; criteria: string[]; awaitingRunner?: string[] }
-  /** A human owes an answer; nothing automated will move this. */
-  | { kind: 'human_decision'; tone: WaitingOnTone; label: string; detail: string | null }
+  /**
+   * A human owes an answer; nothing automated will move this. `visualReview`
+   * is set when the answer is the visual review (screens nobody decided, or
+   * the audit's round-cap question), from `canCompleteMission`'s hold.
+   */
+  | {
+      kind: 'human_decision';
+      tone: WaitingOnTone;
+      label: string;
+      detail: string | null;
+      visualReview?: { cells: number; roundCapOpen: boolean; enforced: boolean };
+    }
   /**
    * Everything open is on a known self-resolving condition. Resumes by itself.
    * `waitUntil` is null when the wait is known but its resume time is not —
@@ -482,6 +492,8 @@ export interface MissionCompletionSummary {
     prUrl: string | null;
     closedUnsuperseded?: boolean;
   }>;
+  /** The visual review hold, in shadow or enforced (`visual_review_open`). */
+  visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -738,6 +750,15 @@ function resolve(input: MissionStateInput): Resolution {
   //    it. This is the genuine stall, and the only task-level `blocked`.
   const open = openTaskFact(input, false);
   if (open) return open;
+
+  // 9½. The visual review holds completion (`visual_review_open`, enforced
+  //     only under VISUAL_REVIEW_GATE=enforce): screens nobody decided. The
+  //     owner is the only one who can clear it. In shadow the same fact is
+  //     reported through `outstanding`, never as the verdict.
+  if (input.completion?.code === 'visual_review_open') {
+    const visual = visualReviewFact(input);
+    if (visual) return visual;
+  }
 
   // 10. The work is done and the completion gate has not cleared. NEVER
   //     `blocked` — see ruling 1 in the module note. Tone comes straight from
@@ -1120,6 +1141,32 @@ function criterionBlockers(
   return { blockers: out, stale };
 }
 
+/**
+ * Rule 9½, and a shadow fact: the visual review wants a human. "N screens
+ * want your review" when unsure screens are undecided, else the round-cap
+ * question. Tone is `warning` only when the hold actually refused completion.
+ */
+function visualReviewFact(input: MissionStateInput): Resolution | null {
+  const hold = input.completion?.visualReviewHold;
+  if (!hold || (hold.cells <= 0 && !hold.roundCapOpen)) return null;
+  const enforced = input.completion?.code === 'visual_review_open';
+  const label = hold.cells > 0
+    ? `${hold.cells} ${hold.cells === 1 ? 'screen wants' : 'screens want'} your review`
+    : 'The visual audit wants your call';
+  return {
+    kind: 'awaiting_decision',
+    waitingOn: {
+      kind: 'human_decision',
+      tone: enforced ? 'warning' : 'info',
+      label,
+      detail: hold.roundCapOpen && hold.cells > 0 ? 'The audit also still finds issues after its last automatic round.' : null,
+      visualReview: { ...hold, enforced },
+    },
+    displayState: 'waiting_decision',
+    source: 'canCompleteMission',
+  };
+}
+
 /** Rule 10 — the completion gate has not cleared. Never `blocked`. */
 function criteriaFact(input: MissionStateInput): Resolution | null {
   const { criteriaGate, completion } = input;
@@ -1277,6 +1324,7 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
     fromResolution(mergeFact(input)),
     fromResolution(criteriaFact(input)),
     fromResolution(openTaskFact(input, live)),
+    fromResolution(visualReviewFact(input)),
   ];
 
   const seen = new Set<WaitingOnDescriptor['kind']>();
@@ -1500,6 +1548,11 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       return 'Run goal-criteria verification to produce a verdict.';
     case 'human_decision':
+      if (waitingOn.visualReview) {
+        return waitingOn.visualReview.cells > 0
+          ? 'Open the visual review and decide each screen: looks right, or needs fix.'
+          : 'Open the visual review and decide whether the remaining issues get fixed or waived.';
+      }
       return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
       return waitingOn.waitUntil

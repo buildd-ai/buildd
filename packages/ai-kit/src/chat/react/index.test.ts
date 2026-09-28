@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { KIT_CSS_VARS } from './index';
+import { KIT_CSS_VARS, KIT_SHEET_QUERY } from './index';
 import { greeting, thinkingSteps, tierLabel, toolRowLabel, toolSummary } from './model';
 
 const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -11,7 +11,9 @@ const styles = strip(readFileSync(join(import.meta.dir, '..', 'styles.css'), 'ut
 describe('theme.css', () => {
   it('defines exactly the --kit-* variables the components read', () => {
     const defined = [...theme.matchAll(/(--kit-[a-z-]+)\s*:/g)].map(m => m[1]).sort();
-    expect(defined).toEqual([...KIT_CSS_VARS].sort());
+    // --kit-scrim (0.8.0) is read and carried but deliberately unset: unset,
+    // the scrim falls back to the 0.6 ink mix, so defaults don't change.
+    expect(defined).toEqual([...KIT_CSS_VARS].filter(v => v !== '--kit-scrim').sort());
   });
   it('uses no Tailwind directives', () => {
     expect(theme).not.toMatch(/@tailwind|@apply|@import\s+['"]tailwindcss/);
@@ -30,6 +32,21 @@ describe('styles.css', () => {
   });
   it('uses no Tailwind directives', () => {
     expect(styles).not.toMatch(/@tailwind|@apply|@import/);
+  });
+  it('the desktop menu panel sizes to content, the toggle never shrinks and the label wraps', () => {
+    const rule = (sel: string) => styles.match(new RegExp(`(?:^|\\n)${sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+    expect(rule('.kit-menu-panel')).toMatch(/width:\s*max-content/);
+    expect(rule('.kit-menu-panel')).toMatch(/max-width:\s*min\(92vw, 380px\)/);
+    expect(rule('.kit-row > .kit-toggle, .kit-row > .kit-row-lock')).toMatch(/flex:\s*none/);
+    expect(rule('.kit-row > .kit-row-label')).toMatch(/min-width:\s*0/);
+    // The phone sheet stays full width.
+    expect(styles).toMatch(/\.kit-sheet-layer > \.kit-menu-panel\[data-sheet\]\s*\{[^}]*width:\s*auto/);
+  });
+});
+
+describe('exports', () => {
+  it('re-exports KIT_SHEET_QUERY (the width below which menus open as a phone sheet)', () => {
+    expect(KIT_SHEET_QUERY).toBe('(max-width: 639px)');
   });
 });
 

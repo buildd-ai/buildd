@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.243.1",
+  "version": "0.247.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -17,6 +17,7 @@
     "./model-aliases": "./model-aliases.ts",
     "./model-catalog": "./model-catalog.ts",
     "./model-catalog-cache": "./model-catalog-cache.ts",
+    "./chat-model-eligibility": "./chat-model-eligibility.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",
@@ -122,6 +123,7 @@
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
+    "./visual-review-text": "./visual-review-text.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
     "./friction-manifest": "./friction-manifest.ts",
@@ -157,7 +159,7 @@
     "@builddai/ai-kit": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.157.0",
+    "@openai/codex-sdk": "^0.158.0",
     "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.6.0",
     "dotenv": "^18.0.0",

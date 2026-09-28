@@ -1,43 +1,46 @@
 /**
- * Name the conversation after its first exchange, on the budget tier, so the
- * user never has to. Runs after the response; never overwrites a title the
- * user set (store.setConversationTitle is conditional on title_source='auto').
+ * Name the conversation after its first exchange, so the user never has to.
+ * The kit's pipeline (`titleConversation`): a short first message is its own
+ * title; otherwise one call on the budget tier. Runs after the response;
+ * never overwrites a title the user set (store.setConversationTitle is
+ * conditional on title_source='auto').
  */
 
-import { generateText, type UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
+import { titleConversation } from '@builddai/ai-kit/chat/server';
 import { resolveChatModel } from './models';
 import { pingConversation, setConversationTitle, type ConversationRow } from './store';
-
-function transcript(messages: UIMessage[]): string {
-  return messages
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .slice(-4)
-    .map(m => `${m.role}: ${m.parts.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join(' ')}`)
-    .join('\n')
-    .slice(0, 3000);
-}
 
 export async function autoTitleConversation(
   conversation: ConversationRow,
   messages: UIMessage[],
   userId: string,
-  deps: { generate?: typeof generateText } = {},
+  deps: {
+    generate?: Parameters<typeof titleConversation>[0]['generate'];
+    resolveModel?: typeof resolveChatModel;
+    save?: typeof setConversationTitle;
+    ping?: typeof pingConversation;
+  } = {},
 ): Promise<void> {
+  const warn = (e: unknown) => console.warn(`[chat] auto-title failed for conversation ${conversation.id}:`, e);
   try {
-    const model = await resolveChatModel({
-      tier: 'budget', teamId: conversation.teamId, workspaceId: conversation.workspaceId, userId,
+    const result = await titleConversation({
+      messages,
+      generate: deps.generate,
+      onError: warn,
+      model: async () => {
+        const m = await (deps.resolveModel ?? resolveChatModel)({
+          tier: 'budget', teamId: conversation.teamId, workspaceId: conversation.workspaceId, userId,
+        });
+        if (m.ok) return { model: m.model };
+        warn(new Error(`no budget model: ${m.reason} (${m.provider})`));
+        return null;
+      },
     });
-    if (!model.ok) return;
-    const { text } = await (deps.generate ?? generateText)({
-      model: model.model,
-      instructions: 'Write a title for this conversation: 3 to 7 words, sentence case, no quotes, no trailing period. Reply with the title only.',
-      prompt: transcript(messages),
-      maxOutputTokens: 30,
-      abortSignal: AbortSignal.timeout(8000),
-    });
-    const title = await setConversationTitle(conversation.id, text, 'auto');
-    if (title) await pingConversation(conversation.id, 'title');
+    if (!result) return;
+    const title = await (deps.save ?? setConversationTitle)(conversation.id, result.title, 'auto');
+    if (title) await (deps.ping ?? pingConversation)(conversation.id, 'title');
   } catch (e) {
-    console.warn(`[chat] auto-title failed for conversation ${conversation.id}:`, e);
+    warn(e);
   }
 }

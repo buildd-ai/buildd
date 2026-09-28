@@ -108,6 +108,11 @@ mock.module('@/lib/mission-criteria-eval', () => ({
   ensureCriteriaVerdict: mockEnsureCriteriaVerdict,
 }));
 
+// The visual review hold reads the one model every surface reads.
+let visualModel: any = null;
+const mockLoadVisualReview = mock(async (_m: any) => visualModel);
+mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
+
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
 }));
@@ -170,6 +175,9 @@ function reset() {
   mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve(null) as any);
   mockFireMissionRelease.mockReset();
   mockFireMissionRelease.mockImplementation(() => Promise.resolve());
+  visualModel = null;
+  mockLoadVisualReview.mockClear();
+  delete process.env.VISUAL_REVIEW_GATE;
 }
 
 /** A real CI-retry row: taskClass 'attempt', which is NOT a deliverable. */
@@ -1241,5 +1249,87 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
 
     const d = await canCompleteMission('m1', { path: 'dormancy' });
     expect(d.code).toBe('awaiting_merge');
+  });
+});
+
+// ── Visual review hold (docs/design/visual-qa-human-review.md, part 5) ────────
+
+describe('canCompleteMission — visual review hold', () => {
+  beforeEach(reset);
+
+  const auditRow = (status = 'completed') => ({
+    id: 'audit-1', status, title: '[surface audit] M2', taskClass: 'work', mode: 'execution', result: null, roleSlug: 'visual-auditor',
+  });
+  const heldModel = (awaitingHuman: number, roundCapOpen = false) => ({
+    phase: 'needs_you', roundCapOpen, summary: { awaitingHuman }, cells: [],
+  });
+
+  it('runs no extra query when the mission has no audit task', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(mockLoadVisualReview).not.toHaveBeenCalled();
+    expect(d.visualReviewHold ?? null).toBeNull();
+  });
+
+  it('shadow by default: unreviewed unsure screens log and do not block', async () => {
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(3);
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(true);
+      expect(d.code).toBe('ok');
+      expect(d.visualReviewHold).toEqual({ cells: 3, roundCapOpen: false, enforced: false });
+    } finally {
+      console.log = orig;
+    }
+    expect(mockLoadVisualReview).toHaveBeenCalledTimes(1);
+    expect(logs.some(l => l.startsWith('[visual-review-shadow] m1 would hold: 3 cells'))).toBe(true);
+  });
+
+  it('VISUAL_REVIEW_GATE=enforce refuses with visual_review_open', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(2);
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('visual_review_open');
+    expect(d.reason).toContain('2 screens');
+    expect(d.visualReviewHold).toEqual({ cells: 2, roundCapOpen: false, enforced: true });
+  });
+
+  it('an open round-cap note holds too', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(0, true);
+    const d = await canCompleteMission('m1');
+    expect(d.code).toBe('visual_review_open');
+    expect(d.visualReviewHold).toEqual({ cells: 0, roundCapOpen: true, enforced: true });
+  });
+
+  it('nothing awaiting a human: no hold, even when enforced', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(0);
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.visualReviewHold ?? null).toBeNull();
+  });
+
+  it('a failed model read never blocks completion', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
   });
 });

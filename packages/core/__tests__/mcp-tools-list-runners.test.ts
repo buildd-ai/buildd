@@ -77,7 +77,8 @@ describe('list_runners', () => {
 
     expect(out).toContain('Runner A');
     expect(out).toContain('http://localhost:8766');
-    expect(out).toContain('capacity 1/3');
+    expect(out).toContain('1 busy of 3 slots');
+    expect(out).not.toContain('capacity');
     expect(out).toContain('branch main');
     expect(out).toContain('runnerCommit=5bfaeef');
     expect(out).toContain('runnerVersion=0.206.0');
@@ -123,5 +124,89 @@ describe('list_runners', () => {
     // dev-tracking runner: upToDateWithDeployed is never meaningful, so it's omitted.
     expect(out).not.toContain('upToDateWithDeployed');
     expect(out).toContain('workspaces: none');
+  });
+
+  const runner = (over: Record<string, unknown> = {}) => ({
+    localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 10,
+    workspaceIds: [MOCK_WORKSPACE_ID], workspaceNames: ['My Workspace'], trackedBranch: 'dev',
+    lastUpdated: '2026-09-27T00:00:00.000Z', ...over,
+  });
+
+  it('says busy of slots, never an ambiguous a/b', async () => {
+    mockApi.mockResolvedValueOnce({ activeLocalUis: [runner()] });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('0 busy of 10 slots');
+    expect(out).not.toMatch(/\b0\/10\b/);
+  });
+
+  it('browser: yes only when the server says online by the summary rule; a stale capable runner is labelled, not yes', async () => {
+    const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    mockApi.mockResolvedValueOnce({ onlineWindowMs: 180_000, activeLocalUis: [
+      runner({ accountName: 'Online', browser: true, browserOnline: true, lastUpdated: ago(1) }),
+      runner({ accountName: 'Stale', browser: true, browserOnline: false, lastUpdated: ago(20) }),
+      runner({ accountName: 'Without', browser: false, browserOnline: false, environment: { envKeys: ['node'] } }),
+      runner({ accountName: 'Unknown env', environment: null }),
+    ] });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    const line = (name: string) => out.split('\n').find(l => l.includes(name))!;
+    expect(line('Online')).toContain('browser: yes');
+    expect(line('Stale')).toContain('browser: capable, not online (heartbeat 20m ago; online = heartbeat within 3m)');
+    expect(line('Stale')).not.toContain('browser: yes');
+    expect(line('Without')).toContain('browser: no');
+    expect(line('Unknown env')).toContain('browser: no');
+  });
+
+  it('with workspaceId: summary no and a stale browser row never reads as a plain yes', async () => {
+    mockApi.mockResolvedValueOnce({
+      onlineWindowMs: 180_000,
+      activeLocalUis: [runner({ browser: true, browserOnline: false, canClaimInWorkspace: true, lastUpdated: new Date(Date.now() - 20 * 60_000).toISOString() })],
+      workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' },
+      browserRunnerOnline: false,
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(out.split('\n')[0]).toBe('Browser-capable runner online for My Workspace: no');
+    expect(out).not.toContain('browser: yes');
+    expect(out).toContain('browser: capable, not online');
+  });
+
+  it('with workspaceId: a fresh capable runner that cannot claim there says so', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [runner({ browser: true, browserOnline: false, canClaimInWorkspace: false, lastUpdated: new Date().toISOString() })],
+      workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' },
+      browserRunnerOnline: false,
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(out).toContain('browser: capable, cannot claim in My Workspace');
+  });
+
+  it('with workspaceId: asks the server for that workspace, keeps its runners, and gives the one-line browser answer', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [runner(), runner({ accountName: 'Elsewhere', workspaceIds: ['other-ws'] })],
+      workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' },
+      browserRunnerOnline: true,
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(mockApi.mock.calls[0][0]).toBe(`/api/workers/active?workspaceId=${MOCK_WORKSPACE_ID}`);
+    expect(out.split('\n')[0]).toBe('Browser-capable runner online for My Workspace: yes');
+    expect(out).not.toContain('Elsewhere');
+    expect(out).toMatch(/1 runner of other workspaces not shown; omit workspaceId for all/);
+  });
+
+  it('with workspaceId: says no, and unknown when the server could not tell', async () => {
+    mockApi.mockResolvedValueOnce({ activeLocalUis: [], workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' }, browserRunnerOnline: false });
+    const no = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(no).toContain('Browser-capable runner online for My Workspace: no');
+
+    mockApi.mockResolvedValueOnce({ activeLocalUis: [], workspace: { id: MOCK_WORKSPACE_ID, name: 'My Workspace' }, browserRunnerOnline: null });
+    const unknown = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: MOCK_WORKSPACE_ID }, ctx())).content[0].text;
+    expect(unknown).toContain('Browser-capable runner online for My Workspace: unknown');
+  });
+
+  it('with a workspaceId that does not resolve: an error, not every runner', async () => {
+    mockApi.mockResolvedValueOnce({ workspaces: [] });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: 'Nope' }, ctx());
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/"Nope"/);
+    expect(mockApi.mock.calls.some((c: unknown[]) => String(c[0]).startsWith('/api/workers/active'))).toBe(false);
   });
 });

@@ -1,4 +1,9 @@
 @import "tailwindcss";
+/* The shared AI kit's chat components (@builddai/ai-kit/chat/react): its
+   neutral defaults and its layout, each in a layer so buildd's own mapping
+   ("Chat on the kit", at the end of this file) and Tailwind utilities win. */
+@import "@builddai/ai-kit/chat/theme.css" layer(base);
+@import "@builddai/ai-kit/chat/styles.css" layer(components);
 @config "../../tailwind.config.ts";
 
 /* ── Z-Index Scale ──
@@ -194,12 +199,14 @@ select {
 
 /* The text field inside a brand Combobox: the wrapper draws the border. */
 input[data-bare-input]:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
-textarea[data-bare-input] {
+textarea[data-bare-input],
+textarea.kit-composer-input {
   border: 0 !important;
 }
-/* The chat composer's box spans the slab edge to edge: the ring above would
-   draw two copper lines across it. Its focus cue is the slab's own top rule. */
-textarea[data-composer-input]:focus-visible { outline: none; }
+/* The chat composer's box (the kit's) spans the slab edge to edge: the ring
+   above would draw two copper lines across it. Its focus cue is the slab's
+   own top rule. */
+textarea.kit-composer-input:focus-visible { outline: none; }
 
 /* iOS Safari zooms the page when a focused field's font-size is under 16px.
    Deliberately UNLAYERED: Tailwind v4 emits utilities in @layer utilities, and
@@ -747,14 +754,14 @@ textarea[data-composer-input]:focus-visible { outline: none; }
   /* Anything said by Buildd or the person: hero, rows, placeholders. */
   .font-voice { font-family: var(--font-newsreader), ui-serif, Georgia, serif; }
   /* The 8px mood square: breathes in opacity, never glows. */
-  .mood-dot { animation: mood-dot 2.4s ease-in-out infinite; }
+  .mood-dot, .buildd-empty .kit-mood-dot { animation: mood-dot 2.4s ease-in-out infinite; }
 }
 @keyframes mood-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: .45; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mood-dot { animation: none; }
+  .mood-dot, .buildd-empty .kit-mood-dot { animation: none; }
 }
 @keyframes canvas-rise {
   from { transform: translateY(14px); opacity: 0; }
@@ -846,4 +853,405 @@ textarea[data-composer-input]:focus-visible { outline: none; }
   .composer-sweep { animation: none; }
   .composer-sweep::after { width: 100%; box-shadow: none; }
   .thinking-tick, .step-active { animation: none; }
+}
+
+/* ── Chat on the kit (docs/design/shared-ai-kit.md, 1c "Theming"). buildd's
+ * tools menu, tier picker, approval and setup cards and the empty canvas are
+ * the kit's components (@builddai/ai-kit/chat/react). They read only these
+ * --kit-* properties, mapped here once from the chat roles above, so they
+ * follow the day/night switch. Objects stay square: --kit-radius-hard is 0;
+ * only the conversation's bubbles are soft (--kit-radius-soft). Declared on
+ * every [data-theme] too, so a subtree pinned to a theme resolves its own. */
+:root, [data-theme] {
+  --kit-bg: var(--chat-ground);
+  --kit-surface: var(--chat-surface);
+  --kit-ink: var(--chat-text);
+  --kit-muted: var(--chat-muted);
+  --kit-rule: var(--chat-rule);
+  --kit-accent: var(--accent);
+  --kit-accent-ink: var(--on-accent);
+  --kit-radius-soft: 18px;
+  --kit-radius-hard: 0;
+  --kit-font-body: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --kit-font-mono: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  --kit-sheet-bottom-offset: 0px;
+  /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
+  --kit-scrim: rgb(0 0 0 / 0.5);
+}
+
+/* buildd's look for the kit's classes: the v3 chat foreground
+ * (docs/design/chat-canvas.md). Same layer as the kit's styles.css and later
+ * in source, so these win without !important, and Tailwind utilities still
+ * win over both. */
+@layer components {
+  /* ── Composer control cells (tools, tier): square, filling their toolbar
+     slot, split by the toolbar's 1px rules. At least 44px to touch. */
+  .buildd-menu-cell > .kit-menu { height: 100%; width: 100%; }
+  .buildd-menu-cell .kit-menu-trigger {
+    height: 100%; width: 100%; min-height: 44px; min-width: 0; padding: 0 8px;
+    justify-content: center; gap: 6px;
+    font-family: var(--kit-font-mono); font-size: 12.5px; font-weight: 500; color: var(--chat-muted);
+  }
+  .buildd-menu-cell .kit-menu-trigger:hover,
+  .buildd-menu-cell .kit-menu-trigger[aria-expanded="true"] { background: var(--chat-raised); color: var(--chat-text); }
+  .buildd-menu-cell [data-testid="kit-tier-trigger"] > span[aria-hidden="true"] { color: var(--chat-dim); }
+  /* The tools cell is just `···` (the kit's ToolsMenu carries no count). */
+  .buildd-menu-cell [data-testid="kit-tools-trigger"] { font-size: 13px; letter-spacing: .08em; }
+  /* Same label on every viewport, lowercase in the cell (`auto ▾`,
+     `auto · standard`); the menu keeps sentence case. */
+  .buildd-menu-cell [data-testid="kit-tier-trigger"] { text-transform: lowercase; }
+
+  /* The popover, anchored to its cell: it opens up (the chat composer sits at
+     the bottom), or down when there is room below and little above (Home's). */
+  .buildd-menu-cell .kit-menu > .kit-menu-panel {
+    width: 300px; min-width: 0; max-width: calc(100vw - 2rem); padding: 0;
+    border: 2px solid var(--border-strong); background: var(--surface-2); color: var(--text-primary);
+    box-shadow: var(--card-shadow);
+  }
+  .kit-sheet-layer > .kit-menu-panel[data-sheet] {
+    border-radius: 0; border-top: 2px solid var(--border-strong);
+    background: var(--surface-2); color: var(--text-primary); padding-top: 0;
+  }
+  .kit-menu-panel .kit-menu-title {
+    margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-size: 11px; letter-spacing: 2px; color: var(--text-muted);
+  }
+  /* The phone sheet's title bar, as buildd's BottomSheet draws it: the title
+     in sentence case and a × to close. */
+  .kit-menu-panel[data-sheet] .kit-sheet-head { min-height: 64px; padding: 0 4px 0 16px; border-bottom: 1px solid var(--border); }
+  .kit-menu-panel[data-sheet] .kit-sheet-head > .kit-menu-title {
+    padding: 0; border: 0; font-size: 15px; font-weight: 700; letter-spacing: 0; text-transform: none; color: var(--text-primary);
+  }
+  .kit-menu-panel[data-sheet] .kit-sheet-close { color: var(--text-secondary); }
+  .kit-menu-panel .kit-menu-footer { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
+  .kit-menu-panel .kit-rows { padding: 4px 0; }
+  .kit-menu-panel .kit-row { min-height: 44px; padding: 0 12px; font-family: var(--kit-font-mono); font-size: 12.5px; color: var(--text-primary); }
+  .kit-menu-panel .kit-row[data-locked="true"] > .kit-row-label { color: var(--text-muted); }
+  .kit-menu-panel .kit-row-lock { font-size: 11.5px; letter-spacing: 1.2px; color: var(--text-muted); }
+  .kit-menu-panel .kit-toggle { border: 1.5px solid var(--border-strong); }
+  .kit-menu-panel .kit-toggle > button { min-height: 32px; font-size: 11.5px; color: var(--text-secondary); }
+  .kit-menu-panel .kit-toggle > button:hover:not([aria-pressed="true"]) { background: var(--surface-3); }
+  .kit-menu-panel .kit-toggle > button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+  .kit-menu-panel .kit-menu-error { padding: 8px 12px; border-top: 1px solid var(--border); font-family: var(--kit-font-mono); font-size: 12px; color: var(--status-error); }
+  /* Tier options: the name over its model and price (the kit's second
+     line), a tick on the pinned one. */
+  .kit-menu-panel .kit-option {
+    min-height: 44px; padding: 6px 12px; font-family: var(--kit-font-mono); font-weight: 400; color: var(--text-secondary);
+  }
+  @media (hover: hover) { .kit-menu-panel .kit-option:hover { background: var(--surface-3); } }
+  .kit-menu-panel .kit-option-name, .kit-menu-panel .kit-option > span:first-child:not(.kit-option-text) { font-size: 13px; font-weight: 600; }
+  .kit-menu-panel .kit-option-detail { color: var(--text-muted); }
+  .kit-menu-panel .kit-option[aria-checked="true"] { color: var(--text-primary); }
+  .kit-menu-panel .kit-option[aria-checked="true"]::after { content: "✓"; flex: none; color: var(--accent-text); }
+  /* A cell's detail on hover (the kit Menu's, desktop pointers only). */
+  .buildd-menu-cell .kit-menu-hover {
+    max-width: 300px; padding: 8px 12px; border: 2px solid var(--border-strong); background: var(--surface-2);
+    box-shadow: var(--card-shadow); font-size: inherit;
+  }
+  /* The running cost rides on the tier cell at tablet width only. */
+  .buildd-menu-cell .kit-trigger-extra { display: none; color: var(--chat-dim); }
+  @media (min-width: 768px) and (max-width: 1023px) { .buildd-menu-cell .kit-trigger-extra { display: inline; } }
+
+  /* ── Approval card: a fleet object (square, 1px rule, 3px offset shadow,
+     2px copper top edge for "needs you"), mono chrome, what changes said in
+     Newsreader. The head row is the kit's (status, the write, its workspace). */
+  .kit-card.buildd-approval {
+    gap: 10px; padding: 0 16px 16px;
+    border: 1px solid var(--chat-rule-strong); border-top: 2px solid var(--mood-needs);
+    background: var(--chat-surface); box-shadow: 3px 3px 0 0 var(--chat-rule);
+  }
+  .buildd-approval > .kit-card-head {
+    align-items: center; gap: 6px 12px; margin: 0 -16px; padding: 10px 16px;
+    border-bottom: 1px solid var(--chat-rule);
+  }
+  .buildd-approval .kit-card-head > .kit-eyebrow {
+    display: flex; align-items: center; gap: 8px; letter-spacing: .16em; color: var(--mood-needs);
+  }
+  .buildd-approval .kit-card-head > .kit-eyebrow::before { content: ""; width: 8px; height: 8px; flex: none; background: var(--mood-needs); }
+  .buildd-approval .kit-card-tag { font-size: 12px; color: var(--chat-text); }
+  .buildd-approval .kit-card-meta { color: var(--chat-muted); }
+  .buildd-approval > .kit-card-title {
+    margin-top: 2px; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 19px; font-weight: 400; line-height: 1.3; color: var(--chat-text);
+  }
+  /* A new mission is titled like the object it files. */
+  [data-kind="mission"] > .buildd-approval > .kit-card-title {
+    font-family: var(--kit-font-mono); font-size: 17px; font-weight: 600; line-height: 1.375; color: var(--text-primary);
+  }
+  [data-kind="mission"] > .buildd-approval > .kit-approval-body { margin-top: -4px; }
+  .buildd-approval .kit-changes { border-top: 1px solid var(--chat-rule); }
+  .buildd-approval .kit-change { gap: 2px 16px; padding: 8px 0; border-bottom: 1px solid var(--chat-rule); }
+  .buildd-approval .kit-change-label { letter-spacing: .14em; color: var(--chat-muted); overflow-wrap: anywhere; }
+  .buildd-approval .kit-change > span:last-child {
+    min-width: 0; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 16.5px; line-height: 1.4; color: var(--chat-text); overflow-wrap: anywhere;
+  }
+  .buildd-approval .kit-change del { color: var(--chat-muted); }
+  .buildd-approval .kit-change-arrow { padding: 0 6px; font-family: var(--kit-font-mono); color: var(--chat-muted); }
+  .buildd-approval .kit-note { font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 15px; font-style: italic; color: var(--chat-muted); }
+  .buildd-approval .kit-confirm-field .kit-note { font-family: var(--kit-font-mono); font-size: 12px; font-style: normal; color: var(--text-secondary); }
+  .buildd-approval .kit-confirm-field strong { color: var(--text-primary); }
+  .buildd-approval .kit-input { min-height: 40px; border: 2px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary); font-family: var(--kit-font-mono); font-size: 13px; }
+  /* The phone fold: "▸ Show details · 3 changes". */
+  .buildd-approval .kit-fold-toggle { min-height: 36px; color: var(--text-muted); }
+  .buildd-approval .kit-fold-toggle > span:first-child, .buildd-approval .kit-fold-label { color: var(--text-secondary); }
+  .buildd-approval .kit-actions { flex-wrap: nowrap; gap: 8px; padding-top: 4px; }
+  .buildd-approval .kit-btn {
+    min-height: 44px; padding: 0 14px; white-space: nowrap;
+    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;
+    border: 1.5px solid var(--border-strong); color: var(--text-primary);
+  }
+  .buildd-approval .kit-btn:hover:not(:disabled) { background: var(--surface-3); }
+  .buildd-approval .kit-btn[data-variant="primary"] { padding: 0 16px; font-weight: 600; border: 2px solid var(--on-accent); background: var(--accent); color: var(--on-accent); }
+  .buildd-approval .kit-btn[data-variant="primary"]:hover:not(:disabled) { background: var(--primary-hover); }
+  .buildd-approval .kit-btn[data-variant="quiet"] { padding: 0 8px; border-color: transparent; color: var(--text-secondary); }
+  .buildd-approval .kit-btn[data-variant="quiet"]:hover:not(:disabled) { background: transparent; color: var(--text-primary); }
+  /* Discarded: one line, like a tool row. */
+  .kit-card.buildd-approval.kit-approval-row {
+    padding: 8px 14px; border: 1px solid var(--chat-rule); box-shadow: none; font-size: 12.5px; color: var(--chat-muted);
+  }
+  .buildd-approval.kit-approval-row > .kit-card-title { margin: 0; font-family: var(--kit-font-mono); font-size: 12.5px; font-weight: 600; color: var(--chat-text); }
+  .buildd-approval.kit-approval-row > .kit-note { font-family: var(--kit-font-mono); font-size: 12.5px; font-style: normal; }
+  @media (min-width: 768px) {
+    .kit-card.buildd-approval:not(.kit-approval-row) { padding: 0 20px 16px; }
+    .buildd-approval > .kit-card-head { margin: 0 -20px; padding: 12px 20px; }
+    .buildd-approval > .kit-card-title { font-size: 20px; }
+    [data-kind="mission"] > .buildd-approval > .kit-card-title { font-size: 20px; }
+    .buildd-approval .kit-change { grid-template-columns: 110px minmax(0, 1fr); align-items: baseline; }
+    .buildd-approval .kit-actions { gap: 10px; }
+  }
+
+  /* ── Setup card: the one inline "chat can't start yet" state. */
+  .kit-card.buildd-setup { gap: 6px; padding: 16px 20px; border: 2px dashed var(--border-strong); background: var(--card); }
+  .buildd-setup > .kit-eyebrow { font-weight: 700; letter-spacing: 2px; color: var(--accent-text); }
+  .buildd-setup > .kit-card-title { font-family: var(--kit-font-mono); font-size: 16px; font-weight: 600; color: var(--text-primary); }
+  .buildd-setup > .kit-note { font-size: 14px; line-height: 1.625; color: var(--text-secondary); }
+  .buildd-setup > .kit-actions { margin-top: 6px; align-items: center; gap: 12px; }
+
+  /* ── The empty canvas (ChatWorkspace): the kit's ChatEmpty with an overline
+     and its mood square, the greeting in the voice face, a sub line, and the
+     picked questions as square numbered rows under their header. Anchored (the
+     plain new chat on a phone, and from 1024px), the header and rows sit at
+     the bottom of the column with open sea above them. */
+  .kit-empty.buildd-empty { gap: 0; padding: 0; }
+  .buildd-empty > .kit-empty-overline { gap: 8px; letter-spacing: .16em; color: var(--chat-muted); }
+  .buildd-empty .kit-mood-dot { background: var(--mood-calm); }
+  .buildd-empty .kit-mood-dot[data-mood="needs"] { background: var(--mood-needs); }
+  .buildd-empty > .kit-greeting {
+    margin: 16px 0 0; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 28px; font-weight: 400; line-height: 1.1; letter-spacing: -0.01em; color: var(--chat-text);
+  }
+  .buildd-empty-plain > .kit-greeting { font-size: 44px; line-height: 1.02; letter-spacing: -0.02em; }
+  .buildd-empty > .kit-empty-sub {
+    margin: 12px 0 0; font-family: var(--font-newsreader), ui-serif, Georgia, serif;
+    font-size: 20px; font-style: italic; line-height: 1.375; color: var(--chat-muted);
+  }
+  .buildd-empty > .kit-chips-head {
+    margin-top: 28px; height: 31px; padding: 0 12px;
+    border: 1px solid var(--chat-rule); background: var(--chat-panel);
+    letter-spacing: .16em; color: var(--chat-muted);
+  }
+  .buildd-empty .kit-chips[data-variant="rows"] {
+    counter-reset: picked; border: 1px solid var(--chat-rule); border-radius: 0; background: var(--chat-panel);
+  }
+  .buildd-empty > .kit-chips-head + .kit-chips { border-top: 0; }
+  .buildd-empty .kit-chips > li + li { border-top-color: var(--chat-rule); }
+  .buildd-empty .kit-chips[data-variant="rows"] .kit-chip {
+    counter-increment: picked; min-height: 56px; gap: 12px; padding: 8px 12px;
+    font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 19px; line-height: 1.25; color: var(--chat-text);
+  }
+  .buildd-empty .kit-chip:hover { background: var(--chat-raised); }
+  .buildd-empty .kit-chip::before { content: counter(picked, decimal-leading-zero); flex: none; font-family: var(--kit-font-mono); font-size: 11px; color: var(--chat-dim); }
+  .buildd-empty .kit-chip::after { content: "→"; flex: none; margin-left: auto; font-family: var(--kit-font-mono); font-size: 14px; color: var(--chat-muted); }
+  /* The row that is the thing waiting on the viewer is drawn copper. */
+  .buildd-empty .kit-chips .kit-chip[data-tone="needs"],
+  .buildd-empty .kit-chips .kit-chip[data-tone="needs"]::before,
+  .buildd-empty .kit-chips .kit-chip[data-tone="needs"]::after { color: var(--mood-needs); }
+  /* Anchored: the sea takes the free height (at least 28px) above the rows. */
+  @media (max-width: 767px) {
+    .buildd-empty-anchor-phone > .kit-chips-head { margin-top: auto; }
+    .buildd-empty-anchor-phone > :has(+ .kit-chips-head) { margin-bottom: 28px; }
+  }
+  @media (min-width: 1024px) {
+    .buildd-empty-anchor-desk > .kit-chips-head { margin-top: auto; }
+    .buildd-empty-anchor-desk > :has(+ .kit-chips-head) { margin-bottom: 28px; }
+    .buildd-empty-plain > .kit-greeting { font-size: 64px; }
+    .buildd-empty:not(.buildd-empty-plain) > .kit-greeting { max-width: 640px; }
+    .buildd-empty > .kit-empty-sub { margin-top: 16px; font-size: 22px; }
+  }
+
+  /* ── Thread on the kit (ChatFeed): the kit's ChatThread is only the list and
+     its message frames; what is in them is buildd's. The feed sits straight
+     on the sea: no ground, no padding, 28px between messages. */
+  .kit-thread.buildd-thread { gap: 28px; padding: 0; background: transparent; }
+  .buildd-thread .kit-msg { max-width: none; }
+  /* The person: meta, then the bubble (it pushes itself right), then the tag. */
+  .buildd-thread .kit-msg[data-role="user"] { align-self: stretch; gap: 4px; }
+  .buildd-thread .kit-msg[data-role="user"] > .kit-msg-head,
+  .buildd-thread .kit-msg[data-role="user"] > .kit-msg-foot { justify-content: flex-end; }
+  /* The agent (and an event it posted): the avatar beside the header, the
+     turn indented under it. */
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) { gap: 14px; padding-left: 40px; }
+  .buildd-thread .kit-msg:is([data-role="assistant"], [data-role="event"]):not([data-streaming]) > .kit-msg-head { margin-left: -40px; gap: 12px; }
+  .buildd-thread .kit-msg:not([data-role="user"]) > .kit-msg-foot { flex-direction: column; align-items: stretch; gap: 14px; }
+  .buildd-thread .kit-msg-foot > .buildd-feedback { align-self: flex-start; }
+  /* Nothing to say (no objects, no thumbs yet): no gap either. */
+  .buildd-thread .kit-msg-foot:empty { display: none; }
+  /* The turn in flight (docs/design/chat-canvas.md, "Thinking"): a square
+     panel with a plain blue left rule, BUILDD / THINKING and three ticking
+     squares, the steps in plain words, then what the agent is saying. No
+     glow here; the surface's one glow is the composer sweep. */
+  .buildd-thread .kit-msg[data-role="assistant"][data-streaming] {
+    gap: 12px; padding: 12px 16px 16px;
+    border: 1px solid var(--chat-rule); border-left: 2px solid var(--mood-thinking-rule); background: var(--chat-panel);
+  }
+  .buildd-thread .kit-thinking { border: 0; background: transparent; padding: 0; }
+  .buildd-thread .kit-thinking > summary { min-height: 0; pointer-events: none; cursor: default; }
+  .buildd-thinking-title {
+    display: flex; align-items: center; gap: 12px;
+    font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .buildd-thread .kit-steps { margin-top: 12px; gap: 8px; }
+  .buildd-thread .kit-step { gap: 12px; font-family: var(--kit-font-mono); font-size: 13px; line-height: 1.4; }
+  .buildd-thread .kit-step[data-state="done"] { color: var(--chat-muted); }
+  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking-text); }
+  .buildd-thread .kit-step[data-state="pending"] { color: var(--chat-dim); }
+  .buildd-thread .kit-step-mark { width: 10px; height: 10px; border: 0; border-radius: 0; }
+  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--mood-thinking-done); }
+  .buildd-thread .kit-step[data-state="active"] .kit-step-mark { background: var(--mood-thinking); animation: mood-dot 1.6s ease-in-out infinite; }
+  .buildd-thread .kit-step[data-state="pending"] .kit-step-mark { border: 1px solid var(--chat-dim); background: transparent; }
+  /* The request failed: said once, under the turn. */
+  .buildd-thread > .kit-error {
+    border: 0; border-radius: 12px; padding: 12px 16px; background: var(--fleet-err-soft);
+    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; color: var(--status-error);
+  }
+  /* The thumbs: 44px to touch on a phone, 32px on a desktop pointer. */
+  .buildd-feedback .kit-thumb-btn { color: var(--text-muted); }
+  .buildd-feedback .kit-thumb-btn:hover { color: var(--text-primary); border-color: var(--border); }
+  .buildd-feedback .kit-thumb-btn[aria-pressed="true"] { color: var(--text-primary); border-color: var(--border-strong); background: var(--surface-2); }
+  .buildd-feedback .kit-feedback-reason { font-size: 11.5px; color: var(--text-muted); }
+  @media (min-width: 768px) {
+    .buildd-feedback .kit-thumb-btn { min-width: 32px; min-height: 32px; }
+  }
+  .kit-feedback-panel .kit-option[aria-checked="true"] { background: var(--text-primary); color: var(--surface-1); }
+  @media (prefers-reduced-motion: reduce) {
+    .buildd-thread .kit-step[data-state="active"] .kit-step-mark { animation: none; }
+  }
+
+  /* ── Composer on the kit (ChatComposer): the kit's box drawn as buildd's
+     slab. A full-bleed slab on a phone, a square box from 768px, no radius
+     anywhere. The 2px top rule is copper while something needs the viewer,
+     the text colour on focus otherwise, and carries the streaming sweep. */
+  .buildd-composer > .kit-composer {
+    border: 0; border-top: 2px solid var(--chat-rule-strong); border-radius: 0;
+    background: var(--chat-surface); transition: border-color .15s;
+  }
+  .buildd-composer > .kit-composer[data-busy] { border-top-color: var(--chat-rule-strong); }
+  .buildd-composer > .kit-composer[data-mood="needs"] { border-top-color: var(--mood-needs); }
+  .buildd-composer .kit-composer-edge { top: -2px; overflow: visible; overflow-x: clip; }
+  .buildd-composer .kit-composer-input {
+    min-height: 64px; max-height: 12rem; padding: 12px 16px;
+    font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 17px; line-height: 1.35; color: var(--chat-text);
+  }
+  .buildd-composer .kit-composer-input::placeholder { color: var(--chat-muted); }
+  .buildd-composer .kit-toolbar { height: 48px; min-height: 48px; border-top-color: var(--chat-rule); }
+  .buildd-composer .kit-toolbar > * + * { border-left-color: var(--chat-rule); }
+  .buildd-composer .kit-toolbar-slot[data-slot="scope"] { flex: 1 1 0; }
+  .buildd-composer .kit-send, .buildd-composer .kit-stop { width: 60px; border-radius: 0; }
+  .buildd-composer .kit-send {
+    display: grid; place-items: center; background: var(--mood-needs-fill); color: var(--on-mood-needs);
+    font-family: var(--kit-font-mono); font-size: 20px; font-weight: 700;
+  }
+  .buildd-composer .kit-send:not([aria-disabled]):hover { filter: brightness(1.1); }
+  .buildd-composer .kit-stop { background: var(--chat-text); }
+  .buildd-composer .kit-stop:hover { opacity: .9; }
+  .buildd-composer .kit-stop-mark { border-radius: 0; background: var(--chat-ground); }
+  .buildd-composer .kit-composer-footer { margin-top: 8px; }
+  .buildd-composer .kit-composer-footer:empty { display: none; }
+  @media (min-width: 768px) {
+    .buildd-composer > .kit-composer { border-left: 1px solid var(--chat-rule); border-right: 1px solid var(--chat-rule); border-bottom: 1px solid var(--chat-rule); }
+    .buildd-composer > .kit-composer:not([data-mood="needs"]):focus-within { border-top-color: var(--chat-text); }
+    .buildd-composer .kit-composer-input { font-size: 16px; }
+    .buildd-composer > .kit-composer:not([data-compact]) .kit-composer-input { min-height: 76px; }
+  }
+  @media (min-width: 1024px) {
+    .buildd-composer > .kit-composer { box-shadow: 4px 4px 0 0 var(--chat-rule); }
+    .buildd-composer .kit-send, .buildd-composer .kit-stop { width: 64px; }
+  }
+
+  /* ── Pinned on the kit (objects/PinnedObject): the kit's strip, hard and
+     square like every fleet object. buildd's breakpoint for the desk bar is
+     768px (the pane docks there), not the kit's 640px. */
+  .kit-pinned.buildd-pinned { flex-shrink: 0; border-bottom: 2px solid var(--border-strong); background: var(--surface-1); }
+  .buildd-pinned .kit-pinned-bar { min-height: 48px; gap: 10px; padding: 8px 16px; }
+  .buildd-pinned .kit-pinned-phone { gap: 10px; }
+  .buildd-pinned .kit-pinned-desk { gap: 12px; }
+  .buildd-pinned .kit-pinned-kind { font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-title { color: var(--text-primary); }
+  .buildd-pinned .kit-pinned-go { color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-meta { display: none; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-open { min-height: 36px; color: var(--accent-text); }
+  .buildd-pinned .kit-pinned-open:hover { text-decoration: underline; }
+  .buildd-pinned .kit-pinned-toggle { min-height: 36px; color: var(--text-muted); }
+  .buildd-pinned .kit-pinned-toggle:hover { color: var(--text-primary); }
+  .buildd-pinned .kit-pinned-extra { gap: 12px; padding: 0 16px 8px; }
+  .buildd-pinned .kit-pinned-detail { padding: 0 24px 16px; }
+  @media (min-width: 640px) and (max-width: 767px) {
+    .kit-pinned.buildd-pinned[data-hide-desktop="true"] { display: block; }
+    .buildd-pinned .kit-pinned-phone { display: flex; }
+    .buildd-pinned .kit-pinned-desk, .buildd-pinned .kit-pinned-detail { display: none; }
+  }
+  @media (min-width: 768px) {
+    .buildd-pinned .kit-pinned-bar { padding: 8px 24px; }
+    .buildd-pinned .kit-pinned-extra { padding: 0 24px 8px; }
+  }
+  @media (min-width: 1024px) { .buildd-pinned .kit-pinned-meta { display: inline; } }
+
+  /* ── Steer on the kit (SteerConversation): the canvas's own chrome, rescoped
+     to one running agent. A header, the square presence strip (the pinned
+     object's family), the sent / delivered list, and a soft composer. */
+  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .buildd-steer .kit-steer-header { min-height: 56px; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--convo-line); }
+  .buildd-steer .kit-steer-header > .kit-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
+  .buildd-steer .kit-steer-header > .kit-eyebrow::after { content: "/"; margin-left: 8px; font-weight: 400; letter-spacing: 0; }
+  .buildd-steer .kit-steer-title { font-family: var(--kit-font-mono); font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
+  .buildd-steer .kit-steer-header > .kit-btn { min-width: 44px; min-height: 44px; padding: 0 8px; border-radius: 10px; font-size: 18px; color: var(--text-secondary); }
+  .buildd-steer .kit-steer-header > .kit-btn:hover { background: var(--convo-soft); color: var(--text-primary); }
+  .buildd-steer .kit-steer-presence { min-height: 44px; padding: 8px 16px; border-bottom: 2px solid var(--border-strong); background: var(--surface-1); color: var(--text-secondary); }
+  .buildd-steer .kit-steer-presence-item[data-tone="strong"] { color: var(--text-primary); }
+  .buildd-steer .kit-steer-presence-item[data-tone="muted"] { color: var(--text-muted); }
+  .buildd-steer .kit-steer-presence-item[data-tone="live"] { color: var(--status-info); }
+  .buildd-steer .kit-steer-feed { padding: 16px; }
+  .buildd-steer .kit-steer-feed > .kit-note { font-size: 14px; color: var(--text-muted); }
+  .buildd-steer .kit-steer-list { gap: 12px; }
+  .buildd-steer .kit-steer-msg { border: 2px solid var(--border-strong); background: var(--card); padding: 8px 12px; }
+  .buildd-steer .kit-steer-msg > .kit-text { font-size: 14px; color: var(--text-primary); }
+  /* The delivery chip: the object cards' square state chip. */
+  .buildd-steer .kit-steer-status {
+    display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+    border: 1.5px solid var(--border); font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--text-muted);
+  }
+  .buildd-steer .kit-steer-status[data-status="sent"]::before { content: ""; width: 8px; height: 8px; background: currentColor; animation: status-pulse 2s ease-in-out infinite; }
+  .buildd-steer .kit-steer-status[data-status="delivered"] { border-color: var(--status-success); color: var(--status-success); }
+  .buildd-steer > .kit-composer {
+    margin: 8px 12px 12px; border: 1.5px solid var(--convo-line); border-radius: 16px; background: var(--surface-2); transition: border-color .15s;
+  }
+  .buildd-steer > .kit-composer:focus-within { border-color: var(--accent); }
+  .buildd-steer .kit-composer-input { min-height: 78px; padding: 12px 14px; font-size: 15px; color: var(--text-primary); }
+  .buildd-steer .kit-composer-input::placeholder { color: var(--text-muted); }
+  .buildd-steer .kit-toolbar { min-height: 0; border-top: 0; justify-content: flex-end; padding: 0 8px 8px; }
+  .buildd-steer .kit-send.kit-steer-send {
+    min-height: 36px; padding: 0 14px; border-radius: 10px; background: var(--accent); color: var(--on-accent);
+    font-size: 13.5px; font-weight: 600;
+  }
+  .buildd-steer .kit-send.kit-steer-send[aria-disabled="true"] { opacity: .5; }
+  .buildd-steer .kit-send.kit-steer-send:not([aria-disabled]):hover { background: var(--primary-hover); }
+  .buildd-steer > .kit-error { margin: 0 12px 12px; border: 0; padding: 0; font-size: 13px; color: var(--status-error); }
+  @media (min-width: 768px) {
+    .buildd-steer .kit-steer-header, .buildd-steer .kit-steer-presence, .buildd-steer .kit-steer-feed { padding-left: 24px; padding-right: 24px; }
+    .buildd-steer .kit-steer-title { font-size: 13px; }
+    .buildd-steer .kit-steer-header > .kit-btn { min-width: 40px; min-height: 40px; }
+    .buildd-steer > .kit-composer { margin: 8px 24px 20px; }
+    .buildd-steer > .kit-error { margin: 0 24px 20px; }
+  }
 }

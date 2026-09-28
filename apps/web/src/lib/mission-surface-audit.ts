@@ -1,8 +1,9 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes } from '@buildd/core/db/schema';
-import { and, desc, eq, like } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
+  SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
   SURFACE_AUDIT_TITLE_PREFIX,
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
@@ -12,6 +13,7 @@ import {
   surfaceAuditTitle,
   surfaceFixRoute,
   touchesUiSurface,
+  type SurfaceAuditTrigger,
 } from '@buildd/core/surface-audit';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -37,6 +39,13 @@ export interface EnsureSurfaceAuditParams {
     githubInstallationId?: string | null;
     githubRepoId?: string | null;
   };
+  /**
+   * Who filed `createdTask`, for a `[surface fix]`: the pipeline (`auto`, the
+   * default: the auditor or a person through POST /api/tasks) or a visual
+   * review decision (`human`), which bypasses the automatic round cap under
+   * MAX_TOTAL_SURFACE_AUDIT_ROUNDS (planSurfaceFixFollowUp).
+   */
+  origin?: SurfaceAuditTrigger;
 }
 
 /**
@@ -57,7 +66,7 @@ export interface EnsureSurfaceAuditParams {
  * this route (neon-http does not support interactive transactions).
  */
 export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams): Promise<void> {
-  const { missionId, workspaceId, createdTask, targetWorkspace } = params;
+  const { missionId, workspaceId, createdTask, targetWorkspace, origin = 'auto' } = params;
 
   // Only a real builder deliverable can trigger or extend the audit — never
   // chase our own tail, and never count bookkeeping rows (mission organizer
@@ -97,6 +106,7 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       fixTask: createdTask,
       latestAudit: existingAudit,
       targetWorkspace,
+      origin,
     });
     return;
   }
@@ -144,8 +154,11 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       requiredRoutes: visualQaRequiredRoutes(scopedPaths),
     }),
     taskClass: 'work',
+    // Looking, not building: the work-kind glyph and the model router read it.
+    kind: 'observation',
     dependsOn,
     outputRequirement: 'artifact_required',
+    context: { surfaceAuditTrigger: 'auto' },
     // An explicit role slug: only a runner that found a working browser
     // advertises it (claim/role-gate.ts), so the audit can't be done from the
     // diff by a runner that can't render a page.
@@ -170,8 +183,8 @@ function frozenRoutes(context: unknown): string[] {
     : [];
 }
 
-export const SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE =
-  `Visual review: issues remain after ${MAX_SURFACE_AUDIT_ROUNDS} audit rounds`;
+// Lives in core so the visual review loader can read it without this module's db deps.
+export { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE };
 
 /**
  * Route a new `[surface fix]` task to the right audit round.
@@ -195,11 +208,16 @@ async function followUpSurfaceFix(opts: {
   fixTask: EnsureSurfaceAuditParams['createdTask'];
   latestAudit: { id: string; title: string; status: string; dependsOn: unknown; context: unknown };
   targetWorkspace: EnsureSurfaceAuditParams['targetWorkspace'];
+  origin: SurfaceAuditTrigger;
 }): Promise<void> {
-  const { missionId, workspaceId, missionTitle, fixTask, latestAudit, targetWorkspace } = opts;
+  const { missionId, workspaceId, missionTitle, fixTask, latestAudit, targetWorkspace, origin } = opts;
   const round = surfaceAuditRound(latestAudit);
   const route = surfaceFixRoute(fixTask.title);
-  const plan = planSurfaceFixFollowUp({ status: latestAudit.status, round });
+  const plan = planSurfaceFixFollowUp({ status: latestAudit.status, round }, { origin });
+
+  // At the ceiling nothing opens. The decisions route checks this first and
+  // answers 409, so a human fix never gets here in practice.
+  if (plan.action === 'ceiling') return;
 
   if (plan.action === 'extend') {
     const currentDeps = Array.isArray(latestAudit.dependsOn) ? (latestAudit.dependsOn as string[]) : [];
@@ -244,6 +262,11 @@ async function followUpSurfaceFix(opts: {
       ].join('\n\n'),
       status: 'open',
     });
+    // The round-cap question also reaches the conversation the mission was
+    // filed from, once per audit (docs/design/visual-qa-human-review.md, Chat).
+    await import('@/lib/chat/mission-events')
+      .then(m => m.postVisualReviewEvent({ missionId, moment: 'round_cap', auditTaskId: latestAudit.id }))
+      .catch(err => console.error('[surface-audit] chat event failed:', err));
     return;
   }
 
@@ -258,14 +281,16 @@ async function followUpSurfaceFix(opts: {
       scopedPaths,
       requiredRoutes: [...new Set([...requiredRoutes, ...visualQaRequiredRoutes(scopedPaths)])].sort(),
       round: plan.round,
+      trigger: origin,
     }),
     taskClass: 'work',
+    kind: 'observation',
     dependsOn: [fixTask.id],
     outputRequirement: 'artifact_required',
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
     // The round is authoritative in context (the retry clone keeps context);
     // the frozen routes are unioned into the evidence check's required set.
-    context: { surfaceAuditRound: plan.round, visualQa: { requiredRoutes } },
+    context: { surfaceAuditRound: plan.round, surfaceAuditTrigger: origin, visualQa: { requiredRoutes } },
   }).returning();
 
   if (auditTask) {
@@ -273,4 +298,73 @@ async function followUpSurfaceFix(opts: {
       console.error('[mission-surface-audit] dispatch failed:', err),
     );
   }
+}
+
+export type DetachFixResult =
+  | { action: 'none' }
+  | { action: 'detached'; auditTaskId: string }
+  | { action: 'cancelled'; auditTaskId: string };
+
+/**
+ * A `[surface fix]` was waived (cancelled by a human decision) or withdrawn
+ * (an undo). If the mission's latest audit has not started, it must not
+ * re-check a fix that will never land: re-shooting the unchanged page would
+ * only file the same issue again.
+ *
+ * - The fix leaves the pending audit's `dependsOn`, and its route leaves the
+ *   frozen route list unless another remaining fix names it.
+ * - A later round left with no dependency re-checks nothing, so it is
+ *   cancelled, only while still pending and unclaimed (atomic WHERE).
+ * - Round 1 keeps its builder dependencies and just drops the fix.
+ *
+ * An audit that already started is never touched.
+ */
+export async function detachFixFromPendingAudit(opts: {
+  missionId: string;
+  workspaceId: string;
+  fixTaskId: string;
+  route: string | null;
+}): Promise<DetachFixResult> {
+  const { missionId, fixTaskId, route } = opts;
+  const audit = await db.query.tasks.findFirst({
+    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    columns: { id: true, title: true, status: true, dependsOn: true, context: true, workspaceId: true },
+    orderBy: [desc(tasks.createdAt)],
+  });
+  if (!audit || audit.status !== 'pending') return { action: 'none' };
+  const deps = Array.isArray(audit.dependsOn) ? (audit.dependsOn as string[]) : [];
+  if (!deps.includes(fixTaskId)) return { action: 'none' };
+  const remaining = deps.filter(d => d !== fixTaskId);
+  const round = surfaceAuditRound(audit);
+
+  if (round > 1 && remaining.length === 0) {
+    const cancelled = await db.update(tasks)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(tasks.id, audit.id), eq(tasks.status, 'pending'), isNull(tasks.claimedBy)))
+      .returning({ id: tasks.id });
+    if (cancelled.length === 0) return { action: 'none' };
+    const { applyTaskCancelSideEffects } = await import('@/lib/task-cancel');
+    await applyTaskCancelSideEffects({ id: audit.id, workspaceId: audit.workspaceId ?? opts.workspaceId, missionId });
+    return { action: 'cancelled', auditTaskId: audit.id };
+  }
+
+  const routes = frozenRoutes(audit.context);
+  let nextRoutes = routes;
+  if (route && routes.includes(route)) {
+    const others = remaining.length > 0
+      ? await db.query.tasks.findMany({ where: inArray(tasks.id, remaining), columns: { id: true, title: true } })
+      : [];
+    if (!others.some(t => surfaceFixRoute(t.title) === route)) nextRoutes = routes.filter(r => r !== route);
+  }
+  const ctx = isRecord(audit.context) ? audit.context : {};
+  await db.update(tasks)
+    .set({
+      dependsOn: remaining,
+      ...(nextRoutes !== routes
+        ? { context: { ...ctx, visualQa: { ...(isRecord(ctx.visualQa) ? ctx.visualQa : {}), requiredRoutes: nextRoutes } } }
+        : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, audit.id), eq(tasks.status, 'pending')));
+  return { action: 'detached', auditTaskId: audit.id };
 }

@@ -58,6 +58,10 @@ mock.module('@/lib/path-claim-release', () => ({
   releaseAndNotify: mockReleaseAndNotify,
 }));
 
+// The visual audit stall notice has its own tests (lib/stale-visual-audits.test.ts).
+const mockNotifyStalled = mock((_now: Date) => Promise.resolve(0));
+mock.module('@/lib/stale-workers', () => ({ HEARTBEAT_STALE_MS: 150 * 60 * 1000, notifyStalledVisualAudits: mockNotifyStalled }));
+
 import { runStaleWorkerCleanup } from './stale-workers';
 
 const NOW = new Date('2026-03-01T12:00:00Z');
@@ -83,6 +87,14 @@ describe('runStaleWorkerCleanup', () => {
     updateCalls = [];
     deleteCalls = 0;
     findError = null;
+  });
+
+  it('checks for visual audits stalled on a browser runner every tick, and survives it throwing', async () => {
+    mockNotifyStalled.mockClear();
+    await runStaleWorkerCleanup(NOW);
+    expect(mockNotifyStalled).toHaveBeenCalledWith(NOW);
+    mockNotifyStalled.mockRejectedValueOnce(new Error('db down'));
+    expect(await runStaleWorkerCleanup(NOW)).toBe(0);
   });
 
   it('does nothing when no heartbeat is stale', async () => {

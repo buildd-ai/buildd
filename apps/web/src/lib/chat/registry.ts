@@ -204,6 +204,15 @@ export const CHAT_TOOL_SPECS = {
       conclude: admin({ param: 'experimentId', is: 'experiment' }, 'PATCH /api/experiments/:id'),
     },
   },
+  /**
+   * The mission's visual review as text: per screen the route, viewport,
+   * round, the agent's verdict and finding, the human decision and the fix.
+   * Chat runs its own image-free, link-free version of the MCP action
+   * (chat/visual-review-tool.ts, by missionId only). There is deliberately no
+   * write tool: a human decides on the card (ChatActions.reviewShots), where
+   * the tap is the consent. (docs/design/visual-qa-human-review.md, Chat)
+   */
+  get_visual_review: single('missions', read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review')),
   manage_model_tiers: single('admin', deferred('model-tier routing and budgets change what every agent in the team spends; kept to the Models settings screen until the admin card ships a spend preview')),
 } satisfies Record<string, ChatToolSpec>;
 
@@ -232,6 +241,7 @@ export const CHAT_NATIVE_TOOL_SPECS = {
   /** Stop one of the caller's own watches. */
   unwatch: single('notifications', self({ param: 'watchId', is: 'subscription' }, 'GET /api/subscriptions', 'DELETE /api/subscriptions/:id')),
   list_watches: single('notifications', read('GET /api/subscriptions')),
+
 } satisfies Record<string, ChatToolSpec>;
 
 export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATIVE_TOOL_SPECS;

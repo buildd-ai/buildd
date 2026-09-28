@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  boardNeedsYouCount,
   buildMissionBoard,
   concurrencyBins,
   formatAge,
@@ -12,6 +13,8 @@ import {
 } from './mission-board';
 import { boardTaskLabel } from './mission-board-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { WORK_KIND_GLYPHS } from './task-presentation';
+import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
 
 // Illustrative fixtures only — no real mission or task data.
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
@@ -407,3 +410,33 @@ describe('buildMissionBoard — a mission open for weeks', () => {
   });
 });
 
+
+describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-review.md)', () => {
+  it('an audit tile carries the observation glyph (visual-auditor maps to observation)', () => {
+    const m = board([task('audit', { roleSlug: 'visual-auditor', title: '[surface audit] Example', outputRequirement: 'none' })]);
+    expect(m.tasks.audit.glyph).toBe(WORK_KIND_GLYPHS.observation.glyph);
+  });
+
+  it('Needs you counts the screens awaiting a human, on top of the waiting tasks', () => {
+    const m = board([
+      task('q', { status: 'in_progress', workers: [worker({ status: 'waiting_input', waitingFor: { prompt: 'Which?', options: [] } })] }),
+    ]);
+    expect(m.needsYou).toEqual(['q']);
+    const visual = buildVisualReviewFixtureModel('needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    expect(visual.summary.awaitingHuman).toBeGreaterThan(0);
+    expect(boardNeedsYouCount(m, visual)).toBe(1 + visual.summary.awaitingHuman);
+  });
+
+  it('no visual model, or nothing awaiting: only the waiting tasks count', () => {
+    const m = board([task('a')]);
+    expect(boardNeedsYouCount(m, null)).toBe(0);
+    expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('reviewed'))).toBe(0);
+  });
+
+  it('an open round-cap question counts once; a worker question is already a waiting task', () => {
+    const m = board([task('a')]);
+    expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('needs_you', { needsYou: 'round_cap' }))).toBe(1);
+    // The auditor's own question parks its worker: that task is in needsYou, so it is not counted twice.
+    expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('needs_you', { needsYou: 'question' }))).toBe(0);
+  });
+});

@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Rea
 import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
-import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions } from './ChatActions';
+import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
 import ChatComposer, { type ChatComposerHandle, type ComposerWorkspace } from './ChatComposer';
 import ChatFeed, { AgentAvatar, type ChatAgent } from './ChatFeed';
 import { canvasPin, paneFocus, provisionalTitle, routedScope } from './feed-model';
@@ -34,6 +34,7 @@ import { dockChoice, needsDockRef, NEEDS_DOCK_CLOSED_KEY } from './dock-model';
 import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
+import { ChatEmpty, type ChatEmptyChip } from '@builddai/ai-kit/chat/react';
 import { INITIAL_PANE, PANE_SIDE_KEY, paneReducer, parsePaneSide, popOutHref } from './pane-state';
 import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
 import { objectSheetTitle } from './mission-sheet';
@@ -49,6 +50,11 @@ export interface ChatWorkspaceProps {
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
   answerQuestion?: ChatActions['answerQuestion'];
+  /** Override how visual review decisions are sent (fixtures). Default: the decisions route. */
+  reviewShots?: ChatActions['reviewShots'];
+  undoReview?: ChatActions['undoReview'];
+  /** Open a mission's review deck on arrival (the dev fixtures' `&review=1`). */
+  initialVisualReview?: Pick<OpenVisualReview, 'ref' | 'startKey'> | null;
   title: string | null;
   titleSource?: 'auto' | 'user';
   teamName?: string | null;
@@ -139,7 +145,7 @@ function useMinWidth(px: number): boolean {
 
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
-    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, title, teamName,
+    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, reviewShots, undoReview, initialVisualReview = null, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, formFallbackHref = null, entryIntent = null, pulse = null,
@@ -151,6 +157,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     overlay ? { ...s, closed: true } : focusRef ? { ...s, pinned: focusRef } : initialPaneClosed ? { ...s, closed: true } : s
   ));
   const [sheet, setSheet] = useState<BuilddObjectRef | null>(null);
+  // The visual review deck, shown by the mission's pane or sheet while set.
+  const [visualReview, setVisualReview] = useState<OpenVisualReview | null>(null);
   // The desktop right panel's HISTORY (?view=history deep-links it open).
   const [historyDock, setHistoryDock] = useState(historyOpen && !overlay);
   // A client navigation to ?view=history keeps this mounted: open it then too.
@@ -196,6 +204,28 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else setSheet(ref);
   }, [onOpenObject]);
 
+  // Review from the thread: the deck takes the docked pane on desktop and the
+  // sheet on a phone. The summoned overlay has no pane, so it uses the sheet.
+  const openVisualReview = useCallback((ref: BuilddObjectRef, startKey: string | null = null) => {
+    if (!overlay && isDesktop()) {
+      const surface = window.matchMedia?.('(min-width: 1024px)').matches ? 'dock' : 'pane';
+      setVisualReview({ ref, startKey, surface });
+      setHistoryDock(false);
+      dispatch({ type: 'open', ref });
+    } else {
+      setVisualReview({ ref, startKey, surface: 'sheet' });
+      setSheet(ref);
+    }
+  }, [overlay]);
+  const closeVisualReview = useCallback(() => setVisualReview(null), []);
+  useEffect(() => {
+    if (initialVisualReview) openVisualReview(initialVisualReview.ref, initialVisualReview.startKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- on arrival only
+  }, []);
+  const closeSheet = useCallback(() => { setSheet(null); setVisualReview(null); }, []);
+  // The sheet is showing the deck: full bleed, the deck pads itself.
+  const sheetReviewing = !!sheet && visualReview?.surface === 'sheet' && refKey(visualReview.ref) === refKey(sheet);
+
   // The right panel (lg+): history, the object, or the task that needs you.
   const needsRef = overlay ? null : needsDockRef(pulse?.needsYou);
   const dock = overlay ? null : dockChoice({ historyOpen: historyDock, focus, needsRef, needsClosedId });
@@ -207,7 +237,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else if (dock.mode === 'needs' && dock.ref) {
       setNeedsClosedId(dock.ref.id);
       try { window.sessionStorage.setItem(NEEDS_DOCK_CLOSED_KEY, dock.ref.id); } catch { /* private mode */ }
-    } else dispatch({ type: 'close' });
+    } else {
+      // Closing the panel mid-review ends the review, so the next open of
+      // the same mission shows the mission, not the deck again.
+      setVisualReview(null);
+      dispatch({ type: 'close' });
+    }
   };
 
   const actions: ChatActions = useMemo(() => ({
@@ -219,7 +254,12 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     viewerName,
     paneRef: focus,
     ...(answerQuestion ? { answerQuestion } : {}),
-  }), [onApproval, openObject, workspaces, viewerName, focus, answerQuestion]);
+    ...(reviewShots ? { reviewShots } : {}),
+    ...(undoReview ? { undoReview } : {}),
+    openVisualReview,
+    visualReview,
+    closeVisualReview,
+  }), [onApproval, openObject, workspaces, viewerName, focus, answerQuestion, reviewShots, undoReview, openVisualReview, visualReview, closeVisualReview]);
 
   // Stick to the bottom while new content streams in, unless the reader scrolled up.
   const pinnedToBottom = useRef(true);
@@ -256,7 +296,6 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
   const busy = status === 'submitted' || status === 'streaming';
-  const lastIsUser = messages[messages.length - 1]?.role === 'user';
   // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
   // "Mission sheet"). An opaque sheet with a context card; the title shows once.
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
@@ -407,7 +446,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   };
 
   // The empty canvas (docs/design/chat-canvas.md): an overline with the mood,
-  // a hero line in the voice face, and two picked questions as square rows.
+  // a hero line in the voice face, and two picked questions as square rows
+  // under their own header. All of it is the kit's ChatEmpty (overline, mood,
+  // greeting, sub line, chips header and rows); globals.css ("Chat on the kit")
+  // gives it buildd's faces and, when anchored, the open sea above the rows.
   const hero = messages.length === 0
     ? canvasHero({ pulse, name: viewerName, about: aboutRef ? { kind: aboutRef.kind, title: aboutRef.title ?? null } : null, intent: entryIntent, now })
     : null;
@@ -419,55 +461,26 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   // Desktop keeps the anchored canvas under ?view=history: the list is in the panel.
   const anchoredPhone = !!hero && plainCanvas && !overlay && !historyOpen;
   const anchoredDesk = !!hero && plainCanvas && !overlay;
-  const anchored = anchoredPhone || anchoredDesk;
+  const chips: ChatEmptyChip[] = suggestions.map((sg, i) => ({ id: `${sg.tone ?? 'row'}-${i}`, label: sg.label, text: sg.text, send: sg.send, tone: sg.tone }));
   const emptyCanvas = hero && (
     <div
       data-testid="canvas-empty"
       data-mood={hero.mood ?? undefined}
       data-layout={anchoredPhone ? 'anchored' : undefined}
-      className={`mb-8 mt-2 md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex max-md:flex-1 max-md:flex-col' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex lg:flex-1 lg:flex-col' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
+      className={`mb-8 mt-2 flex flex-col md:mt-10 ${anchoredPhone ? 'max-md:mb-0 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:mb-0 lg:mt-20 lg:flex-1' : ''} ${historyOpen ? 'max-md:hidden' : ''}`}
     >
-      <p data-testid="canvas-overline" suppressHydrationWarning className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
-        {hero.mood && <span aria-hidden="true" data-testid="canvas-mood-dot" className={`mood-dot h-2 w-2 shrink-0 ${hero.mood === 'needs' ? 'bg-[var(--mood-needs)]' : 'bg-[var(--mood-calm)]'}`} />}
-        {hero.overline}
-      </p>
-      <p className={`mt-4 font-voice text-[var(--chat-text)] ${plainCanvas ? 'text-[44px] leading-[1.02] tracking-[-0.02em] lg:text-[64px]' : 'text-[28px] leading-[1.1] tracking-[-0.01em] lg:max-w-[640px]'}`}>
-        {hero.hero}
-      </p>
-      {hero.sub && (
-        <p data-testid="canvas-hero-sub" suppressHydrationWarning className="mt-3 font-voice text-[20px] italic leading-snug text-[var(--chat-muted)] lg:mt-4 lg:max-w-[640px] lg:text-[22px]">{hero.sub}</p>
-      )}
-      {/* Phone: open sea between the hero and the picked rows, which sit
-          right above the composer (the v3 frames). */}
-      {anchored && suggestions.length > 0 && <div aria-hidden="true" data-testid="canvas-sea-gap" className={`${anchoredPhone ? 'max-md:min-h-7 max-md:flex-1' : ''} ${anchoredDesk ? 'lg:min-h-7 lg:flex-1' : ''}`} />}
-      {suggestions.length > 0 && (
-        <section data-testid="canvas-suggestions" aria-label={plainCanvas ? 'Picked for you' : 'Ask about'} className={`${anchored ? `${anchoredPhone ? '' : 'max-md:mt-7'} md:mt-7 ${anchoredDesk ? 'lg:mt-0' : ''}` : 'mt-7'} border border-[var(--chat-rule)] bg-[var(--chat-panel)]`}>
-          <div className="flex h-[30px] items-center justify-between gap-3 border-b border-[var(--chat-rule)] px-3 font-mono text-[11px] uppercase tracking-[.16em] text-[var(--chat-muted)]">
-            <span>{plainCanvas ? 'Picked for you' : 'Ask about'}</span>
-            {pickedLine && <span data-testid="canvas-picked-status" className="normal-case tracking-normal">{pickedLine}</span>}
-          </div>
-          <ul className="divide-y divide-[var(--chat-rule)]">
-            {suggestions.map((sg, i) => {
-              const copper = sg.tone === 'needs';
-              return (
-                <li key={sg.label}>
-                  <button
-                    type="button"
-                    data-testid="canvas-suggestion"
-                    data-tone={sg.tone}
-                    onClick={() => pick(sg)}
-                    className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--chat-raised)]"
-                  >
-                    <span aria-hidden="true" className={`shrink-0 font-mono text-[11px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-dim)]'}`}>{String(i + 1).padStart(2, '0')}</span>
-                    <span data-testid="canvas-suggestion-label" className={`min-w-0 flex-1 font-voice text-[19px] leading-tight ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-text)]'}`}>{sg.label}</span>
-                    <span aria-hidden="true" className={`shrink-0 font-mono text-[14px] ${copper ? 'text-[var(--mood-needs)]' : 'text-[var(--chat-muted)]'}`}>→</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
+      <ChatEmpty
+        className={`buildd-empty flex flex-col${plainCanvas ? ' buildd-empty-plain' : ''}${anchoredPhone ? ' buildd-empty-anchor-phone max-md:flex-1' : ''}${anchoredDesk ? ' buildd-empty-anchor-desk lg:flex-1' : ''}`}
+        chips={chips}
+        onChip={pick}
+        variant="rows"
+        mood={hero.mood}
+        overline={<span data-testid="canvas-overline" suppressHydrationWarning>{hero.overline}</span>}
+        greeting={hero.hero}
+        sub={hero.sub ? <span data-testid="canvas-hero-sub" suppressHydrationWarning className="block lg:max-w-[640px]">{hero.sub}</span> : undefined}
+        chipsHeader={<span data-testid="canvas-suggestions">{plainCanvas ? 'Picked for you' : 'Ask about'}</span>}
+        chipsAside={pickedLine ? <span data-testid="canvas-picked-status">{pickedLine}</span> : undefined}
+      />
     </div>
   );
 
@@ -508,7 +521,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && (
             <div data-testid="chat-empty-state" className={historyOpen ? 'lg:hidden' : 'hidden md:block lg:hidden'}>{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} thinking={status === 'submitted' && lastIsUser} live={busy} error={error} />
+          <ChatFeed messages={messages} agent={agent} status={status} error={error} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
@@ -570,7 +583,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         {popOut && (
           <a href={popOut} target="_blank" rel="noreferrer" data-testid="pane-popout" className="inline-flex min-h-9 items-center border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Pop out ↗</a>
         )}
-        <button type="button" data-testid="pane-close" onClick={() => dispatch({ type: 'close' })} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
+        <button type="button" data-testid="pane-close" onClick={() => { setVisualReview(null); dispatch({ type: 'close' }); }} className="min-h-9 border-[1.5px] border-border-strong px-2.5 font-mono text-[12px] text-text-primary hover:bg-surface-3">Close ✕</button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ObjectPane key={refKey(focus)} objRef={focus} />
@@ -599,10 +612,18 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             history={aside}
             onSend={send}
             onOpen={ref => { setHistoryDock(false); dispatch({ type: 'open', ref }); }}
+            wide={dock.mode === 'object' && !!dock.ref && visualReview?.surface === 'dock' && refKey(visualReview.ref) === refKey(dock.ref)}
           />
         )}
       </div>
-      <BottomSheet open={sheet !== null} onClose={() => setSheet(null)} title={sheet ? objectSheetTitle(sheet) : ''} height="tall" testId="chat-object-sheet">
+      <BottomSheet
+        open={sheet !== null}
+        onClose={closeSheet}
+        title={sheet ? (sheetReviewing ? 'Review screens' : objectSheetTitle(sheet)) : ''}
+        height="tall"
+        testId="chat-object-sheet"
+        flush={sheetReviewing}
+      >
         {sheet && <ObjectPane objRef={sheet} variant="sheet" />}
       </BottomSheet>
     </ChatActionsProvider>

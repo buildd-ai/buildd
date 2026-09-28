@@ -7,7 +7,7 @@
  * `data-*` attributes, so an app can target either. No Tailwind.
  *
  * Mobile-first: tap targets are at least 44px, the menus become bottom sheets
- * below 640px.
+ * below 640px (portaled to <body> by `Menu`, above --kit-sheet-bottom-offset).
  */
 
 .kit-chat, .kit-chat * { box-sizing: border-box; }
@@ -28,6 +28,9 @@
 .kit-tool-summary { overflow-wrap: anywhere; }
 .kit-steer-note { font-size: 13px; color: var(--kit-muted); font-style: italic; }
 .kit-error { font-size: 13px; color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); padding: 8px 12px; }
+/* 0.9.0: an app's header and footer on a message (rendered only when the app passes them). */
+.kit-msg-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--kit-muted); }
+.kit-msg-foot { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
 /* ── Thinking ───────────────────────────────────────────────────────────── */
 .kit-thinking { border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 8px 12px; }
@@ -66,7 +69,7 @@
 .kit-btn:disabled, .kit-btn[aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
 
 /* ── Composer ───────────────────────────────────────────────────────────── */
-.kit-composer { border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-bg); overflow: hidden; }
+.kit-composer { position: relative; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-bg); }
 .kit-composer[data-busy="true"] { border-color: var(--kit-accent); }
 .kit-composer-input { display: block; width: 100%; min-height: 64px; max-height: 12rem; resize: none; field-sizing: content; border: 0; background: transparent; color: var(--kit-ink); padding: 12px 14px; font: inherit; font-size: 16px; line-height: 1.4; }
 .kit-composer-input:focus { outline: none; }
@@ -75,34 +78,66 @@
 .kit-toolbar > * + * { border-left: 1px solid var(--kit-rule); }
 .kit-toolbar-slot { display: flex; align-items: stretch; min-width: 0; }
 .kit-toolbar-slot[data-slot="scope"] { flex: 1 1 auto; }
+/* The composer doesn't clip (its menus open out of it), so the last control rounds its own corner. */
+.kit-send, .kit-stop { border-bottom-right-radius: calc(var(--kit-radius-soft) - 1px); }
 .kit-send { width: 56px; flex: none; border: 0; background: var(--kit-accent); color: var(--kit-accent-ink); font-size: 20px; font-weight: 700; cursor: pointer; }
 .kit-send[aria-disabled="true"] { cursor: not-allowed; }
 .kit-stop { width: 56px; flex: none; border: 0; background: var(--kit-ink); cursor: pointer; display: grid; place-items: center; }
 .kit-stop-mark { width: 12px; height: 12px; background: var(--kit-bg); border-radius: 2px; }
 .kit-form-fallback { display: block; margin-top: 8px; font-size: 14px; color: var(--kit-muted); text-decoration: underline; text-underline-offset: 3px; }
 .kit-steer-hint { padding: 0 14px 8px; font-size: 12px; color: var(--kit-muted); }
+/* Extension slots (0.5.0). */
+.kit-composer-edge { position: absolute; left: 0; right: 0; top: -1px; height: 2px; overflow: hidden; pointer-events: none; }
+.kit-composer-leading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px 0; min-width: 0; }
+.kit-composer[data-compact="true"] .kit-composer-input { min-height: 48px; }
+.kit-composer-footer { margin-top: 8px; font-size: 12px; color: var(--kit-muted); }
 
 /* ── Menus (tools, scope, tier) ─────────────────────────────────────────── */
 .kit-menu { position: relative; display: flex; align-items: stretch; }
 .kit-menu-trigger { min-height: 48px; min-width: 48px; padding: 0 12px; border: 0; background: transparent; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-family: var(--kit-font-mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .kit-badge { color: var(--kit-accent); font-weight: 600; }
-.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; min-width: 260px; max-width: min(92vw, 380px); background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
+/* The desktop panel sizes to its content between 260px and its max-width. It
+   is absolutely positioned inside a trigger-sized .kit-menu, so without
+   `width: max-content` shrink-to-fit resolves to the 260px min-width and a
+   long tool-group label squeezes the toggle out of view. */
+.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; width: max-content; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
 .kit-menu[data-align="end"] .kit-menu-panel { left: auto; right: 0; }
 .kit-menu-title { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); padding: 6px 14px; margin: 0; }
 .kit-rows { list-style: none; margin: 0; padding: 0; }
 .kit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 0 14px; font-size: 14px; }
+/* The label takes the room that is left and wraps; the lock and the Ask first /
+   Allow toggle keep their full width. */
+.kit-row > .kit-row-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; padding-block: 6px; }
+.kit-row > .kit-toggle, .kit-row > .kit-row-lock { flex: none; }
 .kit-row[data-locked="true"] > .kit-row-label { color: var(--kit-muted); }
 .kit-row-lock { font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--kit-muted); }
 .kit-toggle { display: inline-flex; border: 1.5px solid var(--kit-rule); border-radius: var(--kit-radius-hard); overflow: hidden; }
-.kit-toggle > button { min-height: 36px; padding: 0 10px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--kit-muted); }
+.kit-toggle > button { min-height: 36px; padding: 0 10px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--kit-muted); white-space: nowrap; }
 .kit-toggle > button[aria-pressed="true"] { background: var(--kit-ink); color: var(--kit-bg); }
 .kit-option { width: 100%; min-height: 48px; padding: 0 14px; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; font-size: 14px; }
 .kit-option[aria-checked="true"] { font-weight: 600; }
 .kit-option-meta { font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
 .kit-menu-error { margin: 0; padding: 8px 14px; font-size: 13px; border-top: 1px solid var(--kit-rule); }
-@media (max-width: 639px) {
-  .kit-menu-panel { position: fixed; left: 0; right: 0; bottom: 0; top: auto; max-width: none; min-width: 0; border-radius: var(--kit-radius-soft) var(--kit-radius-soft) 0 0; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .kit-menu[data-align="end"] .kit-menu-panel { right: 0; }
+/* 0.6.1: `placement: 'down'` (or `auto` resolving down) opens below the trigger. */
+.kit-menu[data-placement="down"] > .kit-menu-panel { bottom: auto; top: calc(100% + 6px); }
+/* 0.6.1: the tier picker's footer, and the phone sheet's optional close button. */
+.kit-menu-footer { padding: 8px 14px; border-top: 1px solid var(--kit-rule); font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kit-sheet-head > .kit-menu-title { flex: 1 1 auto; min-width: 0; }
+.kit-sheet-close { flex: none; min-width: 44px; min-height: 44px; border: 0; background: transparent; cursor: pointer; font-size: 20px; line-height: 1; color: var(--kit-muted); }
+/* Phone sheet: `Menu` portals it to <body> inside .kit-sheet-layer, so no
+   ancestor's transform, overflow or stacking context can capture it. It sits
+   on top of the app's bottom chrome (--kit-sheet-bottom-offset); the safe-area
+   inset is only padded for when that chrome doesn't already cover it. */
+.kit-sheet-layer { position: fixed; inset: 0; z-index: 1000; }
+.kit-sheet-scrim { position: absolute; inset: 0; background: var(--kit-scrim, color-mix(in srgb, var(--kit-ink) 28%, transparent)); }
+.kit-sheet-layer > .kit-menu-panel[data-sheet] {
+  position: fixed; left: 0; right: 0; top: auto; bottom: var(--kit-sheet-bottom-offset);
+  width: auto; min-width: 0; max-width: none;
+  max-height: calc(100dvh - var(--kit-sheet-bottom-offset) - 48px);
+  border-width: 1px 0 0; border-radius: var(--kit-radius-soft) var(--kit-radius-soft) 0 0;
+  padding-bottom: max(12px, calc(env(safe-area-inset-bottom) - var(--kit-sheet-bottom-offset)));
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent);
 }
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
@@ -110,3 +145,99 @@
 .kit-greeting { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 600; }
 .kit-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .kit-chip { min-height: 44px; padding: 0 14px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-soft); background: var(--kit-surface); cursor: pointer; font-size: 14px; }
+
+/* ── Turn feedback ──────────────────────────────────────────────────────── */
+.kit-feedback { position: relative; display: flex; align-items: center; gap: 4px; }
+.kit-thumb-btn { min-width: 44px; min-height: 44px; display: inline-grid; place-items: center; border: 1px solid transparent; border-radius: var(--kit-radius-hard); background: transparent; color: var(--kit-muted); cursor: pointer; }
+.kit-thumb-btn[aria-pressed="true"] { color: var(--kit-ink); border-color: var(--kit-rule); background: var(--kit-surface); }
+.kit-thumb[data-down] { transform: rotate(180deg); }
+.kit-feedback-reason { margin-left: 4px; font-family: var(--kit-font-mono); font-size: 11.5px; color: var(--kit-muted); }
+.kit-feedback > .kit-feedback-panel:not([data-sheet]) { min-width: 280px; }
+.kit-feedback-actions { padding: 8px 14px 4px; justify-content: flex-end; }
+.kit-feedback-actions .kit-btn[aria-disabled="true"] { cursor: not-allowed; }
+
+/* ── Steer ──────────────────────────────────────────────────────────────── */
+.kit-steer { display: flex; flex-direction: column; min-height: 0; gap: 0; }
+.kit-steer-header { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 14px; border-bottom: 1px solid var(--kit-rule); }
+.kit-steer-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-steer-presence { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 14px; overflow-x: auto; border-bottom: 1px solid var(--kit-rule); background: var(--kit-surface); font-family: var(--kit-font-mono); font-size: 12px; }
+.kit-steer-presence-item { flex: none; color: var(--kit-muted); }
+.kit-steer-presence-item[data-tone="strong"] { color: var(--kit-ink); font-weight: 600; }
+.kit-steer-presence-item[data-tone="live"] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--kit-accent); }
+.kit-steer-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
+.kit-steer-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.kit-steer-msg { display: grid; gap: 6px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-bg); padding: 8px 12px; }
+.kit-steer-status { justify-self: start; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-steer-status[data-status="delivered"] { color: var(--kit-ink); }
+.kit-steer > .kit-composer { margin: 8px 14px 0; }
+.kit-steer > .kit-error { margin: 8px 14px 0; }
+.kit-send.kit-steer-send { width: auto; padding: 0 16px; font-size: 14px; }
+
+/* ── Objects ────────────────────────────────────────────────────────────── */
+.kit-object-placeholder { display: grid; gap: 4px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
+.kit-object-placeholder[data-loading="true"] { color: var(--kit-muted); }
+.kit-object-pane { min-width: 0; }
+.kit-pinned { border-bottom: 2px solid var(--kit-rule); background: var(--kit-surface); }
+.kit-pinned-bar { display: flex; align-items: center; min-height: 48px; min-width: 0; padding: 4px 14px; }
+.kit-pinned-phone { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; cursor: pointer; text-align: left; padding: 0; }
+.kit-pinned-desk { display: none; flex: 1 1 auto; min-width: 0; align-items: center; gap: 12px; }
+.kit-pinned-kind { flex: none; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-pinned-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 13px; font-weight: 600; }
+.kit-pinned-phone > .kit-pinned-title { flex: 1 1 auto; }
+.kit-pinned-go { flex: none; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-pinned-spacer { flex: 1 1 auto; }
+.kit-pinned-meta { flex: none; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-pinned-open, .kit-pinned-toggle { flex: none; min-height: 36px; padding: 0 8px; border: 0; background: transparent; cursor: pointer; font-family: var(--kit-font-mono); font-size: 12px; }
+.kit-pinned-open { color: var(--kit-accent); font-weight: 600; }
+.kit-pinned-toggle { color: var(--kit-muted); }
+.kit-pinned-extra { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 14px 8px; }
+.kit-pinned-detail { display: none; padding: 0 14px 14px; overflow-x: auto; }
+/* Wide screens (the kit's sheet breakpoint): the desk bar replaces the phone button, and the detail shows. */
+@media (min-width: 640px) {
+  .kit-pinned[data-hide-desktop="true"] { display: none; }
+  .kit-pinned-phone { display: none; }
+  .kit-pinned-desk { display: flex; }
+  .kit-pinned-detail { display: block; }
+}
+
+/* ── 0.8.0 slots ────────────────────────────────────────────────────────── */
+/* Approval card: a head row (status, the write, its meta), an app body, a
+   phone fold for the details, and a one-line settled row. */
+.kit-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.kit-card-tag { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.kit-card-meta { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-approval-body { min-width: 0; overflow-wrap: anywhere; }
+.kit-fold-toggle { display: none; }
+@media (max-width: 639px) {
+  /* `button.` so it wins over `.kit-chat button { font: inherit }` inside a thread (0.9.0). */
+  button.kit-fold-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+  .kit-fold-label { flex: none; font-weight: 600; color: var(--kit-ink); }
+  .kit-fold-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kit-fold:not([data-open]) { display: none; }
+}
+/* One line of text that wraps as prose: "Title · discarded · nothing changed". */
+.kit-card.kit-approval-row { display: block; padding: 8px 14px; border-top-width: 1px; font-family: var(--kit-font-mono); font-size: 12.5px; line-height: 1.5; color: var(--kit-muted); overflow-wrap: anywhere; }
+.kit-approval-row > .kit-card-title, .kit-approval-row > .kit-note { display: inline; font-size: inherit; line-height: inherit; }
+.kit-approval-row > .kit-card-title { color: var(--kit-ink); }
+.kit-approval-row > .kit-note::before { content: " · "; }
+/* Empty state: overline with a mood dot, a sub line, a chips header, rows. */
+.kit-empty-overline { margin: 0; display: flex; align-items: center; gap: 8px; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-mood-dot { width: 8px; height: 8px; flex: none; background: var(--kit-accent); }
+.kit-mood-dot[data-mood="calm"] { background: var(--kit-muted); }
+.kit-empty-sub { margin: 0; font-size: 16px; line-height: 1.45; color: var(--kit-muted); }
+.kit-chips-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); }
+.kit-chips-aside { text-transform: none; letter-spacing: 0; }
+.kit-chips[data-variant="rows"] { display: block; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); }
+.kit-chips[data-variant="rows"] > li + li { border-top: 1px solid var(--kit-rule); }
+.kit-chips[data-variant="rows"] .kit-chip { display: flex; align-items: center; width: 100%; min-height: 48px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.kit-chip[data-tone="accent"] { color: var(--kit-accent); }
+/* Menus: an option's second line, the trigger's extra, the hover detail. */
+.kit-option-text { display: grid; min-width: 0; }
+.kit-option-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--kit-font-mono); font-size: 11px; font-weight: 400; color: var(--kit-muted); }
+.kit-trigger-extra { color: var(--kit-muted); }
+.kit-menu-hover { display: none; position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 40; width: max-content; max-width: 300px; pointer-events: none; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 8px 12px; font-size: 12px; }
+.kit-menu[data-align="end"] > .kit-menu-hover { left: auto; right: 0; }
+.kit-menu[data-placement="down"] > .kit-menu-hover { bottom: auto; top: calc(100% + 6px); }
+@media (hover: hover) and (min-width: 640px) {
+  .kit-menu:not([data-open]):hover > .kit-menu-hover { display: block; }
+}

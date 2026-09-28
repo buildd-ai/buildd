@@ -9,6 +9,15 @@ const mockVerifyWorkspaceAccess = mock(async () => null as any);
 
 // What the PATCH UPDATE ... RETURNING hands back; per-test overridable.
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
+// What the PATCH handed to UPDATE ... SET.
+let lastSet: Record<string, unknown> | null = null;
+const mockTriggerEvent = mock(async (..._args: unknown[]) => {});
+
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { mission: (id: string) => `mission-${id}`, workspace: (id: string) => `workspace-${id}` },
+  events: {},
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -29,7 +38,7 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findFirst: mockArtifactsFindFirst },
     },
     update: () => ({
-      set: mock(() => ({
+      set: mock((fields: Record<string, unknown>) => (lastSet = fields, {
         where: mock(() => ({
           returning: mock(() => [updatedRow]),
         })),
@@ -38,17 +47,17 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-mock.module('drizzle-orm', () => ({
-  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  // artifact-helpers pulls in `and` at module load.
-  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
-}));
-
-mock.module('@buildd/core/db/schema', () => ({
-  artifacts: 'artifacts',
-}));
-
+// drizzle-orm and the schema stay real: the PATCH hands UPDATE ... SET an SQL
+// merge expression, and it is asserted rendered (PgDialect), not guessed.
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { artifactMetadataMergeSql } from '@/lib/artifact-metadata-merge';
 import { GET, PATCH } from './route';
+
+const dialect = new PgDialect();
+const rendered = (v: unknown) => {
+  const q = dialect.sqlToQuery(v as any);
+  return { sql: q.sql, params: q.params };
+};
 
 function createMockGetRequest(apiKey?: string): NextRequest {
   const headers: Record<string, string> = {};
@@ -479,5 +488,88 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
     const req = createMockPatchRequest({ content: 'Corrected summary' }, 'bld_test');
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(403);
+  });
+
+  // docs/design/visual-qa-human-review.md, "PATCH integrity fix": the auditor
+  // prompt sends update_artifact {metadata: {qa: {fixTaskId}}}. A wholesale
+  // replace erased route/viewport/finding and dropped the shot from the
+  // evidence check and the strip.
+  describe('metadata merge', () => {
+    const shotRow = {
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      type: 'screenshot',
+      storageKey: 'qa/ws-1/artifact-1/tasks-mobile.png',
+      metadata: {
+        qa: { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'Header overflows.', verdict: 'issue' },
+        filename: 'tasks-mobile.png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+      },
+      worker: { accountId: 'account-1' },
+    };
+
+    beforeEach(() => {
+      lastSet = null;
+      mockTriggerEvent.mockClear();
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockArtifactsFindFirst.mockResolvedValue(shotRow);
+    });
+
+    // The merge semantics (qa deep, top level shallow) are pinned in
+    // lib/artifact-metadata-merge.test.ts. Here: the route hands SET that SQL
+    // merge of the raw patch, and nothing it read, so an overlapping PATCH of
+    // the same shot (a caption edit landing with a fix link) is not lost.
+    it('deep-merges metadata.qa in SQL: a qa.fixTaskId update sends only the patch, merged onto the stored column', async () => {
+      const patch = { qa: { fixTaskId: 'fix-1' } };
+      const res = await PATCH(createMockPatchRequest({ metadata: patch }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(200);
+      const set = rendered(lastSet!.metadata);
+      expect(set).toEqual(rendered(artifactMetadataMergeSql(patch)));
+      expect(set.sql).toContain('jsonb_set(');
+      expect(set.sql).toContain(`"artifacts"."metadata" -> 'qa'`);
+      // The stored route, finding and filename are never re-sent from the read.
+      expect(JSON.stringify(set.params)).not.toContain('Header overflows.');
+      expect(JSON.stringify(set.params)).not.toContain('tasks-mobile.png');
+    });
+
+    it('shallow-merges top-level keys in SQL', async () => {
+      const patch = { note: 'x', filename: 'renamed.png' };
+      await PATCH(createMockPatchRequest({ metadata: patch }, 'bld_test'), { params: mockParams });
+      const set = rendered(lastSet!.metadata);
+      expect(set).toEqual(rendered(artifactMetadataMergeSql(patch)));
+      expect(set.sql).not.toContain('jsonb_set(');
+      expect(set.params).toEqual([JSON.stringify(patch)]);
+    });
+
+    it('merges onto an artifact with no metadata yet (a non-object column counts as {})', async () => {
+      mockArtifactsFindFirst.mockResolvedValue({ ...shotRow, metadata: null });
+      await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+      expect(rendered(lastSet!.metadata).sql).toContain(`jsonb_typeof("artifacts"."metadata") = 'object'`);
+    });
+
+    it('leaves metadata alone when the body sends none', async () => {
+      await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
+      expect(lastSet).not.toHaveProperty('metadata');
+    });
+
+    it('rejects metadata that is not an object', async () => {
+      const res = await PATCH(createMockPatchRequest({ metadata: ['a'] }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect(lastSet).toBeNull();
+    });
+
+    it('fires worker:artifact on the mission channel for a qa/ audit shot', async () => {
+      await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+      expect(mockTriggerEvent).toHaveBeenCalledWith('mission-mission-1', 'worker:artifact', { artifact: { id: 'artifact-1', workerId: 'worker-1', missionId: 'mission-1' } });
+    });
+
+    it('fires nothing for a non-audit artifact', async () => {
+      mockArtifactsFindFirst.mockResolvedValue({ ...shotRow, storageKey: 'artifacts/ws-1/artifact-1/report.pdf', type: 'file' });
+      await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+    });
   });
 });

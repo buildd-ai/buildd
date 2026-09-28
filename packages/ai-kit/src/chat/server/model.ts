@@ -11,6 +11,7 @@ import {
   isPlanDeniedError,
   toCallConfig,
   type CallConfig,
+  type GatewayConfig,
   type KitTier,
   type ModelsClient,
   type PlanRequest,
@@ -56,8 +57,17 @@ export interface ModelFromPlanOptions<C> {
    * turn is refused with `409 no_key` before any model call. Return an object
    * to attach app metadata to the usage record (`{ key, meta: { keyScope } }`).
    */
-  key: (ctx: C, plan: ResolvedPlan) => string | null | { key: string; meta?: Record<string, unknown> } | Promise<string | null | { key: string; meta?: Record<string, unknown> }>;
-  /** Build the AI SDK model: e.g. `createOpenRouter({ apiKey: config.apiKey, headers: config.headers })(config.model)`. */
+  key?: (ctx: C, plan: ResolvedPlan) => string | null | { key: string; meta?: Record<string, unknown> } | Promise<string | null | { key: string; meta?: Record<string, unknown> }>;
+  /**
+   * A LiteLLM proxy that pays for this turn instead of a provider key. When it
+   * resolves, `key` is not asked: the gateway's `apiKey` is the key (none ⇒
+   * `409 no_key`), and `config.via` is `litellm`. Null ⇒ the direct path.
+   */
+  gateway?: GatewayConfig | null | ((ctx: C, plan: ResolvedPlan) => GatewayConfig | null | undefined | Promise<GatewayConfig | null | undefined>);
+  /**
+   * Build the AI SDK model: e.g. `createOpenRouter({ apiKey: config.apiKey, headers: config.headers })(config.model)`,
+   * or an OpenAI-compatible client at `config.baseURL` when `config.via === 'litellm'`.
+   */
   create: (args: { plan: ResolvedPlan; config: CallConfig; ctx: C }) => LanguageModel | Promise<LanguageModel>;
   /** OpenRouter attribution, passed to `toCallConfig`. */
   appName?: string;
@@ -94,13 +104,16 @@ export function modelFromPlan<C extends { continuing?: { tier?: string | null } 
       }
       throw e;
     }
-    const k = await opts.key(ctx, plan);
+    const gateway = typeof opts.gateway === 'function' ? await opts.gateway(ctx, plan) : opts.gateway ?? null;
+    const k = gateway ? gateway.apiKey ?? null : opts.key ? await opts.key(ctx, plan) : null;
     const key = typeof k === 'string' ? k : k?.key ?? null;
     if (!key) {
       const message = typeof opts.noKeyMessage === 'function' ? opts.noKeyMessage(ctx) : opts.noKeyMessage;
-      return { ok: false, reason: 'no_key', ...(message ? { message } : {}), extra: { provider: plan.provider } };
+      return { ok: false, reason: 'no_key', ...(message ? { message } : {}), extra: { provider: plan.provider, ...(gateway ? { gateway: gateway.kind } : {}) } };
     }
-    const config = toCallConfig(plan, { apiKeys: { [plan.provider]: key }, appName: opts.appName, appUrl: opts.appUrl });
+    const config = gateway
+      ? toCallConfig(plan, { gateway })
+      : toCallConfig(plan, { apiKeys: { [plan.provider]: key }, appName: opts.appName, appUrl: opts.appUrl });
     const model = await opts.create({ plan, config, ctx });
     return {
       ok: true,

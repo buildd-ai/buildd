@@ -8,7 +8,9 @@ import type { BuilddObjectRef, ChatMessage, ChatToolPart } from '@/components/ch
 import type { MissionObjectView, ObjectView, PrObjectView, QuestionObjectView, TaskObjectView } from '@/components/chat/objects/object-views';
 import { CHAT_EVENT_PART_TYPE } from '@/components/chat/chat-contract';
 import { watchNotice } from '@/lib/watch-notice';
-import { encodeApprovalPreview, type ChatApprovalPreview } from '@buildd/shared';
+import { encodeApprovalPreview, type ChatApprovalPreview, type ChatToolPermissionRow, type GetChatTiersResponse, type VisualReviewModel } from '@buildd/shared';
+import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
+import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 
 /** The card `watch` gets without an allow (lib/chat/previews.ts builds the real one). */
 const WATCH_PREVIEW: ChatApprovalPreview = {
@@ -120,9 +122,15 @@ export function missionBoardFixture(moment: Moment) {
   });
 }
 
-export function missionView(moment: Moment): MissionObjectView {
+/** The `visual` state's review: two rounds, an unsure screen, an open fix (fixture-transport plays the route). */
+export const VISUAL_FIXTURE_PHASE = 'needs_you' as const;
+export const VISUAL_FIXTURE_OPTS = { scenario: 'deck' } as const;
+export const visualFixtureModel = (): VisualReviewModel => ({ ...buildVisualReviewFixtureModel(VISUAL_FIXTURE_PHASE, VISUAL_FIXTURE_OPTS), missionId: MISSION_ID });
+
+export function missionView(moment: Moment, visual: VisualReviewModel | null = null): MissionObjectView {
   const board = missionBoardFixture(moment);
   return {
+    visual,
     kind: 'mission', id: MISSION_ID, workspaceId: WS.id, title: 'Multi-currency invoices',
     goal: 'Let customers see, pay, and get receipts for invoices in their own currency.',
     status: 'active', stateLabel: moment === 'question' ? 'Needs you' : 'Running', workspaceName: WS.name,
@@ -224,8 +232,14 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'watch';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'watch'];
+export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'watch' | 'visual';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'watch', 'visual'];
+
+/** A visual review moment as mission-events.ts posts it: the same words and data. */
+const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
+  id, role: 'event', metadata: { createdAt: iso(min) },
+  parts: [{ type: CHAT_EVENT_PART_TYPE, data: { event: 'visual_review', objects: [missionRef], text: visualReviewEventText(moment, model, extra), visual: visualReviewEventData(moment, model) } }],
+});
 
 export function isChatFixtureState(v: string | null | undefined): v is ChatFixtureState {
   return !!v && (CHAT_FIXTURE_STATES as string[]).includes(v);
@@ -317,6 +331,25 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
           ], 1400),
         ],
       };
+    case 'visual': {
+      // The visual audit's moments in the thread, then the assistant's read
+      // (text only) and the mission card with the Screens row and the tray.
+      const waiting = buildVisualReviewFixtureModel('no_browser_runner');
+      const model = visualFixtureModel();
+      return {
+        title: 'Multi-currency invoices', status: 'ready',
+        messages: [
+          visualEvent('v1', 40, 'no_browser_runner', waiting),
+          visualEvent('v2', 62, 'round_done', model),
+          visualEvent('v3', 75, 'fixes_filed', model, { fixes: 1, routes: ['/app/settings'] }),
+          user('v4', 'How do the screens look?', 80),
+          agent('v5', 80, [
+            call('get_visual_review', { missionId: MISSION_ID }, { summary: 'visual review read', data: 'Visual review', objects: [missionRef] }),
+            { type: 'text', text: 'One screen needs your call: the missions page on a phone shows two headings, and the agent was not sure it is intended. One issue is being fixed on settings at desktop width. The card has the screenshots.' },
+          ], 1300),
+        ],
+      };
+    }
     case 'watch':
       // Fired watches first, so a top-of-page capture shows them: one of each
       // tone, then a watch waiting for its card (the v3 approval rows).
@@ -347,10 +380,56 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
 export function fixtureViews(state: ChatFixtureState): Record<string, ObjectView> {
   const moment: Moment = state === 'confirmed' ? 'filed' : state === 'question' || state === 'split' ? 'question' : 'live';
   const pairs: Array<[BuilddObjectRef, ObjectView]> = [
-    [missionRef, missionView(moment)],
+    [missionRef, missionView(moment, state === 'visual' ? visualFixtureModel() : null)],
     [questionRef, questionView(state !== 'answered')],
     [taskRef, taskView()],
     ...prRefs.map((r, i): [BuilddObjectRef, ObjectView] => [r, prView(SHIPPED[i])]),
   ];
   return Object.fromEntries(pairs.map(([r, v]) => [`${r.kind}:${r.id}`, v]));
 }
+
+// ── Composer controls (`&controls=1`): the tools menu and the tier switch,
+// with fictional rows and prices served by the page's fetch stand-in. ──
+
+export const FIXTURE_TOOL_ROWS: ChatToolPermissionRow[] = [
+  { key: 'missions', label: 'Missions', mode: 'ask', locked: false },
+  { key: 'tasks', label: 'Tasks', mode: 'allow', locked: false },
+  { key: 'workers', label: 'Agents', mode: 'ask', locked: false },
+  { key: 'prs', label: 'PRs', mode: 'read', locked: true },
+  { key: 'memory', label: 'Knowledge', mode: 'ask', locked: false },
+  { key: 'schedules', label: 'Schedules', mode: 'ask', locked: false },
+  { key: 'artifacts', label: 'Artifacts', mode: 'ask', locked: false },
+  { key: 'notifications', label: 'Watches', mode: 'ask', locked: false },
+  { key: 'admin', label: 'Admin', mode: 'ask', locked: true },
+  { key: 'secrets', label: 'Secrets', mode: 'never', locked: true },
+];
+
+export const FIXTURE_TIERS: GetChatTiersResponse = {
+  tiers: [
+    { tier: 'budget', model: 'example/small', models: ['example/small', 'example/small-alt'], inputPer1kUsd: 0.0002, outputPer1kUsd: 0.0008 },
+    { tier: 'standard', model: 'example/medium', models: ['example/medium'], inputPer1kUsd: 0.002, outputPer1kUsd: 0.01 },
+    { tier: 'premium', model: 'example/large', models: ['example/large'], inputPer1kUsd: 0.005, outputPer1kUsd: 0.025 },
+  ],
+  pinned: null,
+  conversationCostUsd: 0.0421,
+};
+
+/**
+ * `?steer=1`: steering the running rates-service Builder (SteerConversation),
+ * served by the page's stand-in for the task's messages, its object view and
+ * the instruct route. One instruction delivered, one still queued.
+ */
+export const STEER_TASK_ID = 'task-fx';
+export const STEER_WORKER_ID = 'w-fx';
+export const steerTaskView = (): TaskObjectView => ({
+  ...taskView(),
+  status: 'in_progress',
+  worker: {
+    ...taskView().worker!, status: 'running', completedAt: null, mergedAt: null, prLifecycleStatus: null, prNumber: null, prUrl: null,
+    currentAction: 'Editing fx/rates.ts', turns: 9, updatedAt: Date.now() - 12_000,
+  },
+});
+export const STEER_MESSAGES = [
+  { type: 'instruction' as const, message: 'Snapshot the rate at issue time, not at payment.', timestamp: at(12), deliveryState: 'delivered' as const, turnAtSend: 4 },
+  { type: 'instruction' as const, message: 'Keep the cache at 15 minutes.', timestamp: at(14) },
+];
