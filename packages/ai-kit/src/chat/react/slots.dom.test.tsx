@@ -228,6 +228,6 @@ describe('TierPicker and Menu slots (0.8.0)', () => {
     // The hover detail only shows on a hovering pointer on wide screens, never while open.
     expect(css).toContain('@media (hover: hover) and (min-width: 640px) {\n  .kit-menu:not([data-open]):hover > .kit-menu-hover { display: block; }');
     // The fold only folds on a phone.
-    expect(css).toMatch(/@media \(max-width: 639px\) \{\n {2}\.kit-fold-toggle \{ display: flex;[^]*?\.kit-fold:not\(\[data-open\]\) \{ display: none; \}/);
+    expect(css).toMatch(/@media \(max-width: 639px\) \{\n[^]*?button\.kit-fold-toggle \{ display: flex;[^]*?\.kit-fold:not\(\[data-open\]\) \{ display: none; \}/);
   });
 });

@@ -15,7 +15,7 @@
  * ```
  */
 
-export { ChatThread, type ChatThreadProps, type ChatStatus } from './Thread';
+export { ChatThread, type ChatThreadProps, type ChatStatus, type ThreadMessageContext } from './Thread';
 export { ChatComposer, DEFAULT_BUSY_PLACEHOLDER, type ChatComposerProps, type ChatComposerHandle } from './Composer';
 export {
   ToolsMenu, ToolRows, ScopePicker, TierPicker,
