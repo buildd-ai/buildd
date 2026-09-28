@@ -52,11 +52,33 @@ export interface MenuProps {
   className?: string;
   /** `data-testid` on the wrapper; the trigger gets `${testId}-trigger`, the panel `${testId}-panel`. */
   testId?: string;
+  /**
+   * Which way the popover opens on wide screens (0.6.1). `up` (default) opens
+   * above the trigger, for a composer at the bottom of the screen; `down`
+   * below it; `auto` decides when it opens: down when there is room below and
+   * little above (`menuDropSide`), else up. The phone sheet is unaffected.
+   */
+  placement?: 'up' | 'down' | 'auto';
+  /**
+   * The phone sheet gets a close (×) button beside its title (0.6.1). Off by
+   * default; the scrim, Escape and a choice still close it either way.
+   */
+  sheetClose?: boolean;
 }
 
-export function Menu({ label, trigger, title, align = 'start', children, className, testId }: MenuProps) {
+/** Below this much room under the trigger (and more above it), `auto` opens up. */
+const ROOM_BELOW = 320;
+
+/** `placement: 'auto'`: down, unless there's little room below and more above. */
+export function menuDropSide(rect: { top: number; bottom: number }, viewportHeight: number): 'up' | 'down' {
+  const below = viewportHeight - rect.bottom;
+  return below < ROOM_BELOW && rect.top > below ? 'up' : 'down';
+}
+
+export function Menu({ label, trigger, title, align = 'start', children, className, testId, placement = 'up', sheetClose = false }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [sheet, setSheet] = useState<{ vars: CSSProperties } | null>(null);
+  const [side, setSide] = useState<'up' | 'down'>(placement === 'down' ? 'down' : 'up');
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -69,12 +91,18 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
   // Sheet or popover, decided when it opens and kept in step with the viewport.
   useIsoLayoutEffect(() => {
     if (!open) { setSheet(null); return; }
+    if (placement === 'auto') {
+      const r = wrap.current?.getBoundingClientRect();
+      setSide(r && typeof window !== 'undefined' ? menuDropSide(r, window.innerHeight) : 'up');
+    } else {
+      setSide(placement);
+    }
     const update = () => setSheet(sheetMatches() ? { vars: kitVarsAt(wrap.current) } : null);
     update();
     const mq = typeof window.matchMedia === 'function' ? window.matchMedia(KIT_SHEET_QUERY) : null;
     mq?.addEventListener?.('change', update);
     return () => mq?.removeEventListener?.('change', update);
-  }, [open]);
+  }, [open, placement]);
 
   useEffect(() => {
     if (!open) return;
@@ -104,13 +132,20 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
       data-sheet={sheet ? 'true' : undefined}
       data-testid={testId ? `${testId}-panel` : undefined}
     >
-      {title && <p className="kit-menu-title">{title}</p>}
+      {sheet && sheetClose ? (
+        <div className="kit-sheet-head">
+          {title ? <p className="kit-menu-title">{title}</p> : <span />}
+          <button type="button" className="kit-sheet-close" aria-label="Close" onClick={close} data-testid={testId ? `${testId}-close` : undefined}>
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+      ) : title && <p className="kit-menu-title">{title}</p>}
       {typeof children === 'function' ? children(close) : children}
     </div>
   );
 
   return (
-    <div ref={wrap} className={`kit-menu${className ? ` ${className}` : ''}`} data-align={align} data-open={open || undefined} data-testid={testId}>
+    <div ref={wrap} className={`kit-menu${className ? ` ${className}` : ''}`} data-align={align} data-placement={side} data-open={open || undefined} data-testid={testId}>
       <button
         ref={button}
         type="button"

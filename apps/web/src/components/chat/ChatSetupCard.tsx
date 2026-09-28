@@ -35,14 +35,13 @@ export function chatSetupCopy(_reason: ChatSetupReason, canManage: boolean, poli
 
 export default function ChatSetupCard({ reason, canManage, policy }: { reason: ChatSetupReason; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own' }) {
   const copy = chatSetupCopy(reason, canManage, policy);
-  // The kit's card has one line of copy under its per-reason eyebrow ("Chat
-  // needs a key"), so buildd's policy-specific title leads that line.
   return (
     <div data-testid="chat-setup-card" data-reason={reason}>
       <KitChatSetupCard
         reason={reason}
         className="buildd-setup"
-        message={`${copy.title}. ${copy.body}`}
+        title={copy.title}
+        message={copy.body}
         action={(copy.cta || copy.secondary) ? (
           <>
             {copy.cta && (

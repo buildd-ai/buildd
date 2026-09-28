@@ -83,6 +83,10 @@ export default function TierSwitch({ teamId, conversationId, pinned, last, onCha
         last={last}
         onChange={t => onChange(t as ChatTierName | null)}
         options={tierOptions(data?.tiers)}
+        autoMeta="Routed per message"
+        footer={`This chat: ${formatCost(data?.conversationCostUsd) || '$0'}`}
+        placement="auto"
+        sheetClose
         title="Tier"
       />
     </KitMenuCell>

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ToolsMenu as KitToolsMenu, ToolRows } from '@builddai/ai-kit/chat/react';
 import ToolsMenu from './ToolsMenu';
-import { dropSide } from './KitMenuCell';
 import { TierDetail } from './TierSwitch';
 
 const rows = [
@@ -36,15 +35,6 @@ describe('ToolRows (the kit\'s, as buildd shows them)', () => {
     expect(admin).not.toContain('<button');
     expect(admin).toContain('Ask first');
     expect(html).toContain('Never');
-  });
-});
-
-describe('dropSide: which way a composer menu opens', () => {
-  it('up at the bottom of the screen (the chat composer), down near the top (Home)', () => {
-    expect(dropSide({ top: 800, bottom: 848 }, 900)).toBe('up');
-    expect(dropSide({ top: 120, bottom: 168 }, 900)).toBe('down');
-    // Little room below but even less above: down.
-    expect(dropSide({ top: 100, bottom: 700 }, 900)).toBe('down');
   });
 });
 

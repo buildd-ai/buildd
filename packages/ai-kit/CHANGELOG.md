@@ -4,6 +4,28 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.6.1 — 2026-09-28
+
+Gaps found moving buildd's own chat onto the kit. Patch: every addition is
+optional and off by default, so an app that passes none of them renders
+exactly as on 0.6.0.
+
+- `/chat/react` `Menu`: `placement: 'up' | 'down' | 'auto'` (default `up`,
+  as before) for the wide-screen popover; `auto` measures the trigger when
+  it opens and opens down unless there is little room below and more above.
+  The resolved side is on the wrapper as `data-placement`. New export
+  `menuDropSide(rect, viewportHeight)`.
+- `Menu`: `sheetClose` puts a close (×) button beside the phone sheet's title
+  (`${testId}-close`, `.kit-sheet-head` / `.kit-sheet-close`). Off by default.
+- `ToolsMenu` and `TierPicker` pass `placement` and `sheetClose` through.
+- `TierPicker`: `footer` (under the options, e.g. the conversation's running
+  cost; `.kit-menu-footer`, `kit-tier-footer`) and `autoMeta` (the line under
+  Auto; default "picks per turn").
+- `ChatSetupCard`: `title`, a heading between the eyebrow and the message
+  (`kit-setup-title`).
+- `KIT_VERSION` is `0.6.1`, so pinned decision versions read `…|kit-0.6.1`
+  (fingerprints are unchanged).
+
 ## 0.6.0 — 2026-09-28
 
 Per-app tier defaults, names and offer, plus a remembered last pick. Minor:

@@ -51,7 +51,7 @@ export default function ToolsMenu({ teamId }: { teamId: string }) {
 
   return (
     <KitMenuCell testId="composer-tools">
-      <KitToolsMenu rows={rows} onChange={change} busyKey={busy} error={error ? 'Not saved' : undefined} title="Tools" />
+      <KitToolsMenu rows={rows} onChange={change} busyKey={busy} error={error ? 'Not saved' : undefined} title="Tools" placement="auto" sheetClose />
     </KitMenuCell>
   );
 }

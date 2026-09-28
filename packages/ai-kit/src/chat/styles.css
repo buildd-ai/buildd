@@ -115,6 +115,13 @@
 .kit-option[aria-checked="true"] { font-weight: 600; }
 .kit-option-meta { font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
 .kit-menu-error { margin: 0; padding: 8px 14px; font-size: 13px; border-top: 1px solid var(--kit-rule); }
+/* 0.6.1: `placement: 'down'` (or `auto` resolving down) opens below the trigger. */
+.kit-menu[data-placement="down"] > .kit-menu-panel { bottom: auto; top: calc(100% + 6px); }
+/* 0.6.1: the tier picker's footer, and the phone sheet's optional close button. */
+.kit-menu-footer { padding: 8px 14px; border-top: 1px solid var(--kit-rule); font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kit-sheet-head > .kit-menu-title { flex: 1 1 auto; min-width: 0; }
+.kit-sheet-close { flex: none; min-width: 44px; min-height: 44px; border: 0; background: transparent; cursor: pointer; font-size: 20px; line-height: 1; color: var(--kit-muted); }
 /* Phone sheet: `Menu` portals it to <body> inside .kit-sheet-layer, so no
    ancestor's transform, overflow or stacking context can capture it. It sits
    on top of the app's bottom chrome (--kit-sheet-bottom-offset); the safe-area

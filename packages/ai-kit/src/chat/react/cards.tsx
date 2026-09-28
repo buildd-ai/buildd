@@ -238,6 +238,8 @@ export function ChatEmpty({ name, chips, onChip, greeting: custom, className }: 
 
 export interface ChatSetupCardProps {
   reason: ChatUnavailableReason;
+  /** A heading under the eyebrow, e.g. "Connect a model provider" (0.6.1). */
+  title?: ReactNode;
   /** The server's message (the 4xx body's `message`), or the app's own copy. */
   message?: string;
   /** "Add your OpenRouter key" link or button. */
@@ -252,10 +254,11 @@ const SETUP_TITLE: Record<ChatUnavailableReason, string> = {
 };
 
 /** Shown when a turn is refused before any model call. Keep the draft in the composer. */
-export function ChatSetupCard({ reason, message, action, className }: ChatSetupCardProps) {
+export function ChatSetupCard({ reason, title, message, action, className }: ChatSetupCardProps) {
   return (
     <section className={`kit-card${className ? ` ${className}` : ''}`} data-reason={reason} role="status" data-testid="kit-setup">
       <span className="kit-eyebrow">{SETUP_TITLE[reason]}</span>
+      {title && <h3 className="kit-card-title" data-testid="kit-setup-title">{title}</h3>}
       {message && <p className="kit-note">{message}</p>}
       {action && <div className="kit-actions">{action}</div>}
     </section>
