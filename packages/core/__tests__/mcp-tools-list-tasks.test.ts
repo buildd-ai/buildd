@@ -34,6 +34,20 @@ describe('list_tasks — workspace', () => {
   });
 });
 
+describe('list_tasks — surface', () => {
+  const api = mock(async () => ({ tasks: [{ id: 't1', title: 'A', status: 'pending', descriptionPreview: 'd' }], total: 1, pendingCount: 1, hasMore: false })) as unknown as ApiFn;
+
+  it('tells a worker how to claim', async () => {
+    const out = await handleBuilddAction(api, 'list_tasks', {}, ctx());
+    expect(out.content[0].text).toContain('claim_task');
+  });
+
+  it('a person in chat gets no worker-directed hint: chat cannot claim', async () => {
+    const out = await handleBuilddAction(api, 'list_tasks', {}, ctx({ surface: 'chat' }));
+    expect(out.content[0].text).not.toContain('claim_task');
+  });
+});
+
 describe('list_tasks — status passthrough', () => {
   it('defaults to status=active when no status param is given', async () => {
     const api = mock(async () => ({ tasks: [], total: 0, pendingCount: 0, hasMore: false })) as unknown as ApiFn;

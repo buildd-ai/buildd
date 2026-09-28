@@ -237,6 +237,28 @@ describe('manage_missions — workspace resolution', () => {
     expect(body.workspaceId).toBe(MOCK_WORKSPACE_ID);
   });
 
+  it('list defaults to open missions and a limit: an unfiltered list was the whole history', async () => {
+    mockApi.mockResolvedValueOnce({ missions: [] });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', { action: 'list' }, createMockContext());
+    const qs = new URLSearchParams(String(mockApi.mock.calls[0][0]).split('?')[1]);
+    expect(qs.get('status')).toBe('open');
+    expect(qs.get('limit')).toBe('20');
+    expect(res.content[0].text).toContain('No open missions');
+  });
+
+  it('status "all" reaches the full history; an explicit status and limit pass through', async () => {
+    mockApi.mockResolvedValueOnce({ missions: [] });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', { action: 'list', status: 'all' }, createMockContext());
+    const all = new URLSearchParams(String(mockApi.mock.calls[0][0]).split('?')[1]);
+    expect(all.has('status')).toBe(false);
+
+    mockApi.mockResolvedValueOnce({ missions: [] });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', { action: 'list', status: 'completed', limit: 5 }, createMockContext());
+    const done = new URLSearchParams(String(mockApi.mock.calls[1][0]).split('?')[1]);
+    expect(done.get('status')).toBe('completed');
+    expect(done.get('limit')).toBe('5');
+  });
+
   it('resolves workspace name to ID on list', async () => {
     // First call: resolveWorkspaceId fetches /api/workspaces
     mockApi.mockResolvedValueOnce({
