@@ -43,6 +43,11 @@ on:
         type: string
         required: false
         default: ""
+      theme:
+        description: "'light' or 'dark'. Empty = app default (dark)."
+        type: string
+        required: false
+        default: ""
       judge:
         description: "Also judge the shots on the team OAuth seat (claude-code-action) and post a check run."
         type: boolean
@@ -311,6 +316,7 @@ jobs:
           # Inputs pass through env, never interpolated into the script.
           QA_ROUTES: ${{ inputs.routes }}
           QA_VIEWPORT: ${{ inputs.viewport }}
+          QA_THEME: ${{ inputs.theme }}
           QA_MISSION_ID: ${{ inputs.mission_id }}
           QA_TASK_ID: ${{ inputs.task_id }}
 
