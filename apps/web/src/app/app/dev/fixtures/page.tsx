@@ -11,9 +11,11 @@ import { createFixtureVisualReviewTransport } from '@/components/visual-review/f
 import { useVisualReviewDecisions } from '@/components/visual-review/review-transport';
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
+import MissionListExecutorFixture from './MissionListExecutorFixture';
 import {
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
+    MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -44,6 +46,10 @@ export default function DevFixturesPage() {
                 <MissionBoardVisualFixture />
             </KeyHintsProvider>
         );
+    }
+
+    if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
+        return <MissionListExecutorFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

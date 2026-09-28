@@ -37,6 +37,16 @@ You'll receive:
 
 Save the worker ID. You need it for every subsequent call.
 
+### Organizing a mission you run locally
+
+If you are working a mission's tasks from this session (with local subagents)
+instead of dispatching them, set the mission's `executor` to `"local"`
+(`manage_missions` action=create/update). Runners then leave its tasks alone;
+claim each one explicitly with `claim_task params={ taskId }`, ship it, and
+finish it with `complete_task`. Do not hold the mission (`startMode: "held"`)
+to keep runners off: held is a pause, it refuses your own claims too, and it
+leaves tasks with no worker, PR link or cost.
+
 ## Step 2: Understand Before Acting
 
 **Gate: Do not write any code until you understand the problem and the codebase.**
