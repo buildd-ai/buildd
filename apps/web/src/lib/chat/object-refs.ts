@@ -9,6 +9,7 @@
 
 import type { BuilddObjectRef } from '@buildd/shared';
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { otherVisualEvidence, type VisualEvidenceArtifact } from '@buildd/core/visual-review-text';
 import type { ApiCall } from './in-process-api';
 
 /** Cap per tool call: a list of 50 tasks renders as the first few cards. */
@@ -134,7 +135,13 @@ export function refsFromCall(call: ApiCall): BuilddObjectRef[] {
   } else if (p === '/api/releases') {
     return prRefsFromReleases(call.body).slice(0, MAX_PR_REFS);
   } else if (/\/artifacts$/.test(p)) {
-    for (const a of listOf(call.body, 'artifacts')) {
+    // A mission's (type-filtered) artifact list is read for its visual evidence
+    // (get_visual_review): a card for each piece of it, not for every diff.
+    const list = listOf(call.body, 'artifacts');
+    const items = /^\/api\/missions\/[^/]+\/artifacts$/.test(p) && call.method === 'GET'
+      ? (() => { const ev = otherVisualEvidence(list as unknown as VisualEvidenceArtifact[], { cells: [] }); return [...ev.reports, ...ev.screenshots] as unknown as Obj[]; })()
+      : list;
+    for (const a of items) {
       const id = str(a.id);
       if (!id) continue;
       const title = str(a.title) ?? str(a.key) ?? 'Artifact';

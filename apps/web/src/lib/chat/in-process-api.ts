@@ -69,7 +69,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/missions/:id/evaluate', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/[id]/evaluate/route'), reach: byMission },
   { pattern: '/api/missions/:id/notes', methods: ['POST'], load: () => import('@/app/api/missions/[id]/notes/route'), reach: byMission },
   { pattern: '/api/missions/:id/link', methods: ['POST'], load: () => import('@/app/api/missions/[id]/link/route'), reach: byMission },
-  { pattern: '/api/missions/:id/artifacts', methods: ['POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
+  { pattern: '/api/missions/:id/artifacts', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/[id]/artifacts/route'), reach: byMission },
   // The visual review read (get_visual_review). GET only: the decisions routes
   // under it are never listed here, so no assistant tool can reach them.
   { pattern: '/api/missions/:id/visual-review', methods: ['GET'], load: () => import('@/app/api/missions/[id]/visual-review/route'), reach: byMission },

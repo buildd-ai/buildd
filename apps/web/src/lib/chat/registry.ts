@@ -224,7 +224,7 @@ export const CHAT_TOOL_SPECS = withAreas({
    * write tool: a human decides on the card (ChatActions.reviewShots), where
    * the tap is the consent. (docs/design/visual-qa-human-review.md, Chat)
    */
-  get_visual_review: one(read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review')),
+  get_visual_review: one(read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review', 'GET /api/missions/:id/artifacts')),
   manage_model_tiers: one(deferred('model-tier routing and budgets change what every agent in the team spends; kept to the Models settings screen until the admin card ships a spend preview')),
 });
 

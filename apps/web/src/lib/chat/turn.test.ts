@@ -365,6 +365,63 @@ describe('"make this a mission"', () => {
   });
 });
 
+describe('the Thinking panel\'s steps (data-step, from the tool lifecycle)', () => {
+  /** The `data-step` chunks of an SSE body, as `id label state`. */
+  const streamedSteps = (sse: string) => sse.split('\n')
+    .filter(l => l.startsWith('data: {'))
+    .map(l => JSON.parse(l.slice('data: '.length)))
+    .filter(c => c.type === 'data-step')
+    .map(c => `${c.id} ${c.data.label} ${c.data.state}`);
+  const savedSteps = () => lastAssistant().parts.filter(p => p.type === 'data-step').map(p => `${p.data.id} ${p.data.label} ${p.data.state}`);
+
+  it('a turn with two tool calls streams each as active then done, in plain words, and saves them', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        toolStream('call-a', 'list_tasks', {}),
+        toolStream('call-b', 'manage_missions', { action: 'list' }),
+        textStream('Nothing touches currency.'),
+      ] as any,
+    });
+    const { turn } = harness({ model, api: () => ({ tasks: [], missions: [] }) });
+    const { text } = await turn(userMsg('what is in flight?'));
+    expect(streamedSteps(text)).toEqual([
+      'call-a Looking over the tasks active',
+      'call-a Looked over the tasks done',
+      'call-b Looking over the missions active',
+      'call-b Looked over the missions done',
+    ]);
+    expect(savedSteps()).toEqual(['call-a Looked over the tasks done', 'call-b Looked over the missions done']);
+    // Each step is saved right after its call.
+    const types = lastAssistant().parts.map(p => p.type).filter(t => t !== 'step-start');
+    expect(types).toEqual(['tool-list_tasks', 'data-step', 'tool-manage_missions', 'data-step', 'text']);
+  });
+
+  it('a card is the pending step; confirming it streams the same step done', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('Filed it.')] as any,
+    });
+    const { turn } = harness({ model });
+    const first = await turn(userMsg('make this a mission'));
+    expect(streamedSteps(first.text)).toEqual(['call-m Drafting a mission active', 'call-m Check it with you pending']);
+    const second = await turn(answer(true));
+    expect(streamedSteps(second.text)).toEqual(['call-m Drafted a mission done']);
+    expect(savedSteps()).toEqual(['call-m Drafted a mission done']);
+  });
+
+  it('continuing a message saved before steps existed: its steps are backfilled first', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-m', 'manage_missions', MISSION_INPUT), textStream('Filed it.')] as any,
+    });
+    const { turn } = harness({ model });
+    await turn(userMsg('make this a mission'));
+    const a = lastAssistant();
+    a.parts = a.parts.filter(p => p.type !== 'data-step'); // as stored by an older build
+    const { text } = await turn(answer(true));
+    expect(streamedSteps(text)).toEqual(['call-m Check it with you pending', 'call-m Drafted a mission done']);
+    expect(savedSteps()).toEqual(['call-m Drafted a mission done']);
+  });
+});
+
 describe('limits', () => {
   it('a refused turn returns the limit message and retry-after, and never routes, calls a model or saves', async () => {
     const model = new MockLanguageModelV4({ doStream: textStream('hi') as any });

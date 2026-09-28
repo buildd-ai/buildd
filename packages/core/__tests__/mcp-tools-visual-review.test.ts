@@ -71,6 +71,7 @@ const missionsRoute: Route = (e) => {
   ] };
   if (e === `/api/missions/${MISSION}`) return { id: MISSION, title: 'Desktop chat v3', status: 'completed' };
   if (e === `/api/missions/${MISSION}/visual-review`) return { model };
+  if (e === `/api/missions/${MISSION}/artifacts?types=screenshot,report,analysis,summary,walkthrough&limit=100&preview=1`) return { artifacts: [] };
   return new Error(`unexpected ${e}`);
 };
 
@@ -91,13 +92,40 @@ describe('get_visual_review', () => {
     const { api, calls } = apiOf(missionsRoute);
     const res = await handleBuilddAction(api, 'get_visual_review', { missionId: MISSION }, ctx());
     expect(res.isError).toBeFalsy();
-    expect(calls).toEqual([`/api/missions/${MISSION}`, `/api/missions/${MISSION}/visual-review`]);
+    expect(calls).toEqual([`/api/missions/${MISSION}`, `/api/missions/${MISSION}/visual-review`, `/api/missions/${MISSION}/artifacts?types=screenshot,report,analysis,summary,walkthrough&limit=100&preview=1`]);
     const out = res.content[0].text;
     expect(out).toContain(`Visual review of "Desktop chat v3" (mission ${MISSION}, completed)`);
     expect(out).toContain(`round 1: completed (task ${AUDIT}): Checked one route.`);
     expect(out).toContain('1 screen needs your review.');
     expect(out).toContain(`${BASE}/app/artifacts/${SHOT}`);
     expect(out).toContain(`${BASE}/api/artifacts/${SHOT}/download`);
+  });
+
+  it('reports manual visual evidence from one mission-artifacts call, and never says "no visual audit" over it', async () => {
+    const REPORT = '00000000-0000-4000-8000-0000000000d1';
+    const offModel: VisualReviewModel = { ...model, phase: 'off', audit: null, audits: [], cells: [], queue: [], needsYou: null, summary: { ...model.summary, shots: 0, unsure: 0, awaitingHuman: 0, unreviewed: 0 } };
+    const { api, calls } = apiOf((e) => {
+      if (e.endsWith('/visual-review')) return { model: offModel };
+      if (e === `/api/missions/${MISSION}/artifacts?types=screenshot,report,analysis,summary,walkthrough&limit=100&preview=1`) return { artifacts: [
+        { id: REPORT, type: 'report', title: 'Visual validation: chat v3 (final)', content: 'Verdict: all checks passed on phone and desktop.', metadata: {}, updatedAt: '2026-03-10T10:45:00.000Z' },
+      ] };
+      return missionsRoute(e);
+    });
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionId: MISSION }, ctx());
+    const out = res.content[0].text;
+    expect(calls.filter(c => c.includes('/artifacts'))).toEqual([`/api/missions/${MISSION}/artifacts?types=screenshot,report,analysis,summary,walkthrough&limit=100&preview=1`]);
+    expect(out).not.toMatch(/No visual audit on this mission/);
+    expect(out).toContain('No automatic visual audit ran; manual visual evidence below.');
+    expect(out).toContain('Verdict: all checks passed on phone and desktop.');
+    expect(out).toContain(`${BASE}/app/artifacts/${REPORT}`);
+  });
+
+  it('an artifacts read that fails leaves the review as it was', async () => {
+    const { api } = apiOf((e) => e.includes('/artifacts?') ? new Error('API error: 500') : missionsRoute(e));
+    const res = await handleBuilddAction(api, 'get_visual_review', { missionId: MISSION }, ctx());
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('1 screen needs your review.');
+    expect(res.content[0].text).not.toMatch(/Other visual evidence/);
   });
 
   it('passes the mission completion time through, so "checked before done" is answerable', async () => {
