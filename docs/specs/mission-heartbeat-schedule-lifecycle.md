@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-09-28
 summary: A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/app/api/missions/[id]/route.ts, apps/web/src/lib/mission-stuck.ts, apps/web/src/app/api/missions/route.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/mission-stuck.ts]
 related: [mission-task-lifecycle]
 keywords: [heartbeat, taskschedule, scheduleid, isheartbeat, orchestrationmode, held, archivestaledonemissions, completemissionifverified, dormancy, evaluation log]
 verified_by: [apps/web/src/lib/mission-archive.test.ts, apps/web/src/app/api/cron/schedules/route.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/schedule-health.test.ts, apps/web/src/lib/mission-stuck.test.ts, apps/web/src/app/api/missions/route.test.ts]
