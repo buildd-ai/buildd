@@ -2721,6 +2721,36 @@ export const chatTurnWindows = pgTable('chat_turn_windows', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Chat directives: the person's standing rules ("always open PRs as drafts"),
+// confirmed from a card in the thread or written in Settings, loaded into every
+// one of their chat turns (packages/core/chat-directives.ts). Owned by the
+// person, not the team: only they read or edit them. workspace_id NULL = every
+// workspace; set = that workspace's turns only (gone with the workspace).
+// Not in `memories`: that pool is team-scoped, retrieved by similarity and
+// indexed for everyone, and these must be always-loaded and private.
+export const chatDirectives = pgTable('chat_directives', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  text: text('text').notNull(),
+  // Where it came from: 'chat' (a confirmed card) or 'settings'. Provenance only.
+  source: text('source').notNull().default('chat').$type<'chat' | 'settings'>(),
+  // The assistant message whose card proposed it; null from Settings. No FK:
+  // a deleted conversation leaves the rule in place.
+  sourceMessageId: uuid('source_message_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userCreatedIdx: index('chat_directives_user_created_idx').on(t.userId, t.createdAt),
+  // One copy of a rule per person and scope, race-free: a double tap, a card
+  // answered on two devices, or an edit into an existing rule hits this and
+  // the write is a no-op (ON CONFLICT DO NOTHING). NULLS NOT DISTINCT makes
+  // two "everywhere" copies (workspace_id NULL) collide too.
+  userScopeTextUnique: unique('chat_directives_user_scope_text_unique').on(t.userId, t.workspaceId, t.text).nullsNotDistinct(),
+}));
+
+export type ChatDirectiveRow = typeof chatDirectives.$inferSelect;
+
 // Device code flow for CLI authentication in headless environments
 export const deviceCodes = pgTable('device_codes', {
   id: uuid('id').primaryKey().defaultRandom(),

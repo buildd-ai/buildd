@@ -19,6 +19,7 @@ import { MoreObjects, ObjectsSegment } from './objects/registry';
 import TurnFeedback from './TurnFeedback';
 import { intentTag, thinkingSteps, type ThinkingStep } from './thinking-model';
 import WatchNotice from './WatchNotice';
+import DirectiveCards from './DirectiveCard';
 
 export interface ChatAgent {
   name: string;
@@ -191,6 +192,8 @@ function AssistantMessage({ m, agent }: { m: ChatMessage; agent: ChatAgent }) {
           {meta.durationMs != null && <span>{`· ${(meta.durationMs / 1000).toFixed(1)}s`}</span>}
         </div>
         {segs.map(s => <Segment key={s.key} seg={s} />)}
+        {/* A standing rule the person just stated, offered for one-tap saving. */}
+        {m.role === 'assistant' && <DirectiveCards parts={m.parts} messageId={m.id} />}
         {m.role === 'assistant' && <TurnFeedback messageId={m.id} />}
       </div>
     </div>

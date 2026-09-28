@@ -63,6 +63,10 @@ Hit counts split into `pushCount` and `useCount`. Consolidation's decay test rea
 
 Chat gets two tiers: **directives** (user-stated rules, always loaded, small, editable in settings) and **knowledge** (everything else, through the one door). A chat turn that states a rule produces a directive candidate the user confirms in one tap. Directives apply to the user everywhere by default; Jev suggests "only this workspace" when the rule names workspace-specific things (a repo, a path, a mission), and the confirm card shows that suggestion preselected.
 
+Directives also reach the agents chat dispatches: a task or mission filed from chat carries the requester's applicable rules (everywhere plus that workspace, capped like the chat load) in a "Standing rules (from chat)" block in its description, so the agent follows them and a person reading the task can see why it behaved that way. Only the chatting user's rules, never another user's.
+
+The card is only a proposal. Text the user pastes into chat (a doc, a log, someone else's message) can contain "always" or "never" and yield a card; nothing is saved until the user taps it, the saved text must be the text the card proposed, and it can be edited or removed in Settings.
+
 ### Where Jev helps
 
 Jev answers typed questions (choice, score, yes/no) cheaply and fast, and never writes prose. Each decision is **confidence-gated and fails open** to the current rule (5s deadline, low confidence, error). Shadow is reserved for the two decisions whose mistakes are invisible or spread: the relevance gate (a hidden memory leaves no trace) and promotion (one bad promotion reaches every agent). Those log verdicts until the use ledger can grade them, then switch on. The rest go live with the first release, because a wrong answer is visible, confirmed by a human, or reversible:

@@ -31,6 +31,9 @@ import { autoTitleConversation } from '@/lib/chat/auto-title';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
+import { loadStandingRules } from '@/lib/chat/directives-store';
+import { webMemoryDecisionDeps } from '@/lib/memory-decisions';
+import { createMemoryDecider } from '@buildd/core/memory-decisions';
 
 // The turn streams for up to ~45s (TURN_BUDGET_MS) plus persistence.
 export const maxDuration = 60;
@@ -174,6 +177,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   };
   const base = scopeFor(defaultWorkspaceId);
 
+  // The directive decisions' log rows and usage receipts are collected here
+  // and flushed in one after() registered now, inside the request, so they
+  // outlive the response on Vercel instead of being scheduled mid-stream.
+  const decisionWrites: Promise<unknown>[] = [];
+  try {
+    after(async () => {
+      while (decisionWrites.length) await Promise.all(decisionWrites.splice(0));
+    });
+  } catch { /* outside a request scope (tests): nothing to flush into */ }
+  const directiveDecider = createMemoryDecider(webMemoryDecisionDeps({ pending: decisionWrites }));
+
   return runChatTurn({
     conversation: conv,
     workspace: defaultWorkspaceId ? workspace : null,
@@ -191,6 +205,14 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       linkedMissionId: () => linkedMissionFor(conv.id, conv.teamId),
       later: fn => after(fn),
       autoTitle: (c, messages) => autoTitleConversation(c, messages, user.id),
+      // Standing rules: the caller's own, loaded every turn; a card when a message states one.
+      directives: {
+        load: () => loadStandingRules(r.caller.user.id),
+        judge: ({ message, previous, workspace: ws, rule }) => directiveDecider.judgeChatDirective({
+          scope: { teamId: conv.teamId, workspaceId: ws?.id ?? null, accountId: null },
+          message, previous, workspace: ws ? { name: ws.name, hint: ws.hint ?? null } : null, rule,
+        }),
+      },
     },
   });
 }

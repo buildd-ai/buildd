@@ -50,6 +50,18 @@ mock.module('@/lib/chat/reach', () => ({
   loadChatReach: async (teamId: string) => ({ teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }),
 }));
 mock.module('@/lib/chat/auto-title', () => ({ autoTitleConversation: async () => {} }));
+const ruleLoads: string[] = [];
+const judged: any[] = [];
+mock.module('@/lib/chat/directives-store', () => ({
+  loadStandingRules: async (userId: string) => { ruleLoads.push(userId); return []; },
+}));
+const decisionDeps: any[] = [];
+mock.module('@/lib/memory-decisions', () => ({
+  webMemoryDecisionDeps: (opts: any) => { decisionDeps.push(opts); return { opts }; },
+}));
+mock.module('@buildd/core/memory-decisions', () => ({
+  createMemoryDecider: (deps: any) => ({ judgeChatDirective: async (input: any) => { judged.push({ ...input, deps }); return null; } }),
+}));
 mock.module('@/lib/memory-helper', () => ({ getMemoryStoreForTeam: async () => ({ fake: 'store' }) }));
 mock.module('@buildd/core/knowledge-store', () => ({ PgVectorStore: class {}, getVoyageEmbedder: () => null, getVoyageReranker: () => null }));
 
@@ -157,6 +169,19 @@ describe('/api/chat/[id]: tier pin and tool permissions', () => {
   it('a turn carries the caller\'s own allowed tool groups for the conversation team', async () => {
     await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
     expect([...turnCalls[0].deps.allowedToolGroups]).toEqual(['tasks']);
+  });
+
+  it('a turn loads the caller\'s own standing rules, and judges a card in the conversation team', async () => {
+    ruleLoads.length = 0; judged.length = 0;
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
+    const d = turnCalls.at(-1).deps.directives;
+    await d.load();
+    expect(ruleLoads).toEqual(['u-1']);
+    await d.judge({ message: 'Always x', previous: null, workspace: { id: 'ws-ok', name: 'ok' }, rule: true });
+    expect(judged[0]).toMatchObject({ scope: { teamId: 't-1', workspaceId: 'ws-ok' }, message: 'Always x', workspace: { name: 'ok' }, rule: true });
+    // Log rows and receipts are collected for the request's own after() flush, not scheduled mid-stream.
+    expect(Array.isArray(decisionDeps.at(-1).pending)).toBe(true);
+    expect(judged[0].deps.opts.pending).toBe(decisionDeps.at(-1).pending);
   });
 });
 

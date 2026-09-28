@@ -26,6 +26,7 @@ const stubDecider = (over: Partial<MemoryDecider> = {}): MemoryDecider => ({
   judgeUpdate: async () => { throw new Error('unused'); },
   labelUses: async () => [],
   shadowRelevance: async () => {},
+  judgeChatDirective: async () => null,
   ...over,
 });
 
