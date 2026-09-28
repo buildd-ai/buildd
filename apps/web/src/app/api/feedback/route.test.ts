@@ -16,17 +16,19 @@ let deleted = 0;
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => currentUser }));
 // Workspace access: which workspaces user-1 can reach, and in which team.
 let access: Record<string, string> = { 'ws-mine': 'team-mine' };
-let entityWorkspace: string | null = 'ws-mine';
+let userTeams: string[] = ['team-first', 'team-mine'];
+type Home = { workspaceId: string; teamId?: undefined } | { workspaceId: null; teamId: string } | null;
+let entityHome: Home = { workspaceId: 'ws-mine' };
 const resolvedRefs: Array<{ entityType: string; entityId: string }> = [];
 mock.module('@/lib/team-access', () => ({
-  getUserTeamIds: async () => ['team-first'],
+  getUserTeamIds: async () => userTeams,
   verifyWorkspaceAccess: async (_userId: string, wsId: string) =>
     access[wsId] ? { teamId: access[wsId], role: 'member' } : null,
 }));
 mock.module('@/lib/feedback-entity-workspace', () => ({
-  resolveFeedbackEntityWorkspace: async (entityType: string, entityId: string) => {
+  resolveFeedbackEntityHome: async (entityType: string, entityId: string) => {
     resolvedRefs.push({ entityType, entityId });
-    return entityWorkspace;
+    return entityHome;
   },
 }));
 mock.module('@/lib/chat/turn-feedback', () => ({ rateableTurnTeam: async () => turnTeam }));
@@ -54,7 +56,8 @@ beforeEach(() => {
   updated.length = 0;
   deleted = 0;
   access = { 'ws-mine': 'team-mine' };
-  entityWorkspace = 'ws-mine';
+  userTeams = ['team-first', 'team-mine'];
+  entityHome = { workspaceId: 'ws-mine' };
   resolvedRefs.length = 0;
 });
 
@@ -123,7 +126,7 @@ describe('POST /api/feedback: rated entity must be in a workspace the rater can 
   });
 
   it('refuses an entity in a workspace the rater cannot access, and writes nothing', async () => {
-    entityWorkspace = 'ws-theirs';
+    entityHome = { workspaceId: 'ws-theirs' };
     const res = await post({ entityType: 'note', entityId: 'n-1', signal: 'down', comment: 'x' });
     expect(res.status).toBe(404);
     expect(inserted).toEqual([]);
@@ -131,9 +134,9 @@ describe('POST /api/feedback: rated entity must be in a workspace the rater can 
   });
 
   it('refuses an entity that resolves to no workspace, with the same reply', async () => {
-    entityWorkspace = 'ws-theirs';
+    entityHome = { workspaceId: 'ws-theirs' };
     const foreign = await post({ entityType: 'summary', entityId: 'task-x-summary', signal: 'down' });
-    entityWorkspace = null;
+    entityHome = null;
     const missing = await post({ entityType: 'summary', entityId: 'task-x-summary', signal: 'down' });
     expect(missing.status).toBe(foreign.status);
     expect(await missing.json()).toEqual(await foreign.json());
@@ -142,10 +145,29 @@ describe('POST /api/feedback: rated entity must be in a workspace the rater can 
 
   it('does not let a toggle on an inaccessible entity reach the existing row', async () => {
     existing = { id: 'fb-1', signal: 'down', reason: null };
-    entityWorkspace = 'ws-theirs';
+    entityHome = { workspaceId: 'ws-theirs' };
     const res = await post({ entityType: 'heartbeat', entityId: 't-1', signal: 'down' });
     expect(res.status).toBe(404);
     expect(deleted).toBe(0);
+  });
+});
+
+describe('POST /api/feedback: team-level content (no workspace)', () => {
+  it('accepts a team member and records it under the content team', async () => {
+    entityHome = { workspaceId: null, teamId: 'team-mine' };
+    const res = await post({ entityType: 'note', entityId: 'n-team', signal: 'down' });
+    expect(res.status).toBe(201);
+    expect(inserted[0]).toMatchObject({ teamId: 'team-mine', entityType: 'note' });
+  });
+
+  it('refuses a non-member with the same reply as a missing entity', async () => {
+    entityHome = { workspaceId: null, teamId: 'team-other' };
+    const foreign = await post({ entityType: 'artifact', entityId: 'a-team', signal: 'down' });
+    entityHome = null;
+    const missing = await post({ entityType: 'artifact', entityId: 'a-team', signal: 'down' });
+    expect(foreign.status).toBe(404);
+    expect(await foreign.json()).toEqual(await missing.json());
+    expect(inserted).toEqual([]);
   });
 });
 

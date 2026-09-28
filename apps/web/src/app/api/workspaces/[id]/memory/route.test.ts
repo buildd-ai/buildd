@@ -56,9 +56,10 @@ mock.module('@buildd/core/memory-scope', () => ({
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'user-1' }) }));
 mock.module('@/lib/api-auth', () => ({ hashApiKey: (k: string) => k }));
+let hasAccess = true;
 mock.module('@/lib/team-access', () => ({
-  verifyWorkspaceAccess: async () => ({ teamId: TEAM }),
-  verifyAccountWorkspaceAccess: async () => ({ teamId: TEAM }),
+  verifyWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
+  verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -69,7 +70,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { POST } = await import('./route');
+const { GET, POST } = await import('./route');
 const { PATCH, DELETE } = await import('./[memoryId]/route');
 
 const req = (method: string, body?: unknown) =>
@@ -85,7 +86,11 @@ beforeEach(() => {
     { id: 'mem-teamwide', project: null },
   ];
   workspaceKey = OWN;
+  hasAccess = true;
   keyLookups.length = 0;
+  memClient.search.mockClear();
+  memClient.batch.mockClear();
+  memClient.get.mockClear();
   saved.length = 0;
   updated.length = 0;
   deleted.length = 0;
@@ -169,6 +174,47 @@ describe('DELETE: only the workspace own memories', () => {
     workspaceKey = null;
     const res = await DELETE(req('DELETE'), idParams('mem-own'));
     expect(res.status).toBe(404);
+    expect(deleted).toHaveLength(0);
+  });
+});
+
+describe('GET: listed under the workspace memory key only', () => {
+  const list = (qs = '') => GET(
+    new NextRequest(`http://localhost/api/workspaces/${WS}/memory${qs}`),
+    { params: Promise.resolve({ id: WS }) },
+  );
+
+  it('searches under the resolved key', async () => {
+    const res = await list('?search=auth');
+    expect(res.status).toBe(200);
+    expect(keyLookups).toEqual([WS]);
+    expect(memClient.search).toHaveBeenCalledTimes(1);
+    expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({ project: OWN, query: 'auth' });
+  });
+
+  it('a workspace with no key lists nothing and never searches the team store', async () => {
+    workspaceKey = null;
+    const res = await list();
+    expect(await res.json()).toEqual({ memories: [], total: 0, memoryUnavailable: true });
+    expect(memClient.search).not.toHaveBeenCalled();
+  });
+});
+
+describe('workspace access is checked before any memory store call', () => {
+  it('GET, POST, PATCH and DELETE all 404 and touch nothing', async () => {
+    hasAccess = false;
+    const statuses = [
+      (await GET(new NextRequest(`http://localhost/api/workspaces/${WS}/memory`), { params: Promise.resolve({ id: WS }) })).status,
+      (await POST(req('POST', { type: 'gotcha', title: 'T', content: 'C' }), { params: Promise.resolve({ id: WS }) })).status,
+      (await PATCH(req('PATCH', { content: 'x' }), idParams('mem-own'))).status,
+      (await DELETE(req('DELETE'), idParams('mem-own'))).status,
+    ];
+    expect(statuses).toEqual([404, 404, 404, 404]);
+    expect(keyLookups).toEqual([]);
+    expect(memClient.search).not.toHaveBeenCalled();
+    expect(memClient.get).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+    expect(updated).toHaveLength(0);
     expect(deleted).toHaveLength(0);
   });
 });
