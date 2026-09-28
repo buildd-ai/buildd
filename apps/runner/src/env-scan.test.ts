@@ -4,8 +4,13 @@ import { readFileSync } from 'fs';
 
 // Mock child_process.execSync
 const mockExecSync = mock((cmd: string) => Buffer.from(''));
+// Browser launch probes use execFileSync(file, argv); route them through the
+// same mock as a quoted command line so tests can match on one string.
+const mockExecFileSync = mock((file: string, args: string[]) =>
+  mockExecSync([`'${file}'`, ...args].join(' ')));
 mock.module('child_process', () => ({
   execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
 }));
 
 // Mock fs.readFileSync and existsSync

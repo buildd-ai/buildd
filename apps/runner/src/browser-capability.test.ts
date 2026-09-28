@@ -1,25 +1,43 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { EventEmitter } from 'events';
 
-// No real browser in CI: every exec and existence check is mocked.
+// No real browser in CI: every exec, spawn and fs check is mocked.
 const mockExecSync = mock((_cmd: string, _opts?: unknown): Buffer => Buffer.from(''));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+const mockExecFileSync = mock((_file: string, _args: string[], _opts?: any): Buffer => Buffer.from(''));
+const mockSpawn = mock((_file: string, _args: string[], _opts?: any): any => null);
+mock.module('child_process', () => ({ execSync: mockExecSync, execFileSync: mockExecFileSync, spawn: mockSpawn }));
 
 const mockExistsSync = mock((_p: string) => false);
-mock.module('fs', () => ({ existsSync: mockExistsSync, readFileSync: () => '' }));
+const mockStatSync = mock((_p: string): any => ({ mtimeMs: 1, ino: 1 }));
+const mockRealpathSync = mock((p: string) => p);
+mock.module('fs', () => ({
+  existsSync: mockExistsSync,
+  readFileSync: () => '',
+  statSync: mockStatSync,
+  realpathSync: mockRealpathSync,
+}));
 
 import {
   detectBrowser,
+  detectBrowserAsync,
   checkBrowserCapability,
+  refreshBrowserCapability,
   formatBrowserDetection,
   rescanBrowserCapability,
   applyBrowserCapability,
-  browserProbeCommand,
+  applyAgentPlaywrightEnv,
+  getLastBrowserDetection,
+  browserProbeArgs,
   resetBrowserCapabilityCache,
+  setBrowserProbeTimeoutForTests,
   SYSTEM_PLAYWRIGHT_DIR,
+  FAILURE_BACKOFF_MS,
 } from './browser-capability';
+import { buildAgentBaseEnv, RUNNER_ENV_PASSTHROUGH } from './agent-env';
 
 const HTML = '<html><head></head><body></body></html>\n';
 const SHELL = `${SYSTEM_PLAYWRIGHT_DIR}/chromium_headless_shell-1200/chrome-linux/headless_shell`;
+const HANG = Symbol('hang');
 
 function execError(status: number | null, stderr: string, extra: Record<string, unknown> = {}) {
   return Object.assign(new Error(`Command failed`), { status, stderr: Buffer.from(stderr), ...extra });
@@ -30,13 +48,49 @@ interface Host {
   onPath?: Record<string, string>;
   dirs?: string[];
   found?: string[];
-  launch?: Record<string, () => Buffer>;
+  realpath?: Record<string, string>;
+  mtime?: Record<string, number>;
+  /** Returns stdout, throws an execError, or returns HANG (async only: never exits). */
+  launch?: Record<string, () => Buffer | typeof HANG>;
 }
 let host: Host;
+/** Paths launched, in order, by either the sync or the async probe. */
 let probes: string[];
 
 function install(h: Host) {
   host = h;
+}
+
+function launchOf(file: string) {
+  probes.push(file);
+  const fn = host.launch?.[file];
+  if (!fn) throw Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' });
+  return fn();
+}
+
+function fakeChild(file: string) {
+  const child: any = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.pid = 4242;
+  child.unref = () => {};
+  queueMicrotask(() => {
+    let out: Buffer | typeof HANG;
+    try {
+      out = launchOf(file);
+    } catch (err: any) {
+      if (err.status == null) { child.emit('error', err); return; }
+      child.stderr.emit('data', err.stderr);
+      child.emit('exit', err.status);
+      child.emit('close', err.status);
+      return;
+    }
+    if (out === HANG) return;
+    child.stdout.emit('data', out);
+    child.emit('exit', 0);
+    child.emit('close', 0);
+  });
+  return child;
 }
 
 beforeEach(() => {
@@ -46,6 +100,10 @@ beforeEach(() => {
   delete process.env.PLAYWRIGHT_BROWSERS_PATH;
   mockExistsSync.mockReset();
   mockExistsSync.mockImplementation((p: string) => (host.dirs ?? []).includes(p));
+  mockStatSync.mockReset();
+  mockStatSync.mockImplementation((p: string) => ({ mtimeMs: host.mtime?.[p] ?? 1, ino: 7 }));
+  mockRealpathSync.mockReset();
+  mockRealpathSync.mockImplementation((p: string) => host.realpath?.[p] ?? p);
   mockExecSync.mockReset();
   mockExecSync.mockImplementation((cmd: string) => {
     if (cmd.startsWith('which ')) {
@@ -55,14 +113,16 @@ beforeEach(() => {
       throw execError(1, '');
     }
     if (cmd.startsWith('find ')) return Buffer.from((host.found ?? []).join('\n'));
-    if (cmd.includes('--dump-dom')) {
-      probes.push(cmd);
-      const path = Object.keys(host.launch ?? {}).find(p => cmd.startsWith(`'${p}'`));
-      if (path) return host.launch![path]();
-      throw execError(127, `${cmd.split(' ')[0]}: not found`);
-    }
-    throw execError(1, 'unexpected');
+    throw execError(1, 'unexpected shell command');
   });
+  mockExecFileSync.mockReset();
+  mockExecFileSync.mockImplementation((file: string) => {
+    const out = launchOf(file);
+    if (out === HANG) throw execError(null, '', { code: 'ETIMEDOUT', signal: 'SIGKILL' });
+    return out;
+  });
+  mockSpawn.mockReset();
+  mockSpawn.mockImplementation((file: string) => fakeChild(file));
 });
 
 afterEach(() => {
@@ -88,8 +148,9 @@ describe('detectBrowser', () => {
     expect(findCmd).toContain('headless_shell');
     expect(findCmd).toContain('chrome-headless-shell');
     // Headless shell is launched with plain --headless.
-    expect(probes[0]).toContain(' --headless ');
-    expect(probes[0]).not.toContain('--headless=new');
+    const args = mockExecFileSync.mock.calls[0][1];
+    expect(args).toContain('--headless');
+    expect(args).not.toContain('--headless=new');
   });
 
   it('finds chrome-headless-shell on PATH', () => {
@@ -110,11 +171,23 @@ describe('detectBrowser', () => {
   });
 
   it('launches a full Chromium with --headless=new and the probe flags', () => {
-    const cmd = browserProbeCommand('/usr/bin/chromium');
-    expect(cmd).toContain('--headless=new');
-    expect(cmd).toContain('--no-sandbox');
-    expect(cmd).toContain('--disable-gpu');
-    expect(cmd).toContain('--dump-dom about:blank');
+    const args = browserProbeArgs('/usr/bin/chromium');
+    expect(args).toContain('--headless=new');
+    expect(args).toContain('--no-sandbox');
+    expect(args).toContain('--disable-gpu');
+    expect(args.slice(-2)).toEqual(['--dump-dom', 'about:blank']);
+  });
+
+  it('launches via argv (no shell) and SIGKILLs on timeout', () => {
+    install({ onPath: { chromium: '/usr/bin/chromium' }, launch: { '/usr/bin/chromium': () => Buffer.from(HTML) } });
+    detectBrowser();
+    const [file, args, opts] = mockExecFileSync.mock.calls[0];
+    expect(file).toBe('/usr/bin/chromium');
+    expect(Array.isArray(args)).toBe(true);
+    expect(opts.killSignal).toBe('SIGKILL');
+    expect(opts.timeout).toBeGreaterThan(0);
+    // No launch went through a shell.
+    expect(mockExecSync.mock.calls.some(c => String(c[0]).includes('--dump-dom'))).toBe(false);
   });
 
   it('is not available when the binary exists but the launch probe fails', () => {
@@ -145,7 +218,7 @@ describe('detectBrowser', () => {
     expect(d.attempts[0].reason).toBe('no html on stdout');
   });
 
-  it('falls through a broken PATH binary to a working Playwright build', () => {
+  it('uses a working Playwright build even when a broken PATH binary exists', () => {
     install({
       onPath: { 'chromium-browser': '/usr/bin/chromium-browser' },
       dirs: [SYSTEM_PLAYWRIGHT_DIR],
@@ -157,14 +230,14 @@ describe('detectBrowser', () => {
     });
     const d = detectBrowser();
     expect(d.path).toBe(SHELL);
-    expect(d.attempts.map(a => a.ok)).toEqual([false, true]);
+    expect(d.attempts.map(a => a.path)).toEqual([SHELL]);
   });
 
   it('reports a timeout as the reason', () => {
     install({
       onPath: { chromium: '/usr/bin/chromium' },
       launch: {
-        '/usr/bin/chromium': () => { throw execError(null, '', { code: 'ETIMEDOUT', signal: 'SIGTERM' }); },
+        '/usr/bin/chromium': () => HANG,
       },
     });
     expect(detectBrowser().attempts[0].reason).toMatch(/timeout/);
@@ -177,15 +250,106 @@ describe('detectBrowser', () => {
     expect(probes).toHaveLength(1);
   });
 
-  it('does not cache failures, so a later install-deps is picked up', () => {
+  it('backs off a failed probe: the same unchanged binary is not relaunched within the backoff', () => {
+    install({
+      onPath: { chromium: '/usr/bin/chromium' },
+      launch: { '/usr/bin/chromium': () => { throw execError(127, 'libnss3.so missing'); } },
+    });
+    expect(detectBrowser().available).toBe(false);
+    const again = detectBrowser();
+    expect(again.available).toBe(false);
+    expect(again.attempts[0].cached).toBe(true);
+    expect(again.attempts[0].stderrHead).toContain('libnss3.so');
+    expect(probes).toHaveLength(1);
+  });
+
+  it('re-probes a failed binary at once when it is reinstalled (mtime changes)', () => {
+    let fixed = false;
+    install({
+      onPath: { chromium: '/usr/bin/chromium' },
+      mtime: { '/usr/bin/chromium': 1 },
+      launch: { '/usr/bin/chromium': () => { if (fixed) return Buffer.from(HTML); throw execError(127, 'libnss3.so missing'); } },
+    });
+    expect(detectBrowser().available).toBe(false);
+    fixed = true;
+    host.mtime = { '/usr/bin/chromium': 2 };
+    expect(detectBrowser().available).toBe(true);
+    expect(probes).toHaveLength(2);
+  });
+
+  it('re-probes a failed binary after the backoff, so a later install-deps is picked up', () => {
     let deps = false;
     install({
       onPath: { chromium: '/usr/bin/chromium' },
       launch: { '/usr/bin/chromium': () => { if (deps) return Buffer.from(HTML); throw execError(127, 'libnss3.so missing'); } },
     });
-    expect(detectBrowser().available).toBe(false);
-    deps = true;
-    expect(detectBrowser().available).toBe(true);
+    const t0 = Date.now();
+    const now = spyOn(Date, 'now').mockReturnValue(t0);
+    try {
+      expect(detectBrowser().available).toBe(false);
+      deps = true;
+      now.mockReturnValue(t0 + FAILURE_BACKOFF_MS - 1);
+      expect(detectBrowser().available).toBe(false);
+      now.mockReturnValue(t0 + FAILURE_BACKOFF_MS + 1);
+      expect(detectBrowser().available).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('probes Playwright builds before PATH, so broken PATH entries cannot use up the launch cap', () => {
+    install({
+      onPath: {
+        chromium: '/usr/bin/chromium',
+        'chromium-browser': '/usr/bin/chromium-browser',
+        'google-chrome': '/usr/bin/google-chrome',
+      },
+      dirs: [SYSTEM_PLAYWRIGHT_DIR],
+      found: [SHELL],
+      launch: {
+        '/usr/bin/chromium': () => Buffer.from('snap stub\n'),
+        '/usr/bin/chromium-browser': () => Buffer.from('snap stub\n'),
+        '/usr/bin/google-chrome': () => { throw execError(1, 'broken'); },
+        [SHELL]: () => Buffer.from(HTML),
+      },
+    });
+    const d = detectBrowser();
+    expect(d.available).toBe(true);
+    expect(d.path).toBe(SHELL);
+    expect(probes[0]).toBe(SHELL);
+  });
+
+  it('prefers the headless shell over full Chromium inside a Playwright dir', () => {
+    const full = `${SYSTEM_PLAYWRIGHT_DIR}/chromium-1200/chrome-linux/chrome`;
+    install({
+      dirs: [SYSTEM_PLAYWRIGHT_DIR],
+      found: [full, SHELL],
+      launch: { [full]: () => Buffer.from(HTML), [SHELL]: () => Buffer.from(HTML) },
+    });
+    expect(detectBrowser().path).toBe(SHELL);
+  });
+
+  it('skips PATH entries that resolve into snapd and dedupes by realpath', () => {
+    install({
+      onPath: {
+        chromium: '/usr/bin/chromium',
+        'chromium-browser': '/usr/bin/chromium-browser',
+        'google-chrome': '/usr/bin/google-chrome',
+        'google-chrome-stable': '/usr/bin/google-chrome-stable',
+      },
+      realpath: {
+        '/usr/bin/chromium': '/snap/bin/chromium',
+        '/usr/bin/google-chrome': '/opt/google/chrome/chrome',
+        '/usr/bin/google-chrome-stable': '/opt/google/chrome/chrome',
+      },
+      launch: {
+        '/usr/bin/chromium-browser': () => { throw execError(1, 'broken'); },
+        '/usr/bin/google-chrome': () => Buffer.from(HTML),
+      },
+    });
+    const d = detectBrowser();
+    expect(d.path).toBe('/usr/bin/google-chrome');
+    expect(probes).toEqual(['/usr/bin/chromium-browser', '/usr/bin/google-chrome']);
   });
 
   it('caps the number of launches per scan', () => {
@@ -193,6 +357,61 @@ describe('detectBrowser', () => {
     install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: paths, launch: {} });
     detectBrowser();
     expect(probes.length).toBeLessThanOrEqual(3);
+  });
+
+  it('records the Playwright root the passing build lives under', () => {
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+    expect(detectBrowser().browsersRoot).toBe(SYSTEM_PLAYWRIGHT_DIR);
+  });
+});
+
+describe('detectBrowserAsync (periodic re-scan)', () => {
+  it('launches with spawn in its own process group, never a blocking exec', async () => {
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+    const d = await detectBrowserAsync();
+    expect(d.available).toBe(true);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    const [file, args, opts] = mockSpawn.mock.calls[0];
+    expect(file).toBe(SHELL);
+    expect(args).toContain('--dump-dom');
+    expect(opts.detached).toBe(true);
+  });
+
+  it('SIGKILLs the whole process group of a hung browser on timeout', async () => {
+    setBrowserProbeTimeoutForTests(20);
+    const kill = spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => HANG } });
+      const d = await detectBrowserAsync();
+      expect(d.available).toBe(false);
+      expect(d.attempts[0].reason).toMatch(/timeout/);
+      expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('reports exit code and stderr for a failing async launch', async () => {
+    install({ onPath: { chromium: '/usr/bin/chromium' }, launch: { '/usr/bin/chromium': () => { throw execError(127, 'libnss3.so missing'); } } });
+    const d = await detectBrowserAsync();
+    expect(d.attempts[0].exitCode).toBe(127);
+    expect(d.attempts[0].stderrHead).toContain('libnss3.so');
+  });
+
+  it('does not block the event loop while a probe runs', async () => {
+    setBrowserProbeTimeoutForTests(30);
+    const kill = spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => HANG } });
+      let ticked = false;
+      setTimeout(() => { ticked = true; }, 1);
+      const p = detectBrowserAsync();
+      await new Promise(r => setTimeout(r, 5));
+      expect(ticked).toBe(true);
+      await p;
+    } finally {
+      kill.mockRestore();
+    }
   });
 });
 
@@ -222,7 +441,7 @@ describe('formatBrowserDetection', () => {
 });
 
 describe('checkBrowserCapability logging', () => {
-  it('logs one line on first check and stays quiet while the outcome is unchanged', () => {
+  it('logs one line on first check and stays quiet while the outcome is unchanged', async () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       install({});
@@ -232,9 +451,26 @@ describe('checkBrowserCapability logging', () => {
       expect(String(log.mock.calls[0][0])).toContain('browser: no');
 
       install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
-      checkBrowserCapability();
+      await refreshBrowserCapability();
       expect(log).toHaveBeenCalledTimes(2);
       expect(String(log.mock.calls[1][0])).toContain('browser: yes');
+      await refreshBrowserCapability();
+      expect(log).toHaveBeenCalledTimes(2);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('after startup, the full env scan reuses the latest detection instead of launching', async () => {
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+      expect(checkBrowserCapability()).toBe(true);
+      install({}); // browser gone, but only the re-scan notices
+      expect(checkBrowserCapability()).toBe(true);
+      expect(probes).toHaveLength(1);
+      await refreshBrowserCapability();
+      expect(checkBrowserCapability()).toBe(false);
     } finally {
       log.mockRestore();
     }
@@ -250,21 +486,21 @@ describe('rescanBrowserCapability', () => {
     scannedAt: new Date(0).toISOString(),
   });
 
-  it('flips the browser key on when a browser is installed after startup, and off when it goes away', () => {
+  it('flips the browser key on when a browser is installed after startup, and off when it goes away', async () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       install({});
-      let env = rescanBrowserCapability(base())!;
+      let env = (await rescanBrowserCapability(() => base()))!;
       expect(env.envKeys).not.toContain('browser');
 
       install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
-      env = rescanBrowserCapability(env)!;
+      { const cur = env; env = (await rescanBrowserCapability(() => cur))!; }
       expect(env.envKeys).toContain('browser');
       expect(env.envKeys).toContain('GITHUB_TOKEN');
       expect(env.envKeys).toContain('backend:codex');
 
       install({}); // browser removed
-      env = rescanBrowserCapability(env)!;
+      { const cur = env; env = (await rescanBrowserCapability(() => cur))!; }
       expect(env.envKeys).not.toContain('browser');
       expect(env.envKeys).toEqual(['GITHUB_TOKEN', 'backend:codex']);
     } finally {
@@ -272,13 +508,49 @@ describe('rescanBrowserCapability', () => {
     }
   });
 
-  it('returns undefined when there is no environment yet', () => {
-    expect(rescanBrowserCapability(undefined)).toBeUndefined();
+  it('returns undefined when there is no environment yet', async () => {
+    expect(await rescanBrowserCapability(() => undefined)).toBeUndefined();
+  });
+
+  it('applies the result to the environment current when the probe finishes, not when it started', async () => {
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+    let current = base();
+    const p = rescanBrowserCapability(() => current);
+    current = { ...base(), envKeys: ['NEW_KEY'] }; // a full scan landed meanwhile
+    const env = (await p)!;
+    expect(env.envKeys).toEqual(['NEW_KEY', 'browser']);
   });
 
   it('applyBrowserCapability does not duplicate the key and returns the same object when unchanged', () => {
     const env = { envKeys: ['browser', 'X'] };
     expect(applyBrowserCapability(env, true)).toBe(env);
     expect(applyBrowserCapability(env, false).envKeys).toEqual(['X']);
+  });
+});
+
+describe('agent env carries the Playwright path the runner verified', () => {
+  it('passes PLAYWRIGHT_BROWSERS_PATH through the allowlist', () => {
+    expect(RUNNER_ENV_PASSTHROUGH.has('PLAYWRIGHT_BROWSERS_PATH')).toBe(true);
+    const env = buildAgentBaseEnv(
+      { HOME: '/home/coder', PLAYWRIGHT_BROWSERS_PATH: '/srv/pw', BUILDD_API_KEY: 'bld_x' },
+      { available: false, searched: [], attempts: [] },
+    );
+    expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe('/srv/pw');
+    expect(env.BUILDD_API_KEY).toBeUndefined();
+  });
+
+  it('sets it to the verified Playwright root when the runner has none', () => {
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+    detectBrowser();
+    const env = buildAgentBaseEnv({ HOME: '/home/coder' });
+    expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe(SYSTEM_PLAYWRIGHT_DIR);
+    expect(getLastBrowserDetection()?.browsersRoot).toBe(SYSTEM_PLAYWRIGHT_DIR);
+  });
+
+  it('leaves an explicit value alone and sets nothing for a PATH browser or no browser', () => {
+    expect(applyAgentPlaywrightEnv({ PLAYWRIGHT_BROWSERS_PATH: '/srv/pw' },
+      { available: true, path: SHELL, browsersRoot: SYSTEM_PLAYWRIGHT_DIR, searched: [], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBe('/srv/pw');
+    expect(applyAgentPlaywrightEnv({}, { available: true, path: '/usr/bin/chromium', searched: [], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
+    expect(applyAgentPlaywrightEnv({}, { available: false, searched: [SYSTEM_PLAYWRIGHT_DIR], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
   });
 });
