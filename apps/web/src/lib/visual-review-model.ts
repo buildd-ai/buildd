@@ -22,6 +22,7 @@ import type {
   VisualReviewFixTask,
   VisualReviewMarker,
   VisualReviewModel,
+  VisualReviewNeedsYou,
   VisualReviewPhase,
   VisualReviewShot,
   VisualReviewSummary,
@@ -30,6 +31,7 @@ import { isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit'
 import {
   VISUAL_AUDITOR_ROLE_SLUG,
   auditBootFailed,
+  isBootFailurePrompt,
   parseQaMeta,
   requiredCoverage,
   thumbSrc,
@@ -360,20 +362,32 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   const roundCapOpen = input.roundCapOpen === true;
   let phase: VisualReviewPhase;
   let progress: VisualReviewModel['progress'] = null;
+  const question = latest ? pendingQuestionOf(latest) : null;
+  let needsYou: VisualReviewNeedsYou | null = null;
   const latestRunning = !!latest && (RUNNING.has(latest.status)
     || (latest.status !== 'pending' && !TERMINAL.has(latest.status) && (latest.workers ?? []).some(w => RUNNING_WORKER.has(w.status ?? ''))));
   if (bootFailed) {
     phase = 'boot_failed';
   } else if (latest && latest.status === 'failed' && errorTypeOf(latest) === 'infra_stalled') {
     phase = 'stalled';
+  } else if (latest && latest.status === 'failed') {
+    // Any other failure (max turns, a crash): never "off", and never an older
+    // round's "reviewed", which would hide the failed re-check.
+    phase = 'failed';
+  } else if (question) {
+    // The task stays in_progress while its worker waits, so this goes before
+    // capturing. The boot-failure question is handled above.
+    phase = 'needs_you';
+    needsYou = { reason: 'question', ...question };
   } else if (latest && latestRunning) {
     phase = 'capturing';
     const round = surfaceAuditRound(latest);
     const captured = cells.filter(c => c.current.round === round && c.current.shot.auditTaskId === latest.id).length;
     const required = requiredRoutesOf ? requiredRoutesOf(latest) : [];
     progress = { captured, expected: required.length > 0 ? required.length * 2 : null };
-  } else if (awaitingHuman > 0 || roundCapOpen || latest?.status === 'waiting_input') {
+  } else if (awaitingHuman > 0 || roundCapOpen) {
     phase = 'needs_you';
+    needsYou = { reason: awaitingHuman > 0 ? 'unsure' : 'round_cap' };
   } else if (openFixes > 0) {
     phase = 'fixing';
   } else if (latest && latest.status === 'pending') {
@@ -389,12 +403,15 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
 
   const reviewed = cells.filter(c => c.current.review).length;
   const count = (v: VisualQaVerdict) => cells.filter(c => c.current.agentVerdict === v).length;
+  const effective = (v: VisualQaVerdict) => cells.filter(c => c.effectiveVerdict === v).length;
   const rel = (r: HumanShotReview['relation']) => cells.filter(c => c.current.review?.relation === r).length;
   const summary: VisualReviewSummary = {
     shots: cells.length,
     ok: count('ok'),
     issues: count('issue'),
     unsure: count('unsure'),
+    effectiveOk: effective('ok'),
+    effectiveIssues: effective('issue'),
     reviewed,
     unreviewed: cells.length - reviewed,
     awaitingHuman,
@@ -425,12 +442,27 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     audit,
     bootFailure,
     roundCapOpen,
+    needsYou,
     cells,
     queue,
     summary,
     fixTasks,
     generatedAt: new Date(now).toISOString(),
   };
+}
+
+/**
+ * The latest audit's newest worker waits on a question that is not the boot
+ * failure (`auditBootFailed` owns that one). A newer worker clears it.
+ */
+function pendingQuestionOf(t: VisualReviewTaskInput): { prompt: string; taskId: string; workerId: string } | null {
+  if (TERMINAL.has(t.status)) return null;
+  let newest: VisualReviewWorkerInput | null = null;
+  for (const w of t.workers ?? []) if (!newest || ms(w.startedAt) > ms(newest.startedAt)) newest = w;
+  const wf = newest?.waitingFor;
+  if (!newest || newest.status !== 'waiting_input' || wf?.type !== 'question' || typeof wf.prompt !== 'string') return null;
+  if (isBootFailurePrompt(wf.prompt)) return null;
+  return { prompt: wf.prompt, taskId: t.id, workerId: newest.id };
 }
 
 /** The parked worker behind `auditBootFailed`: the newest auditor worker. */
@@ -455,7 +487,9 @@ const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ?
  * cell, a chip); `detail` the sentence under it. Plain words, no dash
  * placeholders.
  */
-export function describeVisualPhase(model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'>): { label: string; detail: string } {
+export function describeVisualPhase(
+  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null },
+): { label: string; detail: string } {
   const { summary: s, progress } = model;
   switch (model.phase) {
     case 'off':
@@ -475,19 +509,32 @@ export function describeVisualPhase(model: Pick<VisualReviewModel, 'phase' | 'pr
       return { label: 'App did not boot', detail: 'The app did not boot for the visual audit, so nothing was checked.' };
     case 'stalled':
       return { label: 'Stalled', detail: 'The visual audit stalled on its runner. Retry it, or skip this audit.' };
+    case 'failed':
+      return { label: 'Failed', detail: 'The visual audit failed before it finished. Retry it, or skip this audit.' };
     case 'needs_you': {
       const n = s.awaitingHuman;
-      return n > 0
-        ? { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} your call.` }
-        : { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
+      // Older callers pass no reason: infer it from the counts.
+      const reason = model.needsYou?.reason ?? (n > 0 ? 'unsure' : 'round_cap');
+      if (reason === 'question') {
+        const prompt = model.needsYou?.prompt?.trim();
+        return { label: 'Question', detail: prompt ? `The visual audit has a question for you: ${prompt}` : 'The visual audit has a question for you.' };
+      }
+      if (reason === 'unsure' && n > 0) {
+        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} your call.` };
+      }
+      return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
     }
     case 'fixing':
       return { label: `Fixing ${s.openFixes}`, detail: `${plural(s.openFixes, 'fix', 'fixes')} in progress. The audit re-checks after they land.` };
     case 'reviewed': {
-      const parts = [`${s.ok} of ${s.shots} ok`];
-      if (s.issues > 0) parts.push(plural(s.issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed by you`);
-      return { label: `${s.ok} of ${s.shots} ok`, detail: `${parts.join(', ')}.` };
+      // What the human decided wins over the agent's verdict here.
+      const ok = s.effectiveOk ?? s.ok;
+      const issues = s.effectiveIssues ?? s.issues;
+      const head = `${ok} of ${s.shots} ok`;
+      const parts = [head];
+      if (issues > 0) parts.push(plural(issues, 'issue'));
+      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
+      return { label: head, detail: `${parts.join(', ')}.` };
     }
   }
 }

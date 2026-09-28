@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { buildDeliverySteps, deliveryReleaseInput, formatDeliverySummary, missionPrCount, missionTrunkMergedAt, type DeliveryInput } from './mission-delivery';
+import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
 
 const base: DeliveryInput = {
   missionStatus: 'active',
@@ -186,6 +187,18 @@ describe('buildDeliverySteps', () => {
       expect(visual({ shots: 9, ok: 9, issues: 0, unsure: 0, required: 8, covered: 8 })).toMatchObject({
         state: 'done', value: '9 shots',
       });
+    });
+
+    it('shows a failed audit as blocked and a waiting question as needing you, from the model', () => {
+      const withPhase = (phase: string) => buildDeliverySteps({
+        ...base,
+        visual: { shots: 0, ok: 0, issues: 0, unsure: 0 },
+        visualPhase: buildVisualReviewFixtureModel(phase as any, { needsYou: 'question' }),
+      }).find(s => s.key === 'visual');
+      expect(withPhase('failed')).toMatchObject({ state: 'blocked', value: 'failed' });
+      const q = withPhase('needs_you')!;
+      expect(q).toMatchObject({ state: 'partial', value: '?' });
+      expect(q.detail).toContain('question');
     });
 
     it('is blocked only when the app did not boot', () => {

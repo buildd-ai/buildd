@@ -342,6 +342,59 @@ describe('buildVisualReviewModel: phase', () => {
     expect(phaseOf({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks, roundCapOpen: true })).toBe('needs_you');
   });
 
+  it('needs_you: an in-progress audit whose worker waits on a question (not a boot failure)', () => {
+    const t = audit('t1', 1, 'in_progress', 'w1', {
+      workers: [{ id: 'w1', status: 'waiting_input', startedAt: at(1), waitingFor: { type: 'question', prompt: 'Which login should I use?' } }],
+    });
+    const m = buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks: [t] }));
+    expect(m.phase).toBe('needs_you');
+    expect(m.needsYou).toEqual({ reason: 'question', prompt: 'Which login should I use?', taskId: 't1', workerId: 'w1' });
+    const copy = describeVisualPhase(m);
+    expect(copy.detail).toContain('The visual audit has a question for you');
+    expect(copy.detail).toContain('Which login should I use?');
+    expect(copy.detail).not.toMatch(/issues remain/i);
+  });
+
+  it('needs_you: an older worker question is cleared by a newer running worker', () => {
+    const t = audit('t1', 1, 'in_progress', 'w2', {
+      workers: [
+        { id: 'w1', status: 'waiting_input', startedAt: at(1), waitingFor: { type: 'question', prompt: 'Which login?' } },
+        { id: 'w2', status: 'running', startedAt: at(5) },
+      ],
+    });
+    expect(phaseOf({ tasks: [t] })).toBe('capturing');
+  });
+
+  it('needs_you copy follows the reason: unsure cells, round cap', () => {
+    const tasks = [audit('t1', 1, 'completed', 'w1')];
+    const unsure = buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'unsure', 1)], tasks }));
+    expect(unsure.needsYou?.reason).toBe('unsure');
+    expect(describeVisualPhase(unsure).label).toBe('1 to review');
+    const cap = buildVisualReviewModel(input({
+      shots: [shot('w2', '/a', 'mobile', 'issue', 60)],
+      tasks: [audit('t1', 1, 'completed', 'w1'), audit('t2', 2, 'completed', 'w2')],
+      roundCapOpen: true,
+    }));
+    expect(cap.needsYou?.reason).toBe('round_cap');
+    expect(describeVisualPhase(cap).detail).toContain('Issues remain after 2 rounds');
+    // Not needs_you: no reason.
+    expect(buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks })).needsYou).toBeNull();
+  });
+
+  it('failed: the latest audit failed for a reason other than a stall', () => {
+    const failed = audit('t1', 1, 'failed', 'w1', { result: { errorType: 'max_turns' } });
+    const m = buildVisualReviewModel(input({ tasks: [failed] }));
+    expect(m.phase).toBe('failed');
+    expect(describeVisualPhase(m).detail).not.toMatch(/No visual audit/);
+    // Earlier rounds' cells do not hide a failed re-check behind "reviewed".
+    expect(phaseOf({
+      shots: [shot('w1', '/a', 'mobile', 'ok', 1)],
+      tasks: [audit('t1', 1, 'completed', 'w1'), audit('t2', 2, 'failed', 'w2', { errorType: 'crash' })],
+    })).toBe('failed');
+    // Failed with no errorType at all is still failed, not off.
+    expect(phaseOf({ tasks: [audit('t1', 1, 'failed', 'w1')] })).toBe('failed');
+  });
+
   it('fixing: a [surface fix] is still open', () => {
     const s = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx1' });
     expect(phaseOf({
@@ -363,6 +416,25 @@ describe('buildVisualReviewModel: phase', () => {
     expect(phaseOf({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks: [audit('t1', 1, 'completed', 'w1')] })).toBe('reviewed');
     const s = shot('w1', '/a', 'mobile', 'unsure', 1);
     expect(phaseOf({ shots: [s], tasks: [audit('t1', 1, 'completed', 'w1')], reviews: [review(s.id)] })).toBe('reviewed');
+  });
+
+  it('reviewed copy counts human decisions, not only agent verdicts', () => {
+    const s = shot('w1', '/a', 'mobile', 'issue', 1);
+    const m = buildVisualReviewModel(input({
+      shots: [s],
+      tasks: [audit('t1', 1, 'completed', 'w1')],
+      reviews: [review(s.id, { agentVerdict: 'issue', decision: 'looks_right', relation: 'dispute' })],
+    }));
+    expect(m.phase).toBe('reviewed');
+    // Agent counts stay (parity); effective counts follow the human.
+    expect(m.summary.ok).toBe(0);
+    expect(m.summary.issues).toBe(1);
+    expect(m.summary.effectiveOk).toBe(1);
+    expect(m.summary.effectiveIssues).toBe(0);
+    const copy = describeVisualPhase(m);
+    expect(copy.label).toBe('1 of 1 ok');
+    expect(copy.detail).not.toMatch(/issue/);
+    expect(copy.detail).toContain('1 decided by you');
   });
 
   it('every phase has copy with no dash placeholders', () => {
@@ -415,6 +487,11 @@ describe('buildVisualReviewFixtureModel', () => {
       }
     }
     expect(buildVisualReviewFixtureModel('needs_you').summary.awaitingHuman).toBeGreaterThan(0);
+    for (const reason of ['unsure', 'question', 'round_cap'] as const) {
+      const m = buildVisualReviewFixtureModel('needs_you', { needsYou: reason });
+      expect(m.phase).toBe('needs_you');
+      expect(m.needsYou?.reason).toBe(reason);
+    }
     expect(buildVisualReviewFixtureModel('fixing').cells.some(c => c.history.length > 1)).toBe(true);
   });
 

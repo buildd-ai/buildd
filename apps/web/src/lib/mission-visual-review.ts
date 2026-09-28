@@ -285,6 +285,11 @@ interface TaskLike {
 export const BOOT_FAILURE_QUESTION_PREFIX = 'App did not boot';
 const BOOT_FAILURE_RE = /^\s*app did not boot\b/i;
 
+/** A question prompt is the boot-failure question (BOOT_FAILURE_QUESTION_PREFIX). */
+export function isBootFailurePrompt(prompt: string): boolean {
+  return BOOT_FAILURE_RE.test(prompt);
+}
+
 /** Task states in which a boot-failure question no longer holds anything. */
 const RESOLVED_TASK_STATUSES = ['completed', 'cancelled'];
 
@@ -320,9 +325,9 @@ export function auditBootFailed(tasks: readonly TaskLike[]): boolean {
  * current shot of every cell (a round-1 cell a later round did not re-shoot
  * stays), its Delivery summary, and the audit task the Board puts the shots
  * under. Null when the model's phase is `off`: no shots and no open
- * visual-auditor task. A finished auditor task with no shots, or a
- * pre-auditor `[surface audit]` running as a builder, holds nothing to wait
- * for. A boot failure always shows, as the step's one `blocked` state.
+ * visual-auditor task. A completed or cancelled auditor task with no shots,
+ * or a pre-auditor `[surface audit]` running as a builder, holds nothing to
+ * wait for. A failed audit shows (phase `failed`), and so does a boot failure.
  *
  * `shotRows` are expected to be the auditor-scoped rows from
  * `missionVisualShotsWhere` (visual-review-load.ts).

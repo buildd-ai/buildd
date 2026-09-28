@@ -47,17 +47,17 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-mock.module('drizzle-orm', () => ({
-  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  // artifact-helpers pulls in `and` at module load.
-  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
-}));
-
-mock.module('@buildd/core/db/schema', () => ({
-  artifacts: 'artifacts',
-}));
-
+// drizzle-orm and the schema stay real: the PATCH hands UPDATE ... SET an SQL
+// merge expression, and it is asserted rendered (PgDialect), not guessed.
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { artifactMetadataMergeSql } from '@/lib/artifact-metadata-merge';
 import { GET, PATCH } from './route';
+
+const dialect = new PgDialect();
+const rendered = (v: unknown) => {
+  const q = dialect.sqlToQuery(v as any);
+  return { sql: q.sql, params: q.params };
+};
 
 function createMockGetRequest(apiKey?: string): NextRequest {
   const headers: Record<string, string> = {};
@@ -518,27 +518,36 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
       mockArtifactsFindFirst.mockResolvedValue(shotRow);
     });
 
-    it('deep-merges metadata.qa: a qa.fixTaskId update keeps route, viewport, finding and filename', async () => {
-      const res = await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
+    // The merge semantics (qa deep, top level shallow) are pinned in
+    // lib/artifact-metadata-merge.test.ts. Here: the route hands SET that SQL
+    // merge of the raw patch, and nothing it read, so an overlapping PATCH of
+    // the same shot (a caption edit landing with a fix link) is not lost.
+    it('deep-merges metadata.qa in SQL: a qa.fixTaskId update sends only the patch, merged onto the stored column', async () => {
+      const patch = { qa: { fixTaskId: 'fix-1' } };
+      const res = await PATCH(createMockPatchRequest({ metadata: patch }, 'bld_test'), { params: mockParams });
       expect(res.status).toBe(200);
-      expect(lastSet!.metadata).toEqual({
-        qa: { runKey: 'run-1', route: '/app/tasks', viewport: 'mobile', finding: 'Header overflows.', verdict: 'issue', fixTaskId: 'fix-1' },
-        filename: 'tasks-mobile.png',
-        mimeType: 'image/png',
-        sizeBytes: 1024,
-      });
+      const set = rendered(lastSet!.metadata);
+      expect(set).toEqual(rendered(artifactMetadataMergeSql(patch)));
+      expect(set.sql).toContain('jsonb_set(');
+      expect(set.sql).toContain(`"artifacts"."metadata" -> 'qa'`);
+      // The stored route, finding and filename are never re-sent from the read.
+      expect(JSON.stringify(set.params)).not.toContain('Header overflows.');
+      expect(JSON.stringify(set.params)).not.toContain('tasks-mobile.png');
     });
 
-    it('shallow-merges top-level keys: a new key is added, a sent key replaces', async () => {
-      await PATCH(createMockPatchRequest({ metadata: { note: 'x', filename: 'renamed.png' } }, 'bld_test'), { params: mockParams });
-      expect(lastSet!.metadata).toMatchObject({ note: 'x', filename: 'renamed.png', mimeType: 'image/png' });
-      expect((lastSet!.metadata as any).qa.route).toBe('/app/tasks');
+    it('shallow-merges top-level keys in SQL', async () => {
+      const patch = { note: 'x', filename: 'renamed.png' };
+      await PATCH(createMockPatchRequest({ metadata: patch }, 'bld_test'), { params: mockParams });
+      const set = rendered(lastSet!.metadata);
+      expect(set).toEqual(rendered(artifactMetadataMergeSql(patch)));
+      expect(set.sql).not.toContain('jsonb_set(');
+      expect(set.params).toEqual([JSON.stringify(patch)]);
     });
 
-    it('merges onto an artifact with no metadata yet', async () => {
+    it('merges onto an artifact with no metadata yet (a non-object column counts as {})', async () => {
       mockArtifactsFindFirst.mockResolvedValue({ ...shotRow, metadata: null });
       await PATCH(createMockPatchRequest({ metadata: { qa: { fixTaskId: 'fix-1' } } }, 'bld_test'), { params: mockParams });
-      expect(lastSet!.metadata).toEqual({ qa: { fixTaskId: 'fix-1' } });
+      expect(rendered(lastSet!.metadata).sql).toContain(`jsonb_typeof("artifacts"."metadata") = 'object'`);
     });
 
     it('leaves metadata alone when the body sends none', async () => {

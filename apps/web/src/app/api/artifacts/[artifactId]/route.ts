@@ -9,24 +9,9 @@ import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { isAuditStorageKey } from '@/lib/storage-keys';
 import { triggerEvent, channels } from '@/lib/pusher';
+import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 
-type Json = Record<string, unknown>;
-const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/**
- * PATCH metadata semantics (docs/design/visual-qa-human-review.md, "PATCH
- * integrity fix"): top-level keys shallow-merge onto the stored metadata, and
- * `qa` deep-merges one level, so update_artifact {metadata: {qa: {fixTaskId}}}
- * keeps the shot's route, viewport, finding and the upload's filename. A
- * wholesale replace used to erase them, and the shot silently dropped out of
- * the evidence check and the strip.
- */
-function mergeArtifactMetadata(stored: unknown, patch: Json): Json {
-  const base = isObject(stored) ? stored : {};
-  const merged: Json = { ...base, ...patch };
-  if (isObject(patch.qa) && isObject(base.qa)) merged.qa = { ...base.qa, ...patch.qa };
-  return merged;
-}
+// PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -140,7 +125,7 @@ export async function PATCH(
 
   const body = await req.json();
   const { title, content, metadata } = body;
-  if (metadata !== undefined && !isObject(metadata)) {
+  if (metadata !== undefined && !isJsonObject(metadata)) {
     return NextResponse.json({ error: 'metadata must be an object' }, { status: 400 });
   }
 
@@ -150,7 +135,9 @@ export async function PATCH(
 
   if (title !== undefined) updateFields.title = title;
   if (content !== undefined) updateFields.content = content;
-  if (metadata !== undefined) updateFields.metadata = mergeArtifactMetadata(artifact.metadata, metadata);
+  // Merged in SQL against the row the UPDATE sees, not the value read above:
+  // two overlapping PATCHes of one shot must not lose either update.
+  if (metadata !== undefined) updateFields.metadata = artifactMetadataMergeSql(metadata);
 
   const [updated] = await db
     .update(artifacts)

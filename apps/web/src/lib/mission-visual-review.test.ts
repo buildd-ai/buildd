@@ -141,7 +141,8 @@ describe('missionVisualReview', () => {
     ({ ...row(id, '2026-03-10T10:00:00.000Z', { qa: qa({ verdict }) }), workerId: 'w1' });
 
   it('shows todo (no shots) while an auditor task is still open', () => {
-    for (const status of ['pending', 'assigned', 'in_progress', 'waiting_input']) {
+    // Task status has no waiting_input: a waiting auditor is an in_progress task.
+    for (const status of ['pending', 'assigned', 'in_progress']) {
       const r = missionVisualReview([], [auditor(status)]);
       expect(r).not.toBeNull();
       expect(r!.run).toEqual([]);
@@ -149,10 +150,24 @@ describe('missionVisualReview', () => {
     }
   });
 
-  it('is hidden for a finished, failed or cancelled auditor task with no shots', () => {
-    for (const status of ['completed', 'failed', 'cancelled']) {
+  it('is hidden for a finished or cancelled auditor task with no shots', () => {
+    for (const status of ['completed', 'cancelled']) {
       expect(missionVisualReview([], [auditor(status)])).toBeNull();
     }
+  });
+
+  // A failed audit is not "no audit": it shows, so it can be retried or skipped.
+  it('shows a failed auditor task with no shots as failed', () => {
+    const r = missionVisualReview([], [auditor('failed')]);
+    expect(r).not.toBeNull();
+    expect(r!.model.phase).toBe('failed');
+  });
+
+  it('shows an in-progress auditor waiting on a question as needs_you', () => {
+    const t = { ...auditor('in_progress'), id: 'a1', workers: [{ id: 'w1', status: 'waiting_input', startedAt: '2026-03-10T10:00:00.000Z', waitingFor: { type: 'question', prompt: 'Which login should I use?' } }] };
+    const r = missionVisualReview([shotRow('s1')], [t]);
+    expect(r!.model.phase).toBe('needs_you');
+    expect(r!.model.needsYou?.reason).toBe('question');
   });
 
   it('is hidden when there are no shots and no auditor task', () => {

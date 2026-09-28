@@ -78,7 +78,9 @@ Every surface reads one pure model, `buildVisualReviewModel()` in `apps/web/src/
 - `effectiveVerdict` is the human decision if there is one, else the agent's verdict.
 - The model also returns one `phase` for the audit as a whole:
 
-  `off | waiting_deps | queued | no_browser_runner | capturing | boot_failed | stalled | needs_you | fixing | reviewed`
+  `off | waiting_deps | queued | no_browser_runner | capturing | boot_failed | stalled | failed | needs_you | fixing | reviewed`
+
+  `failed` is a latest audit that failed for any reason other than a stall; `off` is kept for a mission that never had an audit. `needs_you` carries its reason (`question`, `unsure` or `round_cap`), and a question an in-progress auditor worker is waiting on counts, since the task stays `in_progress` while its worker waits.
 
   It returns a triage queue too: unsure first, then issue, then ok, then already reviewed.
 
@@ -122,7 +124,8 @@ Rules for filing and undoing:
   - With no shots yet, it shows the phase's inline actions:
     - no runner: "Turn off for this mission" / "Skip this audit";
     - boot failure: the existing question's AnswerButtons;
-    - stalled: retry.
+    - stalled or failed: retry.
+    - a question: the worker's prompt, with the same AnswerButtons.
 - **`VisualReviewDeck`**: the lightbox rebuilt as a review queue.
   - **Desktop:** the route's desktop and phone shots side by side; route pattern, variant and round chip; the finding per viewport; the fix task with its status and PR. The action bar is sticky. Keys: Y = looks right, N = needs fix, J/K = next/previous, C = compare, U = undo. A header shows "4 of 14 reviewed".
   - **Phone:** a full-height page with a segmented phone/desktop toggle (phone first). The image is width-fit and scrolls, with no 42vh cap. Two 50%-width buttons, at least 48px tall, sit at the bottom inside the safe area. Swipe is horizontal only (previous/next) and is disabled while zoomed or comparing.
@@ -170,7 +173,7 @@ Rules for filing and undoing:
   - `POST /api/missions/[id]/visual-review/decisions` takes `{artifactIds (1..50), decision: looks_right|needs_fix, note?, expected: {artifactId: agentVerdict}}`.
   - `DELETE …/decisions/[reviewId]` is the undo.
   - Auth is session only: team and workspace access, as in `download/route.ts`, plus the in-process chat API. Every artifact must match `missionVisualShotsWhere` for this mission, or the request fails with 422.
-  - Stale guard: if the cell has a newer-round shot, or the agent verdict changed, the route returns `409 {stale, cell}`.
+  - Stale guard: if the cell has a newer-round shot, or the agent verdict changed, the route returns `409 {stale, cells, model}`: every stale cell of the request (both viewports can go stale at once) and the fresh model.
   - Writes follow a supersede-then-insert pattern with no `db.transaction`. A partial unique index keeps at most one active review per artifact, so a double tap cannot create two active reviews.
   - Each decision writes one `decision` mission note (with a collapse key per round) and fires `mission:visual_review` on `channels.mission`.
 - **Rounds.**

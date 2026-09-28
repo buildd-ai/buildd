@@ -76,7 +76,7 @@ export interface DeliveryInput {
    * step can say "no browser runner", "stalled" or "capturing 3 of 8" instead
    * of a bare "waiting". Absent: the verdict counts alone decide the step.
    */
-  visualPhase?: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> | null;
+  visualPhase?: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou'> | null;
   /**
    * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
    * per merge. Empty when nothing of the mission is on trunk yet.
@@ -205,7 +205,7 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
  * the open question is what holds the mission. Only a boot failure blocks,
  * because then nobody looked at anything, and that must be loud.
  */
-function visualStep(v: DeliveryVisual, model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> | null): DeliveryStep {
+function visualStep(v: DeliveryVisual, model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou'> | null): DeliveryStep {
   const base = { key: 'visual' as const, label: DELIVERY_STEP_LABEL.visual };
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
   if (v.bootFailed || model?.phase === 'boot_failed') {
@@ -213,9 +213,14 @@ function visualStep(v: DeliveryVisual, model: Pick<VisualReviewModel, 'phase' | 
   }
   // The phases the counts cannot express. Copy comes from the model, the one
   // place phase copy is written (describeVisualPhase).
-  if (model?.phase === 'no_browser_runner' || model?.phase === 'stalled') {
+  if (model?.phase === 'no_browser_runner' || model?.phase === 'stalled' || model?.phase === 'failed') {
     const copy = describeVisualPhase(model);
-    return { ...base, state: 'blocked', value: model.phase === 'stalled' ? 'stalled' : 'no runner', detail: copy.detail };
+    const value = model.phase === 'no_browser_runner' ? 'no runner' : model.phase;
+    return { ...base, state: 'blocked', value, detail: copy.detail };
+  }
+  // A question is advisory like an unsure shot: partial, the question holds the mission.
+  if (model?.phase === 'needs_you' && model.needsYou?.reason === 'question') {
+    return { ...base, state: 'partial', value: '?', detail: describeVisualPhase(model).detail };
   }
   if (model?.phase === 'capturing') {
     const { captured = 0, expected = null } = model.progress ?? {};

@@ -1771,6 +1771,7 @@ export const VISUAL_REVIEW_PHASES = [
   'capturing',
   'boot_failed',
   'stalled',
+  'failed',
   'needs_you',
   'fixing',
   'reviewed',
@@ -1886,6 +1887,9 @@ export interface VisualReviewSummary {
   ok: number;
   issues: number;
   unsure: number;
+  /** `effectiveVerdict` over current cells: the human decision where there is one. For display copy; parity reads the agent counts above. */
+  effectiveOk: number;
+  effectiveIssues: number;
   /** Current cells with an active human review, and without one. */
   reviewed: number;
   unreviewed: number;
@@ -1913,6 +1917,21 @@ export interface VisualReviewAuditTask {
   errorType: string | null;
 }
 
+/**
+ * Why the audit needs a human. `question`: the auditor's worker waits on a
+ * question that is not the boot failure. `unsure`: unsure cells nobody
+ * decided. `round_cap`: the round-cap note is open.
+ */
+export type VisualReviewNeedsYouReason = 'question' | 'unsure' | 'round_cap';
+
+export interface VisualReviewNeedsYou {
+  reason: VisualReviewNeedsYouReason;
+  /** For `question`: the worker's prompt, answered like the boot-failure question. */
+  prompt?: string;
+  taskId?: string;
+  workerId?: string;
+}
+
 export interface VisualReviewModel {
   missionId: string;
   phase: VisualReviewPhase;
@@ -1924,6 +1943,8 @@ export interface VisualReviewModel {
   bootFailure: { taskId: string; workerId: string; prompt: string } | null;
   /** The round-cap question note is open. */
   roundCapOpen: boolean;
+  /** For `needs_you`: why, and for a question the parked worker and its prompt. Null in every other phase. */
+  needsYou: VisualReviewNeedsYou | null;
   cells: VisualReviewCell[];
   /** Cell keys in review order: unsure, issue, ok, then already reviewed. */
   queue: string[];
@@ -1970,7 +1991,8 @@ export interface VisualReviewUndoResponse {
  * `round_ceiling` (at MAX_TOTAL_SURFACE_AUDIT_ROUNDS), 422 `not_in_mission`.
  */
 export type VisualReviewDecisionError =
-  | { error: 'stale'; stale: true; cell: VisualReviewCell }
+  /** Every stale cell of the request (both viewports can go stale at once), plus the fresh model to re-render from. */
+  | { error: 'stale'; stale: true; cells: VisualReviewCell[]; model: VisualReviewModel }
   | { error: 'fix_started'; fixTaskId: string }
   | { error: 'round_ceiling'; message: string }
   | { error: 'not_in_mission'; artifactIds: string[] };

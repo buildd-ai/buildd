@@ -8,7 +8,7 @@
  * `buildVisualReviewModel`, so a fixture is always a shape the real model can
  * produce.
  */
-import type { HumanShotReview, VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
+import type { HumanShotReview, VisualReviewModel, VisualReviewNeedsYouReason, VisualReviewPhase } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, BOOT_FAILURE_QUESTION_PREFIX } from './mission-visual-review';
 import {
   NO_BROWSER_RUNNER_AFTER_MS,
@@ -136,7 +136,7 @@ function review(artifactId: string, route: string, viewport: Viewport, agentVerd
   };
 }
 
-function inputFor(phase: VisualReviewPhase): BuildVisualReviewInput {
+function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason = 'unsure'): BuildVisualReviewInput {
   const base = { missionId: 'fixture-mission', now: VISUAL_REVIEW_FIXTURE_NOW, requiredRoutesOf: () => ['/app/tasks', '/app/tasks/:id', '/app/missions/:id', '/app/settings'] };
   const waived = review('fixture-shot-05', '/app/missions/:id', 'mobile', 'unsure', {});
   switch (phase) {
@@ -167,7 +167,31 @@ function inputFor(phase: VisualReviewPhase): BuildVisualReviewInput {
       };
     case 'stalled':
       return { ...base, shots: [], tasks: [buildTask('completed'), auditTask('fixture-audit-1', 1, 'failed', 'fixture-w1', { errorType: 'infra_stalled' })] };
+    case 'failed':
+      return { ...base, shots: [], tasks: [buildTask('completed'), auditTask('fixture-audit-1', 1, 'failed', 'fixture-w1', { errorType: 'max_turns' })] };
     case 'needs_you':
+      if (reason === 'question') {
+        return {
+          ...base, shots: ROUND_1.slice(0, 2),
+          tasks: [buildTask('completed'), auditTask('fixture-audit-1', 1, 'in_progress', 'fixture-w1', {
+            workers: [{ id: 'fixture-w1', status: 'waiting_input', startedAt: at(1), waitingFor: { type: 'question', prompt: 'Which account should I sign in with to reach the settings page?' } }],
+          })],
+        };
+      }
+      if (reason === 'round_cap') {
+        return {
+          ...base,
+          shots: [...ROUND_1, ...ROUND_2],
+          tasks: [
+            buildTask('completed'),
+            auditTask('fixture-audit-1', 1, 'completed', 'fixture-w1'),
+            auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
+            fixTask('completed', true),
+          ],
+          reviews: [review('fixture-shot-05', '/app/missions/:id', 'mobile', 'unsure', {})],
+          roundCapOpen: true,
+        };
+      }
       return { ...base, shots: ROUND_1, tasks: [buildTask('completed'), auditTask('fixture-audit-1', 1, 'completed', 'fixture-w1'), fixTask('in_progress')] };
     case 'fixing':
       // Round 2 already re-shot the fixed route while a second fix is open.
@@ -201,10 +225,14 @@ function inputFor(phase: VisualReviewPhase): BuildVisualReviewInput {
 /**
  * The fixture model for `phase`, with every image an SVG sketch data URL (an
  * `issue` shot gets a red outline). Pass `{ expired: true }` to point one
- * shot at a path that does not exist, for the expired-tile state.
+ * shot at a path that does not exist, for the expired-tile state. For
+ * `needs_you`, `needsYou` picks the reason (default `unsure`).
  */
-export function buildVisualReviewFixtureModel(phase: VisualReviewPhase, opts: { expired?: boolean } = {}): VisualReviewModel {
-  const model = buildVisualReviewModel(inputFor(phase));
+export function buildVisualReviewFixtureModel(
+  phase: VisualReviewPhase,
+  opts: { expired?: boolean; needsYou?: VisualReviewNeedsYouReason } = {},
+): VisualReviewModel {
+  const model = buildVisualReviewModel(inputFor(phase, opts.needsYou));
   let first = true;
   const cells = model.cells.map(cell => ({
     ...cell,
