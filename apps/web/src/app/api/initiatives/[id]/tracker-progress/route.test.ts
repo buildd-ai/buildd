@@ -11,7 +11,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockResolveAccountTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
-const mockInitiativesFindFirst = mock(async () => ({ id: 'init-1', teamId: 'team-1', workspaceId: null }) as any);
+const mockInitiativesFindFirst = mock(async () => ({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', workspaceId: null }) as any);
 const mockWorkspacesFindFirst = mock(async () => ({ accessMode: 'team' }) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
@@ -41,8 +41,8 @@ import { GET, initiativeTrackerProgress } from './route';
 const call = (opts?: { auth?: string }) => {
   const headers: Record<string, string> = {};
   if (opts?.auth) headers.authorization = opts.auth;
-  const req = new NextRequest('http://localhost/api/initiatives/init-1/tracker-progress', { headers });
-  return GET(req, { params: Promise.resolve({ id: 'init-1' }) });
+  const req = new NextRequest('http://localhost/api/initiatives/11111111-1111-4111-8111-111111111111/tracker-progress', { headers });
+  return GET(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
 };
 
 const fakeDb = {} as any;
@@ -59,7 +59,7 @@ describe('GET /api/initiatives/[id]/tracker-progress — auth + 404 (handler)', 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
-    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-1', workspaceId: null });
+    mockInitiativesFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', workspaceId: null });
     mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'team' });
   });
 
@@ -74,8 +74,17 @@ describe('GET /api/initiatives/[id]/tracker-progress — auth + 404 (handler)', 
     expect((await call()).status).toBe(404);
   });
 
+  it('404 for a non-UUID id without querying the db', async () => {
+    const req = new NextRequest('http://localhost/api/initiatives/not-a-uuid/tracker-progress');
+    const res = await GET(req, { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockInitiativesFindFirst).not.toHaveBeenCalled();
+  });
+
   it('404 when the initiative belongs to another team', async () => {
-    mockInitiativesFindFirst.mockResolvedValue({ id: 'init-1', teamId: 'team-other', workspaceId: null });
+    mockInitiativesFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-other', workspaceId: null });
     expect((await call()).status).toBe(404);
   });
 
@@ -99,7 +108,7 @@ describe('initiativeTrackerProgress — aggregation logic (DI)', () => {
     const fetchProgress = mock(async () => null as any);
     const res = await initiativeTrackerProgress(
       fakeDb,
-      { initiativeId: 'init-1' },
+      { initiativeId: '11111111-1111-4111-8111-111111111111' },
       { getChildMissions, getLinks, getConnectorId, fetchProgress, parseUrl: parseProject },
     );
     expect(res).toMatchObject({ linked: false, provider: null, items: [] });
@@ -125,7 +134,7 @@ describe('initiativeTrackerProgress — aggregation logic (DI)', () => {
 
     const res = await initiativeTrackerProgress(
       fakeDb,
-      { initiativeId: 'init-1' },
+      { initiativeId: '11111111-1111-4111-8111-111111111111' },
       { getChildMissions, getLinks, getConnectorId, fetchProgress, parseUrl: parseProject },
     );
     expect(res.linked).toBe(true);
@@ -156,7 +165,7 @@ describe('initiativeTrackerProgress — aggregation logic (DI)', () => {
     const fetchProgress = mock(async () => null as any);
     const res = await initiativeTrackerProgress(
       fakeDb,
-      { initiativeId: 'init-1' },
+      { initiativeId: '11111111-1111-4111-8111-111111111111' },
       { getChildMissions, getLinks, getConnectorId, fetchProgress, parseUrl: parseProject },
     );
     expect(res.linked).toBe(true);

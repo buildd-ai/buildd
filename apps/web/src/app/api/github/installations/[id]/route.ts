@@ -4,6 +4,7 @@ import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
+import { isUuid } from '@/lib/uuid';
 
 // DELETE /api/github/installations/[id] - Disconnect an installation
 export async function DELETE(
@@ -11,6 +12,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid installation id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ ok: true });

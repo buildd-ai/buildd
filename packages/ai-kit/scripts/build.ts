@@ -86,10 +86,26 @@ export function packageOf(spec: string): string | null {
 }
 
 /**
+ * Entries that exist only to wrap a peer may import it statically: nobody
+ * imports `/chat/react` without React. Keyed by dist path prefix. Every other
+ * entry must load with no optional peer installed (`/chat/server` loads `ai`
+ * lazily on the first turn; `/decide` loads the SDK on the first call).
+ */
+export const ENTRY_PEERS: Record<string, readonly string[]> = {
+  'chat/react/': ['react', '@ai-sdk/react', 'ai'],
+};
+
+function entryAllows(file: string, name: string): boolean {
+  const f = file.replace(/\\/g, '/');
+  return Object.entries(ENTRY_PEERS).some(([prefix, names]) => f.startsWith(prefix) && names.includes(name));
+}
+
+/**
  * Every package a dist `.js` file imports must reach the consumer: a
  * `dependencies` entry, a peer, or the kit itself. An optional peer may only be
  * imported dynamically, or any consumer without it fails to load the entry
- * (0.1.0's `/decide` did exactly that). Returns the problems; empty is clean.
+ * (0.1.0's `/decide` did exactly that), unless the file belongs to an entry in
+ * `ENTRY_PEERS`. Returns the problems; empty is clean.
  */
 export function auditBareImports(files: Record<string, string>, pkg: Record<string, unknown>): string[] {
   const deps = (pkg.dependencies ?? {}) as Record<string, string>;
@@ -102,7 +118,7 @@ export function auditBareImports(files: Record<string, string>, pkg: Record<stri
       if (!name || name === pkg.name) return;
       if (name in deps) return;
       if (!(name in peers)) { problems.push(`${file}: imports '${spec}', which is not in dependencies or peerDependencies`); return; }
-      if (meta[name]?.optional && !dynamic) problems.push(`${file}: statically imports optional peer '${spec}'; import it lazily`);
+      if (meta[name]?.optional && !dynamic && !entryAllows(file, name)) problems.push(`${file}: statically imports optional peer '${spec}'; import it lazily`);
     };
     for (const m of code.matchAll(STATIC_BARE)) check(m[2], false);
     for (const m of code.matchAll(DYNAMIC_BARE)) check(m[2], true);

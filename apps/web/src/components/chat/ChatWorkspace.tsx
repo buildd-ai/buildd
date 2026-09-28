@@ -63,6 +63,9 @@ export interface ChatWorkspaceProps {
   workspaces: readonly ComposerWorkspace[];
   workspaceId: string | null;
   onWorkspaceChange(id: string | null): void;
+  /** The composer's draft, when the caller holds it (a new chat's shared composer). Else kept here. */
+  draft?: string;
+  onDraftChange?(value: string): void;
   viewerName: string | null;
   /**
    * The conversation list the desktop right panel shows under HISTORY
@@ -158,7 +161,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     try { setNeedsClosedId(window.sessionStorage.getItem(NEEDS_DOCK_CLOSED_KEY)); } catch { /* private mode */ }
   }, []);
   const wide = useMinWidth(1280);
-  const [draft, setDraft] = useState('');
+  const [ownDraft, setOwnDraft] = useState('');
+  const draft = props.draft ?? ownDraft;
+  const setDraft = props.onDraftChange ?? setOwnDraft;
   // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
   const [now] = useState(() => new Date());
   const composer = useRef<ChatComposerHandle>(null);

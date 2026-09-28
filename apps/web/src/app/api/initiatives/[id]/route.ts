@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
+import { isUuid } from '@/lib/uuid';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
@@ -27,6 +28,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid initiative id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -100,6 +104,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid initiative id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -173,6 +180,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid initiative id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');

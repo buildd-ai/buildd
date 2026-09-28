@@ -435,7 +435,7 @@ These override the reviewer's own confidence and force `escalate` regardless:
 
 | Trigger | Detection |
 |---|---|
-| Schema migration | PR touches `drizzle/*.sql` OR `packages/core/db/schema.ts` |
+| Schema migration | PR touches `drizzle/*.sql` OR `packages/core/db/schema.ts` — **except** a pure migration-number collision that this PR owns and whose own SQL is non-destructive; see §3.8, which routes that case to an auto-dispatched renumber instead |
 | Risk class | A touched file is covered by a detected `policyConfig` risk class whose preset action is `human` (a legacy stored `agentReview.escalateToPaths[]` prefix also triggers, fallback release only — §1.6) |
 | Low confidence | Reviewer output `confidence < policy.agentReview.maxConfidenceThreshold` |
 | Release PR | `pr.base.ref` is the workspace's `prodBranch` (main or releaseConfig.prodBranch) |
@@ -480,6 +480,64 @@ doctrine established in PR #1051.
 Implementation checkpoint: `createReviewerTask` must pass `baseBranch` into the retry task's
 `context.baseBranch` field, and the worker runner must honor it (the worktree-utils path already
 supports `context.baseBranch`).
+
+### 3.8 Migration-number collision → auto-dispatched renumber, not human review
+
+A migration-number collision between two open PRs (two branches independently minting the same
+`NNNN_*.sql` index — the index namespace git cannot see, per the architecture note on
+`pathsOverlap`) is a mechanical fix: drop the colliding file, regenerate past the collision, done.
+Before this section, `classifyPullRequestMigrations` (`apps/web/src/lib/migration-safety.ts`)
+returned a collision as plain `operationClass: 'CONTRACT'` — the same bucket as a `DROP COLUMN` —
+so `preflightEscalationCheck` escalated it to a human every time, even though PRs #1960, #2468 and
+#2922 all hit exactly this and a worker fixed every one with the same recipe.
+
+**Signal, not just a reason string.** `MigrationSafety`'s `!safe` branch now carries an optional
+`collision: { file, otherFile, otherPrNumber }` field. It is set only when both hold:
+
+- the collision is real, not inherited — `inspectPullRequestMigrations`
+  (`apps/web/src/lib/migration-inspector.ts`) drops a same-path entry from the other PR's file list
+  when that exact path already exists on the current PR's base branch, so two PRs that both merely
+  inherited the same already-merged migration from a stale fork point (the PR #2540 gotcha) are
+  never flagged;
+- this PR's own SQL for the colliding file is independently non-destructive (`classifyMigrationSql`
+  on it returns `EXPAND`) — a migration that is ALSO destructive on its own merits escalates as
+  plain CONTRACT with no `collision` field, same as before this change.
+
+**Deterministic ownership.** `classifyPullRequestMigrations` takes this PR's own number and only
+attaches `collision` when it is the higher (later-opened) of the two — the lower-numbered PR sees
+no collision at all and proceeds exactly as if none existed. This is what stops both colliding PRs
+from renumbering at once: only one side ever has something to report, and once it renumbers past
+both dev's newest index and the other PR's, the collision cannot recur when dev catches up.
+
+**Routing.** `maybeDispatchReviewer` (`apps/web/src/app/api/github/webhook/route.ts`) checks
+`migrationSafety.collision` immediately after classification, before the tier gate — a collision is
+not a policy decision, so this applies under every tier, not just `agent-review`. When set, it
+calls `tryDispatchMigrationCollisionRetry` (`apps/web/src/lib/migration-collision-retry.ts`), which
+dispatches a same-branch renumber task through the *existing* conflict-retry machinery
+(`dispatchConflictRetry` / `buildConflictRetryTask` in `apps/web/src/lib/conflict-retry.ts`, PR
+#1689) via a new `migrationCollision` parameter — reusing its dedup on
+`(workspaceId, prNumber, headSha)`, its `maxConflictIterations` cap, and the RESOLVING chip, exactly
+as a real merge-conflict retry does. Only the generated task's title/description differ: instead of
+"merge the base in and resolve on the merits" (wrong guidance — there is no real git conflict), the
+task gets the schema-change skill's renumber recipe by name, naming both colliding files and the
+other PR number.
+
+On dispatch, the PR gets a `migration_collision_fixing` activity entry (`pr-activity-comment.ts`) —
+"Migration slot conflict · fix N of M queued" — never `human_review_required`, and no Pushover
+alert fires. `tryDispatchMigrationCollisionRetry` returns `handled: false` for every outcome other
+than a fresh dispatch or an already-in-flight retry (disabled, dependency-bot branch, retry cap
+exhausted), and the caller falls through to the unmodified escalation path for those — so a
+genuinely stuck collision still reaches a human once retries run out, per the existing
+conflict-retry escalation doctrine (`escalateConflictExhaustion`).
+
+**Scope boundary.** This routing lives at the PR-opened preflight only (`maybeDispatchReviewer`).
+The verdict-time re-check (`handleReviewerOutcomeIfNeeded` → `enforceServerSideEscalation` →
+`preflightEscalationCheck`, for a migration file that appeared on a PR already reviewer-approved)
+still escalates a collision to a human unchanged — a deliberately narrower fix than the common case,
+left as a known follow-up rather than blocking this change on a rarer path. The actual merge-attempt
+safety rail (`evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts`) is unaffected by design:
+it still blocks the merge (fails closed) until the collision resolves, which happens automatically
+now via the dispatched renumber task instead of via a human.
 
 ---
 

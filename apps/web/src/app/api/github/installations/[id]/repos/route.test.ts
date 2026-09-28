@@ -46,7 +46,7 @@ mock.module('@buildd/core/db/schema', () => ({
 import { GET, POST } from './route';
 
 function createGetRequest(): NextRequest {
-  return new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos');
+  return new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos');
 }
 
 function restore(key: string, value: string | undefined) {
@@ -61,7 +61,7 @@ afterAll(() => {
 });
 
 describe('GET /api/github/installations/[id]/repos', () => {
-  const mockParams = Promise.resolve({ id: 'inst-1' });
+  const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
 
   beforeEach(() => {
     mockAuth.mockReset();
@@ -86,7 +86,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
     process.env.DATABASE_URL = 'postgres://example.test/db';
     process.env.DEV_USER_EMAIL = 'user@test.com';
 
-    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ repos: [] });
     expect(mockListInstallationRepos).not.toHaveBeenCalled();
@@ -99,8 +99,8 @@ describe('GET /api/github/installations/[id]/repos', () => {
     process.env.DEV_USER_EMAIL = 'user@test.com';
 
     const response = await POST(
-      new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', { method: 'POST' }),
-      { params: Promise.resolve({ id: 'inst-1' }) },
+      new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', { method: 'POST' }),
+      { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) },
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ synced: 0, linked: 0, linkedWorkspaceIds: [] });
@@ -108,12 +108,22 @@ describe('GET /api/github/installations/[id]/repos', () => {
     expect(mockInstallationsFindFirst).not.toHaveBeenCalled();
   });
 
+  it('GET and POST return 404 for a non-UUID id without authenticating or querying the db', async () => {
+    const url = 'http://localhost:3000/api/github/installations/not-a-uuid/repos';
+    const g = await GET(new NextRequest(url), { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    const p = await POST(new NextRequest(url, { method: 'POST' }), { params: Promise.resolve({ id: 'not-a-uuid' }) });
+    expect(g.status).toBe(404);
+    expect(p.status).toBe(404);
+    expect(mockAuth).not.toHaveBeenCalled();
+    expect(mockInstallationsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('GET and POST return 401 for an API key with no session — bearer credentials are not accepted here', async () => {
     mockAuth.mockResolvedValue(null);
     const headers = { authorization: 'Bearer bld_example' };
-    const url = 'http://localhost:3000/api/github/installations/inst-1/repos';
-    const g = await GET(new NextRequest(url, { headers }), { params: Promise.resolve({ id: 'inst-1' }) });
-    const p = await POST(new NextRequest(url, { method: 'POST', headers }), { params: Promise.resolve({ id: 'inst-1' }) });
+    const url = 'http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos';
+    const g = await GET(new NextRequest(url, { headers }), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
+    const p = await POST(new NextRequest(url, { method: 'POST', headers }), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(g.status).toBe(401);
     expect(p.status).toBe(401);
     expect(mockAuthenticateApiKey).not.toHaveBeenCalled();
@@ -123,16 +133,16 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
   it('returns 401 for a session whose user no longer exists', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-gone' } });
-    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(401);
     expect(mockInstallationsFindFirst).not.toHaveBeenCalled();
   });
 
   it('checks access as the session user', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
-    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
     // Denied: canView false → 404, and GitHub is never called (no token minted).
     expect(response.status).toBe(404);
@@ -142,11 +152,11 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
   it('POST denied for the session user: canView false → 404, nothing synced', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
     const response = await POST(
-      new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', { method: 'POST' }),
-      { params: Promise.resolve({ id: 'inst-1' }) },
+      new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', { method: 'POST' }),
+      { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) },
     );
     expect(mockGetAccess.mock.calls[0][0]).toBe('user-1');
     expect(response.status).toBe(404);
@@ -156,7 +166,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   it('returns 401 when not authenticated', async () => {
     mockAuth.mockResolvedValue(null);
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await GET(createGetRequest(), { params: mockParams });
     expect(response.status).toBe(401);
 
@@ -168,7 +178,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue(null);
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await GET(createGetRequest(), { params: mockParams });
     expect(response.status).toBe(404);
 
@@ -178,20 +188,20 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
   it('returns 404 when the caller cannot view the installation', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
 
-    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await GET(createGetRequest(), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(404);
     expect(mockListInstallationRepos).not.toHaveBeenCalled();
   });
 
   it('POST returns 404 when the caller cannot view the installation', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345, installedByUserId: null });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345, installedByUserId: null });
     mockGetAccess.mockImplementation(async () => ({ canView: false, canManage: false, otherTeamsUsingIt: [] }));
 
-    const response = await POST(new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', { method: 'POST' }), { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await POST(new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', { method: 'POST' }), { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(404);
     expect(mockSyncInstallationRepos).not.toHaveBeenCalled();
   });
@@ -199,7 +209,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
   it('returns repos with hasWorkspace correctly mapped', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({
-      id: 'inst-1',
+      id: '11111111-1111-4111-8111-111111111111',
       installationId: 12345,
     });
 
@@ -230,7 +240,7 @@ describe('GET /api/github/installations/[id]/repos', () => {
       { id: 'ws-1', repo: 'my-org/my-repo', githubRepoId: 'repo-1' },
     ]);
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await GET(createGetRequest(), { params: mockParams });
     expect(response.status).toBe(200);
 
@@ -265,26 +275,26 @@ describe('GET /api/github/installations/[id]/repos', () => {
   it('POST returns 401 when not authenticated', async () => {
     mockAuth.mockResolvedValue(null);
 
-    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+    const req = new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', {
       method: 'POST',
     });
-    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(401);
   });
 
   it('POST returns synced, linked, and linkedWorkspaceIds on success', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345 });
     mockSyncInstallationRepos.mockResolvedValue({
       synced: 3,
       linked: 2,
       linkedWorkspaceIds: ['ws-1', 'ws-2'],
     });
 
-    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+    const req = new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', {
       method: 'POST',
     });
-    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(200);
 
     const data = await response.json();
@@ -295,17 +305,17 @@ describe('GET /api/github/installations/[id]/repos', () => {
 
   it('POST returns linked=0 with empty linkedWorkspaceIds when no workspace repo matches', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
-    mockInstallationsFindFirst.mockResolvedValue({ id: 'inst-1', installationId: 12345 });
+    mockInstallationsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', installationId: 12345 });
     mockSyncInstallationRepos.mockResolvedValue({
       synced: 5,
       linked: 0,
       linkedWorkspaceIds: [],
     });
 
-    const req = new NextRequest('http://localhost:3000/api/github/installations/inst-1/repos', {
+    const req = new NextRequest('http://localhost:3000/api/github/installations/11111111-1111-4111-8111-111111111111/repos', {
       method: 'POST',
     });
-    const response = await POST(req, { params: Promise.resolve({ id: 'inst-1' }) });
+    const response = await POST(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
     expect(response.status).toBe(200);
 
     const data = await response.json();
@@ -317,12 +327,12 @@ describe('GET /api/github/installations/[id]/repos', () => {
   it('returns 500 on error', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockInstallationsFindFirst.mockResolvedValue({
-      id: 'inst-1',
+      id: '11111111-1111-4111-8111-111111111111',
       installationId: 12345,
     });
     mockListInstallationRepos.mockRejectedValue(new Error('GitHub API error'));
 
-    const mockParams = Promise.resolve({ id: 'inst-1' });
+    const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
     const response = await GET(createGetRequest(), { params: mockParams });
     expect(response.status).toBe(500);
 

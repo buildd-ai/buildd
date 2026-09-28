@@ -64,7 +64,9 @@ mock.module('@buildd/core/knowledge-store', () => ({
 
 import { POST, MAX_GRAPH_ELEMENTS } from './route';
 
-function createRequest(body: unknown, id = 'job-1'): NextRequest {
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+
+function createRequest(body: unknown, id = JOB_ID): NextRequest {
   return new NextRequest(`http://localhost:3000/api/knowledge/ingest-jobs/${id}/graph`, {
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_test' }),
@@ -72,9 +74,9 @@ function createRequest(body: unknown, id = 'job-1'): NextRequest {
   });
 }
 
-const params = (id = 'job-1') => ({ params: Promise.resolve({ id }) });
+const params = (id = JOB_ID) => ({ params: Promise.resolve({ id }) });
 const account = { id: 'account-1', level: 'admin' };
-const runningJob = { id: 'job-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'running', scope: 'full' };
+const runningJob = { id: JOB_ID, workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'running', scope: 'full' };
 
 // Mirrors the shape the runner's pushGraph transmits (see knowledge-full-ingest.test.ts).
 const graphPayload = {
@@ -112,6 +114,15 @@ describe('POST /api/knowledge/ingest-jobs/[id]/graph', () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     const res = await POST(createRequest(graphPayload), params());
     expect(res.status).toBe(401);
+    expect(entityCalls.length).toBe(0);
+  });
+
+  it('returns 404 for a non-UUID id without authenticating or writing the graph', async () => {
+    const res = await POST(createRequest(graphPayload, 'job-1'), params('job-1'));
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('UUID');
+    expect(mockAuthenticateApiKey).not.toHaveBeenCalled();
     expect(entityCalls.length).toBe(0);
   });
 

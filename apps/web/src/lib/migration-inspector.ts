@@ -3,6 +3,7 @@ import {
   classifyPullRequestMigrations,
   isGeneratedMigrationPath,
   type MigrationSafety,
+  type OpenPullRequestMigration,
   type PullRequestMigrationFile,
 } from '@/lib/migration-safety';
 
@@ -53,6 +54,16 @@ export async function inspectPullRequestMigrations(params: {
   prNumber: number;
   headSha: string;
   files: GitHubPullRequestFile[];
+  /**
+   * This PR's base branch (e.g. `dev`) — when given, a path that already
+   * exists on the base with that exact name is dropped from the collision
+   * candidate list before number-matching. Both open PRs inheriting the same
+   * already-merged migration byte-for-byte from the base (because their diff
+   * is computed against a stale fork point) is not a collision — see the
+   * PR #2540 gotcha. Omit only when the base branch genuinely can't be
+   * determined; the check then fails closed exactly as before.
+   */
+  baseRef?: string | null;
 }): Promise<MigrationSafety> {
   let completeFiles: GitHubPullRequestFile[];
   try {
@@ -108,7 +119,7 @@ export async function inspectPullRequestMigrations(params: {
     }
   }
 
-  const openMigrationPaths: string[] = [];
+  const openPullRequestMigrations: OpenPullRequestMigration[] = [];
   try {
     const pulls = await listAll(
       params.installationId,
@@ -123,16 +134,25 @@ export async function inspectPullRequestMigrations(params: {
         params.installationId,
         `/repos/${params.repoFullName}/pulls/${pull.number}/files`,
       )) as GitHubPullRequestFile[];
-      openMigrationPaths.push(
-        ...files
-          .filter((file: GitHubPullRequestFile) => file.status !== 'removed')
-          .map((file: GitHubPullRequestFile) => file.filename)
-          .filter(isGeneratedMigrationPath),
-      );
+      const migrationPaths = files
+        .filter((file: GitHubPullRequestFile) => file.status !== 'removed')
+        .map((file: GitHubPullRequestFile) => file.filename)
+        .filter(isGeneratedMigrationPath);
+      for (const path of migrationPaths) {
+        // Exact same path already on the base branch means this is history
+        // both PRs inherited, not a slot the other PR is newly claiming.
+        if (params.baseRef) {
+          const onBase = await readFileAtRef(params.installationId, params.repoFullName, path, params.baseRef).catch(
+            () => undefined,
+          );
+          if (onBase !== undefined) continue;
+        }
+        openPullRequestMigrations.push({ path, prNumber: pull.number as number });
+      }
     }
   } catch {
     return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
   }
 
-  return classifyPullRequestMigrations(filesWithContent, openMigrationPaths);
+  return classifyPullRequestMigrations(filesWithContent, openPullRequestMigrations, params.prNumber);
 }

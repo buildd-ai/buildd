@@ -49,6 +49,7 @@ import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
+import { isUuid } from '@/lib/uuid';
 
 function extractBearer(req: Request): string | null {
   const auth = req.headers.get('authorization');
@@ -317,6 +318,9 @@ export async function POST(
   { params }: { params: Promise<{ workspace: string }> },
 ) {
   const { workspace } = await params;
+  if (!isUuid(workspace)) {
+    return new Response('Workspace not found', { status: 404 });
+  }
   return handle(req, workspace);
 }
 
@@ -325,5 +329,8 @@ export async function DELETE(
   { params }: { params: Promise<{ workspace: string }> },
 ) {
   const { workspace } = await params;
+  if (!isUuid(workspace)) {
+    return new Response('Workspace not found', { status: 404 });
+  }
   return handle(req, workspace);
 }

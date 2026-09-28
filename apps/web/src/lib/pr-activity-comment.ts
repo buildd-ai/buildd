@@ -66,6 +66,7 @@ export type PrActivityKind =
   | 'lede_corrected'
   | 'human_review_required'
   | 'ci_fixing'
+  | 'migration_collision_fixing'
   | 'ci_exhausted'
   | 'fix_started'
   | 'changes_pushed'
@@ -184,6 +185,14 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         noteLabel: 'Details',
         urlLabel: 'CI run',
       };
+    case 'migration_collision_fixing':
+      return {
+        tone: 'waiting',
+        label: `Migration slot conflict · ${fixText(e)} queued`,
+        headline: `Migration slot conflict · ${fixText(e)} queued`,
+        status: 'waiting for a worker',
+        noteLabel: 'Details',
+      };
     case 'human_applied_recommendation':
       return {
         tone: 'waiting',
@@ -233,7 +242,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
 }
 
 function advance(story: Story, e: PrActivityEntry): Story {
-  if (e.kind === 'review_changes_requested' || e.kind === 'ci_fixing' || e.kind === 'fix_started' || e.kind === 'human_applied_recommendation') {
+  if (e.kind === 'review_changes_requested' || e.kind === 'ci_fixing' || e.kind === 'migration_collision_fixing' || e.kind === 'fix_started' || e.kind === 'human_applied_recommendation') {
     return {
       fix: hasIteration(e)
         ? { iteration: e.iteration ?? null, maxIterations: e.maxIterations ?? null }
@@ -365,6 +374,7 @@ function stateBlock(kept: NormalizedEntry[]): string {
 const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
+  'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'changes_pushed', 'review_superseded_by_merge',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
 ]);

@@ -15,6 +15,13 @@ const vectorType = customType<{ data: number[]; driverData: string; config: { di
   },
 });
 
+// Custom tsvector column type — used for the stored generated lexical search column below.
+const tsvectorType = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
+
 export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
@@ -93,6 +100,13 @@ export const teams = pgTable('teams', {
   // follow-up release, after the build that stopped reading it is live
   // (schema-change skill).
   chatDisabled: boolean('chat_disabled').notNull().default(false),
+  // The chat tier a new conversation's composer caps at ('budget' | 'standard' |
+  // 'premium'). NULL = auto: no cap. Only read when chatCapNewSessionTier is on
+  // (apps/web/src/lib/chat/composer-prefs.ts resolveInitialTier).
+  chatDefaultTier: text('chat_default_tier'),
+  // Admin policy: a new conversation starts at min(person's last tier, the
+  // default tier above) — reset down to it, never up. Off = the person's last tier.
+  chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -108,6 +122,11 @@ export const teamMembers = pgTable('team_members', {
   // for THIS person only, and only when nothing a tool read is in the model's
   // context (apps/web/src/lib/chat/permissions.ts). Empty = ask for every write.
   chatAllowedToolGroups: text('chat_allowed_tool_groups').array().notNull().default(sql`'{}'::text[]`),
+  // The composer choices this person last made in this team (Home card,
+  // /app/chat, the canvas): { workspaceId?, tier? }. A present key with a null
+  // value is a choice (all workspaces / auto); an absent key was never chosen.
+  // Seeds every new conversation (apps/web/src/lib/chat/composer-prefs.ts).
+  chatComposerPrefs: jsonb('chat_composer_prefs').$type<{ workspaceId?: string | null; tier?: string | null }>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),
@@ -2697,7 +2716,7 @@ export const deviceCodes = pgTable('device_codes', {
 
 // Knowledge chunks — unified semantic + lexical retrieval store.
 // namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
-// HNSW index on embedding and GIN index on tsvector are added in the migration SQL.
+// HNSW index on embedding is added in the migration SQL.
 export const knowledgeChunks = pgTable('knowledge_chunks', {
   id: uuid('id').primaryKey().defaultRandom(),
   sourceId: text('source_id').notNull(),
@@ -2708,6 +2727,12 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceUrl: text('source_url'),
   content: text('content').notNull(),
   lexicalText: text('lexical_text'),
+  // Stored generated column so lexical search ranks against a precomputed
+  // tsvector instead of recomputing to_tsvector(...) per row on every query.
+  // Expression MUST stay identical to the one it replaces.
+  lexicalTsv: tsvectorType('lexical_tsv').generatedAlwaysAs(
+    sql`to_tsvector('english', coalesce(lexical_text, content))`,
+  ),
   embedding: vectorType('embedding', { dimensions: 1024 }),
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
@@ -2727,6 +2752,7 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   sourceIdx: uniqueIndex('knowledge_chunks_source_idx').on(t.namespace, t.sourceId),
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
   entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
+  lexicalTsvGinIdx: index('knowledge_chunks_lexical_tsv_gin_idx').using('gin', t.lexicalTsv),
 }));
 
 // Phase 2: knowledge entities — canonical nodes for the entity graph.

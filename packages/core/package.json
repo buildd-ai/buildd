@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.241.1",
+  "version": "0.242.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -45,6 +45,7 @@
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-scope": "./memory-scope.ts",
+    "./memory-hit-scope": "./memory-hit-scope.ts",
     "./memory-store": "./memory-store.ts",
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
@@ -147,6 +148,7 @@
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.157.0",
+    "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.6.0",
     "dotenv": "^18.0.0",
     "drizzle-orm": "^0.45.2",

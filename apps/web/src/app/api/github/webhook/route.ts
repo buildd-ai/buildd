@@ -49,6 +49,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
@@ -2081,7 +2082,31 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       headSha: pr.head.sha,
       files: prFiles,
+      baseRef: pr.base?.ref ?? null,
     });
+
+    // A migration-number collision this PR owns (see `classifyPullRequestMigrations`)
+    // is a mechanical fix, not a policy decision — dispatch a renumber task
+    // through the conflict-retry machinery instead of escalating to a human,
+    // regardless of merge-policy tier. Only when the dispatch didn't handle it
+    // (retries exhausted, feature disabled) does this fall through to the
+    // normal tier/escalation logic below, unchanged.
+    if (!migrationSafety.safe && migrationSafety.collision) {
+      const collisionRetry = await tryDispatchMigrationCollisionRetry({
+        collision: migrationSafety.collision,
+        workerId: openWorker.id,
+        taskId: task.id,
+        prNumber: pr.number,
+        headSha: pr.head.sha,
+        repoFullName,
+        workspaceId: openWorker.workspaceId,
+        installationId,
+      }).catch((err) => {
+        console.error(`[reviewer] migration-collision retry dispatch failed for PR #${pr.number}:`, err);
+        return { handled: false };
+      });
+      if (collisionRetry.handled) return true;
+    }
 
     // Apply semantic risk-class policy override (detected policyConfig paths)
     const policyConfig = workspace.gitConfig?.policyConfig ?? null;

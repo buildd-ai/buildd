@@ -4,6 +4,7 @@ import { workerHeartbeats, accountWorkspaces, workers } from '@buildd/core/db/sc
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { isUuid } from '@/lib/uuid';
 
 const ALLOWED_PATHS = ['doctor', 'history/stats', 'debug/claims'] as const;
 type AllowedPath = typeof ALLOWED_PATHS[number];
@@ -51,6 +52,11 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ heartbeatId: string }> },
 ) {
+  const { heartbeatId } = await params;
+  if (!isUuid(heartbeatId)) {
+    return NextResponse.json({ error: `Invalid heartbeat id: expected a UUID, got "${heartbeatId}".` }, { status: 404 });
+  }
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -62,7 +68,6 @@ export async function GET(
     );
   }
 
-  const { heartbeatId } = await params;
   const hb = await db.query.workerHeartbeats.findFirst({
     where: eq(workerHeartbeats.id, heartbeatId),
     with: { account: { columns: { teamId: true } } },

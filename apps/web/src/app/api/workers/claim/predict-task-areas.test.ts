@@ -90,4 +90,31 @@ describe('predictTaskAreas', () => {
     expect(result.size).toBe(0);
     expect(mockPredictTaskArea).not.toHaveBeenCalled();
   });
+
+  it('caps the batch at CLAIM_FANOUT_CONCURRENCY in-flight predictions, so a deep candidate pool cannot fan out unbounded Neon queries', async () => {
+    const tasks = Array.from({ length: 6 }, (_, i) => ({
+      id: `task-${i}`,
+      title: `T${i}`,
+      workspaceId: 'ws-1',
+    })) as any;
+    for (const t of tasks) taskDeferreds.set(t.id, deferred());
+
+    const resultPromise = predictTaskAreas(tasks);
+
+    await new Promise((r) => setTimeout(r, 0));
+    // Only the cap's worth started, not all 6 — the remaining 2 are queued
+    // behind the first wave.
+    expect(started.length).toBe(4);
+
+    // Resolving two of the in-flight ones should let the queued two start.
+    taskDeferreds.get('task-0')!.resolve({ taskId: 'task-0', predictedPaths: [] });
+    taskDeferreds.get('task-1')!.resolve({ taskId: 'task-1', predictedPaths: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(started.length).toBe(6);
+
+    for (const t of tasks) {
+      taskDeferreds.get(t.id)!.resolve({ taskId: t.id, predictedPaths: [] });
+    }
+    await resultPromise;
+  });
 });

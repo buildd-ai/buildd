@@ -73,14 +73,25 @@ const { handleMemoryAction, memoryActions, adminActions } = await import('../mcp
 const WS = '00000000-0000-0000-0000-000000000001';
 const TEAM = '00000000-0000-0000-0000-0000000000aa';
 
-const memoryClient = {} as any; // consolidate_knowledge never touches the memory service
+const OWN = 'acme/widgets';
+const FOREIGN = 'acme/other-thing';
+
+// Memory rows by id; consolidate_knowledge reads them only to check a memory
+// chunk's project (the team memory namespace is shared by every workspace).
+let memoryProjects: Record<string, string | null> = {};
+const memoryClient = {
+  async batch(ids: string[]) {
+    return { memories: ids.filter(id => id in memoryProjects).map(id => ({ id, project: memoryProjects[id] })) };
+  },
+} as any;
 
 function ctx(over: Record<string, unknown> = {}) {
-  return { workerId: 'w-1', workspaceId: WS, teamId: TEAM, embedder: null, ...over };
+  return { workerId: 'w-1', workspaceId: WS, teamId: TEAM, project: OWN, embedder: null, ...over };
 }
 
 beforeEach(() => {
   executed = [];
+  memoryProjects = {};
   responder = () => ({ rows: [] });
 });
 
@@ -104,6 +115,7 @@ describe('buildd_memory consolidate_knowledge', () => {
 
   describe('op=find_duplicates', () => {
     it('queries team memory + workspace task namespaces by default and reports pairs', async () => {
+      memoryProjects = { 'mem-1': OWN, 'mem-2': OWN };
       responder = () => ({
         rows: [{
           namespace: `${TEAM}:memory`,
@@ -184,6 +196,59 @@ describe('buildd_memory consolidate_knowledge', () => {
     it('reports cleanly when nothing has decayed', async () => {
       const res = await handleMemoryAction(memoryClient, 'consolidate_knowledge', { op: 'find_decayed' }, ctx());
       expect(res.content[0].text).toContain('No decayed');
+    });
+  });
+
+  describe('memory is pinned to the caller project', () => {
+    const pairRow = (a: string, b: string) => ({
+      namespace: `${TEAM}:memory`,
+      source_id_a: a, source_id_b: b,
+      similarity: '0.955',
+      preview_a: `preview ${a}`, preview_b: `preview ${b}`,
+      source_ts_a: null, source_ts_b: null,
+      hit_count_a: 0, hit_count_b: 0,
+    });
+
+    it('find_duplicates drops a pair that touches another project memory', async () => {
+      memoryProjects = { 'own-1': OWN, 'own-2': OWN, 'foreign-1': FOREIGN, 'digest-1': null };
+      responder = () => ({ rows: [pairRow('own-1', 'own-2'), pairRow('own-1', 'foreign-1'), pairRow('own-2', 'digest-1')] });
+      const out = (await handleMemoryAction(memoryClient, 'consolidate_knowledge', { op: 'find_duplicates' }, ctx())).content[0].text;
+      expect(out).toContain('Found 1 near-duplicate');
+      expect(out).not.toContain('foreign-1');
+      expect(out).not.toContain('digest-1');
+    });
+
+    it('find_duplicates never queries the memory namespace without a project', async () => {
+      await handleMemoryAction(memoryClient, 'consolidate_knowledge', { op: 'find_duplicates' }, ctx({ project: undefined }));
+      expect(executed[0].values).not.toContain(`${TEAM}:memory`);
+      expect(executed[0].values).toContain(`${WS}:task`);
+    });
+
+    it('find_decayed drops another project memory', async () => {
+      memoryProjects = { 'own-1': OWN, 'foreign-1': FOREIGN };
+      responder = () => ({
+        rows: ['own-1', 'foreign-1'].map(id => ({
+          namespace: `${TEAM}:memory`, source_id: id, corpus: 'memory',
+          source_ts: null, hit_count: 0, preview: `preview ${id}`,
+        })),
+      });
+      const out = (await handleMemoryAction(
+        memoryClient, 'consolidate_knowledge', { op: 'find_decayed', corpora: ['memory'] }, ctx(),
+      )).content[0].text;
+      expect(out).toContain('own-1');
+      expect(out).not.toContain('foreign-1');
+    });
+
+    it('archive refuses memory ids outside the caller project and writes nothing', async () => {
+      memoryProjects = { 'own-1': OWN, 'foreign-1': FOREIGN };
+      await expect(
+        handleMemoryAction(
+          memoryClient, 'consolidate_knowledge',
+          { op: 'archive', corpus: 'memory', sourceIds: ['own-1', 'foreign-1'] },
+          ctx(),
+        ),
+      ).rejects.toThrow(/not in this workspace/);
+      expect(executed.some(e => e.text.includes('UPDATE knowledge_chunks'))).toBe(false);
     });
   });
 

@@ -10,6 +10,7 @@ import {
   WEBHOOK_MAX_SKEW_MS,
 } from '@/lib/linear-webhook';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Inbound Linear webhook (work-tracker spec §3, Phase 3a).
@@ -106,6 +107,9 @@ export async function processLinearWebhook(
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = await params;
+  if (!isUuid(workspaceId)) {
+    return NextResponse.json({ error: 'Unknown workspace' }, { status: 404 });
+  }
   const rawBody = await req.text();
   const signature = req.headers.get('linear-signature');
   try {

@@ -6,9 +6,13 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { runWatcherForProject } from '@/lib/health-watcher';
+import { isUuid } from '@/lib/uuid';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid watched project id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
   const row = await db.query.watchedProjects.findFirst({
     where: eq(watchedProjects.id, id),
   });

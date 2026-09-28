@@ -1433,13 +1433,21 @@ the KnowledgeStore before the organizer decides what tasks to create.
 
 | Corpus | Namespace | Purpose |
 |--------|-----------|---------|
-| `memory` | `{teamId}:memory` | Team lessons and gotchas |
+| `memory` | `{teamId}:memory`, narrowed to the workspace's project | Lessons and gotchas from this workspace |
 | `task` | `{workspaceId}:task` | Prior task outcomes |
 | `pr` | `{workspaceId}:pr` | Pull request diffs (change history) |
 | `code` | `{workspaceId}:code` | Current code index |
 | `plan` | `{workspaceId}:plan` | Prior decomposition plans |
 
 Cap: 3 hits per corpus to bound prompt growth.
+
+**Memory scoping**: the memory namespace is shared by the whole team, so a
+memory hit MUST be kept only when its `memories` row carries the calling
+workspace's project key (`keepOwnProjectMemoryHits` in
+`packages/core/memory-hit-scope.ts`, the same rule `recall` uses). A workspace
+with no resolvable key (sensitive, or sharing a key with a sensitive workspace)
+gets no memory section, and a memory with no project is never shown. The
+corpora hint counts only the workspace's own memories.
 
 **Rendering**: Each hit shows `[score] title | type/status | PR ref | age`. Task
 hits with `success=true` and a `prUrl` surface the PR number. Memory hits show age.
