@@ -78,7 +78,8 @@ export async function GET(
   const project = await getWorkspaceProject(id);
   // No key means no memory: never fall back to a team-wide list.
   if (!project) {
-    return NextResponse.json({ memories: [], total: 0 });
+    // Flagged so the page can say memory is off here, rather than "no memories".
+    return NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
   }
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
