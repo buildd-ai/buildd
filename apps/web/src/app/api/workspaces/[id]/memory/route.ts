@@ -138,7 +138,13 @@ export async function GET(
     const asked = searchParams.getAll('states').flatMap(v => v.split(',')).map(v => v.trim())
       .filter((v): v is MemoryState => (MEMORY_STATES as readonly string[]).includes(v));
     const states: MemoryState[] = asked.length > 0 ? [...new Set(asked)] : ['active'];
-    const searchData = await memClient.search({ ...search, project, states });
+    // Dashboard review: `superseded=include` also lists replaced rows (shown
+    // as superseded); `reverify=flagged` keeps only rows a merged PR flagged.
+    const searchData = await memClient.search({
+      ...search, project, states,
+      ...(searchParams.get('superseded') === 'include' ? { includeSuperseded: true } : {}),
+      ...(searchParams.get('reverify') === 'flagged' ? { reverifyFlagged: true } : {}),
+    });
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });
