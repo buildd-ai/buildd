@@ -315,7 +315,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, priority?, autoSurfaceAudit?, autoVerify?, startMode?, goalCriteria?, description?, initiativeId?, limit?, taskId?, executor?, maxConcurrentTasks?, …}',
+  manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */
@@ -438,21 +438,22 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'Mission UUID, or its title (looked up)', actions: ['manage_missions', 'get_visual_review'] },
     ]),
     param('missionTitle', str, [{ text: 'get_visual_review: title, team-wide unless workspaceId', actions: ['get_visual_review'] }]),
-    param('title', str, [{ text: 'create: the title. get/update without missionId: finds it by title, no list first', actions: MISSION_WRITES }]),
+    param('title', str, [{ text: 'create: the title. get/update: finds it by title, no list first', actions: MISSION_WRITES }]),
     param('query', str, [{ text: 'list/get: title substring', actions: MISSION_WRITES }]),
     param('workspaceId', str, [
       { text: WS, actions: ['manage_missions', 'get_visual_review', 'list_discrepancies'] },
-      { text: 'get_visual_review with only this: missions with screens awaiting your review', actions: ['get_visual_review'] },
+      { text: 'get_visual_review with only this: missions awaiting your review', actions: ['get_visual_review'] },
+      { text: 'update by UUID: moves the mission there (omit to only scope a title)', actions: MISSION_WRITES },
     ]),
     param('status', str, [{ text: 'list: open (default) or all; update: set it', actions: MISSION_WRITES }]),
     param('priority', num, [{ text: 'create/update', actions: MISSION_WRITES }]),
-    param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit: append a [surface audit] task when UI files change (default true; false turns it off)', actions: MISSION_WRITES }]),
+    param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit when UI files change (default true)', actions: MISSION_WRITES }]),
     param('autoVerify', bool, [{ text: 'Auto-evaluate goalCriteria (default true)', actions: MISSION_WRITES }]),
     param('startMode', { type: 'string', enum: ['armed', 'held'] }, [{ text: 'held: no task is claimed until armed', actions: MISSION_WRITES }]),
     param('goalCriteria', {
       type: 'array',
       items: { type: 'object', properties: { type: { type: 'string', enum: ['command', 'all_prs_merged', 'no_open_tasks', 'artifact_exists', 'description'] } } },
-    }, [{ text: 'Completion gates, null clears; prefer {type:"command",command}. Other forms: help manage_missions', actions: MISSION_WRITES }]),
+    }, [{ text: 'Completion gates, null clears; prefer {type:"command",command}', actions: MISSION_WRITES }]),
     param('awaitingOnly', bool, [{ text: 'get_visual_review: only screens awaiting you', actions: ['get_visual_review'] }]),
   ],
   tasks: [
@@ -488,16 +489,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   admin: [],
 };
 
-/** The `params` schema of a group tool listing `actions`. `help` always takes {action}. */
+/** The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says. */
 export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; description: string; properties: Record<string, Record<string, unknown>> } {
   const listed = new Set(actions);
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
     const texts = f.parts.filter(p => p.actions.some(a => listed.has(a))).map(p => p.text);
-    if (f.name === 'action') texts.push('help: the action to document');
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }
-  if (Object.keys(properties).length > 0 && !properties.action) properties.action = { type: 'string', description: 'help: the action to document' };
-  return { type: 'object', description: 'As the action signature above.', properties };
+  return { type: 'object', description: 'Per the signature above.', properties };
 }

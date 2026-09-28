@@ -211,9 +211,24 @@ describe('listMcpTools — group tools', () => {
     expect(line).toMatch(/workspaceId alone/);
   });
 
-  it('keeps the whole groups surface under 6k tokens', () => {
+  it('warns that update by UUID with workspaceId moves the mission', () => {
+    type P = Record<string, { description?: string }>;
+    const m = (groupTools('admin').find(t => t.name === 'buildd_missions')!.inputSchema.properties.params as unknown as { properties: P }).properties;
+    expect(m.workspaceId.description).toMatch(/update by UUID: moves the mission/);
+  });
+
+  it('does not repeat the help line of the description in params', () => {
+    for (const t of groupTools('admin')) {
+      const props = (t.inputSchema.properties.params as unknown as { properties?: Record<string, { description?: string }> }).properties ?? {};
+      for (const [k, v] of Object.entries(props)) expect(v.description ?? '', `${t.name}.${k}`).not.toMatch(/^help:|\. help:/);
+    }
+  });
+
+  // Budget: 6k tokens (docs/specs/mcp-action-contracts.md). Stay >=150 under it so
+  // one more action summary does not turn a parallel PR red.
+  it('keeps the whole groups surface under 6k tokens with headroom', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000 - 150);
   });
 
   it('is far smaller than the legacy buildd tool', () => {
