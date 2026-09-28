@@ -496,7 +496,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
-    list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url. Open lists conflicts first, then red CI, then newest. Closed PRs are never listed; read one with get_pr.',
+    list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist in the same repo and already be MERGED, and must differ from the PR being superseded; a 404/409 names which check failed. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
@@ -601,6 +601,10 @@ function fmtTokens(n: number | null | undefined): string {
   return `${Math.round(n)}`;
 }
 
+const PR_RESOLVING_LABEL: Record<string, string> = {
+  conflict: 'agent resolving the conflict', ci: 'agent fixing CI', review: 'agent reviewing',
+};
+
 const PR_STATE_LABEL: Record<string, string> = {
   conflict: 'CONFLICT', ci_failed: 'CI FAILED', ci_running: 'CI running', ci_green: 'CI green', pr_open: 'open', merged: 'merged',
 };
@@ -621,9 +625,10 @@ export function renderPrList(data: { state?: string; sinceDays?: number; workspa
       : state === 'open' ? `No open PRs${scope}.`
       : `No open PRs in state ${state}${scope}.`;
   }
+  const needsYou = prs.filter(p => p.waitingOnYou).length;
   const conflicts = prs.filter(p => p.status === 'conflict').length;
   const red = prs.filter(p => p.status === 'ci_failed').length;
-  const flags = [conflicts ? `${conflicts} conflicting` : '', red ? `${red} with failing CI` : ''].filter(Boolean).join(', ');
+  const flags = [needsYou ? `${needsYou} needs you` : '', conflicts ? `${conflicts} conflicting` : '', red ? `${red} with failing CI` : ''].filter(Boolean).join(', ');
   const header = state === 'merged' ? `${noun(prs.length)} merged ${window}${scope}:`
     : state === 'open' ? `${prs.length} open PR${prs.length === 1 ? '' : 's'}${scope}${flags ? ` (${flags})` : ''}:`
     : `${noun(prs.length)} ${state === 'attention' ? 'needing attention' : `in state ${state}`}${scope}${flags ? ` (${flags})` : ''}:`;
@@ -632,12 +637,19 @@ export function renderPrList(data: { state?: string; sinceDays?: number; workspa
     const when = state === 'merged' ? `merged ${day(p.mergedAt)}`
       : p.status === 'conflict' && p.conflictDetectedAt ? `conflicting since ${day(p.conflictDetectedAt)}`
       : p.startedAt ? `opened ${day(p.startedAt)}` : null;
-    return `- #${p.prNumber ?? '?'} ${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'} · ${[
+    // Signals only appear when they matter; a quiet PR's line is unchanged.
+    const lead = p.waitingOnYou ? `NEEDS YOU (${p.waitingOnYou}) · ` : '';
+    const attempts = p.ciFixAttempts ? ` (${p.ciFixAttempts} fix attempt${p.ciFixAttempts === 1 ? '' : 's'})` : '';
+    const label = `${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'}${attempts}`;
+    return `- #${p.prNumber ?? '?'} ${lead}${label} · ${[
+      p.resolving ? PR_RESOLVING_LABEL[p.resolving] : null,
       p.taskTitle ?? '(no task)',
       p.workspaceName,
       p.missionTitle ? `mission "${p.missionTitle}"` : null,
       p.taskId ? `task ${String(p.taskId).slice(0, 8)}` : null,
+      p.intoMissionBranch ? `→ ${p.intoMissionBranch}` : null,
       when,
+      p.checkedHoursAgo ? `state checked ${p.checkedHoursAgo}h ago` : null,
     ].filter(Boolean).join(' · ')}\n  ${p.prUrl}`;
   });
   return `${header}\n${lines.join('\n')}`;
@@ -2268,6 +2280,11 @@ export async function handleBuilddAction(
         ? 'CI: none configured'
         : `CI: ${checks.state} (${checks.passed}/${checks.total} passed${checks.failed > 0 ? `, ${checks.failed} failed` : ''}${checks.pending > 0 ? `, ${checks.pending} pending` : ''})`;
 
+      const failing = Array.isArray(checks.failedChecks) ? checks.failedChecks as Array<{ name: string; url: string | null }> : [];
+      const failingLine = failing.length > 0
+        ? `Failing: ${failing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}`
+        : '';
+
       const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
         ? `Reviews: ${reviews.approved} approved${reviews.changesRequested > 0 ? `, ${reviews.changesRequested} changes requested` : ''}`
         : 'Reviews: none';
@@ -2314,6 +2331,7 @@ export async function handleBuilddAction(
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
         ciLine,
+        failingLine,
         reviewLine,
         statsLine,
         supersededLine,
