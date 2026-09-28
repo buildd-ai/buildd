@@ -260,6 +260,36 @@ function writeLedger(
   }
 }
 
+/**
+ * Record memories the agent pulled by id (`recall` id=, the claim-time index's
+ * pull path): one `via: pull` row each, same writer and verification as a
+ * retrieval. Never throws.
+ */
+export function recordMemoryPulls(args: {
+  memoryIds: readonly string[];
+  teamId: string | null | undefined;
+  workspaceId?: string | null;
+  caller: Extract<MemoryCaller, 'recall'>;
+  attribution?: MemoryAttribution;
+  ledger?: MemoryLedgerWriter | false;
+}): void {
+  writeLedger(args.ledger, buildMemoryUseRows({
+    hits: args.memoryIds.map((memoryId, i) => ({
+      // Read from the memories row, not a knowledge chunk.
+      chunkId: null,
+      memoryId,
+      rank: i + 1,
+      score: null,
+      gated: false,
+      gatedBy: null,
+    })),
+    teamId: args.teamId,
+    workspaceId: args.workspaceId,
+    caller: args.caller,
+    attribution: args.attribution,
+  }));
+}
+
 // ── Hybrid (knowledge store) retrieval ───────────────────────────────────────
 
 export interface MemoryRetrievalScope {
@@ -370,6 +400,8 @@ export interface RetrieveStoreMemoryInput {
   caller: MemoryCaller;
   attribution?: MemoryAttribution;
   ledger?: MemoryLedgerWriter | false;
+  /** Hold the ledger until the caller calls `commitLedger`; see RetrieveMemoryInput. */
+  deferLedger?: boolean;
 }
 
 export interface RetrieveStoreMemoryResult<M> {
@@ -383,6 +415,8 @@ export interface RetrieveStoreMemoryResult<M> {
    * memoryProjectKey rule), as opposed to a search that matched nothing.
    */
   unavailable?: true;
+  /** Write the ledger now (only meaningful with `deferLedger`); same contract as the hybrid one. */
+  commitLedger: (gateFor?: (hit: MemoryHit) => MemoryGate | null) => void;
 }
 
 // ── The door ─────────────────────────────────────────────────────────────────
@@ -487,7 +521,7 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
 async function retrieveStoreMemory(
   input: RetrieveStoreMemoryInput,
 ): Promise<RetrieveStoreMemoryResult<unknown>> {
-  const empty = { memories: [], total: 0, hits: [] };
+  const empty = { memories: [], total: 0, hits: [], commitLedger: EMPTY_COMMIT };
   // The project comes from the workspace, by the rule every memory read uses
   // (memoryProjectKey), never from the caller's search params: the store is
   // team-wide, and a search with no project, or another project, would read
@@ -517,13 +551,25 @@ async function retrieveStoreMemory(
     .filter(h => h.rank > 0)
     .sort((a, b) => a.rank - b.rank);
 
-  writeLedger(input.ledger, buildMemoryUseRows({
-    hits,
-    teamId: input.scope.teamId,
-    workspaceId: input.scope.workspaceId,
-    caller: input.caller,
-    attribution: input.attribution,
-  }));
+  let committed = false;
+  const commitLedger: RetrieveStoreMemoryResult<unknown>['commitLedger'] = (gateFor) => {
+    if (committed) return;
+    committed = true;
+    const final = gateFor
+      ? hits.map(h => {
+          const extra = gateFor(h);
+          return extra ? { ...h, gated: true, gatedBy: extra } : h;
+        })
+      : hits;
+    writeLedger(input.ledger, buildMemoryUseRows({
+      hits: final,
+      teamId: input.scope.teamId,
+      workspaceId: input.scope.workspaceId,
+      caller: input.caller,
+      attribution: input.attribution,
+    }));
+  };
+  if (!input.deferLedger) commitLedger();
 
-  return { memories, total: searchData.total, hits };
+  return { memories, total: searchData.total, hits, commitLedger };
 }

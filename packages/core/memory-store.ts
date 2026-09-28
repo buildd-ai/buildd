@@ -12,7 +12,7 @@
 
 import { db } from './db';
 import { memories } from './db/schema';
-import { eq, and, inArray, or, ilike, desc, isNull, count as dbCount } from 'drizzle-orm';
+import { eq, and, inArray, or, ilike, desc, isNull, sql, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
 import { normalizeMemoryFileScope } from './memory-file-scope';
 import { tokenizeMemoryQuery } from './memory-query-tokens';
@@ -272,6 +272,28 @@ export class MemoryStore {
     });
     if (!row) throw new Error(`Memory not found: ${id}`);
     return { memory: toRecord(row) };
+  }
+
+  /**
+   * Memories in one project whose id starts with `prefix` (the 8-char short id
+   * the claim-time index shows). At most `limit` rows, so a caller can tell a
+   * unique match from an ambiguous one. The project is part of the match, so a
+   * prefix never reaches another workspace's memory: a foreign id and a
+   * missing one both come back empty.
+   */
+  async findByIdPrefix(prefix: string, project: string, limit = 2): Promise<MemoryRecord[]> {
+    const scope = normalizeProject(project);
+    const p = prefix.toLowerCase();
+    if (!scope || !/^[0-9a-f]{8,}$/.test(p)) return [];
+    const rows = await db.query.memories.findMany({
+      where: and(
+        eq(memories.teamId, this.teamId),
+        eq(memories.project, scope),
+        sql`${memories.id}::text LIKE ${`${p}%`}`,
+      ),
+      limit,
+    });
+    return rows.map(toRecord);
   }
 
   /** Insert a new memory. `project` is canonicalized on the way in. */

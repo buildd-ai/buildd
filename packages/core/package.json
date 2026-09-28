@@ -47,6 +47,7 @@
     "./memory-scope": "./memory-scope.ts",
     "./memory-hit-scope": "./memory-hit-scope.ts",
     "./memory-retrieval": "./memory-retrieval.ts",
+    "./memory-claim-index": "./memory-claim-index.ts",
     "./memory-uses-retention": "./memory-uses-retention.ts",
     "./memory-uses-attribution": "./memory-uses-attribution.ts",
     "./memory-store": "./memory-store.ts",
