@@ -81,3 +81,25 @@ export const WORKER_LEASE_MISSED_BEATS_TOLERATED = Math.floor(
 // Beyond 2.5× the interval the record is excluded from queries entirely.
 export const RUNNER_ONLINE_THRESHOLD_MS = 1.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
+
+// ─── Interactive (MCP-claimed) workers ──────────────────────────────────────
+//
+// `claim_task` from an MCP session mints a worker with `runner = 'mcp'`: a
+// person's own Claude Code session (or its local agents) does the work, and no
+// runner process ever starts a session for the row. So none of the runner
+// liveness signals above apply to it. `started_at` stays NULL until the first
+// `update_progress`, tokens and turns are never synced, and there is no runner
+// heartbeat. Judged by the runner rules it reads as "never started" after five
+// idle minutes, which reaped live interactive work and re-queued it for a
+// runner to duplicate (friction 92866723).
+//
+// Instead an interactive worker is alive while its account keeps making MCP
+// calls (each call bumps `workers.updated_at`, see
+// apps/web/src/lib/interactive-worker-liveness.ts), and is reaped only after
+// this long with no MCP activity at all, so an abandoned claim still frees up.
+
+/** `workers.runner` value for a worker minted by an MCP `claim_task`. */
+export const INTERACTIVE_WORKER_RUNNER = 'mcp';
+
+/** Reap an interactive worker only after this long without any MCP activity. */
+export const INTERACTIVE_WORKER_IDLE_TTL_MS = 2 * 60 * 60 * 1000;

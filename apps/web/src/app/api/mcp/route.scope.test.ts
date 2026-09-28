@@ -110,6 +110,11 @@ mock.module('@buildd/core/mcp-tools', () => ({
   handleLearnAction: mock(async () => ({ content: [{ type: 'text', text: '{}' }] })),
 }));
 
+const mockTouchInteractiveWorkers = mock((_opts: { accountId: string; userId?: string | null; level: string }) => {});
+mock.module('@/lib/interactive-worker-liveness', () => ({
+  scheduleInteractiveTouch: mockTouchInteractiveWorkers,
+}));
+
 import { POST } from './route';
 
 function recallRequest(query: string) {
@@ -180,6 +185,25 @@ describe('/api/mcp ?workspace= scope', () => {
     expect(sql).toContain('"workspace_id"');
     expect(params).toContain(ACCOUNT_ID);
     expect(params).toContain(FOREIGN_WS);
+  });
+});
+
+// Friction 92866723: every MCP request from a token is liveness for the
+// interactive workers that token claimed, so the reaper keeps them.
+describe('/api/mcp interactive worker liveness', () => {
+  beforeEach(() => mockTouchInteractiveWorkers.mockClear());
+
+  it("touches the calling account's interactive workers on an accepted call", async () => {
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}`));
+    expect(res.status).toBe(200);
+    expect(mockTouchInteractiveWorkers).toHaveBeenCalledTimes(1);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ accountId: ACCOUNT_ID, userId: null, level: 'worker' });
+  });
+
+  it('touches nothing for a refused request', async () => {
+    const res = await POST(recallRequest(`?workspace=${FOREIGN_WS}`));
+    expect(res.status).toBe(403);
+    expect(mockTouchInteractiveWorkers).not.toHaveBeenCalled();
   });
 });
 

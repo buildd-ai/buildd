@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { createHmac, hkdfSync } from 'crypto';
 import {
   INTERACTIVE_SESSION_HEADER,
   INTERACTIVE_SESSION_TTL_MS,
@@ -6,6 +7,8 @@ import {
   signInteractiveSession,
   verifyInteractiveSession,
   resolveClaimRunner,
+  interactiveSessionKey,
+  resetInteractiveSessionWarning,
 } from './interactive-session';
 
 /**
@@ -90,5 +93,33 @@ describe('resolveClaimRunner', () => {
   it('leaves every other runner id alone', () => {
     expect(resolveClaimRunner('runner-7', null)).toBe('runner-7');
     expect(resolveClaimRunner('runner-7', { userId: 'u' })).toBe('runner-7');
+  });
+});
+
+describe('marker key', () => {
+  it('is derived from the configured secret with HKDF (label interactive-session), not the raw secret', () => {
+    const expected = Buffer.from(hkdfSync('sha256', 'test-secret', Buffer.alloc(0), 'interactive-session', 32));
+    expect(interactiveSessionKey()!.equals(expected)).toBe(true);
+    const marker = signInteractiveSession({ accountId: 'acc-1', userId: null }, NOW)!;
+    const payload = marker.split('.').slice(0, 4).join('.');
+    const rawMac = createHmac('sha256', 'test-secret').update(`interactive-session:${payload}`).digest('base64url');
+    expect(marker.endsWith(rawMac)).toBe(false);
+  });
+
+  it('warns once when no signing secret resolves', () => {
+    delete process.env.AUTH_SECRET;
+    delete process.env.NEXTAUTH_SECRET;
+    delete process.env.ENCRYPTION_KEY;
+    resetInteractiveSessionWarning();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      signInteractiveSession({ accountId: 'acc-1', userId: null }, NOW);
+      signInteractiveSession({ accountId: 'acc-1', userId: null }, NOW);
+      verifyInteractiveSession('v1.1.a.b.c', 'acc-1', NOW);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/interactive-session/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

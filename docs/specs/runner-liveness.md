@@ -2,7 +2,7 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-27
+last_verified: 2026-09-28
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
@@ -324,6 +324,51 @@ branch in GitHub (`latestAvailable`).
 - Scopes: `heartbeatOrphanScope()`, `heartbeatFreshnessScope()` in
   `apps/web/src/lib/stale-workers.ts`
 - Query: uses `workerHeartbeats.lastHeartbeatAt` to find fresh beats
+
+---
+
+## Interactive (MCP-claimed) Workers
+
+A worker minted by an MCP `claim_task` has `runner = 'mcp'`. A person's own
+session (or its local agents) does the work; no runner ever starts a session
+for the row, syncs tokens or turns, or sends a heartbeat for it.
+
+`runner = 'mcp'` is recorded only for a claim carrying the server-signed
+interactive session marker the MCP routes add to their internal calls
+(`apps/web/src/lib/interactive-session.ts`). A client that sends
+`runner: 'mcp'` without it is recorded as `mcp-unverified`, an ordinary runner
+id, and every runner rule applies to its workers.
+
+**Invariants**:
+- No runner liveness rule applies to an interactive worker: the generic stale,
+  idle, silent-start and never-started arms of `cleanupStaleWorkers`, the
+  runner-heartbeat rule, and the cleanup route's 1h stalled and local-UI
+  heartbeat rules all exclude `runner = 'mcp'`.
+- Any MCP request from a `worker` or `admin` session (either transport) bumps
+  `updatedAt` on that session's interactive workers in `idle`, `running` or
+  `starting`, at most once a minute, after the response is sent. When the
+  session carries a user (OAuth `sub`), only workers whose task records that
+  user as the interactive claimer (`context.interactiveClaimUserId`) are
+  touched; a token with no user covers the account's interactive workers.
+  Trigger-level tokens touch nothing. `update_progress` bumps it as before.
+- An interactive worker with no MCP activity for
+  `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
+  booked with its own error text, and does not consume a retry attempt.
+- `waiting_input` interactive workers stay governed by the waiting_input timeout.
+
+**Acceptance criteria**:
+- AC-9a: GIVEN an interactive worker in `idle` with `updatedAt` 10 minutes ago
+  WHEN `cleanupStaleWorkers` runs THEN it is left untouched.
+- AC-9b: GIVEN an interactive worker whose account made no MCP call for over 2
+  hours WHEN `cleanupStaleWorkers` runs THEN it is marked `failed` with
+  `INTERACTIVE_ABANDONED_ERROR` and its task is reclaimed as below.
+
+**Code surface**:
+- `apps/web/src/lib/interactive-worker-liveness.ts`: `touchInteractiveWorkers()`,
+  `interactiveAbandonedScope()`, `runnerWorkerOnly()`
+- `apps/web/src/lib/stale-workers.ts`: `staleWorkerScope()`
+- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS` in
+  `packages/shared/src/runner-liveness.ts`
 
 ---
 

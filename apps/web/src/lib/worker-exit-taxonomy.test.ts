@@ -7,6 +7,7 @@ import {
   isConcurrencyConflictError,
   isSilentStartShape,
   isUnrecognizedModelError,
+  INTERACTIVE_ABANDONED_ERROR,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
   STALE_EXPIRED_ERROR,
@@ -120,6 +121,26 @@ describe('isConcurrencyConflictError', () => {
 });
 
 describe('classifyStaleExit', () => {
+  // Friction 92866723: an MCP claim_task worker is never started by a runner by
+  // design. "Never started by a runner" said nothing and read as a platform bug.
+  it('books an interactive (MCP) worker with its own text, never the runner wording', () => {
+    const unstarted = classifyStaleExit({ runner: 'mcp', startedAt: null, turns: 0 });
+    expect(unstarted.error).toBe(INTERACTIVE_ABANDONED_ERROR);
+    expect(unstarted.error).not.toBe(NEVER_STARTED_ERROR);
+    expect(unstarted.exitCause).toBe('never_started');
+    const started = classifyStaleExit({ runner: 'mcp', startedAt: new Date(), turns: 0 });
+    expect(started.error).toBe(INTERACTIVE_ABANDONED_ERROR);
+    // Not silent_start: an interactive worker never syncs turns or tokens.
+    expect(started.exitCause).toBe('infra_failure');
+    // Neither charges the task a retry.
+    expect(consumesRetryAttempt(unstarted.exitCause)).toBe(false);
+    expect(consumesRetryAttempt(started.exitCause)).toBe(false);
+  });
+
+  it('a runner whose id merely contains "mcp" is still judged as a runner', () => {
+    expect(classifyStaleExit({ runner: 'mcp-box-1', startedAt: null }).error).toBe(NEVER_STARTED_ERROR);
+  });
+
   it('books a worker no runner ever started as never_started, not infra_failure', () => {
     const result = classifyStaleExit({ startedAt: null, turns: 0, costUsd: '0.000000' });
     expect(result.exitCause).toBe('never_started');

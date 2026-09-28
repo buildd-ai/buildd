@@ -36,7 +36,10 @@ import {
   neverStartedTeamScope,
   heartbeatOrphanScope,
   heartbeatFreshnessScope,
+  staleWorkerScope,
 } from './stale-workers';
+import { INTERACTIVE_WORKER_IDLE_TTL_MS } from '@buildd/shared';
+import { interactiveAbandonedScope, interactiveTouchScope, INTERACTIVE_TOUCH_THROTTLE_MS } from './interactive-worker-liveness';
 
 const dialect = new PgDialect();
 
@@ -146,5 +149,69 @@ describe('heartbeatFreshnessScope — must stay account-keyed', () => {
   it('asserts freshness with a greater-than on last_heartbeat_at', () => {
     const sqlText = render(heartbeatFreshnessScope('account-1', THRESHOLD));
     expect(sqlText).toContain('"worker_heartbeats"."last_heartbeat_at" >');
+  });
+});
+
+/**
+ * Friction 92866723: `claim_task` from an MCP session mints a worker with
+ * runner = 'mcp' that no runner ever starts. Every runner rule read it as dead
+ * (the idle rule after five minutes, as "never started by a runner") while a
+ * person's local agent was still working, and the task was re-queued for a
+ * runner to duplicate. Runner rules must skip interactive workers; one arm
+ * reaps them on MCP silence alone, after a long TTL.
+ */
+describe('staleWorkerScope: interactive MCP workers', () => {
+  const NOW = new Date('2026-09-28T12:00:00.000Z');
+
+  it('every runner rule excludes runner = mcp; exactly one arm selects it', () => {
+    const q = dialect.sqlToQuery(staleWorkerScope('account-1', NOW));
+    // generic stale, idle, silent start, never started
+    expect(q.sql.match(/"workers"\."runner" <> \$\d+/g)?.length).toBe(4);
+    expect(q.sql.match(/"workers"\."runner" = \$\d+/g)?.length).toBe(1);
+    expect(q.params.filter(p => p === 'mcp').length).toBe(5);
+  });
+
+  it('the interactive arm is account-scoped and waits the full MCP-silence TTL', () => {
+    const q = dialect.sqlToQuery(interactiveAbandonedScope('account-1', NOW));
+    const text = q.sql.toLowerCase();
+    expect(text).toMatch(/"workers"\."account_id" = \$\d/);
+    expect(text).toMatch(/"workers"\."runner" = \$\d/);
+    expect(text).toContain('"workers"."updated_at" <');
+    expect(text).not.toContain('team_id');
+    expect(q.params).toEqual(expect.arrayContaining(['account-1', 'mcp', 'idle', 'running', 'starting']));
+    // A parked question is governed by the waiting_input sweep, not this arm.
+    expect(q.params).not.toContain('waiting_input');
+    expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString());
+    // And the scope actually includes it.
+    expect(dialect.sqlToQuery(staleWorkerScope('account-1', NOW)).params)
+      .toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString());
+  });
+
+  it('the team-scoped never-started arm skips interactive workers', () => {
+    const q = dialect.sqlToQuery(neverStartedTeamScope('account-1', THRESHOLD));
+    expect(q.sql).toMatch(/"workers"\."runner" <> \$\d/);
+    expect(q.params).toContain('mcp');
+  });
+
+  it('the runner-heartbeat rule skips interactive workers and stays account-scoped', () => {
+    const q = dialect.sqlToQuery(heartbeatOrphanScope('account-1', THRESHOLD));
+    expect(q.sql).toMatch(/"workers"\."runner" <> \$\d/);
+    expect(q.params).toContain('mcp');
+  });
+});
+
+describe('interactiveTouchScope: what one MCP call keeps alive', () => {
+  const NOW = new Date('2026-09-28T12:00:00.000Z');
+
+  it('only the calling account\'s own live interactive workers, throttled', () => {
+    const q = dialect.sqlToQuery(interactiveTouchScope('account-1', null, NOW));
+    const text = q.sql.toLowerCase();
+    expect(text).toMatch(/"workers"\."account_id" = \$\d/);
+    expect(text).toMatch(/"workers"\."runner" = \$\d/);
+    expect(text).toContain('"workers"."status" in');
+    expect(q.params).toEqual(expect.arrayContaining(['account-1', 'mcp', 'idle', 'running', 'starting']));
+    expect(q.params).not.toContain('waiting_input');
+    expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_TOUCH_THROTTLE_MS).toISOString());
+    expect(text).not.toContain('team_id');
   });
 });
