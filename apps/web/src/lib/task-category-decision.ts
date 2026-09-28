@@ -1,24 +1,31 @@
 /**
- * Shadow mode for the task category decision.
+ * The task category decision (docs/design/decision-calls.md → task category).
  *
- * `classifyTask` (./task-category.ts) picks a category with keyword regexes. This
- * module asks a decision model the same question, off the request path, and
- * logs whether the two agree. **It never changes the stored category** — the
- * keyword result is what the task row gets, with or without this module.
+ * `classifyTask` (./task-category.ts) picks a category with keyword regexes.
+ * This module asks a decision model (Jev) the same question and, when it is
+ * confident enough, stores its answer. Measured offline on merged work
+ * (scripts/decision-benchmark.ts, gold = the PR's conventional-commit type):
+ * the keyword rules were right on roughly half of held-out tasks, Jev on about
+ * three quarters, and past 90% at the gates below.
  *
- * The point is to collect agreement/confidence evidence cheaply before anything
- * is switched over. See `docs/design/decision-calls.md` → "Shadow: classifyTask".
+ * The gate (`gateTaskCategory`):
+ *   - a category the caller supplied is never changed;
+ *   - `review` is never written and never replaced: it is a behaviour flag
+ *     (reviewer dispatch, claim-gate exemptions, completion), not a label;
+ *   - the keyword rules abstained ⇒ Jev fills in at FILL_MIN_CONFIDENCE;
+ *   - the keyword rules disagree ⇒ Jev replaces them at OVERRIDE_MIN_CONFIDENCE.
  *
- * Off by default, twice over: the team must enable the `task_category_shadow`
- * inference capability, and an OpenRouter `decision_key` must resolve. With
- * either missing `decisionCall` returns before any network I/O and this module
- * logs nothing.
+ * Every task gets one look, recorded in `tasks.category_decision` with the
+ * prompt/model version, the keyword result and the model's pick, so a write is
+ * reversible and a later prompt can be re-scored. Two triggers share the one
+ * function: task creation (POST /api/tasks, after the response) and a sweep in
+ * the hourly schedules tick for every other creation path. The backfill script
+ * runs the sweep over a wider window.
  *
- * Records go to the log as one `[decision-shadow]` JSON line per task, the same
- * observe-only pattern the worker lease used (`[lease-shadow]` in
- * ./stale-workers.ts). No schema change, no table. A line carries ids, labels
- * and numbers only — never the task's title or description.
+ * Runs only when an OpenRouter key resolves for the team (a `built_in`
+ * capability). Sensitive workspaces never send task content out.
  */
+import { createHash } from 'node:crypto';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
 // lazily inside the run, so importing this module from the task route adds
@@ -29,13 +36,24 @@ import type {
   decisionCall,
 } from '@buildd/core/decision-client';
 
-/** Whole-call ceiling for the shadow request. It runs after the response is sent. */
-export const SHADOW_TIMEOUT_MS = 3_000;
+/** Whole-call ceiling. It runs after the response is sent, or in a sweep. */
+export const DECISION_TIMEOUT_MS = 3_000;
 
 /** Description is truncated: Jev's accuracy falls as irrelevant state grows. */
-export const SHADOW_DESCRIPTION_CHARS = 1_500;
+export const DECISION_DESCRIPTION_CHARS = 1_500;
 
-export const SHADOW_LOG_PREFIX = '[decision-shadow]';
+export const DECISION_LOG_PREFIX = '[task-category]';
+
+/** The keyword rules abstained: fill in at this confidence (held-out ~92% accurate). */
+export const FILL_MIN_CONFIDENCE = 0.8;
+/** The keyword rules picked something else: replace it at this confidence (~94%). */
+export const OVERRIDE_MIN_CONFIDENCE = 0.9;
+
+/**
+ * Bump when the question or any definition changes, and re-run the benchmark.
+ * A test pins the prompt's hash to this version.
+ */
+export const TASK_CATEGORY_PROMPT_VERSION = 'tc1';
 
 /**
  * Label definitions. Every category buildd stores, including `review`, which
@@ -107,115 +125,175 @@ export function buildTaskCategoryState(title: string, description?: string | nul
   return {
     task: {
       title: title.trim(),
-      description: desc.length > SHADOW_DESCRIPTION_CHARS ? `${desc.slice(0, SHADOW_DESCRIPTION_CHARS)}…` : desc,
+      description: desc.length > DECISION_DESCRIPTION_CHARS ? `${desc.slice(0, DECISION_DESCRIPTION_CHARS)}…` : desc,
     },
   };
 }
 
-export interface TaskCategoryShadowInput {
+/** Hash of the prompt, pinned by a test to TASK_CATEGORY_PROMPT_VERSION. */
+export function taskCategoryPromptHash(): string {
+  return createHash('sha256').update(JSON.stringify(TASK_CATEGORY_QUESTIONS)).digest('hex').slice(0, 12);
+}
+
+export type TaskCategoryDecisionRecord = {
+  v: string;
+  source: 'caller' | 'keyword' | 'jev';
+  keyword: string | null;
+  jev: string | null;
+  confidence: number | null;
+  skipped?: 'sensitive' | 'unconfigured';
+  at: string;
+};
+
+export interface GateInput {
+  /** The category on the row now. */
+  stored: TaskCategoryValue | null;
+  /** Did the caller supply `stored` (vs the keyword rules)? */
+  callerSet: boolean;
+  keyword: TaskCategoryValue | null;
+  decision: TaskCategoryValue;
+  confidence: number;
+}
+
+/** What the row should say, and who decided it. Pure. */
+export function gateTaskCategory(g: GateInput): { category: TaskCategoryValue | null; source: TaskCategoryDecisionRecord['source'] } {
+  const keep = { category: g.stored, source: g.callerSet ? 'caller' as const : 'keyword' as const };
+  if (g.callerSet || g.stored === 'review' || g.decision === 'review') return keep;
+  if (g.decision === g.stored) return keep;
+  const min = g.stored === null ? FILL_MIN_CONFIDENCE : OVERRIDE_MIN_CONFIDENCE;
+  return g.confidence >= min ? { category: g.decision, source: 'jev' } : keep;
+}
+
+export interface CategorizeInput {
   taskId: string;
   teamId: string;
   workspaceId: string;
   accountId?: string | null;
   title: string;
   description?: string | null;
-  /** What `classifyTask` returned and the task row stores. */
-  keywordCategory: TaskCategoryValue | null;
+  /** The category on the row now. */
+  stored: TaskCategoryValue | null;
+  /** Did the caller supply `stored`? The route knows; the sweep infers it. */
+  callerSet: boolean;
   /** `workspaces.gitConfig.dataClass`. Sensitive workspaces never send content out. */
   dataClass?: string | null;
-}
-
-/** The record written per shadowed task. Ids, labels and numbers only. */
-export interface TaskCategoryShadowRecord {
-  site: 'task_category';
-  taskId: string;
-  workspaceId: string;
-  keyword: TaskCategoryValue | null;
-  decision: TaskCategoryValue;
-  confidence: number;
-  /** null when the keyword classifier abstained. */
-  agree: boolean | null;
-  probabilities: Record<string, number>;
-  model: string;
-  latencyMs: number;
-  inputTokens: number;
-  costUsd: number | null;
 }
 
 type DecideFn = typeof decisionCall<typeof TASK_CATEGORY_QUESTIONS>;
 
 /**
- * Run the shadow comparison for one task. Never throws, never writes to the
- * task. Returns the record it logged (or null), which is what tests assert on.
+ * Writes the row. Optimistic: only while the category is still what was read,
+ * and only once (category_decision IS NULL, or a look skipped for want of a
+ * key), so a concurrent edit or a second
+ * trigger never clobbers anything. Returns whether a row changed.
  */
-export async function runTaskCategoryShadow(
-  input: TaskCategoryShadowInput,
-  deps: { decide?: DecideFn; log?: (line: string) => void } = {},
-): Promise<TaskCategoryShadowRecord | null> {
+export type WriteDecision = (taskId: string, expected: TaskCategoryValue | null, category: TaskCategoryValue | null, record: TaskCategoryDecisionRecord) => Promise<boolean>;
+
+async function dbWrite(taskId: string, expected: TaskCategoryValue | null, category: TaskCategoryValue | null, record: TaskCategoryDecisionRecord): Promise<boolean> {
+  const { db } = await import('@buildd/core/db');
+  const { tasks } = await import('@buildd/core/db/schema');
+  const { and, eq, isNull, or, sql } = await import('drizzle-orm');
+  const rows = await db.update(tasks)
+    .set({ category, categoryDecision: record })
+    .where(and(
+      eq(tasks.id, taskId),
+      // Once per task; a look skipped for want of a key may be retried.
+      or(isNull(tasks.categoryDecision), sql`${tasks.categoryDecision}->>'skipped' = 'unconfigured'`),
+      expected === null ? isNull(tasks.category) : eq(tasks.category, expected),
+    ))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
+export interface CategorizeResult {
+  outcome: 'applied' | 'kept' | 'skipped' | 'lost_race' | 'error';
+  record?: TaskCategoryDecisionRecord;
+}
+
+/**
+ * Decide one task's category and record the look. Never throws. A transient
+ * failure (timeout, 5xx) records nothing, so the sweep tries again.
+ */
+export async function categorizeTask(
+  input: CategorizeInput,
+  deps: { decide?: DecideFn; write?: WriteDecision; classify?: (title: string, description?: string | null) => TaskCategoryValue | null; now?: () => Date; log?: (line: string) => void } = {},
+): Promise<CategorizeResult> {
   const log = deps.log ?? ((line: string) => console.log(line));
+  const write = deps.write ?? dbWrite;
+  const at = (deps.now?.() ?? new Date()).toISOString();
   try {
-    // Task content must not leave the platform for a sensitive workspace.
-    if (input.dataClass === 'sensitive') return null;
+    const classify = deps.classify ?? (await import('./task-category')).classifyTask as (t: string, d?: string | null) => TaskCategoryValue | null;
+    const keyword = classify(input.title, input.description ?? undefined);
+    const base = { keyword, at };
+    const source = input.callerSet ? 'caller' as const : 'keyword' as const;
+
+    // Nothing the gate could change: record the look, spend nothing.
+    if (input.callerSet || input.stored === 'review') {
+      const record: TaskCategoryDecisionRecord = { v: TASK_CATEGORY_PROMPT_VERSION, source, jev: null, confidence: null, ...base };
+      return { outcome: (await write(input.taskId, input.stored, input.stored, record)) ? 'kept' : 'lost_race', record };
+    }
+
+    if (input.dataClass === 'sensitive') {
+      const record: TaskCategoryDecisionRecord = { v: TASK_CATEGORY_PROMPT_VERSION, source, jev: null, confidence: null, skipped: 'sensitive', ...base };
+      return { outcome: (await write(input.taskId, input.stored, input.stored, record)) ? 'skipped' : 'lost_race', record };
+    }
 
     const client = deps.decide ? null : await import('@buildd/core/decision-client');
     const decide = deps.decide ?? client!.decisionCall;
     const res: DecisionResult<typeof TASK_CATEGORY_QUESTIONS> = await decide({
-      capability: 'task_category_shadow',
+      capability: 'task_category',
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,
       state: buildTaskCategoryState(input.title, input.description),
       questions: TASK_CATEGORY_QUESTIONS,
-      timeoutMs: SHADOW_TIMEOUT_MS,
+      timeoutMs: DECISION_TIMEOUT_MS,
     });
 
     if (!res.ok) {
-      // Not enabled / not configured is the default state: stay silent so the
-      // log carries no per-task noise for teams that never opted in.
-      if (res.error.kind !== 'capability_disabled' && res.error.kind !== 'missing_key') {
-        log(`${SHADOW_LOG_PREFIX} ${JSON.stringify({
-          site: 'task_category', taskId: input.taskId, workspaceId: input.workspaceId,
-          error: res.error.kind, latencyMs: res.latencyMs,
-          ...('status' in res.error ? { status: res.error.status } : {}),
-        })}`);
+      if (res.error.kind === 'capability_disabled' || res.error.kind === 'missing_key') {
+        // Not configured: record the look so the sweep doesn't ask again every
+        // hour. The backfill re-asks once a key exists.
+        const record: TaskCategoryDecisionRecord = { v: TASK_CATEGORY_PROMPT_VERSION, source, jev: null, confidence: null, skipped: 'unconfigured', ...base };
+        return { outcome: (await write(input.taskId, input.stored, input.stored, record)) ? 'skipped' : 'lost_race', record };
       }
-      return null;
+      log(`${DECISION_LOG_PREFIX} ${JSON.stringify({ taskId: input.taskId, error: res.error.kind, latencyMs: res.latencyMs })}`);
+      return { outcome: 'error' };
     }
 
     const answer = res.answers.category;
-    const record: TaskCategoryShadowRecord = {
-      site: 'task_category',
-      taskId: input.taskId,
-      workspaceId: input.workspaceId,
-      keyword: input.keywordCategory,
-      decision: answer.choice,
-      confidence: answer.confidence,
-      agree: input.keywordCategory === null ? null : input.keywordCategory === answer.choice,
-      probabilities: answer.probabilities,
-      model: res.model,
-      latencyMs: res.latencyMs,
-      inputTokens: res.usage.inputTokens,
-      costUsd: res.usage.costUsd,
+    const gated = gateTaskCategory({
+      stored: input.stored, callerSet: input.callerSet, keyword, decision: answer.choice, confidence: answer.confidence,
+    });
+    const record: TaskCategoryDecisionRecord = {
+      v: `${TASK_CATEGORY_PROMPT_VERSION}|${res.model}`,
+      source: gated.source, jev: answer.choice, confidence: answer.confidence, ...base,
     };
-    log(`${SHADOW_LOG_PREFIX} ${JSON.stringify(record)}`);
-    return record;
+    const wrote = await write(input.taskId, input.stored, gated.category, record);
+    // Ids, labels and numbers only: never the task's title or description.
+    log(`${DECISION_LOG_PREFIX} ${JSON.stringify({
+      taskId: input.taskId, stored: input.stored, keyword, jev: answer.choice, confidence: answer.confidence,
+      applied: wrote && gated.source === 'jev', costUsd: res.usage.costUsd,
+    })}`);
+    if (!wrote) return { outcome: 'lost_race', record };
+    return { outcome: gated.source === 'jev' ? 'applied' : 'kept', record };
   } catch (err) {
-    console.error(`${SHADOW_LOG_PREFIX} task_category failed (non-fatal, task unaffected):`, err);
-    return null;
+    console.error(`${DECISION_LOG_PREFIX} failed (non-fatal, task unaffected):`, err);
+    return { outcome: 'error' };
   }
 }
 
 /**
- * Schedule the shadow run after the response, so it can never delay or fail
- * task creation. `schedule` is `next/server`'s `after`; outside a request scope
- * (tests, scripts) it throws, and the run is fired and forgotten instead.
+ * Run after the response, so it can never delay or fail task creation.
+ * `schedule` is `next/server`'s `after`; outside a request scope it throws, and
+ * the run is fired and forgotten instead.
  */
-export function scheduleTaskCategoryShadow(
-  input: TaskCategoryShadowInput,
+export function scheduleTaskCategorize(
+  input: CategorizeInput,
   schedule: (fn: () => Promise<unknown>) => void,
-  deps: Parameters<typeof runTaskCategoryShadow>[1] = {},
+  deps: Parameters<typeof categorizeTask>[1] = {},
 ): void {
-  const run = () => runTaskCategoryShadow(input, deps);
+  const run = () => categorizeTask(input, deps);
   try {
     schedule(run);
   } catch {

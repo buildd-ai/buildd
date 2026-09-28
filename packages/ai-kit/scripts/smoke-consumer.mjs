@@ -15,9 +15,16 @@
  *      config),
  *   3. BARE: with no optional peers installed (npm does not install optional
  *      peers), imports every JS entry, resolves every non-JS export, and checks
- *      `decide` returns `sdk_missing` instead of throwing,
+ *      `decide` returns `sdk_missing` instead of throwing. `/chat/server` must
+ *      load and declare tool groups without `ai` (it loads `ai` on the first
+ *      turn). `/chat/react` is the one entry that needs its peers to load
+ *      (react, @ai-sdk/react, ai); bare, it must fail to load by naming one of
+ *      them, not crash on something else,
  *   4. PEERS: installs every declared peer at its declared range, as a consumer
- *      would, and imports every entry again; `decide` must now reach the SDK.
+ *      would (plus react-dom, which every React app has), and imports every
+ *      entry again; `decide` must now reach the SDK; a `createChatTurn` turn
+ *      runs on a mock model over the real SSE wire and gates a write behind
+ *      one approval card; and `/chat/react` renders on the server.
  *
  * Usage: `bun run build && node scripts/smoke-consumer.mjs [tarball.tgz]`.
  * Set KEEP_SMOKE_DIR=1 to keep the temp project.
@@ -81,9 +88,22 @@ try {
 const phase = process.argv[2];
 const pkg = JSON.parse((await import('node:fs')).readFileSync(new URL('./node_modules/@builddai/ai-kit/package.json', import.meta.url), 'utf8'));
 let bad = 0;
+// Entries that exist to wrap a peer: bare, they must fail by naming it.
+const NEEDS_PEERS = { './chat/react': ['react', '@ai-sdk/react', 'ai'] };
 for (const [entry, target] of Object.entries(pkg.exports)) {
   const spec = pkg.name + entry.slice(1);
   if (entry === './package.json') continue;
+  if (phase === 'bare' && NEEDS_PEERS[entry]) {
+    try {
+      await import(spec);
+      console.log('  ok  ' + spec + ' (loaded without its peers)');
+    } catch (e) {
+      const named = e.code === 'ERR_MODULE_NOT_FOUND' && NEEDS_PEERS[entry].some(p => e.message.includes("'" + p));
+      console.log('  ' + (named ? 'ok  ' : 'FAIL ') + spec + (named ? ' needs its peers (' + e.message.split('\\n')[0] + ')' : ': ' + e.message.split('\\n')[0]));
+      if (!named) bad++;
+    }
+    continue;
+  }
   try {
     if (typeof target === 'object' && target.import) {
       const mod = await import(spec);
@@ -111,6 +131,58 @@ try {
   bad++;
   console.log('  FAIL decide(): ' + (e.code ? e.code + ' ' : '') + e.message.split('\\n')[0]);
 }
+const check = async (name, fn) => {
+  try { await fn(); console.log('  ok  ' + name); }
+  catch (e) { bad++; console.log('  FAIL ' + name + ': ' + (e.code ? e.code + ' ' : '') + String(e.message).split('\\n')[0]); }
+};
+const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+
+await check('/chat/server declares tool groups' + (phase === 'bare' ? ' without ai' : ''), async () => {
+  const { defineToolGroups } = await import(pkg.name + '/chat/server');
+  const g = defineToolGroups({ notes: { label: 'Notes', modes: ['ask', 'allow'], tools: [{ name: 'create_note', class: 'write' }] } });
+  assert(g.rows(new Set(['notes']))[0].mode === 'allow', 'rows');
+});
+
+if (phase === 'peers') {
+  await check('createChatTurn: a write streams one approval card and runs nothing', async () => {
+    const server = await import(pkg.name + '/chat/server');
+    const { jsonSchema } = await import('ai');
+    const { MockLanguageModelV4, convertArrayToReadableStream } = await import('ai/test');
+    const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
+    const model = new MockLanguageModelV4({ doStream: { stream: convertArrayToReadableStream([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-call', toolCallId: 'w1', toolName: 'create_note', input: JSON.stringify({ title: 'Milk' }) },
+      { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool-calls' }, usage },
+    ]) } });
+    let ran = 0;
+    const receipts = [];
+    const turn = server.createChatTurn({
+      toolGroups: server.defineToolGroups({ notes: { label: 'Notes', modes: ['ask', 'allow'], tools: [{ name: 'create_note', class: 'write' }] } }),
+      store: server.memoryChatStore(),
+      system: 'smoke',
+      model: async () => ({ ok: true, model, plan: { planId: 'p', planSource: 'registry', tier: 'standard', provider: 'openrouter', model: 'm' }, recordUsage: r => receipts.push(r) }),
+      tools: { create_note: { description: 'c', inputSchema: jsonSchema({ type: 'object', properties: { title: { type: 'string' } } }), execute: async () => { ran++; return { data: 'ok', objects: [] }; } } },
+    });
+    const res = await turn.run({ body: { message: { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'add milk' }] } }, userId: 'u', conversationId: 'c' });
+    const sse = await res.text();
+    await new Promise(r => setTimeout(r, 20));
+    assert(res.status === 200, 'status ' + res.status);
+    assert((sse.match(/"tool-approval-request"/g) ?? []).length === 1, 'one approval card');
+    assert(sse.includes('"data-step"'), 'a data-step part');
+    assert(ran === 0, 'the write ran without approval');
+    assert(receipts.length === 1 && receipts[0].outcome === 'ok', 'one receipt');
+  });
+  await check('/chat/react renders on the server', async () => {
+    const { createElement: h } = await import('react');
+    const { renderToString } = await import('react-dom/server');
+    const ui = await import(pkg.name + '/chat/react');
+    const html = renderToString(h('div', null,
+      h(ui.ChatThread, { messages: [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] }], status: 'ready' }),
+      h(ui.ChatComposer, { onSend() {}, tools: h(ui.ToolsMenu, { rows: [{ key: 'a', label: 'A', mode: 'allow', locked: false }], onChange() {} }) }),
+      h(ui.ChatEmpty, { name: 'Sam', chips: [], onChip() {} })));
+    assert(html.includes('kit-thread') && html.includes('kit-composer') && html.includes('Hi Sam, what are we working on?'), 'markup');
+  });
+}
 process.exit(bad ? 1 : 0);
 `);
 
@@ -125,7 +197,8 @@ process.exit(bad ? 1 : 0);
   };
 
   phase('bare');
-  const specs = Object.entries(peers).map(([n, range]) => `${n}@${range}`);
+  // react-dom is not a peer (the kit never imports it) but every React app has it; the SSR check needs it.
+  const specs = [...Object.entries(peers).map(([n, range]) => `${n}@${range}`), ...(peers.react ? [`react-dom@${peers.react}`] : [])];
   if (specs.length) {
     console.log(`\ninstalling declared peers: ${specs.join(' ')}`);
     run('npm', ['install', '--no-package-lock', ...specs], project);

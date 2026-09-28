@@ -97,6 +97,7 @@ const SAFE: Record<string, string[]> = {
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
+    'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],

@@ -15,6 +15,8 @@ CREATE TABLE "memory_uses" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "memories" ADD COLUMN "superseded_by" uuid;--> statement-breakpoint
+ALTER TABLE "memories" ADD COLUMN "index_failures" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 CREATE INDEX "memory_uses_memory_idx" ON "memory_uses" USING btree ("team_id","memory_id");--> statement-breakpoint
 CREATE INDEX "memory_uses_task_idx" ON "memory_uses" USING btree ("task_id");--> statement-breakpoint
 CREATE INDEX "memory_uses_created_idx" ON "memory_uses" USING btree ("created_at");

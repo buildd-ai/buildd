@@ -4,6 +4,61 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.2.0 — 2026-09-27
+
+The chat turn runner and the React components (P3 of
+`docs/design/shared-ai-kit.md`), generalised from buildd's v3 chat. See the
+README's "Chat" section for the full API.
+
+- `/chat/server`: `createChatTurn` — one streamed turn on AI SDK v7
+  (`streamText` → UI message stream) with: refusals before any spend
+  (`409 no_key`, `429 budget_exhausted` / `rate_limited`); approval cards
+  gated on the server (approval id + input hash + approver + the store's
+  atomic compare-and-set, and a fingerprint re-check at execution); Allow
+  through `canSkipCard` plus a resolving preview; at most one card per turn;
+  hand-offs (`handoffResult` → `data-handoff` + `store.linkHandoff`,
+  `handoffEventMessage` for later updates); `data-step` thinking rows from the
+  tool lifecycle and `ctx.step()`; Stop / deadline aborts that save the partial
+  turn; a content-free `/models` receipt plus the app's `onUsage` record per
+  request; mid-turn steering behind `steering: { queue }`.
+  `modelFromPlan` builds the turn's model from a `/models` plan (a `deny` plan
+  refuses the turn). `ChatStore` is the persistence adapter
+  (`memoryChatStore` for tests); `createPermissionsApi` serves `GET`/`PATCH`
+  permissions. `ai` is loaded lazily, so the entry still imports without it.
+- `/chat/server` also exports the approval primitives (`canonicalJson`,
+  `hashToolInput` — WebCrypto, byte-identical to buildd's — `approvalRequestsIn`,
+  `reconcileApprovals`, `previewMatches`).
+- `KitToolDecl` gains optional `steps: { active, done, failed? }`;
+  `ToolGroups` gains `labelOf(group)`.
+- `ChatTurnOptions` (the 0.1 skeleton type) is replaced by the real options:
+  `groups` is now `toolGroups`, `key` moved into `modelFromPlan`, and
+  `preview` returns `{ ok: false, question }` (was `message`).
+- `/chat/react`: `useKitChat`, `ChatThread`, `ChatComposer`, `ToolsMenu` /
+  `ToolRows`, `ScopePicker`, `TierPicker`, `ThinkingPanel`, `ApprovalCard`,
+  `HandoffCard`, `ChatEmpty`, `ChatSetupCard`, `Menu`, and the pure view
+  helpers (`thinkingSteps`, `tierLabel`, `greeting`, ...). Peers `react@^19`,
+  `@ai-sdk/react@^4` and `ai@^7` are all required by this entry (the build
+  audit allows it and only it to import optional peers statically).
+- `/chat/react`: `createComposerStore` / `useComposerState` / `applyComposerSeed`
+  — the shared new-chat composer (one draft, scope and tier across a home
+  card, the chat page and a canvas, keyed per team), seeded from and saved
+  through an app `ComposerPrefsAdapter`; a late seed never overwrites a field
+  the person already changed, and a page's own scope wins until they pick.
+  Generalised from buildd's composer-store (#2907), with storage left to the
+  app.
+- `/chat/styles.css` (new): the components' layout, reading only `--kit-*`.
+  `/chat/theme.css` gains `--kit-rule`. `/chat/schema.sql` (new): reference
+  tables for a `ChatStore`.
+- `/chat/contract` (additive): `SteerData` / `data-steer` (`isSteerPart`),
+  `isEventPart`, `latestHandoffs`, `ChatTurnRequest`, `ChatTurnMetadata`,
+  `ChatUnavailableBody`; `HandoffData` gains optional `title`, `toolCallId`,
+  `summary`; `ToolResult` gains optional `handoff`.
+- `KIT_VERSION` is `0.2.0`, so `/decide` versions change to `…|kit-0.2.0`.
+- `scripts/smoke-consumer.mjs` also checks `/chat/react` fails bare only by
+  naming its peers, `/chat/server` loads without `ai`, and, with peers, runs a
+  real turn on a mock model (one card, nothing runs) and server-renders the
+  components.
+
 ## 0.1.1 — 2026-09-27
 
 - Fix: `/decide` declares `@typesafe-ai/sdk` as an optional peer; consumers

@@ -37,9 +37,11 @@ export type ZonedFormat = keyof typeof ZONED_FORMATS;
  * Format `value` in `tz`. Returns '' for an unparseable value or an unknown
  * zone rather than throwing — or silently substituting the process zone.
  *
- * ICU versions disagree on the space before AM/PM (U+202F in newer builds, a
- * plain space in older ones); it is normalised so a Node-rendered string and a
- * Safari-rendered one are byte-identical at hydration.
+ * ICU versions disagree on two things, both normalised so a Node-rendered
+ * string and a browser-rendered one are byte-identical at hydration: the space
+ * before AM/PM (U+202F in newer builds, a plain space in older ones), and the
+ * joiner between date and time (" at " from ICU 72+, ", " before). The joiner
+ * is a `literal` part, so it is replaced by part, never by searching the text.
  */
 export function formatInZone(
   value: string | number | Date,
@@ -50,7 +52,9 @@ export function formatInZone(
   if (Number.isNaN(d.getTime()) || !isValidTimezone(tz)) return '';
   const options = typeof format === 'string' ? ZONED_FORMATS[format] : format;
   return new Intl.DateTimeFormat('en-US', { ...options, timeZone: tz })
-    .format(d)
+    .formatToParts(d)
+    .map(p => (p.type === 'literal' && p.value.trim() === 'at' ? ', ' : p.value))
+    .join('')
     .replace(/[   ]/g, ' ');
 }
 

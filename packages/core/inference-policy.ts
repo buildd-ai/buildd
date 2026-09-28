@@ -26,7 +26,7 @@ export type InferenceCapability =
   | 'visual_qa'
   | 'task_classification'
   | 'mission_summary'
-  | 'task_category_shadow'
+  | 'task_category'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'server_feature';
@@ -70,11 +70,11 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'Tags a new task with its kind and complexity.',
     costHint: '~$0.001 per task',
   },
-  task_category_shadow: {
-    id: 'task_category_shadow',
+  task_category: {
+    id: 'task_category',
     kind: 'built_in',
-    label: 'Task category check',
-    description: 'Compares a model\'s task category with the keyword rules. Never changes a task.',
+    label: 'Task categories',
+    description: 'A decision model picks each task\'s category when it is confident. Never changes a category you set, or a review task.',
     costHint: '~$0.00002 per task',
   },
   chat: {
