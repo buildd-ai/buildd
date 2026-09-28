@@ -74,6 +74,7 @@ let hasAccess = true;
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
   verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
+  canCallerAdminTeam: async () => false,
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -221,6 +222,20 @@ describe('GET: listed under the workspace memory key only', () => {
   it('only unknown ?states= falls back to active', async () => {
     await list('?states=bogus');
     expect((memClient.search.mock.calls[0] as any[])[0].states).toEqual(['active']);
+  });
+
+  it('?superseded=include and ?reverify=flagged reach the store, still under the key', async () => {
+    await list('?states=candidate,active&superseded=include&reverify=flagged');
+    expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({
+      project: OWN, includeSuperseded: true, reverifyFlagged: true,
+    });
+  });
+
+  it('without them the list hides superseded rows and does not narrow to flagged', async () => {
+    await list('?superseded=yes&reverify=1');
+    const call = (memClient.search.mock.calls[0] as any[])[0];
+    expect(call.includeSuperseded).toBeUndefined();
+    expect(call.reverifyFlagged).toBeUndefined();
   });
 
   it('a workspace with no key lists nothing and never searches the team store', async () => {

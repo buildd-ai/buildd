@@ -4,6 +4,12 @@ import { useState, useMemo } from 'react';
 import { Select } from '@/components/ui/Select';
 import CreateObservationForm from './CreateObservationForm';
 import { useConfirm } from '@/components/useConfirm';
+import {
+  memoryDisplayStateOf,
+  memoryReviewActionAllowed,
+  type MemoryDisplayState,
+  type MemoryReviewAction,
+} from '@buildd/core/memory-candidates';
 
 interface Observation {
   id: string;
@@ -16,6 +22,60 @@ interface Observation {
   files: string[] | null;
   concepts: string[] | null;
   createdAt: string;
+  state?: string | null;
+  supersededBy?: string | null;
+  reverifyFlaggedAt?: string | null;
+  reverifyRef?: string | null;
+}
+
+const STATE_LABELS: Record<MemoryDisplayState, string> = {
+  candidate: 'Candidate',
+  active: 'Active',
+  superseded: 'Superseded',
+  invalidated: 'Invalidated',
+  expired: 'Expired',
+};
+
+// Square chips; color only where the state asks for attention.
+const STATE_CHIP: Record<MemoryDisplayState, string> = {
+  candidate: 'text-status-warning border-status-warning',
+  active: 'text-accent-text border-primary',
+  superseded: 'text-text-muted border-border-strong',
+  invalidated: 'text-status-error border-status-error',
+  expired: 'text-text-muted border-border-strong',
+};
+
+const REVIEW_LABELS: Record<MemoryReviewAction, string> = {
+  promote: 'Promote',
+  dismiss: 'Dismiss',
+  reverified: 'Re-verified',
+};
+
+/** `pr:123` (what the lifecycle pass writes) as `PR #123`; anything else verbatim. */
+function formatReverifyRef(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  const m = /^pr:(\d+)$/.exec(ref);
+  return m ? `PR #${m[1]}` : ref;
+}
+
+/** The API's memory record in the list's shape. */
+function toObservation(m: any, workspaceId: string): Observation {
+  return {
+    id: m.id,
+    workspaceId,
+    workerId: null,
+    taskId: null,
+    type: m.type,
+    title: m.title,
+    content: m.content,
+    files: m.files || [],
+    concepts: m.tags || [],
+    createdAt: m.createdAt,
+    state: m.state ?? null,
+    supersededBy: m.supersededBy ?? null,
+    reverifyFlaggedAt: m.reverifyFlaggedAt ?? null,
+    reverifyRef: m.reverifyRef ?? null,
+  };
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -52,9 +112,12 @@ interface EditFormState {
 export default function ObservationList({
   workspaceId,
   initialObservations,
+  canReview = false,
 }: {
   workspaceId: string;
   initialObservations: Observation[];
+  /** Team admins see Promote / Dismiss / Re-verified on each row. */
+  canReview?: boolean;
 }) {
   const { confirm, confirmDialog } = useConfirm();
   const [observations, setObservations] = useState<Observation[]>(initialObservations);
@@ -67,6 +130,9 @@ export default function ObservationList({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [recheckOnly, setRecheckOnly] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState<{ id: string; message: string } | null>(null);
 
   // Group observations by file for file-centric view
   const fileGrouped = useMemo(() => {
@@ -92,7 +158,7 @@ export default function ObservationList({
     return sorted;
   }, [observations]);
 
-  async function fetchFiltered(type: string, searchText: string) {
+  async function fetchFiltered(type: string, searchText: string, recheck = recheckOnly) {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -101,24 +167,16 @@ export default function ObservationList({
       params.set('limit', '50');
       // The list is for people: show candidates and retired memories too.
       params.set('states', 'candidate,active,expired,invalidated');
+      params.set('superseded', 'include');
+      if (recheck) params.set('reverify', 'flagged');
 
       const res = await fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
       if (res.ok) {
         const data = await res.json();
-        // Map memory service response to observation shape
-        const mapped = (data.memories || []).map((m: any) => ({
-          id: m.id,
-          workspaceId,
-          workerId: null,
-          taskId: null,
-          type: m.type,
-          title: m.title,
-          content: m.content,
-          files: m.files || [],
-          concepts: m.tags || [],
-          createdAt: m.createdAt,
-        }));
-        setObservations(mapped);
+        const mapped: Observation[] = (data.memories || []).map((m: any) => toObservation(m, workspaceId));
+        // A text search goes through the shared read path, which ignores the
+        // re-check narrowing; apply it here so the filter always holds.
+        setObservations(recheck ? mapped.filter(o => !!o.reverifyFlaggedAt) : mapped);
       }
     } finally {
       setLoading(false);
@@ -128,6 +186,42 @@ export default function ObservationList({
   function handleTypeChange(type: string) {
     setTypeFilter(type);
     fetchFiltered(type, search);
+  }
+
+  function handleRecheckToggle() {
+    const next = !recheckOnly;
+    setRecheckOnly(next);
+    fetchFiltered(typeFilter, search, next);
+  }
+
+  async function handleReview(obs: Observation, action: MemoryReviewAction) {
+    if (action === 'dismiss' && !(await confirm({
+      title: 'Dismiss memory?',
+      message: 'Marks it invalidated. Agents stop receiving it. The row is kept.',
+      confirmLabel: 'Dismiss',
+      variant: 'danger',
+    }))) return;
+    setReviewingId(obs.id);
+    setReviewError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/memory/${obs.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReviewError({ id: obs.id, message: data.error || 'Action failed' });
+        return;
+      }
+      const updated = toObservation(data.memory, workspaceId);
+      const replaced = new Set<string>(data.supersededIds || []);
+      setObservations(prev => prev
+        .filter(o => !(recheckOnly && o.id === obs.id && !updated.reverifyFlaggedAt))
+        .map(o => o.id === obs.id ? updated : replaced.has(o.id) ? { ...o, supersededBy: obs.id } : o));
+    } finally {
+      setReviewingId(null);
+    }
   }
 
   function handleSearch(text: string) {
@@ -294,13 +388,25 @@ export default function ObservationList({
       );
     }
 
+    const displayState = memoryDisplayStateOf(obs);
+    const reviewActions = canReview
+      ? (['promote', 'reverified', 'dismiss'] as const).filter(a => memoryReviewActionAllowed(a, obs))
+      : [];
+    const recheckRef = formatReverifyRef(obs.reverifyRef);
+
     return (
       <div key={obs.id} className="border border-border-default rounded-lg p-4">
         {/* Meta + actions on one line, title on its own full-width line so a
             long title wraps normally instead of one word per line. */}
         <div className="flex justify-between items-center gap-2 mb-1">
           <div className="flex items-center gap-2 min-w-0">
-            <span className={`px-2 py-0.5 text-xs rounded-full flex-shrink-0 ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
+            <span
+              data-testid="memory-state-chip"
+              className={`health-pill flex-shrink-0 ${STATE_CHIP[displayState]}`}
+            >
+              {STATE_LABELS[displayState]}
+            </span>
+            <span className={`px-2 py-0.5 text-xs flex-shrink-0 ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
               {obs.type}
             </span>
             <span className="text-xs text-text-muted truncate">{timeAgo(obs.createdAt)}</span>
@@ -323,6 +429,11 @@ export default function ObservationList({
           </div>
         </div>
         <h3 className="font-medium mb-2 [overflow-wrap:anywhere]">{obs.title}</h3>
+        {obs.reverifyFlaggedAt && displayState !== 'superseded' && (
+          <p data-testid="memory-recheck-note" className="font-mono text-xs text-status-warning mb-2">
+            Needs re-check: {recheckRef ? `${recheckRef} touched its files` : 'a merged PR touched its files'}, {timeAgo(obs.reverifyFlaggedAt)}
+          </p>
+        )}
         <div
           className="text-sm text-text-secondary whitespace-pre-wrap cursor-pointer"
           onClick={() => setExpandedId(isExpanded ? null : obs.id)}
@@ -357,6 +468,29 @@ export default function ObservationList({
             ))}
           </div>
         )}
+        {reviewActions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-border-default">
+            {reviewActions.map(a => (
+              <button
+                key={a}
+                type="button"
+                onClick={() => handleReview(obs, a)}
+                disabled={reviewingId === obs.id}
+                className={`min-h-11 md:min-h-0 px-3 py-1 font-mono text-xs border disabled:opacity-50 ${
+                  a === 'promote'
+                    ? 'bg-primary text-white border-primary hover:bg-primary-hover'
+                    : 'bg-surface-3 text-text-primary border-border-strong hover:bg-surface-4'
+                }`}
+                aria-label={`${REVIEW_LABELS[a]} ${obs.title}`}
+              >
+                {reviewingId === obs.id ? '…' : REVIEW_LABELS[a]}
+              </button>
+            ))}
+            {reviewError?.id === obs.id && (
+              <span role="alert" className="text-xs text-status-error">{reviewError.message}</span>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -382,6 +516,19 @@ export default function ObservationList({
           onChange={(e) => handleSearch(e.target.value)}
           className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
         />
+        <button
+          type="button"
+          onClick={handleRecheckToggle}
+          aria-pressed={recheckOnly}
+          data-testid="memory-recheck-filter"
+          className={`px-3 py-2 font-mono text-sm border ${
+            recheckOnly
+              ? 'border-primary text-accent-text bg-surface-3 font-medium'
+              : 'border-border-default bg-surface-1 hover:bg-surface-3'
+          }`}
+        >
+          Needs re-check
+        </button>
         <div className="flex rounded-lg border border-border-default overflow-hidden">
           <button
             onClick={() => setViewMode('list')}
@@ -411,7 +558,9 @@ export default function ObservationList({
         <div className="text-center py-8 text-text-muted">Loading…</div>
       ) : observations.length === 0 ? (
         <div className="text-center py-8 text-text-muted">
-          No observations yet. Add one here, or workers record them as they finish tasks.
+          {recheckOnly
+            ? 'Nothing needs a re-check. A memory is flagged here when a merged PR touches its files.'
+            : 'No observations yet. Add one here, or workers record them as they finish tasks.'}
         </div>
       ) : viewMode === 'list' ? (
         <div className="space-y-3">

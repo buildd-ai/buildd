@@ -1,7 +1,9 @@
 /**
  * Individual memory operations — proxies to memory service.
  *
- * PATCH  /api/workspaces/:id/memory/:memoryId  → update a memory
+ * PATCH  /api/workspaces/:id/memory/:memoryId  → update a memory, or, with
+ *        `{ action: 'promote' | 'dismiss' | 'reverified' }`, apply a review
+ *        action (team admins only; see MEMORY_REVIEW_ACTIONS)
  * DELETE /api/workspaces/:id/memory/:memoryId  → delete a memory
  *
  * Auth: session user or API key with workspace access.
@@ -12,13 +14,16 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
-import { updateMemory } from '@buildd/core/memory-write';
+import { updateMemory, transitionMemory } from '@buildd/core/memory-write';
+import { isMemoryReviewAction } from '@buildd/core/memory-candidates';
 import { buildNamespace } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { normalizeProject } from '@buildd/core/project-scope';
 import type { MemoryStore } from '@buildd/core/memory-store';
+
+const REVIEW_VERB = { promote: 'promoted', dismiss: 'dismissed', reverified: 'marked re-verified' } as const;
 
 /** One reply for a memory that is missing and one under another project key. */
 const notFound = () => NextResponse.json({ error: 'Memory not found' }, { status: 404 });
@@ -68,6 +73,20 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
   return true; // dev mode
 }
 
+/**
+ * Review actions change what agents are pushed, so they need an admin of the
+ * workspace's team: a team admin/owner session, or an admin-level key of
+ * that team.
+ */
+async function isTeamAdmin(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>, workspaceId: string, teamId: string): Promise<boolean> {
+  if (auth.type === 'session') {
+    return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId, 'admin'));
+  } else if (auth.type === 'api') {
+    return canCallerAdminTeam({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.level }, teamId);
+  }
+  return true; // dev mode
+}
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; memoryId: string }> },
@@ -88,6 +107,32 @@ export async function PATCH(
   }
 
   const body = await req.json();
+
+  const action: unknown = body.action;
+  if (action !== undefined) {
+    if (!isMemoryReviewAction(action)) {
+      return NextResponse.json({ error: 'action must be one of promote, dismiss, reverified' }, { status: 400 });
+    }
+    if (!(await isTeamAdmin(auth, id, memClient.teamId))) {
+      return NextResponse.json({ error: 'Only team admins can review memories' }, { status: 403 });
+    }
+    try {
+      const own = await ownMemoryKey(memClient, id, memoryId);
+      if (!own) return notFound();
+      const data = await transitionMemory(memClient, memoryId, own, action, {
+        teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:review',
+      });
+      // The row is ours but was not in a state this action starts from
+      // (already promoted, superseded, or not flagged).
+      if (!data) {
+        return NextResponse.json({ error: `Memory cannot be ${REVIEW_VERB[action]} from its current state` }, { status: 409 });
+      }
+      return NextResponse.json({ memory: data.memory, supersededIds: data.supersededIds });
+    } catch (err) {
+      console.error('Memory service error:', err);
+      return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
+    }
+  }
 
   try {
     const own = await ownMemoryKey(memClient, id, memoryId);
