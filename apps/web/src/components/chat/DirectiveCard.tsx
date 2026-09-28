@@ -121,7 +121,7 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
           {data.text}
         </p>
         {options.length > 1 ? (
-          <div role="radiogroup" aria-label="Where this rule applies" data-testid="directive-scope" className="mt-3 grid grid-cols-2 border border-[var(--chat-rule-strong)]">
+          <div role="radiogroup" aria-label="Where this rule applies" data-testid="directive-scope" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] border border-[var(--chat-rule-strong)] md:max-w-[460px] md:grid-cols-2">
             {options.map((o, i) => {
               const on = scope === o.value;
               return (
@@ -132,8 +132,9 @@ export function DirectiveCard({ data, messageId }: { data: ChatDirectiveCandidat
                   aria-checked={on}
                   data-testid={`directive-scope-${o.value}`}
                   disabled={busy}
+                  title={o.label}
                   onClick={() => setScope(o.value)}
-                  className={`min-h-11 min-w-0 truncate px-3 font-mono text-[12.5px] ${i > 0 ? 'border-l border-[var(--chat-rule-strong)] ' : ''}${on
+                  className={`min-h-11 min-w-0 truncate px-4 font-mono text-[12.5px] ${i > 0 ? 'border-l border-[var(--chat-rule-strong)] ' : ''}${on
                     ? 'bg-[var(--chat-text)] font-semibold text-[var(--chat-surface)]'
                     : 'bg-transparent text-[var(--chat-text)] hover:bg-[var(--chat-raised)]'}`}
                 >

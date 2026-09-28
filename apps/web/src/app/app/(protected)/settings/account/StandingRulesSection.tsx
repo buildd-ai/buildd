@@ -60,7 +60,7 @@ function RuleEditor({
         maxLength={MAX}
         rows={2}
         onChange={e => setText(e.target.value)}
-        placeholder="Always open pull requests as drafts."
+        placeholder="Never force-push to dev."
         className="block w-full resize-y border border-border-strong bg-surface-1 px-3 py-2 font-voice text-[16px] leading-[1.4] text-text-primary placeholder:text-text-muted"
       />
       <div className="flex flex-wrap items-center gap-2">
