@@ -18,9 +18,11 @@ import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtu
 import { mockWorkers } from './fixtures-data';
 
 export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
+/** The real mission Board, Lanes and Feed with a visual model (mission-board-visual-fixtures.ts). */
+export const MISSION_BOARD_VISUAL_FIXTURE_STATE = 'mission-board-visual';
 
 /** Every `?state=` the fixtures page understands. */
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

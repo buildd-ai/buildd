@@ -35,7 +35,7 @@ import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
-import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests, MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from './mission-page-query';
+import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
@@ -57,8 +57,12 @@ import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
-import { missionVisualReview } from '@/lib/mission-visual-review';
-import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
+import { loadVisualReview } from '@/lib/visual-review-load';
+import type { VisualReviewModel } from '@buildd/shared';
+import { MissionVisualReviewProvider } from './MissionVisualReview';
+import MissionVisualReviewSetting from './MissionVisualReviewSetting';
+import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -112,20 +116,12 @@ export default async function MissionDetailPage({
   // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
   // or task `context`; the few fields the page reads from those two JSON
   // columns arrive as a projected digest, read alongside (mission-page-query.ts).
-  const [missionRow, digestRows, visualShotRows] = await Promise.all([
+  const [missionRow, digestRows] = await Promise.all([
     db.query.missions.findFirst({
       where: eq(missions.id, id),
       with: MISSION_DETAIL_WITH,
     }),
     db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
-    // Visual review: its own query, since the with-tree keeps five artifacts
-    // per worker. Rendered only after the team check below.
-    db.query.artifacts.findMany({
-      where: missionVisualShotsWhere(id),
-      columns: MISSION_VISUAL_SHOT_COLUMNS,
-      orderBy: MISSION_VISUAL_SHOTS_ORDER,
-      limit: MISSION_VISUAL_SHOTS_LIMIT,
-    }),
   ]);
   let mission = missionRow;
   const taskDigests = indexTaskDigests(digestRows);
@@ -182,6 +178,7 @@ export default async function MissionDetailPage({
     runnerHeartbeats,
     fleetCapacity,
     quickAddRoles,
+    visualModel,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -273,6 +270,18 @@ export default async function MissionDetailPage({
     mission.workspaceId
       ? resolveEffectiveRoles(mission.workspaceId).catch(() => [])
       : Promise.resolve([]),
+    // The visual review (docs/design/visual-qa-human-review.md): one loader,
+    // the only read of audit shots, whenever an audit task exists (pending,
+    // boot-failed and stalled ones too). It reads browser-runner heartbeats
+    // itself, only when a claimable audit has waited past the window. A
+    // mission with no audit skips it. A failed read hides the review rather
+    // than the page.
+    (mission.tasks ?? []).some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+      ? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null }).catch((err): VisualReviewModel | null => {
+          console.error('[mission-page] visual review load failed', err);
+          return null;
+        })
+      : Promise.resolve(null as VisualReviewModel | null),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -934,22 +943,19 @@ export default async function MissionDetailPage({
   const budgetUsd = costBudgetUsd != null ? parseFloat(costBudgetUsd) : null;
   // Distinct PRs, not worker rows — a CI retry pushes to its parent's PR.
   const prCount = missionPrCount(allTasks as Array<{ workers?: Array<{ prUrl?: string | null }> | null }>);
-  // Visual review (docs/design/visual-qa-auditor.md): the latest audit run,
-  // or null when there is nothing to show (rule in `missionVisualReview`).
-  // Required routes come from the run's audit task, recomputed the way the
-  // completion gate does (auditRequiredRoutes), so the step can show n/m.
-  const visualReviewState = missionVisualReview(visualShotRows, mission.tasks ?? [], {
-    requiredRoutesOf: t => auditRequiredRoutes(
-      { context: digestOf(t.id).context },
-      ((t.dependsOn as string[] | null) ?? []).map(d => (taskMap.get(d) as { pathManifest?: unknown } | undefined)?.pathManifest ?? null),
-    ),
-  });
-  const visualRun = visualReviewState?.run ?? [];
-  const visualReview = visualReviewState?.summary ?? null;
-  // The Board and Lanes show the same run: shots under the auditor's row,
-  // screens reviewed in the completion record.
-  const boardVisual = visualRun.length > 0 ? { shots: visualRun, taskId: visualReviewState?.taskId ?? null } : null;
-  // Only the Shipped step is rendered now (a footer row, F6); the band says the rest.
+  // Visual review: the model is passed whenever an audit exists (no
+  // "shots only" guard), so a queued, runner-less, boot-failed or stalled
+  // audit is on the page. The Visual step is an adapter over the same model.
+  const boardVisual: VisualReviewModel | null = visualModel && visualModel.phase !== 'off' ? visualModel : null;
+  const vs = boardVisual?.summary;
+  const visualReview = vs
+    ? {
+        shots: vs.shots, ok: vs.ok, issues: vs.issues, unsure: vs.unsure,
+        ...(vs.required != null ? { required: vs.required, covered: vs.covered } : {}),
+        ...(vs.bootFailed ? { bootFailed: true } : {}),
+      }
+    : null;
+  // The footer renders Shipped and Screens; the band says the rest.
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
     totalTasks: feedCounts.total,
@@ -958,6 +964,7 @@ export default async function MissionDetailPage({
     integrationPr: missionIntegrationPr,
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
     visual: visualReview,
+    visualPhase: boardVisual,
     // D6: this mission's own trunk merges, read against the release baseline.
     mergedAt: missionTrunkMergedAt(
       (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
@@ -971,6 +978,7 @@ export default async function MissionDetailPage({
     durationLabel: null,
   });
   const shippedStep = deliverySteps.find(s => s.key === 'shipped');
+  const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′) — the mission's review gate, and a
     // different object from the task PRs that fed the branch.
@@ -1172,6 +1180,15 @@ export default async function MissionDetailPage({
         </div>
       )}
 
+      {/* Visual review: the auto-audit switch (modelled on auto-verify) and
+          the audit's live Line. */}
+      <MissionVisualReviewSetting
+        missionId={id}
+        initialEnabled={(mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit ?? null}
+        visual={boardVisual}
+        readonly={isTerminal}
+      />
+
       {/* Evaluation Log — heartbeat missions only */}
       {isHeartbeat && heartbeatTasks.length > 0 && (
         <HeartbeatTimeline
@@ -1329,6 +1346,9 @@ export default async function MissionDetailPage({
           <MissionReleaseSection step={shippedStep} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
       )}
+      {/* The visual review, live: opens the review deck (or, before any
+          screen, the phase and its actions). Any audit phase shows it. */}
+      {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
       <MissionRecordsSheet
         missionId={id}
         baseUrl={baseUrl}
@@ -1433,6 +1453,7 @@ export default async function MissionDetailPage({
       >
       <MissionReconcileOnOpen missionId={id} />
 
+      <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
         board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} />)}
@@ -1451,10 +1472,12 @@ export default async function MissionDetailPage({
                 retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
               />
             ) : undefined}
+            visual={boardVisual}
             {...boardLink}
           />,
         )}
       />
+      </MissionVisualReviewProvider>
       </MissionAutoRefresh>
     </TaskPanelWrapper>
     </SwipeProvider>

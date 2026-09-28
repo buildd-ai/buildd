@@ -7,6 +7,7 @@
  * page can share it.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
 import StatusBadge from '@/components/StatusBadge';
@@ -67,6 +68,8 @@ export interface TaskPanelData {
     parts: string[];
     links: Array<{ key: string; label: string; href: string }>;
   } | null;
+  /** A visual-audit task: its round and the mission's review model (the sheet's Tray). */
+  visual?: { round: number; model: VisualReviewModel } | null;
 }
 
 /** Records and Origin: what the task produced and where it came from (W4, U6). */

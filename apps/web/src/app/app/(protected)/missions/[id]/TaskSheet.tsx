@@ -33,6 +33,7 @@ import { missionTaskHref, taskPageHref, type MissionOrigin } from '@/lib/mission
 import TaskPanelBody, { TaskPanelSkeleton, useTaskSummary, type TaskPanelData } from './TaskPanel';
 import type { TaskSheetNav } from './task-sheet-nav';
 import { taskHeading } from '@/app/app/(protected)/tasks/[id]/task-header';
+import AuditRoundTrays from '@/app/app/(protected)/tasks/[id]/AuditRoundTrays';
 
 /** md breakpoint: at and above it the sheet docks instead of sliding up. */
 export const TASK_SHEET_DOCK_QUERY = '(min-width: 768px)';
@@ -119,6 +120,14 @@ function SheetContent({ taskId, mission, nav, summary, onChanged, onStep }: Task
         <p className="py-6 text-center font-mono text-[13px] text-status-error">{error}</p>
       )}
       {data && <TaskPanelBody data={data} onChanged={onChanged} />}
+      {/* A visual audit's screens: its round's Tray (the deck opens inline,
+          in the sheet), not the shots as title links. */}
+      {data?.visual && (
+        <section data-testid="task-sheet-visual" className="border-t border-border-default pt-3">
+          <h3 className="section-label mb-2">Screens</h3>
+          <AuditRoundTrays key={data.id} visual={data.visual} layout="sheet" columns="one" />
+        </section>
+      )}
 
       <nav className="border-t border-border-default">
         {next && (
