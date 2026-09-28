@@ -39,6 +39,7 @@ import {
 } from '../packages/core/decision-benchmark';
 import { TASK_CATEGORY_QUESTIONS, buildTaskCategoryState } from '../apps/web/src/lib/task-category-decision';
 import { classifyTask } from '../apps/web/src/lib/task-category';
+import { HEARTBEAT_TRIAGE_QUESTIONS, buildHeartbeatTriageState } from '../apps/web/src/lib/heartbeat-triage';
 
 interface QuestionSet {
   questions: DecisionQuestions;
@@ -47,6 +48,11 @@ interface QuestionSet {
   toState(fields: Record<string, unknown>): Record<string, unknown> | string;
   /** The incumbent logic, for a side-by-side accuracy line. */
   baseline?(fields: Record<string, unknown>): string | null;
+  /**
+   * A label whose wrong picks are the expensive ones: its precision is printed
+   * at each confidence threshold, which is what its gate is read from.
+   */
+  gatedLabel?: string;
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -57,6 +63,16 @@ const SETS: Record<string, QuestionSet> = {
     answerKey: 'category',
     toState: f => buildTaskCategoryState(str(f.title), str(f.description)),
     baseline: f => classifyTask(str(f.title), str(f.description)),
+  },
+  // {"id":"…","label":"wait"|"act","description":"<the cycle's heartbeat description>"}
+  // Gold is what the organizer did on that cycle (see docs/design/heartbeat-triage.md).
+  heartbeat_triage: {
+    questions: HEARTBEAT_TRIAGE_QUESTIONS,
+    answerKey: 'next',
+    toState: f => buildHeartbeatTriageState(str(f.description)),
+    // Today every cycle that reaches this point dispatches the organizer.
+    baseline: () => 'act',
+    gatedLabel: 'wait',
   },
 };
 
@@ -127,6 +143,15 @@ async function main() {
     console.log(`\ncost $${costUsd.toFixed(6)}   mean latency ${ok ? Math.round(latencyTotal / ok) : 0}ms`);
     const errors = scored.filter(s => s.error);
     if (errors.length) console.log(`errors (first 5): ${errors.slice(0, 5).map(e => `${e.id}: ${e.error}`).join(' | ')}`);
+    if (set.gatedLabel) {
+      console.log(`\n'${set.gatedLabel}' picks by confidence (precision = gold agrees):`);
+      for (const t of [0.5, 0.7, 0.8, 0.9, 0.95]) {
+        const picks = scored.filter(s => s.predicted === set.gatedLabel && (s.confidence ?? 0) >= t);
+        const right = picks.filter(s => s.gold === set.gatedLabel).length;
+        const gold = scored.filter(s => s.gold === set.gatedLabel).length;
+        console.log(`  >=${t.toFixed(2)}  picks ${picks.length}  precision ${picks.length ? (right / picks.length).toFixed(2) : '-'}  covers ${gold ? (right / gold).toFixed(2) : '-'} of gold`);
+      }
+    }
   }
 }
 

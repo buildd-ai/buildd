@@ -98,12 +98,12 @@ describe('the capability registry', () => {
   it('shows only server-side features that have a call site', () => {
     // Visual QA judgment and mission summaries have no call site yet: a switch
     // for them would claim a behaviour that does not exist.
-    expect([...LIVE_SERVER_FEATURES]).toEqual(['criteria_grading']);
+    expect([...LIVE_SERVER_FEATURES]).toEqual(['criteria_grading', 'heartbeat_triage']);
     for (const f of LIVE_SERVER_FEATURES) expect(SERVER_FEATURES).toContain(f);
   });
 
   it('classifies every capability', () => {
-    expect([...SERVER_FEATURES]).toEqual(['criteria_grading', 'visual_qa', 'mission_summary']);
+    expect([...SERVER_FEATURES]).toEqual(['criteria_grading', 'visual_qa', 'mission_summary', 'heartbeat_triage']);
     for (const f of SERVER_FEATURES) expect(INFERENCE_CAPABILITIES[f].kind).toBe('server_feature');
     expect(INFERENCE_CAPABILITIES.chat.kind).toBe('interactive');
     expect(INFERENCE_CAPABILITIES.task_classification.kind).toBe('built_in');
