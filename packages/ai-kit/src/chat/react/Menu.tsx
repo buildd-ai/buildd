@@ -6,7 +6,11 @@
  * the trigger.
  *
  * Wide screens: the panel opens above the trigger, inside the composer (which
- * no longer clips it), and scrolls past `min(70vh, 520px)`.
+ * no longer clips it), and scrolls past `min(70vh, 520px)`. It always fits the
+ * viewport, `MENU_EDGE` px in from each edge (0.9.1): when the content doesn't
+ * fit on its side and does (or fits better) on the other, it flips; its
+ * max-height is the room left on the side it opens (`--kit-menu-room`); and it
+ * shifts sideways (`--kit-menu-shift`) instead of running off an edge.
  * Below 640px: a bottom sheet, portaled to `<body>` so no transformed or
  * clipping ancestor can capture its `position: fixed`, with a scrim. It carries
  * the `--kit-*` values from where it was opened (so scoped theming still
@@ -81,6 +85,41 @@ export function menuDropSide(rect: { top: number; bottom: number }, viewportHeig
   return below < ROOM_BELOW && rect.top > below ? 'up' : 'down';
 }
 
+/** The gap between trigger and panel (matches `calc(100% + 6px)` in styles.css). */
+const MENU_GAP = 6;
+/** How far the desktop popover stays from each viewport edge. */
+export const MENU_EDGE = 12;
+
+/**
+ * Where the desktop popover goes (0.9.1): the `preferred` side if a panel
+ * `panelHeight` tall fits there, else the other side if it fits there, else
+ * whichever side has more room. `room` is the height available on that side,
+ * `MENU_EDGE` in from the viewport edge, for the panel's max-height.
+ */
+export function fitMenuPanel(
+  rect: { top: number; bottom: number },
+  panelHeight: number,
+  viewportHeight: number,
+  preferred: 'up' | 'down',
+): { side: 'up' | 'down'; room: number } {
+  const room = {
+    up: Math.max(0, rect.top - MENU_GAP - MENU_EDGE),
+    down: Math.max(0, viewportHeight - rect.bottom - MENU_GAP - MENU_EDGE),
+  };
+  const other = preferred === 'up' ? 'down' : 'up';
+  const side = panelHeight <= room[preferred] ? preferred
+    : panelHeight <= room[other] || room[other] > room[preferred] ? other
+    : preferred;
+  return { side, room: Math.floor(room[side]) };
+}
+
+/** Sideways nudge (px) that keeps a panel at `rect` `MENU_EDGE` inside the viewport; 0 when it already is. */
+export function menuShift(rect: { left: number; right: number }, viewportWidth: number): number {
+  if (rect.left < MENU_EDGE) return Math.round(MENU_EDGE - rect.left);
+  if (rect.right > viewportWidth - MENU_EDGE) return Math.round(Math.max(viewportWidth - MENU_EDGE - rect.right, MENU_EDGE - rect.left));
+  return 0;
+}
+
 export function Menu({ label, trigger, title, align = 'start', children, className, testId, placement = 'up', sheetClose = false, hover }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [sheet, setSheet] = useState<{ vars: CSSProperties } | null>(null);
@@ -109,6 +148,44 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
     mq?.addEventListener?.('change', update);
     return () => mq?.removeEventListener?.('change', update);
   }, [open, placement]);
+
+  // The desktop popover fits the viewport: flip, cap its height, nudge it
+  // sideways. Measured when it opens and again on resize or a scroll that
+  // moves the trigger. The phone sheet has its own layout and is left alone.
+  useIsoLayoutEffect(() => {
+    if (!open || sheet) return;
+    const fit = () => {
+      const w = wrap.current;
+      const p = panel.current;
+      if (!w || !p || p.dataset.sheet || sheetMatches()) return;
+      p.style.removeProperty('--kit-menu-room');
+      p.style.removeProperty('--kit-menu-shift');
+      const r = w.getBoundingClientRect();
+      if (!r.width && !r.height) return; // not laid out (no layout engine)
+      const preferred = placement === 'auto' ? menuDropSide(r, window.innerHeight) : placement;
+      const border = p.offsetHeight - p.clientHeight;
+      const f = fitMenuPanel(r, p.scrollHeight + Math.max(0, border), window.innerHeight, preferred);
+      setSide(f.side);
+      p.style.setProperty('--kit-menu-room', `${f.room}px`);
+      const shift = menuShift(p.getBoundingClientRect(), document.documentElement.clientWidth || window.innerWidth);
+      if (shift) p.style.setProperty('--kit-menu-shift', `${shift}px`);
+    };
+    fit();
+    let frame = 0;
+    const later = (e: Event) => {
+      // Scrolling the panel's own list moves nothing.
+      if (e.type === 'scroll' && e.target instanceof Node && panel.current?.contains(e.target)) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(fit);
+    };
+    window.addEventListener('resize', later);
+    window.addEventListener('scroll', later, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', later);
+      window.removeEventListener('scroll', later, true);
+    };
+  }, [open, sheet, placement]);
 
   useEffect(() => {
     if (!open) return;

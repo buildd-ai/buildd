@@ -99,8 +99,11 @@
 /* The desktop panel sizes to its content between 260px and its max-width. It
    is absolutely positioned inside a trigger-sized .kit-menu, so without
    `width: max-content` shrink-to-fit resolves to the 260px min-width and a
-   long tool-group label squeezes the toggle out of view. */
-.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; width: max-content; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
+   long tool-group label squeezes the toggle out of view.
+   0.9.1: `Menu` sets --kit-menu-room (the height left between the trigger and
+   the viewport edge on the side it opens) and --kit-menu-shift (a sideways
+   nudge off an edge), so the popover always fits the viewport. */
+.kit-menu-panel { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50; width: max-content; min-width: 260px; max-width: min(92vw, 380px); max-height: min(70vh, 520px, var(--kit-menu-room, 100vh)); translate: var(--kit-menu-shift, 0); overflow-y: auto; overscroll-behavior: contain; background: var(--kit-bg); color: var(--kit-ink); border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); box-shadow: 0 8px 24px color-mix(in srgb, var(--kit-ink) 16%, transparent); padding: 6px 0; }
 .kit-menu[data-align="end"] .kit-menu-panel { left: auto; right: 0; }
 .kit-menu-title { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-muted); padding: 6px 14px; margin: 0; }
 .kit-rows { list-style: none; margin: 0; padding: 0; }

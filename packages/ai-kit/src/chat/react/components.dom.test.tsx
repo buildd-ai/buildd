@@ -417,6 +417,67 @@ describe('Menu placement (0.6.1)', () => {
   });
 });
 
+describe('Menu fits the viewport (0.9.1)', () => {
+  it('fitMenuPanel: keeps the preferred side when it fits, flips when only the other fits, else takes the roomier side', () => {
+    // A composer near the top (Cue's Home): 180px panel, trigger at 183–231 in a 720px window.
+    expect(kit.fitMenuPanel({ top: 183, bottom: 231 }, 180, 720, 'up')).toEqual({ side: 'down', room: 720 - 231 - 6 - 12 });
+    // Near the bottom: up fits, stays up.
+    expect(kit.fitMenuPanel({ top: 600, bottom: 648 }, 180, 720, 'up')).toEqual({ side: 'up', room: 600 - 6 - 12 });
+    // Fits neither: the roomier side, capped to its room.
+    expect(kit.fitMenuPanel({ top: 300, bottom: 348 }, 600, 720, 'up')).toEqual({ side: 'down', room: 720 - 348 - 18 });
+    expect(kit.fitMenuPanel({ top: 400, bottom: 448 }, 600, 720, 'down')).toEqual({ side: 'up', room: 400 - 18 });
+    // Down preferred and fits: stays down.
+    expect(kit.fitMenuPanel({ top: 100, bottom: 148 }, 180, 720, 'down').side).toBe('down');
+  });
+
+  it('menuShift nudges a panel off either edge', () => {
+    expect(kit.menuShift({ left: 100, right: 400 }, 1280)).toBe(0);
+    expect(kit.menuShift({ left: 1000, right: 1300 }, 1280)).toBe(1280 - kit.MENU_EDGE - 1300);
+    expect(kit.menuShift({ left: -20, right: 280 }, 1280)).toBe(kit.MENU_EDGE + 20);
+  });
+
+  it('flips the tier picker down and caps its height when the composer is near the top', async () => {
+    const proto = HTMLElement.prototype;
+    const realRect = proto.getBoundingClientRect;
+    const realScroll = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    const realH = window.innerHeight;
+    proto.getBoundingClientRect = function (this: HTMLElement) {
+      const r = this.classList.contains('kit-menu')
+        ? { top: 183, bottom: 231, left: 715, right: 823 }
+        : { top: 0, bottom: 0, left: 563, right: 823 };
+      return { ...r, x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top, toJSON() {} } as DOMRect;
+    };
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get() { return this.classList?.contains('kit-menu-panel') ? 400 : 0; } });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 560 });
+    try {
+      await render(h(kit.TierPicker, { value: null, onChange() {}, options: [{ tier: 'budget' }, { tier: 'standard' }, { tier: 'premium' }], title: 'Model quality' }));
+      await click($('[data-testid="kit-tier-trigger"]'));
+      expect($('[data-testid="kit-tier"]')!.dataset.placement).toBe('down');
+      // Too tall for either side: capped to the room below (560 − 231 − 6 − 12).
+      expect($('[data-testid="kit-tier-panel"]')!.style.getPropertyValue('--kit-menu-room')).toBe('311px');
+      expect($('[data-testid="kit-tier-panel"]')!.style.getPropertyValue('--kit-menu-shift')).toBe('');
+    } finally {
+      proto.getBoundingClientRect = realRect;
+      if (realScroll) Object.defineProperty(Element.prototype, 'scrollHeight', realScroll);
+      else delete (Element.prototype as { scrollHeight?: number }).scrollHeight;
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: realH });
+    }
+  });
+
+  it('leaves the phone sheet alone', async () => {
+    const restore = phone();
+    try {
+      await render(h(kit.ToolsMenu, { rows, onChange() {} }));
+      await click($('[data-testid="kit-tools-trigger"]'));
+      const p = document.querySelector<HTMLElement>('[data-testid="kit-tools-panel"]')!;
+      expect(p.dataset.sheet).toBe('true');
+      expect($('[data-testid="kit-tools"]')!.dataset.placement).toBe('up');
+      expect(p.style.getPropertyValue('--kit-menu-room')).toBe('');
+      expect(p.style.getPropertyValue('--kit-menu-shift')).toBe('');
+    } finally { restore(); }
+  });
+});
+
 describe('Menu sheet close (0.6.1)', () => {
   it('off by default: the phone sheet has no close button', async () => {
     const restore = phone();
