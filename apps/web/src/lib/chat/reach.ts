@@ -17,12 +17,11 @@ import {
   watchedProjects, workers, workspaceSkills, workspaces,
 } from '@buildd/core/db/schema';
 import type { ChatObjectOwner, ChatReach } from './in-process-api';
+import { isStandardWorkspace } from '../workspace-data-class';
 import type { OwnedKind } from './reach-rules';
 
-/** Sensitive by either marker: the column, or the older gitConfig flag. */
-export function isStandardWorkspace(ws: { dataClass?: string | null; gitConfig?: { dataClass?: string } | null }): boolean {
-  return ws.dataClass === 'standard' && ws.gitConfig?.dataClass !== 'sensitive';
-}
+/** Sensitive by either marker: the column, or the older gitConfig flag. Shared in ../workspace-data-class. */
+export { isStandardWorkspace };
 
 type Owner = ChatObjectOwner;
 

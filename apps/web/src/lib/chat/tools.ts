@@ -20,9 +20,12 @@ import {
   CORPORA, MEMORY_TYPES,
   type ActionContext, type ApiFn,
 } from '@buildd/core/mcp-tools';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 import type { BuilddObjectRef, ChatApprovalPreview, ChatToolResult } from '@buildd/shared';
 import { asBool, previewMatches, type PreviewOutcome } from './previews';
 import { isUuid, type Resolution } from './targets';
+import { renderStandingRulesForTask, withStandingRules, type StandingRule } from '@buildd/core/chat-directives';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
@@ -334,6 +337,37 @@ export interface ChatToolDeps {
   workspaces?: ReadonlyArray<WorkspaceActivity>;
   now?: () => number;
   handle?: typeof handleBuilddAction;
+  /**
+   * The chatting person's own standing rules (chat-directives.ts). A task or
+   * mission chat files carries the ones that apply to its workspace in its
+   * description, so the agent follows them and a reader can see why.
+   */
+  standingRules?: readonly StandingRule[];
+}
+
+/** create_task, or manage_missions create: the writes that file work for an agent. */
+function filesWork(action: string, op: string): boolean {
+  return action === 'create_task' || (action === 'manage_missions' && op === 'create');
+}
+
+/**
+ * The call input with any model-written rules block stripped from its
+ * description and the person's applicable rules appended, server-rendered.
+ * Runs even with no rules, so a forged block never reaches the agent. The
+ * workspace is the one the approval preview resolved (`targetWorkspaceId`),
+ * else a UUID in the input, else the turn's default.
+ */
+export function withRulesForFiledWork(
+  input: Record<string, unknown>,
+  rules: readonly StandingRule[] | undefined,
+  defaultWorkspaceId: string | null,
+  targetWorkspaceId?: string | null,
+): Record<string, unknown> {
+  const ws = targetWorkspaceId
+    ?? (typeof input.workspaceId === 'string' && isUuid(input.workspaceId) ? input.workspaceId : defaultWorkspaceId);
+  const block = rules && rules.length > 0 ? renderStandingRulesForTask(rules, { workspaceId: ws }) : '';
+  const description = withStandingRules(input.description, block);
+  return description === input.description ? input : { ...input, description };
 }
 
 /**
@@ -435,6 +469,9 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
           }
         }
 
+        // After the card check, so the approval still binds to what was shown.
+        if (isWrite && filesWork(action, op)) callInput = withRulesForFiledWork(callInput, deps.standingRules, deps.ctx.workspaceId ?? null, target?.workspaceId ?? null);
+
         const calls: ApiCall[] = [];
         const api = deps.makeApi(c => calls.push(c), { routes: routesFor(o.routes) });
         let text: string;
@@ -478,7 +515,8 @@ async function runAction(
     const wsId = typeof input.workspaceId === 'string' ? input.workspaceId : deps.ctx.workspaceId ?? null;
     const mem = deps.memory ? await deps.memory(wsId) : null;
     if (!mem) return { content: [{ type: 'text' as const, text: 'Error: team knowledge is not available here (no workspace in reach, or the memory store is unavailable).' }], isError: true };
-    const ctx = { ...mem.ctx, api };
+    // A chat write is recorded as a chat episode (used only when the workspace writes candidates).
+    const ctx = { memoryLedger: afterResponseMemoryLedger, memoryDecider: memoryDeciderFor(null), memoryProvenance: { kind: 'chat' as const }, ...mem.ctx, api };
     return action === 'recall' ? handleRecallAction(mem.store, input, ctx) : handleLearnAction(mem.store, input, ctx);
   }
   if (action === 'hold_task') return holdTask(api, input);

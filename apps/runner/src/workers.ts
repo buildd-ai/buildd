@@ -80,7 +80,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunnerMemoryIndex } from './memory-digest-policy';
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
@@ -2733,6 +2733,8 @@ export class WorkerManager {
           pathManifest: task.pathManifest,
           // Carries the claim-time predicted file area for treatment-arm tasks.
           context: (task as any).context,
+          taskId: task.id,
+          workerId: worker.id,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
@@ -2749,8 +2751,14 @@ export class WorkerManager {
         pathScopeMissed: taskMemory.pathScopeMissed,
       }), task.id);
 
+      // Index injection (workspace flag, see @buildd/core/memory-claim-index):
+      // the task matches render as index lines, so their bodies are not
+      // fetched, and what the claim-time block already listed is skipped.
+      // Needs the server's signal too; see resolveRunnerMemoryIndex.
+      const memoryIndex = resolveRunnerMemoryIndex(gitConfig, (task as any).context, taskMemory.derivedBy);
+
       // Fetch full content for task-specific memory matches
-      const fullObservations = taskSearchResults.length > 0
+      const fullObservations = taskSearchResults.length > 0 && !memoryIndex
         ? await this.buildd.getBatchObservations(
             task.workspaceId,
             taskSearchResults.map(r => r.id),
@@ -2789,6 +2797,7 @@ export class WorkerManager {
         compactResult,
         taskSearchResults,
         fullObservations,
+        ...(memoryIndex ? { memoryIndex } : {}),
         inputPolicy,
         hasApiKey: !!this.config.apiKey,
         inputAsRetry: this.config.inputAsRetry,

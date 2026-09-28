@@ -43,9 +43,23 @@ const memClient = {
   batch: mock(async () => ({ memories: [] })),
 };
 
+// The recall index dashboard writes mirror into.
+const upserts: Array<{ ns: string; chunks: any[] }> = [];
+const indexDeletes: Array<{ ns: string; ids: string[] }> = [];
+const index = {
+  upsert: mock(async (ns: string, chunks: any[]) => {
+    upserts.push({ ns, chunks });
+    return { inserted: chunks.length, updated: 0, superseded: 0 };
+  }),
+  query: async () => [],
+  delete: mock(async (ns: string, ids: string[]) => { indexDeletes.push({ ns, ids }); }),
+  listNamespaces: async () => [],
+};
+
 mock.module('@/lib/memory-helper', () => ({
   getMemoryStoreForTeam: async () => memClient,
   getMemoryClientForTeam: async () => memClient,
+  getMemoryIndexStore: () => index,
 }));
 mock.module('@buildd/core/memory-scope', () => ({
   resolveMemoryProjectKey: async (wsId: string | null | undefined) => {
@@ -94,6 +108,8 @@ beforeEach(() => {
   saved.length = 0;
   updated.length = 0;
   deleted.length = 0;
+  upserts.length = 0;
+  indexDeletes.length = 0;
 });
 
 describe('POST: filed under the workspace memory key', () => {
@@ -192,6 +208,21 @@ describe('GET: listed under the workspace memory key only', () => {
     expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({ project: OWN, query: 'auth' });
   });
 
+  it('the plain list serves active memories unless states are asked for', async () => {
+    await list();
+    expect((memClient.search.mock.calls[0] as any[])[0]).toMatchObject({ project: OWN, states: ['active'] });
+  });
+
+  it('the plain list honours explicit ?states= (the dashboard), dropping unknown values', async () => {
+    await list('?states=candidate,active,bogus&states=expired');
+    expect((memClient.search.mock.calls[0] as any[])[0].states).toEqual(['candidate', 'active', 'expired']);
+  });
+
+  it('only unknown ?states= falls back to active', async () => {
+    await list('?states=bogus');
+    expect((memClient.search.mock.calls[0] as any[])[0].states).toEqual(['active']);
+  });
+
   it('a workspace with no key lists nothing and never searches the team store', async () => {
     workspaceKey = null;
     const res = await list();
@@ -216,5 +247,37 @@ describe('workspace access is checked before any memory store call', () => {
     expect(saved).toHaveLength(0);
     expect(updated).toHaveLength(0);
     expect(deleted).toHaveLength(0);
+  });
+});
+
+describe('dashboard writes reach the recall index', () => {
+  it('POST mirrors the new memory into the team memory namespace', async () => {
+    await POST(req('POST', { type: 'gotcha', title: 'T', content: 'C' }), { params: Promise.resolve({ id: WS }) });
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].ns).toBe(`${TEAM}:memory`);
+    expect(upserts[0].chunks[0]).toMatchObject({ id: 'mem-new', sourceType: 'memory' });
+  });
+
+  it('POST still returns 201 when the mirror fails (reconcile picks it up)', async () => {
+    index.upsert.mockImplementationOnce(async () => { throw new Error('index down'); });
+    const warn = console.warn;
+    console.warn = () => {};
+    const res = await POST(req('POST', { type: 'gotcha', title: 'T', content: 'C' }), { params: Promise.resolve({ id: WS }) });
+    console.warn = warn;
+    expect(res.status).toBe(201);
+    expect(saved).toHaveLength(1);
+  });
+
+  it('PATCH re-mirrors an own memory, and a refused edit mirrors nothing', async () => {
+    await PATCH(req('PATCH', { content: 'edited' }), idParams('mem-own'));
+    await PATCH(req('PATCH', { content: 'x' }), idParams('mem-foreign'));
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].chunks[0]).toMatchObject({ id: 'mem-own', content: 'edited' });
+  });
+
+  it('DELETE drops the chunk from the index too, and a refused delete drops nothing', async () => {
+    await DELETE(req('DELETE'), idParams('mem-own'));
+    await DELETE(req('DELETE'), idParams('mem-foreign'));
+    expect(indexDeletes).toEqual([{ ns: `${TEAM}:memory`, ids: ['mem-own'] }]);
   });
 });

@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { Corpus } from './types';
 import { HALF_LIFE_DAYS } from './recency-authority';
 
@@ -128,6 +128,47 @@ export async function findNearDuplicates(
 
 // ── Decayed-unused detection ──────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What "never used" means for one namespace in the decay test.
+ *
+ * Memory (`{teamId}:memory`) reads the use ledger: a memory is unused when no
+ * `memory_uses` row shows an agent pulling it (recall, query_knowledge) or a
+ * completed task acting on it. Pushes do not count; a memory injected into a
+ * hundred prompts and ignored in all of them is exactly what this test exists
+ * to find.
+ *
+ * Warm-up. A young ledger has not yet seen most use, so "no ledger row" would
+ * flag memories that are in use. The ledger's epoch is its team's first row
+ * (`min(memory_uses.created_at)`). Until one memory half-life has passed since
+ * that epoch, a memory the index recorded a hit on after the epoch
+ * (`hit_count > 0 AND last_hit_at > epoch`) also counts as used; with no
+ * ledger rows at all, any recorded hit does. After warm-up, only the ledger
+ * decides.
+ *
+ * Every other corpus has no ledger and keeps `hit_count = 0`. A memory
+ * namespace whose scope id is not a UUID cannot match a ledger row, so it
+ * falls back the same way.
+ */
+export function decayedUnusedClause(namespace: string, corpus: Corpus, now: Date = new Date()): SQL {
+  const teamId = namespace.split(':')[0];
+  if (corpus === 'memory' && UUID_RE.test(teamId)) {
+    const epoch = sql`(SELECT min(mu_e.created_at) FROM memory_uses mu_e WHERE mu_e.team_id = ${teamId}::uuid)`;
+    const warmupCutoff = new Date(now.getTime() - HALF_LIFE_DAYS.memory * 24 * 60 * 60 * 1000).toISOString();
+    return sql`(NOT EXISTS (
+      SELECT 1 FROM memory_uses mu
+      WHERE mu.team_id = ${teamId}::uuid
+        AND mu.memory_id = knowledge_chunks.source_id
+        AND (mu.via = 'pull' OR mu.outcome = 'used')
+    ) AND NOT (
+      hit_count > 0
+      AND (${epoch} IS NULL OR (${epoch} > ${warmupCutoff}::timestamptz AND last_hit_at > ${epoch}))
+    ))`;
+  }
+  return sql`hit_count = 0`;
+}
+
 export interface DecayedChunk {
   namespace: string;
   sourceId: string;
@@ -148,8 +189,9 @@ export interface FindDecayedUnusedOptions {
 
 /**
  * Find `is_current` chunks older than `halfLifeMultiple` × their corpus
- * half-life (per HALF_LIFE_DAYS) that have never been returned by a query
- * (`hit_count = 0`). Chunks without a source_ts are never flagged —
+ * half-life (per HALF_LIFE_DAYS) that were never used: never pulled, for
+ * memory (see decayedUnusedClause), or never returned by a counted query
+ * (`hit_count = 0`) for everything else. Chunks without a source_ts are never flagged:
  * age is unknowable, so stay conservative.
  *
  * The corpus (and thus half-life) is derived from each namespace's
@@ -173,7 +215,7 @@ export async function findDecayedUnused(
   const cutoffClauses = sql.join(
     scoped.map(({ ns, corpus }) => {
       const cutoff = new Date(now.getTime() - multiple * HALF_LIFE_DAYS[corpus] * 24 * 60 * 60 * 1000);
-      return sql`(namespace = ${ns} AND source_ts < ${cutoff.toISOString()})`;
+      return sql`(namespace = ${ns} AND source_ts < ${cutoff.toISOString()} AND ${decayedUnusedClause(ns, corpus, now)})`;
     }),
     sql` OR `,
   );
@@ -183,7 +225,6 @@ export async function findDecayedUnused(
            left(content, 240) AS preview
     FROM knowledge_chunks
     WHERE is_current = true
-      AND hit_count = 0
       AND source_ts IS NOT NULL
       AND (${cutoffClauses})
     ORDER BY source_ts ASC
@@ -264,7 +305,7 @@ Step 2 — merge true duplicates:
 - task corpus: task outcomes have no upstream service; archive the older chunk of the pair via \`buildd\` action=consolidate_knowledge op=archive.
 
 Step 3 — archive decayed noise:
-Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with \`buildd\` action=consolidate_knowledge op=archive (corpus + sourceIds).
+Call \`buildd\` action=consolidate_knowledge op=find_decayed (task+artifact chunks past 6× their corpus half-life with zero retrieval hits; pass corpora including memory to also check memories, which are judged by the memory use ledger: no agent pulled them or acted on them). Sanity-check the previews — anything that still looks load-bearing stays. Archive the rest with \`buildd\` action=consolidate_knowledge op=archive (corpus + sourceIds).
 
 Step 4 — emit a consolidation report:
 Create a report artifact via \`buildd\` action=create_artifact type=report title "Knowledge consolidation <date>" listing: pairs merged (survivor ← loser), chunks archived (id + reason), and pairs/candidates deliberately left alone. The report is itself indexed and is the audit trail for this run.`,

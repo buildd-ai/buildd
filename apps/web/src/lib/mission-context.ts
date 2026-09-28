@@ -898,7 +898,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     mission.workspaceId,
     mission.teamId,
     undefined,
-    { sensitive: missionWorkspaceSensitive, paths: activePaths.length > 0 ? activePaths : undefined },
+    { sensitive: missionWorkspaceSensitive, paths: activePaths.length > 0 ? activePaths : undefined, caller: 'mission_planning' },
   );
   descParts.push(...knowledgeParts);
 
@@ -1364,7 +1364,7 @@ async function buildHeartbeatContext(mission: {
     mission.workspaceId,
     mission.teamId ?? null,
     undefined,
-    { sensitive: mission.sensitive ?? false, paths: activePaths.length > 0 ? activePaths : undefined },
+    { sensitive: mission.sensitive ?? false, paths: activePaths.length > 0 ? activePaths : undefined, caller: 'mission_planning' },
   );
   descParts.push(...heartbeatKnowledgeParts);
 

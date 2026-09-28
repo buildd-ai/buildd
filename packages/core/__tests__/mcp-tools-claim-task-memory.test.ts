@@ -10,12 +10,25 @@
  * teamId resolves; the callback is the injection point for workers.
  */
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import type { ActionContext } from '../mcp-tools';
 
 const WORKER_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TASK_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const WORKSPACE_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+// The claim-time key comes from the server-side resolver (memoryProjectKey over
+// the workspace and its team), not from the claim payload's repo. Mocked here
+// so each test controls what the resolver says.
+let resolvedKey: string | null = 'acme/widgets';
+const resolverCalls: Array<string | null | undefined> = [];
+mock.module('../memory-scope', () => ({
+  resolveMemoryProjectKey: async (wsId: string | null | undefined) => {
+    resolverCalls.push(wsId);
+    return resolvedKey;
+  },
+  resolveMemoryHitScope: async () => null,
+}));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +89,11 @@ function makeCtx(getMemoryClient?: ActionContext['getMemoryClient']): ActionCont
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('claim_task memory injection', () => {
+  beforeEach(() => {
+    resolvedKey = 'acme/widgets';
+    resolverCalls.length = 0;
+  });
+
   it('includes Relevant Memory section when ctx.getMemoryClient returns memories', async () => {
     const { handleBuilddAction } = await import('../mcp-tools');
 
@@ -152,6 +170,28 @@ describe('claim_task memory injection', () => {
       const api = makeApi([], { ...STANDARD_WORKSPACE, dataClass: 'sensitive' });
 
       const result = await handleBuilddAction(api as any, 'claim_task', {}, makeCtx(() => Promise.resolve(store as any)));
+
+      expect(store.search).not.toHaveBeenCalled();
+      expect(result.content[0].text).not.toContain('## Relevant Memory');
+    });
+
+    it('searches under the key memoryProjectKey resolves, not one derived from the payload', async () => {
+      const { handleBuilddAction } = await import('../mcp-tools');
+      resolvedKey = 'resolved/key';
+      const store = makeMemoryStore([{ id: 'mem-1', type: 'gotcha', title: 't', content: 'c' }]);
+
+      await handleBuilddAction(makeApi([]) as any, 'claim_task', {}, makeCtx(() => Promise.resolve(store as any)));
+
+      expect(resolverCalls).toEqual([WORKSPACE_ID]);
+      expect((store.search.mock.calls[0] as any[])[0].project).toBe('resolved/key');
+    });
+
+    it('surfaces no memory when the resolver closes the key (shared with a sensitive workspace)', async () => {
+      const { handleBuilddAction } = await import('../mcp-tools');
+      resolvedKey = null;
+      const store = makeMemoryStore([{ id: 'mem-1', type: 'gotcha', title: 'Leaked', content: 'c' }]);
+
+      const result = await handleBuilddAction(makeApi([]) as any, 'claim_task', {}, makeCtx(() => Promise.resolve(store as any)));
 
       expect(store.search).not.toHaveBeenCalled();
       expect(result.content[0].text).not.toContain('## Relevant Memory');

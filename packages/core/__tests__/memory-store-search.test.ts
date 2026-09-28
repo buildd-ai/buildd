@@ -63,6 +63,7 @@ mock.module('../db/schema', () => ({
     project: 'project',
     id: 'id',
     updatedAt: 'updatedAt',
+    supersededBy: 'supersededBy',
   },
 }));
 
@@ -74,6 +75,7 @@ mock.module('drizzle-orm', () => ({
   desc: (a: unknown) => ['desc', a],
   inArray: (a: unknown, b: unknown) => ['inArray', a, b],
   count: () => ['count'],
+  isNull: (a: unknown) => ['isNull', a],
   // memory-file-scope-sql.ts imports `sql` from this module too, so the named
   // export has to exist here or that file's top-level import throws before any
   // test body runs.

@@ -99,6 +99,8 @@ export default function ObservationList({
       if (type !== 'all') params.set('type', type);
       if (searchText) params.set('search', searchText);
       params.set('limit', '50');
+      // The list is for people: show candidates and retired memories too.
+      params.set('states', 'candidate,active,expired,invalidated');
 
       const res = await fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
       if (res.ok) {

@@ -4,13 +4,24 @@
  * Analyzes recent user feedback (down-votes & dismissals) on AI content,
  * identifies patterns, and persists distilled learnings to the memory service
  * so future agent runs produce more relevant output.
+ *
+ * Each memory is filed under the project key of the workspace the rated
+ * content belongs to (memoryProjectKey, the rule every memory read uses) and
+ * mirrored into the recall index through the shared write helper. Feedback
+ * that cannot be tied to a workspace key writes nothing: a memory with no
+ * project is invisible to every project-scoped read.
  */
 
 import { db } from '@buildd/core/db';
-import { userFeedback, missionNotes, artifacts } from '@buildd/core/db/schema';
-import { and, gte, inArray, sql } from 'drizzle-orm';
+import { userFeedback, missionNotes, artifacts, workspaces } from '@buildd/core/db/schema';
+import { and, eq, gte, inArray } from 'drizzle-orm';
 import { MemoryStore } from '@buildd/core/memory-store';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { memoryProjectKey } from '@buildd/core/project-scope';
+import { saveMemory, updateMemory } from '@buildd/core/memory-write';
+import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { resolveFeedbackEntityWorkspaces } from '@/lib/feedback-entity-workspace';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +40,8 @@ interface FeedbackRow {
 }
 
 interface PatternBucket {
+  /** memories.project key the pattern is filed under (memoryProjectKey of the rated workspace). */
+  project: string;
   entityType: EntityType;
   signal: Signal;
   count: number;
@@ -92,14 +105,18 @@ async function resolveEntityContext(entityType: EntityType, entityIds: string[])
 
 // ── Pattern analysis ──────────────────────────────────────────────────────────
 
-function bucketFeedback(rows: FeedbackRow[]): PatternBucket[] {
-  const key = (r: FeedbackRow) => `${r.entityType}::${r.signal}`;
+function bucketFeedback(rows: FeedbackRow[], projectOf: Map<string, string>): PatternBucket[] {
   const map = new Map<string, PatternBucket>();
 
   for (const r of rows) {
-    const k = key(r);
+    // A memory with no project is invisible to every project-scoped read, so
+    // feedback that cannot be tied to a workspace key is not written at all.
+    const project = projectOf.get(r.id);
+    if (!project) continue;
+    const k = `${project}::${r.entityType}::${r.signal}`;
     if (!map.has(k)) {
       map.set(k, {
+        project,
         entityType: r.entityType,
         signal: r.signal,
         count: 0,
@@ -114,6 +131,44 @@ function bucketFeedback(rows: FeedbackRow[]): PatternBucket[] {
   }
 
   return Array.from(map.values());
+}
+
+// ── Workspace / project resolution ────────────────────────────────────────────
+
+/**
+ * The memory project key for each feedback row, by the same rule every memory
+ * read uses (memoryProjectKey): only workspaces in the row's own team, never a
+ * sensitive one, and never a key shared with a sensitive workspace.
+ */
+async function resolveFeedbackProjects(teamId: string, rows: FeedbackRow[]): Promise<Map<string, string>> {
+  const wsOf = await resolveFeedbackEntityWorkspaces(rows.map(r => ({ key: r.id, entityType: r.entityType, entityId: r.entityId })));
+  const out = new Map<string, string>();
+  if (wsOf.size === 0) return out;
+  const teamWorkspaces = await db.query.workspaces.findMany({
+    where: eq(workspaces.teamId, teamId),
+    columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
+  });
+  const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
+  const authorOf = new Map(rows.map(r => [r.id, r.userId]));
+  // Only an author who can access the workspace speaks for it: a vote from
+  // anyone else is not counted toward that workspace's pattern.
+  const accessChecks = new Map<string, Promise<boolean>>();
+  const canAccess = (userId: string, wsId: string) => {
+    const k = `${userId}::${wsId}`;
+    if (!accessChecks.has(k)) {
+      accessChecks.set(k, verifyWorkspaceAccess(userId, wsId).then(a => !!a && a.teamId === teamId, () => false));
+    }
+    return accessChecks.get(k)!;
+  };
+  for (const [rowId, wsId] of wsOf) {
+    const ws = byId.get(wsId);
+    if (!ws || ws.teamId !== teamId) continue;
+    const author = authorOf.get(rowId);
+    if (!author || !(await canAccess(author, wsId))) continue;
+    const key = memoryProjectKey(ws, teamWorkspaces);
+    if (key) out.set(rowId, key);
+  }
+  return out;
 }
 
 /** Build human-readable memory content from a pattern bucket */
@@ -136,13 +191,10 @@ async function buildMemoryContent(bucket: PatternBucket): Promise<string> {
     lines.push('');
   }
 
-  // Add user comments
+  // Raw comment text is never copied in: it is free text from a person, and
+  // this memory is injected into agent prompts. Only the count is kept.
   if (comments.length > 0) {
-    lines.push('**User comments:**');
-    for (const c of comments.slice(0, 10)) {
-      lines.push(`- "${c}"`);
-    }
-    lines.push('');
+    lines.push(`${comments.length} of these came with a comment (not reproduced here).`, '');
   }
 
   // Actionable guidance
@@ -173,44 +225,50 @@ async function buildMemoryContent(bucket: PatternBucket): Promise<string> {
 
 async function persistPattern(
   memClient: MemoryStore,
+  index: KnowledgeStore,
+  teamId: string,
   bucket: PatternBucket,
 ): Promise<'saved' | 'updated' | 'skipped'> {
   const action = bucket.signal === 'dismiss' ? 'dismissed' : 'downvoted';
   const title = `User feedback: ${bucket.entityType} content frequently ${action}`;
   const tags = [DIGEST_TAG, 'user-preference', bucket.entityType, bucket.signal];
 
-  // Check for existing memory with same tag combo
+  // Check for an existing digest memory for this pattern in this project
   const existing = await memClient.search({
     query: `feedback ${bucket.entityType} ${action}`,
     type: 'pattern',
+    project: bucket.project,
   });
 
   const content = await buildMemoryContent(bucket);
+  const writeOpts = { teamId, knowledgeStore: index, via: 'feedback-digest' as const };
 
   // Find an existing digest memory for this exact pattern
   if (existing.results.length > 0) {
     const fullMemories = await memClient.batch(existing.results.map(r => r.id));
     const match = fullMemories.memories.find(m =>
       m.source === DIGEST_SOURCE &&
+      m.project === bucket.project &&
       m.tags.includes(DIGEST_TAG) &&
       m.tags.includes(bucket.entityType) &&
       m.tags.includes(bucket.signal)
     );
 
     if (match) {
-      await memClient.update(match.id, { content, tags });
+      await updateMemory(memClient, match.id, { content, tags }, writeOpts);
       return 'updated';
     }
   }
 
-  // Save new memory
-  await memClient.save({
+  // Save new memory (mirrored into the recall index by the write helper)
+  await saveMemory(memClient, {
     type: 'pattern',
     title,
     content,
+    project: bucket.project,
     tags,
     source: DIGEST_SOURCE,
-  });
+  }, writeOpts);
   return 'saved';
 }
 
@@ -247,6 +305,7 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
 
   // 3. Process each team
   const results: DigestResult[] = [];
+  const index = getMemoryIndexStore();
 
   for (const [teamId, teamRows] of byTeam) {
     const memClient = await getMemoryStoreForTeam(null, teamId);
@@ -255,14 +314,14 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
       continue;
     }
 
-    const buckets = bucketFeedback(teamRows);
+    const buckets = bucketFeedback(teamRows, await resolveFeedbackProjects(teamId, teamRows));
     let saved = 0;
     let updated = 0;
 
     for (const bucket of buckets) {
       if (bucket.count < MIN_SIGNALS_FOR_PATTERN) continue;
 
-      const result = await persistPattern(memClient, bucket);
+      const result = await persistPattern(memClient, index, teamId, bucket);
       if (result === 'saved') saved++;
       if (result === 'updated') updated++;
     }

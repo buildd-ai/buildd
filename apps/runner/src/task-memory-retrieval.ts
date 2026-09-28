@@ -79,6 +79,7 @@ export interface ObservationSearcher {
     query: string,
     limit?: number,
     files?: readonly string[],
+    attribution?: { taskId?: string | null; workerId?: string | null },
   ): Promise<TaskMemoryObservation[]>;
 }
 
@@ -102,6 +103,9 @@ export interface TaskMemoryInput {
    * rather than asserting a shape.
    */
   context?: unknown;
+  /** Sent with each search for the server's memory use ledger; never affects results. */
+  taskId?: string | null;
+  workerId?: string | null;
 }
 
 /**
@@ -136,8 +140,12 @@ export async function retrieveTaskMemory(
     return { results: [], derivedBy: 'not_attempted', scopePaths, predictedPaths, inferredPaths, pathScopeMissed: false };
   }
 
+  const attribution = task.taskId || task.workerId
+    ? { taskId: task.taskId ?? null, workerId: task.workerId ?? null }
+    : undefined;
+
   const byFiles = async (paths: string[]) => client
-    .searchObservations(task.workspaceId, '', limit, paths)
+    .searchObservations(task.workspaceId, '', limit, paths, attribution)
     .catch(() => [] as TaskMemoryObservation[]);
 
   let pathScopeMissed = false;
@@ -165,7 +173,7 @@ export async function retrieveTaskMemory(
 
   if (title) {
     const byTitle = await client
-      .searchObservations(task.workspaceId, title, limit)
+      .searchObservations(task.workspaceId, title, limit, undefined, attribution)
       .catch(() => [] as TaskMemoryObservation[]);
     if (byTitle.length > 0) {
       return { results: byTitle, derivedBy: 'title_phrase', scopePaths, predictedPaths, inferredPaths, pathScopeMissed };

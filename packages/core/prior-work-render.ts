@@ -8,7 +8,8 @@
 
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { KnowledgeStore, QueryResult } from './knowledge-store/types';
-import { memoryScopeFor, queryOwnProjectMemory, type MemoryHitScope } from './memory-hit-scope';
+import type { MemoryHitScope } from './memory-hit-scope';
+import { retrieveMemory, type MemoryLedgerWriter, type RetrieveMemoryResult } from './memory-retrieval';
 
 export const STALE_BASELINE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -105,29 +106,46 @@ export async function buildAuthoringPriorWork(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store: PriorWorkQuerier | undefined,
-  opts?: { paths?: string[]; memoryScope?: MemoryHitScope | null },
+  opts?: {
+    paths?: string[];
+    memoryScope?: MemoryHitScope | null;
+    /** Memory ledger writer; default the DB. Injectable for tests. */
+    ledger?: MemoryLedgerWriter | false;
+  },
 ): Promise<string> {
   if (!queryText.trim() || !store) return '';
   try {
     const queries: Promise<QueryResult[]>[] = [];
+    // Held until the merge below decides which memory hits made the block.
+    let memoryRetrieval: RetrieveMemoryResult | null = null;
     if (teamId) {
-      const scope = await memoryScopeFor(opts?.memoryScope, workspaceId, teamId);
-      queries.push(queryOwnProjectMemory(store, teamId, scope, { text: queryText, topK: AUTHORING_TOPK_PER_CORPUS }));
+      queries.push(
+        retrieveMemory({
+          query: queryText,
+          scope: { teamId, workspaceId, memoryScope: opts?.memoryScope },
+          caller: 'authoring_prior_work',
+          budget: { topK: AUTHORING_TOPK_PER_CORPUS },
+          store,
+          ledger: opts?.ledger,
+          deferLedger: true,
+        }).then(r => {
+          memoryRetrieval = r;
+          return r.results;
+        }),
+      );
     }
+    // Memory is measured by the ledger; these corpora have none yet, so their
+    // hit_count still counts this query.
+    const wsQuery = (ns: string, text: string) =>
+      store.query(ns, { text, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []);
     if (workspaceId) {
-      queries.push(
-        store.query(buildNamespace(workspaceId, 'task'), { text: queryText, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []),
-      );
-      queries.push(
-        store.query(buildNamespace(workspaceId, 'pr'), { text: queryText, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []),
-      );
+      queries.push(wsQuery(buildNamespace(workspaceId, 'task'), queryText));
+      queries.push(wsQuery(buildNamespace(workspaceId, 'pr'), queryText));
 
       const paths = (opts?.paths ?? []).filter(p => typeof p === 'string' && p.trim().length > 0);
       if (paths.length > 0) {
         const pathQuery = paths.slice(0, AUTHORING_MAX_PATHS).join('\n');
-        queries.push(
-          store.query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: AUTHORING_TOPK_PER_CORPUS }).catch(() => []),
-        );
+        queries.push(wsQuery(buildNamespace(workspaceId, 'pr'), pathQuery));
       }
     }
 
@@ -146,6 +164,10 @@ export async function buildAuthoringPriorWork(
       .filter(r => r.score >= AUTHORING_MIN_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, AUTHORING_MAX_HITS);
+
+    const shown = new Set(top);
+    (memoryRetrieval as RetrieveMemoryResult | null)?.commitLedger(h =>
+      shown.has(h.result) ? null : h.result.score < AUTHORING_MIN_SCORE ? 'score_floor' : 'cross_corpus_cap');
 
     if (top.length === 0) return '';
 

@@ -1,0 +1,277 @@
+/**
+ * learn / buildd_memory save with Jev decisions wired in (keep, type, update).
+ * The decider is the real one; only its transport (`fetch`) is mocked.
+ */
+import { describe, expect, it } from 'bun:test';
+import { handleLearnAction, handleMemoryAction } from '../mcp-tools';
+import { createMemoryDecider, KEEP_NOT_DURABLE_TAG, type MemoryDecisionRow } from '../memory-decisions';
+
+const WS_ID = 'aaaa0000-0000-0000-0000-000000000000';
+const TEAM_ID = 'bbbb0000-0000-0000-0000-000000000001';
+const PROJECT = 'acme/widgets';
+
+const choiceAns = (label: string, confidence: number) => ({ type: 'choice', choice: label, probabilities: { [label]: confidence }, confidence });
+const noulAns = (p: number) => ({ type: 'noul', noul: p });
+
+/** Answers keyed by which decision was asked (learn: keep+type, update: action). */
+function decider(answers: { learn?: Record<string, unknown> | 'error'; update?: Record<string, unknown> | 'error' }, key: string | null = 'sk-test') {
+  const rows: MemoryDecisionRow[] = [];
+  const asked: string[] = [];
+  const d = createMemoryDecider({
+    resolveKey: async () => key,
+    record: r => { rows.push(...r); },
+    fetch: async (_url: string, init?: RequestInit) => {
+      const req = JSON.parse(String(init?.body ?? '{}'));
+      const which = 'action' in req.questions ? 'update' : 'learn';
+      asked.push(which);
+      const a = answers[which];
+      if (!a || a === 'error') return new Response('{"error":"x"}', { status: 500, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ model: 'typesafe/jev-1.13-test', answers: a, usage: { input_tokens: 1, output_tokens: 1, cost: 0 } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  return { d, rows, asked };
+}
+
+const EXISTING = {
+  id: 'existing-mem-id', type: 'gotcha', title: 'Existing title', content: 'An existing memory',
+  project: PROJECT, tags: ['old'], files: ['a.ts'], source: null,
+};
+
+function memClient() {
+  const saves: any[] = [];
+  const updates: Array<{ id: string; fields: any }> = [];
+  const client = {
+    saves, updates,
+    get: async (id: string) => ({ memory: id === EXISTING.id ? EXISTING : { ...EXISTING, id } }),
+    batch: async (ids: string[]) => ({ memories: ids.map(id => ({ ...EXISTING, id })) }),
+    save: async (data: any) => {
+      saves.push(data);
+      return { memory: { id: 'new-id', ...data, tags: data.tags ?? [], files: data.files ?? [] } };
+    },
+    update: async (id: string, fields: any) => {
+      updates.push({ id, fields });
+      return { memory: { ...EXISTING, ...fields, id } };
+    },
+    superseded: [] as Array<{ ids: string[]; byId: string }>,
+    markSuperseded: async (ids: string[], byId: string) => { client.superseded.push({ ids, byId }); return ids.length; },
+  };
+  return client;
+}
+
+function store(similarity: number | null) {
+  const upserts: Array<{ supersedes?: string[] }> = [];
+  return {
+    upserts,
+    async query() { return []; },
+    async upsert(_ns: string, chunks: any[]) {
+      for (const c of chunks) upserts.push({ supersedes: c.supersedes });
+      return { inserted: 1, updated: 0, superseded: chunks[0]?.supersedes?.length ?? 0 };
+    },
+    async delete() {},
+    async listNamespaces() { return []; },
+    async nearDupeCheck() {
+      return similarity === null ? [] : [{ id: EXISTING.id, similarity, content: EXISTING.content, sourceUrl: null }];
+    },
+  };
+}
+
+const ctx = (s: any, memoryDecider?: any) => ({ project: PROJECT, workspaceId: WS_ID, teamId: TEAM_ID, knowledgeStore: s, memoryDecider });
+const LEARN = { type: 'gotcha', title: 'T', content: 'C', tags: ['mine'] };
+
+describe('learn: keep and type', () => {
+  it('a confident "not durable" verdict tags the row and never drops it', async () => {
+    const { d, rows } = decider({ learn: { keep: noulAns(0.05), type: choiceAns('gotcha', 0.99) } });
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(null), d));
+    expect(mc.saves).toHaveLength(1);
+    expect(mc.saves[0].tags).toEqual(['mine', KEEP_NOT_DURABLE_TAG]);
+    expect(res.content[0].text).toContain('new-id');
+    expect(res.content[0].text).toContain(KEEP_NOT_DURABLE_TAG);
+    expect(rows.find(r => r.decision === 'keep')).toMatchObject({ memoryId: 'new-id', applied: true, verdict: 'false' });
+  });
+
+  it('overrides the caller\'s type only above threshold, and logs both', async () => {
+    const { d, rows } = decider({ learn: { keep: noulAns(0.9), type: choiceAns('pattern', 0.95) } });
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(null), d));
+    expect(mc.saves[0].type).toBe('pattern');
+    expect(mc.saves[0].tags).toEqual(['mine']);
+    expect(res.content[0].text).toContain('type set to pattern');
+    expect(rows.find(r => r.decision === 'type')).toMatchObject({ rule: 'gotcha', verdict: 'pattern', applied: true });
+  });
+
+  it('fails open to today\'s write on a decision error', async () => {
+    const { d } = decider({ learn: 'error' });
+    const mc = memClient();
+    await handleLearnAction(mc as any, LEARN, ctx(store(null), d));
+    expect(mc.saves[0]).toMatchObject({ type: 'gotcha', tags: ['mine'] });
+  });
+
+  it('with no decider the write is byte-identical to today', async () => {
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(null)));
+    expect(mc.saves[0]).toMatchObject({ type: 'gotcha', tags: ['mine'] });
+    expect(res.content[0].text).toBe('Memory saved: "T" (gotcha)\nID: new-id');
+  });
+
+  it('buildd_memory save applies the same keep/type judgement', async () => {
+    const { d } = decider({ learn: { keep: noulAns(0.1), type: choiceAns('decision', 0.97) } });
+    const mc = memClient();
+    await handleMemoryAction(mc as any, 'save', LEARN, ctx(store(null), d));
+    expect(mc.saves[0].type).toBe('decision');
+    expect(mc.saves[0].tags).toContain(KEEP_NOT_DURABLE_TAG);
+  });
+});
+
+describe('learn: the 0.88 to 0.94 band', () => {
+  const keepAns = { keep: noulAns(0.9), type: choiceAns('gotcha', 0.99) };
+
+  it('SUPERSEDE at high confidence writes new and supersedes the own-project match', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.95) } });
+    const mc = memClient();
+    const s = store(0.91);
+    const res = await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(mc.saves).toHaveLength(1);
+    expect(s.upserts[0].supersedes).toEqual([EXISTING.id]);
+    expect(res.content[0].text).toContain('superseded: 1');
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'SUPERSEDE', rule: 'conflict', applied: true, memoryId: 'new-id' });
+  });
+
+  it('UPDATE never merges into an external row: nothing is written, the conflict reply is returned', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const external = { ...EXISTING, external: true, sourceKind: 'review', state: 'candidate' };
+    const mc = { ...memClient(), get: async () => ({ memory: external }), batch: async (ids: string[]) => ({ memories: ids.map(id => ({ ...external, id })) }) };
+    const s = store(0.9);
+    const res = await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(mc.saves).toHaveLength(0);
+    expect(s.upserts).toHaveLength(0);
+    expect(res.content[0].text).toContain('Near-duplicate detected');
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'UPDATE', applied: false });
+  });
+
+  it('UPDATE with external incoming text marks the merged row external', async () => {
+    const { d } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const mc = memClient();
+    await handleLearnAction(mc as any, LEARN, {
+      ...ctx(store(0.9), d), memoryCandidateWrites: true, memoryProvenance: { kind: 'review', id: 'rv', external: true },
+    } as any);
+    expect(mc.saves).toHaveLength(1);
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', external: true, sourceKind: 'review' });
+  });
+
+  it('UPDATE as a candidate defers superseding an active row until promotion', async () => {
+    const { d } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const mc = memClient();
+    const s = store(0.9);
+    await handleLearnAction(mc as any, LEARN, { ...ctx(s, d), memoryCandidateWrites: true } as any);
+    expect(mc.saves[0]).toMatchObject({ state: 'candidate', pendingSupersedes: [EXISTING.id] });
+    expect(mc.superseded).toHaveLength(0);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+  });
+
+  it('UPDATE writes a NEW merged row and supersedes the old one, which stays readable', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('UPDATE', 0.97) } });
+    const mc = memClient();
+    const s = store(0.9);
+    const res = await handleLearnAction(mc as any, { ...LEARN, files: ['b.ts'] }, { ...ctx(s, d), workerId: 'w-new' });
+    // Never an overwrite.
+    expect(mc.updates).toHaveLength(0);
+    expect(mc.saves).toHaveLength(1);
+    const saved = mc.saves[0];
+    expect(saved).toMatchObject({ type: 'gotcha', title: 'T', project: PROJECT, source: 'worker:w-new', tags: ['old', 'mine'], files: ['a.ts', 'b.ts'] });
+    expect(saved.content).toContain(EXISTING.content);
+    expect(saved.content).toContain('C');
+    // Supersession goes through the normal path: index flag + row mark.
+    expect(s.upserts[0].supersedes).toEqual([EXISTING.id]);
+    expect(mc.superseded).toEqual([{ ids: [EXISTING.id], byId: 'new-id' }]);
+    // The original is still recoverable by id, unchanged.
+    const old = await mc.get(EXISTING.id);
+    expect(old.memory.content).toBe(EXISTING.content);
+    expect(old.memory.title).toBe(EXISTING.title);
+    expect(res.content[0].text).toContain('ID: new-id');
+    expect(res.content[0].text).toContain('superseded: 1');
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'UPDATE', applied: true, memoryId: 'new-id' });
+  });
+
+  it('NOOP returns the existing id and writes nothing', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('NOOP', 0.93) } });
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(0.92), d));
+    expect(mc.saves).toHaveLength(0);
+    expect(mc.updates).toHaveLength(0);
+    expect(res.content[0].text).toContain('Memory already recorded');
+    expect(res.content[0].text).toContain(`ID: ${EXISTING.id}`);
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'NOOP', applied: true });
+  });
+
+  it('ADD writes a new memory without superseding', async () => {
+    const { d } = decider({ learn: keepAns, update: { action: choiceAns('ADD', 0.94) } });
+    const mc = memClient();
+    const s = store(0.9);
+    await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(mc.saves).toHaveLength(1);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+  });
+
+  it('below threshold keeps today\'s conflict reply and logs the unapplied verdict', async () => {
+    const { d, rows } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.7) } });
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(0.9), d));
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+    expect(mc.saves).toHaveLength(0);
+    expect(rows.find(r => r.decision === 'update')).toMatchObject({ verdict: 'SUPERSEDE', applied: false });
+  });
+
+  it('a failed update call keeps today\'s conflict reply', async () => {
+    const { d } = decider({ learn: keepAns, update: 'error' });
+    const mc = memClient();
+    const res = await handleLearnAction(mc as any, LEARN, ctx(store(0.9), d));
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+  });
+
+  it('a closest match that turns out to be another project\'s is never acted on: conflict reply, no Jev call', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    // The index scope check passed (batch), but the row itself belongs elsewhere.
+    mc.get = async (id: string) => ({ memory: { ...EXISTING, id, project: 'acme/other' } });
+    const s = store(0.91);
+    const res = await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(res.content[0].text.toLowerCase()).toContain('near-duplicate');
+    expect(asked).toEqual(['learn']);
+    expect(mc.saves).toHaveLength(0);
+    expect(s.upserts).toHaveLength(0);
+  });
+
+  it('a foreign-project neighbour is dropped before the band: written as new, nothing superseded', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    mc.batch = async (ids: string[]) => ({ memories: ids.map(id => ({ ...EXISTING, id, project: 'acme/other' })) });
+    const s = store(0.91);
+    await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(asked).toEqual(['learn']);
+    expect(mc.saves).toHaveLength(1);
+    expect(s.upserts[0].supersedes).toBeUndefined();
+  });
+
+  it('a sensitive workspace asks nothing: no keep/type, no band decision', async () => {
+    const { d, asked } = decider({ learn: keepAns, update: { action: choiceAns('SUPERSEDE', 0.99) } });
+    const mc = memClient();
+    const learnRes = await handleLearnAction(mc as any, LEARN, { ...ctx(store(0.91), d), isSensitive: true });
+    expect(learnRes.isError).toBe(true);
+    const saveRes = await handleMemoryAction(mc as any, 'save', LEARN, { ...ctx(store(null), d), isSensitive: true });
+    expect(saveRes.isError).toBe(true);
+    expect(asked).toEqual([]);
+    expect(mc.saves).toHaveLength(0);
+  });
+
+  it('above 0.94 still auto-supersedes without asking about the band', async () => {
+    const { d, asked } = decider({ learn: keepAns });
+    const mc = memClient();
+    const s = store(0.97);
+    await handleLearnAction(mc as any, LEARN, ctx(s, d));
+    expect(asked).toEqual(['learn']);
+    expect(s.upserts[0].supersedes).toEqual([EXISTING.id]);
+  });
+});
