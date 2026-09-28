@@ -277,6 +277,13 @@ export interface WorkspaceGitConfig {
   memoryIndexInjection?: boolean;
   memoryIndexTokenBudget?: number;   // estimated tokens (chars/4); default 800
 
+  // New `learn` / `buildd_memory save` writes land as candidates (not pushed at
+  // claim, recallable with includeCandidates) and are promoted by the
+  // lifecycle pass; failed tasks and changes-requested reviews are extracted
+  // into candidates. Absent / false = today's behaviour.
+  // See packages/core/memory-candidates.ts.
+  memoryCandidateWrites?: boolean;
+
   // Default agent backend for tasks in this workspace, when neither the task
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.
@@ -4050,10 +4057,36 @@ export const memories = pgTable('memories', {
   // Consecutive failed reconcile attempts to mirror this row into the index.
   // Rows past the cap drop out of reconcile so they cannot block the backlog.
   indexFailures: integer('index_failures').notNull().default(0),
+  // Lifecycle (docs/design/memory-done-right.md, "Write: candidates, then
+  // promotion"; packages/core/memory-candidates.ts). Every row written before
+  // this existed is 'active', and writes stay 'active' unless the workspace
+  // flag `memoryCandidateWrites` is on. Only 'active' is pushed at claim time;
+  // 'candidate' is served to a pull that asks for it; 'expired' and
+  // 'invalidated' are readable by id only. Nothing moves a row out of the
+  // table: expiry and invalidation are state changes, reversible.
+  // Supersession stays `superseded_by` (who replaced it) + `invalidated_at`
+  // (when); 'invalidated' is for an invalidation with no replacement.
+  state: text('state').notNull().default('active').$type<'candidate' | 'active' | 'expired' | 'invalidated'>(),
+  // Provenance: which episode proposed it. source_id is the task id for
+  // learn / failed_task, the review_feedback row id for review.
+  sourceKind: text('source_kind').$type<'learn' | 'failed_task' | 'review' | 'chat' | 'digest' | 'dashboard'>(),
+  sourceId: text('source_id'),
+  // Derived from content outside the team (external PR comments, issue text).
+  // Hard floor: never auto-promoted.
+  external: boolean('external').notNull().default(false),
+  // When the row became active by promotion. Null for rows active from birth.
+  validFrom: timestamp('valid_from', { withTimezone: true }),
+  // When it stopped being current (superseded or invalidated).
+  invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  // A merged PR touched one of its anchored `files` since it was written.
+  // A flag for re-verification, never a demotion.
+  reverifyFlaggedAt: timestamp('reverify_flagged_at', { withTimezone: true }),
+  reverifyRef: text('reverify_ref'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   teamIdx: index('memories_team_idx').on(t.teamId),
+  stateCreatedIdx: index('memories_state_created_idx').on(t.state, t.createdAt),
   teamUpdatedIdx: index('memories_team_updated_idx').on(t.teamId, t.updatedAt),
   teamProjectIdx: index('memories_team_project_idx').on(t.teamId, t.project),
 }));

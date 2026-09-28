@@ -35,6 +35,17 @@ mock.module('@buildd/core/memory-index-reconcile', () => ({
   MEMORY_RECONCILE_MAX_ROWS: 25,
 }));
 
+let lifecycleResult: any = { extracted: { failedTasks: 0, reviews: 0, duplicates: 0, failed: 0 }, promoted: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0 };
+const lifecycleCalls: any[] = [];
+mock.module('@buildd/core/memory-lifecycle', () => ({
+  runMemoryLifecycle: async (opts: unknown) => {
+    lifecycleCalls.push(opts);
+    return lifecycleResult;
+  },
+}));
+const decider = { judgeLearn: async () => ({}) };
+mock.module('@/lib/memory-decisions', () => ({ memoryDeciderFor: () => decider }));
+
 const { POST } = await import('./route');
 
 const call = () => POST(new NextRequest('http://localhost/api/cron/feedback-digest', { method: 'POST' }));
@@ -43,6 +54,8 @@ beforeEach(() => {
   digestThrows = false;
   reconcileResult = { scanned: 0, mirrored: 0, failed: 0 };
   reconcileCalls.length = 0;
+  lifecycleCalls.length = 0;
+  lifecycleResult = { extracted: { failedTasks: 0, reviews: 0, duplicates: 0, failed: 0 }, promoted: 0, held: 0, shadowed: 0, expired: 0, reverifyFlagged: 0, errors: 0 };
   lastReport = null;
 });
 
@@ -73,5 +86,34 @@ describe('feedback-digest cron: memory index reconcile', () => {
     expect(res.status).toBe(500);
     expect(reconcileCalls).toHaveLength(1);
     expect(lastReport.result.memoryIndexReconcile).toEqual(reconcileResult);
+  });
+});
+
+describe('feedback-digest cron: memory lifecycle', () => {
+  it('runs the lifecycle pass with the memory index and the decider, and reports it', async () => {
+    lifecycleResult = { ...lifecycleResult, promoted: 2, expired: 1 };
+    const body = await (await call()).json();
+    expect(lifecycleCalls).toHaveLength(1);
+    expect(lifecycleCalls[0].knowledgeStore).toBe(index);
+    expect(lifecycleCalls[0].decider).toBe(decider);
+    expect(body.memoryLifecycle).toEqual(lifecycleResult);
+    expect(lastReport.result.memoryLifecycle).toEqual(lifecycleResult);
+    expect(lastReport.errors).toBeUndefined();
+  });
+
+  it('counts failed lifecycle steps as run errors', async () => {
+    lifecycleResult = { ...lifecycleResult, errors: 2 };
+    await call();
+    expect(lastReport.errors).toBe(2);
+  });
+
+  it('still runs when the digest fails', async () => {
+    digestThrows = true;
+    const err = console.error;
+    console.error = () => {};
+    await call();
+    console.error = err;
+    expect(lifecycleCalls).toHaveLength(1);
+    expect(lastReport.result.memoryLifecycle).toEqual(lifecycleResult);
   });
 });

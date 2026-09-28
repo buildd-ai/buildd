@@ -351,6 +351,9 @@ describe('golden: claim_task Relevant Memory', () => {
             "limit": 5,
             "project": "acme/widgets",
             "query": "Fix the login bug",
+            "states": [
+              "active",
+            ],
           },
         ],
       ]

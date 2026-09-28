@@ -39,6 +39,7 @@ import {
   type MemoryQuerier,
 } from './memory-hit-scope';
 import type { SQL } from 'drizzle-orm';
+import { PUSH_MEMORY_STATES, pullMemoryStates, type MemoryState } from './memory-candidates';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
@@ -384,6 +385,11 @@ export interface RetrieveMemoryInput {
   mode?: QueryMode;
   /** Drop `isCurrent === false` hits before narrowing. Default false. */
   excludeSuperseded?: boolean;
+  /**
+   * Serve candidate memories too. Honoured for pulls only: a push serves
+   * active memories whatever this says. Default false.
+   */
+  includeCandidates?: boolean;
   /** Caller's post-narrowing filter (recall's type/files). Applied before the topK cut. */
   filter?: (r: QueryResult) => boolean;
   /** Retrieved-but-held-back rules. Gated hits are returned flagged, not dropped. */
@@ -426,6 +432,8 @@ export interface MemoryStoreSearchParams {
   type?: string;
   project?: string;
   files?: string[];
+  /** Set by the door from the caller, never by the caller. */
+  states?: readonly MemoryState[];
   limit?: number;
   offset?: number;
 }
@@ -468,6 +476,8 @@ export interface RetrieveStoreMemoryInput {
   ledger?: MemoryLedgerWriter | false;
   /** Hold the ledger until the caller calls `commitLedger`; see RetrieveMemoryInput. */
   deferLedger?: boolean;
+  /** Pulls only; see RetrieveMemoryInput. */
+  includeCandidates?: boolean;
 }
 
 export interface RetrieveStoreMemoryResult<M> {
@@ -499,6 +509,15 @@ export async function retrieveMemory(
 }
 
 const EMPTY_COMMIT = () => {};
+
+/**
+ * The lifecycle states a retrieval may serve: a push only active memories, a
+ * pull active ones plus candidates when asked. Expired and invalidated rows
+ * are reachable by id only.
+ */
+export function servedMemoryStates(caller: MemoryCaller, includeCandidates?: boolean): readonly MemoryState[] {
+  return MEMORY_CALLER_VIA[caller] === 'push' ? PUSH_MEMORY_STATES : pullMemoryStates(includeCandidates);
+}
 
 async function defaultStore(): Promise<MemoryQuerier> {
   const { PgVectorStore } = await import('./knowledge-store/pg-vector-store');
@@ -533,7 +552,9 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
     });
 
     const current = input.excludeSuperseded ? raw.filter(r => r.isCurrent !== false) : raw;
-    let own = await keepOwnProjectMemoryHits(current, memoryScope);
+    let own = await keepOwnProjectMemoryHits(current, memoryScope, {
+      states: servedMemoryStates(input.caller, input.includeCandidates),
+    });
     if (input.filter) own = own.filter(input.filter);
     own = own.slice(0, input.budget.topK);
 
@@ -600,7 +621,11 @@ async function retrieveStoreMemory(
   const project = await resolveStoreProject(input.scope.workspaceId);
   if (!project) return { ...empty, unavailable: true };
 
-  const searchData = await input.searcher.search({ ...input.search, project });
+  const searchData = await input.searcher.search({
+    ...input.search,
+    project,
+    states: servedMemoryStates(input.caller, input.includeCandidates),
+  });
   const results = searchData.results || [];
   if (results.length === 0) return empty;
 

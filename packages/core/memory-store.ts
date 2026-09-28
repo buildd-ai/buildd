@@ -18,6 +18,7 @@ import { normalizeMemoryFileScope } from './memory-file-scope';
 import { tokenizeMemoryQuery } from './memory-query-tokens';
 import { tokenMatchScoreSql } from './memory-query-tokens-sql';
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
+import { memoryStateOf, PUSH_MEMORY_STATES, type MemoryState, type MemorySourceKind } from './memory-candidates';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -34,6 +35,16 @@ export interface MemoryRecord {
   source: string | null;
   /** Id of the memory that replaced this one, when it was superseded. */
   supersededBy?: string | null;
+  /** Lifecycle state; absent reads as 'active'. See ./memory-candidates. */
+  state?: MemoryState;
+  sourceKind?: MemorySourceKind | null;
+  sourceId?: string | null;
+  external?: boolean;
+  validFrom?: string | null;
+  invalidatedAt?: string | null;
+  /** Set when a merged PR touched one of this memory's files since it was written. */
+  reverifyFlaggedAt?: string | null;
+  reverifyRef?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -45,6 +56,7 @@ export interface MemorySearchResult {
   project?: string;
   tags?: string[];
   files?: string[];
+  state?: MemoryState;
   createdAt: string;
 }
 
@@ -56,6 +68,11 @@ export interface SaveMemoryInput {
   tags?: string[];
   files?: string[];
   source?: string;
+  /** Default 'active'. */
+  state?: MemoryState;
+  sourceKind?: MemorySourceKind;
+  sourceId?: string;
+  external?: boolean;
 }
 
 export interface UpdateMemoryInput {
@@ -82,6 +99,14 @@ function toRecord(row: typeof memories.$inferSelect): MemoryRecord {
     files: row.files,
     source: row.source,
     supersededBy: row.supersededBy ?? null,
+    state: memoryStateOf(row),
+    sourceKind: row.sourceKind ?? null,
+    sourceId: row.sourceId ?? null,
+    external: row.external ?? false,
+    validFrom: row.validFrom ? row.validFrom.toISOString() : null,
+    invalidatedAt: row.invalidatedAt ? row.invalidatedAt.toISOString() : null,
+    reverifyFlaggedAt: row.reverifyFlaggedAt ? row.reverifyFlaggedAt.toISOString() : null,
+    reverifyRef: row.reverifyRef ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -108,6 +133,8 @@ export class MemoryStore {
         ...(scope ? [eq(memories.project, scope)] : []),
         // A memory recorded as replaced is not current knowledge.
         isNull(memories.supersededBy),
+        // Always-loaded context is a push: active memories only.
+        inArray(memories.state, [...PUSH_MEMORY_STATES]),
       ),
       orderBy: [desc(memories.updatedAt), desc(memories.id)],
       limit: 20,
@@ -138,6 +165,8 @@ export class MemoryStore {
     type?: string;
     project?: string;
     files?: string[];
+    /** Only these lifecycle states. Omitted: every state (the dashboard list). */
+    states?: readonly MemoryState[];
     limit?: number;
     offset?: number;
   } = {}): Promise<{ results: MemorySearchResult[]; total: number; limit: number; offset: number }> {
@@ -151,6 +180,9 @@ export class MemoryStore {
 
     if (params.type) {
       conditions.push(eq(memories.type, params.type as MemoryRecord['type']));
+    }
+    if (params.states) {
+      conditions.push(inArray(memories.state, [...params.states]));
     }
     // Exact canonical match, not a substring: a short project name used to also
     // match every longer project name it happened to be a prefix of.
@@ -244,6 +276,7 @@ export class MemoryStore {
       project: m.project ?? undefined,
       tags: m.tags,
       files: m.files,
+      state: memoryStateOf(m),
       createdAt: m.createdAt.toISOString(),
     }));
 
@@ -307,6 +340,10 @@ export class MemoryStore {
       tags: input.tags ?? [],
       files: input.files ?? [],
       source: input.source ?? null,
+      ...(input.state ? { state: input.state } : {}),
+      ...(input.sourceKind ? { sourceKind: input.sourceKind } : {}),
+      ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+      ...(input.external ? { external: true } : {}),
     }).returning();
 
     return { memory: toRecord(row) };
@@ -342,7 +379,7 @@ export class MemoryStore {
     const targets = [...new Set(ids.filter(id => id && id !== byId))];
     if (targets.length === 0) return 0;
     const rows = await db.update(memories)
-      .set({ supersededBy: byId })
+      .set({ supersededBy: byId, invalidatedAt: sql`COALESCE(${memories.invalidatedAt}, now())` })
       .where(and(eq(memories.teamId, this.teamId), inArray(memories.id, targets)))
       .returning({ id: memories.id });
     return rows.length;

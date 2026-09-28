@@ -107,6 +107,8 @@ const SAFE: Record<string, string[]> = {
   // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
   // (MemoryCaller, MemoryGate in packages/core/memory-retrieval.ts). No content.
   memory_uses: ['chunk_id', 'memory_id', 'caller', 'gated_by'],
+  memories: ['source_id', // a task id or review_feedback row id (packages/core/memory-candidates.ts)
+    'reverify_ref'], // 'pr:<number>'
   // Content-free by construction: ids, decision names, labels, error kinds.
   memory_decisions: ['memory_id', 'decision', 'version', 'verdict', 'rule', 'error', 'caller'],
   artifacts: ['type'],

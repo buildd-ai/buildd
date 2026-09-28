@@ -10,6 +10,12 @@
  * path mirrored), bounded per run. It rides this schedule so it adds no Neon
  * wake window of its own.
  *
+ * And the memory lifecycle pass (packages/core/memory-lifecycle.ts):
+ * candidate extraction, promotion (Jev `promote` in shadow), expiry and
+ * re-verify flags, each bounded per run. Only workspaces with
+ * `memoryCandidateWrites` on produce candidates, so with the flag off
+ * everywhere it reads and changes nothing.
+ *
  * Auth: Bearer token matching CRON_SECRET env var.
  * Schedule: recommended every 1-4 hours via external cron trigger.
  */
@@ -19,6 +25,8 @@ import { runFeedbackDigest, getFeedbackStats } from '@/lib/feedback-digest';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { getMemoryIndexStore } from '@/lib/memory-helper';
 import { reconcileMemoryIndex, type ReconcileResult } from '@buildd/core/memory-index-reconcile';
+import { runMemoryLifecycle, type LifecycleResult } from '@buildd/core/memory-lifecycle';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 
 /**
  * Re-mirror unindexed memory rows. Never throws: a reconcile failure is
@@ -32,6 +40,18 @@ async function runReconcile(): Promise<ReconcileResult | { error: string }> {
     return { error: String(error) };
   }
 }
+
+/** The memory lifecycle pass. Never throws; failures are counted in the result. */
+async function runLifecycle(): Promise<LifecycleResult | { error: string }> {
+  try {
+    return await runMemoryLifecycle({ knowledgeStore: getMemoryIndexStore(), decider: memoryDeciderFor(null) });
+  } catch (error) {
+    console.error('[feedback-digest] Memory lifecycle error:', error);
+    return { error: String(error) };
+  }
+}
+
+const lifecycleErrors = (r: LifecycleResult | { error: string }): number => ('error' in r ? 1 : r.errors);
 
 export const maxDuration = 60; // Allow up to 60s for processing
 
@@ -54,16 +74,19 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     const memoryIndexReconcile = await runReconcile();
     const reconcileFailed = 'error' in memoryIndexReconcile ? 1 : memoryIndexReconcile.failed;
+    const memoryLifecycle = await runLifecycle();
+    const failed = reconcileFailed + lifecycleErrors(memoryLifecycle);
 
     report({
       processed: digest.totalFeedback,
       changed: digest.results.length,
-      ...(reconcileFailed > 0 ? { errors: reconcileFailed } : {}),
+      ...(failed > 0 ? { errors: failed } : {}),
       result: {
         windowHours,
         totalNegativeFeedback: digest.totalFeedback,
         teams: digest.results.length,
         memoryIndexReconcile,
+        memoryLifecycle,
       },
     });
 
@@ -76,13 +99,15 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         teams: digest.results,
       },
       memoryIndexReconcile,
+      memoryLifecycle,
     });
   } catch (error) {
     console.error('[feedback-digest] Pipeline error:', error);
     // The reconcile pass does not depend on the digest, so a digest failure
     // does not also cost the index its catch-up run.
     const memoryIndexReconcile = await runReconcile();
-    report({ processed: 0, changed: 0, errors: 1, result: { error: String(error), memoryIndexReconcile } });
+    const memoryLifecycle = await runLifecycle();
+    report({ processed: 0, changed: 0, errors: 1, result: { error: String(error), memoryIndexReconcile, memoryLifecycle } });
     return NextResponse.json(
       { error: 'Feedback digest failed', detail: String(error) },
       { status: 500 },
