@@ -1,4 +1,4 @@
-import { createHmac, hkdfSync, timingSafeEqual } from 'crypto';
+import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'crypto';
 
 /**
  * A server-signed marker that says "this request came from buildd's own MCP
@@ -35,6 +35,12 @@ export const UNVERIFIED_INTERACTIVE_RUNNER = 'mcp-unverified';
 export interface InteractiveSession {
   /** The person behind the session when the token is tied to one (OAuth sub). */
   userId: string | null;
+  /**
+   * The MCP session this call came from (see mintMcpSessionId), when the
+   * client echoed one. A bld_ key has no user, so this is what tells two of
+   * its sessions apart for liveness.
+   */
+  sessionKey: string | null;
 }
 
 /** HKDF info label: the marker key is dedicated to this use, never the raw secret. */
@@ -72,17 +78,18 @@ function mac(key: Buffer, payload: string): string {
   return createHmac('sha256', key).update(`interactive-session:${payload}`).digest('base64url');
 }
 
-/** `v1.<ts>.<account>.<user>.<mac>`; null when no secret is configured. */
+/** `v2.<ts>.<account>.<user>.<session>.<mac>`; null when no secret is configured. */
 export function signInteractiveSession(
-  input: { accountId: string; userId: string | null | undefined },
+  input: { accountId: string; userId: string | null | undefined; sessionKey?: string | null },
   now: number = Date.now(),
 ): string | null {
   const secret = interactiveSessionKey();
   if (!secret) return null;
-  const payload = `v1.${now}.${b64(input.accountId)}.${b64(input.userId ?? '')}`;
+  const payload = `v2.${now}.${b64(input.accountId)}.${b64(input.userId ?? '')}.${b64(input.sessionKey ?? '')}`;
   return `${payload}.${mac(secret, payload)}`;
 }
 
+/** Accepts v2 and the keyless v1 (`v1.<ts>.<account>.<user>.<mac>`). */
 export function verifyInteractiveSession(
   header: string | null | undefined,
   accountId: string,
@@ -92,16 +99,54 @@ export function verifyInteractiveSession(
   const secret = interactiveSessionKey();
   if (!secret) return null;
   const parts = header.split('.');
-  if (parts.length !== 5 || parts[0] !== 'v1') return null;
-  const [v, ts, acc, user, sig] = parts;
-  const expected = Buffer.from(mac(secret, `${v}.${ts}.${acc}.${user}`));
+  const shape = parts[0] === 'v2' ? 6 : parts[0] === 'v1' ? 5 : 0;
+  if (!shape || parts.length !== shape) return null;
+  const sig = parts[parts.length - 1];
+  const expected = Buffer.from(mac(secret, parts.slice(0, -1).join('.')));
   const provided = Buffer.from(sig);
   if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
+  const [, ts, acc, user, session] = parts;
   const issuedAt = Number(ts);
   if (!Number.isFinite(issuedAt) || Math.abs(now - issuedAt) > INTERACTIVE_SESSION_TTL_MS) return null;
   if (unb64(acc) !== accountId) return null;
   const userId = unb64(user);
-  return { userId: userId.length > 0 ? userId : null };
+  const sessionKey = shape === 6 ? unb64(session) : '';
+  return { userId: userId.length > 0 ? userId : null, sessionKey: sessionKey.length > 0 ? sessionKey : null };
+}
+
+// ── MCP session id ───────────────────────────────────────────────────────────
+
+/**
+ * The MCP transport is stateless, so nothing identified one client session
+ * across its requests. /api/mcp returns one of these as `Mcp-Session-Id` on a
+ * request that carries none (a valid one of ours), and Streamable HTTP clients
+ * echo it on every later request. Its key rides in the marker above, and the
+ * claim and the liveness touch key off it.
+ *
+ * `s1.<key>.<mac>`, bound to the account. A client can only replay an id it
+ * was given for the same account; anything else (another server's id,
+ * garbage) is no session, and the route mints a fresh one.
+ */
+export const MCP_SESSION_ID_HEADER = 'mcp-session-id';
+
+export function mintMcpSessionId(accountId: string): string | null {
+  const secret = interactiveSessionKey();
+  if (!secret) return null;
+  const key = randomBytes(16).toString('base64url');
+  return `s1.${key}.${mac(secret, `mcp-session.${accountId}.${key}`)}`;
+}
+
+/** The session key of an id minted for this account, or null. */
+export function verifyMcpSessionId(header: string | null | undefined, accountId: string): string | null {
+  if (!header) return null;
+  const parts = header.split('.');
+  if (parts.length !== 3 || parts[0] !== 's1' || !parts[1]) return null;
+  const secret = interactiveSessionKey();
+  if (!secret) return null;
+  const expected = Buffer.from(mac(secret, `mcp-session.${accountId}.${parts[1]}`));
+  const provided = Buffer.from(parts[2]);
+  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
+  return parts[1];
 }
 
 /** The runner id the claim route records: 'mcp' only for a verified session. */

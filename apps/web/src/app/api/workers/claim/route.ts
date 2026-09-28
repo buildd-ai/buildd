@@ -5,7 +5,7 @@ import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
-import { INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
+import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -1870,6 +1870,12 @@ export async function POST(req: NextRequest) {
     delete (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_USER_KEY];
     if (interactiveSession?.userId) {
       (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_USER_KEY] = interactiveSession.userId;
+    }
+    // And the MCP session that made it: a bld_ key has no user, so this is
+    // what keeps one of its sessions from keeping another's claims alive.
+    delete (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_SESSION_KEY];
+    if (interactiveSession?.sessionKey) {
+      (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_SESSION_KEY] = interactiveSession.sessionKey;
     }
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)

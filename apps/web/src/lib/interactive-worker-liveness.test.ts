@@ -30,6 +30,7 @@ mock.module('@buildd/core/db', () => ({
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { INTERACTIVE_RUNNER, UNVERIFIED_INTERACTIVE_RUNNER } from './interactive-session';
 import {
+  INTERACTIVE_CLAIM_SESSION_KEY,
   INTERACTIVE_CLAIM_USER_KEY,
   INTERACTIVE_TOUCH_THROTTLE_MS,
   isInteractiveWorker,
@@ -74,6 +75,34 @@ describe('touchInteractiveWorkers', () => {
     expect(q.sql).toMatch(/t_claim\.context->>\$\d+ = \$\d+/);
     expect(q.params).toEqual(expect.arrayContaining([INTERACTIVE_CLAIM_USER_KEY, 'user-a']));
     expect(q.params).not.toContain('user-b');
+  });
+
+  // Review of #3072: a bld_ key has no session user, so one live session kept
+  // every other session's interactive claims on the account alive.
+  it('a session with a key only touches the workers that session claimed', async () => {
+    await touchInteractiveWorkers({ accountId: 'account-1', sessionKey: 'sess-a', now: NOW });
+    const q = render();
+    expect(q.sql).toContain('t_sess.id = "workers"."task_id"');
+    expect(q.sql).toMatch(/t_sess\.context->>\$\d+ = \$\d+/);
+    expect(q.sql).not.toContain('NOT EXISTS');
+    expect(q.params).toEqual(expect.arrayContaining([INTERACTIVE_CLAIM_SESSION_KEY, 'sess-a']));
+    expect(q.params).not.toContain('sess-b');
+  });
+
+  it("a session with no key never touches a keyed session's claims", async () => {
+    await touchInteractiveWorkers({ accountId: 'account-1', now: NOW });
+    const q = render();
+    const text = q.sql.replace(/\s+/g, ' ');
+    expect(text).toContain('NOT EXISTS ( SELECT 1 FROM "tasks" t_sess WHERE t_sess.id = "workers"."task_id"');
+    expect(text).toMatch(/t_sess\.context->>\$\d+ IS NOT NULL/);
+    expect(q.params).toContain(INTERACTIVE_CLAIM_SESSION_KEY);
+  });
+
+  it('memoises per session key', async () => {
+    await touchInteractiveWorkers({ accountId: 'account-1', sessionKey: 'sess-a', now: NOW });
+    await touchInteractiveWorkers({ accountId: 'account-1', sessionKey: 'sess-b', now: new Date(NOW.getTime() + 1000) });
+    await touchInteractiveWorkers({ accountId: 'account-1', sessionKey: 'sess-a', now: new Date(NOW.getTime() + 2000) });
+    expect(updateCalls).toHaveLength(2);
   });
 
   it('memoises per (account, user) for the throttle window', async () => {
