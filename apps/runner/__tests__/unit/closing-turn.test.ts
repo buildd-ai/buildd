@@ -508,6 +508,11 @@ describe('closing turn', () => {
     expect(call).toBeDefined();
     expect(call!.payload.structuredOutput).toEqual(verdict);
     expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('skipped:structured_output');
+    // The structured result IS the authored outcome — tagging the summary
+    // 'fallback' made the server's bookkeeping gate read it as "never
+    // reported" and 400 a payload holding a complete result.
+    expect(call!.payload.summary).toBe('Review done.');
+    expect(call!.payload.summarySource).toBe('agent');
   });
 
   test('a closing turn that does run still completes with the main session structured output', async () => {

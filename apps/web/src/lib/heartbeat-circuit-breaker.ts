@@ -21,6 +21,7 @@
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, taskSchedules, tasks } from '@buildd/core/db/schema';
 import { and, desc, eq, gt } from 'drizzle-orm';
+import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { isDiedEarly, normalizeErrorSignature } from './failure-analytics';
 import { notify } from './pushover';
 
@@ -169,6 +170,10 @@ export async function tripHeartbeatCircuitBreaker(input: {
 // outcome. Each of those costs real turns, and the cron dispatched the next
 // one on the very next tick, indefinitely.
 //
+// Cycles that failed on a provider budget wall, or whose valid structured
+// result the completion gate refused, are skipped (see isNonOrganizerFailure):
+// neither is the organizer failing to plan.
+//
 // This is a backoff, not a pause: after K consecutive failed cycles on the
 // same schedule the next dispatch waits BASE * 2^(streak-K) past the most
 // recent failure, capped at MAX. Any non-failed cycle ends the streak, and the
@@ -196,28 +201,64 @@ export interface HeartbeatPlanningBackoff {
 /** One durable note per backoff episode, updated in place on each later step. */
 const PLANNING_BACKOFF_NOTE_TITLE = 'Heartbeat backing off: repeated planning failures';
 
+/** One recent heartbeat cycle, as the planning backoff reads it. */
+export interface HeartbeatPlanningCycle {
+  status: string;
+  failedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  /** Latest worker's `exitCause`. */
+  exitCause?: string | null;
+  /** Latest worker's `error`. */
+  error?: string | null;
+  /** `structuredOutput` from the latest worker's `rejectedCompletionPayload`. */
+  rejectedStructuredOutput?: unknown;
+}
+
+function isNonEmptyObject(v: unknown): boolean {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length > 0;
+}
+
+/**
+ * A failed cycle that says nothing about the organizer: the provider pool hit
+ * a budget/usage wall (recorded as `exitCause: 'budget_limited'`, or only
+ * attributable from the error text on older rows), or the completion gate
+ * refused a payload that carried a non-empty structured result — the
+ * organizer did produce its outcome, the server discarded it. Counting either
+ * as a planning failure backed a healthy mission off for a wall it cannot move.
+ */
+export function isNonOrganizerFailure(cycle: HeartbeatPlanningCycle): boolean {
+  if (cycle.exitCause === 'budget_limited') return true;
+  if (isBudgetExhaustionError(cycle.error)) return true;
+  return isNonEmptyObject(cycle.rejectedStructuredOutput);
+}
+
 /**
  * Pure: given this schedule's recent cycles (newest first), decide whether to
  * hold the next dispatch. Only `status === 'failed'` extends the streak; the
- * first row that is anything else ends it.
+ * first row that is anything else ends it. A failed cycle that is not an
+ * organizer failure (`isNonOrganizerFailure`) is skipped: it neither extends
+ * nor ends the streak.
  *
- * The wait is anchored on when the newest cycle failed (`failedAt`, the latest
- * worker's `completedAt`), falling back to the task's `createdAt`. Never on
- * `tasks.updatedAt`: any later write to the row (a reconcile or cleanup sweep)
- * would silently push the hold out.
+ * The wait is anchored on when the newest counted cycle failed (`failedAt`,
+ * the latest worker's `completedAt`), falling back to the task's `createdAt`.
+ * Never on `tasks.updatedAt`: any later write to the row (a reconcile or
+ * cleanup sweep) would silently push the hold out.
  */
 export function computeHeartbeatPlanningBackoff(
-  recent: Array<{ status: string; failedAt?: Date | string | null; createdAt?: Date | string | null }>,
+  recent: HeartbeatPlanningCycle[],
   now: Date,
 ): HeartbeatPlanningBackoff {
   let streak = 0;
+  let newestCounted: HeartbeatPlanningCycle | null = null;
   for (const t of recent) {
     if (t.status !== 'failed') break;
+    if (isNonOrganizerFailure(t)) continue;
+    newestCounted ??= t;
     streak++;
   }
-  if (streak < HEARTBEAT_PLANNING_BACKOFF_THRESHOLD) return { active: false, streak, resumeAt: null };
+  if (streak < HEARTBEAT_PLANNING_BACKOFF_THRESHOLD || !newestCounted) return { active: false, streak, resumeAt: null };
 
-  const anchorRaw = recent[0].failedAt ?? recent[0].createdAt ?? null;
+  const anchorRaw = newestCounted.failedAt ?? newestCounted.createdAt ?? null;
   const anchor = anchorRaw ? new Date(anchorRaw).getTime() : now.getTime();
   // 2^(streak-K) passes the cap within a few steps; clamp the exponent anyway.
   const exponent = Math.min(streak - HEARTBEAT_PLANNING_BACKOFF_THRESHOLD, 16);
@@ -245,14 +286,24 @@ export async function evaluateHeartbeatPlanningBackoff(
     limit: PLANNING_BACKOFF_LOOKBACK,
     with: {
       workers: {
-        columns: { completedAt: true },
+        columns: { completedAt: true, exitCause: true, error: true, rejectedCompletionPayload: true },
         orderBy: (w, { desc: d }) => [d(w.startedAt)],
         limit: 1,
       },
     },
   });
   return computeHeartbeatPlanningBackoff(
-    recent.map(t => ({ status: t.status, createdAt: t.createdAt, failedAt: t.workers?.[0]?.completedAt ?? null })),
+    recent.map(t => {
+      const w = t.workers?.[0];
+      return {
+        status: t.status,
+        createdAt: t.createdAt,
+        failedAt: w?.completedAt ?? null,
+        exitCause: w?.exitCause ?? null,
+        error: w?.error ?? null,
+        rejectedStructuredOutput: (w?.rejectedCompletionPayload as { structuredOutput?: unknown } | null | undefined)?.structuredOutput ?? null,
+      };
+    }),
     now,
   );
 }

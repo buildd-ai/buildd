@@ -4756,7 +4756,17 @@ export class WorkerManager {
           // so downstream consumers (KB ingestion, UI) never present it as an
           // authored result. See docs/specs — the agent's own complete_task
           // PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
-          ...(fallbackSummary ? { summary: fallbackSummary, summarySource: 'fallback' as const } : {}),
+          //
+          // Exception: when the session returned a structured result, that
+          // result IS the agent-authored outcome (outputSchema sessions never
+          // call complete_task — see closingTurnOutcome 'skipped:structured_output').
+          // Tagging it 'fallback' made the server's bookkeeping gate read the
+          // payload as "never reported" and reject a complete, valid result.
+          // 'agent' is the only other value the server accepts
+          // (packages/shared/src/types.ts summarySource).
+          ...(fallbackSummary
+            ? { summary: fallbackSummary, summarySource: structuredOutput ? 'agent' as const : 'fallback' as const }
+            : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush
