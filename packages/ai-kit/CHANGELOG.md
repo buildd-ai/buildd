@@ -4,6 +4,33 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.3.1 — 2026-09-28
+
+Two fixes to 0.3.0's `/chat/react`. No API is removed.
+
+**Upgrading: what you can delete**
+
+- **The tools-panel width override.** Remove `.kit-menu-panel { width:
+  max-content }` (or `:not([data-sheet])` variants) and `.kit-row >
+  .kit-toggle { flex: none }` from your chat CSS. The kit does both now.
+- **A local copy of the sheet breakpoint.** Import `KIT_SHEET_QUERY` from
+  `@builddai/ai-kit/chat/react` instead of hard-coding `(max-width: 639px)`.
+- **Pinned decision versions** read `…|kit-0.3.1` now (fingerprints are
+  unchanged): update `expectDecisionPinned({ version })` and version regexes.
+
+**Changes**
+
+- `/chat/styles.css`: the desktop menu panel sizes to its content
+  (`width: max-content`) between its 260px min-width and `min(92vw, 380px)`.
+  It used to resolve to 260px, because it is absolutely positioned inside a
+  trigger-sized `.kit-menu`, so next to a long tool-group label ("Shipments:
+  hold, release, merge, consolidate") the Ask first / Allow toggle was cut
+  off. The toggle and the lock label never shrink (`flex: none`, toggle
+  buttons `nowrap`); the row label takes the rest and wraps. The phone sheet
+  stays full width.
+- `/chat/react`: `KIT_SHEET_QUERY` is re-exported, as the 0.3.0 notes said.
+- `KIT_VERSION` is `0.3.1`.
+
 ## 0.3.0 — 2026-09-28
 
 Fixes from the first two apps on 0.2.0, plus the rank slot of `/surfaces`.
