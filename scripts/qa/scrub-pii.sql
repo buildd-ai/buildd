@@ -410,6 +410,7 @@ UPDATE worker_error_traces SET
   source = pg_temp.qa_str(source);
 
 UPDATE worker_terminal_records SET
+  exit_cause = pg_temp.qa_str(exit_cause),
   detail = pg_temp.qa_json(detail);
 
 UPDATE worker_prompt_composition_events SET
