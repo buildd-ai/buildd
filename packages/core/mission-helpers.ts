@@ -658,6 +658,9 @@ export const ROLE_TO_WORK_KIND: Record<string, WorkKind> = {
   analyst: 'analysis',
   reviewer: 'analysis',
   'spec-validator': 'analysis',
+  // The mission visual auditor looks at the running app and reports: an
+  // observation, not a build (docs/design/visual-qa-human-review.md, "Kind").
+  'visual-auditor': 'observation',
 };
 
 export interface WorkKindInput {

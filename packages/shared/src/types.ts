@@ -1731,6 +1731,276 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
 // ============================================================================
+// VISUAL REVIEW (docs/design/visual-qa-human-review.md)
+// ============================================================================
+//
+// One model every surface reads: cells (route × viewport × variant) with their
+// round history, the audit phase, a triage queue and a summary. Built by
+// `buildVisualReviewModel` (apps/web/src/lib/visual-review-model.ts), served by
+// GET /api/missions/[id]/visual-review. Human decisions live in the
+// `visual_shot_reviews` table, never in `artifacts.metadata.qa`.
+
+export type VisualQaVerdict = 'ok' | 'issue' | 'unsure';
+export type VisualQaViewport = 'mobile' | 'desktop';
+
+/** The two buttons a human sees, whatever the agent said. */
+export type VisualReviewDecision = 'looks_right' | 'needs_fix';
+export const VISUAL_REVIEW_DECISIONS: readonly VisualReviewDecision[] = ['looks_right', 'needs_fix'];
+
+/** How the human decision relates to the agent's verdict. Derived by the server, never sent. */
+export type VisualReviewRelation = 'agree' | 'dispute' | 'waive';
+
+/**
+ * The relation a decision implies (the table in the design doc, part 1):
+ * ok + looks right = agree, ok + needs fix = dispute, issue + looks right =
+ * dispute (it waives the fix), issue + needs fix = agree, unsure + looks right
+ * = waive, unsure + needs fix = dispute (a fix is filed, as for ok).
+ */
+export function visualReviewRelation(agentVerdict: VisualQaVerdict, decision: VisualReviewDecision): VisualReviewRelation {
+  if (agentVerdict === 'unsure') return decision === 'looks_right' ? 'waive' : 'dispute';
+  const agentSaysFine = agentVerdict === 'ok';
+  return agentSaysFine === (decision === 'looks_right') ? 'agree' : 'dispute';
+}
+
+/** The audit as a whole, one value. Phase copy is written in one place (visual-review-model.ts). */
+export const VISUAL_REVIEW_PHASES = [
+  'off',
+  'waiting_deps',
+  'queued',
+  'no_browser_runner',
+  'capturing',
+  'boot_failed',
+  'stalled',
+  'failed',
+  'needs_you',
+  'fixing',
+  'reviewed',
+] as const;
+export type VisualReviewPhase = (typeof VISUAL_REVIEW_PHASES)[number];
+
+/** `artifacts.metadata.qa`, validated (`parseQaMeta`). Written only by visual-auditor workers. */
+export interface VisualQaMeta {
+  /** `''` when the auditor sent none. */
+  runKey: string;
+  /** The route pattern (`/app/tasks/:id`), not a concrete URL. */
+  route: string;
+  viewport: VisualQaViewport;
+  finding: string;
+  verdict: VisualQaVerdict;
+  theme?: string;
+  /** The auditor's own fix link. A human-filed fix is on the review row instead. */
+  fixTaskId?: string;
+  variant?: string;
+}
+
+/** One audit screenshot, as every surface renders it. */
+export interface VisualReviewShot {
+  /** The artifact id. */
+  id: string;
+  workerId?: string | null;
+  /** The visual-auditor task whose worker wrote the shot, when known. */
+  auditTaskId: string | null;
+  /** The audit round of that task (`surfaceAuditRound`); 1 when unknown. */
+  round: number;
+  createdAt: string;
+  /** Always `/api/artifacts/:id/download` for real rows, never a signed URL. */
+  src: string;
+  title?: string | null;
+  qa: VisualQaMeta;
+  /** The distinguishing variant in the caption (`withVariants`). */
+  variant?: string | null;
+}
+
+/** A human decision on one shot: a `visual_shot_reviews` row. */
+export interface HumanShotReview {
+  id: string;
+  artifactId: string;
+  auditTaskId: string | null;
+  round: number;
+  cellKey: string;
+  route: string;
+  viewport: VisualQaViewport;
+  /** The agent's verdict when the human decided. */
+  agentVerdict: VisualQaVerdict;
+  decision: VisualReviewDecision;
+  relation: VisualReviewRelation;
+  note: string | null;
+  /** The `[surface fix]` task this decision filed. */
+  fixTaskId: string | null;
+  /** The auditor's fix this decision cancelled, so undo can reopen it. */
+  cancelledFixTaskId: string | null;
+  reviewerUserId: string | null;
+  reviewerLabel: string | null;
+  createdAt: string;
+  /** Null while active. At most one active review per artifact. */
+  supersededAt: string | null;
+}
+
+/** A `[surface fix]` task as a cell shows it. */
+export interface VisualReviewFixTask {
+  id: string;
+  title: string;
+  status: string;
+  prUrl: string | null;
+  prNumber: number | null;
+  mergedAt: string | null;
+  /** Who filed it: the auditor (`qa.fixTaskId`) or a human decision (the review row). */
+  origin: 'auditor' | 'human';
+}
+
+/** One round's look at a cell. */
+export interface VisualReviewCellEntry {
+  round: number;
+  shot: VisualReviewShot;
+  agentVerdict: VisualQaVerdict;
+  finding: string;
+  fixTask: VisualReviewFixTask | null;
+  /** The active human review of this shot, if any. */
+  review: HumanShotReview | null;
+}
+
+/** A thumbnail's human-review marker: hollow, solid, strike. */
+export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived';
+
+/** One route × viewport × variant, across rounds. */
+export interface VisualReviewCell {
+  /** `route|viewport|variant` (`visualReviewCellKey`). */
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The newest round that shot this cell. A cell a later round did not re-shoot stays current. */
+  current: VisualReviewCellEntry;
+  /** One entry per round that shot the cell, oldest round first. */
+  history: VisualReviewCellEntry[];
+  /** The active human decision if there is one (looks right = ok, needs fix = issue), else the agent's verdict. */
+  effectiveVerdict: VisualQaVerdict;
+  marker: VisualReviewMarker;
+  /** An unsure cell nobody has decided: the only kind that needs a human. */
+  needsHuman: boolean;
+}
+
+export interface VisualReviewSummary {
+  /** Current cells. Equals `summarizeVisualRun(...).shots` for a single-run mission. */
+  shots: number;
+  /** Agent verdicts over current cells. */
+  ok: number;
+  issues: number;
+  unsure: number;
+  /** `effectiveVerdict` over current cells: the human decision where there is one. For display copy; parity reads the agent counts above. */
+  effectiveOk: number;
+  effectiveIssues: number;
+  /** Current cells with an active human review, and without one. */
+  reviewed: number;
+  unreviewed: number;
+  /** Current unsure cells without an active review (`needsHuman`). */
+  awaitingHuman: number;
+  confirmed: number;
+  disputed: number;
+  waived: number;
+  /** Required route × viewport cells, when code named routes. */
+  required?: number;
+  covered?: number;
+  bootFailed?: boolean;
+  rounds: number;
+  /** `[surface fix]` tasks of the mission still open. */
+  openFixes: number;
+}
+
+export interface VisualReviewAuditTask {
+  id: string;
+  title: string;
+  status: string;
+  round: number;
+  createdAt: string | null;
+  /** `result.errorType`, e.g. `infra_stalled`. */
+  errorType: string | null;
+}
+
+/**
+ * Why the audit needs a human. `question`: the auditor's worker waits on a
+ * question that is not the boot failure. `unsure`: unsure cells nobody
+ * decided. `round_cap`: the round-cap note is open.
+ */
+export type VisualReviewNeedsYouReason = 'question' | 'unsure' | 'round_cap';
+
+export interface VisualReviewNeedsYou {
+  reason: VisualReviewNeedsYouReason;
+  /** For `question`: the worker's prompt, answered like the boot-failure question. */
+  prompt?: string;
+  taskId?: string;
+  workerId?: string;
+}
+
+export interface VisualReviewModel {
+  missionId: string;
+  phase: VisualReviewPhase;
+  /** For `capturing`: shots of the running round so far, of `expected` (null when code named no route). */
+  progress: { captured: number; expected: number | null } | null;
+  /** The latest visual-auditor task (highest round, newest). */
+  audit: VisualReviewAuditTask | null;
+  /** For `boot_failed`: the parked worker and its question. */
+  bootFailure: { taskId: string; workerId: string; prompt: string } | null;
+  /** The round-cap question note is open. */
+  roundCapOpen: boolean;
+  /** For `needs_you`: why, and for a question the parked worker and its prompt. Null in every other phase. */
+  needsYou: VisualReviewNeedsYou | null;
+  cells: VisualReviewCell[];
+  /** Cell keys in review order: unsure, issue, ok, then already reviewed. */
+  queue: string[];
+  summary: VisualReviewSummary;
+  fixTasks: VisualReviewFixTask[];
+  generatedAt: string;
+}
+
+// ── Decisions contract (POST /api/missions/[id]/visual-review/decisions) ────
+
+export const VISUAL_REVIEW_MAX_ARTIFACTS = 50;
+
+export interface VisualReviewDecisionRequest {
+  /** 1..VISUAL_REVIEW_MAX_ARTIFACTS shots of this mission (both viewports of a route: one fix). */
+  artifactIds: string[];
+  decision: VisualReviewDecision;
+  note?: string;
+  /** The agent verdict the client saw per artifact: the stale guard. */
+  expected: Record<string, VisualQaVerdict>;
+}
+
+export interface VisualReviewDecisionResponse {
+  reviews: HumanShotReview[];
+  /** The fix filed (needs fix on ok or unsure). */
+  fixTaskId: string | null;
+  /** The auditor fix cancelled (looks right on issue, fix still pending and unclaimed). */
+  cancelledFixTaskId: string | null;
+  /** The fix that got a `guidance` note instead, because it had started. */
+  guidanceTaskId: string | null;
+  model: VisualReviewModel;
+}
+
+/** DELETE /api/missions/[id]/visual-review/decisions/[reviewId] (undo). */
+export interface VisualReviewUndoResponse {
+  superseded: string;
+  reopenedFixTaskId: string | null;
+  cancelledFixTaskId: string | null;
+  model: VisualReviewModel;
+}
+
+/**
+ * Errors: 409 `stale` (a newer-round shot exists or the agent verdict
+ * changed), 409 `fix_started` (undo after the fix was claimed), 409
+ * `round_ceiling` (at MAX_TOTAL_SURFACE_AUDIT_ROUNDS), 422 `not_in_mission`.
+ */
+export type VisualReviewDecisionError =
+  /** Every stale cell of the request (both viewports can go stale at once), plus the fresh model to re-render from. */
+  | { error: 'stale'; stale: true; cells: VisualReviewCell[]; model: VisualReviewModel }
+  | { error: 'fix_started'; fixTaskId: string }
+  | { error: 'round_ceiling'; message: string }
+  | { error: 'not_in_mission'; artifactIds: string[] };
+
+/** Realtime: fired on the mission channel after a decision or an undo. */
+export const VISUAL_REVIEW_EVENT = 'mission:visual_review';
+
+// ============================================================================
 // GOAL CRITERIA & INITIATIVE KPIs
 // ============================================================================
 

@@ -7,6 +7,11 @@ import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { isAuditStorageKey } from '@/lib/storage-keys';
+import { triggerEvent, channels } from '@/lib/pusher';
+import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
+
+// PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -120,6 +125,9 @@ export async function PATCH(
 
   const body = await req.json();
   const { title, content, metadata } = body;
+  if (metadata !== undefined && !isJsonObject(metadata)) {
+    return NextResponse.json({ error: 'metadata must be an object' }, { status: 400 });
+  }
 
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date(),
@@ -127,13 +135,24 @@ export async function PATCH(
 
   if (title !== undefined) updateFields.title = title;
   if (content !== undefined) updateFields.content = content;
-  if (metadata !== undefined) updateFields.metadata = metadata;
+  // Merged in SQL against the row the UPDATE sees, not the value read above:
+  // two overlapping PATCHes of one shot must not lose either update.
+  if (metadata !== undefined) updateFields.metadata = artifactMetadataMergeSql(metadata);
 
   const [updated] = await db
     .update(artifacts)
     .set(updateFields)
     .where(eq(artifacts.id, artifactId))
     .returning();
+
+  // An audit shot changed (a fix link, a re-labelled finding): the mission
+  // page refreshes on worker:artifact, so its thumbnails follow. Thin payload,
+  // no share token; qa/ shots only, so ordinary edits stay quiet.
+  if (artifact.missionId && isAuditStorageKey(artifact.storageKey)) {
+    await triggerEvent(channels.mission(artifact.missionId), 'worker:artifact', {
+      artifact: { id: artifact.id, workerId: artifact.workerId ?? null, missionId: artifact.missionId },
+    });
+  }
 
   const shareUrl = updated.shareToken && updated.visibility === 'public'
     ? `${appBaseUrl()}/share/${updated.shareToken}`

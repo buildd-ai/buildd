@@ -3,6 +3,7 @@ import { tasks, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, desc, eq, like } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
+  SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
   SURFACE_AUDIT_TITLE_PREFIX,
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
@@ -170,8 +171,8 @@ function frozenRoutes(context: unknown): string[] {
     : [];
 }
 
-export const SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE =
-  `Visual review: issues remain after ${MAX_SURFACE_AUDIT_ROUNDS} audit rounds`;
+// Lives in core so the visual review loader can read it without this module's db deps.
+export { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE };
 
 /**
  * Route a new `[surface fix]` task to the right audit round.
