@@ -149,7 +149,7 @@ hero_tasks = [
          taskClass="bookkeeping",
          description="Plan the mission into phased tasks with dependsOn edges and concrete pathManifests.",
          complexity="normal"),
-    task("T1", "RESEARCH: FX rate providers — freshness, cost, and what breaks when they're down",
+    task("T1", "RESEARCH: FX rate providers: freshness, cost, and what breaks when they're down",
          "researcher", "research", 1, P1, [], outputRequirement="artifact_required",
          description="Compare three rate providers on update cadence, pricing model, and outage behaviour. Recommend one plus a fallback. No code."),
     task("T2", "feat(db): currency and fx_rate_snapshot on invoices and line items",
@@ -296,7 +296,7 @@ artifacts = [
      "type": "recording", "key_": None, "title": "E2E: EUR invoice paid end to end", "content": None,
      "storageKey": "demo/e2e-eur-invoice.webm", "visibility": "private", "metadata": {"durationSec": 38}},
     {"key": "a_summary", "table": "artifacts", "workerId": None, "workspaceId": "ws", "missionId": "M1",
-     "type": "summary", "key_": "mission-summary", "title": "Multi-currency invoices — shipped",
+     "type": "summary", "key_": "mission-summary", "title": "Multi-currency invoices, shipped",
      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. "
                 "Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; "
                 "the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
@@ -358,7 +358,7 @@ mission_notes = [
              "and the pay button stays on the first screen. Nothing to fix.",
      "actorLabel": "Visual Auditor", "status": "open"},
     {"key": "n_done", "table": "mission_notes", "missionId": "M1", "taskId": None, "workerId": None,
-     "authorType": "system", "type": "update", "title": "All 4 goal criteria pass — mission complete",
+     "authorType": "system", "type": "update", "title": "All 4 goal criteria pass, mission complete",
      "body": None, "actorLabel": "buildd", "status": "open"},
 ]
 
@@ -370,7 +370,7 @@ memories = [
      "tags": ["fx", "rounding", "stripe"], "files": ["packages/money/src/fx/convert.ts"], "source": "task:T8"},
     {"key": "mem2", "table": "memories", "teamId": "team", "type": "gotcha", "project": "pdf",
      "title": "Invoice PDF snapshots are locale-sensitive",
-     "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale) — never toLocaleString() with the process default.",
+     "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale), never toLocaleString() with the process default.",
      "tags": ["pdf", "i18n"], "files": ["packages/pdf/src/invoice.snapshot.test.tsx"], "source": "task:T7"},
     {"key": "mem3", "table": "memories", "teamId": "team", "type": "pattern", "project": "money",
      "title": "Snapshot the FX rate at invoice issue",
@@ -409,7 +409,7 @@ heartbeat = {
     "tick_worker": mk_worker("H1", "wh1"),
     "past_ticks": [
         {"agoHours": 6, "summary": "Merged 2 patch bumps (CI green). No majors."},
-        {"agoHours": 12, "summary": "OK — nothing new."},
+        {"agoHours": 12, "summary": "OK, nothing new."},
         {"agoHours": 18, "summary": "Filed builder task: date library major bump needs a codemod."},
     ],
 }
@@ -465,7 +465,7 @@ background = [
          bg_task("B3", 5, "fix(api): bulk-refund route skipped the audit hook", "builder", "engineering", (356, 29, 3), runner="atlas", label="bulk-refund audit"),
          bg_task("B3", 6, "[reviewer] PR #353: feat(api): record an audit event from every admin mutation", "reviewer", "engineering", None, runner="birch", label="review audit PR"),
      ]},
-    {"mission": {"key": "B4", "table": "missions", "workspaceId": "ws", "title": "Usage-based pricing — spec first",
+    {"mission": {"key": "B4", "table": "missions", "workspaceId": "ws", "title": "Usage-based pricing, spec first",
                  "description": "Write the spec and pricing-page copy before any code.", "status": "paused",
                  "isHeld": False, "_createdAgo": "-1d",
                  "_note": "one non-completed row so the list isn't uniformly green"},
@@ -521,7 +521,7 @@ ev(0, "mission_create", mission="M1", title=M1_TITLE, description=M1_GOAL, conve
 ev(2, "task_create", task="T0", api="(mission create auto-starts the organizer)", db="INSERT tasks (mode=planning, roleSlug=organizer)")
 claim(5, "T0")
 prog(8, "T0", 10, "Reading the repo: apps/web, apps/api, packages/money")
-prog(20, "T0", 35, "Found money formatted by hand in many places — one helper first, then everything else")
+prog(20, "T0", 35, "Found money formatted by hand in many places. One helper first, then everything else")
 prog(31, "T0", 60, "Snapshot rates at invoice issue so checkout never waits on a live rate")
 prog(40, "T0", 85, "Drafting plan: 3 phases, 12 tasks, dependencies from path manifests")
 for i, k in enumerate(["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12"]):
@@ -543,7 +543,7 @@ prog(230, "T2", 55, "Migration applies cleanly on a fresh database and on a copy
 prog(260, "T5", 60, "Amount component now takes currency + locale")
 prog(290, "T3", 40, "Provider client with retries and a circuit breaker")
 prog(320, "T4", 45, "Persisting preference; defaulting to account base currency")
-prog(340, "T1", 45, "Provider C has no documented outage behaviour — ruling it out")
+prog(340, "T1", 45, "Provider C has no documented outage behaviour, ruling it out")
 prog(380, "T2", 85, "Tests pass; backfill defaults verified")
 open_pr(420, "T2")
 complete(430, "T2", "Additive migration for currency and rate snapshot; defaults backfilled.")
@@ -571,7 +571,7 @@ prog(735, "T9", 50, "Reconciling presentment vs base in the export")
 ci(700, "T3", "ci_running"); ci(790, "T3", "ci_green"); merge(815, "T3")
 prog(760, "T8", 20, "Creating PaymentIntents in the customer currency from the snapshotted rate")
 open_pr(800, "T6"); complete(820, "T6", "Invoices API exposes currency and presentment amounts, additively.")
-prog(840, "T8", 40, "Line items convert cleanly — but rounding per line vs total gives different card charges")
+prog(840, "T8", 40, "Line items convert cleanly, but rounding per line vs total gives different card charges")
 ev(868, "waiting_input", worker="w8", task="T8", note="n_q",
    waitingFor={"type": "question", "prompt": "Round converted amounts per line (matches the Stripe charge) or only on the total (matches the base ledger)?",
                "options": ["Per line — match Stripe", "Total only — match the ledger"]},
@@ -611,7 +611,7 @@ ev(1260, "schedule_fire", schedule="S2", task="H1", api="cron → /api/cron/sche
    beat="Meanwhile, the recurring mission ticks")
 ev(1263, "claim", task="H1", worker="wh1", runner="dune", api="POST /api/workers/claim", db="INSERT workers")
 ev(1266, "worker_status", worker="wh1", status="running", api="PATCH /api/workers/wh1", db="workers.status=running")
-ev(1300, "progress", worker="wh1", pct=60, message="Two patch bumps with green CI — merging", api="update_progress", db="workers.milestones")
+ev(1300, "progress", worker="wh1", pct=60, message="Two patch bumps with green CI, merging", api="update_progress", db="workers.milestones")
 ev(1330, "complete", task="H1", worker="wh1", summary="Merged 2 patch bumps. No majors pending. Next tick in 6h.", api="complete_task", db="tasks.status=completed")
 open_pr(1340, "T8"); complete(1352, "T8", "Checkout charges in the customer's currency; per-line rounding matches Stripe exactly.")
 claim(1358, "T11"); claim(1362, "T12")
@@ -759,9 +759,9 @@ chat = {
              "parts": [
                  {"type": "step-start"},
                  tool_part("call_demo_list", "manage_missions", {"action": "list", "workspace": "billing-web"}, "3 open, none touch currency"),
-                 tool_part("call_demo_recall", "recall", {"query": "currency money rounding"}, "1 recalled: money is integer minor units"),
+                 tool_part("call_demo_recall", "recall", {"query": "currency money rounding"}, "1 past decision: integer cents"),
                  tool_part("call_demo_tasks", "list_tasks", {"workspace": "billing-web", "status": "in_progress"}, "nothing in flight touches currency"),
-                 {"type": "text", "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."},
+                 {"type": "text", "text": "Nothing in flight touches currency. The team already decided amounts stay integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."},
              ]},
             {"key": "C1m3", "role": "user", "_at": "-2m",
              "parts": [{"type": "text", "text": "Make it a mission. Keep the public API backward compatible."}]},
@@ -780,8 +780,20 @@ chat = {
             "data": f"Mission created: {M1_TITLE}. The Organizer is planning it.",
             "objects": [{"kind": "mission", "id": "{{M1}}", "workspaceId": "{{ws}}", "title": M1_TITLE, "fallbackText": f"Mission: {M1_TITLE}"}],
             "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks.",
+            # "Keep the public API backward compatible" reads as a standing rule, so
+            # the confirmed turn also offers it as a directive card
+            # (components/chat/DirectiveCard.tsx): one tap saves it to the workspace.
+            "followUpParts": [{"type": "data-buildd-directive", "data": {
+                "conversationId": "{{C1}}", "text": "Keep the public Invoices API backward compatible.",
+                "suggestedScope": "workspace", "workspace": {"id": "{{ws}}", "name": "billing-web"}, "source": "jev",
+            }}],
         },
     }],
+    # Maya's standing rules already on file (Settings > Profile, "Standing rules").
+    "directives": [
+        {"userId": "u_maya", "text": "Open pull requests as drafts until CI is green.", "source": "settings", "_createdAgo": "-21d"},
+        {"userId": "u_maya", "workspaceId": "ws", "text": "Every UI change ships with phone and desktop screenshots.", "source": "chat", "_createdAgo": "-9d"},
+    ],
 }
 
 data = {

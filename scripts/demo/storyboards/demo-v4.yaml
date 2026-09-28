@@ -1,0 +1,143 @@
+# The v4 product demo (scripts/demo/renderer/): calm, one idea per shot.
+#
+#   bun run demo:shoot scripts/demo/storyboards/demo-v4.yaml --out <dir>
+#   bun run demo:render --shots <dir>/demo-v4 --out <video dir>
+#
+# Beats: ask in chat -> it recalls and drafts -> confirm -> keep a standing rule
+# -> fan-out on the Board -> the fleet at peak -> the question on a phone ->
+# visual review, approved by a person -> the completion record.
+#
+# Keys in {braces} are dataset keys from the story JSON (see multi-currency.yaml).
+# One theme: the directive card's Save is a real write, so a second theme would
+# find it already saved.
+story: ../stories/multi-currency.json
+name: demo-v4
+viewport: { width: 1440, height: 810, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark]
+highlight:
+  - chat-composer
+  - tool-call-group
+  - tool-call-row
+  - approval-card
+  - approval-confirm
+  - object-card
+  - chat-pane
+  - directive-card
+  - directive-save
+  - standing-rules
+  - standing-rule
+  - mission-board
+  - board-tile
+  - home-fleet
+  - fleet-slot
+  - respond-question-hero
+  - question-option
+  - visual-review-strip
+  - visual-review-thumb
+  - visual-review-review-button
+  - visual-review-deck
+  - deck-looks-right
+  - deck-toast
+  - goal-band
+  - goal-criterion
+  - pr-outcome
+steps:
+  # 1. The goal, asked in one sentence (typed, never sent).
+  - id: s01-ask
+    goto: /app/chat
+    waitFor: canvas-empty
+    type: { into: '[data-testid="chat-composer"] textarea', text: "What would it take to bill customers in their own currency?", frames: 16 }
+    hold: 600
+
+  # 2. The whole thread, unclipped: the renderer pans from the read-only tool
+  # rows (one is a recalled decision) down to the approval card and its Confirm.
+  - id: s02-thread
+    goto: /app/chat/{C1}
+    waitFor: [tool-call-group, approval-card]
+    fullPage: true
+    hold: 900
+
+  # 3. Confirmed (t=0): the mission docks beside the chat, and the turn offers
+  # "Keep the public API backward compatible" as a standing rule.
+  - id: s04-rule-card
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    waitFor: directive-card
+    scrollTo: directive-card
+    scrollAlign: end
+    scrollOffset: 160
+
+  # 4. One tap saves it to billing-web (a real POST /api/chat/directives).
+  - id: s05-rule-saved
+    goto: /app/chat/{C1}
+    waitFor: directive-save
+    click: directive-save
+    scrollTo: directive-card
+    scrollAlign: end
+    scrollOffset: 160
+    hold: 900
+
+  - id: s06-rules-settings
+    goto: /app/settings/account
+    waitFor: standing-rule
+    scrollTo: standing-rules
+    scrollOffset: -120
+
+  # 5. Fan-out: the Board in phase 1, then the fleet at peak.
+  - id: s07-board
+    advance: "4:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+
+  - id: s08-home
+    advance: "11:50"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+
+  # 6. The question, on the phone (w8 waits on Maya 14:28 -> 16:54).
+  - id: s09-question
+    advance: "14:35"
+    goto: /app/tasks/{T8}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    hold: 700
+
+  # 7. Visual review: the auditor's phone + desktop shots on the Board, then
+  # the review deck, where a person agrees.
+  - id: s10-screens
+    advance: "25:40"
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    fullPage: true
+    hold: 900
+
+  - id: s11-deck
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: mission-screens-row
+    hold: 1200
+
+  - id: s12-deck-agreed
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: [mission-screens-row, deck-looks-right]
+    hold: 1500
+
+  # 8. Done: the completion record.
+  - id: s13-complete
+    advance: end
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+
+  # Last, because answering is a real write: on the demo stack (no runner) it
+  # files a "Continue:" task that would sit on the Board to the end. Going back
+  # to 14:35 re-seeds, so nothing after this sees it.
+  - id: s14-answered
+    advance: "14:35"
+    goto: /app/tasks/{T8}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    click: '[data-testid="chat-object-sheet"] [data-testid="question-option"]'
+    hold: 6000
