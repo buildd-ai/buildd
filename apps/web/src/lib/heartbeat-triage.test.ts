@@ -50,6 +50,16 @@ describe('buildHeartbeatTriageState', () => {
     expect(state).not.toContain('**Report**');
   });
 
+  it('keeps the prior-runs section under its new and its old heading', () => {
+    // Renamed from "Prior Heartbeats"; stored descriptions from before the
+    // rename still carry the old heading and the benchmark rebuilds from them.
+    for (const heading of ['## Prior organizer runs', '## Prior Heartbeats']) {
+      const out = buildHeartbeatTriageState(`## Mission Phase: IDLE\n\n${heading}\n- 1h ago: [ok]`);
+      expect(out).toContain(heading);
+      expect(out).toContain('1h ago: [ok]');
+    }
+  });
+
   it('keeps the newest end of a long completed-tasks list', () => {
     expect(state).toContain('newest completion: shipped');
     expect(state.length).toBeLessThan(DESCRIPTION.length);

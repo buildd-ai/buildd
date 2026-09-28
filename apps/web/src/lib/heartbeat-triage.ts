@@ -75,6 +75,8 @@ const KEEP_SECTIONS: ReadonlyArray<{ prefix: string; maxChars: number; tail?: bo
   { prefix: '## Goal criteria', maxChars: 1_200 },
   { prefix: '## User Guidance', maxChars: 1_000 },
   { prefix: '## Questions & Answers', maxChars: 1_000 },
+  { prefix: '## Prior organizer runs', maxChars: 600 },
+  // Pre-rename heading: stored descriptions the benchmark rebuilds from.
   { prefix: '## Prior Heartbeats', maxChars: 600 },
   { prefix: '## Active/Pending Tasks', maxChars: 1_500 },
   { prefix: '## Blocked Tasks', maxChars: 1_200 },
