@@ -4,8 +4,8 @@
  *
  *   bun run scripts/demo/check-live-refresh.ts [path] [from] [to]
  *   bun run demo:check-live                     # /app/home, t=30s → t=150s
- *   DEMO_MARKER='[data-testid="chat-pane"] [data-testid="board-planning"]' \
- *     bun run demo:check-live '/app/chat/{C1}' 0 12   # the docked mission pane
+ *   DEMO_MARKER='[data-testid="chat-dock"] [data-testid="board-planning"]' \
+ *     bun run demo:check-live '/app/chat/{C1}' 0 12   # the docked mission (desktop)
  *
  * Needs the demo stack up and served (demo:up, demo:seed, demo:serve). Opens
  * `path` at story time `from`, reads a marker element, replays the story to `to`
