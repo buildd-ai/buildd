@@ -213,9 +213,11 @@ export async function runChatTurn(args: {
   }
   const routable = args.workspace ? undefined : args.workspaces;
   const checkTitle = text && deps.retitle ? titleToCheck(conv, stored.filter(m => m.role === 'user').length + 1) : null;
+  const lastAssistantMsg = lastAssistantText(stored);
   const routePromise = text
     ? (deps.route ?? routeTurn)({
       teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
+      ...(lastAssistantMsg ? { previous: lastAssistantMsg } : {}),
       ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
       ...(checkTitle ? { title: checkTitle } : {}),
     })
@@ -287,7 +289,7 @@ export async function runChatTurn(args: {
     ? proposeDirectiveCard({
       conversationId: conv.id,
       message: text!,
-      previous: lastAssistantText(stored),
+      previous: lastAssistantMsg,
       workspace: scopeWs ? { id: scopeWs.id, name: scopeWs.name, hint: routedWs?.hint ?? null } : null,
       judge: deps.directives.judge,
     })
