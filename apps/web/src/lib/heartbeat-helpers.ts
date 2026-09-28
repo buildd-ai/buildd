@@ -12,14 +12,18 @@ export const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat Checklist
 
 export const DEFAULT_HEARTBEAT_CRON = '*/30 * * * *';
 
+/**
+ * The organizer checklist. Only the items the organizer alone can do: the
+ * platform already retries failed tasks (task auto-retry), handles PR
+ * conflicts (CI retry + the conflict sweep) and catches a stuck mission (the
+ * backstop stuck check), so none of those are restated here. The exported
+ * name keeps "heartbeat" — renaming it changes no behaviour.
+ */
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: are we planning, building, reviewing, or stalled?
 - [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
 - [ ] If no workspace/repo exists: create one with manage_workspaces, then create coding tasks
-- [ ] Retry any failed tasks with failureContext (skip cancelled tasks — those were intentionally killed as duplicates or unwanted, do NOT retry them)
-- [ ] Check PR merge status — if a PR has merge conflicts, retry the ORIGINATING task (create_task with parentTaskId=<original task id>, failureContext='PR #N has merge conflicts with main — rebase onto main and resolve, continue on the same branch') — do NOT create a separate integration task
 - [ ] When creating a batch of build tasks: include a CONCRETE pathManifest (actual file/directory paths each task will create or modify) so the platform can serialize tasks that touch the same files. Example: pathManifest=["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]. The API auto-adds dependsOn edges between tasks whose concrete manifests overlap — you declare the paths, not the edges. A task filed WITHOUT a pathManifest defaults to the repo-wide sentinel ["**"], which means "scope not declared": it is advisory only and buys no serialization at all — no dependsOn edges in, none out, and no claim-time blocking. So an undeclared scope does not make a task safe; it makes it race. Declaring the paths is the only way to get serialization.
 - [ ] NEVER re-implement a file that is already declared in a sibling task's pathManifest or described as that task's primary deliverable. If you need code owned by a pending/active sibling task, report blocked with the sibling taskId so a dependsOn edge can be added.
-- [ ] Do NOT report OK if the mission has not made forward progress since last heartbeat
 - [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput. This PROPOSES completion — the platform then counts open tasks and evaluates the mission's goal criteria, and refuses if either does not clear. Setting the flag is not the same as the mission closing; check the mission's goal criteria (shown below when set) before asserting it, and if completion is refused the reason is posted to the mission feed`;
 
 // ── Hour formatting ──
@@ -181,7 +185,6 @@ export interface MissionPhaseData {
   artifacts: Array<{ type: string; key?: string | null }>;
   hasWorkspace: boolean;
   prCount: number;
-  priorHeartbeatStatuses: string[];
 }
 
 export type MissionPhase = 'planning' | 'needs_workspace' | 'building' | 'reviewing' | 'stalled' | 'idle';
@@ -193,12 +196,17 @@ export interface PhaseAssessment {
 }
 
 /**
- * Detect the current phase of a mission based on task, artifact, and heartbeat data.
- * Pure function — no DB access. Used by the heartbeat context builder to generate
- * phase-aware guidance instead of passive status reporting.
+ * Detect the current phase of a mission from its task and artifact state.
+ * Pure function — no DB access. Used by the organizer context builder to
+ * generate phase-aware guidance instead of passive status reporting.
+ *
+ * Prior organizer statuses are deliberately NOT an input. `stalled` used to
+ * mean "the last 3+ heartbeats said ok", which only existed to stop a cron
+ * cycle idling; stuck missions are now the backstop sweep's job. Here
+ * `stalled` is read from state alone: work finished, nothing open, no plan.
  */
 export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
-  const { completedTasks, activeTasks, failedTasks, artifacts, hasWorkspace, prCount, priorHeartbeatStatuses } = data;
+  const { completedTasks, activeTasks, failedTasks, artifacts, hasWorkspace, prCount } = data;
 
   const builderCompleted = completedTasks.filter(t => t.roleSlug === 'builder');
   const activeBuilders = activeTasks.filter(t => t.roleSlug === 'builder');
@@ -209,10 +217,6 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     a.type === 'report' ||
     (a.key != null && /plan|feature|spec|design/i.test(a.key))
   );
-
-  // 3+ consecutive "ok" heartbeats = potential stall
-  const isStalled = priorHeartbeatStatuses.length >= 3 &&
-    priorHeartbeatStatuses.every(s => s === 'ok');
 
   // Active builders → building
   if (activeBuilders.length > 0) {
@@ -279,16 +283,16 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     };
   }
 
-  // Stalled: heartbeat keeps saying OK but nothing moves
-  if (isStalled && completedTasks.length > 0) {
+  // Stalled: work finished, nothing open, and no plan or builder output to act on
+  if (completedTasks.length > 0 && activeTasks.length === 0) {
     return {
       phase: 'stalled',
-      reason: 'Last 3+ heartbeats reported OK with no forward progress.',
+      reason: 'Work has finished and nothing is open or planned.',
       actions: [
-        'Identify the specific blocker preventing progress',
+        'Decide the next step from the completed results and the mission goal',
         'If tasks only produced plans, create coding tasks (see planning phase)',
         'If waiting on a human decision, escalate clearly',
-        'Do NOT report OK again without taking concrete action',
+        'If the goal is met, propose completion',
       ],
     };
   }

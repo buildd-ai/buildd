@@ -28,6 +28,14 @@ function baseCtx(overrides: Partial<PromptContext> = {}): PromptContext {
 }
 
 describe('buildPromptWithComposition — heartbeat protocol injection', () => {
+  it('reads a stall from the phase above, not from prior run statuses', () => {
+    // Stalls are the backstop sweep's job; the organizer's phase section says
+    // STALLED from state alone. "Same state as prior heartbeats" was the old
+    // cron-idling rule and must not come back through the protocol.
+    expect(HEARTBEAT_PROTOCOL_BLOCK).not.toContain('prior heartbeats');
+    expect(HEARTBEAT_PROTOCOL_BLOCK).toContain('STALLED');
+  });
+
   it('injects HEARTBEAT_PROTOCOL_BLOCK exactly once for a heartbeat task', () => {
     const ctx = baseCtx({
       task: {

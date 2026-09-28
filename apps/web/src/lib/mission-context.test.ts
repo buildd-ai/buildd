@@ -655,7 +655,8 @@ describe('buildMissionContext', () => {
     });
 
     const result = await buildMissionContext('obj-hb4', { triggerSource: 'cron' });
-    expect(result!.description).toContain('## Prior Heartbeats');
+    expect(result!.description).toContain('## Prior organizer runs');
+    expect(result!.description).not.toContain('## Prior Heartbeats');
     expect(result!.description).toContain('[ok] 2 task(s) created, 5 action(s)');
     expect(result!.description).toContain('[action_taken] 1 retried, 3 action(s)');
   });
