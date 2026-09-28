@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { DEP_SATISFYING_STATUSES, dependenciesSatisfied } from './deps-gate';
+import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate } from './deps-gate';
+import { sql } from 'drizzle-orm';
 import {
   DEP_SATISFYING_STATUSES as CONTRACT_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -123,5 +124,35 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
 
   it('re-exports the ONE contract definition, not a local copy', () => {
     expect(DEP_SATISFYING_STATUSES).toBe(CONTRACT_STATUSES);
+  });
+});
+
+// Friction cad81659: the route's deps gate was
+//   depends_on IS NULL OR depends_on = '[]' OR context->>'bypassDepsGate' = 'true' OR <satisfied>
+// and the bypass arm is NULL when the key is absent, so a task with an
+// unsatisfied dependency evaluated to NULL, not FALSE. The claim excluded it
+// (correctly) and the explicit-claim probe, reading NULL as "not evaluated",
+// said "unknown". Verified against real Postgres; here the SQL shape pins it.
+describe('depsGate(): two-valued', () => {
+  const text = () => dialect.sqlToQuery(depsGate()).sql.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ');
+
+  it('coalesces the force-start bypass so a missing key is FALSE', () => {
+    expect(text()).toMatch(/COALESCE\("tasks"\."context"->>\$\d+, ''\) = 'true'/);
+    expect(dialect.sqlToQuery(depsGate()).params).toContain('bypassDepsGate');
+    expect(text()).not.toMatch(/"tasks"\."context"->>'bypassDepsGate' = 'true'/);
+  });
+
+  it('keeps the no-deps and empty-deps escapes and the satisfied check', () => {
+    const t = text();
+    expect(t).toContain('"tasks"."depends_on" is null');
+    expect(t).toContain(`"tasks"."depends_on"::jsonb = '[]'::jsonb`);
+    expect(t).toContain('jsonb_array_elements_text("tasks"."depends_on"::jsonb)');
+  });
+});
+
+describe('dependencySatisfied(depId): the per-dependency predicate', () => {
+  it('is the same predicate the whole-array gate applies to each element', () => {
+    const one = dialect.sqlToQuery(dependencySatisfied(sql`dep_id::uuid`)).sql;
+    expect(renderGate()).toContain(one.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim());
   });
 });

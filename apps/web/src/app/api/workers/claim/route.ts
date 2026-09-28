@@ -4,6 +4,7 @@ import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkill
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -43,10 +44,13 @@ import {
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
-import { dependenciesSatisfied } from './deps-gate';
+import { depsGate } from './deps-gate';
+import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
+import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
+import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, taskNotHeld } from './held-gate';
-import { diagnoseExplicitTaskExclusion, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -79,6 +83,7 @@ import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
 
+
 /**
  * A review task the reviewer dispatched: `category: 'review'` plus
  * `context.reviewerFor` naming the reviewed task (the same pair
@@ -89,6 +94,36 @@ function isDispatchedReview(category: unknown, context: unknown): boolean {
   if (category !== 'review') return false;
   const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
   return typeof reviewerFor === 'string' && reviewerFor.length > 0;
+}
+
+/**
+ * The workspace concurrency cap as a claim predicate (see the call site for the
+ * rules). A function so a force claim can evaluate it for the audit without
+ * applying it.
+ */
+function workspaceCapGate() {
+  return or(
+      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
+      sql`(
+      SELECT COUNT(*) FROM ${workers} w2
+      JOIN ${tasks} t3 ON t3.id = w2.task_id
+      WHERE t3.workspace_id = ${tasks.workspaceId}
+      AND w2.status IN ('running', 'starting', 'idle')
+      AND t3.id != ${tasks.id}
+      AND EXISTS (
+        SELECT 1 FROM ${workspaces} ws
+        WHERE ws.id = t3.workspace_id
+        AND ws.repo IS NOT NULL
+      )
+    ) < GREATEST(
+      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
+       WHERE ws2.id = ${tasks.workspaceId}),
+      COALESCE(
+        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
+        0
+      )
+    )`,
+    )!;
 }
 
 export async function POST(req: NextRequest) {
@@ -132,6 +167,31 @@ export async function POST(req: NextRequest) {
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
+  // A person's interactive MCP session, proven by the marker the MCP routes
+  // sign server-side (lib/interactive-session.ts). `runner: 'mcp'` alone is
+  // client-supplied and proves nothing, so without the marker it is recorded
+  // as a runner id and gets every runner rule (cooldown, reaper liveness).
+  const interactiveSession = verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), account.id);
+
+  // Admin force-claim of ONE named task: the MCP equivalent of the dashboard's
+  // "Start with override" (friction cad81659). Only for an admin token, only
+  // with a taskId, and only on a task in the admin's OWN team's workspace (a
+  // canClaim link into another team grants claiming, not overriding that
+  // team's gates); any other combination is an ordinary claim. It lifts the
+  // gates a person may override (deps, held mission, dead subject, startAt,
+  // mission concurrency/pacing, path overlap, workspace cap) and never the ones
+  // that protect correctness, cost or capacity (live worker, a person's hold on
+  // the task, the mission budget, scope-undeclared serialization, role/runner
+  // routing, provider walls, account limits). Granted below, once the task's
+  // team is known.
+  const forceRequested = body.forceOverride === true && !!taskId && account.level === 'admin';
+  let forceClaim = false;
+  // Gates a force claim actually lifted for its task, i.e. the ones that would
+  // have excluded or deferred it. SQL-level ones are evaluated after the
+  // candidate query (the claim query no longer applies them); in-loop ones are
+  // appended as the loop passes them. Audited on the task and the gate ledger.
+  const forceBypassed: string[] = [];
+
   if (!runner) {
     if (!isProbe) fireGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
@@ -143,6 +203,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
+  runner = resolveClaimRunner(runner, interactiveSession);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
@@ -382,6 +443,43 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // A person's explicit claims from an interactive session skip the per-runner
+  // cooldown (below), so they get their own limit instead: one attempt per
+  // (task, account) per EXPLICIT_CLAIM_WINDOW_SEC.
+  if (taskId && interactiveSession && !(await allowExplicitClaim(taskId, account.id))) {
+    return emptyClaim({
+      diagnostics: {
+        reason: 'rate_limited',
+        taskExclusion: {
+          code: 'rate_limited',
+          detail: `This task was claimed from this account less than ${EXPLICIT_CLAIM_WINDOW_SEC}s ago. Retry shortly.`,
+        },
+      } satisfies ClaimDiagnostics,
+    });
+  }
+
+  if (forceRequested) {
+    const target = await db.query.tasks.findMany({
+      where: and(eq(tasks.id, taskId!), inArray(tasks.workspaceId, workspaceIds)),
+      columns: { id: true, workspaceId: true },
+      with: { workspace: { columns: { teamId: true } } },
+      limit: 1,
+    });
+    const targetTeamId = (target[0] as any)?.workspace?.teamId as string | undefined;
+    forceClaim = !!targetTeamId && targetTeamId === account.teamId;
+    if (!forceClaim && target[0]) {
+      fireGateEvent({
+        gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+        surface: 'POST /api/workers/claim',
+        outcome: 'rejected',
+        reason: 'force_claim_cross_team',
+        taskId: taskId!,
+        workspaceId: target[0].workspaceId,
+        callerOrigin: gateCallerOrigin({ apiAccount: account }),
+      });
+    }
+  }
+
   // Find claimable tasks
   const now = new Date();
   // CLAIMABILITY CONTRACT (all conditions must hold):
@@ -401,8 +499,9 @@ export async function POST(req: NextRequest) {
     eq(tasks.status, 'pending'),
     or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now)),
     // A deferred task is inert until its concrete floor. This is deliberately
-    // enforced in the atomic claim query, not only in dispatch/UI.
-    or(isNull(tasks.startAt), lte(tasks.startAt, now)),
+    // enforced in the atomic claim query, not only in dispatch/UI. A force
+    // claim starts it now, as the dashboard override clears startAt.
+    ...(forceClaim ? [] : [or(isNull(tasks.startAt), lte(tasks.startAt, now))]),
   ];
 
   // If a specific taskId was requested, only claim that task
@@ -433,8 +532,10 @@ export async function POST(req: NextRequest) {
   // Exclude tasks whose mission is held. A held mission gates ALL its tasks
   // until explicitly armed (mission.isHeld=false). Force-starting a single task
   // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
-  explicitTaskGates.missionHeld = missionNotHeld();
-  claimableConditions.push(explicitTaskGates.missionHeld);
+  if (!forceClaim) {
+    explicitTaskGates.missionHeld = missionNotHeld();
+    claimableConditions.push(explicitTaskGates.missionHeld);
+  }
   // A single task held by a person (PATCH { held: true }) waits for resume.
   explicitTaskGates.taskHeld = taskNotHeld();
   claimableConditions.push(explicitTaskGates.taskHeld);
@@ -448,8 +549,10 @@ export async function POST(req: NextRequest) {
   // subject anchor are unaffected (backwards compat).
   // context.bypassSubjectGate=true (written by /start with forceOverride)
   // bypasses this gate for a single force-started task.
-  explicitTaskGates.subject = subjectLivenessCondition();
-  claimableConditions.push(explicitTaskGates.subject);
+  if (!forceClaim) {
+    explicitTaskGates.subject = subjectLivenessCondition();
+    claimableConditions.push(explicitTaskGates.subject);
+  }
 
   // Exclude tasks whose dependencies haven't been satisfied yet.
   // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
@@ -459,16 +562,12 @@ export async function POST(req: NextRequest) {
   // pending / in_progress deps still block. See dependenciesSatisfied().
   // Exception: bypassDepsGate=true in task context lets a human override the gate
   // (set by /api/tasks/[id]/start when forceOverride=true).
-  explicitTaskGates.deps = or(
-      // No dependencies
-      isNull(tasks.dependsOn),
-      sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-      // Human override: task was manually force-started, skip the dep-PR gate
-      sql`${tasks.context}->>'bypassDepsGate' = 'true'`,
-      // Every dependency must be satisfied (completed+merged, or cancelled)
-      dependenciesSatisfied()
-    )!;
-  claimableConditions.push(explicitTaskGates.deps);
+  // No deps, empty deps, the force-start bypass, or every dependency satisfied.
+  // Two-valued (see depsGate) so the explicit-claim probe can name it.
+  if (!forceClaim) {
+    explicitTaskGates.deps = depsGate();
+    claimableConditions.push(explicitTaskGates.deps);
+  }
 
   // Cap parallel workers per repo-backed workspace. Each task runs in its own git
   // worktree+branch, so parallel work is safe on disk; the cap bounds merge-conflict
@@ -488,29 +587,8 @@ export async function POST(req: NextRequest) {
   // precisely when the workspace is at cap — i.e. every time the button is
   // actually used — so the in-loop check below never saw the task at all.
   // Same accepted value forms on both sides via lib/bypass-flags.ts.
-  explicitTaskGates.workspaceCap = or(
-      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
-      sql`(
-      SELECT COUNT(*) FROM ${workers} w2
-      JOIN ${tasks} t3 ON t3.id = w2.task_id
-      WHERE t3.workspace_id = ${tasks.workspaceId}
-      AND w2.status IN ('running', 'starting', 'idle')
-      AND t3.id != ${tasks.id}
-      AND EXISTS (
-        SELECT 1 FROM ${workspaces} ws
-        WHERE ws.id = t3.workspace_id
-        AND ws.repo IS NOT NULL
-      )
-    ) < GREATEST(
-      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-       WHERE ws2.id = ${tasks.workspaceId}),
-      COALESCE(
-        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
-        0
-      )
-    )`,
-    )!;
-  claimableConditions.push(explicitTaskGates.workspaceCap);
+  if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
+  if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
 
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
@@ -521,14 +599,21 @@ export async function POST(req: NextRequest) {
   // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
   // only check missed them entirely and left the burn-loop gap that caused the
   // 2026-06-25 session-limit storm.
-  explicitTaskGates.runnerCooldown = sql`NOT EXISTS (
-      SELECT 1 FROM ${workers} w_cd
-      WHERE w_cd.task_id = ${tasks.id}
-      AND w_cd.runner = ${runner}
-      AND w_cd.status IN ('error', 'failed')
-      AND w_cd.updated_at > ${cooldownCutoff}
-    )`;
-  claimableConditions.push(explicitTaskGates.runnerCooldown);
+  //
+  // Not applied to a person's explicit claim from an MCP session: there is no
+  // runner loop to break, every MCP session shares the runner id 'mcp' (so one
+  // person's reaped worker cooled the task down for everyone), and re-claiming
+  // right after a worker was reaped is exactly what an organizer does.
+  if (!(taskId && interactiveSession)) {
+    explicitTaskGates.runnerCooldown = sql`NOT EXISTS (
+        SELECT 1 FROM ${workers} w_cd
+        WHERE w_cd.task_id = ${tasks.id}
+        AND w_cd.runner = ${runner}
+        AND w_cd.status IN ('error', 'failed')
+        AND w_cd.updated_at > ${cooldownCutoff}
+      )`;
+    claimableConditions.push(explicitTaskGates.runnerCooldown);
+  }
 
   // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
   // (visual-auditor) need an explicit availableSkills match; every other role
@@ -549,6 +634,23 @@ export async function POST(req: NextRequest) {
     limit: candidateLimit,
     with: { workspace: true },
   });
+
+  if (forceClaim && claimableTasks.some(t => t.id === taskId)) {
+    // Which of the lifted SQL gates would have excluded the task. Same
+    // predicates the ordinary claim applies; audit only, never blocks.
+    const failing = await evaluateForcedGates({
+      taskId: taskId!,
+      workspaceIds,
+      gates: {
+        deps: depsGate(),
+        missionHeld: missionNotHeld(),
+        subject: subjectLivenessCondition(),
+        workspaceCap: workspaceCapGate(),
+        startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
+      },
+    });
+    forceBypassed.push(...failing);
+  }
 
   if (claimableTasks.length === 0) {
     // An explicit taskId the query filtered out would otherwise read exactly
@@ -674,6 +776,12 @@ export async function POST(req: NextRequest) {
         reason: 'capability_mismatch',
         pendingTasks: claimableTasks.length,
         matchedTasks: 0,
+        ...(taskId ? {
+          taskExclusion: {
+            code: 'capability_mismatch',
+            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with local Codex auth nor access to a team Codex credential.',
+          },
+        } : {}),
       } satisfies ClaimDiagnostics,
     });
   }
@@ -888,6 +996,12 @@ export async function POST(req: NextRequest) {
     // new reason ships untyped to every client.
   } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
 
+  // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
+  // deferred in the dispatch loop below. It already passed every SQL-level
+  // gate (it is in `filteredTasks`), so the SQL probe never runs for it; the
+  // loop knows which gate held it, so it says so (see deferTask).
+  let explicitTaskExclusion: ClaimTaskExclusion | null = null;
+
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
   // behind the same gate for hours accumulates a `consecutiveDeferrals`
@@ -900,6 +1014,11 @@ export async function POST(req: NextRequest) {
     detail?: Record<string, unknown>,
   ) => {
     deferrals[reasonKey]++;
+    // The named task itself was deferred: say by what. Path overlap sets a
+    // richer sentence before calling here, so keep one that is already set.
+    if (taskId && task.id === taskId && !explicitTaskExclusion) {
+      explicitTaskExclusion = describeExplicitDeferral(reasonKey, detail);
+    }
     fireDeferralEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
@@ -921,13 +1040,6 @@ export async function POST(req: NextRequest) {
   // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
   // that want to name the PR an idle runner is waiting on).
   let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
-  // Set when the EXPLICITLY requested task (claim with `taskId`) is itself the
-  // one deferred by the path-overlap backstop below. This task already passed
-  // every SQL-level claimability gate (it is in `filteredTasks`), so the
-  // explicit-task-exclusion probe never runs for it and would say 'unknown' —
-  // the route already knows exactly which PR or task blocked it, so surface
-  // that instead of falling back to the generic deferral message.
-  let explicitTaskExclusion: ClaimTaskExclusion | null = null;
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
@@ -1181,10 +1293,22 @@ export async function POST(req: NextRequest) {
     // predicate (lib/subject-gate-contract.ts) — subjectAnchor and context must
     // be selected for it to see the anchor's source and the bypass flag; the
     // candidate query above selects every task column.
+    // The named task under an admin force claim skips the gates a person may
+    // override; every other candidate in the batch is gated as usual.
+    const forced = forceClaim && task.id === taskId;
+    /** Forceable gate hit: record it as bypassed on a force claim, else defer. True = skip the task. */
+    const bypassOrDefer = (reasonKey: keyof typeof deferrals, detail?: Record<string, unknown>): boolean => {
+      if (forced) {
+        if (!forceBypassed.includes(reasonKey)) forceBypassed.push(reasonKey);
+        return false;
+      }
+      deferTask(task, reasonKey, detail);
+      return true;
+    };
+
     if (!subjectStillLive(task)) {
-      console.log(`[claim] task ${task.id} skipped: subject PR reconciled (dead)`);
-      deferTask(task, 'subject_dead');
-      continue;
+      console.log(`[claim] task ${task.id} ${forced ? 'force-claimed past' : 'skipped:'} subject PR reconciled (dead)`);
+      if (bypassOrDefer('subject_dead')) continue;
     }
 
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
@@ -1217,7 +1341,7 @@ export async function POST(req: NextRequest) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
         firstBlockingPr ??= blockedByPr;
-        if (task.id === taskId) {
+        if (task.id === taskId && !forced) {
           const blockingEntry = filterOpenPrTasks.find(
             t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
           );
@@ -1228,8 +1352,7 @@ export async function POST(req: NextRequest) {
             detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
           };
         }
-        deferTask(task, 'path_overlap', blockedByPr);
-        continue;
+        if (bypassOrDefer('path_overlap', blockedByPr)) continue;
       }
 
       // Path-overlap backstop (layer 2): also check active path_claims rows.
@@ -1253,7 +1376,7 @@ export async function POST(req: NextRequest) {
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-              if (task.id === taskId) {
+              if (task.id === taskId && !forced) {
                 const overlapPaths = intersectPaths(concreteManifest, concreteClaimed);
                 explicitTaskExclusion = {
                   code: 'path_overlap',
@@ -1262,8 +1385,7 @@ export async function POST(req: NextRequest) {
               }
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
-              deferTask(task, 'path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
-              blockedByActiveClaim = true;
+              blockedByActiveClaim = bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
               break;
             }
           }
@@ -1310,8 +1432,7 @@ export async function POST(req: NextRequest) {
         );
         if (concurrencyBlock) {
           console.log(`[claim] task ${task.id} deferred: mission ${taskMissionId} at concurrency cap (${concurrencyBlock.active}/${concurrencyBlock.cap})`);
-          deferTask(task, 'mission_concurrent', { missionId: taskMissionId, active: concurrencyBlock.active, cap: concurrencyBlock.cap });
-          continue;
+          if (bypassOrDefer('mission_concurrent', { missionId: taskMissionId, active: concurrencyBlock.active, cap: concurrencyBlock.cap })) continue;
         }
 
         // 3. Pacing gate: paced missions enforce a minimum interval between task starts.
@@ -1324,8 +1445,7 @@ export async function POST(req: NextRequest) {
             `(next eligible ${pacingBlock.nextEligibleAt.toISOString()}, ` +
             `interval ${pacingBlock.intervalSec}s, elapsed ${Math.round(pacingBlock.elapsedSec)}s)`,
           );
-          deferTask(task, 'mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() });
-          continue;
+          if (bypassOrDefer('mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() })) continue;
         }
 
         // 4. Advisory-manifest serialization (compensating guard).
@@ -1398,8 +1518,7 @@ export async function POST(req: NextRequest) {
       const missionCap = taskMissionId ? (missionClaimMap.get(taskMissionId)?.maxConcurrentTasks ?? 0) : 0;
       const cap = Math.max(workspaceCap, missionCap);
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
-        deferTask(task, 'workspace_cap', { active: activeByWorkspace.get(task.workspaceId) || 0, cap });
-        continue;
+        if (bypassOrDefer('workspace_cap', { active: activeByWorkspace.get(task.workspaceId) || 0, cap })) continue;
       }
     }
 
@@ -1546,6 +1665,12 @@ export async function POST(req: NextRequest) {
           },
         })
         .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+      if (task.id === taskId) {
+        explicitTaskExclusion = {
+          code: 'workspace_mismatch',
+          detail: `The task is pinned to project "${taskProject}", which this workspace does not have, so it was failed. Check the workspace the MCP session is connected to.`,
+        };
+      }
 
       // TERMINAL write → must run the same post-terminal resolution every other
       // terminal writer runs (lib/stale-workers.ts, workers/[id] completion,
@@ -1708,8 +1833,20 @@ export async function POST(req: NextRequest) {
     // routed output, so the next claim after a requeue routes afresh instead of
     // replaying this result as an override. A role full-id pin is not a task
     // pin: it is re-read from the role on every claim.
+    if (forced) {
+      console.log(`[claim] force claim: task ${task.id} past [${forceBypassed.join(', ')}] by admin account ${account.id}`);
+    }
     const patchedContext = {
-      ...(taskContext || {}),
+      // A previous claim's force audit never carries over (withoutForceClaim).
+      ...withoutForceClaim(taskContext),
+      ...(forced ? {
+        [FORCE_CLAIM_CONTEXT_KEY]: {
+          at: now.toISOString(),
+          accountId: account.id,
+          userId: interactiveSession?.userId ?? null,
+          bypassed: [...forceBypassed],
+        },
+      } : {}),
       model: resolvedModel,
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
@@ -1876,6 +2013,12 @@ export async function POST(req: NextRequest) {
         .update(tasks)
         .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
         .where(eq(tasks.id, task.id));
+      if (task.id === taskId) {
+        explicitTaskExclusion = {
+          code: 'account_cap',
+          detail: `This account reached its limit of ${account.maxConcurrentWorkers} concurrent workers while the claim ran. Finish or release one, then retry.`,
+        };
+      }
       break;
     }
 
@@ -1885,6 +2028,20 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    if (forced) {
+      fireGateEvent({
+        gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+        surface: 'POST /api/workers/claim',
+        outcome: 'bypassed',
+        reason: 'force_claim',
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+        missionId: (task as any).missionId ?? null,
+        workerId: worker.id,
+        callerOrigin: gateCallerOrigin({ apiAccount: account }),
+        detail: { bypassed: [...forceBypassed], accountId: account.id, userId: interactiveSession?.userId ?? null },
+      });
+    }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
 

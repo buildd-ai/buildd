@@ -23,6 +23,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
+import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
@@ -85,7 +86,12 @@ function extractBearerToken(req: Request): string | null {
 
 // ── API Wrapper ──────────────────────────────────────────────────────────────
 
-function createApi(apiKey: string): ApiFn {
+/**
+ * `interactiveMarker` is the server-signed INTERACTIVE_SESSION_HEADER value
+ * (lib/interactive-session.ts): it tells the REST routes this call comes from
+ * a person's MCP session, which a client-supplied `runner: 'mcp'` cannot.
+ */
+function createApi(apiKey: string, interactiveMarker?: string | null): ApiFn {
   const baseUrl = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : process.env.NEXTAUTH_URL || "https://buildd.dev";
@@ -96,6 +102,7 @@ function createApi(apiKey: string): ApiFn {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
         ...options.headers,
       },
     });
@@ -948,7 +955,10 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   }
 
   // Create per-request API wrapper, server, and transport
-  const api = createApi(apiKey);
+  const api = createApi(apiKey, signInteractiveSession({
+    accountId: account.id,
+    userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
+  }));
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
   const dataClass = await resolveWorkspaceDataClass(workspaceId);

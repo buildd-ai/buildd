@@ -137,6 +137,22 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     expect('taskId' in claimBody()).toBe(false);
   });
 
+  // Friction cad81659: an organizer claiming a task held only by an edge
+  // POST /api/tasks added for overlapping pathManifests had no MCP override.
+  it('passes force through as forceOverride, only together with a taskId', async () => {
+    mockApi.mockResolvedValue({ workers: [] });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID, force: true }, interactive());
+    expect(claimBody()).toMatchObject({ taskId: TASK_ID, forceOverride: true });
+
+    mockApi.mockClear();
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { force: true }, interactive());
+    expect('forceOverride' in claimBody()).toBe(false);
+
+    mockApi.mockClear();
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID }, interactive());
+    expect('forceOverride' in claimBody()).toBe(false);
+  });
+
   it('rejects a short task id prefix before calling the route', async () => {
     await expect(
       handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: '81962c2f' }, interactive()),
