@@ -135,6 +135,9 @@ function mockMemoryClient(): any {
     async save(input: any) { return { memory: mem(input) }; },
     async update(_id: string, fields: any) { return { memory: mem(fields) }; },
     async delete() {},
+    // Explicit supersedes are narrowed to the caller's project by row lookup;
+    // here every id is one of the caller's own memories.
+    async batch(ids: string[]) { return { memories: ids.map(id => mem({ id })) }; },
   };
 }
 

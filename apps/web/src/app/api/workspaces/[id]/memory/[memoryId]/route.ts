@@ -13,7 +13,8 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { updateMemory } from '@buildd/core/memory-write';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -67,14 +68,14 @@ export async function PATCH(
   const body = await req.json();
 
   try {
-    const data = await memClient.update(memoryId, {
+    const data = await updateMemory(memClient, memoryId, {
       type: body.type,
       title: body.title,
       content: body.content,
       files: body.files,
       tags: body.tags || body.concepts,
       project: body.project,
-    });
+    }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:update' });
     return NextResponse.json({ memory: data.memory, observation: data.memory });
   } catch (err) {
     console.error('Memory service error:', err);

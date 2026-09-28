@@ -90,7 +90,7 @@ function toRecord(row: typeof memories.$inferSelect): MemoryRecord {
 export type Memory = MemoryRecord;
 
 export class MemoryStore {
-  constructor(private teamId: string) {}
+  constructor(readonly teamId: string) {}
 
   /** Markdown-formatted recent memories for agent context injection. */
   async getContext(project?: string): Promise<{ markdown: string; count: number }> {

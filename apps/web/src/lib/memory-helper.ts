@@ -9,6 +9,8 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { MemoryStore } from '@buildd/core/memory-store';
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
+import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
 
 export async function getMemoryStoreForTeam(
   workspaceId: string | null | undefined,
@@ -31,6 +33,15 @@ export async function getMemoryStoreForTeam(
   if (!teamId) return null;
 
   return new MemoryStore(teamId);
+}
+
+/**
+ * The index memory writes mirror into (`{teamId}:memory`, read by recall and
+ * the claim/planning blocks). Same construction as the MCP route's store; a
+ * null embedder falls back to lexical-only indexing.
+ */
+export function getMemoryIndexStore(): KnowledgeStore {
+  return new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
 }
 
 /** @deprecated Use getMemoryStoreForTeam */

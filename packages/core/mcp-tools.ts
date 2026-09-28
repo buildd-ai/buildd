@@ -12,7 +12,8 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { normalizeProject, workspaceProjectKey } from './project-scope';
+import { normalizeProject } from './project-scope';
+import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,
   LEDE_REQUIRED_ERROR,
@@ -1617,11 +1618,16 @@ export async function handleBuilddAction(
       try {
         const claimedTask = workers[0]?.task;
         const claimedWs = claimedTask?.workspace;
-        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive'
-          ? workspaceProjectKey(claimedWs.repo, claimedWs.name)
+        // The key is memoryProjectKey's (via resolveMemoryProjectKey), the same
+        // rule every other memory read uses: it also closes a key shared with a
+        // sensitive workspace in the team, which the payload alone cannot show.
+        const claimedWsId = claimedTask?.workspaceId ?? claimedWs?.id;
+        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive' && claimedWsId
+          && claimedTask?.title && ctx.getMemoryClient
+          ? await resolveClaimMemoryProject(claimedWsId)
           : null;
-        const memClient = memProject && claimedTask?.title && ctx.getMemoryClient
-          ? await ctx.getMemoryClient(claimedTask.workspaceId ?? claimedWs.id)
+        const memClient = memProject && ctx.getMemoryClient
+          ? await ctx.getMemoryClient(claimedWsId)
           : null;
         if (memClient && memProject) {
           const searchData = await memClient.search({
@@ -5623,6 +5629,37 @@ async function ownMemoryHits<T extends { id: string; metadata?: Record<string, u
 }
 
 /**
+ * Server-side memory project key for a workspace (memoryProjectKey over the
+ * workspace and its team). Loaded lazily: ./memory-scope reaches the DB, and
+ * this module also runs where there is none. Any failure means no memory.
+ */
+async function resolveClaimMemoryProject(workspaceId: string): Promise<string | null> {
+  try {
+    const { resolveMemoryProjectKey } = await import('./memory-scope');
+    return await resolveMemoryProjectKey(workspaceId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Narrow explicit `supersedes` ids to the caller's own project memories, by the
+ * same rule as reads. The index flips whatever ids it is given across the whole
+ * team namespace, so a foreign id and a missing id must both drop out here, and
+ * identically: the superseded count in the reply then says nothing about ids
+ * outside the caller's project. A failed lookup supersedes nothing.
+ */
+async function ownSupersedes(
+  mc: MemoryStore | null,
+  ctx: MemoryActionCtx,
+  ids: string[] | undefined,
+): Promise<string[] | undefined> {
+  if (!ids || ids.length === 0) return undefined;
+  const own = await ownMemoryHits(mc, ctx, ids.map(id => ({ id }))).catch(() => []);
+  return own.length > 0 ? own.map(h => h.id) : undefined;
+}
+
+/**
  * Extracts implementation anchors from spec chunks for two-hop code retrieval.
  * Captures file paths, route paths, camelCase symbols, and PascalCase types —
  * the identifiers spec docs use to reference implementing code. These anchors
@@ -6007,7 +6044,13 @@ export async function handleLearnAction(
     }
   }
 
-  const data = await memoryClient.save({
+  // Explicit ids are narrowed to the caller's own project before they reach the
+  // team-wide index (auto-supersede ids above already were).
+  const learnSupersedes = await ownSupersedes(memoryClient, ctx, supersedesParam.ids);
+
+  // Saved and mirrored through the one write helper; a failed mirror is
+  // recorded there and picked up by the reconcile pass.
+  const saved = await saveMemory(memoryClient, {
     type: params.type as string,
     title: params.title as string,
     content: params.content as string,
@@ -6015,25 +6058,9 @@ export async function handleLearnAction(
     tags: params.tags as string[] | undefined,
     files: params.files as string[] | undefined,
     source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-  });
-
-  // Mirror into KnowledgeStore for hybrid retrieval (team-scoped).
-  let learnSuperseded = 0;
-  if (ctx.teamId && ctx.knowledgeStore) {
-    const m = data.memory;
-    const ns = buildNamespace(ctx.teamId, 'memory');
-    const lexicalText = `${m.title}\n\n${m.content}`;
-    const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-      id: m.id,
-      content: m.content,
-      lexicalText,
-      sourceType: 'memory',
-      sourceUrl: `/app/memory/${m.id}`,
-      metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-      ...(supersedesParam.ids && supersedesParam.ids.length > 0 ? { supersedes: supersedesParam.ids } : {}),
-    }]).catch(() => undefined);
-    if (upsertRes) learnSuperseded = upsertRes.superseded;
-  }
+  }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: learnSupersedes });
+  const data = { memory: saved.memory };
+  const learnSuperseded = saved.superseded;
 
   const supersededStr = supersedesParam.ids !== undefined
     ? ` | superseded: ${learnSuperseded}`
@@ -6166,7 +6193,8 @@ export async function handleMemoryAction(
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
-      const data = await mc.save({
+      const saveIds = await ownSupersedes(mc, ctx, saveSupersedes.ids);
+      const saved = await saveMemory(mc, {
         type: params.type as string,
         title: params.title as string,
         content: params.content as string,
@@ -6174,29 +6202,14 @@ export async function handleMemoryAction(
         tags: params.tags as string[] | undefined,
         files: params.files as string[] | undefined,
         source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
-      });
+      }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveIds });
+      const data = { memory: saved.memory };
+      const memSuperseded = saved.superseded;
 
-      // Mirror into KnowledgeStore for hybrid retrieval (team-scoped — memories
-      // belong to a team, not a workspace).
       let memEntityBinding: EntityBinding | null = null;
-      let memSuperseded = 0;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        // Best-effort — don't fail the memory save if indexing fails
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(saveSupersedes.ids && saveSupersedes.ids.length > 0 ? { supersedes: saveSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) memSuperseded = upsertRes.superseded;
-
         // Layer 2: bind entity refs (team-scoped; workspace_id = teamId for memories)
         memEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
@@ -6257,27 +6270,17 @@ export async function handleMemoryAction(
       const existing = await mc.get(params.id as string);
       if (!isOwnMemory(existing.memory, ctx)) return errorResult(`Memory not found: ${params.id}`);
 
-      const data = await mc.update(params.id as string, updateFields);
+      const updateIds = await ownSupersedes(mc, ctx, updateSupersedes.ids);
+      const updated = await updateMemory(mc, params.id as string, updateFields, {
+        teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:update', supersedes: updateIds,
+      });
+      const data = { memory: updated.memory };
+      const updateSuperseded = updated.superseded;
 
-      // Mirror update into KnowledgeStore (team-scoped)
       let updateEntityBinding: EntityBinding | null = null;
-      let updateSuperseded = 0;
       if (ctx.teamId && ctx.knowledgeStore) {
         const ns = buildNamespace(ctx.teamId, 'memory');
         const m = data.memory;
-        const lexicalText = `${m.title}\n\n${m.content}`;
-        const upsertRes = await ctx.knowledgeStore.upsert(ns, [{
-          id: m.id,
-          content: m.content,
-          lexicalText,
-          sourceType: 'memory',
-          sourceUrl: `/app/memory/${m.id}`,
-          metadata: { memoryId: m.id, type: m.type, tags: m.tags, files: m.files, project: m.project },
-          // Explicit supersession: memory ids ARE the chunk source_ids in {teamId}:memory.
-          ...(updateSupersedes.ids && updateSupersedes.ids.length > 0 ? { supersedes: updateSupersedes.ids } : {}),
-        }]).catch(() => undefined);
-        if (upsertRes) updateSuperseded = upsertRes.superseded;
-
         // Layer 2: re-bind entity refs on update
         updateEntityBinding = await processEntityRefs(
           ctx.teamId, m.id, ns,
