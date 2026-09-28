@@ -50,21 +50,9 @@ export function ToolRows({ rows, onChange, busy }: {
   );
 }
 
-/** How many tool groups run without asking, or null until the rows load. Pure. */
-export function allowedCount(rows: readonly ChatToolPermissionRow[] | null): number | null {
-  return rows ? rows.filter(r => r.mode === 'allow').length : null;
-}
-
-/** The tools cell: `··· 2` with groups on Allow, just `···` with none. */
-export function ToolsTrigger({ count }: { count: number | null }) {
-  return (
-    <>
-      <span aria-hidden="true" className="font-mono text-[13px] leading-none tracking-[.08em]">···</span>
-      {count !== null && count > 0 && (
-        <span data-testid="composer-tools-count" className="font-mono text-[12px] text-accent-text">{count}</span>
-      )}
-    </>
-  );
+/** The tools cell: just `···` — the menu itself shows each group's mode. */
+export function ToolsTrigger() {
+  return <span aria-hidden="true" className="font-mono text-[13px] leading-none tracking-[.08em]">···</span>;
 }
 
 export default function ToolsMenu({ teamId }: { teamId: string }) {
@@ -106,7 +94,7 @@ export default function ToolsMenu({ teamId }: { teamId: string }) {
       label="Tools"
       title="Tools"
       testId="composer-tools"
-      trigger={<ToolsTrigger count={allowedCount(rows)} />}
+      trigger={<ToolsTrigger />}
     >
       {() => (
         <div>
