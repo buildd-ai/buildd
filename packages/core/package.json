@@ -147,7 +147,7 @@
     "@builddai/ai-kit": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.157.0",
+    "@openai/codex-sdk": "^0.158.0",
     "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.6.0",
     "dotenv": "^18.0.0",
