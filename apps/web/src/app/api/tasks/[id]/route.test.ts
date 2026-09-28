@@ -454,6 +454,45 @@ describe('PATCH /api/tasks/[id]', () => {
     mockIsMissionLinkable.mockResolvedValue(true);
   });
 
+  // Review of #3053: a dependsOn edge may only name tasks in the task's own
+  // workspace (POST already enforces this); PATCH accepted any string.
+  describe('dependsOn workspace scope', () => {
+    const task = {
+      id: TASK_ID, title: 'T', status: 'pending', mode: 'execution', missionId: null,
+      dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+    };
+    function setup() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task);
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [task]) })) })) });
+    }
+
+    it('refuses a dependency outside the task\'s workspace and writes nothing', async () => {
+      setup();
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'dep-own' }]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: ['dep-own', 'dep-elsewhere'] } }), TASK_ID);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('dep-elsewhere');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+      const where = (mockTasksFindMany.mock.calls.at(-1) as any[])[0].where;
+      expect(JSON.stringify(where)).toContain('ws-1');
+    });
+
+    it('accepts dependencies that are all in the workspace', async () => {
+      setup();
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'dep-own' }]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: ['dep-own'] } }), TASK_ID);
+      expect(res.status).toBe(200);
+    });
+
+    it('a task cannot depend on itself', async () => {
+      setup();
+      mockTasksFindMany.mockResolvedValueOnce([{ id: TASK_ID }]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: [TASK_ID] } }), TASK_ID);
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('mission link scope', () => {
     const task = {
       id: TASK_ID,

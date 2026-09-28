@@ -361,7 +361,8 @@ describe('authenticateApiKey', () => {
         mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
         const result = await authenticateApiKey(JWT_TOKEN);
-        expect(result).toEqual({ ...mockAccount, level });
+        // sessionUserId: the person behind the session (the account is team-shared).
+        expect(result).toEqual({ ...mockAccount, level, sessionUserId: 'user-1' });
       });
     }
 

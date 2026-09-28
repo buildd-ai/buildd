@@ -184,7 +184,10 @@ export function buildMissionListCard(
   const byId = new Map(tasks.map(t => [t.id, t]));
   const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: 'missions', mode: 'sheet' });
   const schedule = row.schedule ?? null;
-  const isRecurring = !!schedule?.cronExpression && view.group !== 'completed';
+  // A heartbeat is the orchestrator's check-in on a goal mission, not a
+  // cadence the owner asked for: every such mission would read "every 30m".
+  const isHeartbeat = schedule?.taskTemplate?.context?.heartbeat === true;
+  const isRecurring = !!schedule?.cronExpression && !isHeartbeat && view.group !== 'completed';
 
   // ── Cells, in pulse order, grouped by phase ──
   const feed: MissionFeedTaskInput[] = tasks.map(toFeedTask);

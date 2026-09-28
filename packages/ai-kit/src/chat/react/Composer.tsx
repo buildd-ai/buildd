@@ -45,6 +45,21 @@ export interface ChatComposerProps {
   label?: string;
   autoFocus?: boolean;
   className?: string;
+  /**
+   * A row inside the box, above the message: e.g. a chip for the object the
+   * message is about, or a locked scope. Nothing renders without it.
+   */
+  leading?: ReactNode;
+  /** Extra toolbar controls, after `tier` and before Send (e.g. attach, a voice button). */
+  actions?: ReactNode;
+  /** Decoration drawn inside the box, over its top edge (e.g. a streaming sweep). Hidden from assistive tech. */
+  edge?: ReactNode;
+  /** Under the box, after the form fallback (e.g. keyboard hints). */
+  footer?: ReactNode;
+  /** An app-defined mood on the box as `data-mood` (e.g. `needs` to tint its rule). */
+  mood?: string | null;
+  /** A shorter box, for a narrow docked column (`data-compact`). */
+  compact?: boolean;
 }
 
 export const DEFAULT_BUSY_PLACEHOLDER = 'Steer while I think…';
@@ -54,6 +69,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   placeholder = 'Ask anything…', onSteer, busyPlaceholder = DEFAULT_BUSY_PLACEHOLDER,
   scope, tools, tier, formFallbackHref, formFallback, formFallbackLabel = 'Fill in a form instead',
   showFormFallback = true, label = 'Message', autoFocus, className,
+  leading, actions, edge, footer, mood = null, compact = false,
 }, ref) {
   const [inner, setInner] = useState(defaultValue);
   const [steerSent, setSteerSent] = useState(false);
@@ -109,9 +125,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       <form
         className="kit-composer"
         data-busy={busy || undefined}
+        data-mood={mood || undefined}
+        data-compact={compact || undefined}
         data-testid="kit-composer"
         onSubmit={e => { e.preventDefault(); submit(); }}
       >
+        {edge != null && edge !== false && <span className="kit-composer-edge" aria-hidden="true" data-testid="kit-composer-edge">{edge}</span>}
+        {leading != null && leading !== false && <div className="kit-composer-leading" data-testid="kit-composer-leading">{leading}</div>}
         <label htmlFor={inputId} className="kit-sr-only">{label}</label>
         <textarea
           id={inputId}
@@ -136,6 +156,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           <div className="kit-toolbar-slot" data-slot="scope">{scope}</div>
           {tools && <div className="kit-toolbar-slot" data-slot="tools">{tools}</div>}
           {tier && <div className="kit-toolbar-slot" data-slot="tier">{tier}</div>}
+          {actions != null && actions !== false && <div className="kit-toolbar-slot" data-slot="actions">{actions}</div>}
           {busy && !(steering && !empty) ? (
             <button type="button" className="kit-stop" aria-label="Stop" disabled={!onStop} onClick={() => onStop?.()} data-testid="kit-stop">
               <span aria-hidden="true" className="kit-stop-mark" />
@@ -157,6 +178,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       {showFormFallback && (formFallback ?? (formFallbackHref ? (
         <a className="kit-form-fallback" href={formFallbackHref} data-testid="kit-form-fallback">{formFallbackLabel}</a>
       ) : null))}
+      {footer != null && footer !== false && <div className="kit-composer-footer" data-testid="kit-composer-footer">{footer}</div>}
     </div>
   );
 });

@@ -59,6 +59,7 @@ const mockAccountWorkspacesFindFirst = mock(async (opts: any) => {
 });
 
 const mockAuthenticateApiKey = mock(async () => ({ id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'api' } as any));
+const mockHandleBuilddAction = mock(async (..._args: any[]) => ({ content: [{ type: 'text', text: '{}' }] }));
 const mockHandleRecallAction = mock(async () => ({ content: [{ type: 'text', text: '{"recalled":true}' }] }));
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -103,10 +104,15 @@ mock.module('@/lib/memory-helper', () => ({
 
 mock.module('@buildd/core/mcp-tools', () => ({
   ...realMcpTools,
-  handleBuilddAction: mock(async () => ({ content: [{ type: 'text', text: '{}' }] })),
+  handleBuilddAction: mockHandleBuilddAction,
   handleMemoryAction: mock(async () => ({ content: [{ type: 'text', text: '{}' }] })),
   handleRecallAction: mockHandleRecallAction,
   handleLearnAction: mock(async () => ({ content: [{ type: 'text', text: '{}' }] })),
+}));
+
+const mockTouchInteractiveWorkers = mock((_opts: { accountId: string; userId?: string | null; level: string }) => {});
+mock.module('@/lib/interactive-worker-liveness', () => ({
+  scheduleInteractiveTouch: mockTouchInteractiveWorkers,
 }));
 
 import { POST } from './route';
@@ -179,5 +185,56 @@ describe('/api/mcp ?workspace= scope', () => {
     expect(sql).toContain('"workspace_id"');
     expect(params).toContain(ACCOUNT_ID);
     expect(params).toContain(FOREIGN_WS);
+  });
+});
+
+// Friction 92866723: every MCP request from a token is liveness for the
+// interactive workers that token claimed, so the reaper keeps them.
+describe('/api/mcp interactive worker liveness', () => {
+  beforeEach(() => mockTouchInteractiveWorkers.mockClear());
+
+  it("touches the calling account's interactive workers on an accepted call", async () => {
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}`));
+    expect(res.status).toBe(200);
+    expect(mockTouchInteractiveWorkers).toHaveBeenCalledTimes(1);
+    expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ accountId: ACCOUNT_ID, userId: null, level: 'worker' });
+  });
+
+  it('touches nothing for a refused request', async () => {
+    const res = await POST(recallRequest(`?workspace=${FOREIGN_WS}`));
+    expect(res.status).toBe(403);
+    expect(mockTouchInteractiveWorkers).not.toHaveBeenCalled();
+  });
+});
+
+// The REST routes can only tell a person's MCP session from a client that
+// merely sends runner: 'mcp' by a marker this route signs server-side.
+describe('/api/mcp signs the interactive session marker on internal API calls', () => {
+  it('every internal call carries a marker that verifies for the calling account', async () => {
+    const saved = process.env.AUTH_SECRET;
+    process.env.AUTH_SECRET = 'scope-test-secret';
+    const realFetch = globalThis.fetch;
+    const seen: Array<Record<string, string>> = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      seen.push(init.headers);
+      return new Response('{}', { status: 200 });
+    }) as any;
+    try {
+      mockHandleBuilddAction.mockClear();
+      const res = await POST(new Request(`http://localhost/api/mcp?workspace=${OWN_WS}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer bld_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'buildd', arguments: { action: 'list_tasks', params: {} } } }),
+      }));
+      expect(res.status).toBe(200);
+      const api = (mockHandleBuilddAction.mock.calls[0] as any[])[0];
+      await api('/api/workers/claim', { method: 'POST', body: '{}' });
+      const { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } = await import('@/lib/interactive-session');
+      expect(verifyInteractiveSession(seen[0][INTERACTIVE_SESSION_HEADER], ACCOUNT_ID)).toEqual({ userId: null });
+      expect(verifyInteractiveSession(seen[0][INTERACTIVE_SESSION_HEADER], 'someone-else')).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = saved;
+    }
   });
 });

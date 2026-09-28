@@ -98,10 +98,8 @@ describe('release_status — workspace name resolution', () => {
     expect((err as Error).message).toMatch(/could not resolve workspace/i);
   });
 
-  it('falls back to repo param when workspace name cannot be resolved', async () => {
-    const { api, calls } = workspaceListApi();
-
-    // Override workspaces list to return nothing
+  // A repo alongside used to excuse a bad workspaceId (silently dropped).
+  it('errors on an unresolvable workspace name even when repo is given', async () => {
     const emptyApi = makeApi((url, opts) => {
       if (url === '/api/workspaces') return { workspaces: [] };
       if (url.startsWith('/api/releases/status')) {
@@ -110,12 +108,10 @@ describe('release_status — workspace name resolution', () => {
       throw new Error(`Unexpected: ${url}`);
     });
 
-    const result = await handleBuilddAction(emptyApi, 'release_status', {
+    await expect(handleBuilddAction(emptyApi, 'release_status', {
       workspaceId: 'nonexistent',
       repo: 'buildd-ai/buildd',
-    }, adminContext());
-
-    expect(result?.content?.[0]?.text).toContain('buildd-ai/buildd');
+    }, adminContext())).rejects.toThrow(/Could not resolve workspace "nonexistent"/);
   });
 });
 

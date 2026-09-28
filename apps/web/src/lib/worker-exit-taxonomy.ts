@@ -1,3 +1,5 @@
+import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+
 export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
@@ -87,6 +89,14 @@ export function isUnrecognizedModelError(error: string | null | undefined): bool
 /** Error text for a worker row that the claim route minted but no runner ever started. */
 export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
+
+/**
+ * Error text for an interactive (MCP-claimed) worker reaped after its account
+ * made no MCP call for INTERACTIVE_WORKER_IDLE_TTL_MS. Its own text, because
+ * "never started by a runner" is always true of such a worker and says nothing.
+ */
+export const INTERACTIVE_ABANDONED_ERROR =
+  'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)';
 
 /** Error text for a completion that landed on a task cancelled while the session ran. */
 export const TASK_CANCELLED_UNDER_SESSION_ERROR =
@@ -212,14 +222,23 @@ export function classifyReportedFailure(input: {
  *   silent_start  — started_at is set but the session streamed nothing at all.
  *                   Points at the runner/SDK stream, not the task.
  *   infra_failure — the worker did real work and then went offline.
+ *
+ * An interactive worker (runner = 'mcp') gets INTERACTIVE_ABANDONED_ERROR: no
+ * runner was ever meant to start it, so the runner wording would mislead. Its
+ * cause is still never_started or infra_failure, neither of which charges the
+ * task a retry.
  */
 export function classifyStaleExit(worker: {
+  runner?: string | null;
   startedAt?: Date | string | null;
   turns?: number | null;
   costUsd?: string | number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
 }): { exitCause: WorkerExitCause; error: string } {
+  if (worker.runner === INTERACTIVE_WORKER_RUNNER) {
+    return { exitCause: worker.startedAt ? 'infra_failure' : 'never_started', error: INTERACTIVE_ABANDONED_ERROR };
+  }
   if (!worker.startedAt) {
     return { exitCause: 'never_started', error: NEVER_STARTED_ERROR };
   }

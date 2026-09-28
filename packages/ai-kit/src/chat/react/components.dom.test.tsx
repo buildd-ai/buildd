@@ -51,12 +51,12 @@ const rows = [
 ];
 
 describe('ToolsMenu', () => {
-  it('shows ··· N for groups on Allow, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
+  it('is a plain "Tools" ··· trigger, opens the rows, toggles, and closes on Escape back to the trigger', async () => {
     const changes: string[] = [];
     await render(h(kit.ToolsMenu, { rows, onChange: (k: string, m: string) => changes.push(`${k}:${m}`) }));
-    expect($('[data-testid="kit-tools-count"]')!.textContent).toBe('1');
     const trigger = $('[data-testid="kit-tools-trigger"]')!;
-    expect(trigger.getAttribute('aria-label')).toBe('Tools, 1 allowed without asking');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
+    expect(trigger.textContent).toBe('···');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     await click(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
@@ -105,9 +105,14 @@ describe('ToolsMenu', () => {
     }
   });
 
-  it('shows just ··· with nothing on Allow', async () => {
-    await render(h(kit.ToolsMenu, { rows: rows.map(r => ({ ...r, mode: r.mode === 'allow' ? 'ask' : r.mode })), onChange() {} }));
+  it('carries no Allow count, however many groups are on Allow', async () => {
+    const allAllowed = rows.map(r => (r.locked ? r : { ...r, mode: 'allow' as const }));
+    await render(h(kit.ToolsMenu, { rows: allAllowed, onChange() {} }));
     expect($('[data-testid="kit-tools-count"]')).toBeNull();
+    expect($('.kit-badge')).toBeNull();
+    const trigger = $('[data-testid="kit-tools-trigger"]')!;
+    expect(trigger.textContent).toBe('···');
+    expect(trigger.getAttribute('aria-label')).toBe('Tools');
   });
 });
 
@@ -134,6 +139,28 @@ describe('ScopePicker and TierPicker', () => {
     expect($$('.kit-option-meta').map(e => e.textContent)).toContain('$0.001');
     await click([...$$('[role="radio"]')].find(b => b.textContent!.startsWith('Premium'))!);
     expect(picked).toEqual(['premium']);
+  });
+
+  it('tier with a policy: no Auto, the app names, only offered rows, meta kept', async () => {
+    const picked: Array<string | null> = [];
+    const policy = kit.defineTierPolicy({ defaultTier: 'budget', auto: false, labels: { budget: 'Economy', standard: 'Balanced', premium: 'Best' } });
+    const options = [{ tier: 'budget', price: 'Haiku' }, { tier: 'standard' }, { tier: 'premium' }, { tier: 'premium-plus' }];
+    await render(h(kit.TierPicker, { value: 'budget', last: 'standard', policy, options, onChange: (v: string | null) => picked.push(v) }));
+    const trigger = $('[data-testid="kit-tier-trigger"]')!;
+    expect(trigger.textContent).toContain('Economy');
+    expect(trigger.getAttribute('aria-label')).toBe('Model tier: Economy');
+    await click(trigger);
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['EconomyHaiku', 'Balanced', 'Best']);
+    await click([...$$('[role="radio"]')].find(b => b.textContent === 'Best')!);
+    expect(picked).toEqual(['premium']);
+  });
+
+  it('tier with a policy and no options lists the policy tiers', async () => {
+    const policy = kit.defineTierPolicy({ offer: ['budget', 'standard'], labels: { budget: 'Economy' }, autoLabel: 'Pick for me' });
+    await render(h(kit.TierPicker, { value: null, policy, onChange() {} }));
+    expect($('[data-testid="kit-tier-trigger"]')!.textContent).toContain('Pick for me');
+    await click($('[data-testid="kit-tier-trigger"]'));
+    expect($$('[role="radio"]').map(b => b.textContent)).toEqual(['Pick for mepicks per turn', 'Economy', 'Standard']);
   });
 });
 

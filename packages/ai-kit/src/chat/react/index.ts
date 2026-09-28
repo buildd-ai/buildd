@@ -28,12 +28,43 @@ export {
 export { Menu, MenuOption, KIT_SHEET_QUERY, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
 export {
-  createComposerStore, useComposerState, applyComposerSeed,
-  type ComposerStore, type ComposerPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
+  createComposerStore, useComposerState, applyComposerSeed, tierPrefs,
+  type ComposerStore, type ComposerStoreOptions, type ComposerPrefsAdapter, type TierPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
 } from './composer-store';
 export {
   thinkingSteps, isApprovalPart, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
+  formatCost, formatPer1k,
   type ToolRowState,
 } from './model';
+
+// 0.5.0: lifted from buildd's chat.
+export {
+  TurnFeedback, TurnFeedbackProvider, useTurnFeedback, DEFAULT_FEEDBACK_REASONS,
+  type TurnFeedbackProviderProps, type TurnFeedbackEvent, type FeedbackReason,
+} from './TurnFeedback';
+export {
+  SteerComposer, steerStatusLabel, steerTitle, canSteer,
+  type SteerComposerProps, type SteerMessage, type SteerDelivery, type SteerPresenceItem,
+} from './SteerComposer';
+export {
+  createObjectStore, createTrailingThrottle, idleEntry, realClock, OBJECT_REFRESH_WINDOW_MS,
+  type ObjectStore, type ObjectSource, type ObjectEntry, type ObjectStoreOptions, type ObjectEventEffect, type KitClock,
+} from './object-store';
+export {
+  paneReducer, parsePaneSide, dockChoice, INITIAL_PANE, PANE_SIDE_KEY,
+  type PaneState, type PaneAction, type PaneSide, type DockMode, type DockChoice,
+} from './object-dock';
+export {
+  ObjectStoreProvider, useObjectStore, useObjectEntry, ObjectCard, ObjectPane, ObjectPlaceholder, PinnedObject, pinnedObjectTitle,
+  type ObjectStoreProviderProps, type ObjectRenderer, type ObjectRenderers, type ObjectVariant, type PinnedObjectProps,
+} from './objects';
+export { createPendingMessages, DEFAULT_PENDING_PREFIX, type PendingMessages, type PendingStorage } from './pending-message';
+export {
+  approvalDraft, approvalLabel, firstParagraph, toolAction, toolInput,
+  type ApprovalDraft, type PreviewDraft, type GenericDraft,
+} from './approval-draft';
+
+// 0.6.0: per-app tier policy (also in /chat/contract, for the server).
+export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@builddai/ai-kit/chat/contract';
 
 export { KIT_CSS_VARS, type KitCssVar } from './vars';

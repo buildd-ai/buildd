@@ -1,4 +1,5 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { isNull, or, sql, type SQL } from 'drizzle-orm';
+import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { tasks, workers } from '@buildd/core/db/schema';
 import {
   DEP_SATISFYING_STATUSES,
@@ -31,16 +32,26 @@ export { DEP_SATISFYING_STATUSES };
  * `context.bypassDepsGate = 'true'`).
  */
 export function dependenciesSatisfied(): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
+    WHERE NOT ${dependencySatisfied(sql`dep_id::uuid`)}
+  )`;
+}
+
+/**
+ * TRUE when the ONE dependency `depId` names is satisfied. The per-dependency
+ * half of `dependenciesSatisfied()`, exported so the explicit-claim diagnosis
+ * can say WHICH dependency is blocking with the same predicate the claim used.
+ */
+export function dependencySatisfied(depId: SQL): SQL {
   const satisfyingStatuses = sql.join(
     DEP_SATISFYING_STATUSES.map((s) => sql`${s}`),
     sql`, `,
   );
 
-  return sql`NOT EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
-    WHERE NOT EXISTS (
+  return sql`EXISTS (
       SELECT 1 FROM ${tasks} t2
-      WHERE t2.id = dep_id::uuid
+      WHERE t2.id = ${depId}
       AND t2.status IN (${satisfyingStatuses})
       AND NOT (
         -- A completed dep with a still-open PR keeps blocking its dependents.
@@ -56,6 +67,26 @@ export function dependenciesSatisfied(): SQL {
           AND COALESCE(w.pr_lifecycle_status, '') != ${DEP_UNBLOCKING_PR_LIFECYCLE}
         )
       )
-    )
-  )`;
+    )`;
+}
+
+/**
+ * The claim route's whole dependency gate: TRUE when the task has no
+ * dependencies, a person force-started it (context.bypassDepsGate), or every
+ * dependency is satisfied.
+ *
+ * Two-valued on purpose. The bypass check used to be a bare
+ * `context->>'bypassDepsGate' = 'true'`, which is NULL (not FALSE) whenever the
+ * key is absent, so a blocked task's gate evaluated to `NULL OR FALSE = NULL`.
+ * The claim WHERE excludes NULL just like FALSE, but the explicit-claim probe
+ * read NULL as "not evaluated" and answered "Excluded by a claim filter this
+ * diagnosis does not cover" (friction cad81659).
+ */
+export function depsGate(): SQL {
+  return or(
+    isNull(tasks.dependsOn),
+    sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
+    bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
+    dependenciesSatisfied(),
+  )!;
 }

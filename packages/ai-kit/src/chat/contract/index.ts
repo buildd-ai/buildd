@@ -119,6 +119,11 @@ export function isObjectRefOf<K extends string>(kinds: readonly K[], value: unkn
     && typeof v.fallbackText === 'string';
 }
 
+/** One string per object (`kind:id`): the key a live copy is shared under. */
+export function refKey(ref: Pick<ObjectRef, 'kind' | 'id'>): string {
+  return `${ref.kind}:${ref.id}`;
+}
+
 /**
  * What every chat tool returns as its `output`. `data` is what the model
  * reads; `objects` is what the client renders.
@@ -381,7 +386,10 @@ export interface ToolPermissionRow {
   locked: boolean;
 }
 
-/** The `⋯` badge: how many groups the person has set to Allow. */
+/**
+ * How many groups the person has set to Allow. Since 0.5.0 `<ToolsMenu>` no
+ * longer shows this on its trigger; it stays for settings pages and tests.
+ */
 export function allowedBadgeCount(rows: readonly ToolPermissionRow[]): number {
   return rows.filter(r => r.mode === 'allow').length;
 }
@@ -404,3 +412,96 @@ export interface UpdateToolPermissionRequest {
  * status instead of a stream. `no_key` ⇒ show the setup card, keeping the draft.
  */
 export type ChatUnavailableReason = 'no_key' | 'budget_exhausted' | 'rate_limited';
+
+const UNAVAILABLE_REASONS: readonly ChatUnavailableReason[] = ['no_key', 'budget_exhausted', 'rate_limited'];
+
+/**
+ * Read a refusal back out of a client-side error. `useChat` surfaces a 4xx
+ * JSON body as the error's message; this parses it into the body the server
+ * sent, keeping any app-defined extras (`retryAfterSeconds`, who can fix it).
+ * Null for anything that is not a refusal.
+ */
+export function parseChatUnavailable(err: unknown): ChatUnavailableBody | null {
+  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : null;
+  if (!raw || raw[0] !== '{') return null;
+  try {
+    const v = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!v || typeof v !== 'object' || typeof v.error !== 'string') return null;
+    if (!(UNAVAILABLE_REASONS as readonly string[]).includes(v.error)) return null;
+    return { ...v, error: v.error as ChatUnavailableReason, message: typeof v.message === 'string' ? v.message : '' };
+  } catch {
+    return null;
+  }
+}
+
+/** The one-line wording `chatErrorLine` falls back to, per cause. */
+export interface ChatErrorLines {
+  no_key: string;
+  budget_exhausted: string;
+  rate_limited: string;
+  /** Anything else: a dropped stream, a 500. */
+  failed: string;
+}
+
+export const DEFAULT_CHAT_ERROR_LINES: ChatErrorLines = {
+  no_key: 'Chat is unavailable.',
+  budget_exhausted: 'Today’s chat budget is used up.',
+  rate_limited: 'Too many turns in a short time. Try again in a moment.',
+  failed: 'The turn didn’t finish. Your message is kept, so send it again.',
+};
+
+/**
+ * One line for a turn that failed. A refusal reads its server message (or
+ * the line for its reason); any other JSON body reads its `message` or
+ * `error`; anything else reads `lines.failed`. Never echoes a stack.
+ */
+export function chatErrorLine(err: unknown, lines: Partial<ChatErrorLines> = {}): string {
+  const l = { ...DEFAULT_CHAT_ERROR_LINES, ...lines };
+  const u = parseChatUnavailable(err);
+  if (u) return u.message || l[u.error];
+  const raw = err instanceof Error ? err.message : '';
+  if (raw.startsWith('{')) {
+    try {
+      const v = JSON.parse(raw) as { error?: unknown; message?: unknown } | null;
+      if (typeof v?.message === 'string' && v.message) return v.message;
+      if (typeof v?.error === 'string' && v.error) return v.error;
+    } catch { /* fall through */ }
+  }
+  return l.failed;
+}
+
+// ── Turn feedback ─────────────────────────────────────────────────────────────
+
+/** A thumb on one assistant turn. */
+export type TurnSignal = 'up' | 'down';
+
+/** A person's vote on one turn. `reason` is a label key, never free text. */
+export interface TurnVote<R extends string = string> {
+  signal: TurnSignal;
+  reason: R | null;
+}
+
+/**
+ * The next votes after one press. The same thumb with no new reason toggles
+ * the vote off; anything else sets it. Pure, so a server mirroring the toggle
+ * and the client agree.
+ */
+export function applyTurnVote<R extends string>(
+  votes: Readonly<Record<string, TurnVote<R>>>,
+  messageId: string,
+  signal: TurnSignal,
+  reason: R | null = null,
+): Record<string, TurnVote<R>> {
+  const prev = votes[messageId];
+  const next = { ...votes };
+  if (prev && prev.signal === signal && !reason) delete next[messageId];
+  else next[messageId] = { signal, reason };
+  return next;
+}
+
+// ── Tier policy (0.6.0) ───────────────────────────────────────────────────────
+
+export {
+  CHAT_TIERS, defineTierPolicy, defaultTierName, isChatTier,
+  type ChatTier, type TierPolicy, type TierPolicyOptions,
+} from './tiers';
