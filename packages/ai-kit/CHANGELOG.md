@@ -4,6 +4,23 @@ Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
 bumps; new optional data parts are minor.
 
+## 0.4.0 — 2026-09-28
+
+Conversation titles, opt-in. Nothing changes unless you pass `title`.
+
+- `createChatTurn({ title: { needed, save, rules?, model?, later? } })`: after
+  a new question's turn is saved, titles the conversation: your rules, then
+  the built-in rule (a 2–7 word first message is its own title), then one
+  call on `model` (a `budget` plan). Failures go to `onError(e, 'title')`,
+  which gains the `'title'` value.
+- `titleConversation`, `ruleTitle`, `normalizeTitle`, `titleMessages` from
+  `/chat/server`, for apps that run their own turn loop.
+- The model step leaves room for reasoning (`maxOutputTokens: 512`). A
+  title-sized cap is spent on a reasoning model's thinking and comes back
+  empty; buildd's own chat lost every title that way.
+- **Pinned decision versions** read `…|kit-0.4.0` now (fingerprints are
+  unchanged).
+
 ## 0.3.1 — 2026-09-28
 
 Two fixes to 0.3.0's `/chat/react`. No API is removed.
