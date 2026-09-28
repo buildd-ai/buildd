@@ -108,3 +108,30 @@ describe('NeedsInputBanner: the phone chat canvas already says it', () => {
     expect(rootClass(render())).not.toContain('hidden');
   });
 });
+
+// Regression (demo capture): after the person answered, the banner still said
+// the task needed their input until the worker resumed.
+describe('NeedsInputBanner: an answer is on its way', () => {
+  const task = (id: string, title: string, answerSent = false) => ({ id, title, workspaceId: 'ws', missionId: 'm1', waitingFor: null, answerSent });
+  const render = (tasks: ReturnType<typeof task>[]) => renderToStaticMarkup(
+    <NeedsInputContext.Provider value={{ tasks, count: tasks.filter(t => !t.answerSent).length, alertPermission: 'unsupported', enableAlerts: () => {} }}>
+      <NeedsInputBanner />
+    </NeedsInputContext.Provider>,
+  );
+
+  it('says the answer went, not that the task needs input', () => {
+    const html = render([task('q1', 'feat(checkout): pay in currency', true)]);
+    expect(html).toContain('data-testid="global-answer-sent-banner"');
+    expect(html).toContain('Answer sent, waiting for the agent');
+    expect(html).toContain('Pay in currency');
+    expect(html).not.toContain('needs your input');
+  });
+
+  it('a task still waiting takes the banner; the answered one is not counted', () => {
+    const html = render([task('q1', 'fix: a', true), task('q2', 'fix: b')]);
+    expect(html).toContain('needs your input');
+    expect(html).toContain('B');
+    expect(html).not.toContain('2 tasks');
+    expect(html).not.toContain('Answer sent');
+  });
+});

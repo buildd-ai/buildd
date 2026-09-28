@@ -12,7 +12,8 @@
  *    already recorded writes nothing and replaces nothing. Review text is
  *    external and never auto-promotes.
  * 2. **Promote**: a candidate becomes active when its source task's PR merged
- *    at least 72h ago and was not reverted inside that window, or when a
+ *    at least 72h ago and was not reverted (inside that window by the
+ *    heuristics, or at any time by a revert recorded in `pr_reverts`), or when a
  *    different task's near-duplicate `learn` in the same project was folded
  *    into it. External content never promotes. The `promote` Jev decision is
  *    asked in shadow over the same evidence and only logged.
@@ -96,7 +97,9 @@ export function memorySourceTaskSql(alias: 'm' | 'm2' | 'memories'): SQL {
  *   revert window ago.
  * - `reverted`: inside that window, a merged buildd task titled as a revert
  *   of it, or a later merged PR in the same workspace with exactly the same
- *   file list (what a revert looks like in the ingest log), landed.
+ *   file list (what a revert looks like in the ingest log), landed; or, at
+ *   any time after the merge, `pr_reverts` recorded a merged PR reverting it
+ *   or a commit reverting its merge sha (see ./pr-reverts).
  * - `corroborated`: this candidate's `corroborated_by` link, which only
  *   learn's automatic near-duplicate path writes, points at a row in the same
  *   team and project that is a candidate or active, not external, a learn (or
@@ -133,6 +136,20 @@ export function promotionCandidatesQuery(limit: number, excluded: readonly Exclu
                  AND js.pr_number = pr.pr_number
                  AND js.trigger = 'pr_merged'
                  AND jsonb_array_length(js.changed_files) > 0
+             )
+             -- Recorded from GitHub (./pr-reverts): a later merged PR whose
+             -- title/body reverts the source PR, or a commit reverting its
+             -- merge sha. Any time after the merge, not just inside the window.
+             OR EXISTS (
+               SELECT 1 FROM pr_reverts rv
+               WHERE rv.workspace_id = pr.workspace_id
+                 AND rv.created_at > pr.merged_at
+                 AND (rv.reverted_pr_number = pr.pr_number
+                      OR (rv.reverted_sha IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM knowledge_ingest_jobs sj
+                        WHERE sj.workspace_id = pr.workspace_id AND sj.pr_number = pr.pr_number AND sj.trigger = 'pr_merged'
+                          AND starts_with(sj.sha, rv.reverted_sha)
+                      )))
              )
            )) AS reverted,
            (m.source_kind = 'learn' AND src.task_id IS NOT NULL AND m.corroborated_by IS NOT NULL AND EXISTS (

@@ -64,8 +64,6 @@ export interface ChatConversationProps {
   focusRef?: BuilddObjectRef | null;
   /** How the chat was opened (+ Mission, New task, Ask about…). Sent with every turn. */
   entry?: ChatEntry;
-  /** "Fill in a form instead", until the first message. */
-  formFallbackHref?: string | null;
   /** The empty canvas's mood and picked questions (chat-shell.tsx, canvasPulse). */
   pulse?: CanvasPulse | null;
   /**
@@ -90,7 +88,7 @@ export function dtoToMessage(m: GetConversationResponse['messages'][number], vie
 export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
-    canManageTeamKeys, aside, emptyState, historyOpen = false, focusRef, entry = EMPTY_CHAT_ENTRY, formFallbackHref = null, pulse = null,
+    canManageTeamKeys, aside, emptyState, historyOpen = false, focusRef, entry = EMPTY_CHAT_ENTRY, pulse = null,
     onConversationCreated, canvas,
   } = props;
   const router = useRouter();
@@ -269,7 +267,6 @@ export default function ChatConversation(props: ChatConversationProps) {
         focusOpensSheet={!entry.about}
         composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}
         autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
-        formFallbackHref={formFallbackHref}
         entryIntent={entry.intent}
         pulse={pulse}
         {...canvas}

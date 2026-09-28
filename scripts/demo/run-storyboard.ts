@@ -28,6 +28,8 @@
  *       hold: 500                     # ms to settle after load (default 400)
  *       reducedMotion: true           # optional: shoot with prefers-reduced-motion: reduce (board-level default too)
  *       record: { ms: 8000, advanceTo: "14:30", ticks: 6 }   # optional webm: live replay via Pusher
+ *       type: { into: 'textarea', text: "…", frames: 24 }   # optional: type into a field (never sent), one
+ *                                     # still per frame as <step>-type-NN[-viewport]-<theme>.png (00 = empty), before the shot
  *
  * Output: <out>/<story>/<step>-<theme>.png (desktop) or <step>-<viewport>-<theme>.png,
  * .webm for record steps, and <out>/<story>/manifest.json with captions, element
@@ -46,7 +48,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -65,6 +67,7 @@ type Step = {
   shot?: boolean;
   reducedMotion?: boolean;
   record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
+  type?: { into: string; text: string; frames?: number };
 };
 type Storyboard = {
   story?: string;
@@ -188,6 +191,9 @@ async function main() {
       await page.locator(sel(target)).first().click();
       await page.waitForLoadState('networkidle');
     }
+    // Park the pointer in a corner: a pointer left where the last click landed
+    // would hover whatever sits there on the next page (a Board tile's card).
+    await page.mouse.move(0, 0).catch(() => {});
     // Let the page settle first — some pages auto-scroll on mount (e.g. a
     // scrollIntoView on the selected pulse segment) — then start every shot at
     // the top, and optionally bring a target to the top edge.
@@ -292,6 +298,20 @@ async function main() {
         const missing = await prepare(page, step);
         if (missing.length) (entry.waitForMissing ??= {})[key] = missing;
         entry.timings[`${key}LoadMs`] = Date.now() - l;
+        if (step.type) {
+          // Typed a prefix at a time (fill, so each frame is exact), never submitted.
+          // Frame 00 is the empty field, so the take starts before the first key.
+          const field = page.locator(sel(step.type.into)).first();
+          const frames: string[] = [];
+          for (const [i, n] of [0, ...typingPrefixes(step.type.text, step.type.frames ?? 24)].entries()) {
+            await field.fill(step.type.text.slice(0, n));
+            await page.waitForTimeout(60);
+            const file = captureFile(`${step.id}-type-${String(i).padStart(2, '0')}`, vpName, theme);
+            await page.screenshot({ path: join(outDir, file), animations: 'disabled' });
+            frames.push(file);
+          }
+          entry.files[`${key}Type`] = frames;
+        }
         if (step.fullPage) await unclip(page);
         entry.highlights[key] = await boxes(page, step);
         if (step.shot !== false) {

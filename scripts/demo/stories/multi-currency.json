@@ -406,7 +406,7 @@
       "key": "B4",
       "table": "missions",
       "workspaceId": "ws",
-      "title": "Usage-based pricing — spec first",
+      "title": "Usage-based pricing, spec first",
       "description": "Write the spec and pricing-page copy before any code.",
       "status": "paused",
       "isHeld": false,
@@ -473,7 +473,7 @@
       "table": "tasks",
       "workspaceId": "ws",
       "missionId": "M1",
-      "title": "RESEARCH: FX rate providers — freshness, cost, and what breaks when they're down",
+      "title": "RESEARCH: FX rate providers: freshness, cost, and what breaks when they're down",
       "description": "Compare three rate providers on update cadence, pricing model, and outage behaviour. Recommend one plus a fallback. No code.",
       "status": "pending",
       "_statusAtEnd": "completed",
@@ -1530,7 +1530,7 @@
       "workspaceId": "ws",
       "missionId": "M1",
       "type": "summary",
-      "title": "Multi-currency invoices — shipped",
+      "title": "Multi-currency invoices, shipped",
       "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
       "visibility": "private",
       "metadata": {},
@@ -1759,7 +1759,7 @@
       "workerId": null,
       "authorType": "system",
       "type": "update",
-      "title": "All 4 goal criteria pass — mission complete",
+      "title": "All 4 goal criteria pass, mission complete",
       "body": null,
       "actorLabel": "buildd",
       "status": "open"
@@ -1791,7 +1791,7 @@
       "type": "gotcha",
       "project": "pdf",
       "title": "Invoice PDF snapshots are locale-sensitive",
-      "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale) — never toLocaleString() with the process default.",
+      "content": "Snapshot tests run under several locales. Format through formatMoney(amount, currency, locale), never toLocaleString() with the process default.",
       "tags": [
         "pdf",
         "i18n"
@@ -1860,7 +1860,7 @@
     },
     {
       "agoHours": 12,
-      "summary": "OK — nothing new."
+      "summary": "OK, nothing new."
     },
     {
       "agoHours": 18,
@@ -2331,9 +2331,9 @@
                   "query": "currency money rounding"
                 },
                 "output": {
-                  "data": "1 recalled: money is integer minor units",
+                  "data": "1 past decision: integer cents",
                   "objects": [],
-                  "summary": "1 recalled: money is integer minor units"
+                  "summary": "1 past decision: integer cents"
                 }
               },
               {
@@ -2352,7 +2352,7 @@
               },
               {
                 "type": "text",
-                "text": "Nothing in flight touches currency. Amounts are integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."
+                "text": "Nothing in flight touches currency. The team already decided amounts stay integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."
               }
             ]
           },
@@ -2436,8 +2436,38 @@
               "fallbackText": "Mission: Multi-currency invoices"
             }
           ],
-          "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks."
+          "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks.",
+          "followUpParts": [
+            {
+              "type": "data-buildd-directive",
+              "data": {
+                "conversationId": "{{C1}}",
+                "text": "Keep the public Invoices API backward compatible.",
+                "suggestedScope": "workspace",
+                "workspace": {
+                  "id": "{{ws}}",
+                  "name": "billing-web"
+                },
+                "source": "jev"
+              }
+            }
+          ]
         }
+      }
+    ],
+    "directives": [
+      {
+        "userId": "u_maya",
+        "text": "Open pull requests as drafts until CI is green.",
+        "source": "settings",
+        "_createdAgo": "-21d"
+      },
+      {
+        "userId": "u_maya",
+        "workspaceId": "ws",
+        "text": "Every UI change ships with phone and desktop screenshots.",
+        "source": "chat",
+        "_createdAgo": "-9d"
       }
     ]
   },
@@ -2491,7 +2521,7 @@
       "op": "progress",
       "worker": "w0",
       "pct": 35,
-      "message": "Found money formatted by hand in many places — one helper first, then everything else",
+      "message": "Found money formatted by hand in many places. One helper first, then everything else",
       "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
     },
@@ -2786,7 +2816,7 @@
       "op": "progress",
       "worker": "w1",
       "pct": 45,
-      "message": "Provider C has no documented outage behaviour — ruling it out",
+      "message": "Provider C has no documented outage behaviour, ruling it out",
       "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
     },
@@ -3611,7 +3641,7 @@
       "op": "progress",
       "worker": "w8",
       "pct": 40,
-      "message": "Line items convert cleanly — but rounding per line vs total gives different card charges",
+      "message": "Line items convert cleanly, but rounding per line vs total gives different card charges",
       "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
     },
@@ -4135,7 +4165,7 @@
       "op": "progress",
       "worker": "wh1",
       "pct": 60,
-      "message": "Two patch bumps with green CI — merging",
+      "message": "Two patch bumps with green CI, merging",
       "api": "update_progress",
       "db": "workers.milestones"
     },

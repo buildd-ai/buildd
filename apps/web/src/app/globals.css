@@ -53,7 +53,7 @@
   --status-success: #5ec495;
   --status-running: #f4811f;
   --status-warning: #e0b35a;
-  --status-error: #d4736a;
+  --status-error: #d97a71;
   --status-info: #7aacca;
 
   --cat-bug: #d4736a;
@@ -113,7 +113,7 @@
   --status-success: #3a9864;
   --status-running: #d96e12;
   --status-warning: #9a7a20;
-  --status-error: #c0524a;
+  --status-error: #9e3b34;
   --status-info: #5088b0;
 
   --cat-bug: #c0524a;
@@ -948,9 +948,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     max-width: 300px; padding: 8px 12px; border: 2px solid var(--border-strong); background: var(--surface-2);
     box-shadow: var(--card-shadow); font-size: inherit;
   }
-  /* The running cost rides on the tier cell at tablet width only. */
+  /* The running cost is not drawn on the tier cell: desktop reads it in the hover detail. */
   .buildd-menu-cell .kit-trigger-extra { display: none; color: var(--chat-dim); }
-  @media (min-width: 768px) and (max-width: 1023px) { .buildd-menu-cell .kit-trigger-extra { display: inline; } }
 
   /* ── Approval card: a fleet object (square, 1px rule, 3px offset shadow,
      2px copper top edge for "needs you"), mono chrome, what changes said in
@@ -1068,7 +1067,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-empty .kit-chips .kit-chip[data-tone="needs"]::before,
   .buildd-empty .kit-chips .kit-chip[data-tone="needs"]::after { color: var(--mood-needs); }
   /* Anchored: the sea takes the free height (at least 28px) above the rows. */
-  @media (max-width: 767px) {
+  @media (max-width: 1023px) {
     .buildd-empty-anchor-phone > .kit-chips-head { margin-top: auto; }
     .buildd-empty-anchor-phone > :has(+ .kit-chips-head) { margin-bottom: 28px; }
   }
@@ -1125,12 +1124,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     border: 0; border-radius: 12px; padding: 12px 16px; background: var(--fleet-err-soft);
     font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; color: var(--status-error);
   }
-  /* The thumbs: 44px to touch on a phone, 32px on a desktop pointer. */
+  /* The thumbs: 44px to touch on a phone or tablet, 32px on a desktop pointer. */
   .buildd-feedback .kit-thumb-btn { color: var(--text-muted); }
   .buildd-feedback .kit-thumb-btn:hover { color: var(--text-primary); border-color: var(--border); }
   .buildd-feedback .kit-thumb-btn[aria-pressed="true"] { color: var(--text-primary); border-color: var(--border-strong); background: var(--surface-2); }
   .buildd-feedback .kit-feedback-reason { font-size: 11.5px; color: var(--text-muted); }
-  @media (min-width: 768px) {
+  @media (min-width: 1024px) {
     .buildd-feedback .kit-thumb-btn { min-width: 32px; min-height: 32px; }
   }
   .kit-feedback-panel .kit-option[aria-checked="true"] { background: var(--text-primary); color: var(--surface-1); }
@@ -1139,7 +1138,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
 
   /* ── Composer on the kit (ChatComposer): the kit's box drawn as buildd's
-     slab. A full-bleed slab on a phone, a square box from 768px, no radius
+     slab. A full-bleed slab on a phone or tablet, a square box from 1024px, no radius
      anywhere. The 2px top rule is copper while something needs the viewer,
      the text colour on focus otherwise, and carries the streaming sweep. */
   .buildd-composer > .kit-composer {
@@ -1168,20 +1167,18 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-composer .kit-stop-mark { border-radius: 0; background: var(--chat-ground); }
   .buildd-composer .kit-composer-footer { margin-top: 8px; }
   .buildd-composer .kit-composer-footer:empty { display: none; }
-  @media (min-width: 768px) {
+  @media (min-width: 1024px) {
     .buildd-composer > .kit-composer { border-left: 1px solid var(--chat-rule); border-right: 1px solid var(--chat-rule); border-bottom: 1px solid var(--chat-rule); }
     .buildd-composer > .kit-composer:not([data-mood="needs"]):focus-within { border-top-color: var(--chat-text); }
     .buildd-composer .kit-composer-input { font-size: 16px; }
     .buildd-composer > .kit-composer:not([data-compact]) .kit-composer-input { min-height: 76px; }
-  }
-  @media (min-width: 1024px) {
     .buildd-composer > .kit-composer { box-shadow: 4px 4px 0 0 var(--chat-rule); }
     .buildd-composer .kit-send, .buildd-composer .kit-stop { width: 64px; }
   }
 
   /* ── Pinned on the kit (objects/PinnedObject): the kit's strip, hard and
      square like every fleet object. buildd's breakpoint for the desk bar is
-     768px (the pane docks there), not the kit's 640px. */
+     1024px (the dock opens there), not the kit's 640px. */
   .kit-pinned.buildd-pinned { flex-shrink: 0; border-bottom: 2px solid var(--border-strong); background: var(--surface-1); }
   .buildd-pinned .kit-pinned-bar { min-height: 48px; gap: 10px; padding: 8px 16px; }
   .buildd-pinned .kit-pinned-phone { gap: 10px; }
@@ -1196,16 +1193,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-pinned .kit-pinned-toggle:hover { color: var(--text-primary); }
   .buildd-pinned .kit-pinned-extra { gap: 12px; padding: 0 16px 8px; }
   .buildd-pinned .kit-pinned-detail { padding: 0 24px 16px; }
-  @media (min-width: 640px) and (max-width: 767px) {
+  @media (min-width: 640px) and (max-width: 1023px) {
     .kit-pinned.buildd-pinned[data-hide-desktop="true"] { display: block; }
     .buildd-pinned .kit-pinned-phone { display: flex; }
     .buildd-pinned .kit-pinned-desk, .buildd-pinned .kit-pinned-detail { display: none; }
   }
-  @media (min-width: 768px) {
+  @media (min-width: 1024px) {
     .buildd-pinned .kit-pinned-bar { padding: 8px 24px; }
     .buildd-pinned .kit-pinned-extra { padding: 0 24px 8px; }
+    .buildd-pinned .kit-pinned-meta { display: inline; }
   }
-  @media (min-width: 1024px) { .buildd-pinned .kit-pinned-meta { display: inline; } }
 
   /* ── Steer on the kit (SteerConversation): the canvas's own chrome, rescoped
      to one running agent. A header, the square presence strip (the pinned

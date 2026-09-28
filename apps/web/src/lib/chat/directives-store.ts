@@ -77,12 +77,21 @@ function sameRule(userId: string, text: string, workspaceId: string | null) {
   return and(eq(chatDirectives.userId, userId), eq(chatDirectives.text, text), scope);
 }
 
+/** The cap trigger's refusal (migration 0210): a save that lost the race for the last slot. */
+export function isRuleCapRefusal(error: unknown): boolean {
+  const e = error as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } } | null;
+  const c = e?.cause ?? e;
+  return c?.code === '23514' && c.constraint === 'chat_directives_per_user_cap';
+}
+
 /**
  * Save a rule, race-free. One statement inserts only while the person holds
  * fewer than MAX_DIRECTIVES_PER_USER rules, and ON CONFLICT DO NOTHING on the
  * one-copy-per-scope constraint makes a double tap (or a card answered on two
- * devices) a no-op. When nothing was inserted the existing copy wins; with no
- * copy, the cap refused it.
+ * devices) a no-op. The WHERE count reads the statement's snapshot, so two
+ * saves racing at the last slot both pass it; the chat_directives_per_user_cap
+ * trigger serializes a person's inserts and refuses the second. When nothing
+ * was inserted the existing copy wins; with no copy, the cap refused it.
  */
 export async function createDirective(input: {
   userId: string;
@@ -91,12 +100,17 @@ export async function createDirective(input: {
   source: 'chat' | 'settings';
   sourceMessageId?: string | null;
 }): Promise<CreateDirectiveResult> {
-  const inserted = await db.execute(sql`
-    insert into chat_directives (user_id, workspace_id, text, source, source_message_id)
-    select ${input.userId}::uuid, ${input.workspaceId}::uuid, ${input.text}, ${input.source}, ${input.sourceMessageId ?? null}::uuid
-    where (select count(*) from chat_directives where user_id = ${input.userId}::uuid) < ${MAX_DIRECTIVES_PER_USER}
-    on conflict do nothing
-    returning id`);
+  let inserted: { rows: unknown[] } = { rows: [] };
+  try {
+    inserted = await db.execute(sql`
+      insert into chat_directives (user_id, workspace_id, text, source, source_message_id)
+      select ${input.userId}::uuid, ${input.workspaceId}::uuid, ${input.text}, ${input.source}, ${input.sourceMessageId ?? null}::uuid
+      where (select count(*) from chat_directives where user_id = ${input.userId}::uuid) < ${MAX_DIRECTIVES_PER_USER}
+      on conflict do nothing
+      returning id`);
+  } catch (e) {
+    if (!isRuleCapRefusal(e)) throw e;
+  }
   const id = (inserted.rows[0] as { id?: string } | undefined)?.id;
   if (id) {
     const [row] = await db.select().from(chatDirectives).where(and(eq(chatDirectives.id, id), eq(chatDirectives.userId, input.userId))).limit(1);

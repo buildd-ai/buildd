@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { confirmedParts, DEMO_ENCRYPTION_KEY, demoInputHash, fillKeys } from './chat';
+import { confirmedParts, DEMO_ENCRYPTION_KEY, demoInputHash, directiveRows, fillKeys } from './chat';
 import { IdMap, loadStory } from './story';
 
 const STORY = join(import.meta.dir, '../stories/multi-currency.json');
@@ -29,8 +29,36 @@ describe('confirmedParts', () => {
     expect(out[1].input).toEqual({ action: 'create' });
     expect(out[2]).toEqual({ type: 'text', text: 'Filed.' });
   });
+  test('followUpParts land after the follow-up text, in order', () => {
+    const card = { type: 'data-buildd-directive', data: { text: 'Keep the API additive.' } };
+    const out = confirmedParts(parts, 'call_x', { summary: 'filed', data: 'ok', objects: [], followUp: 'Filed.', followUpParts: [card] });
+    expect(out.map((p) => p.type)).toEqual(['text', 'tool-manage_missions', 'text', 'data-buildd-directive']);
+    expect(out[3]).toEqual(card);
+  });
   test('confirming a call that is not there fails loudly', () => {
     expect(() => confirmedParts(parts, 'nope', { summary: '', data: '', objects: [] })).toThrow();
+  });
+});
+
+describe('directiveRows', () => {
+  const anchor = Date.UTC(2026, 0, 10, 12);
+  const keyed = { get: (k: string) => ({ u: 'user-id', ws: 'ws-id' } as Record<string, string>)[k] ?? (() => { throw new Error(`unknown ${k}`); })() };
+  test('a rule without a workspace applies everywhere; one with a workspace key is scoped to it', () => {
+    const rows = directiveRows({ chat: { directives: [
+      { userId: 'u', text: 'Open PRs as drafts.', _createdAgo: '-3d' },
+      { userId: 'u', workspaceId: 'ws', text: 'Screenshots on UI changes.', source: 'chat' },
+    ] } } as any, keyed, anchor);
+    expect(rows[0]).toMatchObject({ userId: 'user-id', workspaceId: null, source: 'settings', createdAt: new Date(anchor - 3 * 86_400_000) });
+    expect(rows[1]).toMatchObject({ workspaceId: 'ws-id', source: 'chat' });
+  });
+  test('an entry missing its text fails loudly', () => {
+    expect(() => directiveRows({ chat: { directives: [{ userId: 'u' }] } } as any, keyed, anchor)).toThrow();
+  });
+  test('the multi-currency story has standing rules, and its confirm offers one more card', () => {
+    const { story } = loadStory(STORY);
+    expect(story.chat.directives.length).toBeGreaterThan(0);
+    const card = story.chat.conversations[0]._onConfirm.followUpParts.find((p: any) => p.type === 'data-buildd-directive');
+    expect(card.data).toMatchObject({ conversationId: '{{C1}}', suggestedScope: 'workspace', workspace: { id: '{{ws}}', name: 'billing-web' } });
   });
 });
 
@@ -49,7 +77,7 @@ describe('the multi-currency chat opener', () => {
 
   test('every {{KEY}} in the conversation names a dataset key the seed registers', () => {
     const map = new IdMap('t');
-    for (const k of ['ws', 'M1', 'u_maya']) map.register(k);
+    for (const k of ['ws', 'M1', 'u_maya', 'C1']) map.register(k);
     expect(() => fillKeys({ messages: conv.messages, onConfirm: conv._onConfirm }, map)).not.toThrow();
   });
 

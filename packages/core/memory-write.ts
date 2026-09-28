@@ -4,8 +4,8 @@
  * Invariant: every memory write lands in the `memories` table AND in the
  * `{teamId}:memory` index that `recall` and the claim/planning blocks read.
  * `learn`, `buildd_memory` save/update, the dashboard and the feedback digest
- * all go through `saveMemory` / `updateMemory`, so no writer can forget the
- * mirror.
+ * all go through `saveMemory` / `updateMemory` (and the dashboard's review
+ * actions through `transitionMemory`), so no writer can forget the mirror.
  *
  * A mirror failure never fails the write (the row is the source of truth), but
  * it is never silent either: it logs `MEMORY_MIRROR_FAILED_TAG` and bumps a
@@ -16,7 +16,8 @@
  */
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { KnowledgeStore, UpsertChunk } from './knowledge-store/types';
-import type { MemoryRecord, SaveMemoryInput, UpdateMemoryInput } from './memory-store';
+import type { MemoryRecord, MemoryTransitionResult, SaveMemoryInput, UpdateMemoryInput } from './memory-store';
+import type { MemoryReviewAction } from './memory-candidates';
 
 /** Log prefix for a memory row that did not reach the index. Grep prod logs for this. */
 export const MEMORY_MIRROR_FAILED_TAG = '[memory-mirror-failed]';
@@ -28,6 +29,7 @@ export type MemoryWriteVia =
   | 'buildd_memory:update'
   | 'dashboard:create'
   | 'dashboard:update'
+  | 'dashboard:review'
   | 'feedback-digest'
   | 'reconcile';
 
@@ -152,4 +154,32 @@ export async function updateMemory(
   const mirror = await mirrorMemoryToIndex(opts.knowledgeStore, opts.teamId, memory, opts);
   await recordSupersession(client, memory.id, opts);
   return { memory, mirrored: mirror.mirrored, superseded: mirror.superseded };
+}
+
+export interface MemoryTransitionWriteResult extends MemoryWriteResult {
+  /** Rows the promotion superseded (same team and project). */
+  supersededIds: string[];
+}
+
+/**
+ * Apply a human review action (promote / dismiss / reverified) to a memory in
+ * `project`, then re-mirror it. The store's UPDATE is the gate: null means the
+ * row is missing, under another project, superseded, or not in a state the
+ * action starts from, and nothing was written. A promotion's superseded rows
+ * are flipped in the index by the same mirror call.
+ */
+export async function transitionMemory(
+  client: { transition(id: string, project: string, action: MemoryReviewAction): Promise<MemoryTransitionResult | null> },
+  id: string,
+  project: string,
+  action: MemoryReviewAction,
+  opts: Omit<MemoryWriteOpts, 'supersedes'>,
+): Promise<MemoryTransitionWriteResult | null> {
+  const res = await client.transition(id, project, action);
+  if (!res) return null;
+  const mirror = await mirrorMemoryToIndex(opts.knowledgeStore, opts.teamId, res.memory, {
+    via: opts.via,
+    supersedes: res.supersededIds,
+  });
+  return { memory: res.memory, mirrored: mirror.mirrored, superseded: mirror.superseded, supersededIds: res.supersededIds };
 }

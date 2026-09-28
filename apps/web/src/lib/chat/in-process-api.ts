@@ -58,6 +58,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/tasks/:id/notes', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/notes/route'), reach: byTask },
   { pattern: '/api/tasks/:id/approve-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/approve-plan/route'), reach: byTask },
   { pattern: '/api/tasks/:id/reject-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/reject-plan/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/attach-pr', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/attach-pr/route'), reach: byTask },
 
   // ── missions and initiatives ──
   { pattern: '/api/missions', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/route'), reach: { pinTeam: true, ...ROWS } },

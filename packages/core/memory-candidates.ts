@@ -196,3 +196,51 @@ export function reviewCandidate(r: {
     provenance: { kind: 'review', id: r.reviewId, external: true },
   };
 }
+
+// ── Human review (dashboard) ─────────────────────────────────────────────────
+
+/**
+ * What a person sees for a row: its lifecycle state, except that a row with
+ * `superseded_by` set reads as superseded whatever its state column says.
+ */
+export type MemoryDisplayState = MemoryState | 'superseded';
+
+export function memoryDisplayStateOf(m: { state?: string | null; supersededBy?: string | null }): MemoryDisplayState {
+  return m.supersededBy ? 'superseded' : memoryStateOf(m);
+}
+
+/**
+ * The admin actions on one row from the memory dashboard:
+ *
+ * - `promote`: candidate to active (the human route past the automatic
+ *   floors; its deferred supersedes apply, as on automatic promotion).
+ * - `dismiss`: candidate, active or expired to invalidated. Reversible like
+ *   every state change; nothing is deleted.
+ * - `reverified`: a person checked a re-verify flagged row still holds;
+ *   clears the flag and its ref. The state is untouched.
+ *
+ * A superseded row takes none of them: its replacement is the one to act on.
+ */
+export const MEMORY_REVIEW_ACTIONS = ['promote', 'dismiss', 'reverified'] as const;
+export type MemoryReviewAction = typeof MEMORY_REVIEW_ACTIONS[number];
+
+export function isMemoryReviewAction(v: unknown): v is MemoryReviewAction {
+  return typeof v === 'string' && (MEMORY_REVIEW_ACTIONS as readonly string[]).includes(v);
+}
+
+/** States each action may start from. `reverified` also needs the flag set. */
+export const MEMORY_REVIEW_FROM: Record<MemoryReviewAction, readonly MemoryState[]> = {
+  promote: ['candidate'],
+  dismiss: ['candidate', 'active', 'expired'],
+  reverified: ['candidate', 'active', 'expired', 'invalidated'],
+};
+
+export function memoryReviewActionAllowed(
+  action: MemoryReviewAction,
+  m: { state?: string | null; supersededBy?: string | null; reverifyFlaggedAt?: string | Date | null },
+): boolean {
+  if (m.supersededBy) return false;
+  if (!MEMORY_REVIEW_FROM[action].includes(memoryStateOf(m))) return false;
+  if (action === 'reverified' && !m.reverifyFlaggedAt) return false;
+  return true;
+}

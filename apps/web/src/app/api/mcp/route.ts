@@ -24,7 +24,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
-import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from "@/lib/interactive-session";
+import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
@@ -971,6 +971,15 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
+  // The transport is stateless, so this route names the client's session
+  // itself: a request that echoes an id we minted for this account is that
+  // session; any other gets a fresh id to echo from now on (Streamable HTTP
+  // clients must), and is keyless itself, so a client that never echoes keeps
+  // the keyless (account-wide) behaviour instead of stranding its claims.
+  const incomingSessionId = req.headers.get(MCP_SESSION_ID_HEADER);
+  const sessionKey = verifyMcpSessionId(incomingSessionId, account.id);
+  const sessionIdToReturn = sessionKey ? incomingSessionId : mintMcpSessionId(account.id);
+
   // Any MCP request from a worker/admin session is liveness for the
   // interactive workers that session claimed (claim_task, runner = 'mcp');
   // without it the reaper judged them by runner rules and reaped live work
@@ -978,6 +987,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   scheduleInteractiveTouch({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
+    sessionKey,
     level: account.level,
   });
 
@@ -985,6 +995,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const api = createApi(apiKey, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
+    sessionKey,
   }));
   const accountLevel = account.level as 'trigger' | 'worker' | 'admin' || 'worker';
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
@@ -1001,7 +1012,11 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   await server.connect(transport);
 
   try {
-    return await transport.handleRequest(req);
+    const res = await transport.handleRequest(req);
+    if (!sessionIdToReturn) return res;
+    const headers = new Headers(res.headers);
+    headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } finally {
     await transport.close();
     await server.close();

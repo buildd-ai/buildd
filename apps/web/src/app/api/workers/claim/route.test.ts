@@ -7022,6 +7022,22 @@ describe('claim route: interactive session marker', () => {
     expect(ctx().interactiveClaimUserId).toBe('user-1');
   });
 
+  // Review of #3072: a bld_ key has no user; the MCP session key is what
+  // tells its sessions apart, so the claim records it too.
+  it('an interactive claim stamps the MCP session key; a keyless one drops a stale stamp', async () => {
+    const ctx = claimedContext();
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: null, sessionKey: 'sess-a' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(ctx().interactiveClaimSessionKey).toBe('sess-a');
+
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimSessionKey: 'sess-old' }, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    const ctx2 = claimedContext();
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId: 'account-1', userId: null }) }, body: { runner: 'mcp' } }));
+    expect('interactiveClaimSessionKey' in ctx2()).toBe(false);
+  });
+
   it('a claim without a verified session user drops a stale stamp', async () => {
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);

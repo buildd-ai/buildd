@@ -106,8 +106,41 @@ describe('GET /api/tasks/waiting-input', () => {
       workspaceId: 'ws-1',
       missionId: 'mission-1',
       waitingFor: { type: 'question', prompt: 'Which database?' },
+      answerSent: false,
       actionUrl: 'https://buildd.dev/app/tasks/task-1/respond',
     });
+  });
+
+  // An answer on the resume path clears waitingFor but leaves the worker
+  // waiting_input until the runner resumes it: the task is answered, not waiting.
+  it('marks a task whose question was answered but whose worker has not resumed', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReturnValue([
+      { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: null },
+    ]);
+    mockTasksFindMany.mockReturnValue([
+      { id: 'task-1', title: 'Setup database', status: 'running', workspaceId: 'ws-1', missionId: null },
+    ]);
+
+    const data = await (await GET()).json();
+    expect(data.tasks).toHaveLength(1);
+    expect(data.tasks[0]).toMatchObject({ id: 'task-1', answerSent: true, waitingFor: null });
+  });
+
+  it('a task with a worker still asking is not answered, even beside an answered one', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReturnValue([
+      { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: null },
+      { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Again?' } },
+    ]);
+    mockTasksFindMany.mockReturnValue([
+      { id: 'task-1', title: 'Setup database', status: 'running', workspaceId: 'ws-1', missionId: null },
+    ]);
+
+    const data = await (await GET()).json();
+    expect(data.tasks[0]).toMatchObject({ answerSent: false, waitingFor: { prompt: 'Again?' } });
   });
 
   it('excludes completed/failed tasks', async () => {

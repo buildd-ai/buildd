@@ -35,6 +35,7 @@
     "demo:seed": "bun run scripts/demo/seed.ts",
     "demo:advance": "bun run scripts/demo/advance.ts",
     "demo:shoot": "bun run scripts/demo/run-storyboard.ts",
+    "demo:render": "bun run scripts/demo/renderer/render.ts",
     "demo:check-live": "bun run scripts/demo/check-live-refresh.ts",
     "backfill:subject-anchors": "bun run packages/core/scripts/backfill-subject-anchors.ts",
     "backfill:seat-ids": "bun run scripts/backfill-seat-ids.ts",

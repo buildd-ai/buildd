@@ -133,7 +133,20 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
 }
 
 const context = await browser.newContext(contextOptions);
+// QA_THEME=light|dark seeds the theme the app's boot script reads, before any
+// page script runs. Unset keeps the app default (dark).
+const QA_THEME = process.env.QA_THEME?.trim();
+if (QA_THEME) {
+  await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
+  console.log(`[capture] theme ${QA_THEME}`);
+}
 const page = await context.newPage();
+// Hydration mismatches and other client errors land in the run log, so a shot
+// that looks fine but threw on load (React #418) is still visible.
+page.on('pageerror', (err) => console.warn(`[capture] page error on ${page.url()}: ${err.message}`));
+page.on('console', (msg) => {
+  if (msg.type() === 'error') console.warn(`[capture] console error on ${page.url()}: ${msg.text().slice(0, 2000)}`);
+});
 
 // --- Auth ---
 // If a storage state was loaded, we're already signed in. Otherwise fall back to

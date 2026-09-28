@@ -140,3 +140,59 @@ describe('claim_task reply is a push through the store search', () => {
     expect(res.content[0].text).toContain('- **[gotcha] T**: c');
   });
 });
+
+describe('deprecated buildd_memory reads go through the door', () => {
+  // A store whose search/batch answer from the same rows, recording what was
+  // asked. getContext throws: context must not read around retrieveMemory.
+  function memStore(rows: Array<{ id: string; title: string; content: string }>) {
+    const searches: any[] = [];
+    return {
+      searches,
+      client: {
+        async search(p: any) { searches.push(p); return { results: rows.map(r => ({ id: r.id })), total: rows.length }; },
+        async batch(ids: string[]) {
+          return { memories: ids.map(id => rows.find(r => r.id === id)!).map(r => ({ type: 'gotcha', tags: [], files: [], project: PROJECT, ...r })) };
+        },
+        async getContext() { throw new Error('context read around retrieveMemory'); },
+      } as any,
+    };
+  }
+  const rows = [{ id: 'mem-a', title: 'A', content: 'first' }, { id: 'mem-b', title: 'B', content: 'second' }];
+  const mctx = { workspaceId: WS, teamId: TEAM, project: PROJECT, workerId: WORKER, taskId: TASK };
+
+  it('search ledgers one pull row per memory it returned, in rank order', async () => {
+    const { client } = memStore(rows);
+    const res = await handleMemoryAction(client, 'search', { query: 'first second' }, mctx);
+    expect(res.content[0].text).toContain('## gotcha: A');
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map(r => [r.memoryId, r.caller, r.via, r.rank, r.taskId, r.workerId, r.workspaceId])).toEqual([
+      ['mem-a', 'buildd_memory_search', 'pull', 1, TASK, WORKER, WS],
+      ['mem-b', 'buildd_memory_search', 'pull', 2, TASK, WORKER, WS],
+    ]);
+  });
+
+  it('search still searches the caller own project and the states it asked for', async () => {
+    const { client, searches } = memStore(rows);
+    await handleMemoryAction(client, 'search', { query: 'x', includeCandidates: true, type: 'gotcha', limit: 3 }, mctx);
+    expect(searches[0]).toMatchObject({ query: 'x', project: PROJECT, type: 'gotcha', limit: 3, states: ['active', 'candidate'] });
+  });
+
+  it('context ledgers what it returned and renders it as before', async () => {
+    const { client, searches } = memStore(rows);
+    const res = await handleMemoryAction(client, 'context', {}, mctx);
+    expect(res.content[0].text).toBe('## [gotcha] A\nfirst\n\n---\n\n## [gotcha] B\nsecond');
+    expect(searches[0]).toMatchObject({ project: PROJECT, limit: 20, states: ['active'] });
+    expect(searches[0].query).toBeUndefined();
+    expect(batches[0].map(r => [r.memoryId, r.caller, r.via, r.rank])).toEqual([
+      ['mem-a', 'buildd_memory_context', 'pull', 1],
+      ['mem-b', 'buildd_memory_context', 'pull', 2],
+    ]);
+  });
+
+  it('an empty context writes no ledger rows', async () => {
+    const { client } = memStore([]);
+    const res = await handleMemoryAction(client, 'context', {}, mctx);
+    expect(res.content[0].text).toBe('(No memories yet)');
+    expect(batches).toEqual([]);
+  });
+});

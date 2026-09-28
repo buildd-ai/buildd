@@ -14,6 +14,7 @@ import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
+import { useNeedsInput } from '@/components/needs-input-context';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Exported for testing: whether a worker-channel event should bypass the
@@ -117,6 +118,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   const lastStatusRef = useRef(initialWorker.status);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
+  const { markAnswerSent } = useNeedsInput();
   // Set only when the answer became a COLD continuation — a new task to link
   // to. A resume returns the same task the reader is already on, so there is
   // no second task to point at and this stays null.
@@ -249,13 +251,14 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
         data?.path === 'cold_continuation' && typeof data.taskId === 'string' ? data.taskId : null,
       );
       setAnswerSent(true);
+      markAnswerSent?.(taskId);
     } catch (err) {
       console.error('Failed to send answer:', err);
       setAnswerError({ message: err instanceof Error ? err.message : 'Failed to send answer' });
     } finally {
       setAnswerSending(null);
     }
-  }, [worker.id, worker.waitingFor?.prompt, noteId, taskId]);
+  }, [worker.id, worker.waitingFor?.prompt, noteId, taskId, markAnswerSent]);
 
   const nowMs = nowProp ?? Date.now();
   const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);

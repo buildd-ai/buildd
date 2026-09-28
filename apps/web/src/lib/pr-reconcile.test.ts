@@ -108,6 +108,15 @@ mock.module('@/lib/mission-pr', () => ({
   evaluateMissionWorkState: mockEvaluateMissionWorkState,
 }));
 
+// A shipped mission (its mission PR merged) is handed to the one completion
+// writer; whether it may complete is that module's predicate, not this sweep's.
+const mockCompleteMissionIfVerified = mock(() => Promise.resolve({ completed: true, decision: {} } as any));
+mock.module('@/lib/mission-completion', () => ({
+  completeMissionIfVerified: mockCompleteMissionIfVerified,
+  canCompleteMission: mock(() => Promise.resolve({ ok: false })),
+  visualReviewGateEnforced: () => false,
+}));
+
 // ─── GitHub API mock ──────────────────────────────────────────────────────────
 
 // Real SubjectSweepResult shape: reconciled/cancelled are COUNTS, not arrays.
@@ -975,6 +984,44 @@ describe('sweepMissionIntegrationPrs', () => {
     mockGithubApi.mockReset();
     mockMissionsUpdate.mockReset();
     mockMissionsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockCompleteMissionIfVerified.mockReset();
+    mockCompleteMissionIfVerified.mockResolvedValue({ completed: true, decision: {} });
+  });
+
+  it('asks the completion gate to close a mission whose PR already merged', async () => {
+    // A shipped mission left `active` reads as unfinished on every surface. The
+    // gate still decides — this only makes sure somebody asks it.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({
+      taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u', mergedAt: new Date(), state: 'merged',
+    });
+
+    await sweepMissionIntegrationPrs();
+
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledTimes(1);
+    expect((mockCompleteMissionIfVerified.mock.calls[0] as any[])[0]).toBe('m1');
+  });
+
+  it('counts an adopted, already-merged mission PR as shipped and asks to complete the mission', async () => {
+    // The opener found the mission PR merged outside buildd and recorded it.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue({
+      ok: true, prNumber: 71, prUrl: 'u', created: false, merged: true,
+    });
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(result.alreadyShipped).toBe(1);
+    expect(result.alreadyOpen).toBe(0);
+    expect(mockCompleteMissionIfVerified).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask to complete a mission whose PR only just opened', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+
+    await sweepMissionIntegrationPrs();
+
+    expect(mockCompleteMissionIfVerified).not.toHaveBeenCalled();
   });
 
   it('returns zeros and asks nothing when there are no opted-in missions', async () => {

@@ -80,6 +80,18 @@ describe('shapeQuestion', () => {
     expect(s.workerId).toBe('w1');
     expect(s.question.headline).toBe('Round per line or total?');
     expect(s.answer).toBe('Per line');
+    expect(s.awaitingAgent).toBe(false);
+  });
+
+  it('closed while the answered worker is still waiting_input: the agent has not picked it up yet', () => {
+    const s = shapeQuestion({
+      taskTitle: 't',
+      workers: [{ id: 'w1', waitingFor: null, status: 'waiting_input' }],
+      notes: [{ id: 'n1', type: 'question', status: 'answered', title: 'Round per line or total?' }],
+    });
+    expect(s.open).toBe(false);
+    expect(s.awaitingAgent).toBe(true);
+    expect(shapeQuestion({ taskTitle: 't', workers: [{ id: 'w1', waitingFor: null, status: 'running' }], notes: [] }).awaitingAgent).toBe(false);
   });
 
   it('closed with no note: falls back to the task title', () => {

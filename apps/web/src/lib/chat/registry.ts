@@ -98,7 +98,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   create_task: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/tasks', 'GET /api/tasks', 'GET /api/missions/:id')),
   update_task: one(write({ param: 'taskId', is: 'task' },
     'PATCH /api/tasks/:id', 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct', 'POST /api/tasks/:id/notes', 'POST /api/missions/:id/notes')),
-  correct_task_result: one(write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id')),
+  correct_task_result: one(write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id', 'POST /api/tasks/:id/attach-pr')),
   approve_plan: one(write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/approve-plan', 'GET /api/tasks/:id')),
   reject_plan: one(write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/reject-plan')),
 
