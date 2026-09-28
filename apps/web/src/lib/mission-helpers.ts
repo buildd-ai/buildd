@@ -309,11 +309,13 @@ export function deriveTaskHealthSignal(
  * `deriveMissionDisplayState` keeps its historical chain, so nothing that reads
  * it changes behaviour until it adopts the accessor.
  */
-export type MissionDisplayState = 'held' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
+export type MissionDisplayState = 'held' | 'local' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
 
 export function deriveMissionDisplayState(opts: {
   status: string;
   isHeld: boolean;
+  /** `missions.executor`: a 'local' mission reads LOCAL (active work), never HELD. */
+  executor?: string | null;
   orchestrationMode?: string | null;
   activeAgents: number;
   health: Health;
@@ -332,8 +334,9 @@ export function deriveMissionDisplayState(opts: {
 }): MissionDisplayState {
   if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
   if (opts.isHeld) return 'held';
-  if (opts.activeAgents > 0) return 'running';
+  if (opts.activeAgents > 0) return opts.executor === 'local' ? 'local' : 'running';
   if (opts.health === 'FAILING') return 'failed';
+  if (opts.executor === 'local' && opts.hasPendingDeliverableWork !== false) return 'local';
   // Escalated + no pending work: mission awaiting owner decision on criteria
   if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'waiting_decision';
   // Work done + verdict missing outranks 'review': "READY FOR REVIEW" would
@@ -346,6 +349,9 @@ export function deriveMissionDisplayState(opts: {
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   held: 'HELD',
+  // executor='local': the tasks run in a person's own session. Active work,
+  // never HELD — held is the pause, and a local mission is not paused.
+  local: 'LOCAL',
   blocked: 'BLOCKED',
   // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
   // vocabulary): the Home/list health chip already said STALLED for the same
@@ -665,6 +671,11 @@ export function deriveMissionHealth(opts: {
   nextRunAt: string | Date | null;
   orchestrationMode?: string | null;
   isHeld?: boolean;
+  /**
+   * `missions.executor`. A 'local' mission's tasks run in a person's own
+   * session, which runners never see, so no live runner is not "idle".
+   */
+  executor?: string | null;
   /** Earliest future startAt of pending tasks created by the user (loopIteration=0). */
   pendingUserScheduledAt?: Date | null;
   /** `missions.criteriaEscalatedAt` — set once the goal-criteria gate has handed the mission to its owner. */
@@ -692,6 +703,8 @@ export function deriveMissionHealth(opts: {
 
   if (opts.activeAgents > 0) return 'active';
   if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'escalated';
+  // Local session between claims: its open work is in flight, not stalled.
+  if (opts.executor === 'local' && opts.hasPendingDeliverableWork !== false) return 'active';
 
   if (opts.cronExpression) {
     // Manual mode: schedule exists but orchestrator is disarmed — not "on schedule"

@@ -179,6 +179,17 @@ function openTaskLinks(
         { ...base, taskId: deps[0].id },
       );
     }
+    // A local-executor mission: its rows are the person's session's to claim,
+    // so "no live worker" (read: a runner should have it) is the wrong claim.
+    if (w.local && !t.live) {
+      return link(
+        t.status === 'pending'
+          ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
+          : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
+        'mission.executor',
+        { ...base, taskId: t.id },
+      );
+    }
     return link(
       orphaned(t)
         ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`

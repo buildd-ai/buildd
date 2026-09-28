@@ -11,7 +11,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { missionNotHeld, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
+import { missionNotHeld, missionNotLocal, checkMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -147,5 +147,44 @@ describe('taskNotHeld() — a single held task is not claimable', () => {
 
   it('the hold key is stable — the PATCH route writes it', () => {
     expect(TASK_HOLD_KEY).toBe('heldBy');
+  });
+});
+
+// ─── executor='local' (task 09ed6675) ────────────────────────────────────────
+describe('missionNotLocal() — emitted SQL', () => {
+  const render = () => dialect.sqlToQuery(missionNotLocal());
+  const text = () => render().sql.replace(/\s+/g, ' ').trim();
+
+  it('lets a task with no mission through', () => {
+    expect(text()).toContain('"tasks"."mission_id" IS NULL');
+  });
+
+  it('blocks a task only when its mission runs locally', () => {
+    // `EXISTS` would make runners claim ONLY local missions' tasks; `<> 'local'`
+    // would make every runner-executed mission unclaimable.
+    expect(text()).toMatch(
+      /OR NOT EXISTS \( SELECT 1 FROM "missions" m WHERE m\.id = "tasks"\."mission_id" AND m\.executor = 'local' \)/,
+    );
+    // Independent of the hold: the held gate is its own predicate.
+    expect(text()).not.toContain('is_held');
+  });
+
+  it('honours the dashboard force-start bypass, two-valued', () => {
+    expect(text()).toMatch(/COALESCE\("tasks"\."context"->>\$1, ''\) = 'true'/);
+    expect(render().params[0]).toBe(BYPASS_HELD_GATE_KEY);
+    expect(text().split(' OR ')).toHaveLength(3);
+  });
+});
+
+describe('checkMissionLocal — query shape', () => {
+  it('filters on executor = local, not merely on the mission id', async () => {
+    mockMissionsFindFirst.mockResolvedValue(null);
+    expect(await checkMissionLocal('mission-abc')).toBe(false);
+    const args = mockMissionsFindFirst.mock.calls.at(-1)![0] as { where: any };
+    const { sql: q, params } = dialect.sqlToQuery(args.where);
+    expect(q).toContain('"missions"."executor" = $2');
+    expect(params).toEqual(['mission-abc', 'local']);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-abc' });
+    expect(await checkMissionLocal('mission-abc')).toBe(true);
   });
 });

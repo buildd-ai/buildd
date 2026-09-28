@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
-import { checkMissionHeld } from '../../../workers/claim/held-gate';
+import { checkMissionHeld, checkMissionLocal } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
@@ -174,6 +174,23 @@ export async function POST(
         return NextResponse.json({
           error: 'Task is blocked: parent mission is held. Arm the mission or use forceOverride to bypass.',
           gateReason: 'mission_held',
+          blockClass: 'policy',
+          missionId,
+          canForce: true,
+        }, { status: 422 });
+      }
+    }
+
+    // ── Local-executor gate ─────────────────────────────────────────────────
+    // A mission with executor='local' runs in a person's own session: runners
+    // never auto-claim its tasks, so Start would broadcast into the void. Force
+    // start dispatches it to a runner anyway (bypassHeldGate, written below,
+    // lifts the claim route's local gate too).
+    if (missionId && !isBypassHeld && !forceOverride) {
+      if (await checkMissionLocal(missionId)) {
+        return NextResponse.json({
+          error: 'This mission runs in a local session: runners do not pick up its tasks. Claim it from your session with claim_task, or use forceOverride to hand it to a runner.',
+          gateReason: 'mission_local',
           blockClass: 'policy',
           missionId,
           canForce: true,

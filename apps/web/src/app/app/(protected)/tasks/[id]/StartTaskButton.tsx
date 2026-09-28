@@ -549,6 +549,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             ? 'Blocked: dependency PR not merged'
             : gateData?.gateReason === 'mission_held'
             ? 'Blocked: parent mission is held'
+            : gateData?.gateReason === 'mission_local'
+            ? 'Running in a local session'
             : gateData?.gateReason === 'subject_dead'
             ? 'Blocked: subject PR is closed'
             : gateData?.gateReason === 'connector_routing_mismatch'
@@ -568,6 +570,8 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
             : gateData?.gateReason === 'mission_held'
             ? 'The parent mission is held. Workers claim none of its tasks until you arm the mission. "Force start" bypasses the hold for this task only.'
+            : gateData?.gateReason === 'mission_local'
+            ? 'This mission runs in a local session, so runners leave its tasks for that session to claim. "Force start" hands this task to a runner instead.'
             : gateData?.gateReason === 'mission_budget_exhausted'
             ? 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.'
             : gateData?.gateReason === 'connector_routing_mismatch'

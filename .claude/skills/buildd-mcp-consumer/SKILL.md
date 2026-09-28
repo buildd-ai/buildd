@@ -60,6 +60,22 @@ recall (check prior context) → claim_task → work → update_progress (milest
    future agent would want to know (see Knowledge Discipline below).
 7. **Finish:** `buildd action=complete_task` with a summary.
 
+## Running a mission from your own session
+
+When you (an organizer, or a person driving Claude Code with local subagents)
+will do a mission's tasks yourself rather than hand them to background
+runners, create or update the mission with `executor: "local"`
+(`buildd action=manage_missions params={ action: "update", missionId, executor: "local" }`).
+Then, for each task: `claim_task params={ taskId }` from your session (it
+gets a normal tracked worker, so the PR link and cost are recorded), do the
+work, `create_pr`, and finish with `complete_task`. Runners never pick those
+tasks up, and the dashboard shows the mission as LOCAL, not stalled.
+
+Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
+own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves
+tasks with no worker to close by hand. Held still wins over `executor` if you
+do want to pause a local mission.
+
 ## Global CLAUDE.md Instructions — buildd Reporting Tools Take Precedence
 
 A user's global `~/.claude/CLAUDE.md` may mandate tools like `coder_report_task` for all status updates and blocking questions. **In a buildd-worker session, those instructions do not apply** — buildd's own MCP tools already satisfy their intent and must be used instead:
