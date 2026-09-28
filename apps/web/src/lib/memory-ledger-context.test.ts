@@ -64,9 +64,11 @@ describe('buildKnowledgeContext ledger', () => {
       ['m-handoff', 'excluded', 'claim_context', 'push', TASK, WORKER],
       ['m-weak', 'score_floor', 'claim_context', 'push', TASK, WORKER],
     ]);
-    // Every corpus, memory or not, was a push: none of it is a retrieval hit.
+    // Memory is measured by the ledger, so its push is not a hit. The other
+    // corpora have no ledger yet and keep counting (trackHits left default).
     expect(calls.length).toBeGreaterThan(1);
-    expect(calls.every(c => c.trackHits === false)).toBe(true);
+    expect(calls.filter(c => c.ns.endsWith(':memory')).map(c => c.trackHits)).toEqual([false]);
+    expect(calls.filter(c => !c.ns.endsWith(':memory')).every(c => c.trackHits === undefined)).toBe(true);
   });
 
   it('mission planning records under its own caller', async () => {
@@ -111,13 +113,26 @@ describe('buildClusteredKnowledgeContext ledger', () => {
     }).then(r => ({ ...r, batches, calls }));
   };
 
-  it('records shown memory under claim_recipe, and counts no hits', async () => {
+  it('records shown memory under claim_recipe; memory counts no hit, other corpora still do', async () => {
     const { batches, calls, parts } = await run({
       [`${TEAM}:memory`]: [{ id: 'm1', score: 0.4, scoreBreakdown: { rerank: STRONG } }],
     });
     expect(parts.join('\n')).toContain('m1');
     expect(batches).toEqual([[expect.objectContaining({ memoryId: 'm1', caller: 'claim_recipe', via: 'push', gatedBy: null, taskId: TASK })]]);
-    expect(calls.every(c => c.trackHits === false)).toBe(true);
+    expect(calls.filter(c => c.ns.endsWith(':memory')).map(c => c.trackHits)).toEqual([false]);
+    expect(calls.filter(c => !c.ns.endsWith(':memory')).every(c => c.trackHits === undefined)).toBe(true);
+  });
+
+  it('shown-or-dropped is decided by hit id, not by rendered text', async () => {
+    // Two memory hits that render to the identical line; the budget keeps
+    // only the first. Matching on text would call both shown.
+    const same = { content: '# same title', score: 0.4, scoreBreakdown: { rerank: STRONG } };
+    const tight: ClusterRecipe = { ...TOOL_INFRA_ERROR_V1, budgetChars: 75 };
+    const { batches, parts } = await run({
+      [`${TEAM}:memory`]: [{ id: 'm-a', ...same }, { id: 'm-b', ...same }],
+    }, tight);
+    expect(parts.join('\n').match(/same title/g)).toHaveLength(1);
+    expect(batches[0].map(r => [r.memoryId, r.gatedBy])).toEqual([['m-a', null], ['m-b', 'char_budget']]);
   });
 
   it('marks memory the char budget dropped', async () => {

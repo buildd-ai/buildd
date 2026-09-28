@@ -160,6 +160,10 @@ export interface ActionContext {
   // task claim_task just claimed): the store is that workspace's team's, and
   // null when it is sensitive or cannot be resolved.
   getMemoryClient?: (workspaceId?: string) => Promise<MemoryStore | null>;
+  // Where memory reads record their use (memory_uses). The web routes pass an
+  // after()-backed writer so the write outlives the response; omitted, reads
+  // fire and forget.
+  memoryLedger?: MemoryLedgerWriter;
 }
 
 export type ToolResult = {
@@ -530,7 +534,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
-    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
+    consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
 
@@ -1621,25 +1625,24 @@ export async function handleBuilddAction(
       try {
         const claimedTask = workers[0]?.task;
         const claimedWs = claimedTask?.workspace;
-        // The key is memoryProjectKey's (via resolveMemoryProjectKey), the same
-        // rule every other memory read uses: it also closes a key shared with a
-        // sensitive workspace in the team, which the payload alone cannot show.
+        // The key is memoryProjectKey's, the same rule every other memory read
+        // uses: it also closes a key shared with a sensitive workspace in the
+        // team, which the payload alone cannot show. retrieveMemory resolves it
+        // from the workspace itself and searches nothing when there is none.
         const claimedWsId = claimedTask?.workspaceId ?? claimedWs?.id;
-        const memProject = claimedWs && claimedWs.dataClass !== 'sensitive' && claimedWsId
+        const memClient = claimedWs && claimedWs.dataClass !== 'sensitive' && claimedWsId
           && claimedTask?.title && ctx.getMemoryClient
-          ? await resolveClaimMemoryProject(claimedWsId)
-          : null;
-        const memClient = memProject && ctx.getMemoryClient
           ? await ctx.getMemoryClient(claimedWsId)
           : null;
-        if (memClient && memProject) {
+        if (memClient) {
           const { memories } = await retrieveMemory<any>({
             strategy: 'store-search',
             searcher: memClient,
-            search: { query: claimedTask.title, project: memProject, limit: 5 },
+            search: { query: claimedTask.title, limit: 5 },
             scope: { teamId: claimedWs.teamId, workspaceId: claimedWsId },
             caller: 'claim_task_reply',
             attribution: { taskId: workers[0]?.taskId ?? claimedTask.id, workerId: workers[0]?.id },
+            ledger: ctx.memoryLedger,
           });
           if (memories.length > 0) {
             const memoryLines = memories.map((m: any) => {
@@ -2731,7 +2734,10 @@ export async function handleBuilddAction(
         wsId,
         ctx.teamId,
         ctx.knowledgeStore,
-        { paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined },
+        {
+          paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined,
+          ledger: ctx.memoryLedger,
+        },
       ).catch(() => '');
 
       const routingLine = task.routing
@@ -4299,6 +4305,7 @@ export async function handleBuilddAction(
             data.workspaceId ?? null,
             data.teamId ?? ctx.teamId ?? null,
             ctx.knowledgeStore,
+            { ledger: ctx.memoryLedger },
           ).catch(() => '');
 
           return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
@@ -5453,7 +5460,7 @@ import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
-import { retrieveMemory, type MemoryCaller } from './memory-retrieval';
+import { retrieveMemory, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5587,6 +5594,8 @@ type MemoryActionCtx = {
   api?: ApiFn;
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
+  /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
+  memoryLedger?: MemoryLedgerWriter;
 };
 
 // ── Memory project scoping ───────────────────────────────────────────────────
@@ -5633,20 +5642,6 @@ async function ownMemoryHits<T extends { id: string; metadata?: Record<string, u
 /** The caller's memory scope for retrieveMemory, or null (no memory) with no store. */
 function ownMemoryScope(mc: MemoryStore | null, ctx: MemoryActionCtx): MemoryHitScope | null {
   return mc ? { project: ctx.project ?? null, lookup: ids => mc.batch(ids) } : null;
-}
-
-/**
- * Server-side memory project key for a workspace (memoryProjectKey over the
- * workspace and its team). Loaded lazily: ./memory-scope reaches the DB, and
- * this module also runs where there is none. Any failure means no memory.
- */
-async function resolveClaimMemoryProject(workspaceId: string): Promise<string | null> {
-  try {
-    const { resolveMemoryProjectKey } = await import('./memory-scope');
-    return await resolveMemoryProjectKey(workspaceId);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -5835,6 +5830,7 @@ async function fanOutCorpora(
             mode: opts.mode,
             excludeSuperseded: true,
             attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
             onError: 'throw',
           })).results;
         }
@@ -5983,6 +5979,7 @@ export async function handleRecallAction(
       excludeSuperseded: true,
       filter: isFiltered ? r => matchesRecallFilters(r, filterParams) : undefined,
       attribution: { workerId: ctx.workerId },
+      ledger: ctx.memoryLedger,
       onError: 'throw',
     })).results;
   } else {
@@ -6433,6 +6430,7 @@ export async function handleMemoryAction(
             store: ks,
             mode,
             attribution: { workerId: ctx.workerId },
+            ledger: ctx.memoryLedger,
             onError: 'throw',
           })).results
         : await ks.query(ns, { text: params.query as string, mode, topK });
@@ -6563,7 +6561,7 @@ export async function handleMemoryAction(
       const decayedLines = decayed.map(d =>
         `- ${d.sourceId} [${d.corpus}]${d.sourceTs ? ` ts: ${d.sourceTs.toISOString()}` : ''} hits: ${d.hitCount}\n  > ${d.preview}`
       ).join('\n');
-      return text(`Found ${decayed.length} decayed zero-hit chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
+      return text(`Found ${decayed.length} decayed unused chunk(s). Sanity-check previews, then archive with op=archive (corpus + sourceIds):\n${decayedLines}`);
     }
 
     default:

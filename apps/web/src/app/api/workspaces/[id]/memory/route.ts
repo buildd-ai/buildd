@@ -17,6 +17,7 @@ import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper'
 import { saveMemory } from '@buildd/core/memory-write';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
+import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -115,8 +116,8 @@ export async function GET(
   try {
     // A search (a query or a file scope) is a memory read an agent receives:
     // the runner's `## Workspace Memory` block is built from it. It goes
-    // through the one door so it shares the ledger; the output is the store's
-    // own token search, unchanged. The ledger row needs the task it was for,
+    // through the one door, which resolves the workspace's project key again
+    // itself (no key, no search) and shares the ledger. The ledger row needs the task it was for,
     // which the runner sends as `taskId` / `workerId`; without one (a
     // dashboard search) nothing is recorded.
     if (query || search.files) {
@@ -128,7 +129,7 @@ export async function GET(
         scope: { teamId, workspaceId: id },
         caller: 'runner_workspace_memory',
         attribution: { taskId, workerId: searchParams.get('workerId') },
-        ledger: taskId ? undefined : false,
+        ledger: taskId ? afterResponseMemoryLedger : false,
       });
       return NextResponse.json({ memories, total });
     }

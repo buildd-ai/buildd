@@ -28,6 +28,11 @@
  * route also runs only once daily, so in practice it pages at most once per
  * breach-day.
  *
+ * It also carries memory_uses retention (pruneMemoryUses): one bounded batch
+ * of expired ledger rows per run, riding this daily wake window rather than
+ * opening one of its own. A failed prune is reported in the response and
+ * never fails the guardrail.
+ *
  * Auth: Bearer CRON_SECRET (enforced by withCronRun).
  */
 
@@ -37,6 +42,7 @@ import { loadGuardrailWindowInput } from '@buildd/core/memory-digest-readout-sou
 import { READOUT_POLICY_VERSION } from '@buildd/core/memory-digest-readout';
 import { reportOps } from '@buildd/core/report-ops';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { pruneMemoryUses } from '@buildd/core/memory-uses-retention';
 
 export const maxDuration = 30;
 
@@ -58,6 +64,10 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
 
   const verdict = evaluateMemoryDigestGuardrail({ composition, sessions, now });
 
+  const memoryUsesPruned = await pruneMemoryUses({ now }).catch((err: unknown) => ({
+    error: err instanceof Error ? err.message : String(err),
+  }));
+
   if (verdict.alarm) {
     await reportOps({
       source: 'memory-digest-guardrail',
@@ -78,5 +88,5 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     result: verdict as unknown as Record<string, unknown>,
   });
 
-  return NextResponse.json({ ok: true, verdict });
+  return NextResponse.json({ ok: true, verdict, memoryUsesPruned });
 }

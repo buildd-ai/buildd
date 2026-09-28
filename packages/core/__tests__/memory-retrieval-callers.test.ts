@@ -79,7 +79,7 @@ describe('recall and query_knowledge are pulls', () => {
 });
 
 describe('authoring prior work is a push', () => {
-  it('counts no hits and records which memory hits the merge kept out', async () => {
+  it('memory counts no hit (other corpora still do) and the ledger records which memory hits the merge kept out', async () => {
     const { ks, calls } = store({
       [`${TEAM}:memory`]: [{ id: 'm-top', score: 0.95 }, { id: 'm-low', score: 0.2 }, { id: 'm-capped', score: 0.5 }],
       [`${WS}:task`]: [1, 2, 3, 4].map(i => ({ id: `t${i}`, score: 0.9 })),
@@ -88,7 +88,8 @@ describe('authoring prior work is a push', () => {
       memoryScope: { project: PROJECT, lookup: memClient.batch },
     });
     expect(out.split('\n')).toHaveLength(6);
-    expect(calls.every(c => c.trackHits === false)).toBe(true);
+    expect(calls.filter(c => c.ns.endsWith(':memory')).map(c => c.trackHits)).toEqual([false]);
+    expect(calls.filter(c => !c.ns.endsWith(':memory')).every(c => c.trackHits === undefined)).toBe(true);
     expect(batches).toHaveLength(1);
     expect(batches[0].map(r => [r.memoryId, r.caller, r.via, r.gatedBy])).toEqual([
       ['m-top', 'authoring_prior_work', 'push', null],

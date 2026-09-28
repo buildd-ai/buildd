@@ -38,6 +38,7 @@ import {
   type MemoryHitScope,
   type MemoryQuerier,
 } from './memory-hit-scope';
+import type { SQL } from 'drizzle-orm';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 
@@ -119,40 +120,90 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const uuidOrNull = (v: string | null | undefined): string | null =>
   typeof v === 'string' && UUID_RE.test(v) ? v : null;
 
-type LedgerDb = { insert: (table: any) => { values: (rows: MemoryUseRow[]) => PromiseLike<unknown> } };
+type LedgerDb = {
+  insert: (table: any) => { values: (rows: MemoryUseRow[]) => PromiseLike<unknown> };
+  execute: (query: SQL) => PromiseLike<{ rows: Array<Record<string, unknown>> }>;
+};
 
 /**
- * A writer that sends each batch as ONE INSERT, not awaited, errors
- * swallowed. A missing table, a missing DATABASE_URL (the runner) or a failed
- * insert costs the ledger rows and nothing else.
+ * Keep a row's task and worker ids only when the database confirms them (see
+ * memoryAttributionCheckSql in ./memory-uses-attribution); otherwise the row is written unattributed. The
+ * ids arrive from request parameters, so an unverified id would let a caller
+ * file ledger rows against someone else's task. A task that fails the check
+ * takes the worker down with it. One query per distinct attribution, which is
+ * one per retrieval in practice.
  */
-export function createDbMemoryLedger(
+async function verifyAttribution(db: LedgerDb, rows: MemoryUseRow[]): Promise<MemoryUseRow[]> {
+  if (!rows.some(r => r.taskId || r.workerId)) return rows;
+  // Loaded here, not at the top: it pulls in the schema, and this module is
+  // imported by code (and tests) that stub drizzle-orm.
+  const { memoryAttributionCheckSql } = await import('./memory-uses-attribution');
+  const verdicts = new Map<string, { task: boolean; worker: boolean }>();
+  const keyOf = (r: MemoryUseRow) => `${r.workspaceId}|${r.taskId}|${r.workerId}`;
+  for (const r of rows) {
+    if (!r.taskId && !r.workerId) continue;
+    const key = keyOf(r);
+    if (verdicts.has(key)) continue;
+    if (!r.workspaceId) {
+      verdicts.set(key, { task: false, worker: false });
+      continue;
+    }
+    const res = await db.execute(memoryAttributionCheckSql({ taskId: r.taskId, workerId: r.workerId, workspaceId: r.workspaceId }));
+    const row = res.rows[0] ?? {};
+    const task = row.task_ok === true;
+    // A claimed task that did not check out voids the worker too.
+    const worker = row.worker_ok === true && (!r.taskId || task);
+    verdicts.set(key, { task, worker });
+  }
+  return rows.map(r => {
+    if (!r.taskId && !r.workerId) return r;
+    const v = verdicts.get(keyOf(r))!;
+    return { ...r, taskId: v.task ? r.taskId : null, workerId: v.worker ? r.workerId : null };
+  });
+}
+
+/**
+ * Write one retrieval's rows: verify the attribution, then ONE INSERT. The
+ * returned promise never rejects; a missing table, a missing DATABASE_URL (the
+ * runner) or a failed query costs the ledger rows and nothing else. Web
+ * callers hand this to `after()` so the platform keeps the function alive for
+ * it; everything else fires and forgets it via `dbMemoryLedger`.
+ */
+export function createMemoryUseWriter(
   loadDb: () => Promise<{ db: LedgerDb; table: unknown }> = async () => {
     const { db } = await import('./db');
     const { memoryUses } = await import('./db/schema');
     return { db: db as unknown as LedgerDb, table: memoryUses };
   },
-): MemoryLedgerWriter {
-  return (rows) => {
+): (rows: MemoryUseRow[]) => Promise<void> {
+  return async (rows) => {
     if (rows.length === 0) return;
-    void (async () => {
+    try {
       const { db, table } = await loadDb();
-      await db.insert(table).values(rows);
-    })().catch(() => {});
+      const verified = await verifyAttribution(db, rows);
+      await db.insert(table).values(verified);
+    } catch {
+      // Telemetry: a lost batch never affects the read that produced it.
+    }
   };
 }
 
-const writeToDb = createDbMemoryLedger();
+const writeToDb = createMemoryUseWriter();
 
 /**
- * The default writer. Inert under `bun test` (NODE_ENV=test): unit tests drive
- * the read paths with real-shaped ids, and a checkout's env can point at a
- * live database, so no test may be one stray default away from writing ledger
- * rows into it. Tests that want the rows inject a writer.
+ * The default database write. Inert under `bun test` (NODE_ENV=test): unit
+ * tests drive the read paths with real-shaped ids, and a checkout's env can
+ * point at a live database, so no test may be one stray default away from
+ * writing ledger rows into it. Tests that want the rows inject a writer.
  */
+export function writeMemoryUses(rows: MemoryUseRow[]): Promise<void> {
+  if (process.env.NODE_ENV === 'test') return Promise.resolve();
+  return writeToDb(rows);
+}
+
+/** The default writer: `writeMemoryUses`, fired and forgotten. */
 export const dbMemoryLedger: MemoryLedgerWriter = (rows) => {
-  if (process.env.NODE_ENV === 'test') return;
-  writeToDb(rows);
+  void writeMemoryUses(rows);
 };
 
 /**
@@ -289,6 +340,17 @@ export interface MemoryStoreSearcher {
   batch(ids: string[]): Promise<{ memories: Array<{ id: string } & Record<string, any>> }>;
 }
 
+/** The workspace's memory project key, or null (no memory) on any failure. */
+async function resolveStoreProject(workspaceId: string | null | undefined): Promise<string | null> {
+  if (!workspaceId) return null;
+  try {
+    const { resolveMemoryProjectKey } = await import('./memory-scope');
+    return await resolveMemoryProjectKey(workspaceId);
+  } catch {
+    return null;
+  }
+}
+
 export interface RetrieveStoreMemoryInput {
   /**
    * The memories table's own token search (ILIKE), for the two push paths
@@ -298,8 +360,12 @@ export interface RetrieveStoreMemoryInput {
    */
   strategy: 'store-search';
   searcher: MemoryStoreSearcher;
-  /** Passed to `searcher.search` verbatim; `project` scopes it. */
+  /**
+   * Passed to `searcher.search`, except `project`: that is always the
+   * workspace's own key, resolved here, whatever the caller put in it.
+   */
   search: MemoryStoreSearchParams;
+  /** `workspaceId` decides the project; without one there is no memory. */
   scope: { teamId: string | null | undefined; workspaceId?: string | null };
   caller: MemoryCaller;
   attribution?: MemoryAttribution;
@@ -416,9 +482,17 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
 async function retrieveStoreMemory(
   input: RetrieveStoreMemoryInput,
 ): Promise<RetrieveStoreMemoryResult<unknown>> {
-  const searchData = await input.searcher.search(input.search);
+  const empty = { memories: [], total: 0, hits: [] };
+  // The project comes from the workspace, by the rule every memory read uses
+  // (memoryProjectKey), never from the caller's search params: the store is
+  // team-wide, and a search with no project, or another project, would read
+  // other workspaces' memory. No key means no memory and no search.
+  const project = await resolveStoreProject(input.scope.workspaceId);
+  if (!project) return empty;
+
+  const searchData = await input.searcher.search({ ...input.search, project });
   const results = searchData.results || [];
-  if (results.length === 0) return { memories: [], total: 0, hits: [] };
+  if (results.length === 0) return empty;
 
   const batchData = await input.searcher.batch(results.map(r => r.id));
   const memories = batchData.memories || [];

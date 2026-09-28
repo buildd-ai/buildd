@@ -2,15 +2,32 @@
  * retrieveMemory: the one door every memory read goes through, and the
  * memory_uses ledger it writes (task d1997424).
  */
-import { describe, it, expect } from 'bun:test';
-import {
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+// The store search takes its project from the workspace, never the caller.
+// Each test says what the resolver answers for a workspace.
+let projectFor: Record<string, string | null> = {};
+const resolverCalls: Array<string | null | undefined> = [];
+mock.module('../memory-scope', () => ({
+  resolveMemoryProjectKey: async (wsId: string | null | undefined) => {
+    resolverCalls.push(wsId);
+    return wsId && wsId in projectFor ? projectFor[wsId] : null;
+  },
+  resolveMemoryHitScope: async () => null,
+}));
+
+const {
   retrieveMemory,
   buildMemoryUseRows,
   dbMemoryLedger,
-  createDbMemoryLedger,
+  createMemoryUseWriter,
   MEMORY_CALLER_VIA,
-  type MemoryUseRow,
-  type MemoryCaller,
+} = await import('../memory-retrieval');
+const { memoryAttributionCheckSql } = await import('../memory-uses-attribution');
+import type {
+  MemoryUseRow,
+  MemoryCaller,
 } from '../memory-retrieval';
 import type { MemoryHitScope, MemoryQuerier } from '../memory-hit-scope';
 import type { QueryResult } from '../knowledge-store/types';
@@ -176,14 +193,20 @@ describe('retrieveMemory (store-search)', () => {
     };
   }
 
-  it('passes the search params through verbatim and returns rows in batch order', async () => {
+  beforeEach(() => {
+    projectFor = { [WS]: OWN };
+    resolverCalls.length = 0;
+  });
+
+  it('searches under the workspace key, whatever project the caller passed, and returns rows in batch order', async () => {
     const { s, searches, batches } = searcher(['a', 'b'], [{ id: 'b', title: 'B' }, { id: 'a', title: 'A' }]);
     const l = ledger();
     const res = await retrieveMemory({
-      strategy: 'store-search', searcher: s, search: { query: 'fix', project: OWN, limit: 5 },
+      strategy: 'store-search', searcher: s, search: { query: 'fix', project: 'acme/someone-else', limit: 5 },
       scope: { teamId: TEAM, workspaceId: WS }, caller: 'claim_task_reply',
       attribution: { taskId: TASK, workerId: 'not-a-uuid' }, ledger: l.write,
     });
+    expect(resolverCalls).toEqual([WS]);
     expect(searches).toEqual([{ query: 'fix', project: OWN, limit: 5 }]);
     expect(batches).toEqual([['a', 'b']]);
     expect(res.memories.map((m: any) => m.id)).toEqual(['b', 'a']);
@@ -194,10 +217,34 @@ describe('retrieveMemory (store-search)', () => {
     ]);
   });
 
+  it('no key for the workspace (sensitive, shared with a sensitive one, or none): empty, never searched', async () => {
+    projectFor = { [WS]: null };
+    const { s, searches, batches } = searcher(['a'], [{ id: 'a', title: 'A' }]);
+    const l = ledger();
+    const res = await retrieveMemory({
+      strategy: 'store-search', searcher: s, search: { query: 'fix', project: OWN },
+      scope: { teamId: TEAM, workspaceId: WS }, caller: 'runner_workspace_memory', ledger: l.write,
+    });
+    expect(res).toEqual({ memories: [], total: 0, hits: [] });
+    expect(searches).toEqual([]);
+    expect(batches).toEqual([]);
+    expect(l.batches).toEqual([]);
+  });
+
+  it('no workspace: empty, never searched', async () => {
+    const { s, searches } = searcher(['a'], [{ id: 'a', title: 'A' }]);
+    const res = await retrieveMemory({
+      strategy: 'store-search', searcher: s, search: { query: 'fix', project: OWN },
+      scope: { teamId: TEAM }, caller: 'runner_workspace_memory', ledger: false,
+    });
+    expect(res.memories).toEqual([]);
+    expect(searches).toEqual([]);
+  });
+
   it('an empty search skips the batch and the ledger', async () => {
     const { s, batches } = searcher([], []);
     const l = ledger();
-    const res = await retrieveMemory({ strategy: 'store-search', searcher: s, search: { query: 'x' }, scope: { teamId: TEAM }, caller: 'runner_workspace_memory', ledger: l.write });
+    const res = await retrieveMemory({ strategy: 'store-search', searcher: s, search: { query: 'x' }, scope: { teamId: TEAM, workspaceId: WS }, caller: 'runner_workspace_memory', ledger: l.write });
     expect(res).toEqual({ memories: [], total: 0, hits: [] });
     expect(batches).toHaveLength(0);
     expect(l.batches).toHaveLength(0);
@@ -217,24 +264,91 @@ describe('ledger rows', () => {
     caller: 'recall', via: 'pull', rank: 1, score: null, gatedBy: null,
   };
 
-  it('the DB writer sends one INSERT per batch and swallows a failure', async () => {
+  function fakeDb(verdict: { task_ok: boolean; worker_ok: boolean } | ((q: any) => { task_ok: boolean; worker_ok: boolean })) {
     const inserted: unknown[] = [];
-    const write = createDbMemoryLedger(async () => ({
-      table: 'memory_uses',
-      db: { insert: (t: unknown) => ({ values: async (rows: unknown) => { inserted.push([t, rows]); } }) },
-    }));
-    write([ROW, { ...ROW, rank: 2 }]);
-    write([]);
-    await new Promise(r => setTimeout(r, 0));
-    expect(inserted).toEqual([['memory_uses', [ROW, { ...ROW, rank: 2 }]]]);
+    const checks: any[] = [];
+    const db = {
+      insert: (t: unknown) => ({ values: async (rows: unknown) => { inserted.push([t, rows]); } }),
+      execute: async (q: any) => {
+        checks.push(q);
+        return { rows: [typeof verdict === 'function' ? verdict(q) : verdict] };
+      },
+    };
+    return { db, inserted, checks, write: createMemoryUseWriter(async () => ({ db, table: 'memory_uses' })) };
+  }
 
-    const failing = createDbMemoryLedger(async () => { throw new Error('DATABASE_URL is required'); });
-    expect(() => failing([ROW])).not.toThrow();
-    await new Promise(r => setTimeout(r, 0));
+  it('the DB writer sends one INSERT per batch and never rejects', async () => {
+    const { write, inserted, checks } = fakeDb({ task_ok: true, worker_ok: true });
+    await write([ROW, { ...ROW, rank: 2 }]);
+    await write([]);
+    expect(inserted).toEqual([['memory_uses', [ROW, { ...ROW, rank: 2 }]]]);
+    // Nothing attributed, nothing to verify.
+    expect(checks).toHaveLength(0);
+
+    const failing = createMemoryUseWriter(async () => { throw new Error('DATABASE_URL is required'); });
+    await expect(failing([ROW])).resolves.toBeUndefined();
+  });
+
+  const ATTRIBUTED: MemoryUseRow = { ...ROW, workspaceId: WS, taskId: TASK, workerId: WORKER };
+
+  it('keeps a task and worker the database confirms, with ONE check query per retrieval', async () => {
+    const { write, inserted, checks } = fakeDb({ task_ok: true, worker_ok: true });
+    await write([ATTRIBUTED, { ...ATTRIBUTED, rank: 2 }]);
+    expect(checks).toHaveLength(1);
+    expect((inserted[0] as any)[1].map((r: MemoryUseRow) => [r.taskId, r.workerId])).toEqual([[TASK, WORKER], [TASK, WORKER]]);
+  });
+
+  it('nulls both ids when the task is not in the workspace', async () => {
+    const { write, inserted } = fakeDb({ task_ok: false, worker_ok: true });
+    await write([ATTRIBUTED]);
+    expect((inserted[0] as any)[1][0]).toMatchObject({ taskId: null, workerId: null, memoryId: 'm' });
+  });
+
+  it('nulls the worker when it is not working that task', async () => {
+    const { write, inserted } = fakeDb({ task_ok: true, worker_ok: false });
+    await write([ATTRIBUTED]);
+    expect((inserted[0] as any)[1][0]).toMatchObject({ taskId: TASK, workerId: null });
+  });
+
+  it('rows with no workspace cannot be verified and are written unattributed', async () => {
+    const { write, inserted, checks } = fakeDb({ task_ok: true, worker_ok: true });
+    await write([{ ...ATTRIBUTED, workspaceId: null }]);
+    expect(checks).toHaveLength(0);
+    expect((inserted[0] as any)[1][0]).toMatchObject({ taskId: null, workerId: null });
+  });
+
+  it('a non-UUID task id never reaches the database as an attribution', () => {
+    const rows = buildMemoryUseRows({
+      hits: [{ chunkId: 'c', memoryId: 'm', rank: 1, score: 1, gated: false, gatedBy: null }],
+      teamId: TEAM, workspaceId: WS, caller: 'runner_workspace_memory',
+      attribution: { taskId: "x' OR 1=1 --", workerId: WORKER },
+    });
+    expect(rows[0]).toMatchObject({ taskId: null, workerId: WORKER });
   });
 
   it('the default writer is inert under bun test, so no test can write to a live database', () => {
     expect(process.env.NODE_ENV).toBe('test');
     expect(() => dbMemoryLedger([ROW])).not.toThrow();
+  });
+});
+
+describe('memoryAttributionCheckSql renders', () => {
+  const dialect = new PgDialect();
+  const squash = (x: string) => x.replace(/\s+/g, ' ').trim();
+
+  it('task and worker: the task is in the workspace, the worker is in it and on that task', () => {
+    const q = dialect.sqlToQuery(memoryAttributionCheckSql({ taskId: TASK, workerId: WORKER, workspaceId: WS }));
+    expect(squash(q.sql)).toBe(
+      'SELECT EXISTS (SELECT 1 FROM "tasks" WHERE "tasks"."id" = $1 AND "tasks"."workspace_id" = $2) AS task_ok, ' +
+      'EXISTS (SELECT 1 FROM "workers" WHERE "workers"."id" = $3 AND "workers"."workspace_id" = $4 AND "workers"."task_id" = $5) AS worker_ok',
+    );
+    expect(q.params).toEqual([TASK, WS, WORKER, WS, TASK]);
+  });
+
+  it('worker only (recall): the worker is in the workspace', () => {
+    const q = dialect.sqlToQuery(memoryAttributionCheckSql({ taskId: null, workerId: WORKER, workspaceId: WS }));
+    expect(squash(q.sql)).toBe(
+      'SELECT false AS task_ok, EXISTS (SELECT 1 FROM "workers" WHERE "workers"."id" = $1 AND "workers"."workspace_id" = $2) AS worker_ok',
+    );
   });
 });
