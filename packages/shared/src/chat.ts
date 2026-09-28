@@ -483,6 +483,74 @@ export interface ChatEventData {
 
 export const CHAT_EVENT_PART_TYPE = 'data-buildd-event' as const;
 
+// ── Directives (standing rules) ──────────────────────────────────────────────
+
+/**
+ * A directive card on an assistant turn: the rule the person just stated,
+ * proposed for one-tap saving (docs/design/memory-done-right.md, "Chat").
+ */
+export const CHAT_DIRECTIVE_PART_TYPE = 'data-buildd-directive' as const;
+
+export type ChatDirectiveScope = 'everywhere' | 'workspace';
+
+export interface ChatDirectiveCandidateData {
+  /** The conversation the card lives in, so the card can answer itself. */
+  conversationId: string;
+  /** The rule as proposed. The person saves it as is, or edits it in Settings. */
+  text: string;
+  /** Preselected on the card. */
+  suggestedScope: ChatDirectiveScope;
+  /** The turn's workspace, the "Only <workspace>" option. Null: everywhere is the only option. */
+  workspace: { id: string; name: string } | null;
+  /** Who proposed the card: Jev, or the keyword rule when Jev was unavailable or unsure. */
+  source: 'jev' | 'rule';
+  /** Set once answered: the card draws as its outcome, not its buttons. */
+  status?: 'saved' | 'dismissed';
+  /** The saved rule and the scope it was saved with, when status is saved. */
+  directiveId?: string;
+  savedScope?: ChatDirectiveScope;
+}
+
+export interface ChatDirectiveDTO {
+  id: string;
+  text: string;
+  /** Null: every workspace. */
+  workspaceId: string | null;
+  workspaceName: string | null;
+  source: 'chat' | 'settings';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `GET /api/chat/directives` */
+export interface ListChatDirectivesResponse {
+  directives: ChatDirectiveDTO[];
+  /** Workspaces the person can scope a rule to (Settings' picker). */
+  workspaces: Array<{ id: string; name: string }>;
+}
+
+/**
+ * `POST /api/chat/directives`. With `from`, it answers the card on that
+ * assistant message too (status saved), so a reload draws it answered.
+ */
+export interface CreateChatDirectiveRequest {
+  text: string;
+  workspaceId?: string | null;
+  from?: { conversationId: string; messageId: string };
+}
+
+/** `PATCH /api/chat/directives/[id]` */
+export interface UpdateChatDirectiveRequest {
+  text?: string;
+  workspaceId?: string | null;
+}
+
+/** `POST /api/chat/directives/dismiss`: the card's "Not now". */
+export interface DismissChatDirectiveRequest {
+  conversationId: string;
+  messageId: string;
+}
+
 export type ConversationApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
 export interface ConversationApprovalDTO {

@@ -312,6 +312,53 @@ describe('labelTaskMemoryUses', () => {
   });
 });
 
+describe('judgeChatDirective', () => {
+  const byState = (tier: unknown, scopeAns: unknown) => (req: any) => (req.state.turn ? { tier } : { scope: scopeAns });
+
+  it('asks tier and, with a workspace, scope; logs both rows next to the rule', async () => {
+    const h = harness(byState(choiceAns('directive', 0.92), choiceAns('workspace', 0.88)));
+    const out = await h.decider.judgeChatDirective({
+      scope, message: 'Always run the billing smoke test first.', workspace: { name: 'billing-web' }, rule: true,
+    });
+    expect(out).toEqual({ tier: { choice: 'directive', confidence: 0.92 }, scope: { choice: 'workspace', confidence: 0.88 } });
+    expect(h.requests).toHaveLength(2);
+    expect(h.rows.map(r => [r.decision, r.verdict, r.rule, r.applied, r.caller])).toEqual([
+      ['chat_tier', 'directive', 'directive', true, 'chat'],
+      ['directive_scope', 'workspace', 'everywhere', true, 'chat'],
+    ]);
+    expect(h.receipts).toHaveLength(2);
+  });
+
+  it('no workspace: one call, no scope answer', async () => {
+    const h = harness(byState(choiceAns('neither', 0.6), null));
+    const out = await h.decider.judgeChatDirective({ scope, message: 'never mind', workspace: null, rule: false });
+    expect(out).toEqual({ tier: { choice: 'neither', confidence: 0.6 }, scope: null });
+    expect(h.requests).toHaveLength(1);
+    expect(h.rows[0]).toMatchObject({ decision: 'chat_tier', applied: false, rule: 'neither' });
+  });
+
+  it('no key: null, nothing logged', async () => {
+    const h = harness({}, { key: null });
+    expect(await h.decider.judgeChatDirective({ scope, message: 'Always x', workspace: null, rule: true })).toBeNull();
+    expect(h.rows).toHaveLength(0);
+  });
+
+  it('a failed call fails open: null answers, the error logged', async () => {
+    const h = harness('error');
+    const out = await h.decider.judgeChatDirective({ scope, message: 'Always x', workspace: { name: 'w' }, rule: true });
+    expect(out).toEqual({ tier: null, scope: null });
+    expect(h.rows.length).toBe(2);
+    expect(h.rows.every(r => r.error !== null && r.applied === false)).toBe(true);
+  });
+
+  it('a hang is bounded by the deadline', async () => {
+    const h = harness('hang', { timeoutMs: 30 });
+    const out = await h.decider.judgeChatDirective({ scope, message: 'Always x', workspace: null, rule: true });
+    expect(out).toEqual({ tier: null, scope: null });
+    expect(h.rows[0].error).toBe('timeout');
+  });
+});
+
 const PINNED = {
   learn: '614834af489d',
   update: '3f167883df52',

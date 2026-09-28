@@ -46,7 +46,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'account',
         label: 'Profile',
         href: '/app/settings/account',
-        description: 'Your sign-in, your teams, and which key you use.',
+        description: 'Your sign-in, your teams, your standing rules for chat, and which key you use.',
       },
     ],
   },

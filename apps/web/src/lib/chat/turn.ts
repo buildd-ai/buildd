@@ -47,6 +47,8 @@ import { buildPreview } from './previews';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
+import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirectiveHooks } from './directives';
+import { renderStandingRules } from '@buildd/core/chat-directives';
 import type { LimitVerdict } from './limits';
 import {
   HISTORY_LIMIT,
@@ -104,6 +106,12 @@ export interface TurnDeps {
   autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }) => Promise<void>;
   /** Test seam: replace the streamText call. */
   streamTextImpl?: typeof streamText;
+  /**
+   * The person's standing rules (./directives.ts): loaded into the
+   * instructions, and a confirm card when the user message states a new one.
+   * Absent: neither.
+   */
+  directives?: ChatDirectiveHooks;
 }
 
 export function unavailable(reason: ChatUnavailableReason, status: number, extra: Record<string, unknown> = {}): Response {
@@ -189,6 +197,8 @@ export async function runChatTurn(args: {
     deps.limits({ teamId: conv.teamId, userId: user.id, now }),
     loadMessages(conv.id, STORED_MESSAGE_LIMIT),
   ]);
+  // The person's rules load alongside everything else; never fails the turn.
+  const rulesPromise = deps.directives ? deps.directives.load().catch(() => []) : Promise.resolve([]);
   if (!verdict.ok) {
     return unavailable(verdict.reason, 429, {
       message: verdict.message,
@@ -244,6 +254,18 @@ export async function runChatTurn(args: {
   const scoped = routedWs && deps.scopeFor ? deps.scopeFor(routedWs.id) : null;
   const actionContext = scoped?.actionContext ?? deps.actionContext;
   const memory = scoped?.memory ?? deps.memory;
+
+  // A rule stated in this message: its card is proposed off the critical path
+  // and lands just before the stream finishes (./directives.ts).
+  const directiveCard = message.role === 'user' && deps.directives
+    ? proposeDirectiveCard({
+      conversationId: conv.id,
+      message: text!,
+      previous: lastAssistantText(stored),
+      workspace: scopeWs ? { id: scopeWs.id, name: scopeWs.name, hint: routedWs?.hint ?? null } : null,
+      judge: deps.directives.judge,
+    })
+    : null;
 
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
   // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
@@ -371,7 +393,7 @@ export async function runChatTurn(args: {
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
     entry,
-  })}${dockedBlock}`;
+  })}${dockedBlock}${rulesBlock(await rulesPromise, scopeWs?.id ?? null)}`;
 
   const startedAt = Date.now();
   const result = (deps.streamTextImpl ?? streamText)({
@@ -388,7 +410,7 @@ export async function runChatTurn(args: {
   });
 
   const turnMetadata: ChatTurnMetadata = { tier: resolved.tier, scope: scopeWs };
-  const stream = toUIMessageStream({
+  const stream = withDirectiveCard(toUIMessageStream({
     stream: result.stream,
     tools,
     originalMessages: uiMessages,
@@ -399,6 +421,8 @@ export async function runChatTurn(args: {
       try {
         const parts = [...(responseMessage.parts as ChatMessagePart[])];
         if (isAborted) parts.push({ type: 'text', text: '_Stopped: this turn hit its time limit._' });
+        const card = directiveCard ? await directiveCard : null;
+        if (card) parts.push(directivePart(card));
         let usage: ChatUsage | null = null;
         try {
           const u = await result.usage;
@@ -444,7 +468,7 @@ export async function runChatTurn(args: {
         console.error(`[chat] failed to persist turn for conversation ${conv.id}:`, e);
       }
     },
-  });
+  }), directiveCard);
 
   return createUIMessageStreamResponse({
     stream,
@@ -452,6 +476,20 @@ export async function runChatTurn(args: {
     consumeSseStream: ({ stream: s }) => consumeStream({ stream: s }),
     headers: { 'x-buildd-chat-tier': resolved.tier },
   });
+}
+
+/** The standing-rules block for the instructions, or '' (no rules). */
+function rulesBlock(rules: Parameters<typeof renderStandingRules>[0], workspaceId: string | null): string {
+  const block = renderStandingRules(rules, { workspaceId });
+  return block ? `\n\n${block}` : '';
+}
+
+/** The latest assistant reply's text, as context for the chat-tier question. */
+function lastAssistantText(stored: MessageRow[]): string | null {
+  const last = stored.filter(m => m.role === 'assistant').at(-1);
+  if (!last) return null;
+  const t = last.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? '')).join('\n').trim();
+  return t || null;
 }
 
 /**

@@ -1429,6 +1429,13 @@
       "when": 1790575188641,
       "tag": "0206_regular_secret_warriors",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1790601099703,
+      "tag": "0207_majestic_vanisher",
+      "breakpoints": true
     }
   ]
 }

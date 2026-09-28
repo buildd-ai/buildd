@@ -15,8 +15,8 @@
  * | use             | live   | writes memory_uses.outcome used / ignored               |
  * | relevance       | shadow | nothing; logs a verdict per pushed hit                  |
  * | promote         | shadow | nothing; defined for the candidate step                 |
- * | chat_tier       | live   | defined for chat directives (proposes a card)           |
- * | directive_scope | live   | defined for chat directives (preselects a scope)        |
+ * | chat_tier       | live   | proposes a directive card in chat (judgeChatDirective)  |
+ * | directive_scope | live   | preselects the card's scope (judgeChatDirective)        |
  *
  * Every verdict is logged as a `memory_decisions` row (verdict, confidence,
  * what the rule said, whether it was applied). The thresholds are provisional:
@@ -484,6 +484,25 @@ export interface MemoryDecider {
   judgeUpdate(input: { scope: MemoryDecisionScope; incoming: MemoryText; existing: MemoryText & { id: string } }): Promise<UpdateJudgement>;
   labelUses(input: { scope: MemoryDecisionScope; summary: string; memories: Array<MemoryText & { memoryId: string }> }): Promise<UseLabel[]>;
   shadowRelevance(input: { scope: MemoryDecisionScope; task: string; caller: string; hits: RelevanceShadowHit[] }): Promise<void>;
+  /**
+   * Chat tier and, when a workspace is in scope, directive scope, in parallel
+   * inside one deadline. Null = not configured (no key). Each answer is null
+   * when it did not come back; the caller's keyword rule decides then
+   * (chat-directives.ts `proposeDirective`). `rule` is that rule's verdict,
+   * logged next to Jev's.
+   */
+  judgeChatDirective(input: {
+    scope: MemoryDecisionScope;
+    message: string;
+    previous?: string | null;
+    workspace: { name: string; hint?: string | null } | null;
+    rule: boolean;
+  }): Promise<ChatDirectiveAnswers | null>;
+}
+
+export interface ChatDirectiveAnswers {
+  tier: { choice: ChatMemoryTier; confidence: number } | null;
+  scope: { choice: DirectiveScope; confidence: number } | null;
 }
 
 /** What learn does with no decider (the runner, a team without a key). */
@@ -649,6 +668,43 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
         return labels;
       } catch {
         return items.map(m => ({ memoryId: m.memoryId, outcome: null }));
+      }
+    },
+
+    async judgeChatDirective({ scope, message, previous, workspace, rule }) {
+      if (!message.trim()) return null;
+      try {
+        const [tierRun, scopeRun] = await Promise.all([
+          runOne(CHAT_MEMORY_TIER_DECISION, scope, chatTierState(message, previous)),
+          workspace
+            ? runOne(DIRECTIVE_SCOPE_DECISION, scope, directiveScopeState(message, workspace))
+            : Promise.resolve(null),
+        ]);
+        if (!tierRun) return null;
+        const tierAns = tierRun.result.ok ? (tierRun.result.answers.tier as ChoiceAnswer<ChatMemoryTier>) : null;
+        const scopeAns = scopeRun?.result.ok ? (scopeRun.result.answers.scope as ChoiceAnswer<DirectiveScope>) : null;
+        const tierConfident = !!tierAns && tierAns.confidence >= CHAT_TIER_MIN_CONFIDENCE;
+        const rows: MemoryDecisionRow[] = [{
+          ...baseRow(scope, tierRun as DecisionRun<DecisionQuestions>, CHAT_MEMORY_TIER_DECISION as Decision<DecisionQuestions>),
+          memoryId: null, decision: 'chat_tier', mode: 'live', caller: 'chat',
+          verdict: tierAns?.choice ?? null, confidence: tierAns?.confidence ?? null, probability: null,
+          rule: rule ? 'directive' : 'neither', applied: tierConfident,
+        }];
+        if (scopeRun) {
+          rows.push({
+            ...baseRow(scope, scopeRun as DecisionRun<DecisionQuestions>, DIRECTIVE_SCOPE_DECISION as Decision<DecisionQuestions>),
+            memoryId: null, decision: 'directive_scope', mode: 'live', caller: 'chat',
+            verdict: scopeAns?.choice ?? null, confidence: scopeAns?.confidence ?? null, probability: null,
+            rule: 'everywhere', applied: gateDirectiveScope(scopeAns) !== null,
+          });
+        }
+        safeRecord(deps, rows, receiptsOf([tierRun as DecisionRun<DecisionQuestions>, scopeRun as DecisionRun<DecisionQuestions> | null]), scope);
+        return {
+          tier: tierAns ? { choice: tierAns.choice, confidence: tierAns.confidence } : null,
+          scope: scopeAns ? { choice: scopeAns.choice, confidence: scopeAns.confidence } : null,
+        };
+      } catch {
+        return null;
       }
     },
 
