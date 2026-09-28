@@ -1985,7 +1985,19 @@ export interface VisualReviewDecisionResponse {
   cancelledFixTaskIds: string[];
   /** Fixes annotated with a `guidance` note (started, so not cancelled; or a needs-fix note on the auditor's fix). */
   guidanceTaskIds: string[];
+  /** Why each fix in `guidanceTaskIds` got a note instead of a cancel, for an honest toast. */
+  annotated: VisualReviewAnnotation[];
   model: VisualReviewModel;
+}
+
+/**
+ * `started`: a looks-right could not cancel the fix because it had started.
+ * `still_linked`: another viewport or screen still links the fix, so it stays open.
+ * `note`: a needs-fix note sent to the open fix.
+ */
+export interface VisualReviewAnnotation {
+  fixTaskId: string;
+  reason: 'started' | 'still_linked' | 'note';
 }
 
 /** DELETE /api/missions/[id]/visual-review/decisions/[reviewId] (undo). */
@@ -1993,8 +2005,14 @@ export interface VisualReviewUndoResponse {
   superseded: string;
   /** Every review of the same decision (one tap on both viewports writes two rows; undo takes both back). */
   supersededIds: string[];
+  /** The reviews this decision had replaced, active again: undo returns the cells to their state before the tap. */
+  restoredIds: string[];
+  /** The first of each list below, or null. */
   reopenedFixTaskId: string | null;
   cancelledFixTaskId: string | null;
+  /** Every fix the undo reopened or cancelled (a request can span routes, one fix per route). */
+  reopenedFixTaskIds: string[];
+  cancelledFixTaskIds: string[];
   model: VisualReviewModel;
 }
 

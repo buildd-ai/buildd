@@ -43,6 +43,7 @@ const {
   planDecision,
   applyDecision,
   undoDecision,
+  planUndo,
   humanFixTitle,
 } = await import('./visual-review-decisions');
 
@@ -118,7 +119,8 @@ const req = (artifactIds: string[], decision: 'looks_right' | 'needs_fix', expec
 // ── The effect table ────────────────────────────────────────────────────────
 
 describe('planShotReviewEffect: the six cells', () => {
-  const none = { linkedFixId: null, hasNote: false };
+  const none = { linkedFix: null, hasNote: false };
+  const open = (id = 'fix-a') => ({ id, status: 'pending' });
   it('ok + looks right: agree, record only', () => {
     expect(planShotReviewEffect('ok', 'looks_right', none)).toEqual({ relation: 'agree', intent: 'none' });
   });
@@ -126,15 +128,25 @@ describe('planShotReviewEffect: the six cells', () => {
     expect(planShotReviewEffect('ok', 'needs_fix', none)).toEqual({ relation: 'dispute', intent: 'file_fix' });
   });
   it('issue + looks right: dispute, waive the linked fix', () => {
-    expect(planShotReviewEffect('issue', 'looks_right', { linkedFixId: 'fix-a', hasNote: false })).toEqual({ relation: 'dispute', intent: 'waive_fix' });
-    // No linked fix: nothing to waive.
+    expect(planShotReviewEffect('issue', 'looks_right', { linkedFix: open(), hasNote: false })).toEqual({ relation: 'dispute', intent: 'waive_fix' });
+    // No linked fix, or it already finished: nothing to waive.
     expect(planShotReviewEffect('issue', 'looks_right', none)).toEqual({ relation: 'dispute', intent: 'none' });
+    expect(planShotReviewEffect('issue', 'looks_right', { linkedFix: { id: 'fix-a', status: 'completed' }, hasNote: false })).toEqual({ relation: 'dispute', intent: 'none' });
   });
   it('issue + needs fix: agree, the note goes to the linked fix as guidance', () => {
-    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFixId: 'fix-a', hasNote: true })).toEqual({ relation: 'agree', intent: 'guide_fix' });
-    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFixId: 'fix-a', hasNote: false })).toEqual({ relation: 'agree', intent: 'none' });
+    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFix: open(), hasNote: true })).toEqual({ relation: 'agree', intent: 'guide_fix' });
+    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFix: open(), hasNote: false })).toEqual({ relation: 'agree', intent: 'none' });
     // The auditor never filed one: the human's agreement files it.
     expect(planShotReviewEffect('issue', 'needs_fix', none)).toEqual({ relation: 'agree', intent: 'file_fix' });
+  });
+  it('needs fix on a shot whose fix already completed agrees with the old shot and files nothing', () => {
+    // The re-check round is what shows whether it worked; a second fix on a pre-fix screenshot is duplicate work.
+    const done = { linkedFix: { id: 'fix-a', status: 'completed' }, hasNote: true };
+    expect(planShotReviewEffect('issue', 'needs_fix', done)).toEqual({ relation: 'agree', intent: 'none' });
+    expect(planShotReviewEffect('ok', 'needs_fix', done)).toEqual({ relation: 'dispute', intent: 'none' });
+    // A fix that failed or was cancelled solved nothing: file again.
+    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFix: { id: 'fix-a', status: 'failed' }, hasNote: false })).toEqual({ relation: 'agree', intent: 'file_fix' });
+    expect(planShotReviewEffect('issue', 'needs_fix', { linkedFix: { id: 'fix-a', status: 'cancelled' }, hasNote: false })).toEqual({ relation: 'agree', intent: 'file_fix' });
   });
   it('unsure + looks right: waive, record only', () => {
     expect(planShotReviewEffect('unsure', 'looks_right', none)).toEqual({ relation: 'waive', intent: 'none' });
@@ -210,6 +222,14 @@ describe('planDecision', () => {
     model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken'), newer], { tasks: [round2] });
     const plan = planDecision(model, req(['a-m'], 'looks_right', { 'a-m': 'issue' }));
     expect(plan.kind).toBe('stale');
+  });
+
+  it('needs fix on an issue shot whose auditor fix completed files nothing', () => {
+    model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a')], { tasks: [{ id: 'fix-a', title: '[surface fix] /app/x: broken', status: 'completed' }] });
+    const plan = planDecision(model, req(['a-m'], 'needs_fix', { 'a-m': 'issue' }, 'still broken?'));
+    expect(plan.kind === 'ok' && plan.fixGroups).toEqual([]);
+    expect(plan.kind === 'ok' && plan.guides).toEqual([]);
+    expect(plan.kind === 'ok' && plan.shots[0]).toMatchObject({ relation: 'agree', intent: 'none' });
   });
 
   it('a looks-right redecide withdraws the fix the earlier human decision filed', () => {
@@ -301,6 +321,23 @@ describe('applyDecision', () => {
     expect(row).toMatchObject({ missionId: MISSION.id, workspaceId: 'ws-1', artifactId: 'a-m', auditTaskId: AUDIT, round: 1, cellKey: '/app/x|mobile|', route: '/app/x', viewport: 'mobile', agentVerdict: 'ok', decision: 'looks_right', relation: 'agree', reviewerUserId: 'user-1' });
   });
 
+  it('stamps createdAt on the rows with the instant it superseded the prior ones, so undo can find both exactly', async () => {
+    // created_at defaults to now() in microseconds; a JS Date keeps milliseconds,
+    // so a server default never compares equal to the value read back.
+    model = buildModel([shot('a-m', '/app/x', 'mobile', 'ok', 'fine'), shot('a-d', '/app/x', 'desktop', 'ok', 'fine')], {
+      reviews: [review({ id: 'rev-old', artifactId: 'a-m', decision: 'looks_right', relation: 'agree' })],
+    });
+    inScope = ['a-m', 'a-d'];
+    await applyDecision({ mission: MISSION, reviewer: REVIEWER, request: req(['a-m', 'a-d'], 'needs_fix', { 'a-m': 'ok', 'a-d': 'ok' }) });
+    const sup = calls.find(c => c.op === 'update' && c.table === 'visual_shot_reviews' && c.set.supersededAt)!;
+    const ins = calls.find(c => c.op === 'insert' && c.table === 'visual_shot_reviews')!;
+    expect(sup.set.supersededAt).toBeInstanceOf(Date);
+    for (const row of ins.values) {
+      expect(row.createdAt).toBeInstanceOf(Date);
+      expect(row.createdAt.getTime()).toBe(sup.set.supersededAt.getTime());
+    }
+  });
+
   it('409s a concurrent duplicate that hits the one-active-review index, with no side effects', async () => {
     model = buildModel([shot('a-m', '/app/x', 'mobile', 'ok', 'fine')]);
     inScope = ['a-m'];
@@ -362,6 +399,7 @@ describe('applyDecision', () => {
       expect(out.status).toBe(200);
       expect(calls.some(c => c.op === 'update' && c.table === 'tasks')).toBe(false);
       expect((out.body as any).guidanceTaskId).toBe('fix-a');
+      expect((out.body as any).annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'still_linked' }]);
       const note = calls.find(c => c.op === 'insert' && c.table === 'mission_notes');
       expect(note?.values.body).toContain('Another screen still links this fix');
     });
@@ -378,6 +416,7 @@ describe('applyDecision', () => {
       const body = out.body as any;
       expect(body.cancelledFixTaskId).toBeNull();
       expect(body.guidanceTaskId).toBe('fix-a');
+      expect(body.annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'started' }]);
       const note = calls.find(c => c.op === 'insert' && c.table === 'mission_notes');
       expect(note?.values).toMatchObject({ missionId: MISSION.id, taskId: 'fix-a', type: 'guidance', authorType: 'user', status: 'open' });
       expect(note?.values.body).toContain('This is intended');
@@ -395,6 +434,22 @@ describe('applyDecision', () => {
     const note = calls.find(c => c.op === 'insert' && c.table === 'mission_notes');
     expect(note?.values).toMatchObject({ taskId: 'fix-a', type: 'guidance' });
     expect((out.body as any).guidanceTaskId).toBe('fix-a');
+    expect((out.body as any).annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'note' }]);
+  });
+
+  it('a needs-fix note on a shot whose open fix a human filed keeps that fix on the new row', async () => {
+    // Otherwise the human fix is left open with no active review linking it, and the next Needs fix files a duplicate.
+    model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken')], {
+      reviews: [review({ id: 'rev-old', artifactId: 'a-m', agentVerdict: 'issue', relation: 'agree', fixTaskId: 'fix-h' })],
+      tasks: [{ id: 'fix-h', title: '[surface fix] /app/x: broken', status: 'pending' }],
+    });
+    inScope = ['a-m'];
+    const out = await applyDecision({ mission: MISSION, reviewer: REVIEWER, request: req(['a-m'], 'needs_fix', { 'a-m': 'issue' }, 'the footer too') });
+    expect(out.status).toBe(200);
+    expect(calls.some(c => c.op === 'insert' && c.table === 'tasks')).toBe(false);
+    const ins = calls.find(c => c.op === 'insert' && c.table === 'visual_shot_reviews')!;
+    expect(ins.values[0].fixTaskId).toBe('fix-h');
+    expect((out.body as any).annotated).toEqual([{ fixTaskId: 'fix-h', reason: 'note' }]);
   });
 
   it('refuses a new human round at the ceiling with 409 and writes nothing', async () => {
@@ -449,33 +504,94 @@ describe('applyDecision', () => {
   });
 });
 
+describe('planUndo: undo restores the state before the decision', () => {
+  const row = (over: Record<string, unknown>) => ({ id: 'rev-2', artifactId: 'a-m', route: '/app/x', fixTaskId: null, cancelledFixTaskId: null, ...over }) as any;
+
+  it('a two-viewport needs fix cancels the one shared fix once', () => {
+    const plan = planUndo([row({ id: 'r-m', fixTaskId: 'fix-h' }), row({ id: 'r-d', artifactId: 'a-d', fixTaskId: 'fix-h' })], [], []);
+    expect(plan.cancel).toEqual([{ fixTaskId: 'fix-h', route: '/app/x' }]);
+    expect(plan.reopen).toEqual([]);
+  });
+
+  it('a two-route needs fix cancels the fix of every route', () => {
+    const plan = planUndo([row({ id: 'r-x', fixTaskId: 'fix-x' }), row({ id: 'r-y', artifactId: 'b-m', route: '/app/y', fixTaskId: 'fix-y' })], [], []);
+    expect(plan.cancel).toEqual([{ fixTaskId: 'fix-x', route: '/app/x' }, { fixTaskId: 'fix-y', route: '/app/y' }]);
+  });
+
+  it('a two-route waive reopens every fix it cancelled', () => {
+    const plan = planUndo([row({ id: 'r-x', cancelledFixTaskId: 'fix-x' }), row({ id: 'r-y', artifactId: 'b-m', route: '/app/y', cancelledFixTaskId: 'fix-y' })], [], []);
+    expect(plan.reopen.map(r => r.fixTaskId)).toEqual(['fix-x', 'fix-y']);
+    expect(plan.cancel).toEqual([]);
+  });
+
+  it('needs fix, then needs fix with a note, then undo: the first decision comes back and its fix stays', () => {
+    const first = row({ id: 'rev-1', fixTaskId: 'fix-h' });
+    const plan = planUndo([row({ id: 'rev-2', fixTaskId: 'fix-h' })], [first], []);
+    expect(plan.cancel).toEqual([]);
+    expect(plan.restoreIds).toEqual(['rev-1']);
+  });
+
+  it('needs fix, then looks right, then undo: the fix reopens and the needs-fix review comes back with it', () => {
+    const first = row({ id: 'rev-1', fixTaskId: 'fix-h' });
+    const plan = planUndo([row({ id: 'rev-2', cancelledFixTaskId: 'fix-h' })], [first], []);
+    expect(plan.reopen).toEqual([{ fixTaskId: 'fix-h', route: '/app/x' }]);
+    expect(plan.cancel).toEqual([]);
+    expect(plan.restoreIds).toEqual(['rev-1']);
+  });
+
+  it('keeps a fix another active review still points at', () => {
+    const plan = planUndo([row({ id: 'rev-2', fixTaskId: 'fix-h' })], [], ['fix-h']);
+    expect(plan.cancel).toEqual([]);
+  });
+
+  it('restores only rows of the decision\'s own shots', () => {
+    const plan = planUndo([row({ id: 'rev-2' })], [row({ id: 'rev-1' }), row({ id: 'rev-x', artifactId: 'other' })], []);
+    expect(plan.restoreIds).toEqual(['rev-1']);
+  });
+});
+
 describe('undoDecision', () => {
+  const T = new Date('2026-03-10T11:00:00.000Z');
   const reviewRow = (over: Record<string, unknown> = {}) => ({
     id: 'rev-1', missionId: MISSION.id, workspaceId: 'ws-1', artifactId: 'a-m', auditTaskId: AUDIT, round: 1, cellKey: '/app/x|mobile|', route: '/app/x', viewport: 'mobile',
     agentVerdict: 'ok', decision: 'needs_fix', relation: 'dispute', note: null, fixTaskId: 'fix-h', cancelledFixTaskId: null,
-    reviewerUserId: 'user-1', reviewerLabel: 'Reviewer', createdAt: new Date('2026-03-10T11:00:00.000Z'), supersededAt: null, ...over,
+    reviewerUserId: 'user-1', reviewerLabel: 'Reviewer', createdAt: T, supersededAt: null, ...over,
   });
+  type TaskState = { status: string; claimedBy?: string | null; started?: boolean };
 
-  function undoRespond(opts: { review: any; siblings?: any[]; fixUpdate?: any[]; fixStatusAfter?: string; otherRefs?: any[] }) {
+  function undoRespond(opts: { review: any; siblings?: any[]; restorable?: any[]; otherRefs?: any[]; states?: Record<string, TaskState>; fixUpdate?: any[]; fixStatusAfter?: string }) {
+    const states = opts.states ?? { 'fix-h': { status: opts.review?.cancelledFixTaskId ? 'cancelled' : 'pending' } };
     return (c: Call) => {
       if (c.op === 'findFirst' && c.table === 'visual_shot_reviews') return opts.review;
       if (c.op === 'select' && c.table === 'visual_shot_reviews') {
-        // Siblings of the decision, or other active reviews still pointing at the fix.
-        const q = render(c.where);
-        return q.sql.includes('"visual_shot_reviews"."created_at" =') ? (opts.siblings ?? [opts.review]) : (opts.otherRefs ?? []);
+        const q = render(c.where).sql;
+        if (q.includes('"visual_shot_reviews"."created_at" =')) return opts.siblings ?? [opts.review];
+        if (q.includes('"visual_shot_reviews"."superseded_at" =')) return opts.restorable ?? [];
+        return opts.otherRefs ?? [];
       }
-      if (c.op === 'update' && c.table === 'tasks') return opts.fixUpdate ?? [{ id: 'fix-h' }];
+      if (c.op === 'select' && c.table === 'tasks') {
+        return Object.entries(states).map(([id, s]) => ({ id, status: s.status, claimedBy: s.claimedBy ?? null, started: s.started ?? false }));
+      }
+      if (c.op === 'update' && c.table === 'tasks') {
+        if (opts.fixUpdate) return opts.fixUpdate;
+        const id = render(c.where).params.find((p: unknown) => typeof p === 'string' && p.startsWith('fix-'));
+        return [{ id, workspaceId: 'ws-1' }];
+      }
       if (c.op === 'findFirst' && c.table === 'tasks') return { id: 'fix-h', status: opts.fixStatusAfter ?? 'in_progress', title: '[surface fix] /app/x: y', workspaceId: 'ws-1', missionId: MISSION.id, taskClass: 'work', pathManifest: null };
       if (c.op === 'findFirst' && c.table === 'workspaces') return { id: 'ws-1', teamId: 'team-1' };
-      if (c.op === 'update' && c.table === 'visual_shot_reviews') return [{ id: 'rev-1' }];
+      if (c.op === 'update' && c.table === 'visual_shot_reviews') {
+        return c.set.supersededAt === null ? (opts.restorable ?? []).map((r: any) => ({ id: r.id })) : (opts.siblings ?? [opts.review]).map((r: any) => ({ id: r.id }));
+      }
       return [];
     };
   }
+  const run = () => undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+  const taskUpdates = () => calls.filter(c => c.op === 'update' && c.table === 'tasks');
 
   it('404s a review of another mission, or one already superseded', async () => {
     model = buildModel([]);
     respond = undoRespond({ review: null });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    const out = await run();
     expect(out.status).toBe(404);
     const q = render(calls[0].where);
     expect(q.sql).toContain('"visual_shot_reviews"."mission_id" = $');
@@ -486,7 +602,7 @@ describe('undoDecision', () => {
   it('cancels the pending, unclaimed fix it filed, then supersedes the review', async () => {
     model = buildModel([]);
     respond = undoRespond({ review: reviewRow() });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    const out = await run();
     expect(out.status).toBe(200);
     const cancel = calls.findIndex(c => c.op === 'update' && c.table === 'tasks');
     const sup = calls.findIndex(c => c.op === 'update' && c.table === 'visual_shot_reviews');
@@ -496,30 +612,122 @@ describe('undoDecision', () => {
     expect(render(calls[cancel].where).sql).toContain('"tasks"."claimed_by" is null');
     expect(mockCancelFx).toHaveBeenCalledTimes(1);
     expect((out.body as any).cancelledFixTaskId).toBe('fix-h');
+    expect((out.body as any).cancelledFixTaskIds).toEqual(['fix-h']);
     expect((out.body as any).superseded).toBe('rev-1');
+  });
+
+  it('finds the rest of the tap by its exact createdAt and the reviewer, scoped to the mission', async () => {
+    model = buildModel([]);
+    respond = undoRespond({ review: reviewRow() });
+    await run();
+    const sib = calls.find(c => c.op === 'select' && c.table === 'visual_shot_reviews' && render(c.where).sql.includes('"created_at" ='))!;
+    const q = render(sib.where);
+    expect(q.sql).toContain('"visual_shot_reviews"."mission_id" = $');
+    expect(q.sql).toContain('"visual_shot_reviews"."superseded_at" is null');
+    expect(q.sql).toContain('"visual_shot_reviews"."reviewer_user_id" = $');
+    expect(q.params).toEqual(expect.arrayContaining([MISSION.id, T.toISOString(), 'user-1']));
+  });
+
+  it('undo of a two-viewport needs fix cancels the shared fix and takes back both rows', async () => {
+    model = buildModel([]);
+    const siblings = [reviewRow(), reviewRow({ id: 'rev-d', artifactId: 'a-d', viewport: 'desktop', cellKey: '/app/x|desktop|' })];
+    respond = undoRespond({ review: reviewRow(), siblings });
+    const out = await run();
+    expect(out.status).toBe(200);
+    expect(taskUpdates()).toHaveLength(1);
+    // The other-references check excludes the whole tap, so the desktop row does not keep the fix alive.
+    const refs = calls.find(c => c.op === 'select' && c.table === 'visual_shot_reviews' && render(c.where).sql.includes('"fix_task_id" in'))!;
+    expect(render(refs.where).sql).toContain('"visual_shot_reviews"."id" not in');
+    expect(render(refs.where).params).toEqual(expect.arrayContaining(['rev-1', 'rev-d', 'fix-h']));
+    expect((out.body as any).supersededIds.sort()).toEqual(['rev-1', 'rev-d']);
+  });
+
+  it('undo of a two-route needs fix cancels every route\'s fix', async () => {
+    model = buildModel([]);
+    const siblings = [reviewRow({ fixTaskId: 'fix-x' }), reviewRow({ id: 'rev-y', artifactId: 'b-m', route: '/app/y', cellKey: '/app/y|mobile|', fixTaskId: 'fix-y' })];
+    respond = undoRespond({ review: siblings[0], siblings, states: { 'fix-x': { status: 'pending' }, 'fix-y': { status: 'pending' } } });
+    const out = await run();
+    expect(out.status).toBe(200);
+    expect(taskUpdates().map(c => render(c.where).params.find((p: unknown) => String(p).startsWith('fix-'))).sort()).toEqual(['fix-x', 'fix-y']);
+    expect((out.body as any).cancelledFixTaskIds.sort()).toEqual(['fix-x', 'fix-y']);
+    expect(mockDetach).toHaveBeenCalledTimes(2);
+  });
+
+  it('409 fix_started when any fix of the tap has started, before any write', async () => {
+    model = buildModel([]);
+    const siblings = [reviewRow({ fixTaskId: 'fix-x' }), reviewRow({ id: 'rev-y', artifactId: 'b-m', route: '/app/y', fixTaskId: 'fix-y' })];
+    respond = undoRespond({ review: siblings[0], siblings, states: { 'fix-x': { status: 'pending' }, 'fix-y': { status: 'pending', started: true } } });
+    const out = await run();
+    expect(out.status).toBe(409);
+    expect(out.body).toEqual({ error: 'fix_started', fixTaskId: 'fix-y' });
+    expect(calls.filter(c => c.op === 'update')).toHaveLength(0);
   });
 
   it('409 fix_started when the fix it filed was claimed, and keeps the review', async () => {
     model = buildModel([]);
-    respond = undoRespond({ review: reviewRow(), fixUpdate: [], fixStatusAfter: 'in_progress' });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    respond = undoRespond({ review: reviewRow(), states: { 'fix-h': { status: 'pending', claimedBy: 'acct-1' } } });
+    const out = await run();
     expect(out.status).toBe(409);
     expect(out.body).toEqual({ error: 'fix_started', fixTaskId: 'fix-h' });
+    expect(calls.some(c => c.op === 'update')).toBe(false);
+  });
+
+  it('409 fix_started when the atomic cancel loses a race after the check', async () => {
+    model = buildModel([]);
+    respond = undoRespond({ review: reviewRow(), fixUpdate: [], fixStatusAfter: 'in_progress' });
+    const out = await run();
+    expect(out.status).toBe(409);
     expect(calls.some(c => c.op === 'update' && c.table === 'visual_shot_reviews')).toBe(false);
   });
 
-  it('keeps a fix another active review of the same decision still points at, until the last one goes', async () => {
+  it('keeps a fix another active review still points at', async () => {
     model = buildModel([]);
-    respond = undoRespond({ review: reviewRow(), siblings: [reviewRow()], otherRefs: [{ id: 'rev-9' }] });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    respond = undoRespond({ review: reviewRow(), otherRefs: [{ fixTaskId: 'fix-h' }] });
+    const out = await run();
     expect(out.status).toBe(200);
-    expect(calls.some(c => c.op === 'update' && c.table === 'tasks')).toBe(false);
+    expect(taskUpdates()).toHaveLength(0);
+  });
+
+  it('needs fix, then needs fix with a note, then undo: restores the first review and keeps its fix', async () => {
+    model = buildModel([]);
+    const first = reviewRow({ id: 'rev-0', createdAt: new Date('2026-03-10T10:30:00.000Z'), supersededAt: T });
+    respond = undoRespond({ review: reviewRow({ note: 'also the footer' }), restorable: [first] });
+    const out = await run();
+    expect(out.status).toBe(200);
+    expect(taskUpdates()).toHaveLength(0);
+    // The superseded-by-this-decision lookup: same shots, superseded at the decision's instant.
+    const look = calls.find(c => c.op === 'select' && c.table === 'visual_shot_reviews' && render(c.where).sql.includes('"superseded_at" ='))!;
+    const lq = render(look.where);
+    expect(lq.sql).toContain('"visual_shot_reviews"."mission_id" = $');
+    expect(lq.sql).toContain('"visual_shot_reviews"."artifact_id" in');
+    expect(lq.params).toEqual(expect.arrayContaining([MISSION.id, 'a-m', T.toISOString()]));
+    // Supersede the undone rows first, then bring the prior one back.
+    const sup = calls.findIndex(c => c.op === 'update' && c.table === 'visual_shot_reviews' && c.set.supersededAt instanceof Date);
+    const back = calls.findIndex(c => c.op === 'update' && c.table === 'visual_shot_reviews' && c.set.supersededAt === null);
+    expect(sup).toBeGreaterThanOrEqual(0);
+    expect(back).toBeGreaterThan(sup);
+    const bq = render(calls[back].where);
+    expect(bq.params).toEqual(expect.arrayContaining(['rev-0', T.toISOString()]));
+    expect((out.body as any).restoredIds).toEqual(['rev-0']);
+  });
+
+  it('needs fix, then looks right, then undo: reopens the fix and restores the needs-fix review', async () => {
+    model = buildModel([]);
+    const first = reviewRow({ id: 'rev-0', supersededAt: T });
+    respond = undoRespond({ review: reviewRow({ fixTaskId: null, cancelledFixTaskId: 'fix-h', decision: 'looks_right', relation: 'agree' }), restorable: [first] });
+    const out = await run();
+    expect(out.status).toBe(200);
+    const reopen = taskUpdates();
+    expect(reopen).toHaveLength(1);
+    expect(reopen[0].set.status).toBe('pending');
+    expect((out.body as any).reopenedFixTaskIds).toEqual(['fix-h']);
+    expect((out.body as any).restoredIds).toEqual(['rev-0']);
   });
 
   it('reopens a fix the decision cancelled, while still cancelled and unclaimed, and re-plans its round', async () => {
     model = buildModel([]);
     respond = undoRespond({ review: reviewRow({ fixTaskId: null, cancelledFixTaskId: 'fix-h', agentVerdict: 'issue', decision: 'looks_right' }) });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    const out = await run();
     expect(out.status).toBe(200);
     const reopen = calls.find(c => c.op === 'update' && c.table === 'tasks');
     expect(reopen?.set.status).toBe('pending');
@@ -533,8 +741,9 @@ describe('undoDecision', () => {
 
   it('409 fix_started when the cancelled fix was changed since', async () => {
     model = buildModel([]);
-    respond = undoRespond({ review: reviewRow({ fixTaskId: null, cancelledFixTaskId: 'fix-h' }), fixUpdate: [], fixStatusAfter: 'in_progress' });
-    const out = await undoDecision({ mission: MISSION, reviewer: REVIEWER, reviewId: 'rev-1' });
+    respond = undoRespond({ review: reviewRow({ fixTaskId: null, cancelledFixTaskId: 'fix-h' }), states: { 'fix-h': { status: 'in_progress', claimedBy: 'acct-1' } } });
+    const out = await run();
     expect(out.status).toBe(409);
+    expect(calls.some(c => c.op === 'update')).toBe(false);
   });
 });

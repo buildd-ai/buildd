@@ -48,6 +48,8 @@ function respond(c: FakeCall) {
   if (c.op === 'select' && c.table === 'visual_shot_reviews') {
     return renderSql(c.where).sql.includes('"visual_shot_reviews"."created_at" =') ? [reviewRow] : [];
   }
+  // The all-or-nothing check undo runs on each fix before any write.
+  if (c.op === 'select' && c.table === 'tasks') return [{ id: 'fix-h', status: 'pending', claimedBy: fixClaimed ? 'acct-1' : null, started: false }];
   if (c.op === 'update' && c.table === 'tasks') return fixClaimed ? [] : [{ id: 'fix-h', workspaceId: WS }];
   if (c.op === 'findFirst' && c.table === 'tasks') return { id: 'fix-h', status: 'in_progress' };
   if (c.op === 'update' && c.table === 'visual_shot_reviews') return [{ id: REVIEW }];
@@ -87,7 +89,7 @@ describe('DELETE /api/missions/[id]/visual-review/decisions/[reviewId]', () => {
     const res = await call();
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ superseded: REVIEW, supersededIds: [REVIEW], cancelledFixTaskId: 'fix-h', reopenedFixTaskId: null });
+    expect(body).toMatchObject({ superseded: REVIEW, supersededIds: [REVIEW], cancelledFixTaskId: 'fix-h', reopenedFixTaskId: null, cancelledFixTaskIds: ['fix-h'], restoredIds: [] });
     const cancel = fake.calls.find(c => c.op === 'update' && c.table === 'tasks')!;
     expect(cancel.set.status).toBe('cancelled');
     const q = renderSql(cancel.where);
@@ -105,7 +107,7 @@ describe('DELETE /api/missions/[id]/visual-review/decisions/[reviewId]', () => {
     const res = await call();
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'fix_started', fixTaskId: 'fix-h' });
-    expect(fake.calls.some(c => c.op === 'update' && c.table === 'visual_shot_reviews')).toBe(false);
+    expect(fake.calls.some(c => c.op === 'update')).toBe(false);
     expect(mockCancelFx).not.toHaveBeenCalled();
   });
 });

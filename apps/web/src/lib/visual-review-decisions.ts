@@ -38,6 +38,7 @@ import {
   type VisualReviewModel,
   type VisualReviewRelation,
   type VisualReviewUndoResponse,
+  type VisualReviewAnnotation,
 } from '@buildd/shared';
 import {
   MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
@@ -64,26 +65,35 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 /** What a decision does beyond recording itself. */
 export type ShotReviewIntent = 'none' | 'file_fix' | 'waive_fix' | 'guide_fix';
 
+const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+
 /**
- * One shot's relation and intent. `linkedFixId` is the cell's open fix (the
- * auditor's `qa.fixTaskId`, or an earlier human fix), null when there is none
- * or it already finished.
+ * One shot's relation and intent. `linkedFix` is the cell's fix (an earlier
+ * human fix, else the auditor's `qa.fixTaskId`) with its status, or null when
+ * the shot never had one.
+ *
+ * A linked fix that completed means the shot predates the fix and its
+ * re-check round is what shows whether it worked: Needs fix on it records the
+ * human's view and files nothing, rather than a duplicate fix off a pre-fix
+ * screenshot. A fix that failed or was cancelled solved nothing, so Needs fix
+ * files again.
  */
 export function planShotReviewEffect(
   agentVerdict: VisualQaVerdict,
   decision: VisualReviewDecision,
-  opts: { linkedFixId: string | null; hasNote: boolean },
+  opts: { linkedFix: { id: string; status: string } | null; hasNote: boolean },
 ): { relation: VisualReviewRelation; intent: ShotReviewIntent } {
-  if (agentVerdict === 'ok') {
-    return decision === 'looks_right' ? { relation: 'agree', intent: 'none' } : { relation: 'dispute', intent: 'file_fix' };
-  }
-  if (agentVerdict === 'unsure') {
-    return decision === 'looks_right' ? { relation: 'waive', intent: 'none' } : { relation: 'dispute', intent: 'file_fix' };
+  const open = !!opts.linkedFix && !TERMINAL.has(opts.linkedFix.status);
+  const fixDone = opts.linkedFix?.status === 'completed';
+  if (agentVerdict === 'ok' || agentVerdict === 'unsure') {
+    if (decision === 'looks_right') return { relation: agentVerdict === 'ok' ? 'agree' : 'waive', intent: 'none' };
+    // An open earlier human fix is reused by planDecision rather than filed twice.
+    return { relation: 'dispute', intent: fixDone ? 'none' : 'file_fix' };
   }
   // issue
-  if (decision === 'looks_right') return { relation: 'dispute', intent: opts.linkedFixId ? 'waive_fix' : 'none' };
-  if (!opts.linkedFixId) return { relation: 'agree', intent: 'file_fix' };
-  return { relation: 'agree', intent: opts.hasNote ? 'guide_fix' : 'none' };
+  if (decision === 'looks_right') return { relation: 'dispute', intent: open ? 'waive_fix' : 'none' };
+  if (open) return { relation: 'agree', intent: opts.hasNote ? 'guide_fix' : 'none' };
+  return { relation: 'agree', intent: fixDone ? 'none' : 'file_fix' };
 }
 
 const TITLE_MAX = 200;
@@ -131,8 +141,6 @@ export function parseDecisionRequest(body: unknown): { ok: true; request: Visual
 }
 
 // ── Planning a request (pure) ───────────────────────────────────────────────
-
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
 export interface PlannedShot {
   artifactId: string;
@@ -199,8 +207,8 @@ export function planDecision(model: VisualReviewModel, request: VisualReviewDeci
       continue;
     }
     const fix = cell.current.fixTask;
-    const linkedFixId = fix && openFix.has(fix.id) ? fix.id : null;
-    const effect = planShotReviewEffect(cell.current.agentVerdict, request.decision, { linkedFixId, hasNote: !!oneLine(request.note) });
+    const linkedFix = fix ? { id: fix.id, status: openFix.get(fix.id)?.status ?? fix.status } : null;
+    const effect = planShotReviewEffect(cell.current.agentVerdict, request.decision, { linkedFix, hasNote: !!oneLine(request.note) });
     shots.push({ artifactId, cell, ...effect, priorReview: cell.current.review });
   }
   if (stale.length > 0 || shots.length !== request.artifactIds.length) return { kind: 'stale', cells: stale };
@@ -544,10 +552,17 @@ export async function applyDecision(input: {
       decision: request.decision,
       relation: s.relation,
       note,
-      fixTaskId: plan.fixGroups.find(g => g.reuseFixId && g.artifactIds.includes(s.artifactId))?.reuseFixId ?? null,
+      // A needs-fix redecide that files nothing keeps the fix the earlier decision linked, so it never goes orphaned.
+      fixTaskId: plan.fixGroups.find(g => g.reuseFixId && g.artifactIds.includes(s.artifactId))?.reuseFixId
+        ?? (request.decision === 'needs_fix' && s.intent !== 'file_fix' ? s.priorReview?.fixTaskId ?? null : null),
       cancelledFixTaskId: null,
       reviewerUserId: reviewer.userId,
       reviewerLabel: reviewer.label,
+      // The supersede's instant, set here rather than by the column default:
+      // Postgres keeps microseconds and a JS Date milliseconds, so only a
+      // value we wrote round-trips exactly. Undo finds the rest of this tap
+      // (created_at = now) and the reviews it replaced (superseded_at = now).
+      createdAt: now,
     }))).returning() as typeof inserted;
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
@@ -565,6 +580,7 @@ export async function applyDecision(input: {
   const fixTaskIds: string[] = [];
   const cancelledFixTaskIds: string[] = [];
   const guidanceTaskIds: string[] = [];
+  const annotated: VisualReviewAnnotation[] = [];
   try {
     for (const g of plan.fixGroups) {
       if (g.reuseFixId) { fixTaskIds.push(g.reuseFixId); continue; }
@@ -587,6 +603,7 @@ export async function applyDecision(input: {
         patch(ids, { cancelledFixTaskId: w.fixTaskId });
       } else {
         guidanceTaskIds.push(w.fixTaskId);
+        annotated.push({ fixTaskId: w.fixTaskId, reason: w.coversAllLinks ? 'started' : 'still_linked' });
         const where = placeText(plan.shots.filter(s => w.artifactIds.includes(s.artifactId)));
         await postGuidance({
           missionId: mission.id,
@@ -606,6 +623,7 @@ export async function applyDecision(input: {
     for (const g of plan.guides) {
       if (guidanceTaskIds.includes(g.fixTaskId)) continue;
       guidanceTaskIds.push(g.fixTaskId);
+      annotated.push({ fixTaskId: g.fixTaskId, reason: 'note' });
       const where = placeText(plan.shots.filter(s => g.artifactIds.includes(s.artifactId)));
       await postGuidance({
         missionId: mission.id,
@@ -653,6 +671,7 @@ export async function applyDecision(input: {
       fixTaskIds,
       cancelledFixTaskIds,
       guidanceTaskIds,
+      annotated,
       model: fresh,
     },
   };
@@ -672,12 +691,49 @@ type StoredReview = {
   createdAt: Date | string;
 };
 
+type UndoRow = Pick<StoredReview, 'id' | 'artifactId' | 'route' | 'fixTaskId' | 'cancelledFixTaskId'>;
+type FixRef = { fixTaskId: string; route: string };
+
 /**
- * Undo (the 5-second Undo, or later): supersede the decision's reviews, and
- * reverse the fix it filed or cancelled, only while that task is pending and
- * unclaimed (still cancelled and unclaimed, for a reopen). Otherwise 409
- * `fix_started`, and the review stays. One tap on both viewports wrote one
- * row per shot at the same instant; undo takes them all back.
+ * What an undo reverses (pure). `group` is every row of the tap, `restorable`
+ * the reviews that tap superseded, `stillLinkedFixIds` the group's fixes that
+ * an active review outside the group still points at. Undo returns the cells
+ * to their state before the tap: the replaced reviews come back, every fix
+ * the tap filed is cancelled unless a restored or other active review still
+ * wants it, and every fix it cancelled reopens.
+ */
+export function planUndo(
+  group: UndoRow[],
+  restorable: UndoRow[],
+  stillLinkedFixIds: string[],
+): { cancel: FixRef[]; reopen: FixRef[]; restoreIds: string[] } {
+  const groupIds = new Set(group.map(g => g.id));
+  const shots = new Set(group.map(g => g.artifactId));
+  const restore = restorable.filter(r => shots.has(r.artifactId) && !groupIds.has(r.id));
+  const wanted = new Set([...stillLinkedFixIds, ...restore.map(r => r.fixTaskId).filter((id): id is string => !!id)]);
+  const reopened = new Set(group.map(g => g.cancelledFixTaskId).filter((id): id is string => !!id));
+  const cancel: FixRef[] = [];
+  const reopen: FixRef[] = [];
+  for (const g of group) {
+    if (g.fixTaskId && !wanted.has(g.fixTaskId) && !reopened.has(g.fixTaskId) && !cancel.some(c => c.fixTaskId === g.fixTaskId)) {
+      cancel.push({ fixTaskId: g.fixTaskId, route: g.route });
+    }
+    if (g.cancelledFixTaskId && !reopen.some(r => r.fixTaskId === g.cancelledFixTaskId)) {
+      reopen.push({ fixTaskId: g.cancelledFixTaskId, route: g.route });
+    }
+  }
+  return { cancel, reopen, restoreIds: restore.map(r => r.id) };
+}
+
+/**
+ * Undo (the 5-second Undo, or later): take back every row of the tap, bring
+ * back the reviews it replaced, and reverse every fix it filed or cancelled.
+ * All or nothing: each fix is checked first (a cancel needs it pending,
+ * unclaimed and never picked up; a reopen needs it still cancelled and
+ * unclaimed), and any one that moved on 409s `fix_started` before a write.
+ * The writes stay atomic `UPDATE ... WHERE`, so a fix claimed in the instant
+ * between the check and the write still 409s, with the fixes before it
+ * already reversed.
  */
 export async function undoDecision(input: {
   mission: DecisionMission;
@@ -690,89 +746,159 @@ export async function undoDecision(input: {
   }) as StoredReview | undefined | null;
   if (!review) return { status: 404, body: { error: 'Review not found' } };
 
-  const createdAt = review.createdAt instanceof Date ? review.createdAt : new Date(review.createdAt);
+  // One tap wrote every row with the same createdAt, the instant it superseded
+  // the rows it replaced (applyDecision sets both, to the millisecond).
+  const decidedAt = review.createdAt instanceof Date ? review.createdAt : new Date(review.createdAt);
   const siblings = await db.select().from(visualShotReviews).where(and(
     eq(visualShotReviews.missionId, mission.id),
     isNull(visualShotReviews.supersededAt),
-    eq(visualShotReviews.createdAt, createdAt),
+    eq(visualShotReviews.createdAt, decidedAt),
     review.reviewerUserId ? eq(visualShotReviews.reviewerUserId, review.reviewerUserId) : isNull(visualShotReviews.reviewerUserId),
   )) as StoredReview[];
   const group = siblings.some(s => s.id === review.id) ? siblings : [review, ...siblings];
   const groupIds = group.map(s => s.id);
+
+  const restorable = await db.select().from(visualShotReviews).where(and(
+    eq(visualShotReviews.missionId, mission.id),
+    inArray(visualShotReviews.artifactId, [...new Set(group.map(g => g.artifactId))]),
+    eq(visualShotReviews.supersededAt, decidedAt),
+  )) as StoredReview[];
+
+  const filed = [...new Set(group.map(g => g.fixTaskId).filter((id): id is string => !!id))];
+  const stillLinked = filed.length === 0 ? [] : (await db.select({ fixTaskId: visualShotReviews.fixTaskId }).from(visualShotReviews).where(and(
+    eq(visualShotReviews.missionId, mission.id),
+    inArray(visualShotReviews.fixTaskId, filed),
+    isNull(visualShotReviews.supersededAt),
+    notInArray(visualShotReviews.id, groupIds),
+  )) as Array<{ fixTaskId: string | null }>).map(r => r.fixTaskId).filter((id): id is string => !!id);
+
+  const plan = planUndo(group, restorable, stillLinked);
+
+  // Check every fix before any write.
+  const touched = [...plan.cancel, ...plan.reopen].map(f => f.fixTaskId);
+  const states = new Map<string, { status: string; claimedBy: string | null; started: boolean }>();
+  if (touched.length > 0) {
+    const rows = await db.select({
+      id: tasks.id,
+      status: tasks.status,
+      claimedBy: tasks.claimedBy,
+      started: sql<boolean>`exists (select 1 from "workers" "w" where "w"."task_id" = ${tasks.id})`,
+    }).from(tasks).where(and(inArray(tasks.id, touched), eq(tasks.missionId, mission.id))) as Array<{ id: string; status: string; claimedBy: string | null; started: boolean }>;
+    for (const r of rows) states.set(r.id, r);
+  }
+  const toCancel: FixRef[] = [];
+  for (const f of plan.cancel) {
+    const st = states.get(f.fixTaskId);
+    if (!st || st.status === 'cancelled') continue;
+    if (st.status !== 'pending' || st.claimedBy || st.started) return { status: 409, body: { error: 'fix_started', fixTaskId: f.fixTaskId } };
+    toCancel.push(f);
+  }
+  const toReopen: FixRef[] = [];
+  for (const f of plan.reopen) {
+    const st = states.get(f.fixTaskId);
+    if (!st) continue;
+    if (st.status === 'pending' && !st.claimedBy) continue;
+    if (st.status !== 'cancelled' || st.claimedBy) return { status: 409, body: { error: 'fix_started', fixTaskId: f.fixTaskId } };
+    toReopen.push(f);
+  }
 
   const reFetchStatus = async (id: string) => {
     const t = await db.query.tasks.findFirst({ where: and(eq(tasks.id, id), eq(tasks.missionId, mission.id)), columns: { id: true, status: true } });
     return (t as { status?: string } | undefined)?.status ?? null;
   };
 
-  let cancelledFixTaskId: string | null = null;
-  const fixId = review.fixTaskId;
-  if (fixId) {
-    const others = await db.select({ id: visualShotReviews.id }).from(visualShotReviews).where(and(
-      eq(visualShotReviews.missionId, mission.id),
-      eq(visualShotReviews.fixTaskId, fixId),
-      isNull(visualShotReviews.supersededAt),
-      notInArray(visualShotReviews.id, groupIds),
-    )).limit(1) as Array<{ id: string }>;
-    if (others.length === 0) {
-      const cancelled = await cancelPendingFix(mission.id, fixId);
-      if (cancelled) {
-        cancelledFixTaskId = fixId;
-        await applyTaskCancelSideEffects({ id: cancelled.id, workspaceId: cancelled.workspaceId ?? review.workspaceId, missionId: mission.id });
-        await detachFixFromPendingAudit({ missionId: mission.id, workspaceId: review.workspaceId, fixTaskId: fixId, route: review.route })
-          .catch(err => console.error('[visual-review] detach from audit failed:', err));
-      } else if ((await reFetchStatus(fixId)) !== 'cancelled') {
-        return { status: 409, body: { error: 'fix_started', fixTaskId: fixId } };
-      }
+  const cancelledFixTaskIds: string[] = [];
+  for (const f of toCancel) {
+    const cancelled = await cancelPendingFix(mission.id, f.fixTaskId);
+    if (!cancelled) {
+      if ((await reFetchStatus(f.fixTaskId)) === 'cancelled') continue;
+      return { status: 409, body: { error: 'fix_started', fixTaskId: f.fixTaskId } };
     }
+    cancelledFixTaskIds.push(f.fixTaskId);
+    await applyTaskCancelSideEffects({ id: cancelled.id, workspaceId: cancelled.workspaceId ?? review.workspaceId, missionId: mission.id });
+    await detachFixFromPendingAudit({ missionId: mission.id, workspaceId: review.workspaceId, fixTaskId: f.fixTaskId, route: f.route })
+      .catch(err => console.error('[visual-review] detach from audit failed:', err));
   }
 
-  let reopenedFixTaskId: string | null = null;
-  const waived = review.cancelledFixTaskId;
-  if (waived) {
+  const reopenedFixTaskIds: string[] = [];
+  for (const f of toReopen) {
     const [row] = await db.update(tasks)
       .set({ status: 'pending', updatedAt: new Date() })
-      .where(and(eq(tasks.id, waived), eq(tasks.missionId, mission.id), eq(tasks.status, 'cancelled'), isNull(tasks.claimedBy)))
+      .where(and(eq(tasks.id, f.fixTaskId), eq(tasks.missionId, mission.id), eq(tasks.status, 'cancelled'), isNull(tasks.claimedBy)))
       .returning({ id: tasks.id }) as Array<{ id: string }>;
-    if (row) {
-      reopenedFixTaskId = waived;
-      const fix = await db.query.tasks.findFirst({
-        where: eq(tasks.id, waived),
-        columns: { id: true, title: true, workspaceId: true, taskClass: true, pathManifest: true },
-      }) as { id: string; title: string; workspaceId: string; taskClass: string | null; pathManifest: string[] | null } | undefined;
-      const wsId = fix?.workspaceId ?? review.workspaceId;
-      await applyTaskReopenSideEffects({ id: waived, workspaceId: wsId, missionId: mission.id }, 'visual review undo');
-      const ws = await loadWorkspace(wsId);
-      if (fix && ws) {
-        // Back into a round: extend the pending audit, or open the next one.
-        await ensureMissionSurfaceAudit({
-          missionId: mission.id,
-          workspaceId: wsId,
-          createdTask: { id: fix.id, title: fix.title, taskClass: fix.taskClass, pathManifest: fix.pathManifest ?? null },
-          targetWorkspace: ws as Parameters<typeof ensureMissionSurfaceAudit>[0]['targetWorkspace'],
-          origin: 'human',
-        }).catch(err => console.error('[visual-review] surface audit round failed:', err));
-      }
-    } else if ((await reFetchStatus(waived)) !== 'pending') {
-      return { status: 409, body: { error: 'fix_started', fixTaskId: waived } };
+    if (!row) {
+      if ((await reFetchStatus(f.fixTaskId)) === 'pending') continue;
+      return { status: 409, body: { error: 'fix_started', fixTaskId: f.fixTaskId } };
+    }
+    reopenedFixTaskIds.push(f.fixTaskId);
+    const fix = await db.query.tasks.findFirst({
+      where: eq(tasks.id, f.fixTaskId),
+      columns: { id: true, title: true, workspaceId: true, taskClass: true, pathManifest: true },
+    }) as { id: string; title: string; workspaceId: string; taskClass: string | null; pathManifest: string[] | null } | undefined;
+    const wsId = fix?.workspaceId ?? review.workspaceId;
+    await applyTaskReopenSideEffects({ id: f.fixTaskId, workspaceId: wsId, missionId: mission.id }, 'visual review undo');
+    const ws = await loadWorkspace(wsId);
+    if (fix && ws) {
+      // Back into a round: extend the pending audit, or open the next one.
+      await ensureMissionSurfaceAudit({
+        missionId: mission.id,
+        workspaceId: wsId,
+        createdTask: { id: fix.id, title: fix.title, taskClass: fix.taskClass, pathManifest: fix.pathManifest ?? null },
+        targetWorkspace: ws as Parameters<typeof ensureMissionSurfaceAudit>[0]['targetWorkspace'],
+        origin: 'human',
+      }).catch(err => console.error('[visual-review] surface audit round failed:', err));
     }
   }
 
+  // Take the tap back, then bring back what it replaced (the one-active index
+  // allows it only once the tap's rows are superseded).
   const rows = await db.update(visualShotReviews)
     .set({ supersededAt: new Date() })
     .where(and(inArray(visualShotReviews.id, groupIds), isNull(visualShotReviews.supersededAt)))
     .returning({ id: visualShotReviews.id }) as Array<{ id: string }>;
   const supersededIds = rows.length > 0 ? rows.map(r => r.id) : [review.id];
 
+  let restoredIds: string[] = [];
+  if (plan.restoreIds.length > 0) {
+    try {
+      const back = await db.update(visualShotReviews)
+        .set({ supersededAt: null })
+        .where(and(
+          eq(visualShotReviews.missionId, mission.id),
+          inArray(visualShotReviews.id, plan.restoreIds),
+          eq(visualShotReviews.supersededAt, decidedAt),
+        ))
+        .returning({ id: visualShotReviews.id }) as Array<{ id: string }>;
+      restoredIds = back.map(r => r.id);
+    } catch (err) {
+      // A decision landed on the same shot in between: it is the newer state, keep it.
+      if (!isUniqueViolation(err)) throw err;
+    }
+  }
+
+  const effect = cancelledFixTaskIds.length > 0 ? `, ${cancelledFixTaskIds.length > 1 ? 'fixes' : 'fix'} cancelled`
+    : reopenedFixTaskIds.length > 0 ? `, ${reopenedFixTaskIds.length > 1 ? 'fixes' : 'fix'} reopened` : '';
   const place = placeText(group.map(g => ({ cell: { route: g.route, viewport: g.viewport } as VisualReviewCell })));
   await announce({
     missionId: mission.id,
     round: Math.max(1, ...group.map(g => g.round)),
-    line: `${place}: decision undone${cancelledFixTaskId ? ', fix cancelled' : reopenedFixTaskId ? ', fix reopened' : ''}`,
+    line: `${place}: decision undone${effect}`,
     reviewer,
-    payload: { undo: true, reviewIds: supersededIds, reopenedFixTaskId, cancelledFixTaskId },
+    payload: { undo: true, reviewIds: supersededIds, restoredIds, reopenedFixTaskIds, cancelledFixTaskIds },
   });
 
   const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId });
-  return { status: 200, body: { superseded: review.id, supersededIds, reopenedFixTaskId, cancelledFixTaskId, model } };
+  return {
+    status: 200,
+    body: {
+      superseded: review.id,
+      supersededIds,
+      restoredIds,
+      reopenedFixTaskId: reopenedFixTaskIds[0] ?? null,
+      cancelledFixTaskId: cancelledFixTaskIds[0] ?? null,
+      reopenedFixTaskIds,
+      cancelledFixTaskIds,
+      model,
+    },
+  };
 }

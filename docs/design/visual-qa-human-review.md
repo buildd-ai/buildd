@@ -116,7 +116,7 @@ Rules for filing and undoing:
 - The server always builds the fix title with `surfaceFixTitle(route, note || finding)`, using the recorded route pattern. The client never builds it.
 - The fix id is stored on the review row. It is never written to `qa.fixTaskId`, which stays the auditor's field.
 - Both viewports of one route can be decided together ("apply to both", on by default when their verdicts match), and that files one fix task.
-- Every decision shows a 5-second Undo. Undo supersedes the review. It reopens a fix that it cancelled, or cancels a fix it filed, **only while that task is pending and unclaimed**. Otherwise it returns `409 fix_started`.
+- Every decision shows a 5-second Undo. Undo returns the cells to their state before the tap: it supersedes every row of the tap, brings back the reviews the tap replaced, and reopens every fix it cancelled or cancels every fix it filed (unless a restored or other active review still links it), **only while each task is pending and unclaimed**. Every fix is checked before any write; if one has moved on it returns `409 fix_started`.
 - At the end of the queue the human is offered one batch action: "The agent marked 9 fine. Accept all 9."
 
 ### 2. The review surfaces: one component family
