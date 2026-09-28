@@ -95,6 +95,10 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Which model answers the team's decision calls (packages/core/decision-model.ts).
+  // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
+  // team's LiteLLM gateway, with confidence from token logprobs.
+  decisionModel: jsonb('decision_model').$type<import('../decision-model').DecisionModelConfig | null>(),
   // DEPRECATED — nothing reads or writes this. It was the admin kill switch for
   // chat; chat is now always on and runs whenever a key resolves. Drop in a
   // follow-up release, after the build that stopped reading it is live

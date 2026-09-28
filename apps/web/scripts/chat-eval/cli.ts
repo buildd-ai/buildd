@@ -47,6 +47,9 @@ export interface Question {
   classification?: Classification | null;
 }
 
+/** What a client that loads tools by name pulls in for "what is this mission / runner doing?". */
+const MCP_VISUAL_TOOLS = ['buildd_missions', 'buildd_runners'];
+
 const defSize = (d: ToolDef) => JSON.stringify({ name: d.name, description: d.description, input_schema: d.inputSchema }).length;
 const pad = (s: string | number, n: number) => String(s).padEnd(n);
 const lpad = (s: string | number, n: number) => String(s).padStart(n);
@@ -66,7 +69,11 @@ function cmdStatic() {
   for (const g of TOOL_GROUPS) {
     console.log(`chat, turn routed to ${pad(g, 14)} ${lpad(sum(activeChatDefs(chat, chatGroups(g))), 6)}`);
   }
-  console.log(`mcp tools (${mcp.map(d => d.name).join(', ')})  ${lpad(sum(mcp), 6)}`);
+  const legacy = mcpToolDefs('legacy');
+  console.log(`mcp legacy tools (${legacy.map(d => d.name).join(', ')})  ${lpad(sum(legacy), 6)}`);
+  console.log(`mcp tools, every one (${mcp.length})            ${lpad(sum(mcp), 6)}`);
+  for (const d of mcp) console.log(`  mcp ${pad(d.name, 30)} ${lpad(sum([d]), 6)}`);
+  console.log(`mcp, a visual question (${MCP_VISUAL_TOOLS.join(' + ')})  ${lpad(sum(mcp.filter(d => MCP_VISUAL_TOOLS.includes(d.name))), 6)}`);
   console.log(`mcp server instructions             ${lpad(estTokens(MCP_SERVER_INSTRUCTIONS), 6)}`);
 
   console.log('\nPer chat tool (largest first):');
@@ -97,10 +104,13 @@ async function cmdProbe() {
     { label: 'chat fallback turn', surface: 'chat', system: prompt, tools: activeChatDefs(chat, chatGroups(null)) },
     ...TOOL_GROUPS.map(g => ({ label: `chat routed: ${g}`, surface: 'chat' as Surface, system: prompt, tools: activeChatDefs(chat, chatGroups(g)) })),
     { label: 'chat every tool', surface: 'chat', system: prompt, tools: chat },
-    { label: 'mcp (buildd + recall + learn)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs() },
+    { label: 'mcp legacy (buildd + others)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs('legacy') },
+    { label: 'mcp groups (every tool)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs() },
+    { label: 'mcp groups: missions + runners', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs().filter(d => MCP_VISUAL_TOOLS.includes(d.name)) },
   ];
   if (flag(argv, 'per-tool')) {
     for (const d of chat) variants.push({ label: `tool ${d.name}`, surface: 'chat', system: 'Reply OK.', tools: [d] });
+    for (const d of mcpToolDefs()) variants.push({ label: `mcp tool ${d.name}`, surface: 'mcp', system: 'Reply OK.', tools: [d] });
   }
   variants.splice(2, 0, { label: 'no tools, mcp system prompt', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: null });
   const rows: Array<{ label: string; input: number; toolsTokens?: number }> = [];

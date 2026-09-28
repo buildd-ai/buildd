@@ -2904,6 +2904,85 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    it('completes a bookkeeping task on a fallback summary when the session returned a valid structured result (auto mode)', async () => {
+      // Regression: a session with an outputSchema delivers its outcome as the
+      // SDK's structured result and never calls complete_task, so the runner's
+      // end-of-session PATCH carries summarySource:'fallback'. The gate used to
+      // read that as "never reported" and 400 a payload holding a complete plan.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Plan ready.',
+          summarySource: 'fallback',
+          structuredOutput: { status: 'ok', plan: [{ title: 'Do the thing', description: 'Details' }] },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('still rejects a bookkeeping fallback completion whose structured result is empty (auto mode)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      for (const structuredOutput of [{}, [], 'plan']) {
+        const req = createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'aside', summarySource: 'fallback', structuredOutput },
+        });
+        const res = await PATCH(req, { params: mockParams });
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.hint).toBe('organizer_did_not_report');
+      }
+    });
+
     it('completes a bookkeeping task with artifact_required + a satisfied artifact even on a fallback summary', async () => {
       // The completed-work aggregator (packages/core/task-dependencies.ts) is
       // taskClass='bookkeeping' + outputRequirement='artifact_required'. If it
@@ -12472,6 +12551,47 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
         body: { status: 'completed', summary: 'A plan, in prose.', turns: 1, inputTokens: 3200, outputTokens: 400, costUsd: 0 },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+      expect(failedUpdate.result.errorType).toBe('planning_contract_violation');
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden.exitCause).toBe('code_failure');
+    });
+
+    // A session that ran one shell command and died counts many turns while
+    // the model never billed a token. The turn cap alone booked it code_failure.
+    it('books a 9-turn / $0 planning completion with empty modelUsage as silent_start', async () => {
+      const { taskSetCalls, workerSetCalls } = setupPlanning({ turns: 0, inputTokens: 0, outputTokens: 0, costUsd: '0' });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed', turns: 9, costUsd: 0,
+          resultMeta: { stopReason: null, durationMs: 1000, durationApiMs: 0, numTurns: 9, modelUsage: {}, totalCostUsd: 0 },
+        },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+      expect(failedUpdate.result.errorType).toBe('silent_start');
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden.exitCause).toBe('silent_start');
+    });
+
+    it('keeps a 9-turn session with real model usage as a code_failure contract violation', async () => {
+      const { taskSetCalls, workerSetCalls } = setupPlanning({ turns: 0, inputTokens: 0, outputTokens: 0, costUsd: '0' });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed', summary: 'A plan, in prose.', turns: 9, costUsd: 0,
+          resultMeta: {
+            stopReason: null, durationMs: 1000, durationApiMs: 900, numTurns: 9,
+            modelUsage: { 'claude-sonnet-4-6': { inputTokens: 5000, outputTokens: 700 } },
+          },
+        },
       }), { params: mockParams });
 
       expect(res.status).toBe(200);

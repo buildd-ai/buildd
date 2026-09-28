@@ -7,8 +7,16 @@
  * a server or issuing a request.
  *
  * Invariants encoded here:
- * - Every token level sees the `buildd` tool; the action list inside its schema
- *   is narrowed to the actions that level may call.
+ * - `groups` surface (opt-in, `?tools=groups`): one tool per action group
+ *   (`buildd_<group>`, @buildd/core/mcp-tool-groups), each narrowed to the
+ *   actions the caller's level may call plus `help`. A level with no action in
+ *   a group does not see that group. The one-tool `buildd` is not listed but
+ *   stays callable (route.ts), so prompts that say "buildd action=..." work.
+ * - `legacy` surface (the default): the one `buildd` tool, as before. Every
+ *   session gets it unless it opts in, so existing `mcp__buildd__buildd`
+ *   allow-rules and `select:mcp__buildd__buildd` keep resolving. Runner
+ *   workers (`?worker=`) stay legacy even under the server default flag:
+ *   pr-detection, the tool histogram and role allowedTools match the name.
  * - `check_path_claim` / `send_worker_message` are worker/admin only. Trigger
  *   tokens never run agent work, so they never need either.
  * - Sensitive workspaces do not expose the knowledge/memory tools at all.
@@ -27,13 +35,41 @@ import {
   buildParamsDescription,
   buildMemoryDescription,
 } from "@buildd/core/mcp-tools";
+import {
+  mcpGroupPurpose,
+  MCP_TOOL_GROUPS,
+  ACTION_SUMMARY,
+  actionHelp,
+  actionSignature,
+  actionsOfGroup,
+  mcpGroupOf,
+  mcpGroupToolName,
+  type McpToolGroup,
+} from "@buildd/core/mcp-tool-groups";
+import type { BuilddAction } from "@buildd/core/mcp-tools";
 
 export type McpAccountLevel = 'trigger' | 'worker' | 'admin';
+
+/** `groups`: one tool per action group. `legacy`: the one `buildd` tool. */
+export type McpToolSurface = 'groups' | 'legacy';
 
 export interface ListMcpToolsOptions {
   accountLevel: McpAccountLevel;
   /** Workspace data class is `sensitive` (fail-closed when unknown). */
   isSensitive: boolean;
+  /** Default `legacy`. */
+  surface?: McpToolSurface;
+}
+
+/**
+ * Which surface a session gets. `?tools=groups|legacy` wins. Otherwise
+ * `legacy`, unless the server default (`BUILDD_MCP_TOOL_SURFACE=groups`) says
+ * groups, which never applies to a runner-launched worker session
+ * (`?worker=`): the runner matches the `mcp__buildd__buildd` tool name.
+ */
+export function mcpToolSurfaceFor(opts: { toolsParam?: string | null; workerParam?: string | null; serverDefault?: string | null }): McpToolSurface {
+  if (opts.toolsParam === 'groups' || opts.toolsParam === 'legacy') return opts.toolsParam;
+  return opts.serverDefault === 'groups' && !opts.workerParam ? 'groups' : 'legacy';
 }
 
 /** Actions exposed in the `buildd` tool schema for a given token level. */
@@ -45,11 +81,98 @@ export function actionsForLevel(accountLevel: McpAccountLevel): string[] {
     : [...workerActions];
 }
 
-export function listMcpTools({ accountLevel, isSensitive }: ListMcpToolsOptions): object[] {
-  const filteredActions = actionsForLevel(accountLevel);
+export const HELP_ACTION = 'help';
 
-  const tools: object[] = [
-    {
+/** The actions of `group` the level may call, in allActions order. */
+export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel): string[] {
+  const allowed = new Set(actionsForLevel(accountLevel));
+  return actionsOfGroup(group).filter(a => allowed.has(a));
+}
+
+const GROUP_PARAMS_DESCRIPTION = 'Params of the chosen action, as its signature above.';
+
+/** A `buildd_<group>` tool for the given actions: short purpose, one line per action, and `help`. */
+export function groupToolDefinition(group: McpToolGroup, actions: readonly string[]): object {
+  const lines = actions.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
+  lines.push(`- ${HELP_ACTION} {action}: full docs for one action`);
+  return {
+    name: mcpGroupToolName(group),
+    description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string" as const, enum: [...actions, HELP_ACTION] },
+        params: { type: "object" as const, description: GROUP_PARAMS_DESCRIPTION },
+      },
+      required: ["action"],
+    },
+  };
+}
+
+export type GroupToolCall =
+  | { kind: 'dispatch'; action: string; params: Record<string, unknown> }
+  | { kind: 'reply'; text: string; isError: boolean };
+
+/**
+ * What a call to `buildd_<group>` does: `help`, a one-line error for an action
+ * that is unknown or lives in another group, or the same dispatch the `buildd`
+ * tool does. Level gating of the dispatched action stays where it is for
+ * `buildd` (handleBuilddAction), so both tools refuse exactly alike.
+ */
+export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel): GroupToolCall {
+  const tool = mcpGroupToolName(group);
+  const action = typeof args?.action === 'string' ? args.action : '';
+  const params = (args?.params && typeof args.params === 'object' ? args.params : {}) as Record<string, unknown>;
+
+  if (action === HELP_ACTION) {
+    const target = typeof params.action === 'string' ? params.action : '';
+    const inGroup = groupActionsForLevel(group, accountLevel);
+    if (!target) {
+      return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.` };
+    }
+    const help = actionHelp(target);
+    if (!help) return { kind: 'reply', isError: true, text: `Unknown action "${target}".` };
+    if (!actionsForLevel(accountLevel).includes(target)) {
+      return { kind: 'reply', isError: true, text: `"${target}" is not available at your token level (${accountLevel}).` };
+    }
+    const home = mcpGroupOf(target)!;
+    return { kind: 'reply', isError: false, text: home === group ? help : `${help}\n\n(Call it on ${mcpGroupToolName(home)}.)` };
+  }
+
+  const home = mcpGroupOf(action);
+  if (!home) {
+    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel).join(', ')}, ${HELP_ACTION}.` };
+  }
+  if (home !== group) {
+    if (!actionsForLevel(accountLevel).includes(action)) {
+      return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
+    }
+    return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
+  }
+  return { kind: 'dispatch', action, params };
+}
+
+/** The server `instructions` block sent on initialize. */
+export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy'): string {
+  const tools = surface === 'groups'
+    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
+    : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
+  const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
+  return `Buildd is a task coordination system for AI coding agents. ${tools}
+
+**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
+
+**Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`;
+}
+
+/** The legacy one-tool `buildd`: every action the level may call, with the long docs inline. */
+function legacyBuilddTool(filteredActions: string[]): object {
+  return {
       name: "buildd",
       description: buildToolDescription(filteredActions),
       annotations: {
@@ -72,8 +195,16 @@ export function listMcpTools({ accountLevel, isSensitive }: ListMcpToolsOptions)
         },
         required: ["action"],
       },
-    },
-  ];
+  };
+}
+
+export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy' }: ListMcpToolsOptions): object[] {
+  const tools: object[] = surface === 'legacy'
+    ? [legacyBuilddTool(actionsForLevel(accountLevel))]
+    : MCP_TOOL_GROUPS
+      .map(g => [g, groupActionsForLevel(g, accountLevel)] as const)
+      .filter(([, actions]) => actions.length > 0)
+      .map(([g, actions]) => groupToolDefinition(g, actions));
 
   // check_path_claim is available to worker and admin tokens (not trigger-only tokens).
   // Trigger tokens don't run agent work so they never need mid-task path expansion.
@@ -153,7 +284,11 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     });
   }
 
-  if (!isSensitive) {
+  // buildd_memory (deprecated) stays listed on the legacy surface only; it is
+  // callable on both (route.ts).
+  if (!isSensitive && surface === 'groups') {
+    tools.push(recallToolDefinition, learnToolDefinition);
+  } else if (!isSensitive) {
     tools.push(
       {
         name: "buildd_memory",

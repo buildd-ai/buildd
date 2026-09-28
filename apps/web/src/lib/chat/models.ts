@@ -4,7 +4,9 @@
  * The tier → (provider, model) mapping is the team admin's, through the tier
  * registry (`resolveTierEntry`). The key comes from the one resolver
  * (`resolveInferenceCredential`): the user's own key, then the workspace's,
- * then the team's. Chat never falls back to a subscription seat.
+ * then the team's. Chat never falls back to a subscription seat. With no
+ * key for the tier's provider (nor OpenRouter), the team's LiteLLM gateway
+ * serves the same model as `provider/model` (@buildd/core/litellm-gateway).
  */
 
 import type { LanguageModel } from 'ai';
@@ -18,12 +20,16 @@ import { priceForModel } from '@buildd/core/model-prices';
 import type { Tier } from '@buildd/core/model-tier-defaults';
 import type { ChatProvider } from '@buildd/shared';
 import { openRouterModelId } from './openrouter-id';
+import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
+import { gatewayModel } from '@builddai/ai-kit/models';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
 export type ResolvedChatModel =
   | {
     ok: true; model: LanguageModel; provider: ChatProvider; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope;
+    /** Set when the team's LiteLLM gateway serves the turn; `modelId` stays the planned model, for pricing. */
+    via?: 'litellm';
     /** Set when the tier's chat pool enrolled this turn (docs/design/tier-model-pools.md). */
     pool?: ChatPoolDraw;
   }
@@ -41,10 +47,17 @@ export function languageModelFor(provider: ChatProvider, modelId: string, apiKey
 
 export { openRouterModelId };
 
+/** The planned model through a LiteLLM gateway, on its OpenAI-compatible API. */
+export function gatewayLanguageModel(gateway: LiteLLMGateway, provider: ChatProvider, modelId: string): LanguageModel {
+  return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL })
+    .chat(gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, modelId));
+}
+
 interface ResolveDeps {
   resolveTierEntry: typeof resolveTierEntry;
   resolveInferenceCredential: typeof resolveInferenceCredential;
   drawChatPoolArm?: typeof drawChatPoolArm;
+  resolveLiteLLMGateway?: typeof resolveLiteLLMGateway;
 }
 
 /**
@@ -69,7 +82,7 @@ export async function resolveChatModel(
     userId: string;
     pool?: ChatPoolContext;
   },
-  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential, drawChatPoolArm },
+  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential, drawChatPoolArm, resolveLiteLLMGateway },
 ): Promise<ResolvedChatModel> {
   const incumbent = await resolveIncumbentChatModel(opts, deps);
   if (!incumbent.ok || !opts.pool || !deps.drawChatPoolArm) return incumbent;
@@ -158,6 +171,20 @@ async function resolveIncumbentChatModel(
         keyScope: orCred.scope,
       };
     }
+  }
+  const gateway = deps.resolveLiteLLMGateway
+    ? await deps.resolveLiteLLMGateway({ teamId: opts.teamId, workspaceId: opts.workspaceId }).catch(() => null)
+    : null;
+  if (gateway) {
+    return {
+      ok: true,
+      model: gatewayLanguageModel(gateway, provider, entry.model),
+      provider,
+      modelId: entry.model,
+      tier: opts.tier,
+      keyScope: 'team',
+      via: 'litellm',
+    };
   }
   return { ok: false, reason: 'no_key', provider, tier: opts.tier };
 }

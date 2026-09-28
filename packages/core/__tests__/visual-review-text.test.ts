@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type { VisualReviewCell, VisualReviewModel, VisualReviewAuditTask } from '@buildd/shared';
-import { formatVisualReview, describeVisualPhase } from '../visual-review-text';
+import { formatVisualReview, describeVisualPhase, otherVisualEvidence, type VisualEvidenceArtifact } from '../visual-review-text';
 
 const A1 = 'aaaaaaaa-0000-4000-8000-000000000001';
 const A2 = 'aaaaaaaa-0000-4000-8000-000000000002';
@@ -167,6 +167,104 @@ describe('formatVisualReview for chat', () => {
     expect(text).not.toMatch(/\/download|\/app\/artifacts\//);
     expect(text).toMatch(/You have not seen these images/);
     expect(text).toMatch(/round 1: cancelled/);
+  });
+});
+
+describe('other visual evidence', () => {
+  const MANUAL = 'dddddddd-0000-4000-8000-000000000001';
+  const REPORT = 'dddddddd-0000-4000-8000-000000000002';
+  const DIFF = 'dddddddd-0000-4000-8000-000000000003';
+  const manualShot: VisualEvidenceArtifact = { id: MANUAL, type: 'screenshot', title: 'Settings page, mobile', metadata: {}, updatedAt: '2026-03-10T10:30:00.000Z' };
+  const report: VisualEvidenceArtifact = {
+    id: REPORT, type: 'report', title: 'Visual validation: settings redesign (final)', key: null,
+    content: '# Visual validation\n\nChecked six screens on phone and desktop.\n\n**Verdict:** all checks passed.\n\nDetails follow.',
+    metadata: {}, updatedAt: '2026-03-10T10:45:00.000Z',
+  };
+  const auditShot: VisualEvidenceArtifact = { id: SHOT1, type: 'screenshot', title: 'audit shot', metadata: { qa: { route: '/app/example' } } };
+  const unrelated: VisualEvidenceArtifact[] = [
+    { id: DIFF, type: 'diff', title: 'Visual validation diff', metadata: {} },
+    { id: 'eeeeeeee-0000-4000-8000-000000000001', type: 'report', title: 'Weekly cost report', content: 'All good.', metadata: {} },
+  ];
+  const off = () => model({ phase: 'off', audit: null, audits: [], cells: [], queue: [], needsYou: null, summary: { ...model().summary, shots: 0, ok: 0, issues: 0, unsure: 0, awaitingHuman: 0, unreviewed: 0, rounds: 0, openFixes: 0 } });
+  const all = [auditShot, manualShot, report, ...unrelated];
+  const mcp = (m: VisualReviewModel, artifacts: VisualEvidenceArtifact[] | null, extra: Record<string, unknown> = {}) =>
+    formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1', artifacts, ...extra });
+
+  it('classifies: non-audit screenshots and validation-like reports only', () => {
+    const ev = otherVisualEvidence(all, model());
+    expect(ev.screenshots.map(a => a.id)).toEqual([MANUAL]);
+    expect(ev.reports.map(a => a.id)).toEqual([REPORT]);
+  });
+
+  it('never counts a shot the model already shows, even without metadata.qa', () => {
+    const ev = otherVisualEvidence([{ id: SHOT2, type: 'screenshot', title: 'x', metadata: {} }], model());
+    expect(ev.screenshots).toEqual([]);
+  });
+
+  it('with no audit, does not claim no visual QA happened; lists the manual evidence with links', () => {
+    const text = mcp(off(), all);
+    expect(text).not.toMatch(/No visual audit on this mission/);
+    expect(text).not.toMatch(/no screens were/i);
+    expect(text).toContain('No automatic visual audit ran; manual visual evidence below.');
+    expect(text).toContain('Other visual evidence (1 screenshot, 1 report):');
+    expect(text).toMatch(/"Settings page, mobile" \(phone\)/);
+    expect(text).toContain(`${BASE}/app/artifacts/${MANUAL}`);
+    expect(text).toContain('"Visual validation: settings redesign (final)"');
+    expect(text).toContain('updated 2026-03-10 10:45 UTC');
+    expect(text).toContain('Verdict: all checks passed.');
+    expect(text).toContain(`${BASE}/app/artifacts/${REPORT}`);
+    expect(text).not.toContain(DIFF);
+    expect(text).not.toContain('Weekly cost report');
+    // Never an image: no download route for the manual shot.
+    expect(text).not.toContain(`/api/artifacts/${MANUAL}/download`);
+  });
+
+  it('a report with no verdict line shows its first prose line instead', () => {
+    const text = mcp(off(), [{ ...report, content: '## Heading\n\nLooked at the phone layout only.' }]);
+    expect(text).toContain('Looked at the phone layout only.');
+  });
+
+  it('matches on key too, and caps each list with "N more"', () => {
+    const shots = Array.from({ length: 8 }, (_, i): VisualEvidenceArtifact => ({ id: `ffffffff-0000-4000-8000-00000000000${i}`, type: 'screenshot', title: `Shot ${i}`, metadata: {}, updatedAt: `2026-03-10T10:0${i}:00.000Z` }));
+    const reports = Array.from({ length: 5 }, (_, i): VisualEvidenceArtifact => ({ id: `99999999-0000-4000-8000-00000000000${i}`, type: 'analysis', title: `Notes ${i}`, key: `visual-qa-notes-${i}`, content: 'Result: fine.', metadata: {} }));
+    const text = mcp(off(), [...shots, ...reports]);
+    expect(text).toContain('Other visual evidence (8 screenshots, 5 reports):');
+    expect(text).toMatch(/3 more screenshots not shown/);
+    expect(text).toMatch(/2 more reports not shown/);
+    // Newest first.
+    expect(text.indexOf('Shot 7')).toBeLessThan(text.indexOf('Shot 6'));
+    expect(text).not.toContain('Shot 0');
+  });
+
+  it('with an audit, adds the section after the audit screens', () => {
+    const text = mcp(model(), all);
+    expect(text).toContain('Other visual evidence (1 screenshot, 1 report):');
+    expect(text.indexOf('/app/example:')).toBeLessThan(text.indexOf('Other visual evidence'));
+  });
+
+  it('audits that captured nothing: points at the manual evidence', () => {
+    const m = model({ phase: 'off', cells: [], queue: [], needsYou: null, summary: { ...model().summary, shots: 0, unsure: 0, issues: 0, awaitingHuman: 0, openFixes: 0 } });
+    const text = mcp(m, [report]);
+    expect(text).toMatch(/the audit captured no screens; other visual evidence below/i);
+    expect(text).not.toMatch(/No screenshots yet/);
+  });
+
+  it('Q3: a completed mission with only manual evidence says so instead of a bare "no"', () => {
+    const text = mcp(off(), [report], { missionStatus: 'completed', missionCompletedAt: '2026-03-10T11:00:00.000Z' });
+    expect(text).toContain('Visually checked before the mission was completed: no automatic audit ran; manual evidence dated before completion ("Visual validation: settings redesign (final)", 2026-03-10 10:45 UTC).');
+  });
+
+  it('no artifacts (or none passed): unchanged text', () => {
+    expect(mcp(off(), [])).toBe(mcp(off(), null));
+    expect(mcp(off(), unrelated)).toMatch(/No visual audit on this mission/);
+  });
+
+  it('chat: same section, no links, and it does not claim the images were seen', () => {
+    const text = formatVisualReview(off(), 'Example', { artifacts: all });
+    expect(text).toContain('No automatic visual audit ran; manual visual evidence below.');
+    expect(text).toContain('Verdict: all checks passed.');
+    expect(text).not.toMatch(/\/app\/artifacts\/|\/download/);
+    expect(text).toMatch(/You have not seen these screenshots/);
   });
 });
 

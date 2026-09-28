@@ -82,10 +82,10 @@ same-state comparison.
 - **A second label.** `release_next_step` / `retry_failed` could be executed on
   the server without the organizer. Leaning: not until `wait` is applied and
   measured; each needs a server-side executor.
-- **LiteLLM.** Jev is served by OpenRouter's System One API, which a LiteLLM
-  proxy does not expose. A LiteLLM-only team keeps the organizer on every cycle.
-  A generative fallback through `inferenceCall` needs a `litellm` provider (key +
-  base URL) in `inference-keys.ts` first.
+- **LiteLLM.** Resolved: Jev is not on a LiteLLM proxy, but a team can set its
+  decision model (`teams.decision_model`) to any model behind its gateway, and
+  triage asks it through the kit's chat endpoint (confidence from logprobs). Its
+  picks are shadow like Jev's; a threshold for it needs its own benchmark.
 
 ## Non-goals
 

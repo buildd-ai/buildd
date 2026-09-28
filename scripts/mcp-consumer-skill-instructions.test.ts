@@ -23,41 +23,47 @@ const routeSource = readFileSync(
   'utf8',
 );
 
-function extractInstructionsTemplate(source: string): string {
-  const marker = 'instructions: `';
-  const start = source.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  const bodyStart = start + marker.length;
-  const end = source.indexOf('`,\n    }\n  );', bodyStart);
-  expect(end).toBeGreaterThan(bodyStart);
-  return source.slice(bodyStart, end);
+// The block is built by mcpServerInstructions (apps/web/src/app/api/mcp/tools.ts)
+// per token level and tool surface; check every combination.
+const LEVELS = ['trigger', 'worker', 'admin'] as const;
+const SURFACES = ['groups', 'legacy'] as const;
+async function allInstructions(): Promise<Array<{ level: string; surface: string; text: string }>> {
+  const { mcpServerInstructions } = await import('../apps/web/src/app/api/mcp/tools');
+  return LEVELS.flatMap(level => SURFACES.map(surface => ({ level, surface, text: mcpServerInstructions(level, surface) })));
 }
 
 describe('MCP server instructions block', () => {
-  it('is under the size that was observed truncating', () => {
-    const instructions = extractInstructionsTemplate(routeSource);
-    expect(instructions.length).toBeLessThan(MAX_INSTRUCTIONS_CHARS);
+  it('route.ts sends the shared instructions', () => {
+    expect(routeSource).toContain('instructions: mcpServerInstructions(accountLevel, toolSurface)');
   });
 
-  it('still carries what a client needs before its first tool call', () => {
-    const instructions = extractInstructionsTemplate(routeSource);
-    // Token level + what a 403 means — the resident guarantee
-    // mcp-action-contracts.md AC-3 documents.
-    expect(instructions).toContain('${accountLevel}');
-    expect(instructions).toContain('forbidden');
-    // The pointer to the skill, and the resource fallback for a client with
-    // none installed — the thing that makes the pointer's promise true.
-    expect(instructions).toContain('buildd-mcp-consumer');
-    expect(instructions).toContain('buildd://workspace/skills');
+  it('is under the size that was observed truncating', async () => {
+    for (const { level, surface, text } of await allInstructions()) {
+      expect(text.length, `${level}/${surface}`).toBeLessThan(MAX_INSTRUCTIONS_CHARS);
+    }
   });
 
-  it('no longer inlines the full worker lifecycle', () => {
-    const instructions = extractInstructionsTemplate(routeSource);
-    // These moved to the skill body — their presence here would mean the
-    // split didn't actually happen.
-    expect(instructions).not.toContain('milestones');
-    expect(instructions).not.toContain('AskUserQuestion');
-    expect(instructions).not.toContain('frictionSignature');
+  it('still carries what a client needs before its first tool call', async () => {
+    for (const { level, text } of await allInstructions()) {
+      // Token level + what a 403 means — the resident guarantee
+      // mcp-action-contracts.md AC-3 documents.
+      expect(text).toContain(`**Token level:** ${level}`);
+      expect(text).toContain('forbidden');
+      // The pointer to the skill, and the resource fallback for a client with
+      // none installed — the thing that makes the pointer's promise true.
+      expect(text).toContain('buildd-mcp-consumer');
+      expect(text).toContain('buildd://workspace/skills');
+    }
+  });
+
+  it('no longer inlines the full worker lifecycle', async () => {
+    for (const { text } of await allInstructions()) {
+      // These moved to the skill body — their presence here would mean the
+      // split didn't actually happen.
+      expect(text).not.toContain('milestones');
+      expect(text).not.toContain('AskUserQuestion');
+      expect(text).not.toContain('frictionSignature');
+    }
   });
 });
 

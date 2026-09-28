@@ -9,6 +9,7 @@ import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { useSearchParams } from 'next/navigation';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
+import GatewayAndDecisionModel from './GatewayAndDecisionModel';
 
 export interface ChatAvailabilityProp {
   available: boolean;
@@ -95,6 +96,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
       {view && (
         <KeyPolicyControl teamId={teamId} policy={view.keyPolicy} canManage={canManage} onChanged={load} />
       )}
+
+      <GatewayAndDecisionModel teamId={teamId} canManage={canManage} />
 
     </div>
   );

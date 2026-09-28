@@ -4,10 +4,11 @@
  * screens awaiting a human) and the `list_runners` text (slots and browser
  * capability). Both go through the caller's `api`, so the routes' own access
  * checks apply: GET /api/missions/[id]/visual-review,
+ * GET /api/missions/[id]/artifacts (manual visual evidence, one list read),
  * GET /api/workspaces/[id]/visual-review and GET /api/workers/active.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
-import { formatVisualReview } from './visual-review-text';
+import { formatVisualReview, missionArtifacts } from './visual-review-text';
 import type { VisualReviewModel } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
@@ -89,6 +90,7 @@ export async function runGetVisualReview(
     const m = mission?.mission ?? mission;
     const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel } | null;
     if (!out?.model) return errorResult('The visual review could not be read.');
+    const artifacts = await missionArtifacts(api, id);
     return text(formatVisualReview(out.model, typeof m?.title === 'string' ? m.title : null, {
       audience: 'mcp',
       baseUrl: appBaseUrl,
@@ -96,6 +98,7 @@ export async function runGetVisualReview(
       missionStatus: typeof m?.status === 'string' ? m.status : null,
       missionCompletedAt: typeof m?.completedAt === 'string' ? m.completedAt : null,
       awaitingOnly: params.awaitingOnly === true,
+      artifacts,
     }));
   }
 

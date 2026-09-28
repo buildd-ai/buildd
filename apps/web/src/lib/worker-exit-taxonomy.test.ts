@@ -377,4 +377,45 @@ describe('isSilentStartShape', () => {
     expect(isSilentStartShape({ turns: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 })).toBe(true);
     expect(isSilentStartShape({ turns: 1, costUsd: 0, inputTokens: 900, outputTokens: 40 })).toBe(false);
   });
+
+  // A session that ran one shell command and died (Codex-shaped) can count many
+  // turns while reporting no model usage and $0. With the terminal resultMeta
+  // in hand, turn count is not the evidence — usage is.
+  it('is true for a many-turn session whose terminal resultMeta shows no model usage and $0', () => {
+    expect(isSilentStartShape({
+      turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0,
+      resultMeta: { modelUsage: {}, totalUsage: null, totalCostUsd: 0 },
+    })).toBe(true);
+    expect(isSilentStartShape({
+      turns: 11, costUsd: '0', inputTokens: null, outputTokens: null,
+      resultMeta: { modelUsage: {} },
+    })).toBe(true);
+  });
+
+  it('is false for a many-turn session with real usage', () => {
+    // Real per-model usage.
+    expect(isSilentStartShape({
+      turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0,
+      resultMeta: { modelUsage: { 'claude-sonnet-4-6': { inputTokens: 5000, outputTokens: 800 } } },
+    })).toBe(false);
+    // Seat/OAuth auth: modelUsage stays empty and cost is $0, but the session
+    // totals (and the synced token columns) show real work.
+    expect(isSilentStartShape({
+      turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0,
+      resultMeta: { modelUsage: {}, totalUsage: { inputTokens: 12000, outputTokens: 900 } },
+    })).toBe(false);
+    expect(isSilentStartShape({
+      turns: 9, costUsd: 0, inputTokens: 12000, outputTokens: 900,
+      resultMeta: { modelUsage: {} },
+    })).toBe(false);
+    expect(isSilentStartShape({
+      turns: 9, costUsd: 0.4, inputTokens: 0, outputTokens: 0,
+      resultMeta: { modelUsage: {} },
+    })).toBe(false);
+  });
+
+  it('keeps the turn cap when there is no terminal usage evidence (the reaper path)', () => {
+    expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0 })).toBe(false);
+    expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0, resultMeta: null })).toBe(false);
+  });
 });

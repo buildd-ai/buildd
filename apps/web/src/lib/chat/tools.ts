@@ -262,7 +262,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
-  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
+  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task; plus other visual evidence (manual screenshots, validation reports with their verdict line). Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
 };
 
 /**

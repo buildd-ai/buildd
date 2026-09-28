@@ -123,7 +123,7 @@ export function MissionScopeCell({ objRef }: { objRef: BuilddObjectRef }) {
         <rect x="1" y="6" width="10" height="7" />
         <path d="M3.5 6V3.5h5V6" />
       </svg>
-      <span className="min-w-0 truncate">{missionScopeLabel(ws)}</span>
+      <span className="min-w-0 truncate"><span className="md:hidden">{ws ?? 'mission'}</span><span className="hidden md:inline">{missionScopeLabel(ws)}</span></span>
     </span>
   );
 }

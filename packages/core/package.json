@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.248.0",
+  "version": "0.249.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -13,6 +13,7 @@
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
+    "./mcp-tool-groups": "./mcp-tool-groups.ts",
     "./prior-work-render": "./prior-work-render.ts",
     "./model-aliases": "./model-aliases.ts",
     "./model-catalog": "./model-catalog.ts",
@@ -35,6 +36,8 @@
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
     "./decision-client": "./decision-client.ts",
+    "./decision-model": "./decision-model.ts",
+    "./litellm-gateway": "./litellm-gateway.ts",
     "./inference-keys": "./inference-keys.ts",
     "./inference-key-policy": "./inference-key-policy.ts",
     "./conversation-title": "./conversation-title.ts",

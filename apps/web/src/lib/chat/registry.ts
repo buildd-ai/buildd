@@ -21,13 +21,19 @@
  *     write lands.
  */
 
-import { adminActions, allActions } from '@buildd/core/mcp-tools';
+import { adminActions, allActions, type BuilddAction } from '@buildd/core/mcp-tools';
+import { ACTION_AREA, CHAT_AREAS, type ChatArea } from '@buildd/core/mcp-tool-groups';
 import type { OwnedKind } from './reach-rules';
 
 export type ToolClass = 'read' | 'write' | 'admin' | 'self' | 'deferred';
 
-export const TOOL_GROUPS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
-export type ToolGroup = (typeof TOOL_GROUPS)[number];
+/**
+ * Chat's tool groups. An MCP action's group comes from the shared action →
+ * group registry (@buildd/core/mcp-tool-groups ACTION_AREA), which the MCP
+ * server's group tools also read; only chat-native tools name theirs here.
+ */
+export const TOOL_GROUPS = CHAT_AREAS;
+export type ToolGroup = ChatArea;
 
 /** `GET /api/tasks/:id` — a method and a CHAT_ROUTES pattern. */
 export type RouteRef = `${'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'} /api/${string}`;
@@ -69,25 +75,35 @@ const self = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class
 /** A write that starts recurring or unattended work: never skips its card. */
 const startsWork = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
 const single = (group: ToolGroup, op: ChatOpSpec): ChatToolSpec => ({ group, ops: { '': op } });
+/** A single-op spec for an MCP action; its group is the action's ACTION_AREA. */
+const one = (op: ChatOpSpec): Omit<ChatToolSpec, 'group'> => ({ ops: { '': op } });
+
+/** Stamp each MCP-backed spec with its shared group. An action whose area is `work` (worker-only) cannot be a chat tool. */
+function withAreas<T extends Partial<Record<BuilddAction, Omit<ChatToolSpec, 'group'>>>>(specs: T): { [K in keyof T]: T[K] & { group: ToolGroup } } {
+  return Object.fromEntries(Object.entries(specs).map(([action, spec]) => {
+    const area = ACTION_AREA[action as BuilddAction];
+    if (!area || area === 'work') throw new Error(`chat registry: ${action} has no chat area (ACTION_AREA says ${area ?? 'nothing'})`);
+    return [action, { ...spec, group: area }];
+  })) as unknown as { [K in keyof T]: T[K] & { group: ToolGroup } };
+}
 
 const CAPS = 'GET /api/missions/capabilities' as const;
 const KEY_ONLY = 'its route accepts only a runner API key, not the dashboard session';
 
-export const CHAT_TOOL_SPECS = {
+export const CHAT_TOOL_SPECS = withAreas({
   // ── tasks ──
-  list_tasks: single('tasks', read('GET /api/tasks')),
-  get_task: single('tasks', read('GET /api/tasks/:id')),
-  get_task_messages: single('tasks', read('GET /api/tasks/:id/messages')),
-  create_task: single('tasks', write({ param: 'missionId', is: 'mission' }, 'POST /api/tasks', 'GET /api/tasks', 'GET /api/missions/:id')),
-  update_task: single('tasks', write({ param: 'taskId', is: 'task' },
+  list_tasks: one(read('GET /api/tasks')),
+  get_task: one(read('GET /api/tasks/:id')),
+  get_task_messages: one(read('GET /api/tasks/:id/messages')),
+  create_task: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/tasks', 'GET /api/tasks', 'GET /api/missions/:id')),
+  update_task: one(write({ param: 'taskId', is: 'task' },
     'PATCH /api/tasks/:id', 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct', 'POST /api/tasks/:id/notes', 'POST /api/missions/:id/notes')),
-  correct_task_result: single('tasks', write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id')),
-  approve_plan: single('tasks', write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/approve-plan', 'GET /api/tasks/:id')),
-  reject_plan: single('tasks', write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/reject-plan')),
+  correct_task_result: one(write({ param: 'taskId', is: 'task' }, 'PATCH /api/tasks/:id')),
+  approve_plan: one(write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/approve-plan', 'GET /api/tasks/:id')),
+  reject_plan: one(write({ param: 'taskId', is: 'task' }, 'POST /api/tasks/:id/reject-plan')),
 
   // ── missions ──
   manage_missions: {
-    group: 'missions',
     ops: {
       list: read('GET /api/missions'),
       get: read('GET /api/missions/:id'),
@@ -102,7 +118,6 @@ export const CHAT_TOOL_SPECS = {
     },
   },
   manage_initiatives: {
-    group: 'missions',
     ops: {
       list: read('GET /api/initiatives'),
       get: read('GET /api/initiatives/:id'),
@@ -113,60 +128,59 @@ export const CHAT_TOOL_SPECS = {
       delete: admin({ param: 'initiativeId', is: 'initiative' }, 'DELETE /api/initiatives/:id'),
     },
   },
-  link_tracker: single('missions', write({ param: 'entityId', is: 'mission' }, 'POST /api/missions/:id/link')),
-  list_discrepancies: single('missions', read('GET /api/discrepancies')),
-  get_discrepancy: single('missions', read('GET /api/discrepancies/:id')),
-  adjudicate_discrepancy: single('missions', write({ param: 'discrepancyId', is: 'discrepancy' }, 'POST /api/discrepancies/:id/adjudicate')),
-  promote_discrepancy: single('missions', write({ param: 'discrepancyId', is: 'discrepancy' },
+  link_tracker: one(write({ param: 'entityId', is: 'mission' }, 'POST /api/missions/:id/link')),
+  list_discrepancies: one(read('GET /api/discrepancies')),
+  get_discrepancy: one(read('GET /api/discrepancies/:id')),
+  adjudicate_discrepancy: one(write({ param: 'discrepancyId', is: 'discrepancy' }, 'POST /api/discrepancies/:id/adjudicate')),
+  promote_discrepancy: one(write({ param: 'discrepancyId', is: 'discrepancy' },
     'GET /api/discrepancies/:id', 'POST /api/missions', 'POST /api/discrepancies/:id/promote')),
 
   // ── workers: steering and fleet health ──
-  send_agent_message: single('workers', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct')),
-  query_events: single('workers', read('GET /api/workers/:id')),
-  explain: single('workers', read('GET /api/explain')),
-  get_error_traces: single('workers', read('GET /api/workspaces/:id/error-traces', 'GET /api/workers/:id')),
-  get_failure_analytics: single('workers', read('GET /api/health/failures')),
-  get_budget_forecast: single('workers', read('GET /api/health/budget')),
-  list_connectors: single('workers', read('GET /api/connectors/mounted')),
-  get_usage_stats: single('workers', deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
-  list_runners: single('workers', deferred('each row carries a workspaceIds array (a runner can serve several workspaces), and the generic reach filter only scopes rows by a single workspaceId field — exposing it needs array-aware filtering first')),
+  send_agent_message: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  query_events: one(read('GET /api/workers/:id')),
+  explain: one(read('GET /api/explain')),
+  get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/workers/:id')),
+  get_failure_analytics: one(read('GET /api/health/failures')),
+  get_budget_forecast: one(read('GET /api/health/budget')),
+  list_connectors: one(read('GET /api/connectors/mounted')),
+  get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
+  list_runners: one(deferred('each row carries a workspaceIds array (a runner can serve several workspaces), and the generic reach filter only scopes rows by a single workspaceId field — exposing it needs array-aware filtering first')),
 
   // ── PRs, reviews, releases ──
-  get_pr: single('prs', read('GET /api/github/pr')),
-  get_pr_review: single('prs', read('GET /api/github/pr/review')),
-  merge_pr: single('prs', deferred(`${KEY_ONLY} (and needs the green-CI + merge-safety gate from the design)`)),
-  close_pr: single('prs', deferred(KEY_ONLY)),
-  request_pr_review: single('prs', deferred(KEY_ONLY)),
-  list_releases: single('prs', read('GET /api/releases')),
-  get_release: single('prs', read('GET /api/releases/:id')),
-  release_status: single('prs', read('GET /api/releases/status')),
-  trigger_release: single('admin', admin({ param: 'workspaceId', is: 'workspace' }, 'POST /api/releases/trigger')),
+  get_pr: one(read('GET /api/github/pr')),
+  get_pr_review: one(read('GET /api/github/pr/review')),
+  merge_pr: one(deferred(`${KEY_ONLY} (and needs the green-CI + merge-safety gate from the design)`)),
+  close_pr: one(deferred(KEY_ONLY)),
+  request_pr_review: one(deferred(KEY_ONLY)),
+  list_releases: one(read('GET /api/releases')),
+  get_release: one(read('GET /api/releases/:id')),
+  release_status: one(read('GET /api/releases/status')),
+  trigger_release: one(admin({ param: 'workspaceId', is: 'workspace' }, 'POST /api/releases/trigger')),
 
   // ── memory and knowledge ──
-  spec_compare: single('memory', read()),
-  consolidate_knowledge: single('memory', admin({ conversation: true })),
-  memory_delete: single('memory', admin({ conversation: true })),
+  spec_compare: one(read()),
+  consolidate_knowledge: one(admin({ conversation: true })),
+  memory_delete: one(admin({ conversation: true })),
 
   // ── schedules ──
-  list_schedules: single('schedules', read('GET /api/workspaces/:id/schedules')),
-  trace_schedule: single('schedules', read('GET /api/tasks/:id', 'GET /api/workspaces/:id/schedules', 'GET /api/workspaces/:id/schedules/:scheduleId')),
-  create_schedule: single('schedules', startsWork(write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/schedules'))),
-  update_schedule: single('schedules', startsWork(write({ param: 'scheduleId', is: 'schedule' },
+  list_schedules: one(read('GET /api/workspaces/:id/schedules')),
+  trace_schedule: one(read('GET /api/tasks/:id', 'GET /api/workspaces/:id/schedules', 'GET /api/workspaces/:id/schedules/:scheduleId')),
+  create_schedule: one(startsWork(write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/schedules'))),
+  update_schedule: one(startsWork(write({ param: 'scheduleId', is: 'schedule' },
     'GET /api/workspaces/:id/schedules/:scheduleId', 'PATCH /api/workspaces/:id/schedules/:scheduleId'))),
-  pause_schedules: single('schedules', write({ param: 'workspaceId', is: 'workspace' },
+  pause_schedules: one(write({ param: 'workspaceId', is: 'workspace' },
     'GET /api/workspaces/:id/schedules', 'PATCH /api/workspaces/:id/schedules/:scheduleId')),
-  delete_schedule: single('schedules', admin({ param: 'scheduleId', is: 'schedule' }, 'DELETE /api/workspaces/:id/schedules/:scheduleId')),
+  delete_schedule: one(admin({ param: 'scheduleId', is: 'schedule' }, 'DELETE /api/workspaces/:id/schedules/:scheduleId')),
 
   // ── artifacts ──
-  list_artifacts: single('artifacts', read('GET /api/workspaces/:id/artifacts', 'GET /api/initiatives/:id/artifacts')),
-  get_artifact: single('artifacts', read('GET /api/artifacts/:artifactId')),
-  list_artifact_templates: single('artifacts', read()),
-  create_artifact: single('artifacts', write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/artifacts', 'POST /api/initiatives/:id/artifacts')),
-  update_artifact: single('artifacts', deferred(KEY_ONLY)),
+  list_artifacts: one(read('GET /api/workspaces/:id/artifacts', 'GET /api/initiatives/:id/artifacts')),
+  get_artifact: one(read('GET /api/artifacts/:artifactId')),
+  list_artifact_templates: one(read()),
+  create_artifact: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/artifacts', 'POST /api/initiatives/:id/artifacts')),
+  update_artifact: one(deferred(KEY_ONLY)),
 
   // ── admin: workspace config, roles, experiments, models ──
   manage_workspaces: {
-    group: 'admin',
     ops: {
       list: read(),
       get: read('GET /api/workspaces/:id/config'),
@@ -177,7 +191,6 @@ export const CHAT_TOOL_SPECS = {
     },
   },
   manage_watched_projects: {
-    group: 'admin',
     ops: {
       list: read('GET /api/workspaces/:id/watched-projects'),
       create: write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/watched-projects'),
@@ -186,13 +199,12 @@ export const CHAT_TOOL_SPECS = {
       delete: admin({ param: 'projectId', is: 'watched_project' }, 'DELETE /api/watched-projects/:id'),
     },
   },
-  list_skills: single('admin', read('GET /api/workspaces/:id/skills')),
-  get_skill: single('admin', read('GET /api/workspaces/:id/skills', 'GET /api/workspaces/:id/skills/:skillId')),
-  register_skill: single('admin', admin({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/skills')),
-  update_skill: single('admin', admin({ param: 'workspaceId', is: 'workspace' }, 'GET /api/workspaces/:id/skills', 'PATCH /api/workspaces/:id/skills/:skillId')),
-  delete_skill: single('admin', admin({ param: 'workspaceId', is: 'workspace' }, 'GET /api/workspaces/:id/skills', 'DELETE /api/workspaces/:id/skills/:skillId')),
+  list_skills: one(read('GET /api/workspaces/:id/skills')),
+  get_skill: one(read('GET /api/workspaces/:id/skills', 'GET /api/workspaces/:id/skills/:skillId')),
+  register_skill: one(admin({ param: 'workspaceId', is: 'workspace' }, 'POST /api/workspaces/:id/skills')),
+  update_skill: one(admin({ param: 'workspaceId', is: 'workspace' }, 'GET /api/workspaces/:id/skills', 'PATCH /api/workspaces/:id/skills/:skillId')),
+  delete_skill: one(admin({ param: 'workspaceId', is: 'workspace' }, 'GET /api/workspaces/:id/skills', 'DELETE /api/workspaces/:id/skills/:skillId')),
   manage_experiments: {
-    group: 'admin',
     ops: {
       list: read('GET /api/experiments'),
       get: read('GET /api/experiments/:id'),
@@ -212,9 +224,9 @@ export const CHAT_TOOL_SPECS = {
    * write tool: a human decides on the card (ChatActions.reviewShots), where
    * the tap is the consent. (docs/design/visual-qa-human-review.md, Chat)
    */
-  get_visual_review: single('missions', read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review')),
-  manage_model_tiers: single('admin', deferred('model-tier routing and budgets change what every agent in the team spends; kept to the Models settings screen until the admin card ships a spend preview')),
-} satisfies Record<string, ChatToolSpec>;
+  get_visual_review: one(read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review', 'GET /api/missions/:id/artifacts')),
+  manage_model_tiers: one(deferred('model-tier routing and budgets change what every agent in the team spends; kept to the Models settings screen until the admin card ships a spend preview')),
+});
 
 /** Chat-only tools: no MCP action, same registry rules. */
 export const CHAT_NATIVE_TOOL_SPECS = {
