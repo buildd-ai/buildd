@@ -1,13 +1,20 @@
 /**
- * The `?state=visual-review` dev fixture: the mission Visual review strip
- * (docs/design/visual-qa-auditor.md) with placeholder shots.
+ * The `?state=visual-review` dev fixture: the visual review component family
+ * (components/visual-review/, docs/design/visual-qa-human-review.md) over
+ * the fixture models in lib/visual-review-model.fixtures.ts.
  *
- * Illustrative fixtures only. The images are self-made SVG page sketches,
- * never captures: the repo is public, and a real screenshot can hold real
- * content. One shot points at a path that does not exist, to show the
- * "expired" tile. Deterministic: no Date.now or random at module scope.
+ *   ?state=visual-review&phase=<phase>        Line + Ask + Tray for a phase
+ *   &reason=question|unsure|round_cap         which needs_you
+ *   &view=board                               embedded like the mission board
+ *   &view=deck | deck-phone | compare         the review deck (dialog, inline sheet, compare open)
+ *   &view=reviewed                            the reviewed tray
+ *   &expired=1                                one image that fails to load
+ *
+ * Illustrative fixtures only: SVG sketches, never captures (the repo is
+ * public). Decisions go to an in-memory transport, never the network.
  */
-import type { VisualShot } from '@/lib/mission-visual-review';
+import { VISUAL_REVIEW_PHASES, type VisualReviewNeedsYouReason, type VisualReviewPhase } from '@buildd/shared';
+import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtures';
 import { mockWorkers } from './fixtures-data';
 
 export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
@@ -19,72 +26,68 @@ export function isFixtureView(value: string | null | undefined): value is string
   return value != null && FIXTURE_VIEWS.includes(value);
 }
 
-const PALETTE = {
-  dark: { bg: '#1a1816', card: '#2a2724', block: '#4b453f', line: '#3a3531' },
-  light: { bg: '#eee9e3', card: '#ffffff', block: '#cdc5bb', line: '#d8d1c8' },
-} as const;
+export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'reviewed'] as const;
+export type VisualReviewFixtureView = (typeof VISUAL_REVIEW_FIXTURE_VIEWS)[number];
 
-/** A wireframe page: header bar, accent, a few cards. `flag` outlines an area in red. */
-function sketch(viewport: 'mobile' | 'desktop', theme: 'dark' | 'light', flag = false): string {
-  const [w, h] = viewport === 'mobile' ? [390, 844] : [1280, 900];
-  const c = PALETTE[theme];
-  const pad = viewport === 'mobile' ? 16 : 40;
-  const cardW = viewport === 'mobile' ? w - pad * 2 : (w - pad * 3) / 2;
-  const cards = [0, 1, 2, 3].map(i => {
-    const col = viewport === 'mobile' ? 0 : i % 2;
-    const row = viewport === 'mobile' ? i : Math.floor(i / 2);
-    const x = pad + col * (cardW + pad);
-    const y = 120 + row * 170;
-    return `<rect x="${x}" y="${y}" width="${cardW}" height="140" fill="${c.card}" stroke="${c.line}"/>`
-      + `<rect x="${x + 16}" y="${y + 20}" width="${cardW * 0.5}" height="14" fill="${c.block}"/>`
-      + `<rect x="${x + 16}" y="${y + 48}" width="${cardW * 0.8}" height="10" fill="${c.line}"/>`;
-  }).join('');
-  const flagRect = flag
-    ? `<rect x="${pad - 6}" y="20" width="${w - pad * 2 + 12}" height="64" fill="none" stroke="#d4736a" stroke-width="4"/>`
-    : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}">`
-    + `<rect width="${w}" height="${h}" fill="${c.bg}"/>`
-    + `<rect x="${pad}" y="32" width="${w * 0.45}" height="28" fill="${c.block}"/>`
-    + `<rect x="${w - pad - 60}" y="32" width="60" height="28" fill="#f4811f"/>`
-    + cards + flagRect + '</svg>';
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];
+
+export interface VisualReviewFixtureParams {
+  view: VisualReviewFixtureView;
+  phase: VisualReviewPhase;
+  options: VisualReviewFixtureOptions;
+  /** The deck opens on this cell. */
+  startKey: string | null;
+  compare: boolean;
 }
 
-const RUN = 'fixture-run-1';
+/** The compare view opens on the route the second round re-shot. */
+export const COMPARE_START_KEY = '/app/tasks/:id|mobile|';
 
-function shot(
-  id: string,
-  minute: number,
-  route: string,
-  viewport: 'mobile' | 'desktop',
-  verdict: 'ok' | 'issue' | 'unsure',
-  finding: string,
-  extra: { theme?: 'dark' | 'light'; fixTaskId?: string; src?: string } = {},
-): VisualShot {
-  const theme = extra.theme ?? 'dark';
-  return {
-    id,
-    createdAt: `2026-03-10T10:${String(minute).padStart(2, '0')}:00.000Z`,
-    src: extra.src ?? sketch(viewport, theme, verdict === 'issue'),
-    qa: {
-      runKey: RUN,
-      route,
-      viewport,
-      finding,
-      verdict,
-      theme,
-      ...(extra.fixTaskId ? { fixTaskId: extra.fixTaskId } : {}),
-    },
-  };
+/** Pure: `?view=&phase=&reason=&expired=` to what the page renders. Unknown values fall back. */
+export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReviewFixtureParams {
+  const viewParam = q.get('view');
+  const view: VisualReviewFixtureView = (VISUAL_REVIEW_FIXTURE_VIEWS as readonly string[]).includes(viewParam ?? '')
+    ? (viewParam as VisualReviewFixtureView)
+    : 'tray';
+  const phaseParam = q.get('phase');
+  const reasonParam = q.get('reason');
+  const reason = (REASONS as readonly string[]).includes(reasonParam ?? '') ? (reasonParam as VisualReviewNeedsYouReason) : undefined;
+  const expired = q.get('expired') === '1';
+  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare';
+
+  if (view === 'reviewed') {
+    return { view, phase: 'reviewed', options: { expired }, startKey: null, compare: false };
+  }
+  if (deckLike) {
+    // The two-round working set with mixed human reviews.
+    return {
+      view,
+      phase: 'needs_you',
+      options: { needsYou: 'unsure', scenario: 'deck', expired },
+      startKey: view === 'compare' ? COMPARE_START_KEY : null,
+      compare: view === 'compare',
+    };
+  }
+  const phase = (VISUAL_REVIEW_PHASES as readonly string[]).includes(phaseParam ?? '') ? (phaseParam as VisualReviewPhase) : 'needs_you';
+  const options: VisualReviewFixtureOptions = { expired };
+  if (phase === 'needs_you') {
+    options.needsYou = reason ?? 'unsure';
+    if (options.needsYou === 'unsure') options.scenario = 'deck';
+  }
+  return { view, phase, options, startKey: null, compare: false };
 }
 
-export const visualReviewFixtureShots: readonly VisualShot[] = [
-  shot('fx-1', 1, '/app/tasks', 'mobile', 'issue', 'The header wraps onto two lines and pushes the status badge off-screen.', { fixTaskId: 'fixture-fix-1' }),
-  shot('fx-2', 2, '/app/tasks', 'desktop', 'ok', 'Header and list render in one row; nothing clipped.'),
-  shot('fx-3', 3, '/app/tasks/:id', 'mobile', 'unsure', 'The retry button sits under the fold; unclear whether that is intended.'),
-  shot('fx-4', 4, '/app/tasks/:id', 'desktop', 'ok', 'Detail panel and timeline align.', { theme: 'light' }),
-  shot('fx-5', 5, '/app/missions', 'mobile', 'ok', 'Cards stack cleanly at 390px.'),
-  shot('fx-6', 6, '/app/missions', 'desktop', 'issue', 'The empty state overlaps the filter bar.', { fixTaskId: 'fixture-fix-2' }),
-  shot('fx-7', 7, '/app/missions/:id', 'mobile', 'ok', 'Delivery line wraps between steps, not mid-step.', { src: '/dev-fixtures/expired-shot.png' }),
-  shot('fx-8', 8, '/app/missions/:id', 'desktop', 'ok', 'Delivery block and task list render as expected.'),
-];
+/** The fixture links the page shows: every phase, then the deck and board views. */
+export function visualReviewFixtureLinks(): { label: string; href: string }[] {
+  const base = `?state=${VISUAL_REVIEW_FIXTURE_STATE}`;
+  return [
+    ...VISUAL_REVIEW_PHASES.filter(p => p !== 'needs_you').map(p => ({ label: p, href: `${base}&phase=${p}` })),
+    ...REASONS.map(r => ({ label: `needs_you: ${r}`, href: `${base}&phase=needs_you&reason=${r}` })),
+    { label: 'board', href: `${base}&view=board` },
+    { label: 'deck', href: `${base}&view=deck` },
+    { label: 'deck-phone', href: `${base}&view=deck-phone` },
+    { label: 'compare', href: `${base}&view=compare` },
+    { label: 'reviewed', href: `${base}&view=reviewed` },
+    { label: 'expired', href: `${base}&view=deck-phone&expired=1` },
+  ];
+}

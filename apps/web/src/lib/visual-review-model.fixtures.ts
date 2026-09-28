@@ -101,6 +101,20 @@ const ROUND_2: VisualReviewShotRow[] = [
   shotRow('fixture-shot-08', 'fixture-w2', 'fixture-audit-2', 100, '/app/tasks/:id', 'mobile', 'ok', 'Resolved: the title now truncates with an ellipsis.'),
 ];
 
+/** The deck scenario's second issue: a round-1 finding whose fix is still open. */
+const DECK_EXTRA: VisualReviewShotRow[] = [
+  shotRow('fixture-shot-09', 'fixture-w1', 'fixture-audit-1', 9, '/app/settings', 'desktop', 'issue', 'The save bar covers the last settings row at 1280px.', 'fixture-fix-2'),
+];
+
+const openFixTask = (): VisualReviewTaskInput => ({
+  id: 'fixture-fix-2',
+  title: '[surface fix] /app/settings: The save bar covers the last settings row at 1280px.',
+  status: 'in_progress',
+  createdAt: at(20),
+  updatedAt: at(120),
+  workers: [{ id: 'fixture-wf2', status: 'running', startedAt: at(118), prUrl: 'https://example.test/pulls/2', prNumber: 2, mergedAt: null }],
+});
+
 const fixTask = (status: string, merged = false): VisualReviewTaskInput => ({
   id: 'fixture-fix-1',
   title: '[surface fix] /app/tasks/:id: Header title overflows the viewport by about 40px.',
@@ -136,7 +150,7 @@ function review(artifactId: string, route: string, viewport: Viewport, agentVerd
   };
 }
 
-function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason = 'unsure'): BuildVisualReviewInput {
+function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason = 'unsure', scenario?: VisualReviewFixtureScenario): BuildVisualReviewInput {
   const base = { missionId: 'fixture-mission', now: VISUAL_REVIEW_FIXTURE_NOW, requiredRoutesOf: () => ['/app/tasks', '/app/tasks/:id', '/app/missions/:id', '/app/settings'] };
   const waived = review('fixture-shot-05', '/app/missions/:id', 'mobile', 'unsure', {});
   switch (phase) {
@@ -170,6 +184,21 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
     case 'failed':
       return { ...base, shots: [], tasks: [buildTask('completed'), auditTask('fixture-audit-1', 1, 'failed', 'fixture-w1', { errorType: 'max_turns' })] };
     case 'needs_you':
+      if (scenario === 'deck' && reason === 'unsure') {
+        // Two rounds with mixed human reviews: the review deck's working set.
+        return {
+          ...base,
+          shots: [...ROUND_1, ...DECK_EXTRA, ...ROUND_2],
+          tasks: [
+            buildTask('completed'),
+            auditTask('fixture-audit-1', 1, 'completed', 'fixture-w1'),
+            auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
+            fixTask('completed', true),
+            openFixTask(),
+          ],
+          reviews: [review('fixture-shot-01', '/app/tasks', 'mobile', 'ok', { relation: 'agree', createdAt: at(140) })],
+        };
+      }
       if (reason === 'question') {
         return {
           ...base, shots: ROUND_1.slice(0, 2),
@@ -223,16 +252,24 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
 }
 
 /**
- * The fixture model for `phase`, with every image an SVG sketch data URL (an
- * `issue` shot gets a red outline). Pass `{ expired: true }` to point one
- * shot at a path that does not exist, for the expired-tile state. For
- * `needs_you`, `needsYou` picks the reason (default `unsure`).
+ * `deck`: two rounds with mixed human reviews, an unsure cell, an issue whose
+ * fix is still open and a fixed route to compare (phase `needs_you`).
  */
-export function buildVisualReviewFixtureModel(
-  phase: VisualReviewPhase,
-  opts: { expired?: boolean; needsYou?: VisualReviewNeedsYouReason } = {},
-): VisualReviewModel {
-  const model = buildVisualReviewModel(inputFor(phase, opts.needsYou));
+export type VisualReviewFixtureScenario = 'deck';
+
+export interface VisualReviewFixtureOptions {
+  expired?: boolean;
+  needsYou?: VisualReviewNeedsYouReason;
+  scenario?: VisualReviewFixtureScenario;
+}
+
+/** The model input behind a fixture, for a fixture transport that rebuilds it after a decision. */
+export function visualReviewFixtureInput(phase: VisualReviewPhase, opts: VisualReviewFixtureOptions = {}): BuildVisualReviewInput {
+  return inputFor(phase, opts.needsYou, opts.scenario);
+}
+
+/** Point every image of a built model at an SVG sketch (an `issue` shot gets a red outline). */
+export function withFixtureImages(model: VisualReviewModel, opts: { expired?: boolean } = {}): VisualReviewModel {
   let first = true;
   const cells = model.cells.map(cell => ({
     ...cell,
@@ -243,4 +280,15 @@ export function buildVisualReviewFixtureModel(
     }),
   })).map(cell => ({ ...cell, current: cell.history[cell.history.length - 1] }));
   return { ...model, cells };
+}
+
+/**
+ * The fixture model for `phase`, with every image an SVG sketch data URL (an
+ * `issue` shot gets a red outline). Pass `{ expired: true }` to point one
+ * shot at a path that does not exist, for the expired-tile state. For
+ * `needs_you`, `needsYou` picks the reason (default `unsure`), and
+ * `scenario: 'deck'` the two-round review set.
+ */
+export function buildVisualReviewFixtureModel(phase: VisualReviewPhase, opts: VisualReviewFixtureOptions = {}): VisualReviewModel {
+  return withFixtureImages(buildVisualReviewModel(visualReviewFixtureInput(phase, opts)), opts);
 }
