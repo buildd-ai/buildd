@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.243.2",
+  "version": "0.243.3",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -17,6 +17,7 @@
     "./model-aliases": "./model-aliases.ts",
     "./model-catalog": "./model-catalog.ts",
     "./model-catalog-cache": "./model-catalog-cache.ts",
+    "./chat-model-eligibility": "./chat-model-eligibility.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",

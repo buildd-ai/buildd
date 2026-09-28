@@ -30,6 +30,7 @@ function makeDeps(over: Partial<PlanDeps> = {}) {
     defaultWorkspaceId: async () => null,
     resolveEntry: async (tier, teamId, ws) => { calls.resolveEntry.push([tier, teamId, ws]); return REGISTRY[tier]; },
     drawPoolArm: async (args) => { calls.drawPoolArm.push(args); return null; },
+    chatCatalog: async () => [],
     price: async (_p, model) => {
       const [input, output] = PRICES[model] ?? [3, 15];
       return { input, output, cacheRead: input / 10, cacheWrite: input * 1.25 };
@@ -165,6 +166,32 @@ describe('POST /api/ai/plan — the plan', () => {
     expect(saved[0]).toMatchObject({ poolId: 'pool-1', armId: 'arm-2', source: 'pool' });
     // The plan id is the draw unit, and a workspace-row tier reports the override.
     expect(calls.drawPoolArm[0]).toMatchObject({ teamId: 'team-a', tier: 'standard', planId: 'plan-1', workspaceOverride: true, now: NOW });
+  });
+
+  it('a chat plan never serves a challenger that cannot call tools: the incumbent, no pool link', async () => {
+    const arm: PoolArmPick = { poolId: 'pool-1', armId: 'arm-2', route: 'openrouter', model: 'aion-labs/aion-3.5-mini', role: 'challenger' };
+    const { deps, saved } = makeDeps({ drawPoolArm: async (a) => (a.tier === 'standard' ? arm : null) });
+    const body = await (await handlePlanRequest(req(BODY), deps)).json();
+    expect(body).toMatchObject({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5', source: 'registry' });
+    expect(saved[0]).toMatchObject({ armId: null, model: 'anthropic/claude-sonnet-5' });
+  });
+
+  it('a chat plan replaces a registry pick missing from the tool-capable catalog with the tier default', async () => {
+    const { deps } = makeDeps({
+      resolveEntry: async (tier) => (tier === 'standard' ? { provider: 'openrouter', model: 'vendor/no-tools', source: 'team' } : REGISTRY[tier]),
+      chatCatalog: async () => [{ openRouterId: 'anthropic/claude-sonnet-5', permaslug: 'anthropic/claude-sonnet-5' }] as never,
+    });
+    const body = await (await handlePlanRequest(req(BODY), deps)).json();
+    expect(body).toMatchObject({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5', source: 'default' });
+  });
+
+  it('an inference plan skips the chat check', async () => {
+    let asked = 0;
+    const arm: PoolArmPick = { poolId: 'pool-1', armId: 'arm-2', route: 'openrouter', model: 'aion-labs/aion-3.5-mini', role: 'challenger' };
+    const { deps } = makeDeps({ drawPoolArm: async (a) => (a.tier === 'standard' ? arm : null), chatCatalog: async () => { asked++; return []; } });
+    const body = await (await handlePlanRequest(req({ ...BODY, surface: 'inference' }), deps)).json();
+    expect(body).toMatchObject({ model: 'aion-labs/aion-3.5-mini', source: 'pool' });
+    expect(asked).toBe(0);
   });
 
   it('500s when the plan cannot be stored, so the kit falls back', async () => {
