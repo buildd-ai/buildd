@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { processLinearWebhook } from './route';
+import { NextRequest } from 'next/server';
+import { processLinearWebhook, POST } from './route';
 
 // DI core test — NO mock.module. All boundaries are injected, so this file leaks
 // nothing into sibling test files (the bun mock.module global-leak class).
@@ -96,6 +97,18 @@ describe('processLinearWebhook', () => {
       },
     );
     expect(res.status).toBe(401);
+  });
+
+  it('POST returns 404 for a non-UUID workspaceId without reaching processLinearWebhook\'s db lookup', async () => {
+    const req = new NextRequest('http://localhost/api/webhooks/linear/not-a-uuid', {
+      method: 'POST',
+      headers: { 'linear-signature': 'sig' },
+      body: validBody,
+    });
+    const res = await POST(req, { params: Promise.resolve({ workspaceId: 'not-a-uuid' }) });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe('Unknown workspace');
   });
 
   it('400 on an unparseable body', async () => {

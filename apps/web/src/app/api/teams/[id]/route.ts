@@ -6,6 +6,7 @@ import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
+import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 
 type TeamRole = 'owner' | 'admin' | 'member';
@@ -47,6 +48,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid team id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const principal = await getRequestPrincipal(req);
   if (!principal) {
@@ -136,6 +140,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid team id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const session = await requireSessionUser(req);
   if (session.response) return session.response;
@@ -269,6 +276,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid team id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const session = await requireSessionUser(req);
   if (session.response) return session.response;

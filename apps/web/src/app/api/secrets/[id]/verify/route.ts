@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { verifyClaudeCredential } from '@/lib/claude-credential';
 import { getCodexSecretId, verifyCodexCredential } from '@/lib/codex-credential';
+import { isUuid } from '@/lib/uuid';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -14,6 +15,9 @@ type RouteContext = { params: Promise<{ id: string }> };
 // Supports: oauth_token, anthropic_api_key (Claude) and codex_credential (Codex).
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid secret id: expected a UUID, got "${id}".` }, { status: 404 });
+  }
 
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
