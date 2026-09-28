@@ -7,8 +7,7 @@
  * mission's Pusher channels.
  */
 import Link from 'next/link';
-import { useState, type ComponentProps } from 'react';
-import type { VisualReviewModel } from '@buildd/shared';
+import { useState } from 'react';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
@@ -155,17 +154,6 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
   );
 }
 
-/**
- * Whether MissionBoard / MissionLanes take `visual: VisualReviewModel` and
- * `reviewLayout` yet (visual-review slice S4, built in parallel). Before S4
- * their `visual` is the legacy `{ shots, taskId }` run and would throw on the
- * model, so nothing is passed. The literal must match the type: the day S4
- * lands this line stops compiling until it reads `true`.
- */
-type BoardVisualProp = NonNullable<ComponentProps<typeof MissionBoard>['visual']>;
-type BoardTakesReviewModel = [VisualReviewModel] extends [BoardVisualProp] ? true : false;
-const BOARD_TAKES_REVIEW_MODEL: BoardTakesReviewModel = false;
-
 /** The docked pane / phone sheet: the mission board itself. */
 export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: BuilddObjectRef; view: MissionObjectView; variant?: 'pane' | 'sheet' }) {
   const store = useObjectStore();
@@ -174,11 +162,10 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
   const tone = missionTone(view.stateLabel, view.status);
   const link = { missionId: view.id, from: null, initiativeId: null };
   const visual = view.visual ?? null;
-  // The shared Board / Lanes contract (visual-review slice S4): they take the
-  // model and wire review themselves; inside the chat's pane and sheet the
-  // deck renders inline, never as a Dialog over the BottomSheet. Passed only
-  // once the Board takes the model (see BOARD_TAKES_REVIEW_MODEL).
-  const boardVisual: Record<string, unknown> = BOARD_TAKES_REVIEW_MODEL ? { visual, reviewLayout: 'sheet' } : {};
+  // Board / Lanes take the model and wire review themselves; inside the
+  // chat's pane and sheet the deck renders inline, never as a Dialog over the
+  // BottomSheet.
+  const boardVisual = { visual, reviewLayout: 'sheet' as const };
 
   // "Review" on the card or the pinned strip: the deck takes the pane (desktop)
   // or the sheet (phone) until it is closed.
