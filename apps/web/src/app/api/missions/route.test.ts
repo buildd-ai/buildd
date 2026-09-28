@@ -120,6 +120,7 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ args, type: 'or' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -869,6 +870,21 @@ describe('GET /api/missions', () => {
     expect(body.missions).toEqual([]);
     // Must not have queried with the foreign team
     expect(mockMissionsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('status=open lists every mission not completed or archived, and limit caps the query', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?status=open&limit=15'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    // drizzle-orm is mocked in this file: `and` returns its predicates as an array.
+    expect(args.where).toContainEqual({ field: undefined, values: ['completed', 'archived'], type: 'notInArray' });
+    expect(args.limit).toBe(15);
+  });
+
+  it('no status and no limit: every mission, unbounded, as before (the dashboard relies on it)', async () => {
+    await GET(new NextRequest('http://localhost/api/missions'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.limit).toBeUndefined();
+    expect(args.where.type).toBe('inArray');
   });
 
   it('returns null deferral fields when schedule has no deferral', async () => {

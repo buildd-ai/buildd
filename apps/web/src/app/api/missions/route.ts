@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { missions, workspaces, taskSchedules, initiatives, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveBranchStrategy, isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { generateMissionBranchName } from '@buildd/core/branch-names';
-import { eq, and, inArray, desc } from 'drizzle-orm';
+import { eq, and, inArray, notInArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
@@ -58,9 +58,16 @@ export async function GET(req: NextRequest) {
     }
 
     let where = inArray(missions.teamId, scopedTeamIds);
-    if (statusFilter) {
+    if (statusFilter === 'open') {
+      // Everything still in play: the list an agent means by "my missions".
+      where = and(where, notInArray(missions.status, ['completed', 'archived']))!;
+    } else if (statusFilter) {
       where = and(where, eq(missions.status, statusFilter as any))!;
     }
+    // Opt-in cap: every mission carries all its tasks, so an unbounded list
+    // grows with the team's whole history. Unset keeps the dashboard's full list.
+    const limitParam = Number(searchParams.get('limit'));
+    const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : undefined;
     if (workspaceIdFilter) {
       where = and(where, eq(missions.workspaceId, workspaceIdFilter))!;
     }
@@ -68,6 +75,7 @@ export async function GET(req: NextRequest) {
     const results = await db.query.missions.findMany({
       where,
       orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
+      ...(limit ? { limit } : {}),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {

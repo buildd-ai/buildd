@@ -89,6 +89,8 @@ describe('/api/chat/[id]', () => {
     expect(turnCalls[0].body).toEqual(body);
     expect(await turnCalls[0].deps.actionContext.getLevel()).toBe('admin');
     expect(turnCalls[0].deps.actionContext.authType).toBe('oauth');
+    // A person, not a worker: worker-directed hints are left out of tool text.
+    expect(turnCalls[0].deps.actionContext.surface).toBe('chat');
   });
 
   it('POST wires the team\'s budget settings into the limit check', async () => {
