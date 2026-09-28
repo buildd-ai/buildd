@@ -55,6 +55,9 @@ mock.module('../db/client', () => ({
   },
 }));
 
+let catalog: any[] = [];
+mock.module('../model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => catalog, _resetCatalogCache() {} }));
+
 const src = await import('../tier-pool-source');
 
 const dialect = new PgDialect();
@@ -95,6 +98,7 @@ beforeEach(() => {
   fake.inserted = [];
   fake.conflictTargets = [];
   fake.throwOnSelect = false;
+  catalog = [];
   src.invalidateTierPoolCache();
 });
 
@@ -233,6 +237,24 @@ describe('drawChatPoolArm', () => {
     const d = await src.drawChatPoolArm(chatArgs({ previous: { id: 'm0', tier: 'standard', createdAt: new Date(now.getTime() - 60_000) } }));
     expect(d).toMatchObject({ source: 'chain', propensity: 0.2 });
     expect(d!.arm.id).toBe(CH);
+  });
+
+  it('a challenger that cannot serve chat is never served: null, so the incumbent', async () => {
+    // Not in the tool-capable catalog.
+    catalog = [{ openRouterId: 'vendor/other-model', permaslug: 'vendor/other-model' }];
+    expect(await src.drawChatPoolArm(chatArgs())).toBeNull();
+    // Lists tools, but named as not calling them: excluded even with no catalog, and on a continued chain.
+    catalog = [];
+    fake.arms = arms().map(a => ({ ...a, route: 'openrouter', model: a.role === 'challenger' ? 'aion-labs/aion-3.5-mini' : a.model }));
+    src.invalidateTierPoolCache();
+    expect(await src.drawChatPoolArm(chatArgs())).toBeNull();
+    fake.priors = [{ armId: CH, propensity: 0.2 }];
+    expect(await src.drawChatPoolArm(chatArgs({ previous: { id: 'm0', tier: 'standard', createdAt: new Date(now.getTime() - 60_000) } }))).toBeNull();
+  });
+
+  it('a chat-capable challenger in the catalog is still drawn', async () => {
+    catalog = [{ openRouterId: 'claude-opus-5', permaslug: 'claude-opus-5' }];
+    expect((await src.drawChatPoolArm(chatArgs()))!.arm.id).toBe(CH);
   });
 
   it('a sensitive workspace is never enrolled', async () => {

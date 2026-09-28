@@ -29,6 +29,8 @@ import {
   type PriorPoolAssignment,
 } from './tier-pool';
 import { DEFAULT_MAX_BUDGET_PRESSURE } from './model-routing-experiment';
+import { getCachedOpenRouterCatalog } from './model-catalog-cache';
+import { chatModelVerdict } from './chat-model-eligibility';
 
 // ── Pool lookup (cached) ────────────────────────────────────────────────────
 
@@ -394,6 +396,8 @@ export function chatPreviousScope(experimentId: string, messageId: string) {
 /**
  * The arm this chat turn runs on, or null to serve the incumbent as today.
  * A turn that continues a chain reuses the chain's arm; otherwise it draws.
+ * A challenger that can't serve chat (no tool calling, or listed tools it
+ * doesn't call: `chatModelVerdict`) is never served: null, so the incumbent.
  */
 export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw | null> {
   try {
@@ -445,6 +449,13 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     }
     const arm = pool.arms.find(a => a.id === armId);
     if (!arm) return null;
+    if (arm.role === 'challenger') {
+      const verdict = chatModelVerdict(arm.route, arm.model, await getCachedOpenRouterCatalog());
+      if (!verdict.ok) {
+        console.warn(`[tier-pool] chat arm ${arm.id} is not chat-capable (${verdict.reason}); serving the incumbent`);
+        return null;
+      }
+    }
     return {
       poolId: pool.id, experimentId: pool.experimentId, policyVersion: pool.policyVersion,
       allocationVersion: pool.allocationVersion, arm, propensity, conversationId: args.conversationId,
