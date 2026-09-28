@@ -260,6 +260,67 @@ function writeLedger(
   }
 }
 
+// ── Relevance shadow ─────────────────────────────────────────────────────────
+
+/**
+ * One pushed retrieval, as the relevance shadow sees it: the task text the
+ * query was built from and the hits the agent was shown. The shadow asks Jev
+ * "does this memory change what the agent should do on this task?" per hit
+ * and logs the verdict next to the rule's (see ./memory-decisions). It never
+ * changes a result: the hook runs after the ledger rows are built, is not
+ * awaited, and anything it throws is swallowed.
+ */
+export interface MemoryRelevanceShadowInput {
+  teamId: string;
+  workspaceId: string | null;
+  taskId: string;
+  caller: MemoryCaller;
+  query: string;
+  hits: Array<{ memoryId: string; rank: number; score: number | null; gatedBy: MemoryGate | null; content: string }>;
+}
+
+/** Must not throw and must not be awaited; schedule the work after the response. */
+export type MemoryRelevanceShadow = (input: MemoryRelevanceShadowInput) => void;
+
+let relevanceShadow: MemoryRelevanceShadow | null = null;
+
+/**
+ * Install (or clear, with null) the relevance shadow, returning the previous
+ * one. The web app installs one; the runner and tests run without.
+ */
+export function setMemoryRelevanceShadow(hook: MemoryRelevanceShadow | null): MemoryRelevanceShadow | null {
+  const previous = relevanceShadow;
+  relevanceShadow = hook;
+  return previous;
+}
+
+/** Pushes only, attributed to a task, shown hits only. */
+function shadowRelevance(
+  input: RetrieveMemoryInput,
+  teamId: string,
+  hits: readonly RetrievedMemoryHit[],
+): void {
+  const hook = relevanceShadow;
+  if (!hook || MEMORY_CALLER_VIA[input.caller] !== 'push') return;
+  const taskId = uuidOrNull(input.attribution?.taskId);
+  const team = uuidOrNull(teamId);
+  if (!taskId || !team) return;
+  const shown = hits.filter(h => !h.gated);
+  if (shown.length === 0) return;
+  try {
+    hook({
+      teamId: team,
+      workspaceId: uuidOrNull(input.scope.workspaceId),
+      taskId,
+      caller: input.caller,
+      query: input.query,
+      hits: shown.map(h => ({ memoryId: h.memoryId, rank: h.rank, score: h.score, gatedBy: h.gatedBy, content: h.result.content })),
+    });
+  } catch {
+    // Shadow: nothing depends on it.
+  }
+}
+
 // ── Hybrid (knowledge store) retrieval ───────────────────────────────────────
 
 export interface MemoryRetrievalScope {
@@ -474,6 +535,7 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
         caller: input.caller,
         attribution: input.attribution,
       }));
+      shadowRelevance(input, teamId, final);
     };
     if (!input.deferLedger) commitLedger();
 

@@ -1422,6 +1422,13 @@
       "when": 1790573142307,
       "tag": "0205_bored_moira_mactaggert",
       "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1790573955805,
+      "tag": "0206_smart_cammi",
+      "breakpoints": true
     }
   ]
 }

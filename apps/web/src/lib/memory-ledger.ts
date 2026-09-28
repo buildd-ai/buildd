@@ -9,6 +9,11 @@
  */
 import { after } from 'next/server';
 import { writeMemoryUses, type MemoryLedgerWriter } from '@buildd/core/memory-retrieval';
+import { installMemoryRelevanceShadow } from './memory-decisions';
+
+// Every web read path loads this module, so the relevance shadow (log-only
+// Jev verdicts on pushed hits, run after the response) is installed here.
+installMemoryRelevanceShadow();
 
 export function createAfterResponseMemoryLedger(
   schedule: (task: () => Promise<void>) => void = after,

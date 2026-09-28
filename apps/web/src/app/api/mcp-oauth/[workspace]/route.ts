@@ -44,6 +44,7 @@ import {
   type ActionContext,
 } from '@buildd/core/mcp-tools';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { memoryDeciderFor } from '@/lib/memory-decisions';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
@@ -117,6 +118,8 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
     // Memory reads record their use after the response, not in a promise
     // the platform may freeze.
     memoryLedger: afterResponseMemoryLedger,
+    // Jev keep/type/update on memory writes; fails open to today's rules.
+    memoryDecider: memoryDeciderFor(null),
     workspaceId,
     teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,

@@ -167,6 +167,9 @@ export interface ActionContext {
   // after()-backed writer so the write outlives the response; omitted, reads
   // fire and forget.
   memoryLedger?: MemoryLedgerWriter;
+  // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
+  // web routes inject one; omitted (the runner), learn keeps today's rules.
+  memoryDecider?: MemoryDecider;
 }
 
 export type ToolResult = {
@@ -5470,6 +5473,15 @@ import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
 import { retrieveMemory, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
+import {
+  fallbackLearnJudgement,
+  FALLBACK_UPDATE_JUDGEMENT,
+  KEEP_NOT_DURABLE_TAG,
+  type LearnJudgement,
+  type MemoryDecider,
+  type MemoryDecisionType,
+  type UpdateJudgement,
+} from './memory-decisions';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -5605,7 +5617,32 @@ type MemoryActionCtx = {
   isSensitive?: boolean;
   /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
   memoryLedger?: MemoryLedgerWriter;
+  /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
+  memoryDecider?: MemoryDecider;
 };
+
+/**
+ * Start the keep/type judgement for a write. Bounded by the decider's own
+ * deadline (5s) and never rejects; no decider, no team or a sensitive
+ * workspace is today's behaviour.
+ */
+function judgeMemoryWrite(ctx: MemoryActionCtx, title: string, content: string, type: MemoryDecisionType): Promise<LearnJudgement> {
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return Promise.resolve(fallbackLearnJudgement(type));
+  return ctx.memoryDecider
+    .judgeLearn({ scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null }, title, content, type })
+    .catch(() => fallbackLearnJudgement(type));
+}
+
+/** Reply suffix for what the keep/type decisions changed. Empty when nothing did. */
+function learnJudgementNote(j: LearnJudgement): string {
+  const parts: string[] = [];
+  if (j.type.overridden) parts.push(`type set to ${j.type.type}`);
+  if (j.keep.flag) parts.push(`tagged ${KEEP_NOT_DURABLE_TAG}: reads as a task summary, not a durable lesson`);
+  return parts.length ? ` | ${parts.join(' | ')}` : '';
+}
+
+const unionStrings = (...lists: Array<readonly string[] | null | undefined>): string[] =>
+  [...new Set(lists.flatMap(l => l ?? []).filter((v): v is string => typeof v === 'string'))];
 
 // ── Memory project scoping ───────────────────────────────────────────────────
 //
@@ -6042,15 +6079,24 @@ export async function handleLearnAction(
   const supersedesParam = parseSupersedesParam(params.supersedes);
   if (supersedesParam.error) return errorResult(supersedesParam.error);
 
+  const title = params.title as string;
+  const content = params.content as string;
+  const callerType = params.type as MemoryDecisionType;
+  // Jev's keep/type judgement runs alongside the near-duplicate check, inside
+  // its own 5s deadline, and falls back to the caller's type on any failure.
+  const judging = judgeMemoryWrite(ctx, title, content, callerType);
+
   // Dedupe check — embed the candidate and compare cosine similarity against the
   // team memory namespace. Skip when the caller already supplied explicit supersedes
   // (they've resolved the conflict) or when the store lacks nearDupeCheck.
   const THRESH_AUTO     = 0.94;
   const THRESH_CONFLICT = 0.88;
+  // Set when Jev resolved the 0.88 to 0.94 band into a write (ADD or SUPERSEDE).
+  let bandDecision: UpdateJudgement | null = null;
 
   if (!supersedesParam.ids && ctx.teamId && ctx.knowledgeStore?.nearDupeCheck) {
     const ns = buildNamespace(ctx.teamId, 'memory');
-    const embedText = `${params.title as string}\n\n${params.content as string}`;
+    const embedText = `${title}\n\n${content}`;
     // The namespace is team-wide: over-fetch, then keep the caller's project, so
     // another workspace's memory is neither quoted back nor auto-superseded.
     const nearest = await ctx.knowledgeStore.nearDupeCheck(ns, embedText, memoryOverfetchTopK(5)).catch(() => []);
@@ -6064,15 +6110,57 @@ export async function handleLearnAction(
     } else {
       const conflicts = candidates.filter(c => c.similarity >= THRESH_CONFLICT);
       if (conflicts.length > 0) {
-        const list = conflicts
-          .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
-          .join('\n\n');
-        const ids = JSON.stringify(conflicts.map(c => c.id));
-        return text(
-          `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
-          `or modify the content to make the distinction clear.\n\n${list}\n\n` +
-          `To replace: re-call learn with supersedes: ${ids}`,
-        );
+        // The band: ask Jev whether this is new (ADD), a refinement (UPDATE),
+        // a replacement (SUPERSEDE) or a repeat (NOOP) of the closest match.
+        // Below its threshold (or on any failure) the reply is today's conflict.
+        const band = await resolveNearDuplicateBand(memoryClient, ctx, { title, content, type: callerType }, conflicts[0]);
+        if (band.action === 'SUPERSEDE') {
+          supersedesParam.ids = [conflicts[0].id];
+          bandDecision = band.judgement;
+        } else if (band.action === 'ADD') {
+          bandDecision = band.judgement;
+        } else if (band.action === 'NOOP' && band.existing) {
+          band.judgement.record(band.existing.id, true);
+          (await judging).record(null);
+          return text(
+            `Memory already recorded: "${band.existing.title}" (${band.existing.type})\nID: ${band.existing.id}` +
+            ` | nothing new to add (decision: NOOP). To replace it anyway, re-call learn with supersedes: ${JSON.stringify([band.existing.id])}`,
+          );
+        } else if (band.action === 'UPDATE' && band.existing) {
+          const existing = band.existing;
+          const judgement = await judging;
+          let updated: Awaited<ReturnType<typeof updateMemory>>;
+          try {
+            updated = await updateMemory(memoryClient, existing.id, {
+              title,
+              content,
+              tags: unionStrings(existing.tags, params.tags as string[] | undefined),
+              files: unionStrings(existing.files, params.files as string[] | undefined),
+            }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn' });
+          } catch (err) {
+            band.judgement.record(existing.id, false);
+            judgement.record(null);
+            throw err;
+          }
+          band.judgement.record(existing.id, true);
+          judgement.record(null);
+          return text(
+            `Memory updated: "${updated.memory.title}" (${updated.memory.type})\nID: ${updated.memory.id}` +
+            ` | merged into a near-duplicate (decision: UPDATE)`,
+          );
+        } else {
+          band.judgement.record(null, false);
+          (await judging).record(null);
+          const list = conflicts
+            .map(c => `- ID: ${c.id} (similarity: ${c.similarity.toFixed(3)})\n  ${c.content.slice(0, 200)}`)
+            .join('\n\n');
+          const ids = JSON.stringify(conflicts.map(c => c.id));
+          return text(
+            `Near-duplicate detected. Re-call with explicit \`supersedes\` to confirm replacement, ` +
+            `or modify the content to make the distinction clear.\n\n${list}\n\n` +
+            `To replace: re-call learn with supersedes: ${ids}`,
+          );
+        }
       }
     }
   }
@@ -6080,26 +6168,63 @@ export async function handleLearnAction(
   // Explicit ids are narrowed to the caller's own project before they reach the
   // team-wide index (auto-supersede ids above already were).
   const learnSupersedes = await ownSupersedes(memoryClient, ctx, supersedesParam.ids);
+  const judgement = await judging;
 
   // Saved and mirrored through the one write helper; a failed mirror is
-  // recorded there and picked up by the reconcile pass.
-  const saved = await saveMemory(memoryClient, {
-    type: params.type as string,
-    title: params.title as string,
-    content: params.content as string,
-    project: learnScope.project,
-    tags: params.tags as string[] | undefined,
-    files: params.files as string[] | undefined,
-    source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
-  }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: learnSupersedes });
+  // recorded there and picked up by the reconcile pass. A "not durable"
+  // verdict only adds a tag: nothing is dropped.
+  let saved: Awaited<ReturnType<typeof saveMemory>>;
+  try {
+    saved = await saveMemory(memoryClient, {
+      type: judgement.type.type,
+      title,
+      content,
+      project: learnScope.project,
+      tags: judgement.addTags.length ? unionStrings(params.tags as string[] | undefined, judgement.addTags) : params.tags as string[] | undefined,
+      files: params.files as string[] | undefined,
+      source: ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent',
+    }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'learn', supersedes: learnSupersedes });
+  } catch (err) {
+    judgement.record(null);
+    bandDecision?.record(null, false);
+    throw err;
+  }
+  judgement.record(saved.memory.id);
+  bandDecision?.record(saved.memory.id, true);
   const data = { memory: saved.memory };
   const learnSuperseded = saved.superseded;
 
   const supersededStr = supersedesParam.ids !== undefined
     ? ` | superseded: ${learnSuperseded}`
     : '';
-  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}`);
+  return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}${learnJudgementNote(judgement)}`);
 }
+
+/**
+ * Jev's verdict on the 0.88 to 0.94 near-duplicate band, against the closest
+ * match. The match came from `ownMemoryHits`, and the row is re-read here and
+ * re-checked as the caller's own before anything can act on it. No decider,
+ * no row, or a verdict below threshold: `action: null` (the conflict reply).
+ */
+async function resolveNearDuplicateBand(
+  mc: MemoryStore,
+  ctx: MemoryActionCtx,
+  incoming: { title: string; content: string; type: string },
+  match: { id: string; content: string },
+): Promise<{ action: UpdateJudgement['action']; judgement: UpdateJudgement; existing: MemoryRecordShape | null }> {
+  const none = { action: null, judgement: FALLBACK_UPDATE_JUDGEMENT, existing: null };
+  if (!ctx.memoryDecider || !ctx.teamId || ctx.isSensitive) return none;
+  const existing = await mc.get(match.id).then(r => r.memory as MemoryRecordShape).catch(() => null);
+  if (!existing || !isOwnMemory(existing, ctx)) return none;
+  const judgement = await ctx.memoryDecider.judgeUpdate({
+    scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId ?? null },
+    incoming,
+    existing: { id: existing.id, title: existing.title, content: existing.content || match.content, type: existing.type },
+  }).catch(() => FALLBACK_UPDATE_JUDGEMENT);
+  return { action: judgement.action, judgement, existing };
+}
+
+type MemoryRecordShape = { id: string; title: string; content: string; type: string; project?: string | null; tags?: string[]; files?: string[] };
 
 /** Log prefix for deprecated `buildd_memory` dispatches — grep prod logs for this. */
 export const BUILDD_MEMORY_DEPRECATION_TAG = '[buildd_memory-deprecated]';
@@ -6226,16 +6351,26 @@ export async function handleMemoryAction(
       const saveSupersedes = parseSupersedesParam(params.supersedes);
       if (saveSupersedes.error) throw new Error(saveSupersedes.error);
 
+      // Same keep/type judgement as learn (bounded, fails open to the caller's type).
+      const saveJudging = judgeMemoryWrite(ctx, params.title as string, params.content as string, params.type as MemoryDecisionType);
       const saveIds = await ownSupersedes(mc, ctx, saveSupersedes.ids);
-      const saved = await saveMemory(mc, {
-        type: params.type as string,
-        title: params.title as string,
-        content: params.content as string,
-        project: saveScope.project,
-        tags: params.tags as string[] | undefined,
-        files: params.files as string[] | undefined,
-        source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
-      }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveIds });
+      const saveJudgement = await saveJudging;
+      let saved: Awaited<ReturnType<typeof saveMemory>>;
+      try {
+        saved = await saveMemory(mc, {
+          type: saveJudgement.type.type,
+          title: params.title as string,
+          content: params.content as string,
+          project: saveScope.project,
+          tags: saveJudgement.addTags.length ? unionStrings(params.tags as string[] | undefined, saveJudgement.addTags) : params.tags as string[] | undefined,
+          files: params.files as string[] | undefined,
+          source: (params.source as string) || (ctx.workerId ? `worker:${ctx.workerId}` : 'mcp-agent'),
+        }, { teamId: ctx.teamId, knowledgeStore: ctx.teamId ? ctx.knowledgeStore : null, via: 'buildd_memory:save', supersedes: saveIds });
+      } catch (err) {
+        saveJudgement.record(null);
+        throw err;
+      }
+      saveJudgement.record(saved.memory.id);
       const data = { memory: saved.memory };
       const memSuperseded = saved.superseded;
 
@@ -6260,7 +6395,7 @@ export async function handleMemoryAction(
         ? ` | ${memEntityBinding.bound} entities bound${memEntityBinding.ambiguous.length > 0 ? `, ${memEntityBinding.ambiguous.length} ambiguous` : ''}`
         : '';
       const saveSupersededStr = saveSupersedes.ids !== undefined ? ` | superseded: ${memSuperseded}` : '';
-      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}`);
+      return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${bindingStr}${saveSupersededStr}${learnJudgementNote(saveJudgement)}`);
     }
 
     case 'get': {
