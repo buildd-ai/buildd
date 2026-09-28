@@ -58,6 +58,23 @@ export const CHAT_ROUTING_QUESTIONS = {
   } satisfies ChoiceQuestion<ToolGroup | 'general'>,
 };
 
+/**
+ * Asked only when the turn passes the conversation's auto title (see
+ * `retitle.ts`): has the conversation moved on from what its title names?
+ * Rides the routing call, so it costs a question, never a request.
+ */
+export const TITLE_TOPIC_QUESTION = {
+  type: 'choice',
+  instructions: {
+    question: 'Does the conversation title in `turn.title` still name what the latest message in `turn.message` is about?',
+    rule: 'Choose new_topic only when the message starts a clearly different subject. A follow-up, a detail, a thank-you or a next step on the same work is same_topic.',
+  },
+  criteria: {
+    same_topic: 'The message continues, narrows or follows up on the subject the title names, or is small talk.',
+    new_topic: 'The message is about a different mission, task, system or goal than the title names.',
+  },
+} satisfies ChoiceQuestion<'same_topic' | 'new_topic'>;
+
 /** Thresholds live next to the questions; retuning one is a reviewed change. */
 export const TIER_MIN_CONFIDENCE = 0.8;
 /** Only used to *withhold* write tools, so it's gated high. */
@@ -149,9 +166,11 @@ export interface TurnRoute {
   usage?: DecisionUsage;
   /** The workspace routing picked for an unpinned conversation, when confident. */
   workspaceId?: string;
+  /** The title-topic answer, ungated, when `title` was passed and the call answered it. */
+  topic?: { label: 'same_topic' | 'new_topic'; confidence: number };
 }
 
-type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string> };
+type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string>; topic?: typeof TITLE_TOPIC_QUESTION };
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
 
@@ -160,13 +179,19 @@ export async function routeTurn(
     teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string;
     /** Unpinned conversations: the in-reach workspaces to pick the turn's scope from. */
     workspaces?: readonly RoutableWorkspace[];
+    /** The conversation's auto title, to ask whether the conversation has moved on (`TITLE_TOPIC_QUESTION`). */
+    title?: string;
   },
   deps: { decide?: Decide } = {},
 ): Promise<TurnRoute> {
   const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
   const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
-  const questions: RoutingQuestions = ws ? { ...CHAT_ROUTING_QUESTIONS, workspace: ws.question } : CHAT_ROUTING_QUESTIONS;
+  const questions: RoutingQuestions = {
+    ...CHAT_ROUTING_QUESTIONS,
+    ...(ws ? { workspace: ws.question } : {}),
+    ...(input.title ? { topic: TITLE_TOPIC_QUESTION } : {}),
+  };
   let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
@@ -174,7 +199,7 @@ export async function routeTurn(
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
+      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000), ...(input.title ? { title: input.title } : {}) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
     });
@@ -190,6 +215,10 @@ export async function routeTurn(
   const wsAnswer = (res.answers as { workspace?: Parameters<typeof gateChoice>[0] }).workspace;
   const wsGate = ws && wsAnswer ? gateChoice(wsAnswer, WORKSPACE_MIN_CONFIDENCE) : null;
   const workspaceId = wsGate?.apply ? ws!.idFor.get(wsGate.label) : undefined;
+  const topicAnswer = input.title ? (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic : undefined;
+  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
+    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
+    : undefined;
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
     // Withhold the write tools only on a confident "not acting"; low
@@ -199,5 +228,6 @@ export async function routeTurn(
     source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
     ...(res.usage ? { usage: res.usage } : {}),
     ...(workspaceId ? { workspaceId } : {}),
+    ...(topic ? { topic } : {}),
   };
 }

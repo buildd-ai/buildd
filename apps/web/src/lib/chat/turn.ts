@@ -38,6 +38,7 @@ import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResu
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
 import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
+import { titleToCheck } from './retitle-policy';
 import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
 import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
 import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, isAllowlistedSelfOp, needsApproval, toolNamesForGroups, type ChatToolDeps } from './tools';
@@ -104,7 +105,10 @@ export interface TurnDeps {
   linkedMissionId?: () => Promise<string | null>;
   /** Scheduled after the response (Next `after()`); runs inline in tests. */
   later?: (fn: () => Promise<void>) => void;
-  autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }) => Promise<void>;
+  /** `about`: the object the chat was opened on (entry.about), whose name can be the title. */
+  autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }, about: { kind: 'mission' | 'task'; title: string } | null) => Promise<void>;
+  /** Routing answered the title-topic question this turn (chat/retitle.ts). */
+  retitle?: (conversation: ConversationRow, messages: UIMessage[], topic: NonNullable<TurnRoute['topic']>) => Promise<void>;
   /** Test seam: replace the streamText call. */
   streamTextImpl?: typeof streamText;
   /**
@@ -208,10 +212,12 @@ export async function runChatTurn(args: {
     });
   }
   const routable = args.workspace ? undefined : args.workspaces;
+  const checkTitle = text && deps.retitle ? titleToCheck(conv, stored.filter(m => m.role === 'user').length + 1) : null;
   const routePromise = text
     ? (deps.route ?? routeTurn)({
       teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
       ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
+      ...(checkTitle ? { title: checkTitle } : {}),
     })
     : null;
 
@@ -472,9 +478,18 @@ export async function runChatTurn(args: {
         await recordApprovalRequests({ conversationId: conv.id, messageId, userId: user.id, parts });
         await pingConversation(conv.id, 'message', messageId);
 
+        const later = deps.later ?? (fn => void fn());
+        const done = () => [...uiMessages, { ...responseMessage, parts } as UIMessage];
         if (!conv.title && message.role === 'user' && deps.autoTitle) {
-          const done = [...uiMessages, { ...responseMessage, parts } as UIMessage];
-          (deps.later ?? (fn => void fn()))(() => deps.autoTitle!(conv, done, resolved));
+          const about = entry?.about && docked?.kind === entry.about.kind && docked.id === entry.about.id
+            ? { kind: docked.kind, title: docked.title }
+            : null;
+          const messages = done();
+          later(() => deps.autoTitle!(conv, messages, resolved, about));
+        } else if (checkTitle && route.topic && deps.retitle) {
+          const messages = done();
+          const topic = route.topic;
+          later(() => deps.retitle!(conv, messages, topic));
         }
       } catch (e) {
         console.error(`[chat] failed to persist turn for conversation ${conv.id}:`, e);

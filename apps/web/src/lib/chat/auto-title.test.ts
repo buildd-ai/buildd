@@ -66,4 +66,12 @@ describe('autoTitleConversation', () => {
     expect(String(warn.mock.calls[0]?.[1])).toContain('no budget model: no_key');
     warn.mockRestore();
   });
+
+  it('a chat opened on a mission or task takes its name, without a model call', async () => {
+    let called = false;
+    const { saved, d } = deps(async () => { called = true; return { text: 'x' }; });
+    await autoTitleConversation(conv, msgs(long), 'u-1', { ...d, about: { kind: 'mission', title: 'Multi-currency invoices' } });
+    expect(saved).toEqual(['Multi-currency invoices']);
+    expect(called).toBe(false);
+  });
 });

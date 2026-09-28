@@ -75,7 +75,7 @@ const conversation = {
 } as any;
 const user = { id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' as const };
 
-function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any; directives?: any }) {
+function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: () => Promise<any>; route?: () => Promise<any>; api?: (method: string, path: string, body: any) => unknown; user?: typeof user; pool?: any; allowedGroups?: string[]; conversation?: Record<string, unknown>; workspace?: { id: string; name: string } | null; workspaces?: Array<{ id: string; name: string }>; scopeFor?: (id: string) => any; directives?: any; extraDeps?: Record<string, unknown> }) {
   const apiCalls: string[] = [];
   const resolveCalls: any[] = [];
   const poolRecords: Array<{ draw: any; messageId: string }> = [];
@@ -111,6 +111,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     linkMission: async (id: string) => { linked.push(id); },
     ...(opts.scopeFor ? { scopeFor: opts.scopeFor } : {}),
     ...(opts.directives ? { directives: opts.directives } : {}),
+    ...(opts.extraDeps ?? {}),
   };
   const turn = async (message: any, extra: Record<string, unknown> = {}) => {
     const res = await runChatTurn({ conversation: { ...conversation, ...(opts.conversation ?? {}) }, workspace: opts.workspace === undefined ? { id: 'ws-1', name: 'billing-web' } : opts.workspace, workspaces: opts.workspaces, user: opts.user ?? user, body: { message, ...extra } as any, deps });
@@ -890,3 +891,64 @@ describe('workspace scope: all workspaces by default, routed per turn', () => {
     expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('all workspaces in reach');
   });
 });
+
+describe('titles: the docked object, and the re-title question', () => {
+  const M = '11111111-1111-4111-8111-111111111111';
+  const seed = (n: number) => {
+    for (let i = 0; i < n; i++) {
+      messages.push({ id: `u${i}`, conversationId: 'conv-1', role: 'user', parts: [{ type: 'text', text: `q${i}` }], createdAt: new Date() } as any);
+      messages.push({ id: `a${i}`, conversationId: 'conv-1', role: 'assistant', parts: [{ type: 'text', text: `a${i}` }], createdAt: new Date() } as any);
+    }
+  };
+
+  it('the first turn of a chat opened on a mission hands its name to autoTitle', async () => {
+    const titled: any[] = [];
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model,
+      api: (_m, path) => (path === `/api/missions/${M}` ? { id: M, title: 'Multi-currency invoices', status: 'active', workspaceId: 'ws-1', tasks: [] } : { tasks: [] }),
+      extraDeps: { autoTitle: async (_c: any, _m: any, _r: any, about: any) => { titled.push(about); } },
+    });
+    await turn(userMsg('how is this going?'), { entry: { about: { kind: 'mission', id: M } } });
+    expect(titled).toEqual([{ kind: 'mission', title: 'Multi-currency invoices' }]);
+  });
+
+  it('no entry ⇒ autoTitle gets no object', async () => {
+    const titled: any[] = [];
+    const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), extraDeps: { autoTitle: async (_c: any, _m: any, _r: any, about: any) => { titled.push(about); } } });
+    await turn(userMsg('hi there'));
+    expect(titled).toEqual([null]);
+  });
+
+  it('every third user turn of an auto-titled chat asks routing about the title and hands the answer on', async () => {
+    const routed: any[] = [];
+    const verdicts: any[] = [];
+    const topic = { label: 'new_topic', confidence: 0.95 };
+    const opts = {
+      conversation: { title: 'Release status', titleSource: 'auto' },
+      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'decision', topic }; },
+      extraDeps: { retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push({ t, n: msgs.length }); } },
+    };
+    seed(2);
+    await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('different subject now'));
+    expect(routed[0].title).toBe('Release status');
+    expect(verdicts).toEqual([{ t: topic, n: 6 }]);
+
+    await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('fourth turn'));
+    expect(routed[1].title).toBeUndefined();
+    expect(verdicts).toHaveLength(1);
+  });
+
+  it('a title the person set is never asked about', async () => {
+    const routed: any[] = [];
+    seed(2);
+    await harness({
+      model: new MockLanguageModelV4({ doStream: textStream('ok') as any }),
+      conversation: { title: 'Mine', titleSource: 'user' },
+      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: { retitle: async () => {} },
+    }).turn(userMsg('third'));
+    expect(routed[0].title).toBeUndefined();
+  });
+});
+
