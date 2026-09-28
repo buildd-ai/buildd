@@ -984,9 +984,9 @@ export function renderReleaseList(
     const when = r.deployedAt ? `deployed ${stamp(r.deployedAt)}` : `created ${stamp(r.createdAt)}`;
     const head = [r.version ?? 'unversioned', state, when, r.headSha ? String(r.headSha).slice(0, 7) : null]
       .filter(Boolean).join(' · ');
-    const shipped: Array<{ title: string | null; prNumber: number | null }> = r.tasks ?? [];
+    const shipped: Array<{ title: string | null; prNumber: number | null; missionTitle?: string | null }> = r.tasks ?? [];
     const lines = shipped.slice(0, MAX_TASKS)
-      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}`);
+      .map((t) => `    - ${t.prNumber ? `#${t.prNumber} ` : ''}${t.title ?? 'untracked change'}${t.missionTitle ? ` (mission: ${t.missionTitle})` : ''}`);
     if (shipped.length > MAX_TASKS) lines.push(`    - …and ${shipped.length - MAX_TASKS} more (get_release)`);
     return [`- ${head} (id ${r.id})`, ...lines].join('\n');
   }).join('\n');

@@ -163,6 +163,12 @@ export interface PrObjectRef extends BuilddObjectRefBase {
   url: string;
   /** The task whose worker opened the PR, when known. */
   taskId?: string;
+  /** Grouping hints for a list of PRs: the task's mission, and its scope chip ("fx"). */
+  missionId?: string | null;
+  missionTitle?: string | null;
+  area?: string | null;
+  /** The task's category (feature, bug, chore…), for grouping PRs outside a mission. */
+  category?: string | null;
 }
 
 /**
