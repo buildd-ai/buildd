@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { and, lt, inArray } from 'drizzle-orm';
-import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
+import { HEARTBEAT_STALE_MS, notifyStalledVisualAudits } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 
@@ -80,6 +80,13 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
     }
   } catch (cleanupErr) {
     console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+  }
+  // A visual audit left waiting with no browser runner online: told once to
+  // the conversation its mission came from (display only, never a cancel).
+  try {
+    await notifyStalledVisualAudits(now);
+  } catch (stallErr) {
+    console.warn('[Cron] Visual audit stall notice failed:', stallErr instanceof Error ? stallErr.message : stallErr);
   }
   return heartbeatOrphans;
 }

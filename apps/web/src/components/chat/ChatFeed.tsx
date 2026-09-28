@@ -8,17 +8,19 @@
  * turn in flight is the Thinking panel (thinking-model.ts). Fleet objects stay
  * hard and square (docs/design/chat-canvas.md).
  */
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { isTextPart, messageMeta, type ChatMessage } from './chat-contract';
-import { feedSegments, type FeedSegment } from './feed-model';
+import { eventRefsShownLater, feedSegments, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
 import TurnFeedback from './TurnFeedback';
 import { intentTag, thinkingSteps, type ThinkingStep } from './thinking-model';
 import WatchNotice from './WatchNotice';
+import { visualPhaseTone, type VisualReviewTone } from '@/components/visual-review/VisualReviewLine';
+import { VISUAL_REVIEW_PHASES, type VisualReviewPhase } from '@buildd/shared';
 
 export interface ChatAgent {
   name: string;
@@ -66,12 +68,35 @@ function Segment({ seg }: { seg: FeedSegment }) {
       return <WatchNotice text={seg.text} notice={seg.notice} />;
     case 'event':
       return (
-        <div data-testid="feed-event" data-event={seg.event} className="flex items-center gap-2 font-mono text-[12px] text-text-secondary">
-          <span aria-hidden="true" className={`h-2 w-2 shrink-0 ${seg.event === 'mission_failed' ? 'bg-status-error' : seg.event === 'question' ? 'bg-status-warning' : seg.event === 'mission_completed' ? 'bg-status-success' : 'bg-accent'}`} />
-          {seg.text}
+        <div data-testid="feed-event" data-event={seg.event} data-tone={eventTone(seg) ?? undefined} className="flex items-start gap-2 font-mono text-[12px] text-text-secondary">
+          <span aria-hidden="true" className={`mt-[5px] h-2 w-2 shrink-0 ${eventDotClass(seg)}`} />
+          <span className="min-w-0 [overflow-wrap:anywhere]">{seg.text}</span>
         </div>
       );
   }
+}
+
+const TONE_DOT: Record<VisualReviewTone, string> = {
+  needs: 'bg-accent',
+  attention: 'bg-status-error',
+  blocked: 'bg-status-error',
+  working: 'bg-status-warning',
+  done: 'bg-status-success',
+  quiet: 'bg-text-muted',
+};
+
+/** A visual_review event's tone, from the phase it was posted in (the Screens line's own scale). */
+export function eventTone(seg: Extract<FeedSegment, { kind: 'event' }>): VisualReviewTone | null {
+  if (seg.event !== 'visual_review' || !seg.visual) return null;
+  const phase = seg.visual.phase as VisualReviewPhase;
+  return (VISUAL_REVIEW_PHASES as readonly string[]).includes(phase) ? visualPhaseTone(phase) : 'quiet';
+}
+
+/** The event row's square. A missing browser runner reads red here, as on the pinned chip. */
+export function eventDotClass(seg: Extract<FeedSegment, { kind: 'event' }>): string {
+  const tone = eventTone(seg);
+  if (tone) return TONE_DOT[tone];
+  return seg.event === 'mission_failed' ? 'bg-status-error' : seg.event === 'question' ? 'bg-status-warning' : seg.event === 'mission_completed' ? 'bg-status-success' : 'bg-accent';
 }
 
 /**
@@ -177,9 +202,9 @@ function ThinkingPanel({ m, agent }: { m: ChatMessage | null; agent: ChatAgent }
   );
 }
 
-function AssistantMessage({ m, agent }: { m: ChatMessage; agent: ChatAgent }) {
+function AssistantMessage({ m, agent, hideEventRefs }: { m: ChatMessage; agent: ChatAgent; hideEventRefs?: ReadonlySet<string> }) {
   const meta = messageMeta(m);
-  const segs = feedSegments(m.parts);
+  const segs = feedSegments(m.parts, { hideEventRefs });
   if (segs.length === 0) return null;
   return (
     <div data-testid="feed-message" data-role="assistant" className="flex gap-3">
@@ -214,12 +239,13 @@ export default function ChatFeed({
 }) {
   const last = messages[messages.length - 1];
   const liveId = live && last && last.role === 'assistant' ? last.id : null;
+  const hidden = useMemo(() => eventRefsShownLater(messages), [messages]);
   return (
     <div data-testid="chat-feed" className="flex flex-col gap-7">
       {messages.map((m, i) => m.role === 'user'
         ? <UserMessage key={m.id} m={m} tag={intentTag(messages, i)?.label ?? null} />
         : m.id === liveId ? <ThinkingPanel key={m.id} m={m} agent={agent} />
-        : m.role === 'assistant' || m.role === 'event' ? <AssistantMessage key={m.id} m={m} agent={agent} /> : null)}
+        : m.role === 'assistant' || m.role === 'event' ? <AssistantMessage key={m.id} m={m} agent={agent} hideEventRefs={hidden.get(m.id)} /> : null)}
       {thinking && (
         <div data-testid="feed-thinking">
           <ThinkingPanel m={null} agent={agent} />

@@ -36,6 +36,8 @@ mock.module('@/lib/mission-feed', () => ({ postMissionFeedEvent: mockFeed }));
 const mockTrigger = mock(async (..._a: any[]) => {});
 mock.module('@/lib/pusher', () => ({ triggerEvent: mockTrigger, channels: { mission: (id: string) => `mission-${id}` }, events: {} }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: async () => {} }));
+const mockChatEvent = mock(async (_i: any) => true);
+mock.module('@/lib/chat/mission-events', () => ({ postVisualReviewEvent: mockChatEvent }));
 
 const {
   parseDecisionRequest,
@@ -300,6 +302,9 @@ describe('applyDecision', () => {
     expect(body.fixTaskIds).toEqual(['fix-new']);
     expect(body.reviews).toHaveLength(2);
     expect(body.reviews.every((r: any) => r.relation === 'dispute')).toBe(true);
+    // The mission's conversation hears that the decision filed a fix.
+    const ev = mockChatEvent.mock.calls.at(-1)![0];
+    expect(ev).toMatchObject({ missionId: MISSION.id, moment: 'fixes_filed', fixes: 1, routes: ['/app/x'] });
   });
 
   it('inserts the review rows after superseding the prior active one, never in a transaction', async () => {

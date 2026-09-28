@@ -1,14 +1,5 @@
 ---
-status: partially
-# Slice 1 (model, scoped loader, GET route), slice 2 (the decisions route,
-# rounds, the shadow completion hold) and slice 3 (the review component
-# family) have shipped. Slices 4-5 (mission-page wiring, chat integration)
-# have not, so this assertion set includes one deliberately-failing
-# symbol_reachable from slice 4 — mission-page-tray-wiring — to keep the
-# derived status honestly `partial` instead of `implemented`.
-# review-deck-component genuinely shipped in slice 3 (PR that built
-# apps/web/src/components/visual-review/) — suppressed below (skip_until)
-# rather than left to promote a doc that is still partial overall.
+status: implemented
 assertions:
   - id: "cell-matrix-model"
     type: "symbol"
@@ -32,17 +23,23 @@ assertions:
     type: "symbol"
     name: "VisualReviewDeck"
     path: "apps/web/src/components/visual-review/VisualReviewDeck.tsx"
-    skip_until: "2026-12-19"
-    skip_reason: "VisualReviewDeck genuinely shipped (slice 3, the review component family) — this isn't a false positive — but the doc must stay 'partially' until mission-page-tray-wiring (slice 4) ships, so this assertion will pass forever under a non-terminal status. mission-page-tray-wiring is the assertion that tracks real remaining progress."
-  - id: "mission-page-tray-wiring"
+  - id: "mission-page-loads-review"
+    type: "symbol_reachable"
+    symbol: "loadVisualReview"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
+  - id: "board-renders-tray"
     type: "symbol_reachable"
     symbol: "VisualReviewTray"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/MissionVisualReview.tsx"
+  - id: "chat-visual-review-events"
+    type: "symbol"
+    name: "postVisualReviewEvent"
+    path: "apps/web/src/lib/chat/mission-events.ts"
 ---
 
 # Visual QA: human review loop
 
-**Status:** Partially Implemented — foundation and decisions route shipped (slices 1-2: the cell-matrix model, the scoped GET loader, the decisions/undo routes, human rounds and the shadow completion hold). The review component family, mission-page wiring and chat integration (slices 3-5) have not been built yet.
+**Status:** Implemented — #3036 (model, loader, review table), #3044 (decisions, rounds, shadow completion hold), #3046 (review components), #3049 (mission page), #3050 (chat). The `visual_review_open` hold still runs in shadow; enforcement (`VISUAL_REVIEW_GATE=enforce`) is the open question below.
 **Related:** `docs/design/visual-qa-auditor.md` (the auditor this builds on), `apps/web/src/lib/mission-visual-review.ts`, `apps/web/src/lib/mission-surface-audit.ts`, `packages/core/surface-audit.ts`, `apps/web/src/lib/visual-audit-evidence.ts`, `apps/web/src/lib/mission-completion.ts`, `apps/web/src/app/app/(protected)/missions/[id]/`, `apps/web/src/components/chat/objects/`, `apps/web/src/lib/chat/mission-events.ts`
 
 ## Problem

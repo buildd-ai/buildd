@@ -661,6 +661,18 @@ export async function applyDecision(input: {
   });
 
   const fresh = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId });
+
+  // 8. The mission's conversation, if it was filed from chat: fixes filed
+  // from these decisions, or the all-clear once nothing is left.
+  const filedRoutes = plan.fixGroups.filter(g => !g.reuseFixId).map(g => g.route);
+  if (filedRoutes.length > 0 || fresh.phase === 'reviewed') {
+    await import('@/lib/chat/mission-events')
+      .then(m => m.postVisualReviewEvent(filedRoutes.length > 0
+        ? { missionId: mission.id, moment: 'fixes_filed', model: fresh, fixes: filedRoutes.length, routes: filedRoutes }
+        : { missionId: mission.id, moment: 'all_clear', model: fresh }))
+      .catch(err => console.error('[visual-review] chat event failed:', err));
+  }
+
   return {
     status: 200,
     body: {

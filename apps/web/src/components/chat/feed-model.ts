@@ -142,7 +142,7 @@ export type FeedSegment =
   | { kind: 'text'; key: string; text: string; streaming: boolean }
   | { kind: 'tools'; key: string; calls: ChatToolPart[] }
   | { kind: 'approval'; key: string; part: ChatToolPart }
-  | { kind: 'event'; key: string; event: ChatEventData['event']; text: string }
+  | { kind: 'event'; key: string; event: ChatEventData['event']; text: string; visual?: ChatEventData['visual'] }
   /** A watch the person set fired: its own notice card, not a status line. */
   | { kind: 'watch'; key: string; text: string; notice: NonNullable<ChatEventData['watch']> }
   | { kind: 'objects'; key: string; refs: BuilddObjectRef[] }
@@ -176,7 +176,7 @@ export function textNames(text: string, r: BuilddObjectRef): boolean {
  * cards ahead of a one-line answer. Objects from writes, approvals and events
  * render where they happen.
  */
-export function feedSegments(parts: readonly ChatPart[]): FeedSegment[] {
+export function feedSegments(parts: readonly ChatPart[], opts: { hideEventRefs?: ReadonlySet<string> } = {}): FeedSegment[] {
   const out: FeedSegment[] = [];
   let group: ChatToolPart[] = [];
   const shown = new Set<string>();
@@ -235,8 +235,8 @@ export function feedSegments(parts: readonly ChatPart[]): FeedSegment[] {
         out.push({ kind: 'watch', key: `watch-${i}`, text: p.data.text, notice: p.data.watch });
         return;
       }
-      out.push({ kind: 'event', key: `event-${i}`, event: p.data.event, text: p.data.text });
-      const refs = eventObjects(p.data).filter(r => !shown.has(refKey(r)));
+      out.push({ kind: 'event', key: `event-${i}`, event: p.data.event, text: p.data.text, ...(p.data.visual ? { visual: p.data.visual } : {}) });
+      const refs = eventObjects(p.data).filter(r => !shown.has(refKey(r)) && !opts.hideEventRefs?.has(refKey(r)));
       refs.forEach(r => shown.add(refKey(r)));
       if (refs.length > 0) out.push({ kind: 'objects', key: `obj-event-${i}`, refs });
     }
@@ -280,6 +280,24 @@ const PANE_KINDS: ReadonlySet<string> = new Set(['mission', 'task', 'pr', 'quest
  * naming it (the collapsed "Also read" row) is left out, so the tail of a
  * broad list never drives the pin or the pane.
  */
+/**
+ * Visual review events come in runs (waiting, round done, fixes filed) and all
+ * name the same live mission. Each keeps its line, but its card shows only on
+ * the newest message that names the mission: per event message, the refs a
+ * later message shows.
+ */
+export function eventRefsShownLater(messages: readonly ChatMessage[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const later = new Set<string>();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const isVisualEvent = m.role === 'event' && m.parts.some(p => isEventPart(p) && p.data.event === 'visual_review');
+    if (isVisualEvent && later.size > 0) out.set(m.id, new Set(later));
+    for (const seg of feedSegments(m.parts)) if (seg.kind === 'objects' || seg.kind === 'more') for (const r of seg.refs) later.add(refKey(r));
+  }
+  return out;
+}
+
 export function conversationRefs(messages: readonly ChatMessage[]): BuilddObjectRef[] {
   const order = new Map<string, BuilddObjectRef>();
   for (const m of messages) {

@@ -25,6 +25,7 @@ import { isUuid, type Resolution } from './targets';
 import { routesFor, type ApiCall, type RouteEntry } from './in-process-api';
 import { refsFromCalls } from './object-refs';
 import { runListWatches, runUnwatch, runWatch } from './watch-tools';
+import { runGetVisualReview } from './visual-review-tool';
 import { ACTIVE_WINDOW_DAYS, splitByActivity, type WorkspaceActivity } from './workspace-activity';
 import {
   ALL_CHAT_TOOL_SPECS, CHAT_TOOL_SPECS, isExposed, opSpec, opsOf, SELF_SCOPED_ALLOWLIST,
@@ -186,6 +187,8 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       });
     case 'list_watches':
       return z.object({});
+    case 'get_visual_review':
+      return z.object({ missionId: z.string().describe('The mission\'s full id: the docked mission, or one a tool returned.') });
     case 'list_schedules':
       return z.object({
         workspaceId: ws,
@@ -230,6 +233,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
+  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
 };
 
 /** Steering tools whose taskId may be words; said in their description so the model doesn't hunt for ids. */
@@ -433,6 +437,7 @@ async function runAction(
   if (action === 'watch') return runWatch(api, input, deps.conversationId ?? null);
   if (action === 'unwatch') return runUnwatch(api, input);
   if (action === 'list_watches') return runListWatches(api);
+  if (action === 'get_visual_review') return runGetVisualReview(api, input);
   return handle(api, action, input, deps.ctx);
 }
 
