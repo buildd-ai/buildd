@@ -1,5 +1,5 @@
 /**
- * `@buildd/ai-kit/surfaces`: Jev picks which of the app's own chips and cards
+ * `@builddai/ai-kit/surfaces`: Jev picks which of the app's own chips and cards
  * to show, and in what order (server; builds on `/decide`).
  *
  * P0 SKELETON: types only. `defineSurface` ships in P7.
@@ -9,7 +9,7 @@
  * code. A low-confidence answer, a timeout or shadow mode renders `default`.
  */
 
-import type { DecisionMode } from '@buildd/ai-kit/decide';
+import type { DecisionMode } from '@builddai/ai-kit/decide';
 
 export interface SurfaceCandidate {
   id: string;

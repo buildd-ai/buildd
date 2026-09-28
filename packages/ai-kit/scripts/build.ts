@@ -73,6 +73,52 @@ function rewriteDist(dir: string): void {
   }
 }
 
+/** Static `from '…'` / `import '…'` with a bare (package) specifier. `import type` is erased from `.js`. */
+const STATIC_BARE = /(?:\bfrom\s*|^\s*import\s+)(['"])([^.'"/][^'"]*)\1/gm;
+/** Dynamic `import('…')` with a bare specifier. */
+const DYNAMIC_BARE = /\bimport\s*\(\s*(['"])([^.'"/][^'"]*)\1\s*\)/g;
+
+/** `@scope/name/sub` → `@scope/name`; `name/sub` → `name`; `node:*` → null. */
+export function packageOf(spec: string): string | null {
+  if (spec.startsWith('node:')) return null;
+  const parts = spec.split('/');
+  return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+/**
+ * Every package a dist `.js` file imports must reach the consumer: a
+ * `dependencies` entry, a peer, or the kit itself. An optional peer may only be
+ * imported dynamically, or any consumer without it fails to load the entry
+ * (0.1.0's `/decide` did exactly that). Returns the problems; empty is clean.
+ */
+export function auditBareImports(files: Record<string, string>, pkg: Record<string, unknown>): string[] {
+  const deps = (pkg.dependencies ?? {}) as Record<string, string>;
+  const peers = (pkg.peerDependencies ?? {}) as Record<string, string>;
+  const meta = (pkg.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean }>;
+  const problems: string[] = [];
+  for (const [file, code] of Object.entries(files)) {
+    const check = (spec: string, dynamic: boolean) => {
+      const name = packageOf(spec);
+      if (!name || name === pkg.name) return;
+      if (name in deps) return;
+      if (!(name in peers)) { problems.push(`${file}: imports '${spec}', which is not in dependencies or peerDependencies`); return; }
+      if (meta[name]?.optional && !dynamic) problems.push(`${file}: statically imports optional peer '${spec}'; import it lazily`);
+    };
+    for (const m of code.matchAll(STATIC_BARE)) check(m[2], false);
+    for (const m of code.matchAll(DYNAMIC_BARE)) check(m[2], true);
+  }
+  return problems;
+}
+
+function auditDist(dir: string, pkg: Record<string, unknown>): void {
+  const files: Record<string, string> = {};
+  for (const entry of readdirSync(dir, { recursive: true }) as string[]) {
+    if (entry.endsWith('.js')) files[entry] = readFileSync(join(dir, entry), 'utf8');
+  }
+  const problems = auditBareImports(files, pkg);
+  if (problems.length) throw new Error(`dist imports packages a consumer would not have:\n  ${problems.join('\n  ')}`);
+}
+
 export function distPackageJson(pkg: Pkg): Record<string, unknown> {
   const { scripts: _s, devDependencies: _d, exports, ...rest } = pkg;
   return { ...rest, exports: distExports(exports), publishConfig: { access: 'public', provenance: true } };
@@ -83,6 +129,7 @@ if (import.meta.main) {
   await $`bunx tsc -p ${join(root, 'tsconfig.build.json')}`;
   rewriteDist(dist);
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as Pkg;
+  auditDist(dist, distPackageJson(pkg));
   for (const [, target] of Object.entries(pkg.exports)) {
     if (!target.startsWith('./src/') || target.endsWith('.ts')) continue;
     cpSync(join(root, target), join(dist, target.replace(/^\.\/src\//, '')));
@@ -91,5 +138,5 @@ if (import.meta.main) {
     if (existsSync(join(root, f))) cpSync(join(root, f), join(dist, f));
   }
   writeFileSync(join(dist, 'package.json'), `${JSON.stringify(distPackageJson(pkg), null, 2)}\n`);
-  console.log(`built @buildd/ai-kit@${pkg.version} → ${dist}`);
+  console.log(`built ${String(pkg.name)}@${String(pkg.version)} → ${dist}`);
 }

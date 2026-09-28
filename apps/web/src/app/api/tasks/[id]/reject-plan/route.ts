@@ -6,6 +6,7 @@ import type { SpecDocFixContext } from '@/lib/approve-plan';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isUuid } from '@/lib/uuid';
 
 // POST /api/tasks/[id]/reject-plan - Reject a planning task's plan and create a revised planning task
@@ -119,13 +120,16 @@ export async function POST(
       });
     }
 
-    // Create a new planning task with feedback context
+    // Create a new planning task with feedback context. It re-attempts the
+    // rejected plan, so it carries that plan's backend, role, routing kind and
+    // phase (Rule P1-7) — its parentTaskId is the plan's parent, not the plan.
     const [newTask] = await db
       .insert(tasks)
       .values({
         workspaceId: task.workspaceId,
         title: task.title + ' (revised)',
         description: task.description,
+        ...attemptIdentityFrom(task),
         mode: 'planning',
         taskClass: 'bookkeeping',
         status: 'pending',

@@ -7,6 +7,8 @@ import { artifacts, tasks, workers } from '@buildd/core/db/schema';
  */
 export const terminalAuditFields = {
   updatedAt: tasks.updatedAt,
+  roleSlug: tasks.roleSlug,
+  creationSource: tasks.creationSource,
   summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
   // Audit mode reaches the entire terminal history, unbounded by the
   // 24h window every other query path stays inside — including tasks

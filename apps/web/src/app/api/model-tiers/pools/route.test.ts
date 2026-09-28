@@ -22,7 +22,7 @@ const calls: Record<string, any[]> = {};
 const log = (k: string) => (...a: any[]) => { (calls[k] ??= []).push(a); };
 
 const POOL = {
-  pool: { id: 'pool-1', tier: 'standard', surface: 'chat', mode: 'split', allocation: { inc: 1, ch: 0 }, allocationVersion: 4, incumbentFloor: 0.6, explorationCap: 0.3 },
+  pool: { id: 'pool-1', tier: 'standard', surface: 'chat', mode: 'split', allocation: { inc: 1, ch: 0 }, weights: { inc: 'high', ch: 'off' }, allocationVersion: 4, incumbentFloor: 0.6, explorationCap: 0.3 },
   arms: [
     { id: 'inc', role: 'incumbent', status: 'active', route: 'anthropic', model: 'claude-sonnet-5', addedAt: new Date('2026-01-01') },
     { id: 'ch', role: 'challenger', status: 'active', route: 'openrouter', model: 'qwen/qwen3-coder', addedAt: new Date('2026-01-02') },
@@ -31,6 +31,7 @@ const POOL = {
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/team-access', () => ({ getUserTeamRole: async () => role }));
+mock.module('@buildd/core/model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => [] }));
 mock.module('@buildd/core/model-tier-registry', () => ({
   resolveAllTiers: async () => ({}),
   resolveTierEntry: async () => tierEntry,
@@ -132,15 +133,31 @@ describe('POST /api/model-tiers/pools — add a model', () => {
 describe('PATCH /api/model-tiers/pools/[id] — traffic', () => {
   const patch = (body: Record<string, unknown>) => poolById.PATCH(req('/api/model-tiers/pools/pool-1', 'PATCH', { teamId: 'team-1', expectedVersion: 4, ...body }), ctx({ id: 'pool-1' }));
 
-  it('writes a valid split with the expected version and flushes the draw cache', async () => {
-    const res = await patch({ allocation: { inc: 0.8, ch: 0.2 }, mode: 'split' });
+  it('derives the allocation from weights and flushes the draw cache', async () => {
+    const res = await patch({ weights: { ch: 'low' }, mode: 'split' });
     expect(res.status).toBe(200);
-    expect(calls.writeAllocation[0][0]).toMatchObject({ teamId: 'team-1', poolId: 'pool-1', expectedVersion: 4, allocation: { inc: 0.8, ch: 0.2 }, mode: 'split', kind: 'allocation', actorUserId: 'user-1' });
+    expect(calls.writeAllocation[0][0]).toMatchObject({
+      teamId: 'team-1', poolId: 'pool-1', expectedVersion: 4,
+      allocation: { inc: 0.75, ch: 0.25 }, weights: { inc: 'high', ch: 'low' },
+      mode: 'split', kind: 'allocation', actorUserId: 'user-1',
+    });
     expect(calls.invalidatePool).toHaveLength(1);
   });
 
-  it('refuses a split below the base floor', async () => {
-    const res = await patch({ allocation: { inc: 0.5, ch: 0.5 } });
+  it('accepts a split that crosses the old 60% floor — the admin\'s weights are final', async () => {
+    const res = await patch({ weights: { inc: 'off', ch: 'high' } });
+    expect(res.status).toBe(200);
+    expect(calls.writeAllocation[0][0]).toMatchObject({ allocation: { inc: 0, ch: 1 } });
+  });
+
+  it('rejects a weight level that is not off/low/med/high', async () => {
+    const res = await patch({ weights: { ch: 'medium' } });
+    expect(res.status).toBe(400);
+    expect(calls.writeAllocation).toBeUndefined();
+  });
+
+  it('rejects a weight for an arm that is not in the pool', async () => {
+    const res = await patch({ weights: { ghost: 'low' } });
     expect(res.status).toBe(400);
     expect(calls.writeAllocation).toBeUndefined();
   });

@@ -25,7 +25,7 @@ function armRow(id: string, model: string, over: Partial<DailyPoolArm> = {}): Da
 function pool(over: Partial<DailyPool> = {}): DailyPool {
   return {
     id: 'pool-1', teamId: 'team-1', tier: 'standard', surface: 'agent', mode: 'explore', policyVersion: 1,
-    allocation: { inc: 0.9, ch: 0.1 }, allocationVersion: 7, autoChallenger: false,
+    allocation: { inc: 0.9, ch: 0.1 }, allocationVersion: 7, weights: { inc: 'high', ch: 'low' }, autoChallenger: false,
     arms: [
       armRow('inc', 'claude-sonnet-5', { role: 'incumbent', source: 'registry' }),
       armRow('ch', 'qwen-coder-x', { route: 'runner:claude' }),
@@ -110,10 +110,26 @@ describe('planPoolDay — popularity and expiry', () => {
     expect(plan.actions).toEqual([]);
   });
 
-  it('split: an expired model goes to 0 as system:expiry', () => {
+  it('split: an expired model goes to 0 as system:expiry, and its weight goes to off', () => {
     const cat = [entry('claude-sonnet-5'), entry('qwen-coder-x', { provider: 'anthropic', expiresAt: nowS - DAY })];
     const plan = planPoolDay({ pool: pool({ mode: 'split', allocation: { inc: 0.7, ch: 0.3 } }), evidence: evidence(['inc', 'ch']), catalog: cat, rankings: {}, now: NOW });
-    expect(plan.actions).toEqual([expect.objectContaining({ type: 'allocate', allocation: { inc: 1, ch: 0 }, actorSystem: 'system:expiry' })]);
+    expect(plan.actions).toEqual([expect.objectContaining({
+      type: 'allocate', allocation: { inc: 1, ch: 0 }, actorSystem: 'system:expiry', weights: { inc: 'high', ch: 'off' },
+    })]);
+  });
+
+  it('split: a harm cut also takes the arm\'s weight to off', () => {
+    const cat = [entry('claude-sonnet-5'), entry('qwen-coder-x', { provider: 'anthropic' })];
+    const harmed: ArmEvidence = { graded: 2, successes: 0, failures: 2, earlyCritical: 2, spread: { units: 2, conversations: 0, users: 0 } };
+    const perArm = new Map([['inc', quiet], ['ch', harmed]]);
+    const plan = planPoolDay({
+      pool: pool({ mode: 'split', allocation: { inc: 0.7, ch: 0.3 } }),
+      evidence: perArm,
+      catalog: cat, rankings: {}, now: NOW,
+    });
+    expect(plan.actions).toEqual([expect.objectContaining({
+      type: 'allocate', allocation: { inc: 1, ch: 0 }, actorSystem: 'system:harm-cut', weights: { inc: 'high', ch: 'off' },
+    })]);
   });
 
   it('explore: an arm expiring within 14 days is capped to 0 through the steps', () => {

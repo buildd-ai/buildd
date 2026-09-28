@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { isUuid } from '@/lib/uuid';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -57,6 +58,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: `Invalid connector id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
+  }
   const auth = await authenticateRequest(req);
   if (!auth || auth.type === 'denied') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

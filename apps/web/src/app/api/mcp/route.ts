@@ -46,7 +46,7 @@ import {
 import { listMcpTools } from "./tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
-import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
+import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -127,26 +127,13 @@ async function resolveTeamId(workspaceId: string | null | undefined, fallbackTea
 }
 
 /**
- * Canonical `memories.project` key for this connection.
- *
- * The `?repo=` param is whatever the client sent — a full URL for most workspaces,
- * a bare `owner/repo` for at least one. Resolving through the workspace row and
- * canonicalizing means memories written over MCP land on the same key the
- * dashboard queries, instead of on whichever spelling the client happened to use.
+ * Canonical `memories.project` key for this connection — always the resolved
+ * workspace's own, never the client's `?repo=` hint (that would let a caller
+ * name another workspace's memories). Undefined means no memory: no workspace,
+ * a sensitive one, or a key it shares with a sensitive workspace.
  */
-async function resolveProjectKey(
-  workspaceId: string | null | undefined,
-  repoParam?: string,
-): Promise<string | undefined> {
-  if (workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
-      columns: { repo: true, name: true },
-    });
-    const key = workspaceProjectKey(ws?.repo, ws?.name);
-    if (key) return key;
-  }
-  return normalizeProject(repoParam) ?? undefined;
+async function resolveProjectKey(workspaceId: string | null | undefined): Promise<string | undefined> {
+  return (await resolveMemoryProjectKey(workspaceId)) ?? undefined;
 }
 
 // getMemoryClientForTeam is imported from @/lib/memory-helper (canonical implementation).
@@ -238,6 +225,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       // which could hand back a different team's store.
       if (targetWorkspaceId) {
         if (await knowledgeBlockedFor(targetWorkspaceId)) return null;
+        // A key shared with a sensitive workspace is closed too.
+        if (!(await resolveMemoryProjectKey(targetWorkspaceId))) return null;
         return getMemoryClientForTeam(targetWorkspaceId);
       }
       if (await knowledgeBlockedFor(resolvedWorkspaceId)) return null;
@@ -324,7 +313,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       ok: true as const,
       memClient,
       memCtx: {
-        project: await resolveProjectKey(wsId, repoName),
+        project: await resolveProjectKey(wsId),
         workerId,
         workspaceId: wsId ?? undefined,
         teamId: memTeamId ?? undefined,
@@ -870,8 +859,10 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             };
           }
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
-          if (memClient) {
-            const data = await memClient.getContext(await resolveProjectKey(wsId, repoName));
+          // No project key means no memory — an unscoped getContext is team-wide.
+          const memProject = await resolveProjectKey(wsId);
+          if (memClient && memProject) {
+            const data = await memClient.getContext(memProject);
             return {
               contents: [{ uri, mimeType: "text/plain", text: data.markdown || "No memories yet." }],
             };

@@ -27,6 +27,7 @@ import {
   type PoolMode,
   type PoolSurface,
 } from './tier-pool';
+import { backfillWeights, sharesFromWeights, type WeightLevel, type Weights } from './tier-weights';
 
 export interface PoolRow {
   id: string;
@@ -36,6 +37,7 @@ export interface PoolRow {
   experimentId: string | null;
   allocation: Allocation;
   allocationVersion: number;
+  weights: Weights;
   incumbentFloor: number;
   explorationCap: number;
   frozenAt: Date | null;
@@ -70,6 +72,7 @@ const poolColumns = {
   experimentId: tierPools.experimentId,
   allocation: tierPools.allocation,
   allocationVersion: tierPools.allocationVersion,
+  weights: tierPools.weights,
   incumbentFloor: tierPools.incumbentFloor,
   explorationCap: tierPools.explorationCap,
   frozenAt: tierPools.frozenAt,
@@ -171,13 +174,15 @@ export async function ensurePool(args: {
   const incumbent = arms.find(a => a.role === 'incumbent');
   let current = pool as PoolRow;
   if (incumbent && Object.keys(current.allocation ?? {}).length === 0) {
-    // First allocation: everything on the incumbent. Audited like any other.
+    // First allocation: everything on the incumbent, weight `high` (the
+    // default an admin's own weight starts equal to). Audited like any other.
+    const weights: Weights = { [incumbent.id]: 'high' };
     const v = await writeAllocation({
       teamId: args.teamId, poolId: pool.id, expectedVersion: current.allocationVersion,
-      allocation: { [incumbent.id]: 1 }, kind: 'allocation', actorUserId: args.actorUserId,
+      allocation: { [incumbent.id]: 1 }, weights, kind: 'allocation', actorUserId: args.actorUserId,
       evidence: { reason: 'pool_created' },
     });
-    if (v !== null) current = { ...current, allocation: { [incumbent.id]: 1 }, allocationVersion: v };
+    if (v !== null) current = { ...current, allocation: { [incumbent.id]: 1 }, weights, allocationVersion: v };
   }
   return { pool: current, arms };
 }
@@ -192,32 +197,36 @@ export async function writeAllocation(args: {
   poolId: string;
   expectedVersion: number;
   allocation: Allocation;
+  /** Split only. Omit to leave the stored weights untouched (a mode-only or arm-removal write). */
+  weights?: Weights;
   mode?: PoolMode;
-  kind: 'allocation' | 'mode' | 'arm_removed';
+  kind: 'allocation' | 'mode' | 'arm_removed' | 'arm_added';
   actorUserId: string | null;
-  /** `system:*` when buildd made the change (tier-weights §5). */
+  /** e.g. `system:explore`, `system:harm-cut` — a system-initiated change (docs/design/tier-weights.md §5). */
   actorSystem?: string | null;
   evidence?: Record<string, unknown>;
 }): Promise<number | null> {
   const result = await db.execute(sql`
     WITH prev AS (
-      SELECT allocation, mode, allocation_version FROM tier_pools
+      SELECT allocation, weights, mode, allocation_version FROM tier_pools
       WHERE id = ${args.poolId} AND team_id = ${args.teamId}
     ), u AS (
       UPDATE tier_pools
       SET allocation = ${JSON.stringify(args.allocation)}::jsonb,
+          weights = COALESCE(${args.weights ? JSON.stringify(args.weights) : null}::jsonb, weights),
           allocation_version = allocation_version + 1,
           mode = COALESCE(${args.mode ?? null}::text, mode),
           updated_at = now()
       WHERE id = ${args.poolId} AND team_id = ${args.teamId} AND allocation_version = ${args.expectedVersion}
-      RETURNING allocation, mode, allocation_version
+      RETURNING allocation, weights, mode, allocation_version
     ), log AS (
       INSERT INTO tier_pool_changes (pool_id, kind, before, after, evidence, actor_user_id, actor_system)
       SELECT ${args.poolId}::uuid, ${args.kind}::text,
-        jsonb_build_object('allocation', prev.allocation, 'mode', prev.mode, 'version', prev.allocation_version),
-        jsonb_build_object('allocation', u.allocation, 'mode', u.mode, 'version', u.allocation_version),
+        jsonb_build_object('allocation', prev.allocation, 'weights', prev.weights, 'mode', prev.mode, 'version', prev.allocation_version),
+        jsonb_build_object('allocation', u.allocation, 'weights', u.weights, 'mode', u.mode, 'version', u.allocation_version),
         ${args.evidence ? JSON.stringify(args.evidence) : null}::jsonb,
-        ${args.actorUserId}::uuid, ${args.actorSystem ?? null}::text
+        ${args.actorUserId}::uuid,
+        ${args.actorSystem ?? null}::text
       FROM u, prev
     )
     SELECT allocation_version FROM u
@@ -231,35 +240,65 @@ export type AddArmResult =
   | { ok: false; reason: 'full' | 'duplicate' };
 
 /**
- * Add a challenger at 0% (it carries no traffic until an admin gives it a
- * share). The four-arm cap is a conditional insert, not a transaction; the
- * change row is written by the same statement.
+ * Add a challenger at the given weight, folded into the pool's weights so it
+ * starts carrying traffic instead of needing a second edit
+ * (docs/design/tier-weights.md §2). The four-arm cap is a conditional insert,
+ * not a transaction; logging the arm add and applying the resulting
+ * allocation happen in the same `writeAllocation` call right after — this
+ * function is two statements, not one, the same non-transactional shape
+ * `ensurePool` already uses (neon-http admits no `db.transaction()`).
  */
 export async function addChallenger(args: {
+  teamId: string;
   poolId: string;
   route: ArmRoute;
   model: string;
+  weight: WeightLevel;
   actorUserId: string | null;
+  evidence?: Record<string, unknown>;
 }): Promise<AddArmResult> {
   const result = await db.execute(sql`
-    WITH ins AS (
-      INSERT INTO tier_pool_arms (pool_id, route, model, role, status, source, added_by)
-      SELECT ${args.poolId}::uuid, ${args.route}::text, ${args.model}::text, 'challenger', 'active', 'admin', ${args.actorUserId}::uuid
-      WHERE (SELECT count(*) FROM tier_pool_arms WHERE pool_id = ${args.poolId} AND status <> 'removed') < ${MAX_POOL_ARMS}
-      ON CONFLICT DO NOTHING
-      RETURNING id, route, model
-    ), log AS (
-      INSERT INTO tier_pool_changes (pool_id, kind, after, actor_user_id)
-      SELECT ${args.poolId}::uuid, 'arm_added', jsonb_build_object('armId', id, 'route', route, 'model', model), ${args.actorUserId}::uuid
-      FROM ins
-    )
-    SELECT id FROM ins
+    INSERT INTO tier_pool_arms (pool_id, route, model, role, status, source, added_by)
+    SELECT ${args.poolId}::uuid, ${args.route}::text, ${args.model}::text, 'challenger', 'active', 'admin', ${args.actorUserId}::uuid
+    WHERE (SELECT count(*) FROM tier_pool_arms WHERE pool_id = ${args.poolId} AND status <> 'removed') < ${MAX_POOL_ARMS}
+    ON CONFLICT DO NOTHING
+    RETURNING id
   `);
   const row = (result.rows as Array<{ id: string }>)[0];
-  if (row) return { ok: true, armId: row.id };
-  const live = await db.select({ id: tierPoolArms.id, route: tierPoolArms.route, model: tierPoolArms.model })
-    .from(tierPoolArms).where(and(eq(tierPoolArms.poolId, args.poolId), ne(tierPoolArms.status, 'removed')));
-  return { ok: false, reason: live.some(a => a.route === args.route && a.model === args.model) ? 'duplicate' : 'full' };
+  if (!row) {
+    const live = await db.select({ id: tierPoolArms.id, route: tierPoolArms.route, model: tierPoolArms.model })
+      .from(tierPoolArms).where(and(eq(tierPoolArms.poolId, args.poolId), ne(tierPoolArms.status, 'removed')));
+    return { ok: false, reason: live.some(a => a.route === args.route && a.model === args.model) ? 'duplicate' : 'full' };
+  }
+  const armId = row.id;
+
+  const [poolRow] = await db.select({
+    allocationVersion: tierPools.allocationVersion, weights: tierPools.weights, allocation: tierPools.allocation,
+  }).from(tierPools).where(eq(tierPools.id, args.poolId));
+  if (poolRow) {
+    const arms = (await db.select({ id: tierPoolArms.id, role: tierPoolArms.role, addedAt: tierPoolArms.addedAt })
+      .from(tierPoolArms).where(and(eq(tierPoolArms.poolId, args.poolId), ne(tierPoolArms.status, 'removed')))) as
+      Array<{ id: string; role: 'incumbent' | 'challenger'; addedAt: Date }>;
+    const armOrder = arms
+      .slice()
+      .sort((a, b) => (a.role === 'incumbent' ? -1 : b.role === 'incumbent' ? 1 : a.addedAt.getTime() - b.addedAt.getTime()))
+      .map(a => a.id);
+    const allocation = (poolRow.allocation ?? {}) as Allocation;
+    const backfilled = backfillWeights(
+      (poolRow.weights ?? {}) as Weights,
+      arms.map(a => ({ id: a.id, share: allocation[a.id] ?? (a.role === 'incumbent' ? 1 : 0) })),
+    );
+    const newWeights: Weights = { ...backfilled, [armId]: args.weight };
+    const check = sharesFromWeights(newWeights, armOrder);
+    if (check.ok) {
+      await writeAllocation({
+        teamId: args.teamId, poolId: args.poolId, expectedVersion: poolRow.allocationVersion,
+        allocation: check.allocation, weights: newWeights, kind: 'arm_added', actorUserId: args.actorUserId,
+        evidence: { armId, route: args.route, model: args.model, weight: args.weight, ...args.evidence },
+      });
+    }
+  }
+  return { ok: true, armId };
 }
 
 /**
@@ -282,7 +321,9 @@ export async function removeChallenger(args: {
       SELECT allocation, mode, allocation_version FROM tier_pools WHERE id = ${args.poolId} AND team_id = ${args.teamId}
     ), u AS (
       UPDATE tier_pools
-      SET allocation = ${JSON.stringify(args.allocation)}::jsonb, allocation_version = allocation_version + 1, updated_at = now()
+      SET allocation = ${JSON.stringify(args.allocation)}::jsonb,
+          weights = weights - ${args.armId}::text,
+          allocation_version = allocation_version + 1, updated_at = now()
       WHERE id = ${args.poolId} AND team_id = ${args.teamId} AND allocation_version = ${args.expectedVersion}
         AND EXISTS (
           SELECT 1 FROM tier_pool_arms

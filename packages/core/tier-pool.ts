@@ -112,11 +112,19 @@ export type AllocationCheck =
  * typed `20` (meant as 20%) is rejected rather than read as 2000%. Active arms
  * missing from the input read as 0; paused or removed arms may not carry
  * traffic. The result keeps every active arm, rounded to 4 places.
+ *
+ * `opts.mode === 'split'` skips the floor/cap checks below (see
+ * `docs/design/tier-weights.md` §1): a `split` pool's shares come from an
+ * admin's own weights via `sharesFromWeights` (`./tier-weights.ts`), and the
+ * admin's weights are final — the incumbent may legally go to 0%. Every other
+ * mode (the default, and `explore`) keeps the floor and cap enforced, since
+ * those bounds are what protect an automatic or bandit-proposed shift.
  */
 export function validateAllocation(
   input: unknown,
   arms: readonly PoolArmRef[],
   bounds: PoolBounds = DEFAULT_POOL_BOUNDS,
+  opts?: { mode?: PoolMode },
 ): AllocationCheck {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, error: 'allocation must be an object of arm id to share' };
@@ -140,12 +148,14 @@ export function validateAllocation(
   const total = Object.values(out).reduce((s, v) => s + v, 0);
   if (Math.abs(total - 1) > 1e-3) return { ok: false, error: `shares must sum to 100% (got ${(total * 100).toFixed(1)}%)` };
 
-  const challengers = total - out[incumbent.id];
-  if (out[incumbent.id] + EPS < bounds.incumbentFloor) {
-    return { ok: false, error: `the base model keeps at least ${pct(bounds.incumbentFloor)}` };
-  }
-  if (challengers > bounds.explorationCap + EPS) {
-    return { ok: false, error: `challengers together get at most ${pct(bounds.explorationCap)}` };
+  if (opts?.mode !== 'split') {
+    const challengers = total - out[incumbent.id];
+    if (out[incumbent.id] + EPS < bounds.incumbentFloor) {
+      return { ok: false, error: `the base model keeps at least ${pct(bounds.incumbentFloor)}` };
+    }
+    if (challengers > bounds.explorationCap + EPS) {
+      return { ok: false, error: `challengers together get at most ${pct(bounds.explorationCap)}` };
+    }
   }
   return { ok: true, allocation: out };
 }

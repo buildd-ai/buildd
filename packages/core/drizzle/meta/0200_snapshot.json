@@ -1,6 +1,6 @@
 {
-  "id": "8017c5a6-e05f-4b8e-83f6-c2d92e5f47f1",
-  "prevId": "9a267726-4974-484c-9f61-15454fc42801",
+  "id": "ad78d0e2-77d8-4ee5-a679-5a73614fffef",
+  "prevId": "458dd01d-d7c8-4938-8e00-0c581663e837",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5898,6 +5898,12 @@
           "notNull": true,
           "default": false
         },
+        "pr_sweep_last_checked_at": {
+          "name": "pr_sweep_last_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "orchestration_mode": {
           "name": "orchestration_mode",
           "type": "text",
@@ -10964,12 +10970,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::text[]"
-        },
-        "chat_composer_prefs": {
-          "name": "chat_composer_prefs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -11161,19 +11161,6 @@
         },
         "chat_disabled": {
           "name": "chat_disabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "chat_default_tier": {
-          "name": "chat_default_tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "chat_cap_new_session_tier": {
-          "name": "chat_cap_new_session_tier",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -12834,6 +12821,12 @@
         "update_available": {
           "name": "update_available",
           "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "update_available_since": {
+          "name": "update_available_since",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

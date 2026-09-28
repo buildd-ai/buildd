@@ -1,5 +1,5 @@
 /**
- * `@buildd/ai-kit/decide`: Jev decisions (server; peer `@typesafe-ai/sdk`).
+ * `@builddai/ai-kit/decide`: Jev decisions (server; peer `@typesafe-ai/sdk`).
  *
  * - Typed question builders: `choice`, `score`, `noul`.
  * - `decide({ apiKey, state, questions })`: one call over the TypeSafe SDK to
@@ -23,14 +23,10 @@
  * resolve it (`scripts/build.test.ts` enforces this).
  */
 
-import {
-  TypeSafeClient,
-  APIError,
-  APIConnectionError,
-  APITimeoutError,
-  APIUserAbortError,
-  type Fetch,
-} from '@typesafe-ai/sdk';
+// Type-only: erased from the emitted JS. The SDK is an optional peer, so the
+// runtime import is lazy (`loadSdk`, in the transport section): this module
+// loads without it, and only `decide` fails, with `sdk_missing`.
+import type { TypeSafeClient, Fetch } from '@typesafe-ai/sdk';
 
 // ══ Types ═════════════════════════════════════════════════════════════════════
 
@@ -111,7 +107,9 @@ export type DecideError =
   | { kind: 'transport'; message: string }
   | { kind: 'rate_limited'; retryAfter?: number }
   | { kind: 'provider_error'; status: number; body: string }
-  | { kind: 'parse'; message: string };
+  | { kind: 'parse'; message: string }
+  /** The optional peer `@typesafe-ai/sdk` is not installed (or failed to load). No request was made. */
+  | { kind: 'sdk_missing'; message: string };
 
 export type DecideResult<Q extends DecisionQuestions> =
   | {
@@ -141,6 +139,8 @@ export function describeDecideError(error: DecideError): string {
       return `provider returned HTTP ${error.status}`;
     case 'parse':
       return `decision response did not match the questions: ${error.message}`;
+    case 'sdk_missing':
+      return `decide needs the optional peer dependency ${DECIDE_SDK_PACKAGE}; install it (npm install ${DECIDE_SDK_PACKAGE}): ${error.message}`;
   }
 }
 
@@ -501,8 +501,26 @@ function bodyText(body: unknown): string {
   return typeof body === 'string' ? body : JSON.stringify(body);
 }
 
-function makeClient(apiKey: string, model: string, fetcher: Fetcher, headers: Record<string, string>): TypeSafeClient {
-  return new TypeSafeClient({
+/** The optional peer `decide` runs on. Declared in `peerDependencies` (optional). */
+export const DECIDE_SDK_PACKAGE = '@typesafe-ai/sdk';
+
+type Sdk = typeof import('@typesafe-ai/sdk');
+let sdkLoad: Promise<Sdk> | null = null;
+
+/**
+ * Import the SDK on first use. A failed import is not cached, so installing
+ * the peer (or a transient loader error) recovers without a restart.
+ */
+function loadSdk(): Promise<Sdk> {
+  sdkLoad ??= import('@typesafe-ai/sdk').catch((e: unknown) => {
+    sdkLoad = null;
+    throw e;
+  });
+  return sdkLoad;
+}
+
+function makeClient(sdk: Sdk, apiKey: string, model: string, fetcher: Fetcher, headers: Record<string, string>): TypeSafeClient {
+  return new sdk.TypeSafeClient({
     apiKey,
     baseURL: DECIDE_BASE_URL,
     defaultModel: model,
@@ -515,11 +533,13 @@ function makeClient(apiKey: string, model: string, fetcher: Fetcher, headers: Re
 
 /** Map an SDK throw to an error kind. `retryable` feeds our own retry loop. */
 function mapSdkError(
+  sdk: Sdk,
   e: unknown,
   timeoutMs: number,
   retryable: (status: number) => boolean,
   attemptCapped: boolean,
 ): { error: DecideError; retryable: boolean } {
+  const { APIError, APIConnectionError, APITimeoutError, APIUserAbortError } = sdk;
   if (e instanceof APIError) {
     if (e.status === 429) {
       const retryAfter = Number(e.headers.get('retry-after'));
@@ -575,9 +595,16 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
   if (invalid) return fail({ kind: 'invalid_request', message: invalid }, 0);
   if (!params.apiKey) return fail({ kind: 'missing_key' }, 0);
 
+  let sdk: Sdk;
+  try {
+    sdk = await loadSdk();
+  } catch (e) {
+    return fail({ kind: 'sdk_missing', message: e instanceof Error ? e.message : String(e) }, 0);
+  }
+
   let client: TypeSafeClient;
   try {
-    client = makeClient(params.apiKey, model, fetcher, params.headers ?? {});
+    client = makeClient(sdk, params.apiKey, model, fetcher, params.headers ?? {});
   } catch (e) {
     return fail({ kind: 'transport', message: e instanceof Error ? e.message : String(e) }, 0);
   }
@@ -603,7 +630,7 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
         { timeout: budget, signal: AbortSignal.timeout(budget) },
       );
     } catch (e) {
-      const mapped = mapSdkError(e, timeoutMs, retryable, attemptCapped);
+      const mapped = mapSdkError(sdk, e, timeoutMs, retryable, attemptCapped);
       lastError = mapped.error;
       if (!mapped.retryable) return fail(lastError, attempts);
       if (attempts < maxAttempts) await sleep(backoff * 2 ** (attempts - 1));
@@ -827,7 +854,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. */
-export const KIT_VERSION = '0.1.0';
+export const KIT_VERSION = '0.1.1';
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 

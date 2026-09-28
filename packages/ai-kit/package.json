@@ -1,6 +1,6 @@
 {
-  "name": "@buildd/ai-kit",
-  "version": "0.1.0",
+  "name": "@builddai/ai-kit",
+  "version": "0.1.1",
   "description": "Chat contract, tool permissions, model plans and Jev decisions for apps that use buildd's model economy",
   "license": "Apache-2.0",
   "type": "module",

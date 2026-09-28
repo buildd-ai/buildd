@@ -8,6 +8,7 @@ import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
+import { resolveEffectiveRoleSlugs } from './effective-roles';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -264,6 +265,15 @@ export async function approvePlan(
     missionPhaseLabel: task.missionPhaseLabel ?? null,
   });
 
+  // A step's role is the planner's to state, but only a role this workspace
+  // actually has is kept: an unknown slug names no persona and strands the
+  // child at claim (role-routing §1 row 6). A missing or unknown role files
+  // role-less, and the rejected slug is recorded on the child's context. The
+  // planning task's own role (the Organizer) is never inherited.
+  const knownRoles = survivingPlan.some(step => step.roleSlug) && task.workspaceId
+    ? await resolveEffectiveRoleSlugs(task.workspaceId)
+    : new Set<string>();
+
   // First pass: create all tasks with empty dependsOn to get their IDs
   const refToId: Record<string, string> = {};
   const refToTitle: Record<string, string> = {};
@@ -272,6 +282,8 @@ export async function approvePlan(
   for (const [stepIndex, step] of survivingPlan.entries()) {
     const intentInfo = stepIntent.get(step.ref);
     const phase = stepPhases[stepIndex] ?? { missionPhaseIndex: null, missionPhaseLabel: null };
+    const stepRole = step.roleSlug && knownRoles.has(step.roleSlug) ? step.roleSlug : null;
+    const rejectedRole = step.roleSlug && !stepRole ? step.roleSlug : null;
     const [created] = await db
       .insert(tasks)
       .values({
@@ -287,7 +299,7 @@ export async function approvePlan(
         creationSource: options?.autoApproved ? 'orchestrator' : 'api',
         status: 'pending',
         priority: step.priority ?? 0,
-        roleSlug: step.roleSlug || null,
+        roleSlug: stepRole,
         requiredCapabilities: step.requiredCapabilities ?? [],
         outputRequirement: step.outputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto' | undefined,
         // A proposal child inherits the doc-fix task's scope so the §11
@@ -319,6 +331,7 @@ export async function approvePlan(
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
           ...(options?.autoApproved ? { autoApproved: true } : {}),
+          ...(rejectedRole ? { planRoleSlugRejected: rejectedRole } : {}),
           // The link back to the ledger: this child exists to settle these rows,
           // and the spec text it updates is the one they name.
           ...(docFix?.specPath ? { specDocFix: docFix, finalizesProposal: true } : {}),

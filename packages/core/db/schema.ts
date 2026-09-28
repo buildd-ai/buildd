@@ -596,6 +596,11 @@ export interface TaskScheduleTemplate {
   // time consumes these via tasks.kind / tasks.complexity.
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
   complexity?: 'simple' | 'normal' | 'complex';
+  // The role every task this schedule spawns runs as, stated once. Applied at
+  // fire time only if the slug still resolves to a role in the task's
+  // workspace (docs/design/role-routing.md §3.1); otherwise the task files
+  // role-less.
+  roleSlug?: string;
 }
 
 // Task result/deliverable snapshot - populated when worker completes
@@ -896,6 +901,16 @@ export const missions = pgTable('missions', {
   //
   // Default false: nothing about any existing mission changes until this is true.
   integrationBranchEnabled: boolean('integration_branch_enabled').default(false).notNull(),
+  // ATTEMPT clock for sweepMissionIntegrationPrs (lib/pr-reconcile.ts), mirroring
+  // workers.prLastCheckedAt. Advanced on every candidate this sweep looks at,
+  // regardless of outcome — including a failed open attempt. The sweep's
+  // candidate query gates on THIS column, not `updatedAt`: `updatedAt` is bumped
+  // by any unrelated write (e.g. a task completing, via maybeRetriggerMission's
+  // debounce), so a mission that keeps genuinely failing to open its PR never
+  // ages out of the window as long as something else keeps touching it — and,
+  // symmetrically, a mission nothing else ever touches again ages out forever
+  // with no re-entry. Null = never attempted.
+  prSweepLastCheckedAt: timestamp('pr_sweep_last_checked_at', { withTimezone: true }),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -2125,6 +2140,10 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   commitDrift: boolean('commit_drift'),
   updating: boolean('updating'),
   updateAvailable: boolean('update_available'),
+  // Set the moment updateAvailable first flips to true, cleared the moment it
+  // stops being true — so "how long has it been behind" is measured from this
+  // column instead of inferred from boot age or heartbeat cadence.
+  updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
@@ -3537,6 +3556,11 @@ export const tierPools = pgTable('tier_pools', {
   allocation: jsonb('allocation').$type<Record<string, number>>().notNull().default({}),
   // Bumped by every allocation write; writes are compare-and-set on it.
   allocationVersion: integer('allocation_version').notNull().default(1),
+  // { [tier_pool_arms.id]: 'off'|'low'|'med'|'high' }. `split` only — the
+  // input `allocation` is derived from it (docs/design/tier-weights.md §1). A
+  // pool created before this shipped has `weights = {}`; see
+  // `packages/core/tier-weights.ts` `backfillWeights`.
+  weights: jsonb('weights').$type<Record<string, 'off' | 'low' | 'med' | 'high'>>().notNull().default({}),
   incumbentFloor: real('incumbent_floor').notNull().default(0.6),
   explorationCap: real('exploration_cap').notNull().default(0.3),
   challengerMin: real('challenger_min').notNull().default(0.05),

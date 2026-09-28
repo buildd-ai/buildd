@@ -359,7 +359,7 @@ describe('knowledge mirror — no store configured', () => {
 // ── memory corpus is team-scoped (regression for workspace-namespace bug) ────
 
 function mockMemoryClient(): any {
-  const mem = (over: any = {}) => ({ id: 'mem-1', title: 'T', content: 'C', type: 'gotcha', tags: [], files: [], project: null, ...over });
+  const mem = (over: any = {}) => ({ id: 'mem-1', title: 'T', content: 'C', type: 'gotcha', tags: [], files: [], project: 'acme/widgets', ...over });
   return {
     async save(input: any) { return { memory: mem(input) }; },
     async update(_id: string, fields: any) { return { memory: mem(fields) }; },
@@ -378,7 +378,7 @@ describe('knowledge mirror — memory is team-scoped', () => {
       knowledgeStore: store,
       embedder: null,
     };
-    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, ctx);
+    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, { ...ctx, project: 'acme/widgets' });
     expect(store.upserts).toHaveLength(1);
     expect(store.upserts[0].namespace).toBe(`${MOCK_TEAM_ID}:memory`);
     expect(store.upserts[0].namespace).not.toContain(MOCK_WORKSPACE_ID);
@@ -393,7 +393,7 @@ describe('knowledge mirror — memory is team-scoped', () => {
       knowledgeStore: store,
       embedder: null,
     };
-    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, ctx);
+    await handleMemoryAction(mockMemoryClient(), 'save', { type: 'gotcha', title: 'X', content: 'Y' }, { ...ctx, project: 'acme/widgets' });
     expect(store.upserts).toHaveLength(0);
   });
 });

@@ -6,7 +6,7 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
 const mockConnectorsFindFirst = mock(() => null as any);
 const mockConnectorsUpdate = mock(() => ({
-  set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'conn-1' }]) })) })),
+  set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }]) })) })),
 }));
 const mockConnectorsDelete = mock(() => ({ where: mock(() => Promise.resolve()) }));
 const mockSecretsFindFirst = mock(() => null as any);
@@ -56,7 +56,7 @@ const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET, PATCH, DELETE } from './route';
 
-const PARAMS = Promise.resolve({ id: 'conn-1' });
+const PARAMS = Promise.resolve({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
 
 function makeReq(method = 'GET', headers: Record<string, string> = {}, body?: any) {
   return new NextRequest('http://localhost:3000/api/connectors/conn-1', {
@@ -66,7 +66,7 @@ function makeReq(method = 'GET', headers: Record<string, string> = {}, body?: an
   });
 }
 
-const CONNECTOR = { id: 'conn-1', teamId: 'team-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth' as const };
+const CONNECTOR = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', teamId: 'team-1', name: 'Test', url: 'https://mcp.example.com', authMode: 'oauth' as const };
 
 describe('GET /api/connectors/[id]', () => {
   beforeEach(() => {
@@ -92,6 +92,14 @@ describe('GET /api/connectors/[id]', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 for a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await GET(makeReq(), { params: Promise.resolve({ id: 'a1b2c3d4' }) });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+    expect(mockConnectorsFindFirst).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when connector belongs to different team (team scoping)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, teamId: 'other-team' });
@@ -105,7 +113,7 @@ describe('GET /api/connectors/[id]', () => {
     const res = await GET(makeReq(), { params: PARAMS });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.connector.id).toBe('conn-1');
+    expect(data.connector.id).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
   });
 
   it('returns 404 for API key from wrong team', async () => {
@@ -168,7 +176,7 @@ describe('PATCH /api/connectors/[id]', () => {
     mockConnectorsUpdate.mockReturnValue({
       set: mock((v: any) => { captured = v; return {
         where: mock(() => ({ returning: mock(() => [{
-          id: 'conn-1', authMode: 'assertion',
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', authMode: 'assertion',
           assertionAudience: 'https://cue.buildd.dev/api/mcp',
           assertionTokenEndpoint: 'https://cue.buildd.dev/api/oauth/token',
         }]) })),

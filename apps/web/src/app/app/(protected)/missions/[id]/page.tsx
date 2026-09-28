@@ -87,6 +87,7 @@ import {
   MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
+import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
@@ -180,6 +181,7 @@ export default async function MissionDetailPage({
     missionFollowupTasks,
     runnerHeartbeats,
     fleetCapacity,
+    quickAddRoles,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -266,6 +268,11 @@ export default async function MissionDetailPage({
     // same number Home's "AGENTS LIVE n/N" prints (not the slots drawn here).
     (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(user.id), now: Date.now() }))()
       .catch(() => null),
+    // The quick-add picker offers only roles a task in this mission's
+    // workspace can carry (role-routing §1 row 3, §3.1).
+    mission.workspaceId
+      ? resolveEffectiveRoles(mission.workspaceId).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
@@ -1303,7 +1310,7 @@ export default async function MissionDetailPage({
       currentStatus={mission.status}
       cronExpression={scheduleCron}
       workspaceId={mission.workspaceId}
-      roles={roles}
+      roles={quickAddRoles}
       hasSchedule={!!scheduleCron}
       orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
       isHeld={isHeld}

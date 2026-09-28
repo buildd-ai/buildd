@@ -49,7 +49,8 @@ mock.module('../db/client', () => ({
 mock.module('../tier-pool-admin', () => ({
   writeAllocation: async (a: any) => { writes.push(a); return writeVersion; },
 }));
-mock.module('../model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => [] }));
+let catalogRows: any[] = [];
+mock.module('../model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => catalogRows }));
 mock.module('../openrouter-rankings-source', () => ({
   refreshTeamRankings: async (a: any) => { refreshCalls.push(a); return { status: 'fetched', written: ['text'], failed: [], unmapped: 0 }; },
   loadTeamRankings: async () => ({}),
@@ -74,6 +75,7 @@ beforeEach(() => {
   writes.length = 0;
   refreshCalls.length = 0;
   writeVersion = 8;
+  catalogRows = [];
 });
 
 describe('runTierPoolsDaily', () => {
@@ -128,6 +130,20 @@ describe('runTierPoolsDaily', () => {
     const s = await src.runTierPoolsDaily({ now: AT_SIX });
     expect(s.pools).toBe(0);
     expect(executed).toHaveLength(0);
+  });
+
+  it('split: an expired arm writes its weight to off alongside the allocation', async () => {
+    poolRows = [{ ...poolRows[0], mode: 'split', allocation: { inc: 0.7, ch: 0.3 }, weights: { inc: 'high', ch: 'low' } }];
+    catalogRows = [
+      { id: 'claude-sonnet-5', canonicalId: null, openRouterId: 'anthropic/claude-sonnet-5', provider: 'anthropic', displayName: 'x', contextLength: 400_000, created: 0, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+      { id: 'claude-opus-5', canonicalId: null, openRouterId: 'anthropic/claude-opus-5', provider: 'anthropic', displayName: 'x', contextLength: 400_000, created: 0, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, expiresAt: Math.floor(AT_SIX.getTime() / 1000) - 86_400 },
+    ];
+    const s = await src.runTierPoolsDaily({ now: AT_SIX });
+    expect(s.written).toBe(1);
+    expect(writes[0]).toMatchObject({
+      poolId: 'pool-1', kind: 'allocation', actorSystem: 'system:expiry',
+      allocation: { inc: 1, ch: 0 }, weights: { inc: 'high', ch: 'off' },
+    });
   });
 });
 

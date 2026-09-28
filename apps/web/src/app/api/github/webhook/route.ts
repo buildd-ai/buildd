@@ -1697,6 +1697,10 @@ async function handleCheckSuiteFailure(
           ciRunUrl: ciLogs.runUrl,
         });
 
+        // The diagnose task re-attempts the PR's owner task, so it carries the
+        // same identity as the CI retry below would (Rule P1-7).
+        const diagnoseIdentity = await inheritAttemptIdentity(diagnoseTask.parentTaskId);
+
         const [newDiagnoseTask] = await db
           .insert(tasks)
           .values({
@@ -1704,6 +1708,7 @@ async function handleCheckSuiteFailure(
             title: diagnoseTask.title,
             description: diagnoseTask.description,
             parentTaskId: diagnoseTask.parentTaskId,
+            ...diagnoseIdentity,
             ciRetryPrNumber: pr.number,
             ciRetryHeadSha: checkSuite.head_sha,
             missionId: diagnoseTask.missionId,
@@ -2354,6 +2359,7 @@ async function maybeReDispatchReviewer(
       installationId,
       repoFullName,
       policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
+      baseRef: pr.base?.ref ?? null,
       priorVerdict: {
         headSha: priorHeadSha,
         verdict: priorVerdictKind,

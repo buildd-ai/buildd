@@ -21,13 +21,13 @@ const stats = summarizeArm([
 const rows = [
   { tier: 'standard', surface: 'chat', poolId: 'pool-1', mode: 'split', locked: false, allocationVersion: 4, incumbentFloor: 0.6, explorationCap: 0.3, minGraded: 50, lastChange: null,
     arms: [
-      { id: 'inc', route: 'anthropic', model: 'claude-sonnet-5', role: 'incumbent', status: 'active', share: 0.8, stats },
-      { id: 'ch', route: 'openrouter', model: 'qwen/qwen3-coder', role: 'challenger', status: 'active', share: 0.2, stats: null },
+      { id: 'inc', route: 'anthropic', model: 'claude-sonnet-5', role: 'incumbent', status: 'active', share: 0.8, weight: 'high', stats },
+      { id: 'ch', route: 'openrouter', model: 'qwen/qwen3-coder', role: 'challenger', status: 'active', share: 0.2, weight: 'low', stats: null },
     ] },
   { tier: 'premium-plus', surface: 'agent', poolId: null, mode: 'pinned', locked: true, allocationVersion: null, incumbentFloor: 0.6, explorationCap: 0.3, minGraded: 30, lastChange: null,
-    arms: [{ id: null, route: 'runner:claude', model: 'claude-fable-5-1', role: 'incumbent', status: 'active', share: 1, stats: null }] },
+    arms: [{ id: null, route: 'runner:claude', model: 'claude-fable-5-1', role: 'incumbent', status: 'active', share: 1, weight: 'high', stats: null }] },
   { tier: 'budget', surface: 'agent', poolId: null, mode: 'pinned', locked: false, allocationVersion: null, incumbentFloor: 0.6, explorationCap: 0.3, minGraded: 30, lastChange: null,
-    arms: [{ id: null, route: 'runner:claude', model: 'claude-haiku-4-5', role: 'incumbent', status: 'active', share: 1, stats: null }] },
+    arms: [{ id: null, route: 'runner:claude', model: 'claude-haiku-4-5', role: 'incumbent', status: 'active', share: 1, weight: 'high', stats: null }] },
 ];
 
 const requests: Array<{ url: string; method: string; body: any }> = [];
@@ -107,8 +107,30 @@ describe('TierPoolsSection', () => {
     await click(panel.querySelector('[data-key="runner:claude::claude-opus-5"]'));
     await click(document.querySelector('[data-testid="model-picker-confirm"]'));
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    // Nothing is added yet: the sheet previews a preselected, cost-aware weight first.
+    expect(requests.some(r => r.method === 'POST')).toBe(false);
+    const row = host.querySelector('[data-testid="pool-row-agent-budget"]')!;
+    const preview = row.querySelector('[data-testid="pool-add-preview"]')!;
+    expect(preview.textContent).toContain('claude-opus-5');
+    // claude-opus-5 ($5/$25) is pricier than the incumbent claude-haiku-4-5 ($1/$5): low.
+    expect(preview.querySelector('[data-testid="pool-weight-low"]')!.getAttribute('aria-pressed')).toBe('true');
+    await click(preview.querySelector('[data-testid="pool-add-confirm"]'));
     const post = requests.find(r => r.method === 'POST')!;
-    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5' });
+    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5', weight: 'low' });
+  });
+
+  it('lets the admin change the preselected weight before adding', async () => {
+    await mount();
+    await click(host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-toggle"]'));
+    const panel = document.querySelector('[data-testid="model-picker-panel"]')!;
+    await click(document.querySelector('[data-testid="model-picker-band-all"]'));
+    await click(panel.querySelector('[data-key="runner:claude::claude-opus-5"]'));
+    await click(document.querySelector('[data-testid="model-picker-confirm"]'));
+    const preview = host.querySelector('[data-testid="pool-row-agent-budget"] [data-testid="pool-add-preview"]')!;
+    await click(preview.querySelector('[data-testid="pool-weight-high"]'));
+    await click(preview.querySelector('[data-testid="pool-add-confirm"]'));
+    const post = requests.find(r => r.method === 'POST')!;
+    expect(post.body).toEqual({ teamId: 'team-demo', tier: 'budget', surface: 'agent', route: 'runner:claude', model: 'claude-opus-5', weight: 'high' });
   });
 
   it('chat pools pick from API-key routes', async () => {
@@ -119,19 +141,25 @@ describe('TierPoolsSection', () => {
     expect(document.querySelector('select, datalist')).toBeNull();
   });
 
-  it('applies typed shares as a split with the version it loaded', async () => {
+  it('applies a weight change as a split with the version it loaded', async () => {
     await mount();
     await click(host.querySelector('[data-testid="pool-row-chat-standard"] [data-testid="pool-details-toggle"]'));
-    const inputs = [...host.querySelectorAll('[data-testid="pool-share-input"]')] as HTMLInputElement[];
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(inputs[0], '70'); inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-      setter.call(inputs[1], '30'); inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    const weightGroups = [...host.querySelectorAll('[data-testid="pool-weight"]')];
+    expect(weightGroups).toHaveLength(2);
+    // Base starts `high`; bump the challenger from `low` to `med`.
+    await click(weightGroups[1].querySelector('[data-testid="pool-weight-med"]'));
     await click(host.querySelector('[data-testid="pool-apply"]'));
     const patch = requests.find(r => r.method === 'PATCH')!;
     expect(patch.url).toBe('/api/model-tiers/pools/pool-1');
-    expect(patch.body).toEqual({ teamId: 'team-demo', expectedVersion: 4, mode: 'split', allocation: { inc: 0.7, ch: 0.3 } });
+    expect(patch.body).toEqual({ teamId: 'team-demo', expectedVersion: 4, mode: 'split', weights: { inc: 'high', ch: 'med' } });
+  });
+
+  it('shows no explainer text next to the weight control', async () => {
+    await mount();
+    await click(host.querySelector('[data-testid="pool-row-chat-standard"] [data-testid="pool-details-toggle"]'));
+    const details = host.querySelector('[data-testid="pool-details"]')!;
+    expect(details.textContent).not.toContain('base keeps at least');
+    expect(details.textContent).not.toContain('others at most');
   });
 
   it('pins to the base', async () => {
@@ -146,6 +174,6 @@ describe('TierPoolsSection', () => {
     expect(host.querySelector('[data-testid="pool-add-toggle"]')).toBeNull();
     await click(host.querySelector('[data-testid="pool-details-toggle"]'));
     expect(host.querySelector('[data-testid="pool-pin"]')).toBeNull();
-    expect((host.querySelector('[data-testid="pool-share-input"]') as HTMLInputElement).disabled).toBe(true);
+    expect((host.querySelector('[data-testid="pool-weight-high"]') as HTMLButtonElement).disabled).toBe(true);
   });
 });

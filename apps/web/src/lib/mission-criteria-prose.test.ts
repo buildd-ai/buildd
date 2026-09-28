@@ -74,6 +74,17 @@ mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
 
+// Roles effective for the task's workspace (role-routing §1 row 9, §3.1).
+let effectiveRoles = new Set<string>();
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+mock.module('@/lib/effective-roles', () => ({
+  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
+    pickRoleCalls.push({ workspaceId, candidates });
+    return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
+  },
+  resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
 const {
   resolveProseCriterion,
   handleProseEvalOutcome,
@@ -529,5 +540,23 @@ describe('isProseEvalTask', () => {
     expect(isProseEvalTask({})).toBe(false);
     expect(isProseEvalTask({ criteriaVerification: { missionId: 'm', criterionIndex: 0 } })).toBe(false);
     expect(isProseEvalTask({ criteriaProseEval: { missionId: 'm' } })).toBe(false);
+  });
+});
+
+// ── Role (role-routing §1 row 9) ──────────────────────────────────────────────
+
+describe('resolveProseCriterion — role', () => {
+  beforeEach(() => { effectiveRoles = new Set(); pickRoleCalls.length = 0; });
+
+  it('runs the verifier as Researcher when the workspace has the role', async () => {
+    effectiveRoles = new Set(['researcher', 'writer']);
+    await resolveProseCriterion(input());
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['researcher'] }]);
+    expect(insertedValues[0].roleSlug).toBe('researcher');
+  });
+
+  it('files it role-less when the workspace has no Researcher', async () => {
+    await resolveProseCriterion(input());
+    expect(insertedValues[0].roleSlug).toBeNull();
   });
 });

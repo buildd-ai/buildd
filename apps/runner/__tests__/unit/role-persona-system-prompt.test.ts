@@ -19,6 +19,7 @@ import type { LocalUIConfig } from '../../src/types';
 
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
+import * as realBootstrap from '../../src/cbm-bootstrap';
 import { buildRoleSystemPromptSection } from '../../src/roles';
 
 // ─── Pure: the rendered section ─────────────────────────────────────────────
@@ -169,6 +170,11 @@ mock.module('../../src/env-scan', () => ({
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
+}));
+
+mock.module('../../src/cbm-bootstrap.js', () => ({
+  ...realBootstrap,
+  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');
