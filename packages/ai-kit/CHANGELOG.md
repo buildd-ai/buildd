@@ -71,7 +71,7 @@ engine version does that now, and only when the behaviour actually changes.
 - `/decide`: `DECIDE_ENGINE_VERSION`, `normalizeDecisionVersion`,
   `parseDecisionVersion`, `ParsedDecisionVersion`; `decisionFingerprint(config,
   engine?)`; `Decision.engine`, `Decision.kitVersion`,
-  `DecisionRun.kitVersion`, `EvalReport.kitVersion`.
+  `DecisionRun.kitVersion` (optional in the type, always set by the kit), `EvalReport.kitVersion`.
 - `expectDecisionPinned` compares versions normalised; its version-mismatch
   message names the prompt version, model or decide engine instead of the kit
   release.

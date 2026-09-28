@@ -1041,8 +1041,12 @@ export interface DecisionRun<Q extends DecisionQuestions> {
   decisionId: string;
   /** The decision's identity (`promptVersion|model|engine-N`). Stamp it on persisted rows. */
   version: string;
-  /** The kit release that ran it. Metadata: log it if useful, never group or pin by it. */
-  kitVersion: string;
+  /**
+   * The kit release that ran it. Metadata: log it if useful, never group or
+   * pin by it. Always set by the kit; optional so code that builds its own
+   * runs (fallbacks, test fakes) still type-checks.
+   */
+  kitVersion?: string;
   outcomes: DecisionOutcomes<Q>;
   result: DecideResult<Q>;
   /** Present when the call reached the network. Metadata only. */
