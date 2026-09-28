@@ -40,6 +40,7 @@ const batch = mock(async (_ids: string[]) => ({ memories: [{ id: 'mem-1', title:
 mock.module('@/lib/memory-helper', () => ({
   getMemoryStoreForTeam: async () => ({ search, batch }),
   getMemoryClientForTeam: async () => ({ search, batch }),
+  getMemoryIndexStore: () => ({ upsert: async () => ({}), query: async () => [], delete: async () => {}, listNamespaces: async () => [] }),
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
