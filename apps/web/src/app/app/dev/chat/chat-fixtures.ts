@@ -172,8 +172,12 @@ export const prView = ([n, title, add, rem]: [number, string, number, number]): 
 export const missionRef: BuilddObjectRef = { kind: 'mission', id: MISSION_ID, workspaceId: WS.id, fallbackText: 'Mission: Multi-currency invoices' };
 export const questionRef: BuilddObjectRef = { kind: 'question', id: 'w-checkout', taskId: QUESTION_TASK_ID, missionId: MISSION_ID, workspaceId: WS.id, fallbackText: 'The checkout Builder asks: Round per line, or only the total?' };
 export const taskRef: BuilddObjectRef = { kind: 'task', id: 'task-fx', workspaceId: WS.id, fallbackText: 'Task: rates service' };
+// Grouping hints as a release read carries them: the multi-currency work, and one chore outside any mission.
 export const prRefs: BuilddObjectRef[] = SHIPPED.map(([n, title]) => ({
   kind: 'pr', id: `harborline/billing-web#${n}`, repo: 'harborline/billing-web', prNumber: n, url: pr(n), workspaceId: WS.id, fallbackText: `#${n} ${title}`,
+  ...(n === 410
+    ? { missionId: null, missionTitle: null, category: 'chore', area: 'deps' }
+    : { missionId: MISSION_ID, missionTitle: 'Multi-currency invoices', category: 'feature' }),
 }));
 
 // ── Messages ─────────────────────────────────────────────────────────────────

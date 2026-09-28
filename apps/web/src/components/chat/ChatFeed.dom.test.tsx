@@ -198,6 +198,12 @@ describe('objects', () => {
     expect(q('[data-testid="pr-list"]')?.textContent).toContain('7 pull requests');
     expect(qa('[data-testid="object-card"][data-kind="pr"]').length).toBe(7);
   });
+
+  it('PRs cluster by mission, then category: the mission work, then the chore', async () => {
+    await render(fixtures.chatFixture('shipped').messages as Msgs, 'shipped');
+    const clusters = qa('[data-testid="pr-cluster"]');
+    expect(clusters.map(c => c.firstElementChild?.textContent)).toEqual(['Multi-currency invoices6', 'Chores1']);
+  });
 });
 
 describe('model-authored text', () => {

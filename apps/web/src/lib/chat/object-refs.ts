@@ -8,10 +8,13 @@
  */
 
 import type { BuilddObjectRef } from '@buildd/shared';
+import { taskDisplayLabel } from '@buildd/core/task-label';
 import type { ApiCall } from './in-process-api';
 
 /** Cap per tool call: a list of 50 tasks renders as the first few cards. */
 export const MAX_REFS_PER_CALL = 8;
+/** PRs render as one compact list, so a week of them isn't cut to the card cap. */
+export const MAX_PR_REFS = 40;
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -50,6 +53,10 @@ function prRefsFromWorkers(task: Obj): BuilddObjectRef[] {
     out.push({
       kind: 'pr', id: `${m[1]}#${prNumber}`, workspaceId: wsOf(task), repo: m[1], prNumber, url,
       taskId: str(task.id), title: `#${prNumber}`, fallbackText: `PR ${m[1]}#${prNumber}: ${url}`,
+      missionId: str(task.missionId) ?? null,
+      missionTitle: (isObj(task.mission) ? str(task.mission.title) : undefined) ?? null,
+      area: str(task.title) ? taskDisplayLabel({ label: str(task.label) ?? null, title: str(task.title)! }).scope : null,
+      category: str(task.category) ?? null,
     });
   }
   return out;
@@ -66,6 +73,32 @@ function questionRefsFromWorkers(task: Obj): BuilddObjectRef[] {
       kind: 'question', id: str(w.id)!, taskId: str(task.id)!, missionId: str(task.missionId) ?? null,
       workspaceId: wsOf(task), title: prompt.slice(0, 120), fallbackText: `Question: ${prompt.slice(0, 280)}`,
     });
+  }
+  return out;
+}
+
+/** What each listed release shipped (`include=tasks`), as PR refs with their mission and area. */
+function prRefsFromReleases(body: unknown): BuilddObjectRef[] {
+  const out: BuilddObjectRef[] = [];
+  for (const r of listOf(body, 'releases')) {
+    const repo = str(r.repo);
+    if (!repo) continue;
+    for (const t of Array.isArray(r.tasks) ? r.tasks.filter(isObj) : []) {
+      const prNumber = typeof t.prNumber === 'number' ? t.prNumber : null;
+      if (!prNumber) continue;
+      const title = str(t.title) ?? `#${prNumber}`;
+      out.push({
+        kind: 'pr', id: `${repo}#${prNumber}`, workspaceId: wsOf(r), repo, prNumber,
+        url: `https://github.com/${repo}/pull/${prNumber}`,
+        ...(str(t.taskId) ? { taskId: str(t.taskId) } : {}),
+        title,
+        missionId: str(t.missionId) ?? null,
+        missionTitle: str(t.missionTitle) ?? null,
+        area: taskDisplayLabel({ label: str(t.label) ?? null, title }).scope,
+        category: str(t.category) ?? null,
+        fallbackText: `PR ${repo}#${prNumber}: ${title}`,
+      });
+    }
   }
   return out;
 }
@@ -98,6 +131,8 @@ export function refsFromCall(call: ApiCall): BuilddObjectRef[] {
       const name = str(s.name) ?? 'Schedule';
       out.push({ kind: 'schedule', id, workspaceId: wsOf(s), title: name, fallbackText: `Schedule: ${name}` });
     }
+  } else if (p === '/api/releases') {
+    return prRefsFromReleases(call.body).slice(0, MAX_PR_REFS);
   } else if (/\/artifacts$/.test(p)) {
     for (const a of listOf(call.body, 'artifacts')) {
       const id = str(a.id);
@@ -121,5 +156,10 @@ export function refsFromCalls(calls: ApiCall[]): BuilddObjectRef[] {
       out.push(r);
     }
   }
-  return out.slice(0, MAX_REFS_PER_CALL);
+  // PRs are capped separately: they stack as one compact list, not cards.
+  const keep = new Set<BuilddObjectRef>([
+    ...out.filter(r => r.kind === 'pr').slice(0, MAX_PR_REFS),
+    ...out.filter(r => r.kind !== 'pr').slice(0, MAX_REFS_PER_CALL),
+  ]);
+  return out.filter(r => keep.has(r));
 }

@@ -14,6 +14,7 @@ import { TaskCard, TaskPane } from './TaskObject';
 import { useObjectEntry } from './ObjectStoreProvider';
 import { isRenderableKind, type ObjectView, type RenderableKind } from './object-views';
 import { ObjectPlaceholder } from './parts';
+import { prClusters } from './pr-clusters';
 
 type ViewOf<K extends RenderableKind> = Extract<ObjectView, { kind: K }>;
 
@@ -87,13 +88,7 @@ export function ObjectsSegment({ refs }: { refs: readonly BuilddObjectRef[] }) {
   return (
     <div data-testid="feed-objects" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
       {objectRuns(refs).map(run => run.kind === 'prs' ? (
-        <div key={`prs-${run.refs[0].id}`} data-testid="pr-list" className="border-2 border-border-strong bg-card divide-y divide-border-default">
-          <div className="flex items-center gap-2 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[2px] text-text-muted">
-            <span aria-hidden="true" className="h-2.5 w-2.5 bg-accent" />
-            {`${run.refs.length} pull requests`}
-          </div>
-          {run.refs.map(r => <PrListItem key={r.id} objRef={r} />)}
-        </div>
+        <PrList key={`prs-${run.refs[0].id}`} refs={run.refs} />
       ) : (
         <ObjectCard key={`${run.refs[0].kind}-${run.refs[0].id}`} objRef={run.refs[0]} />
       ))}
@@ -133,6 +128,34 @@ export function MoreObjects({ refs }: { refs: readonly BuilddObjectRef[] }) {
         <span aria-hidden="true" className={`ml-auto transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
       </button>
       {open && <ObjectsSegment refs={refs} />}
+    </div>
+  );
+}
+
+/**
+ * A run of PRs as one list, clustered by mission, then category, then area
+ * (pr-clusters.ts). One group names itself in the header; several get a
+ * sub-heading each.
+ */
+function PrList({ refs }: { refs: readonly BuilddObjectRef[] }) {
+  const clusters = prClusters(refs);
+  const single = clusters.length === 1 ? clusters[0] : null;
+  const heading = `${refs.length} pull requests${single && single.key !== 'other' ? ` · ${single.label}` : ''}`;
+  return (
+    <div data-testid="pr-list" className="border-2 border-border-strong bg-card divide-y divide-border-default">
+      <div className="flex items-center gap-2 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[2px] text-text-muted">
+        <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 bg-accent" />
+        <span className="min-w-0 truncate">{heading}</span>
+      </div>
+      {single ? single.refs.map(r => <PrListItem key={r.id} objRef={r} />) : clusters.map(c => (
+        <div key={c.key} data-testid="pr-cluster" className="divide-y divide-border-default">
+          <div className="flex items-baseline gap-2 bg-surface-2 px-4 py-1.5 font-mono text-[11px] text-text-secondary">
+            <span className="min-w-0 truncate font-semibold">{c.label}</span>
+            <span className="ml-auto shrink-0 text-text-muted">{c.refs.length}</span>
+          </div>
+          {c.refs.map(r => <PrListItem key={r.id} objRef={r} />)}
+        </div>
+      ))}
     </div>
   );
 }
