@@ -624,6 +624,32 @@ describe('buildMissionContext', () => {
     expect(result!.context.heartbeatChecklist).toBe('- check A\n- check B');
   });
 
+  it('labels first failures in organizer-run context as platform-retried', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-failed',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: 'sched-f',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    mockHeartbeatQueries({
+      failedTasks: [
+        { id: 't-f1', title: 'Scaffold project', result: { error: 'type error in foo.ts' } },
+      ],
+    });
+
+    const result = await buildMissionContext('obj-hb-failed', { triggerSource: 'cron' });
+    const desc = result!.description;
+    expect(desc).toContain('## Failed Tasks (first failure — the platform retries these; replan only if the approach itself is wrong)');
+    expect(desc).not.toContain('may retry');
+    expect(desc).toContain('Scaffold project');
+  });
+
   it('shows compact prior heartbeat results', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-hb4',
@@ -1231,9 +1257,70 @@ describe('buildMissionContext', () => {
     expect(result).not.toBeNull();
     expect(result!.description).toContain('COORDINATE-ONLY MODE');
     expect(result!.description).toContain('must NOT create new build tasks');
+    // A replacement for a task whose approach is wrong still links its parent.
     expect(result!.description).toContain('parentTaskId');
     // decompositionSkipped must propagate into the context JSONB
     expect(result!.context.decompositionSkipped).toBe(true);
+  });
+
+  it('coordinate-only checklist leaves retries and PR conflicts to the platform', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-coord-trim',
+      title: 'Pre-filed mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed tasks
+    mockFindMany.mockResolvedValueOnce([]); // active tasks
+    mockFindMany.mockResolvedValueOnce([]); // failed tasks
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-coord-trim', { decompositionSkipped: true });
+    const desc = result!.description;
+    const section = desc.slice(desc.indexOf('## COORDINATE-ONLY MODE'));
+
+    // Task auto-retry, CI retry, the conflict sweep and pr-reconcile do these.
+    expect(section).not.toContain('Retry any failed tasks');
+    expect(section).not.toMatch(/merge conflicts/i);
+    expect(section).not.toMatch(/retry the originating task/i);
+    expect(section).not.toContain('needs a retry child');
+    // Organizer-only work stays.
+    expect(section).toContain('Monitor the tasks');
+    expect(section).toContain('post_note');
+    expect(section).toContain('missionComplete: true');
+  });
+
+  // The platform retries failed tasks; the heading must not invite the
+  // organizer to file its own retries, only to replan a wrong approach.
+  it('labels single failures as platform-retried, not as an invitation to retry', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-failed-heading',
+      title: 'Mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+    });
+    mockFindMany.mockResolvedValueOnce([]); // completed tasks
+    mockFindMany.mockResolvedValueOnce([]); // active tasks
+    mockFindMany.mockResolvedValueOnce([
+      { id: 't-f1', title: 'Scaffold project', description: null, result: { error: 'type error in foo.ts' } },
+    ]); // failed tasks
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-failed-heading');
+    const desc = result!.description;
+    expect(desc).toContain('## Failed Tasks (the platform retries these; replan only if the approach itself is wrong)');
+    expect(desc).not.toContain('may retry');
+    expect(desc).toContain('Scaffold project');
   });
 
   it('does not inject coordinate-only instructions when decompositionSkipped is absent', async () => {
