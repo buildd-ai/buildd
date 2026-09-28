@@ -198,7 +198,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
     case 'list_prs':
       return z.object({
         state: z.enum(['open', 'attention', 'conflict', 'ci_failed', 'merged']).optional()
-          .describe('Default open. attention: conflicts and failing CI. merged: the last sinceDays.'),
+          .describe('Default open. attention: conflicts, failing CI, waiting on the user. merged: the last sinceDays.'),
         workspaceId: ws,
         sinceDays: z.number().int().min(1).max(90).optional().describe('merged: default 7.'),
         limit: z.number().int().min(1).max(50).optional(),
@@ -295,7 +295,7 @@ const CHAT_DESCRIPTIONS: Record<string, string> = {
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
-  list_prs: 'PRs buildd opened or adopted, one line each. Default: open ones, conflicts and failing CI first. state attention lists only those; merged lists recent merges. Closed PRs are never listed.',
+  list_prs: 'PRs buildd opened or adopted, one line each, flagged when one needs the user, is red, or an agent is already on it. Default: open ones, what needs the user first. state attention: only conflicts, failing CI and PRs waiting on the user. merged: recent merges. Closed PRs are never listed.',
   get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos.',
   list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildPrListWhere, parsePrListState, shapePrRows, type PrListRow } from './pr-list';
+import { buildPrListWhere, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, type PrListRow } from './pr-list';
 
 /** WHERE clauses rendered through PgDialect, so their shape is observable. */
 const dialect = new PgDialect();
@@ -47,10 +47,8 @@ describe('buildPrListWhere', () => {
     expect(q.params).toEqual(expect.arrayContaining(['merged', 'closed', 'unresolvable']));
   });
 
-  it('attention: conflicts and red CI only', () => {
-    const q = render({ workspaceIds: ws, state: 'attention' });
-    expect(q.params).toEqual(expect.arrayContaining(['conflict', 'ci_failed']));
-    expect(q.params).not.toContain('closed');
+  it('attention reads every open PR: waiting-on-you is decided after the query', () => {
+    expect(render({ workspaceIds: ws, state: 'attention' })).toEqual(render({ workspaceIds: ws, state: 'open' }));
   });
 
   it('conflict and ci_failed narrow to that one status', () => {
@@ -69,7 +67,7 @@ describe('buildPrListWhere', () => {
 const row = (over: Partial<PrListRow>): PrListRow => ({
   workerId: 'w', prNumber: 1, prUrl: 'https://github.com/o/r/pull/1', status: 'pr_open', mergedAt: null,
   lastCheckedAt: null, conflictDetectedAt: null, startedAt: new Date('2026-09-20T00:00:00Z'),
-  workspaceId: 'ws-a', workspaceName: 'a', taskId: 't', taskTitle: 'T', missionId: null, missionTitle: null,
+  workspaceId: 'ws-a', workspaceName: 'a', taskId: 't', taskTitle: 'T', missionId: null, missionTitle: null, baseRef: null, missionWorkingBranch: null, missionIntegration: null,
   ...over,
 });
 
@@ -97,11 +95,12 @@ describe('shapePrRows', () => {
     for (const s of ['open', 'attention', 'conflict', 'merged'] as const) expect(shapePrRows(rows, s)).toEqual([]);
   });
 
-  it('attention keeps conflicts and red CI only', () => {
+  it('attention keeps every open PR in order; needsAttention narrows it once signals are in', () => {
     const out = shapePrRows([
       row({ prUrl: 'u1', status: 'ci_running' }), row({ prUrl: 'u2', status: 'ci_failed' }), row({ prUrl: 'u3', status: 'conflict' }),
     ], 'attention');
-    expect(out.map(r => r.prUrl)).toEqual(['u3', 'u2']);
+    expect(out.map(r => r.prUrl)).toEqual(['u3', 'u2', 'u1']);
+    expect(out.filter(needsAttention).map(r => r.prUrl)).toEqual(['u3', 'u2']);
   });
 
   it('open: conflicts first, then red CI, then the rest by recency', () => {
@@ -120,5 +119,78 @@ describe('shapePrRows', () => {
       row({ prUrl: 'u2', status: 'merged', mergedAt: new Date('2026-09-22T00:00:00Z') }),
     ], 'merged');
     expect(out.map(r => r.prUrl)).toEqual(['u2', 'u1']);
+  });
+});
+
+describe('shapePrRows keeps every worker id of a PR', () => {
+  // A reviewer escalation can sit on another worker's task than the latest.
+  it('so the attention lookup sees all of them', () => {
+    const out = shapePrRows([row({ workerId: 'a' }), row({ workerId: 'b', lastCheckedAt: new Date('2026-09-28T00:00:00Z') })], 'open');
+    expect(out[0].workerIds.sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('prSignals', () => {
+  const noAttention = { inbox: new Map<string, string>(), reviewing: new Set<string>(), conflictFix: new Set<string>(), ciFix: new Set<string>(), ciFixAttempts: new Map<string, number>() };
+  const now = new Date('2026-09-28T12:00:00Z');
+
+  it('a quiet PR carries nothing', () => {
+    expect(prSignals(shapePrRows([row({ lastCheckedAt: now })], 'open')[0], noAttention, now)).toEqual({});
+  });
+
+  it('waiting on you names why, from any worker of the PR', () => {
+    const r = shapePrRows([row({ workerId: 'a' }), row({ workerId: 'b' })], 'open')[0];
+    const s = prSignals(r, { ...noAttention, inbox: new Map([['a', 'reviewer escalated']]) }, now);
+    expect(s.waitingOnYou).toBe('reviewer escalated');
+  });
+
+  it('an agent already on it: conflict fix, CI fix, or review', () => {
+    const r = shapePrRows([row({ workerId: 'a', status: 'ci_failed' })], 'open')[0];
+    const key = 'ws-a:1';
+    expect(prSignals(r, { ...noAttention, ciFix: new Set([key]) }, now).resolving).toBe('ci');
+    expect(prSignals(r, { ...noAttention, conflictFix: new Set([key]) }, now).resolving).toBe('conflict');
+    expect(prSignals(r, { ...noAttention, reviewing: new Set(['a']) }, now).resolving).toBe('review');
+  });
+
+  // Not workers.prCheckFailureCount: that counts failed GitHub lookups and resets on success.
+  it('fix attempts on a red PR, from the CI-retry tasks buildd dispatched for it', () => {
+    const red = shapePrRows([row({ status: 'ci_failed', lastCheckedAt: now })], 'open')[0];
+    expect(prSignals(red, { ...noAttention, ciFixAttempts: new Map([['ws-a:1', 2]]) }, now)).toEqual({ ciFixAttempts: 2 });
+    expect(prSignals(red, noAttention, now)).toEqual({});
+    const green = shapePrRows([row({ status: 'ci_green', lastCheckedAt: now })], 'open')[0];
+    expect(prSignals(green, { ...noAttention, ciFixAttempts: new Map([['ws-a:1', 2]]) }, now)).toEqual({});
+  });
+
+  it('into a mission branch, not the trunk', () => {
+    const r = shapePrRows([row({ baseRef: 'mission/x', missionWorkingBranch: 'mission/x', missionIntegration: true, lastCheckedAt: now })], 'open')[0];
+    expect(prSignals(r, noAttention, now)).toEqual({ intoMissionBranch: 'mission/x' });
+  });
+
+  it('a state last checked over an hour ago says how old it is', () => {
+    const r = shapePrRows([row({ lastCheckedAt: new Date('2026-09-28T09:00:00Z') })], 'open')[0];
+    expect(prSignals(r, noAttention, now)).toEqual({ checkedHoursAgo: 3 });
+  });
+});
+
+describe('needsAttention', () => {
+  const base = shapePrRows([row({})], 'open')[0];
+  it('conflicts, red CI, or waiting on you', () => {
+    expect(needsAttention({ ...base, status: 'conflict' })).toBe(true);
+    expect(needsAttention({ ...base, status: 'ci_failed' })).toBe(true);
+    expect(needsAttention({ ...base, status: 'ci_green', waitingOnYou: 'human merge' })).toBe(true);
+    expect(needsAttention({ ...base, status: 'ci_running' })).toBe(false);
+  });
+});
+
+describe('rankPrs', () => {
+  const base = shapePrRows([row({})], 'open')[0];
+  it('waiting on you, then red nobody is fixing, then red being fixed, then the rest', () => {
+    const out = rankPrs([
+      { ...base, prUrl: 'rest', status: 'ci_running' },
+      { ...base, prUrl: 'fixing', status: 'conflict', resolving: 'conflict' as const },
+      { ...base, prUrl: 'red', status: 'ci_failed' },
+      { ...base, prUrl: 'you', status: 'ci_green', waitingOnYou: 'human merge' },
+    ]);
+    expect(out.map(r => r.prUrl)).toEqual(['you', 'red', 'fixing', 'rest']);
   });
 });
