@@ -13,13 +13,15 @@
  */
 
 import { db } from '@buildd/core/db';
-import { userFeedback, missionNotes, artifacts, missions, tasks, workspaces } from '@buildd/core/db/schema';
+import { userFeedback, missionNotes, artifacts, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray } from 'drizzle-orm';
 import { MemoryStore } from '@buildd/core/memory-store';
 import { memoryProjectKey } from '@buildd/core/project-scope';
 import { saveMemory, updateMemory } from '@buildd/core/memory-write';
 import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
+import { resolveFeedbackEntityWorkspaces } from '@/lib/feedback-entity-workspace';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -133,80 +135,13 @@ function bucketFeedback(rows: FeedbackRow[], projectOf: Map<string, string>): Pa
 
 // ── Workspace / project resolution ────────────────────────────────────────────
 
-/** Task id inside a summary entity id (`task-<uuid>-summary` / `task-<uuid>-suggestion`). */
-const SUMMARY_ENTITY_RE = /^task-([0-9a-f-]{36})-(?:summary|suggestion)$/i;
-
-/** The workspace each feedback row's rated entity belongs to, by feedback row id. */
-async function resolveFeedbackWorkspaces(rows: FeedbackRow[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const idsOf = (type: EntityType) => rows.filter(r => r.entityType === type).map(r => r.entityId);
-
-  const noteIds = idsOf('note');
-  const artifactIds = idsOf('artifact');
-  const heartbeatTaskIds = idsOf('heartbeat');
-  const orchestrationMissionIds = idsOf('orchestration');
-  const summaryTaskIds = rows
-    .filter(r => r.entityType === 'summary')
-    .map(r => SUMMARY_ENTITY_RE.exec(r.entityId)?.[1])
-    .filter((id): id is string => !!id);
-
-  const noteMission = new Map<string, string>();
-  if (noteIds.length > 0) {
-    const notes = await db.query.missionNotes.findMany({
-      where: inArray(missionNotes.id, noteIds),
-      columns: { id: true, missionId: true },
-    });
-    for (const n of notes) if (n.missionId) noteMission.set(n.id, n.missionId);
-  }
-
-  const missionIds = [...new Set([...noteMission.values(), ...orchestrationMissionIds])];
-  const missionWs = new Map<string, string>();
-  if (missionIds.length > 0) {
-    const ms = await db.query.missions.findMany({
-      where: inArray(missions.id, missionIds),
-      columns: { id: true, workspaceId: true },
-    });
-    for (const m of ms) if (m.workspaceId) missionWs.set(m.id, m.workspaceId);
-  }
-
-  const artifactWs = new Map<string, string>();
-  if (artifactIds.length > 0) {
-    const arts = await db.query.artifacts.findMany({
-      where: inArray(artifacts.id, artifactIds),
-      columns: { id: true, workspaceId: true },
-    });
-    for (const a of arts) if (a.workspaceId) artifactWs.set(a.id, a.workspaceId);
-  }
-
-  const taskIds = [...new Set([...heartbeatTaskIds, ...summaryTaskIds])];
-  const taskWs = new Map<string, string>();
-  if (taskIds.length > 0) {
-    const ts = await db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
-      columns: { id: true, workspaceId: true },
-    });
-    for (const t of ts) if (t.workspaceId) taskWs.set(t.id, t.workspaceId);
-  }
-
-  for (const r of rows) {
-    let ws: string | undefined;
-    if (r.entityType === 'note') ws = missionWs.get(noteMission.get(r.entityId) ?? '');
-    else if (r.entityType === 'orchestration') ws = missionWs.get(r.entityId);
-    else if (r.entityType === 'artifact') ws = artifactWs.get(r.entityId);
-    else if (r.entityType === 'heartbeat') ws = taskWs.get(r.entityId);
-    else if (r.entityType === 'summary') ws = taskWs.get(SUMMARY_ENTITY_RE.exec(r.entityId)?.[1] ?? '');
-    if (ws) out.set(r.id, ws);
-  }
-  return out;
-}
-
 /**
  * The memory project key for each feedback row, by the same rule every memory
  * read uses (memoryProjectKey): only workspaces in the row's own team, never a
  * sensitive one, and never a key shared with a sensitive workspace.
  */
 async function resolveFeedbackProjects(teamId: string, rows: FeedbackRow[]): Promise<Map<string, string>> {
-  const wsOf = await resolveFeedbackWorkspaces(rows);
+  const wsOf = await resolveFeedbackEntityWorkspaces(rows.map(r => ({ key: r.id, entityType: r.entityType, entityId: r.entityId })));
   const out = new Map<string, string>();
   if (wsOf.size === 0) return out;
   const teamWorkspaces = await db.query.workspaces.findMany({
@@ -214,9 +149,22 @@ async function resolveFeedbackProjects(teamId: string, rows: FeedbackRow[]): Pro
     columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
   });
   const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
+  const authorOf = new Map(rows.map(r => [r.id, r.userId]));
+  // Only an author who can access the workspace speaks for it: a vote from
+  // anyone else is not counted toward that workspace's pattern.
+  const accessChecks = new Map<string, Promise<boolean>>();
+  const canAccess = (userId: string, wsId: string) => {
+    const k = `${userId}::${wsId}`;
+    if (!accessChecks.has(k)) {
+      accessChecks.set(k, verifyWorkspaceAccess(userId, wsId).then(a => !!a && a.teamId === teamId, () => false));
+    }
+    return accessChecks.get(k)!;
+  };
   for (const [rowId, wsId] of wsOf) {
     const ws = byId.get(wsId);
     if (!ws || ws.teamId !== teamId) continue;
+    const author = authorOf.get(rowId);
+    if (!author || !(await canAccess(author, wsId))) continue;
     const key = memoryProjectKey(ws, teamWorkspaces);
     if (key) out.set(rowId, key);
   }
@@ -243,13 +191,10 @@ async function buildMemoryContent(bucket: PatternBucket): Promise<string> {
     lines.push('');
   }
 
-  // Add user comments
+  // Raw comment text is never copied in: it is free text from a person, and
+  // this memory is injected into agent prompts. Only the count is kept.
   if (comments.length > 0) {
-    lines.push('**User comments:**');
-    for (const c of comments.slice(0, 10)) {
-      lines.push(`- "${c}"`);
-    }
-    lines.push('');
+    lines.push(`${comments.length} of these came with a comment (not reproduced here).`, '');
   }
 
   // Actionable guidance
