@@ -613,3 +613,68 @@ describe('MissionStateView invariants', () => {
     }
   });
 });
+
+// ── Visual review hold (docs/design/visual-qa-human-review.md, part 5) ────────
+
+describe('deriveMissionStateView — visual review', () => {
+  it('visual_review_open is an owner decision: "N screens want your review"', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'visual_review_open',
+        reason: '3 screens want your review.',
+        visualReviewHold: { cells: 3, roundCapOpen: false, enforced: true },
+      },
+    });
+    expect(view.kind).toBe('awaiting_decision');
+    const w = gated(view);
+    expect(w.kind).toBe('human_decision');
+    expect(w.label).toBe('3 screens want your review');
+    expect(w.tone).toBe('warning');
+    expect(view.derivedFrom.kind).toBe('canCompleteMission');
+    expect(view.nextAction).toContain('visual review');
+    expect(view.situation.headline).toBe('Waiting on you: 3 screens want your review.');
+  });
+
+  it('in shadow the same fact shows, without blocking', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: true,
+        code: 'ok',
+        reason: 'All deliverables terminal; mission states no goal criteria',
+        visualReviewHold: { cells: 1, roundCapOpen: false, enforced: false },
+      },
+    });
+    expect(view.kind).toBe('idle');
+    expect(view.waitingOn).toBeNull();
+    const fact = view.outstanding.find(f => f.kind === 'human_decision');
+    expect(fact?.label).toBe('1 screen wants your review');
+    expect(fact?.tone).toBe('info');
+    expect(view.situation.focus?.label).toBe('1 screen wants your review');
+  });
+
+  it('shows alongside a running mission and under another refusal', () => {
+    const running = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      completion: { ok: true, code: 'ok', reason: '', visualReviewHold: { cells: 2, roundCapOpen: false, enforced: false } },
+    });
+    expect(running.kind).toBe('running');
+    expect(running.outstanding.some(f => f.kind === 'human_decision' && f.label === '2 screens want your review')).toBe(true);
+  });
+
+  it('an open round-cap question with no unsure screen reads as the audit\'s call', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      completion: { ok: false, code: 'visual_review_open', reason: '', visualReviewHold: { cells: 0, roundCapOpen: true, enforced: true } },
+    });
+    expect(gated(view).label).toBe('The visual audit wants your call');
+  });
+
+  it('nothing to review: no fact', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ok: true, code: 'ok', reason: '', visualReviewHold: null } });
+    expect(view.outstanding).toHaveLength(0);
+  });
+});

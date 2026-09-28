@@ -133,13 +133,35 @@ export function surfaceAuditRound(task: { title?: string | null; context?: unkno
   return m ? Math.max(1, Number(m[1])) : 1;
 }
 
+/**
+ * The hard ceiling on audit rounds of one mission, human rounds included. A
+ * human "needs fix" opens a round past MAX_SURFACE_AUDIT_ROUNDS; this stops a
+ * disagreement from looping for ever. At the ceiling the decisions route
+ * answers 409 and asks the human to file the task by hand.
+ */
+export const MAX_TOTAL_SURFACE_AUDIT_ROUNDS = 5;
+
+/** Who opened an audit round: the pipeline (`auto`) or a human review decision. Recorded as `context.surfaceAuditTrigger`. */
+export type SurfaceAuditTrigger = 'auto' | 'human';
+
+/** `context.surfaceAuditTrigger`, `auto` when absent (every row written before human rounds). */
+export function surfaceAuditTrigger(task: { context?: unknown }): SurfaceAuditTrigger {
+  const ctx = task.context;
+  if (ctx && typeof ctx === 'object' && !Array.isArray(ctx) && (ctx as Record<string, unknown>).surfaceAuditTrigger === 'human') {
+    return 'human';
+  }
+  return 'auto';
+}
+
 export type SurfaceFixFollowUp =
   /** The latest audit has not started: depend on the fix, it will see it. */
   | { action: 'extend' }
   /** The latest audit already looked: a fresh round re-checks the fix. */
   | { action: 'new_round'; round: number }
-  /** The last round already looked: ask a human instead of looping. */
-  | { action: 'escalate'; roundsRun: number };
+  /** The last automatic round already looked: ask a human instead of looping. */
+  | { action: 'escalate'; roundsRun: number }
+  /** A human fix at MAX_TOTAL_SURFACE_AUDIT_ROUNDS: no round opens, the caller refuses. */
+  | { action: 'ceiling'; roundsRun: number };
 
 /**
  * What a new `[surface fix]` task means for the mission's latest audit.
@@ -147,12 +169,25 @@ export type SurfaceFixFollowUp =
  * "Already looked" is any status but `pending`, not just `completed`: the
  * auditor files its fix tasks while its own task is still `in_progress`, so a
  * `completed`-only trigger would never fire for the fixes that matter most.
+ *
+ * `origin: 'human'` (a "needs fix" decision in the visual review) never hits
+ * the automatic cap: a human asking for a re-check is the answer the cap's
+ * question asks for. A pending audit is extended whatever the origin, which is
+ * what keeps at most one open (not yet started) human round: a second request
+ * joins it. MAX_TOTAL_SURFACE_AUDIT_ROUNDS bounds human rounds.
  */
-export function planSurfaceFixFollowUp(latestAudit: { status: string; round: number }): SurfaceFixFollowUp {
+export function planSurfaceFixFollowUp(
+  latestAudit: { status: string; round: number },
+  opts: { origin?: SurfaceAuditTrigger } = {},
+): SurfaceFixFollowUp {
   if (latestAudit.status === 'pending') return { action: 'extend' };
   const next = latestAudit.round + 1;
+  if (opts.origin === 'human') {
+    if (next > MAX_TOTAL_SURFACE_AUDIT_ROUNDS) return { action: 'ceiling', roundsRun: latestAudit.round };
+    return { action: 'new_round', round: next };
+  }
   if (next > MAX_SURFACE_AUDIT_ROUNDS) {
-    return { action: 'escalate', roundsRun: Math.min(latestAudit.round, MAX_SURFACE_AUDIT_ROUNDS) };
+    return { action: 'escalate', roundsRun: Math.max(1, latestAudit.round) };
   }
   return { action: 'new_round', round: next };
 }
@@ -181,8 +216,10 @@ export function buildSurfaceAuditDescription(opts: {
   requiredRoutes?: string[];
   /** A round above 1 is a re-check of the fixes it depends on. */
   round?: number;
+  /** Who opened the round. A human round was asked for in the visual review. */
+  trigger?: SurfaceAuditTrigger;
 }): string {
-  const { missionTitle, scopedPaths, requiredRoutes = [], round = 1 } = opts;
+  const { missionTitle, scopedPaths, requiredRoutes = [], round = 1, trigger = 'auto' } = opts;
   const scopeList = scopedPaths.length > 0
     ? scopedPaths.map(p => `- \`${p}\``).join('\n')
     : "- (no concrete paths declared by this mission's builder tasks — audit the UI-facing routes/components named in their descriptions)";
@@ -190,12 +227,16 @@ export function buildSurfaceAuditDescription(opts: {
     ? requiredRoutes.map(r => `- \`${r}\``).join('\n')
     : '- (no required routes derived: no changed page/layout file. Pick the routes that render the scoped paths and capture those.)';
   const checklist = SURFACE_AUDIT_CHECKLIST_ITEMS.map(item => `- [ ] ${item}`).join('\n');
+  const resolution =
+    'Start each finding with "Resolved:" or "Still there:" for the previous round\'s finding on that route and viewport, then say what you saw.';
   const roundNote = round > 1
     ? [
-        `Round ${round} re-check: this audit depends on the \`[surface fix]\` tasks filed by the previous round. Re-capture the routes they fixed and say in each finding whether the issue is gone.` +
-          (round >= MAX_SURFACE_AUDIT_ROUNDS
-            ? ` This is the last automatic round (there is no round ${round + 1}): still file a \`[surface fix]\` task for anything wrong, and the server asks a human whether to fix or waive it.`
-            : ''),
+        trigger === 'human'
+          ? `Round ${round} re-check, opened by a human review decision: this audit depends on the \`[surface fix]\` task(s) a person filed from the visual review. Re-capture the routes they fixed. ${resolution} File a \`[surface fix]\` task for anything still wrong.`
+          : `Round ${round} re-check: this audit depends on the \`[surface fix]\` tasks filed by the previous round. Re-capture the routes they fixed. ${resolution}` +
+            (round >= MAX_SURFACE_AUDIT_ROUNDS
+              ? ` This is the last automatic round (there is no round ${round + 1}): still file a \`[surface fix]\` task for anything wrong, and the server asks a human whether to fix or waive it.`
+              : ''),
         '',
       ]
     : [];
@@ -214,6 +255,6 @@ export function buildSurfaceAuditDescription(opts: {
     '',
     'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
     '',
-    'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot as metadata.qa.fixTaskId.',
+    'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot with update_artifact metadata { qa: { fixTaskId } } (the server merges it into the shot\'s qa). Record an unsure shot with verdict unsure and move on: the human review queue asks about it, so post no note.',
   ].join('\n');
 }

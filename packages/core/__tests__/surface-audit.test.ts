@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
+  MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_TITLE_PREFIX,
   SURFACE_FIX_TITLE_PREFIX,
   buildSurfaceAuditDescription,
@@ -199,6 +200,50 @@ describe('planSurfaceFixFollowUp — the round bound', () => {
   });
 });
 
+describe('planSurfaceFixFollowUp — human-origin fixes (visual-qa-human-review.md, Rounds)', () => {
+  const human = { origin: 'human' as const };
+
+  it('defaults to the automatic rules', () => {
+    expect(planSurfaceFixFollowUp({ status: 'completed', round: 2 })).toEqual(
+      planSurfaceFixFollowUp({ status: 'completed', round: 2 }, { origin: 'auto' }),
+    );
+  });
+
+  it('bypasses the automatic cap: a human fix after the last automatic round opens the next round', () => {
+    expect(planSurfaceFixFollowUp({ status: 'completed', round: MAX_SURFACE_AUDIT_ROUNDS }, human)).toEqual({
+      action: 'new_round',
+      round: MAX_SURFACE_AUDIT_ROUNDS + 1,
+    });
+    expect(planSurfaceFixFollowUp({ status: 'in_progress', round: 1 }, human)).toEqual({ action: 'new_round', round: 2 });
+  });
+
+  it('keeps one open human round: a second request while a round is still pending extends it', () => {
+    expect(planSurfaceFixFollowUp({ status: 'pending', round: 3 }, human)).toEqual({ action: 'extend' });
+    expect(planSurfaceFixFollowUp({ status: 'pending', round: 1 }, human)).toEqual({ action: 'extend' });
+  });
+
+  it(`stops at the ceiling of ${MAX_TOTAL_SURFACE_AUDIT_ROUNDS} rounds in all`, () => {
+    expect(MAX_TOTAL_SURFACE_AUDIT_ROUNDS).toBe(5);
+    expect(planSurfaceFixFollowUp({ status: 'completed', round: MAX_TOTAL_SURFACE_AUDIT_ROUNDS - 1 }, human)).toEqual({
+      action: 'new_round',
+      round: MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
+    });
+    expect(planSurfaceFixFollowUp({ status: 'completed', round: MAX_TOTAL_SURFACE_AUDIT_ROUNDS }, human)).toEqual({
+      action: 'ceiling',
+      roundsRun: MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
+    });
+    // Even a pending audit past the ceiling is only extended, never a new round.
+    expect(planSurfaceFixFollowUp({ status: 'pending', round: MAX_TOTAL_SURFACE_AUDIT_ROUNDS }, human)).toEqual({ action: 'extend' });
+  });
+
+  it('an automatic fix filed during a human round still goes to a human, naming the real round', () => {
+    expect(planSurfaceFixFollowUp({ status: 'in_progress', round: 3 }, { origin: 'auto' })).toEqual({
+      action: 'escalate',
+      roundsRun: 3,
+    });
+  });
+});
+
 describe('buildSurfaceAuditDescription — later rounds', () => {
   it('a round-2 description says what to re-check and that no round 3 follows', () => {
     const desc = buildSurfaceAuditDescription({
@@ -211,6 +256,20 @@ describe('buildSurfaceAuditDescription — later rounds', () => {
     expect(desc).toContain('- `/app/tasks/:id`');
     expect(desc).toContain('no round 3');
     expect(desc).toContain('[surface fix]');
+  });
+
+  it('a human-opened round says so, and tells the auditor to report prior-finding resolution', () => {
+    const desc = buildSurfaceAuditDescription({
+      missionTitle: 'M',
+      scopedPaths: [],
+      requiredRoutes: ['/app/tasks/:id'],
+      round: 3,
+      trigger: 'human',
+    });
+    expect(desc).toContain('Round 3');
+    expect(desc).toContain('opened by a human review');
+    expect(desc).toContain('Resolved:');
+    expect(desc).not.toContain('no round 4');
   });
 
   it('a round-1 description does not mention rounds', () => {
