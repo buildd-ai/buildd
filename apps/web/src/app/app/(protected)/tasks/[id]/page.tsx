@@ -40,6 +40,9 @@ import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
+import { loadVisualReview } from '@/lib/visual-review-load';
+import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import { toTaskArtifactItem } from './task-artifact-items';
 import { hasCodeDeliverables as hasTaskCodeDeliverables } from './deliverables';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
@@ -269,7 +272,7 @@ export default async function TaskDetailPage({
   const workerIds = taskWorkers.map(w => w.id);
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
   const LIVE_WORKER_STATUSES = ['running', 'starting', 'waiting_input'];
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -337,6 +340,16 @@ export default async function TaskDetailPage({
     // Heartbeats of this task's runner accounts: names its runners (and its
     // CI retries' sibling runners) by hostname.
     loadRunnerHeartbeats(taskWorkers),
+    // A visual-audit task shows its round's screens from the mission's review
+    // model (docs/design/visual-qa-human-review.md), not a mixed-attempt grid.
+    task.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && task.missionId
+      ? loadVisualReview({ id: task.missionId, workspaceId: task.workspaceId ?? null })
+          .then((model) => {
+            const round = visualReviewRoundOf(model, task.id);
+            return round != null ? { round, model } : null;
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -1560,6 +1573,7 @@ export default async function TaskDetailPage({
             baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
             initialOpenArtifactId={initialOpenArtifactId}
             missionId={task.missionId ?? null}
+            visual={auditVisual}
           />
         )}
 

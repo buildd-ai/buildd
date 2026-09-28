@@ -10,8 +10,10 @@ import VisualReviewTray, { type VisualReviewPhaseActions } from '@/components/vi
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import { useVisualReviewDecisions } from '@/components/visual-review/review-transport';
 import { mockWorkers, type FixtureState } from './fixtures-data';
+import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import {
     FIXTURE_VIEWS,
+    MISSION_BOARD_VISUAL_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -35,6 +37,14 @@ export default function DevFixturesPage() {
     }, []);
 
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
+
+    if (state === MISSION_BOARD_VISUAL_FIXTURE_STATE) {
+        return (
+            <KeyHintsProvider value={hints}>
+                <MissionBoardVisualFixture />
+            </KeyHintsProvider>
+        );
+    }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
         return (

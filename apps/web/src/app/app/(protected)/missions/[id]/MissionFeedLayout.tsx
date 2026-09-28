@@ -11,11 +11,16 @@
  * bottom when the mission has one.
  */
 import { useMemo, type ReactNode } from 'react';
+import type { VisualReviewModel } from '@buildd/shared';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import { buildMissionEventFeed, type FeedEventKind, type FeedNoteInput } from '@/lib/mission-event-feed';
 import { AskBanner, Band } from './MissionBoard';
 import { SectionLabel, taskSheetHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import {
+  MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
+  type MissionVisualReviewValue, type VisualReviewLayout,
+} from './MissionVisualReview';
 
 /** The Home ticker's glyphs (ActivityTicker), plus the kinds only a mission has. */
 const GLYPH: Record<FeedEventKind, { char: string; cls: string; label: string }> = {
@@ -42,9 +47,23 @@ export interface MissionFeedLayoutProps extends BoardLinkContext {
   notice?: ReactNode;
   /** The dependency graph (StructureView), when the mission has dependencies. */
   structure?: ReactNode;
+  /** The mission's visual review, whenever an audit exists: the Band row, the Ask and the Tray. */
+  visual?: VisualReviewModel | null;
+  /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
+  reviewLayout?: VisualReviewLayout;
 }
 
-export default function MissionFeedLayout({ model: serverModel, notes = [], completionText = null, timeZone = null, notice, structure, ...link }: MissionFeedLayoutProps) {
+export default function MissionFeedLayout(props: MissionFeedLayoutProps) {
+  return (
+    <WithMissionVisualReview missionId={props.missionId} visual={props.visual} reviewLayout={props.reviewLayout}>
+      {review => <FeedView {...props} review={review} />}
+    </WithMissionVisualReview>
+  );
+}
+
+function FeedView({
+  model: serverModel, notes = [], completionText = null, timeZone = null, notice, structure, visual: _visual, reviewLayout: _layout, review, ...link
+}: MissionFeedLayoutProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
   // The team zone is known on the server; the browser zone only after mount.
@@ -58,9 +77,18 @@ export default function MissionFeedLayout({ model: serverModel, notes = [], comp
 
   return (
     <div data-testid="mission-feed-layout" className="flex flex-col">
-      <Band model={model} compact={false} missionId={link.missionId} />
+      <Band model={model} compact={false} missionId={link.missionId} visual={review?.model ?? null} onReview={review ? () => review.openDeck(null) : undefined} />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => <AskBanner key={id} task={model.tasks[id]} now={now} />)}
+      {review && <MissionVisualAsk review={review} board={model} className="mt-4" />}
+      {review && review.model.phase !== 'off' && (
+        <section data-testid="feed-visual-section" className="mt-[22px]">
+          <SectionLabel className="mb-2 block">Screens</SectionLabel>
+          <div className="border-2 border-border-strong bg-card p-3.5">
+            <MissionVisualTray review={review} board={model} columns="fit" hideLine />
+          </div>
+        </section>
+      )}
 
       <section data-testid="mission-event-feed" className="mt-[22px]">
         <SectionLabel className="mb-2 block">What happened</SectionLabel>

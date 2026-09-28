@@ -13,7 +13,7 @@ mock.module('next/navigation', () => ({
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
-const { toVisualShots } = await import('@/lib/mission-visual-review');
+const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
 const { CanvasContext } = await import('@/components/chat/canvas-context');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
@@ -228,42 +228,86 @@ describe('MissionBoard — compact (docked pane / phone sheet)', () => {
 
 // Visual review on the Board: before, the auditor showed only as a landed row
 // marked "report", and the shots rendered in the Feed layout alone.
-describe('MissionBoard — visual review', () => {
-  const qa = (id: string, verdict: string, viewport = 'desktop') => ({
-    id, type: 'screenshot', workerId: 'w-va', title: `${id}.png`,
-    createdAt: `2026-01-01T12:0${id.length}:00.000Z`,
-    metadata: { qa: { runKey: 'r1', route: '/invoices/:id', viewport, verdict, finding: `Checked ${id}.` } },
-  });
-  const shots = toVisualShots([qa('a', 'ok'), qa('bb', 'ok', 'mobile'), qa('ccc', 'ok')]);
+describe('MissionBoard — visual review (docs/design/visual-qa-human-review.md)', () => {
+  type Phase = Parameters<typeof buildVisualReviewFixtureModel>[0];
+  type Opts = Parameters<typeof buildVisualReviewFixtureModel>[1];
+  /** A fixture model whose latest audit is the board task `auditId`. */
+  const visualAs = (auditId: string, phase: Phase, opts?: Opts) => {
+    const m = buildVisualReviewFixtureModel(phase, opts);
+    return {
+      ...m,
+      missionId: 'mission-1',
+      audit: m.audit ? { ...m.audit, id: auditId } : null,
+      needsYou: m.needsYou?.taskId ? { ...m.needsYou, taskId: auditId } : m.needsYou,
+      bootFailure: m.bootFailure ? { ...m.bootFailure, taskId: auditId } : null,
+    };
+  };
+  const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
-  it('shows the shots and the verdict under the auditor task in its column', () => {
-    const html = render('complete', { completionText: 'x', visual: { shots, taskId: 'guide' } });
-    expect(html).toContain('data-testid="board-visual-shots"');
-    expect(count(html, 'data-testid="board-visual-thumb"')).toBe(3);
-    expect(html).toMatch(/data-testid="board-visual-verdict"[^>]*>3 of 3 ok</);
-    // Directly after the auditor's own row, inside the columns.
+  it('the auditor\'s tile carries the Tray, directly after its row inside the columns', () => {
+    const visual = visualAs('guide', 'reviewed');
+    const html = render('complete', { completionText: 'x', visual });
     const cols = html.split('data-testid="mission-board-columns"')[1].split('data-testid="mission-concurrency"')[0];
     const afterGuide = cols.split('data-task-id="guide"')[1] ?? '';
-    expect(afterGuide).toContain('data-testid="board-visual-shots"');
+    expect(afterGuide).toContain('data-testid="board-visual-tray"');
+    expect(count(html, 'data-testid="visual-review-thumb"')).toBe(visual.cells.length);
+    expect(html).not.toContain('data-testid="board-visual-section"');
   });
 
-  it('falls back to under the columns when the task is not on the board', () => {
-    const html = render('running', { visual: { shots, taskId: null } });
-    expect(html).toContain('data-testid="board-visual-shots"');
+  it('falls back to a section under the columns when the audit is not on the board', () => {
+    const html = render('running', { visual: visualAs('not-on-board', 'reviewed') });
+    expect(html).toContain('data-testid="board-visual-section"');
+    expect(html).not.toContain('data-testid="board-visual-tray"');
   });
 
-  it('draws nothing without shots', () => {
-    const html = render('running', { visual: { shots: [], taskId: 'guide' } });
-    expect(html).not.toContain('data-testid="board-visual-shots"');
+  it('draws nothing visual without a model', () => {
+    const html = render('running');
+    for (const id of ['visual-band', 'board-visual-tray', 'board-visual-section', 'visual-review-ask']) {
+      expect(html).not.toContain(`data-testid="${id}"`);
+    }
   });
 
-  it('the completion record hides a zero CI auto-fix count and shows screens reviewed', () => {
-    const html = render('complete', { completionText: 'x', visual: { shots, taskId: 'guide' } });
+  it('a pending audit with no shots is on the board: the Band row says why, the Tray offers the way out', () => {
+    const html = render('running', { visual: visualAs('guide', 'no_browser_runner') });
+    expect(html).toMatch(/data-testid="visual-band" data-phase="no_browser_runner"/);
+    expect(text(html)).toContain('No browser runner');
+    expect(html).toContain('data-testid="visual-review-action-turn-off"');
+    expect(html).toContain('data-testid="visual-review-action-skip"');
+  });
+
+  it('stalled and boot-failed audits show too', () => {
+    expect(render('running', { visual: visualAs('guide', 'stalled') })).toContain('data-testid="visual-review-action-retry"');
+    expect(render('running', { visual: visualAs('guide', 'boot_failed') })).toMatch(/data-testid="visual-band" data-phase="boot_failed"/);
+  });
+
+  it('Needs you counts the screens awaiting you, and the Ask sits with the asks', () => {
+    const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    const html = render('running', { visual });
+    const cell = html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '';
+    expect(text(cell)).toContain(String(visual.summary.awaitingHuman));
+    expect(text(html)).toContain(`${visual.summary.awaitingHuman} ${visual.summary.awaitingHuman === 1 ? 'screen' : 'screens'} to review`);
+    expect(html).toContain('data-testid="visual-review-ask"');
+    // Before the columns, beside the other asks.
+    expect(html.indexOf('data-testid="visual-review-ask"')).toBeLessThan(html.indexOf('data-testid="mission-board-columns"'));
+  });
+
+  it('a question the auditor\'s worker asks is the board\'s own ask: not a second card', () => {
+    // boardFixture('question') parks `pay`: let the audit be that task.
+    const html = render('question', { visual: visualAs('pay', 'needs_you', { needsYou: 'question' }) });
+    expect(html).toContain('data-testid="needs-you-band"');
+    expect(html).not.toContain('data-testid="visual-review-ask"');
+  });
+
+  it('the completion record counts the screens and your calls on them', () => {
+    const visual = visualAs('guide', 'reviewed');
+    const html = render('complete', { completionText: 'x', visual });
     const stats = html.split('data-testid="record-stats"')[1] ?? '';
     expect(stats).not.toContain('data-testid="record-ci-fixes"');
-    expect(stats).not.toMatch(/CI auto-fix/i);
     const screens = stats.split('data-testid="record-screens"')[1]?.split('data-testid="record-')[0] ?? '';
-    expect(screens.replace(/<[^>]+>/g, ' ')).toMatch(/Screens reviewed\s+3\s+all ok/);
+    expect(text(screens)).toContain(`Screens reviewed ${visual.summary.shots}`);
+    const calls = stats.split('data-testid="record-screen-calls"')[1]?.split('data-testid="record-')[0] ?? '';
+    expect(text(calls)).toContain(`${visual.summary.reviewed}`);
+    expect(text(calls)).toMatch(/agreed|waived|disputed/);
   });
 
   it('the completion record keeps CI auto-fix when something was fixed', () => {

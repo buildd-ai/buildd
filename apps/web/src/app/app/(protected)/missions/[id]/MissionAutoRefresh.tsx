@@ -44,8 +44,13 @@ export const WORKSPACE_EVENTS = [
   'worker:artifact',
   'worker:progress',
 ] as const;
-/** Mission-channel events; the channel is already scoped to this mission. */
-export const MISSION_EVENTS = ['mission:note_posted', 'mission:completion_decision'] as const;
+/**
+ * Mission-channel events; the channel is already scoped to this mission.
+ * `worker:artifact` arrives here for audit shots (upload-url and the artifact
+ * PATCH), and `mission:visual_review` for a human decision, so the visual
+ * review's thumbnails and markers follow without a reload.
+ */
+export const MISSION_EVENTS = ['mission:note_posted', 'mission:completion_decision', 'mission:visual_review', 'worker:artifact'] as const;
 
 const defaultScroller = () => (typeof document === 'undefined' ? null : document.querySelector('main'));
 

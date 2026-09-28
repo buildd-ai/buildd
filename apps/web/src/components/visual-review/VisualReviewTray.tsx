@@ -42,6 +42,12 @@ export interface VisualReviewTrayProps {
   actions?: VisualReviewPhaseActions;
   /** Hide the Line header, when the host already shows it. */
   hideLine?: boolean;
+  /**
+   * `one`: one route per row, for a narrow host (a side rail). `fit`: as many
+   * routes per row as the host's own width holds (a container query), for a
+   * host whose width is not the viewport's (a board column).
+   */
+  columns?: 'auto' | 'one' | 'fit';
   className?: string;
 }
 
@@ -137,7 +143,7 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
   );
 }
 
-export default function VisualReviewTray({ model, onReview, actions, hideLine = false, className = '' }: VisualReviewTrayProps) {
+export default function VisualReviewTray({ model, onReview, actions, hideLine = false, columns = 'auto', className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
   const s = model.summary;
   // One count across the Line, the Ask and this button: screens awaiting you.
@@ -154,7 +160,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
   ) : null;
 
   return (
-    <div data-testid="visual-review-tray" data-phase={model.phase} className={`flex min-w-0 flex-col gap-3 ${className}`}>
+    <div data-testid="visual-review-tray" data-phase={model.phase} className={`flex min-w-0 flex-col gap-3 ${columns === 'fit' ? '@container' : ''} ${className}`}>
       {(!hideLine || reviewButton) && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           {!hideLine ? <VisualReviewLine model={model} /> : <span />}
@@ -165,7 +171,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
       {model.cells.length === 0 ? (
         <EmptyPhase model={model} actions={actions} />
       ) : (
-        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <ul className={`grid grid-cols-1 gap-3 ${columns === 'one' ? '' : columns === 'fit' ? '@lg:grid-cols-2 @4xl:grid-cols-3' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>
           {groups.map(g => (
             <li
               key={g.key}

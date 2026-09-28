@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import ArtifactCard from '@/components/ArtifactCard';
 import ArtifactViewer from '@/components/ArtifactViewer';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
-import VisualReviewStrip from '@/app/app/(protected)/missions/[id]/VisualReviewStrip';
-import { toVisualShots, withVariants } from '@/lib/mission-visual-review';
+import type { VisualReviewModel } from '@buildd/shared';
+import VisualReviewTray from '@/components/visual-review/VisualReviewTray';
+import { parseQaMeta } from '@/lib/mission-visual-review';
+import { buildVisualReviewModel } from '@/lib/visual-review-model';
+import AuditRoundTrays from './AuditRoundTrays';
 import type { TaskArtifactItem } from './task-artifact-items';
 
 type ArtifactItem = TaskArtifactItem;
@@ -16,8 +19,14 @@ interface Props {
   baseUrl: string;
   /** If set, open the viewer to this artifact on mount (from ?artifact= param). */
   initialOpenArtifactId?: string | null;
-  /** The task's mission, for the lightbox's fix-task link. */
+  /** The task's mission. */
   missionId?: string | null;
+  /**
+   * For a visual-audit task: the mission's review model and this audit's
+   * round (`loadVisualReview`). Its screens show as one Tray per round,
+   * latest first, decidable in place.
+   */
+  visual?: { round: number; model: VisualReviewModel } | null;
 }
 
 export default function TaskArtifactsSection({
@@ -26,6 +35,7 @@ export default function TaskArtifactsSection({
   baseUrl,
   initialOpenArtifactId,
   missionId,
+  visual = null,
 }: Props) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -43,10 +53,19 @@ export default function TaskArtifactsSection({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Audit screenshots (a valid metadata.qa) show as a thumbnail grid with
-  // their caption, verdict and finding; everything else keeps its card.
-  const shots = useMemo(() => withVariants(toVisualShots(items)), [items]);
-  const shotIds = useMemo(() => new Set(shots.map(s => s.id)), [shots]);
+  // Audit screenshots (a valid metadata.qa) show as Trays; everything else
+  // keeps its card. With no mission model (a task outside a mission), the
+  // shots still group into one read-only Tray, newest run per screen.
+  const shotIds = useMemo(
+    () => new Set(items.filter(a => a.type === 'screenshot' && parseQaMeta(a.metadata)).map(a => a.id)),
+    [items],
+  );
+  const localModel = useMemo(() => (visual || shotIds.size === 0 ? null : buildVisualReviewModel({
+    missionId: missionId ?? '',
+    shots: items.filter(a => shotIds.has(a.id)),
+    tasks: [],
+    now: Date.now(),
+  })), [visual, shotIds, items, missionId]);
 
   if (artifacts.length === 0) return null;
 
@@ -72,11 +91,15 @@ export default function TaskArtifactsSection({
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Artifacts ({artifacts.length})
       </div>
-      {shots.length > 0 && (
+      {visual ? (
         <div data-testid="task-visual-shots" className="mb-4">
-          <VisualReviewStrip shots={shots} missionId={missionId} layout="grid" />
+          <AuditRoundTrays visual={visual} />
         </div>
-      )}
+      ) : localModel && localModel.cells.length > 0 ? (
+        <div data-testid="task-visual-shots" className="mb-4">
+          <VisualReviewTray model={localModel} hideLine />
+        </div>
+      ) : null}
       <div className="space-y-3">
         {items.map((art, index) => shotIds.has(art.id) ? null : (
           <ArtifactCard
