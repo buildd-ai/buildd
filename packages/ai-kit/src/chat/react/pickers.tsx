@@ -33,6 +33,8 @@ export interface ToolsMenuProps {
   /** Passed to the `Menu` (0.6.1). */
   placement?: MenuProps['placement'];
   sheetClose?: boolean;
+  /** Passed to the `Menu` (0.8.0): a detail on pointer hover. */
+  hover?: MenuProps['hover'];
 }
 
 /** The toggle rows on their own, for a settings page. */
@@ -70,7 +72,7 @@ export function ToolRows({ rows, onChange, busyKey }: Pick<ToolsMenuProps, 'onCh
  * already shows each group's mode, and a number on the trigger read as
  * unread items.
  */
-export function ToolsMenu({ rows, onChange, busyKey = null, error, title = 'Tools', className, placement, sheetClose }: ToolsMenuProps) {
+export function ToolsMenu({ rows, onChange, busyKey = null, error, title = 'Tools', className, placement, sheetClose, hover }: ToolsMenuProps) {
   return (
     <Menu
       label={title}
@@ -80,6 +82,7 @@ export function ToolsMenu({ rows, onChange, busyKey = null, error, title = 'Tool
       testId="kit-tools"
       placement={placement}
       sheetClose={sheetClose}
+      hover={hover}
       trigger={<span aria-hidden="true">···</span>}
     >
       {rows ? <ToolRows rows={rows} onChange={onChange} busyKey={busyKey} /> : <p className="kit-menu-title">…</p>}
@@ -129,6 +132,8 @@ export interface TierOption {
   label?: string;
   /** e.g. "$0.02 / turn" from the plan's price. */
   price?: string;
+  /** A second line under the name, e.g. the model and its price per 1k (0.8.0). */
+  detail?: ReactNode;
 }
 
 export interface TierPickerProps {
@@ -150,20 +155,26 @@ export interface TierPickerProps {
   policy?: TierPolicy;
   /** Offer Auto. Default: the policy's `auto`, else true. */
   auto?: boolean;
-  /** The line under Auto (0.6.1). Default "picks per turn". */
+  /** The line under Auto (0.6.1). Default "picks per turn"; `null` for none. */
   autoMeta?: ReactNode;
+  /** Auto's second line under its name, like a tier's `detail` (0.8.0). */
+  autoDetail?: ReactNode;
   /** Under the options, e.g. the conversation's running cost (0.6.1). */
   footer?: ReactNode;
   /** Passed to the `Menu` (0.6.1). */
   placement?: MenuProps['placement'];
   sheetClose?: boolean;
+  /** More on the trigger after its label, e.g. this chat's cost (0.8.0). */
+  triggerExtra?: ReactNode;
+  /** Passed to the `Menu` (0.8.0): a detail on pointer hover. */
+  hover?: MenuProps['hover'];
   title?: string;
   className?: string;
 }
 
 const DEFAULT_TIERS: TierOption[] = [{ tier: 'budget' }, { tier: 'standard' }, { tier: 'premium' }];
 
-export function TierPicker({ value, onChange, last = null, options, policy, auto, autoMeta = 'picks per turn', footer, placement, sheetClose, title = 'Model tier', className }: TierPickerProps) {
+export function TierPicker({ value, onChange, last = null, options, policy, auto, autoMeta = 'picks per turn', autoDetail, footer, placement, sheetClose, triggerExtra, hover, title = 'Model tier', className }: TierPickerProps) {
   const rows = options
     ? (policy ? options.filter(o => policy.isOffered(o.tier)) : options)
     : policy ? policy.options() : DEFAULT_TIERS;
@@ -172,13 +183,13 @@ export function TierPicker({ value, onChange, last = null, options, policy, auto
   const autoLabel = policy?.autoLabel ?? 'Auto';
   const shown = tierLabel(value, offerAuto ? last : null, labels, autoLabel);
   return (
-    <Menu label={`${title}: ${shown}`} title={title} align="end" className={className} testId="kit-tier" placement={placement} sheetClose={sheetClose} trigger={<><span>{shown}</span><span aria-hidden="true">▾</span></>}>
+    <Menu label={`${title}: ${shown}`} title={title} align="end" className={className} testId="kit-tier" placement={placement} sheetClose={sheetClose} hover={hover} trigger={<><span>{shown}</span>{triggerExtra != null && <span className="kit-trigger-extra">{triggerExtra}</span>}<span aria-hidden="true">▾</span></>}>
       {close => (
         <>
         <div role="radiogroup" aria-label={title}>
-          {offerAuto && <MenuOption checked={value === null} onSelect={() => { onChange(null); close(); }} meta={autoMeta}>{autoLabel}</MenuOption>}
+          {offerAuto && <MenuOption checked={value === null} onSelect={() => { onChange(null); close(); }} meta={autoMeta} detail={autoDetail}>{autoLabel}</MenuOption>}
           {rows.map(o => (
-            <MenuOption key={o.tier} checked={value === o.tier} meta={o.price} onSelect={() => { onChange(o.tier); close(); }}>
+            <MenuOption key={o.tier} checked={value === o.tier} meta={o.price} detail={"detail" in o ? o.detail : undefined} onSelect={() => { onChange(o.tier); close(); }}>
               {tierLabel(o.tier, null, labels)}
             </MenuOption>
           ))}

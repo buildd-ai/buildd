@@ -64,6 +64,12 @@ export interface MenuProps {
    * default; the scrim, Escape and a choice still close it either way.
    */
   sheetClose?: boolean;
+  /**
+   * A detail shown on pointer hover without opening (0.8.0): wide screens
+   * with a hovering pointer only, never while the menu is open, on the same
+   * side the panel opens. `${testId}-hover`, `.kit-menu-hover`.
+   */
+  hover?: ReactNode;
 }
 
 /** Below this much room under the trigger (and more above it), `auto` opens up. */
@@ -75,7 +81,7 @@ export function menuDropSide(rect: { top: number; bottom: number }, viewportHeig
   return below < ROOM_BELOW && rect.top > below ? 'up' : 'down';
 }
 
-export function Menu({ label, trigger, title, align = 'start', children, className, testId, placement = 'up', sheetClose = false }: MenuProps) {
+export function Menu({ label, trigger, title, align = 'start', children, className, testId, placement = 'up', sheetClose = false, hover }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [sheet, setSheet] = useState<{ vars: CSSProperties } | null>(null);
   const [side, setSide] = useState<'up' | 'down'>(placement === 'down' ? 'down' : 'up');
@@ -145,7 +151,19 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
   );
 
   return (
-    <div ref={wrap} className={`kit-menu${className ? ` ${className}` : ''}`} data-align={align} data-placement={side} data-open={open || undefined} data-testid={testId}>
+    <div
+      ref={wrap}
+      className={`kit-menu${className ? ` ${className}` : ''}`}
+      data-align={align}
+      data-placement={side}
+      data-open={open || undefined}
+      data-testid={testId}
+      // The hover detail opens on the side the panel would.
+      onMouseEnter={hover != null && placement === 'auto' && !open ? () => {
+        const r = wrap.current?.getBoundingClientRect();
+        if (r && typeof window !== 'undefined') setSide(menuDropSide(r, window.innerHeight));
+      } : undefined}
+    >
       <button
         ref={button}
         type="button"
@@ -159,6 +177,9 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
       >
         {trigger}
       </button>
+      {hover != null && (
+        <div role="tooltip" className="kit-menu-hover" data-testid={testId ? `${testId}-hover` : undefined}>{hover}</div>
+      )}
       {open && !sheet && panelEl}
       {open && sheet && typeof document !== 'undefined' && createPortal(
         <div className="kit-chat kit-sheet-layer" style={sheet.vars} data-testid={testId ? `${testId}-sheet` : undefined}>
@@ -171,11 +192,16 @@ export function Menu({ label, trigger, title, align = 'start', children, classNa
   );
 }
 
-/** One choice inside a `Menu`; wrap them in `<div role="radiogroup">`. */
-export function MenuOption({ checked, onSelect, children, meta }: { checked: boolean; onSelect(): void; children: ReactNode; meta?: ReactNode }) {
+/**
+ * One choice inside a `Menu`; wrap them in `<div role="radiogroup">`.
+ * `detail` (0.8.0) is a second line under the name.
+ */
+export function MenuOption({ checked, onSelect, children, meta, detail }: { checked: boolean; onSelect(): void; children: ReactNode; meta?: ReactNode; detail?: ReactNode }) {
   return (
-    <button type="button" role="radio" aria-checked={checked} className="kit-option" onClick={onSelect}>
-      <span>{children}</span>
+    <button type="button" role="radio" aria-checked={checked} className="kit-option" data-detail={detail != null || undefined} onClick={onSelect}>
+      {detail != null
+        ? <span className="kit-option-text"><span className="kit-option-name">{children}</span><span className="kit-option-detail">{detail}</span></span>
+        : <span>{children}</span>}
       {meta != null && <span className="kit-option-meta">{meta}</span>}
     </button>
   );

@@ -49,8 +49,19 @@ describe('TierSwitch menu', () => {
     await settle();
     await act(async () => { q('[data-testid="kit-tier-trigger"]')!.click(); });
     const panel = q('[data-testid="kit-tier-panel"]')!;
-    expect(panel.querySelector('[role="radio"] .kit-option-meta')?.textContent).toBe('Routed per message');
+    const auto = panel.querySelector('[role="radio"]')!;
+    expect(auto.querySelector('.kit-option-detail')?.textContent).toBe('Routed per message');
+    expect(auto.querySelector('.kit-option-meta')).toBeNull();
     expect(panel.querySelector('[data-testid="kit-tier-footer"]')?.textContent).toBe('This chat: $0.04');
+  });
+
+  it('the cell carries the running cost (shown at tablet width) and the kit hover detail', async () => {
+    await act(async () => { root.render(<TierSwitch teamId="t1" conversationId="c1" pinned={null} last={null} onChange={() => {}} />); });
+    await settle();
+    expect(q('[data-testid="kit-tier-trigger"] .kit-trigger-extra [data-testid="composer-tier-cost"]')?.textContent).toBe('$0.04');
+    const tip = q('[data-testid="composer-tier"] [data-testid="kit-tier-hover"]')!;
+    expect(tip.getAttribute('role')).toBe('tooltip');
+    expect(tip.querySelector('[data-testid="tier-chat-cost"]')?.textContent).toBe('$0.04');
   });
 
   it('with nothing spent yet the footer reads $0', async () => {

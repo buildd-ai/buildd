@@ -136,10 +136,14 @@ describe('phone layout: hero on top, open sea, PICKED FOR YOU right above the co
       const canvas = q('[data-testid="canvas-empty"]')!;
       expect(canvas.dataset.layout).toBe('anchored');
       expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'max-md:flex-1']));
-      const gap = q('[data-testid="canvas-sea-gap"]')!;
-      expect(cls(gap)).toContain('max-md:flex-1');
-      expect(gap.nextElementSibling?.getAttribute('data-testid')).toBe('canvas-suggestions');
-      expect(q('[data-testid="canvas-suggestions"]')?.nextElementSibling).toBeNull();
+      // The kit's box fills the column; its rows header is pushed to the
+      // bottom (margin-top: auto, globals.css), and the rows are last.
+      const box = canvas.querySelector('.kit-empty')!;
+      expect(cls(box)).toEqual(expect.arrayContaining(['buildd-empty', 'buildd-empty-anchor-phone', 'flex', 'flex-col', 'max-md:flex-1']));
+      const head = box.querySelector('.kit-chips-head')!;
+      expect(head.contains(q('[data-testid="canvas-suggestions"]'))).toBe(true);
+      expect(head.nextElementSibling?.classList.contains('kit-chips')).toBe(true);
+      expect(head.nextElementSibling?.nextElementSibling).toBeNull();
       expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['max-md:flex', 'max-md:min-h-full', 'max-md:flex-col']));
     });
   }
@@ -244,16 +248,16 @@ describe('sea', () => {
 });
 
 describe('empty canvas', () => {
-  // The picked rows are the kit's ChatEmpty chips; a `needs-` id draws one copper.
+  // The picked rows are the kit's ChatEmpty chips (rows variant); tone `needs` draws one copper.
   const chips = () => qa('[data-testid="canvas-empty"] .kit-chip');
   const labels = () => chips().map(c => c.textContent);
-  const copper = (c: HTMLElement) => c.dataset.chip?.startsWith('needs-') ?? false;
+  const copper = (c: HTMLElement) => c.dataset.tone === 'needs';
   const placeholder = () => (q('#chat-composer-input') as HTMLTextAreaElement).placeholder;
 
   it('without a pulse: greets by name, claims no mood, and offers no needs-you prompt', async () => {
     await render();
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('Hi Maya, what are we working on?');
-    expect(q('[data-testid="canvas-mood-dot"]')).toBeNull();
+    expect(q('[data-testid="canvas-empty"] .kit-mood-dot')).toBeNull();
     expect(labels()).toEqual(["What's running right now?", 'Start something new']);
     await act(async () => { chips()[0].click(); });
     expect(sent).toEqual(["What's running right now?"]);
@@ -275,6 +279,9 @@ describe('empty canvas', () => {
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
     expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
+    // The overline leads with the needs square; the header reads before the rows.
+    expect(q('[data-testid="canvas-empty"] .kit-empty-overline .kit-mood-dot')?.getAttribute('data-mood')).toBe('needs');
+    expect(q('[data-testid="canvas-empty"] .kit-chips-head')?.nextElementSibling?.classList.contains('kit-chips')).toBe(true);
     const rows = chips();
     expect(rows).toHaveLength(2);
     expect(copper(rows[0])).toBe(true);
@@ -521,8 +528,7 @@ describe('desktop (>= 1024px): one 720px voice column over the sea (docs/design/
     const canvas = q('[data-testid="canvas-empty"]')!;
     expect(cls(canvas)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'lg:flex-1', 'lg:mb-0']));
     expect(cls(canvas.parentElement)).toEqual(expect.arrayContaining(['lg:flex', 'lg:min-h-full', 'lg:flex-col']));
-    expect(cls(q('[data-testid="canvas-sea-gap"]'))).toContain('lg:flex-1');
-    expect(cls(q('[data-testid="canvas-suggestions"]'))).toContain('lg:mt-0');
+    expect(cls(canvas.querySelector('.kit-empty'))).toEqual(expect.arrayContaining(['buildd-empty-anchor-desk', 'lg:flex-1']));
   });
 
   it('header: `CHAT / new` left and `HISTORY →` right, over the opaque bar; no agent crumbs, no + New chat', async () => {

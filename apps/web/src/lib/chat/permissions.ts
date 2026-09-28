@@ -81,17 +81,18 @@ function baseClass(spec: ChatToolSpec): ToolCallClass {
 /**
  * One tool, with buildd's per-call hooks. The class is the op's own (`self`
  * and `deferred` included, and neither ever skips); an unknown op resolves to
- * no class, which the kit treats as an unknown tool.
+ * no class, which the kit treats as an unknown tool. A tool whose every op is
+ * deferred is declared `deferred`: in its group's row, never registered with
+ * the model.
  */
 function toolDecl(name: string, spec: ChatToolSpec): KitToolDecl {
   return {
     name,
     class: baseClass(spec),
-    // The kit's facts accept an app's own classes (and undefined); its
-    // declaration type is the narrower read | write | admin, hence the cast.
+    ...(isExposed(spec) ? {} : { deferred: true }),
     effectiveClass: (input) => {
       const s = opSpec(name, input);
-      return (s ? effectiveClass(name, s.op, s.spec, input) : undefined) as ToolCallClass;
+      return s ? effectiveClass(name, s.op, s.spec, input) : undefined;
     },
     startsUnattendedWork: (input) => {
       const s = opSpec(name, input);
@@ -102,15 +103,17 @@ function toolDecl(name: string, spec: ChatToolSpec): KitToolDecl {
 }
 
 function groupDecl(group: ToolGroup): ToolGroupDecl {
-  // Only what chat registers with the model: a deferred-only tool is not a tool yet.
   const tools = Object.entries(ALL_CHAT_TOOL_SPECS)
-    .filter(([, spec]) => spec.group === group && isExposed(spec))
+    .filter(([, spec]) => spec.group === group)
     .map(([name, spec]) => toolDecl(name, spec));
   const label = TOOL_GROUP_LABELS[group];
+  // The group's mode comes from what chat registers: a deferred-only tool is
+  // declared (the kit keeps it off the model) but is not a tool yet.
+  const live = tools.filter(t => !t.deferred);
   // Admin-class calls (deletes, budgets, workspace config) always ask.
   if (group === 'admin') return { label, tools, fixed: 'ask' };
-  if (tools.some(t => t.class === 'write')) return { label, tools, modes: ['ask', 'allow'] };
-  return { label, tools, fixed: tools.every(t => t.class === 'read') ? 'read' : 'ask' };
+  if (live.some(t => t.class === 'write')) return { label, tools, modes: ['ask', 'allow'] };
+  return { label, tools, fixed: live.every(t => t.class === 'read') ? 'read' : 'ask' };
 }
 
 /**

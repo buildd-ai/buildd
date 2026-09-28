@@ -353,7 +353,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
 
   const callClass = (tool: string, input: unknown): string | undefined => {
     const t = groups.tool(tool);
-    return t ? (t.effectiveClass ? t.effectiveClass(input) : t.class) : undefined;
+    return t ? (t.deferred ? 'deferred' : t.effectiveClass ? t.effectiveClass(input) : t.class) : undefined;
   };
 
   const run = async (args: RunTurnArgs<X>): Promise<Response> => {
