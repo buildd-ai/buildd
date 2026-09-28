@@ -7,7 +7,7 @@ mock.module('@buildd/core/decision-client', () => ({
     : { apply: false, reason: 'low_confidence', label: a.choice, confidence: a.confidence }),
 }));
 
-const { routeTurn, FALLBACK_TIER, workspaceHint } = await import('./routing');
+const { routeTurn, FALLBACK_TIER, workspaceHint, TITLE_TOPIC_QUESTION } = await import('./routing');
 
 const input = { teamId: 't', workspaceId: null, userId: 'u', message: 'make this a mission' };
 const answer = (complexity: [string, number], intent: [string, number]) => async () => ({
@@ -129,3 +129,35 @@ describe('workspaceHint', () => {
     expect(workspaceHint({ repo: null, projects: [] })).toBeNull();
   });
 });
+
+describe('routeTurn: title topic (re-title shadow)', () => {
+  const withTopic = (topic?: [string, number]) => async (p: any) => {
+    asked.push(p);
+    return {
+      ok: true as const,
+      answers: {
+        complexity: { choice: 'standard', confidence: 0.9 },
+        intent: { choice: 'needs_tools', confidence: 0.5 },
+        ...(topic ? { topic: { choice: topic[0], confidence: topic[1] } } : {}),
+      },
+    } as any;
+  };
+  let asked: any[] = [];
+
+  it('asks the topic question, with the title in state, only when a title is passed', async () => {
+    asked = [];
+    await routeTurn(input, { decide: withTopic() });
+    expect(asked[0].questions.topic).toBeUndefined();
+    expect(asked[0].state.turn.title).toBeUndefined();
+    await routeTurn({ ...input, title: 'Release status' }, { decide: withTopic(['new_topic', 0.95]) });
+    expect(asked[1].questions.topic).toBe(TITLE_TOPIC_QUESTION);
+    expect(asked[1].state.turn.title).toBe('Release status');
+  });
+
+  it('returns the answer ungated; absent when not asked or not answered', async () => {
+    expect((await routeTurn({ ...input, title: 'T' }, { decide: withTopic(['new_topic', 0.4]) })).topic).toEqual({ label: 'new_topic', confidence: 0.4 });
+    expect((await routeTurn({ ...input, title: 'T' }, { decide: withTopic() })).topic).toBeUndefined();
+    expect((await routeTurn(input, { decide: withTopic(['new_topic', 0.99]) })).topic).toBeUndefined();
+  });
+});
+

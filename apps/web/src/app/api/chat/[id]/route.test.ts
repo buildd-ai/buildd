@@ -50,6 +50,7 @@ mock.module('@/lib/chat/reach', () => ({
   loadChatReach: async (teamId: string) => ({ teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }),
 }));
 mock.module('@/lib/chat/auto-title', () => ({ autoTitleConversation: async () => {} }));
+mock.module('@/lib/chat/retitle', () => ({ handleTopicVerdict: async () => {} }));
 const ruleLoads: string[] = [];
 const judged: any[] = [];
 mock.module('@/lib/chat/directives-store', () => ({
