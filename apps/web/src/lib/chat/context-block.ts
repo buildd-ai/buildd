@@ -77,7 +77,7 @@ function workspaceLine(input: ChatContextInput): string {
     return `${x.name} (id ${x.id}${act ? `, ${act}` : ''})`;
   }).join(', ');
   return list
-    ? `Scope: all workspaces in reach: ${list}. No default workspace. A list read (list_tasks, list_releases, list_schedules, list_discrepancies) without workspaceId covers the active workspaces in one call: don't repeat it per workspace. Pass workspaceId when the message names one. For anything that needs one workspace, ask which one.`
+    ? `Scope: all workspaces in reach: ${list}. No default workspace. A list read (list_tasks, list_prs, list_releases, list_schedules, list_discrepancies) without workspaceId covers the active workspaces in one call: don't repeat it per workspace. Pass workspaceId when the message names one. For anything that needs one workspace, ask which one.`
     : 'No default workspace: ask which workspace, or pass workspaceId, before filing work.';
 }
 
