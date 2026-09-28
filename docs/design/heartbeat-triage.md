@@ -1,6 +1,6 @@
 # Heartbeat Triage: Ask a Decision Model Before Hiring the Organizer
 
-**Status:** Accepted (shadow shipped; apply off)
+**Status:** Implemented (shadow everywhere; skips only inside a `heartbeat_triage` experiment)
 **Related:** `apps/web/src/lib/heartbeat-triage.ts`, `apps/web/src/lib/heartbeat-prepass.ts`, `apps/web/src/app/api/cron/schedules/route.ts`, `apps/web/src/lib/mission-context.ts` (`buildHeartbeatContext`), `packages/core/inference-policy.ts`, `packages/core/decision-client.ts`, `scripts/decision-benchmark.ts`, `docs/design/decision-calls.md`
 
 ## Problem
@@ -37,10 +37,19 @@ bounded:
 - `act`, low confidence, a failed call, no OpenRouter key, the feature set to
   `runner`, a sensitive workspace or a criteria re-arm all dispatch as before.
 
-**Shadow first.** `TRIAGE_APPLY` ships `false`: every cycle gets a look, and none
-is skipped. The look is recorded on the dispatched task's context
-(`context.heartbeatTriage`), so the organizer's own outcome on the exact same
-state grades the pick. That is the gold the offline benchmark lacked.
+**Applied only inside an experiment.** Every cycle gets a look, recorded as a
+`heartbeat_triage_looks` row with the organizer task it dispatched (NULL for a
+skip), so the organizer's own outcome on the exact same state grades the pick:
+the gold the offline benchmark lacked. The row is kept off the task's context,
+which the organizer reads. A skip happens only for a mission in the treatment
+arm of the team's running `heartbeat_triage` experiment
+(`packages/core/heartbeat-triage-experiment.ts`): the mission is the unit,
+drawn deterministically on its id, and the experiment's config may raise the
+wait threshold. No experiment, or its control arm, is shadow. The readout
+(`packages/core/heartbeat-triage-readout.ts`, via the experiment readout
+route) reports per arm: organizer dispatches per mission (primary), how often
+the organizer acted on the cycle after a skip (guardrail), and confident-wait
+precision on dispatched cycles (the threshold's precision).
 
 The state is built from the rendered description text, not from the rows, so
 `scripts/decision-benchmark.ts --set heartbeat_triage` can rebuild it from a past
@@ -71,8 +80,9 @@ same-state comparison.
    defaults to server with a team key and appears in Settings → Model features.
 3. Cron schedules route: after `buildMissionContext`, before the insert.
 4. Benchmark set `heartbeat_triage`, with `wait` precision per threshold.
-5. **Later:** grade the shadow records against each cycle's outcome, then set
-   `TRIAGE_APPLY` and the threshold from that table.
+5. The `heartbeat_triage` experiment kind, the looks table (migration 0208) and
+   its readout. Start one with `manage_experiments action=create
+   kind=heartbeat_triage treatmentFraction=<share>`, then `start`.
 
 ## Open questions
 

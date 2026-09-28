@@ -297,8 +297,9 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
     `mission_summary` declared with no call site and not shown in Settings).
     `heartbeat_triage` asks a decision model (OpenRouter) whether a heartbeat
-    cycle needs the organizer before a runner is dispatched; it records every
-    look and skips nothing until applying is switched on
+    cycle needs the organizer before a runner is dispatched; every look is a
+    `heartbeat_triage_looks` row, and a confident wait skips the organizer only
+    in the treatment arm of a running `heartbeat_triage` experiment
     (`docs/design/heartbeat-triage.md`). All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
     overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own

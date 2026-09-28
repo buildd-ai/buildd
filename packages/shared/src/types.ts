@@ -2585,7 +2585,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access';
+export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {

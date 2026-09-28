@@ -2499,7 +2499,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
@@ -2581,6 +2581,37 @@ export const experimentAssignments = pgTable('experiment_assignments', {
   // Readout scan: every row for an experiment/version, split by arm.
   experimentVersionArmIdx: index('experiment_assignments_experiment_version_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
   taskIdx: index('experiment_assignments_task_idx').on(t.taskId),
+}));
+
+/**
+ * One row per heartbeat triage look (apps/web/src/lib/heartbeat-triage.ts):
+ * a decision model's wait/act pick before the organizer is dispatched.
+ *
+ * The heartbeat_triage experiment's payload table (per-experiment payloads
+ * stay in their own tables, docs/design/experiment-lifecycle.md). `taskId` is
+ * the organizer task the cycle dispatched, NULL when the look skipped it, so
+ * the organizer's own outcome on the same state grades the pick. Kept out of
+ * `tasks.context`, which the organizer can read.
+ */
+export const heartbeatTriageLooks = pgTable('heartbeat_triage_looks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  experimentId: uuid('experiment_id').references(() => experiments.id, { onDelete: 'set null' }),
+  policyVersion: integer('policy_version'),
+  arm: text('arm').$type<'control' | 'treatment'>(),
+  promptVersion: text('prompt_version').notNull(),
+  model: text('model'),
+  pick: text('pick').$type<'wait' | 'act'>(),
+  confidence: real('confidence'),
+  skipped: boolean('skipped').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  missionCreatedIdx: index('heartbeat_triage_looks_mission_created_idx').on(t.missionId, t.createdAt),
+  experimentArmIdx: index('heartbeat_triage_looks_experiment_arm_idx').on(t.experimentId, t.policyVersion, t.arm),
+  taskIdx: index('heartbeat_triage_looks_task_idx').on(t.taskId),
 }));
 
 // Team invitations for multi-tenancy
