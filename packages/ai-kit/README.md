@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.1.0
+npm i -E @builddai/ai-kit@0.2.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -19,9 +19,11 @@ and you should re-run your evals before taking it.
 | Import | What | Status |
 |---|---|---|
 | `@builddai/ai-kit/chat/contract` | Wire types: parts, object refs, data parts, approval previews, tool-permission rows. No deps, isomorphic | Ready |
-| `@builddai/ai-kit/chat/server` | `defineToolGroups` + server-side Allow enforcement. Turn runner later (peer `ai@^7`) | Permissions ready |
-| `@builddai/ai-kit/chat/react` | UI components (peers `react@^19`, `@ai-sdk/react@^4`) | Types only |
+| `@builddai/ai-kit/chat/server` | `createChatTurn` (the turn runner), `defineToolGroups` + server-side Allow enforcement, the `ChatStore` persistence adapter. Peer `ai@^7`, loaded lazily on the first turn | Ready |
+| `@builddai/ai-kit/chat/react` | Thread, composer, tools / scope / tier pickers, thinking panel, approval / hand-off / setup cards, empty state, `useKitChat`. Peers `react@^19`, `@ai-sdk/react@^4`, `ai@^7` (all required by this entry) | Ready |
 | `@builddai/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
+| `@builddai/ai-kit/chat/styles.css` | The components' layout, reading only `--kit-*`. No Tailwind | Ready |
+| `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
 | `@builddai/ai-kit/surfaces` | Jev picks among the app's own chips and cards | Types only |
@@ -76,6 +78,182 @@ await models.flush(); // before a serverless function returns (e.g. in waitUntil
 - **Storage.** `PlanStore` is `{ get(key), set(key, value) }`, sync or async.
   A failing store is treated as a miss. Default: in memory.
 - `onError` receives every absorbed failure, for logs.
+
+## Chat
+
+A streamed chat turn on AI SDK v7, with the writes it proposes gated on the
+server, and the React components that render it. The kit owns the turn and
+the permission rules; your app owns the tools, the model key, the storage and
+the look.
+
+### Peers
+
+| Entry | Needs |
+|---|---|
+| `/chat/contract` | nothing |
+| `/chat/server` | `ai@^7` to run a turn (imported lazily: the entry loads, and `defineToolGroups` works, without it). Its `.d.ts` references `ai` types |
+| `/chat/react` | `react@^19`, `@ai-sdk/react@^4`, `ai@^7` (imported statically) |
+
+The kit never imports a provider SDK. Build the model yourself, e.g. with
+`@openrouter/ai-sdk-provider`.
+
+### Server: one turn
+
+```ts
+// app/api/chat/[id]/route.ts
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createChatTurn, modelFromPlan } from '@builddai/ai-kit/chat/server';
+import { groups } from '@/lib/ai/tool-groups';        // defineToolGroups(...)
+import { tools } from '@/lib/ai/tools';                // AI SDK tool({ ... }) keyed by name
+import { models } from '@/lib/ai/models';              // createModelsClient(...)
+import { chatStore, permissionsApi } from '@/lib/ai/store';
+
+const turn = createChatTurn({
+  toolGroups: groups,
+  tools,                                               // or (ctx) => tools, per turn
+  model: modelFromPlan({
+    models,
+    tier: 'standard',                                  // or (ctx) => tier; default: the continued turn's tier, else standard
+    key: async (ctx, plan) => resolveKey(ctx.userId),  // null ⇒ 409 no_key; or { key, meta: { keyScope } }
+    create: ({ config }) => createOpenRouter({ apiKey: config.apiKey, headers: config.headers })(config.model),
+    appName: 'cue',
+  }),
+  system: ctx => buildInstructions(ctx),
+  store: chatStore,                                    // your ChatStore
+  permissions: ctx => permissionsApi.allowed(ctx.userId),
+  preview: (tool, input, ctx) => dryRun(tool, input),  // the approval card's before → after
+  onUsage: record => ledger.insert(record),            // your own ledger, awaited
+});
+
+export const maxDuration = 60;
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const userId = await requireUser(req);
+  return turn.handle(req, { userId, conversationId: (await params).id });
+}
+```
+
+`createChatTurn(options)` returns `{ run, handle, steer }`:
+
+- `handle(req, { userId, conversationId, extra?, abortOnDisconnect? })`: parses the JSON body and runs the turn. The request's signal aborts it (Stop / disconnect) unless `abortOnDisconnect: false`.
+- `run({ body, userId, conversationId, signal?, extra? })`: the same, from a parsed body.
+- `steer({ conversationId, userId, text, id? })`: queue a mid-turn steer (see below). 202 / 400 / 404 when steering is off.
+
+The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client sends **only the newest message**: a `user` message, or the latest `assistant` message with approval answers. History always comes from your store. `useKitChat` does this for you.
+
+**Order of a turn.** Refuse before any spend (bad body 400; `admit` 429; `model` returns `no_key` 409 / `budget_exhausted` 429 as `ChatUnavailableBody`) → save the user message, or reconcile the approval answer against the store (a replay, an edit, another user or a lost race ⇒ `409 approval_not_pending`, nothing runs) → stream → on end, save the assistant message and its approval requests, send the receipt, await `onUsage`.
+
+**Options** (`ChatTurnOptions<G, X>`, `X` = your per-request `extra`):
+
+| Option | |
+|---|---|
+| `toolGroups` | `defineToolGroups(...)`. Every tool must be declared in a group, or the turn throws `ToolGroupsError` (fail closed). A `never` group has no tools, so its tools can't reach the model |
+| `tools` | `ToolSet` or `(ctx: TurnToolsContext) => ToolSet`. `ctx.step(label, state?, id?)` adds a thinking row; `ctx.signal` is the turn's abort signal |
+| `model` | `(ctx) => TurnModel`. Use `modelFromPlan`; never a hard-coded model |
+| `system` | string or `(ctx) => string` |
+| `store` | `ChatStore` (below) |
+| `permissions?` | the groups this person set to Allow. Default none: every write asks |
+| `preview?` | `(tool, input, ctx) => PreviewOutcome`: `{ ok: true, preview: ApprovalPreview, input? }` or `{ ok: false, question }`. Without it every write asks with a raw-input card and Allow never skips |
+| `docked?` | an object's data is in the instructions: blocks Allow |
+| `activeGroups?` | groups offered to the model this turn (all tools stay defined, so an approved call still runs) |
+| `admit?` | your rate limit / per-person cap, before any model call |
+| `limits?` | `{ maxSteps: 8, turnMs: 45_000, historyLimit: 40, storedLimit: 500, maxUserText: 8_000 }` |
+| `steering?` | `{ queue: SteerQueue, maxPerTurn?: 3 }`. Off when absent |
+| `onUsage?` | `TurnUsageRecord`: user, conversation, message, plan, tokens, cost, latency, outcome, `meta` from your key resolver. Carries identity; never sent to buildd |
+| `onStep?`, `onError?`, `metadata?`, `headers?`, `generateId?` | hooks |
+
+**Writes are gated on the server.** For each call the kit asks the tool's declared class:
+
+- `read`: runs.
+- a write the person set to Allow runs without a card only if `canSkipCard` holds (first skip of the turn, no tool output anywhere in the stored conversation or earlier in this turn, nothing docked, not `startsUnattendedWork`, not `spends`, only `skippableFields`) **and** your `preview` resolves. Its output gets `allowed: true`.
+- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one.
+- a preview that can't resolve the target (`ok: false`) shows no card; the tool answers `Needs clarification: <question>`.
+- on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise). `execute` re-checks all of this, so nothing a tool result says can make a write run.
+
+**Thinking steps.** The runner emits `data-step` parts from the tool lifecycle (active → done, "Check it with you" while a card waits, "Filed as a task" for a hand-off), labelled from the tool declaration's `steps: { active, done, failed? }` or the group label, never the tool name. Plus your own `ctx.step()` rows.
+
+**Hand-off.** Declare the tool `class: 'write', spends: true` (so it always asks) and return `handoffResult({ taskId, url, title })` from its `execute`. The runner streams a `data-handoff` part (`state: 'filed'`), calls `store.linkHandoff`, and the card becomes a live object. When the task reports back (your webhook), append `handoffEventMessage({ id, handoff: { taskId, url, state: 'completed', summary } })` through your store; `latestHandoffs(messages)` folds the states and `<HandoffCard>` shows the newest.
+
+**Stop.** `useKitChat().stop()` aborts the request; `handle` passes the request's signal, so the model call stops too. The turn deadline (`turnMs`) always applies. Either way the partial answer is saved with `STOPPED_NOTE` and the receipt says `outcome: 'aborted'`.
+
+**Usage.** Each request sends one content-free receipt to the plan's `recordUsage` (`/models`: plan id, model, provider, tier, `kind: 'chat'`, tokens, the provider-reported cost when OpenRouter returns it, latency, outcome) and awaits `onUsage` with the full record (cost estimated from the plan's price when the provider reports none). A continuation after an approval is its own receipt (`continuation: true`); the saved message's `usage` is summed. Call `models.flush()` in `after()` / `waitUntil` on serverless.
+
+**Steering (flag).** With `steering: { queue }`, `turn.steer(...)` queues text against the conversation; the running turn injects it at the next step boundary (`prepareStep`) and streams a `data-steer` part (`applied`). Up to `maxPerTurn` (3) apply; the rest, and any that arrive after the last step, come back `deferred` and `useKitChat` sends them as the next message. A steer never extends `turnMs`, and only the turn owner's steers apply. `memorySteerQueue()` is single-process; on serverless use a shared queue (KV list, DB table) since the steer request and the turn usually hit different instances.
+
+### Persistence: `ChatStore`
+
+```ts
+interface ChatStore {
+  loadMessages(conversationId: string, opts: { limit: number }): Promise<StoredMessage[]>;   // newest `limit`, oldest first
+  saveMessage(conversationId: string, message: StoredMessage): Promise<void>;                 // upsert by id
+  recordApprovals(args: { conversationId: string; messageId: string; userId: string; rows: ApprovalRequestRow[] }): Promise<void>; // idempotent on approvalId
+  decideApproval(args: { conversationId: string; userId: string; approvalId: string; inputHash: string; approved: boolean }): Promise<boolean>; // ONE atomic compare-and-set on status = 'pending'
+  storeApprovalResult?(args: { conversationId: string; toolCallId: string; result: unknown }): Promise<void>;
+  linkHandoff?(args: { conversationId: string; messageId: string | null; toolCallId: string; taskId: string; url: string }): Promise<void>;
+}
+// StoredMessage = ChatMessage & { createdAt?, authorUserId?, tier?, model?, usage?: ChatUsage | null }
+// ApprovalRequestRow = { approvalId, toolCallId, toolName, inputHash }
+```
+
+`schema.sql` is a reference layout (conversations, messages, approvals, hand-offs, the permission preference, an `ai_usage` ledger) with the one `UPDATE … WHERE status = 'pending' RETURNING` that `decideApproval` must be. `memoryChatStore()` is for tests. Returning exactly `limit` rows from `loadMessages` tells the kit older rows exist, and Allow then treats the conversation as tainted.
+
+**Permission preference.** `createPermissionsApi(groups, { get(userId), set(userId, groups) })` gives `{ allowed(userId), GET({ userId }), PATCH(req, { userId }) }`, matching buildd's `/api/chat/permissions` contract (`GetToolPermissionsResponse`, `UpdateToolPermissionRequest`).
+
+### React
+
+```tsx
+'use client';
+import '@builddai/ai-kit/chat/theme.css';
+import '@builddai/ai-kit/chat/styles.css';
+import { useRef } from 'react';
+import {
+  useKitChat, ChatThread, ChatComposer, ChatEmpty, ChatSetupCard, ToolsMenu, TierPicker, ScopePicker,
+  type ChatComposerHandle,
+} from '@builddai/ai-kit/chat/react';
+
+export function Chat({ id, name, chips, rows, onToolChange }) {
+  const chat = useKitChat({ api: `/api/chat/${id}`, id, steer: { api: `/api/chat/${id}/steer` } });
+  const composer = useRef<ChatComposerHandle>(null);
+  return (
+    <>
+      <ChatThread
+        messages={chat.messages}
+        status={chat.status}
+        onApprovalResponse={chat.respond}
+        empty={<ChatEmpty name={name} chips={chips} onChip={c => (c.send ? chat.send(c.text) : composer.current?.prefill(c.text))} />}
+      />
+      {chat.unavailable && <ChatSetupCard reason={chat.unavailable.error} message={chat.unavailable.message} action={<a href="/settings/ai">Add a key</a>} />}
+      <ChatComposer
+        ref={composer}
+        busy={chat.busy}
+        onSend={chat.send}
+        onStop={chat.stop}
+        onSteer={chat.steer}                       // omit to keep steering off
+        scope={<ScopePicker options={spaces} value={scope} onChange={setScope} />}
+        tools={<ToolsMenu rows={rows} onChange={onToolChange} />}
+        tier={<TierPicker value={tier} last={lastTier} onChange={setTier} />}
+        formFallbackHref="/new"
+        showFormFallback={chat.messages.length === 0}
+      />
+    </>
+  );
+}
+```
+
+| Export | |
+|---|---|
+| `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable` |
+| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderEvent? renderHandoff? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after) |
+| `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. Ref: `{ focus(), prefill(text) }` |
+| `<ToolsMenu rows onChange busyKey? error?>` | The `···` control; the badge is `allowedBadgeCount(rows)` (`··· 2`). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
+| `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
+| `<TierPicker value onChange last? options?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta |
+| `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
+| `<ApprovalCard part onRespond onEdit? approverName?>` | before → after from the server preview; typed confirm for `confirmText` |
+| `<HandoffCard data renderLink?>` | a filed task as a live object |
+| `<ChatEmpty name chips onChip greeting?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send }`; `send: false` prefills. Order them yourself (or with `/surfaces` later) |
+| `<ChatSetupCard reason message? action?>` | for `unavailable` |
+
+**Theming.** Components read only `--kit-*` (`--kit-bg`, `--kit-surface`, `--kit-ink`, `--kit-muted`, `--kit-rule`, `--kit-accent`, `--kit-accent-ink`, `--kit-radius-soft`, `--kit-radius-hard`, `--kit-font-body`, `--kit-font-mono`). Map them once from your tokens (`:root { --kit-accent: var(--primary); }`). Classes are `kit-*` and state is on `data-*`, for overrides. Mobile-first: 44px tap targets; the menus are bottom sheets below 640px; `prefers-reduced-motion` is honoured.
 
 ## Tool permissions
 
@@ -170,8 +348,8 @@ Writing labels: define each one contrastively, avoid a catch-all label
 
 ## Theming
 
-Import `@builddai/ai-kit/chat/theme.css` and override the `--kit-*` variables
-with your own tokens.
+Import `@builddai/ai-kit/chat/theme.css` and `@builddai/ai-kit/chat/styles.css`,
+and override the `--kit-*` variables with your own tokens.
 
 ## License
 

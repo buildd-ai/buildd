@@ -12,7 +12,7 @@ describe('dist package.json', () => {
     expect(Object.keys(out).sort()).toEqual(Object.keys(pkg.exports).sort());
   });
   it('has the entry points the design names', () => {
-    for (const e of ['./models', './decide', './chat/contract', './chat/server', './chat/react', './chat/theme.css', './surfaces']) {
+    for (const e of ['./models', './decide', './chat/contract', './chat/server', './chat/react', './chat/theme.css', './chat/styles.css', './chat/schema.sql', './surfaces']) {
       expect(pkg.exports).toHaveProperty([e]);
     }
   });
@@ -37,7 +37,7 @@ describe('relative import specifiers', () => {
   // published dist is valid Node ESM.
   const srcDir = join(import.meta.dir, '..', 'src');
   const sourceFiles = (readdirSync(srcDir, { recursive: true }) as string[])
-    .filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    .filter(f => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
 
   it('source never uses a .js or .ts extension on a relative import', () => {
     const offenders: string[] = [];
@@ -112,6 +112,20 @@ describe('bare imports reach the consumer', () => {
         "const sdk = await import('@typesafe-ai/sdk');",
       ].join('\n'),
     }, kit)).toEqual([]);
+  });
+  it('lets /chat/react (and only it) import its optional peers statically', () => {
+    const optional = {
+      ...kit,
+      peerDependencies: { ...kit.peerDependencies, ai: '^7.0.0', '@ai-sdk/react': '^4.0.0' },
+      peerDependenciesMeta: { ...kit.peerDependenciesMeta, react: { optional: true }, ai: { optional: true }, '@ai-sdk/react': { optional: true } },
+    };
+    expect(auditBareImports({
+      'chat/react/index.js': "import { jsx } from 'react/jsx-runtime';\nimport { useChat } from '@ai-sdk/react';\nimport { DefaultChatTransport } from 'ai';",
+    }, optional)).toEqual([]);
+    const problems = auditBareImports({ 'chat/server/turn.js': "import { streamText } from 'ai';" }, optional);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("statically imports optional peer 'ai'");
+    expect(auditBareImports({ 'chat/server/turn.js': "const ai = await import('ai');" }, optional)).toEqual([]);
   });
   it('carries the optional peer into dist/package.json', () => {
     const out = distPackageJson(pkg as never) as { peerDependencies: Record<string, string>; peerDependenciesMeta: Record<string, { optional: boolean }> };
