@@ -2733,6 +2733,8 @@ export class WorkerManager {
           pathManifest: task.pathManifest,
           // Carries the claim-time predicted file area for treatment-arm tasks.
           context: (task as any).context,
+          taskId: task.id,
+          workerId: worker.id,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);

@@ -27,10 +27,16 @@ import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { renderHitLines } from '@buildd/core/prior-work-render';
 import {
   memoryScopeFor,
-  queryOwnProjectMemory,
   hasMemoryScope,
   type MemoryHitScope,
 } from '@buildd/core/memory-hit-scope';
+import {
+  retrieveMemory,
+  type MemoryAttribution,
+  type MemoryCaller,
+  type MemoryLedgerWriter,
+  type RetrieveMemoryResult,
+} from '@buildd/core/memory-retrieval';
 
 /**
  * Minimum score for a claim-time prior-work hit to be worth a worker's
@@ -48,7 +54,7 @@ export type KnowledgeQuerier = {
    * sending paths through a dense embedder is the prose-against-code mismatch
    * clusters exist to stop.
    */
-  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode }) => Promise<QueryResult[]>;
+  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode; trackHits?: boolean }) => Promise<QueryResult[]>;
   /** Optional — used to build the corpora availability hint in claim payloads. */
   countNamespace?: (ns: string) => Promise<number>;
 };
@@ -70,27 +76,35 @@ async function buildCorporaHint(
   memoryScope: MemoryHitScope | null,
 ): Promise<string> {
   if (!ks.countNamespace) return '';
+  const countNamespace = ks.countNamespace.bind(ks);
   try {
-    const parts: string[] = [];
-
-    // The caller's own-project memories, never the team namespace total: a
-    // team-wide count would describe other workspaces' memory.
-    if (hasMemoryScope(memoryScope) && memoryScope.count) {
-      const memCount = await memoryScope.count().catch(() => 0);
-      parts.push(`memory ${memCount}`);
-    }
-
-    if (workspaceId) {
-      const codeCount = await ks.countNamespace(buildNamespace(workspaceId, 'code')).catch(() => 0);
-      parts.push(codeCount > 0 ? `code indexed (${codeCount.toLocaleString()} chunks)` : 'code not indexed');
-
+    // The three counts are independent; awaiting them one after another cost
+    // three sequential round trips on the claim path. Order of `parts` is
+    // fixed below, not by which count lands first.
+    const [memCount, codeCount, docsCount] = await Promise.all([
+      // The caller's own-project memories, never the team namespace total: a
+      // team-wide count would describe other workspaces' memory.
+      hasMemoryScope(memoryScope) && memoryScope.count
+        ? memoryScope.count().catch(() => 0)
+        : Promise.resolve(null),
+      workspaceId
+        ? countNamespace(buildNamespace(workspaceId, 'code')).catch(() => 0)
+        : Promise.resolve(null),
       // `docs`, not `spec`: nothing writes a `spec` namespace, so this line
       // read "spec not indexed" for every workspace forever while the docs
-      // corpus — which holds SPEC.md and every `.md`/`.mdx` — was populated on
+      // corpus (which holds SPEC.md and every `.md`/`.mdx`) was populated on
       // every merged PR.
-      const docsCount = await ks.countNamespace(buildNamespace(workspaceId, 'docs')).catch(() => 0);
-      parts.push(docsCount > 0 ? `docs ${docsCount}` : 'docs not indexed');
+      workspaceId
+        ? countNamespace(buildNamespace(workspaceId, 'docs')).catch(() => 0)
+        : Promise.resolve(null),
+    ]);
+
+    const parts: string[] = [];
+    if (memCount !== null) parts.push(`memory ${memCount}`);
+    if (codeCount !== null) {
+      parts.push(codeCount > 0 ? `code indexed (${codeCount.toLocaleString()} chunks)` : 'code not indexed');
     }
+    if (docsCount !== null) parts.push(docsCount > 0 ? `docs ${docsCount}` : 'docs not indexed');
 
     if (parts.length === 0) return '';
     return `knowledge: ${parts.join(' · ')} — recall before diagnosing`;
@@ -110,6 +124,11 @@ export async function buildKnowledgeContext(
     excludedSourceIds?: ReadonlySet<string>;
     /** Resolved from the DB when omitted; `null` means no memory. */
     memoryScope?: MemoryHitScope | null;
+    /** Which read path this is, for the memory ledger. Default claim_context. */
+    caller?: Extract<MemoryCaller, 'claim_context' | 'mission_planning'>;
+    attribution?: MemoryAttribution;
+    /** Memory ledger writer; default the DB. Injectable for tests. */
+    ledger?: MemoryLedgerWriter | false;
   },
 ): Promise<string[]> {
   if (!query.trim()) return [];
@@ -121,22 +140,38 @@ export async function buildKnowledgeContext(
       ? await memoryScopeFor(opts?.memoryScope, workspaceId, teamId)
       : null;
 
-    const hint = await buildCorporaHint(workspaceId, ks, memoryScope);
+    // Started now, awaited after the fan-out: the hint's counts do not depend
+    // on any query below, and awaiting them first put their round trips in
+    // front of every claim's retrieval.
+    const hintPromise = buildCorporaHint(workspaceId, ks, memoryScope);
 
     // Query memory (team namespace, narrowed to the caller's project), plans,
     // task outcomes, PRs, and code (workspace-scoped).
-    // Cap at 3 hits per corpus to bound prompt growth.
+    // Cap at 3 hits per corpus to bound prompt growth. A push, so none of
+    // these count as retrieval hits (see retrieveMemory).
     const sources: Array<{ label: string; run: () => Promise<QueryResult[]> }> = [];
     if (teamId && hasMemoryScope(memoryScope)) {
       sources.push({
         label: 'Team memory',
-        run: () => queryOwnProjectMemory(ks, teamId, memoryScope, { text: query, topK: 3 }),
+        run: async () => (await retrieveMemory({
+          query,
+          scope: { teamId, workspaceId, memoryScope },
+          caller: opts?.caller ?? 'claim_context',
+          budget: { topK: 3 },
+          store: ks,
+          // The floor and the handoff exclusion are applied here so the ledger
+          // records what they held back; the section filter below is then a
+          // no-op for memory.
+          gate: { minScore: PRECISION_FLOOR, exclude: excluded },
+          attribution: opts?.attribution,
+          ledger: opts?.ledger,
+        })).results,
       });
     }
     if (workspaceId) {
       const ws = (label: string, ns: string) => ({
         label,
-        run: () => ks.query(ns, { text: query, topK: 3 }),
+        run: () => ks.query(ns, { text: query, topK: 3, trackHits: false }),
       });
       sources.push(ws('Prior plans', buildNamespace(workspaceId, 'plan')));
       sources.push(ws('Past task outcomes', buildNamespace(workspaceId, 'task')));
@@ -158,6 +193,7 @@ export async function buildKnowledgeContext(
       : [];
 
     const priorWork = sectioned.flat();
+    const hint = await hintPromise;
     const output: string[] = [];
 
     if (hint) output.push(hint);
@@ -173,7 +209,7 @@ export async function buildKnowledgeContext(
       const pathQuery = paths.slice(0, 20).join('\n');
       const pathResults = (
         await ks
-          .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3 })
+          .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3, trackHits: false })
           .catch(() => [] as QueryResult[])
       ).filter(r => !excluded?.has(r.id));
       if (pathResults.length > 0) {
@@ -218,6 +254,8 @@ export type ClusterRetrievalInput = {
     excludedSourceIds?: ReadonlySet<string>;
     /** Resolved from the DB when omitted; `null` means no memory. */
     memoryScope?: MemoryHitScope | null;
+    /** Memory ledger writer; default the DB. Injectable for tests. */
+    ledger?: MemoryLedgerWriter | false;
   };
   store?: KnowledgeQuerier;
 };
@@ -377,6 +415,10 @@ export async function buildClusteredKnowledgeContext(
       ? await memoryScopeFor(input.opts?.memoryScope, workspaceId, teamId)
       : null;
 
+    // Memory retrievals held until the block is assembled, so the ledger can
+    // say which hits the char budget or the fan-out fallback kept out.
+    const memoryRetrievals: RetrieveMemoryResult[] = [];
+
     /** Render + record one step's outcome. Returns the section's line groups, or null. */
     const runStep = async (step: ClusterStep): Promise<{ weak: boolean; groups: string[][] | null }> => {
       // Sensitivity is a recipe change, not a filter: tool-infra-error-v1 loses
@@ -407,13 +449,29 @@ export async function buildClusteredKnowledgeContext(
         return { weak: true, groups: null };
       }
 
-      const results = (
-        step.corpus === 'memory' && teamId
-          ? await queryOwnProjectMemory(ks, teamId, memoryScope, { text, topK: step.topK, mode: step.mode })
-          : await ks
-              .query(ns, { text, topK: step.topK, mode: step.mode })
-              .catch(() => [] as QueryResult[])
-      ).filter(r => !excluded?.has(r.id));
+      let results: QueryResult[];
+      if (step.corpus === 'memory' && teamId) {
+        const retrieval = await retrieveMemory({
+          query: text,
+          scope: { teamId, workspaceId, memoryScope },
+          caller: 'claim_recipe',
+          budget: { topK: step.topK },
+          store: ks,
+          mode: step.mode,
+          gate: { exclude: excluded },
+          attribution: { taskId: chain.taskId, workerId: chain.workerId },
+          ledger: input.opts?.ledger,
+          deferLedger: true,
+        });
+        memoryRetrievals.push(retrieval);
+        results = retrieval.results;
+      } else {
+        results = (
+          await ks
+            .query(ns, { text, topK: step.topK, mode: step.mode, trackHits: false })
+            .catch(() => [] as QueryResult[])
+        ).filter(r => !excluded?.has(r.id));
+      }
 
       // Strength is judged over SEED hits only. A graph neighbour was not
       // returned by this query, so letting it satisfy the step's threshold
@@ -513,7 +571,12 @@ export async function buildClusteredKnowledgeContext(
     const hasContent = body.some(line => line.startsWith('- '));
     if (!hasContent) {
       assembly.fallbackFired = true;
+      for (const r of memoryRetrievals) r.commitLedger(() => 'recipe_fallback');
       return { parts: [], assembly };
+    }
+    const kept = new Set(body);
+    for (const r of memoryRetrievals) {
+      r.commitLedger(h => (kept.has(renderHitLines(h.result)[0]) ? null : 'char_budget'));
     }
 
     const hint = await buildCorporaHint(workspaceId, ks, memoryScope);

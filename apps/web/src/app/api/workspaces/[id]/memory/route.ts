@@ -16,6 +16,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { saveMemory } from '@buildd/core/memory-write';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
+import { retrieveMemory } from '@buildd/core/memory-retrieval';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -54,11 +55,16 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
  * list scoped a URL against short-form rows and returned nothing.
  */
 async function getWorkspaceProject(id: string): Promise<string | undefined> {
+  return (await getWorkspaceScope(id)).project;
+}
+
+/** The project key plus the team id the memory ledger needs, in one lookup. */
+async function getWorkspaceScope(id: string): Promise<{ project: string | undefined; teamId: string | null }> {
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, id),
-    columns: { repo: true, name: true },
+    columns: { repo: true, name: true, teamId: true },
   });
-  return workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
+  return { project: workspaceProjectKey(ws?.repo, ws?.name) ?? undefined, teamId: ws?.teamId ?? null };
 }
 
 export async function GET(
@@ -80,7 +86,7 @@ export async function GET(
     return NextResponse.json({ error: 'Workspace team not found' }, { status: 404 });
   }
 
-  const project = await getWorkspaceProject(id);
+  const { project, teamId } = await getWorkspaceScope(id);
   const searchParams = req.nextUrl.searchParams;
   const query = searchParams.get('search') || searchParams.get('query') || undefined;
   const type = searchParams.get('type') || undefined;
@@ -96,11 +102,33 @@ export async function GET(
     .map(v => v.trim())
     .filter(Boolean);
 
+  const search = {
+    query, type, project, limit, offset,
+    files: files.length > 0 ? files : undefined,
+  };
+
   try {
-    const searchData = await memClient.search({
-      query, type, project, limit, offset,
-      files: files.length > 0 ? files : undefined,
-    });
+    // A search (a query or a file scope) is a memory read an agent receives:
+    // the runner's `## Workspace Memory` block is built from it. It goes
+    // through the one door so it shares the ledger; the output is the store's
+    // own token search, unchanged. The ledger row needs the task it was for,
+    // which the runner sends as `taskId` / `workerId`; without one (a
+    // dashboard search) nothing is recorded.
+    if (query || search.files) {
+      const taskId = searchParams.get('taskId');
+      const { memories, total } = await retrieveMemory({
+        strategy: 'store-search',
+        searcher: memClient,
+        search,
+        scope: { teamId, workspaceId: id },
+        caller: 'runner_workspace_memory',
+        attribution: { taskId, workerId: searchParams.get('workerId') },
+        ledger: taskId ? undefined : false,
+      });
+      return NextResponse.json({ memories, total });
+    }
+
+    const searchData = await memClient.search(search);
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });

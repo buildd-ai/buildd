@@ -36,6 +36,7 @@ import {
   type TaskAreaPrediction,
 } from '@buildd/core/task-area-prediction-source';
 import { PgVectorStore, getVoyageEmbedder } from '@buildd/core/knowledge-store';
+import { memoryScopeFor } from '@buildd/core/memory-hit-scope';
 import { buildSubjectPriorWork } from './subject-prior-work';
 import { CLAIM_FANOUT_CONCURRENCY, mapWithConcurrency } from './concurrency-limit';
 
@@ -330,6 +331,13 @@ export async function attachKnowledgeContext(
       missionId: (task as any).missionId ?? null,
     };
 
+    // Resolved once for both the recipe and the fan-out below. Each used to
+    // resolve it itself, so a recipe that came back empty paid for the two
+    // workspace lookups twice on the claim path.
+    const memoryScope = teamId && !sensitive
+      ? await memoryScopeFor(undefined, task.workspaceId, teamId)
+      : null;
+
     let parts: string[] = [];
     let recipeAssembly: ContextAssembly | null = null;
     if (recipe) {
@@ -341,7 +349,7 @@ export async function attachKnowledgeContext(
         teamId,
         trigger,
         chain,
-        opts: { sensitive, excludedSourceIds: handoffExcludedSources },
+        opts: { sensitive, excludedSourceIds: handoffExcludedSources, memoryScope },
       });
       parts = clustered;
       recipeAssembly = assembly;
@@ -361,6 +369,9 @@ export async function attachKnowledgeContext(
         sensitive,
         paths,
         excludedSourceIds: handoffExcludedSources,
+        memoryScope,
+        caller: 'claim_context',
+        attribution: { taskId: task.id, workerId: cw.id },
       });
     }
 

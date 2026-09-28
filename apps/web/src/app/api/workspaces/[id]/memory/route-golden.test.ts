@@ -10,12 +10,13 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const inserts: Array<{ values: unknown }> = [];
+let teamIdForTest = 'team-1';
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: async () => ({ id: 'acct-1' }) },
-      workspaces: { findFirst: async () => ({ repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', teamId: 'team-1' }) },
+      workspaces: { findFirst: async () => ({ repo: 'https://github.com/Acme/Widgets.git', name: 'widgets', teamId: teamIdForTest }) },
     },
     insert: () => ({
       values: (values: unknown) => {
@@ -172,6 +173,30 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
     const res = await GET(req('query=nothing&limit=5'), { params });
     expect(await res.json()).toEqual({ memories: [], total: 0 });
     expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('a runner search carrying its task writes one ledger INSERT; a dashboard search writes none', async () => {
+    const TEAM = '11111111-1111-4111-8111-111111111111';
+    const TASK = '33333333-3333-4333-8333-333333333333';
+    const WORKER = '44444444-4444-4444-8444-444444444444';
+    teamIdForTest = TEAM;
+    try {
+      await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params });
+      await new Promise(r => setTimeout(r, 10));
+      expect(inserts).toHaveLength(1);
+      // Ranked by the search's order (mem-1 first), not the batch's.
+      expect((inserts[0].values as any[]).map(r => [r.memoryId, r.rank, r.caller, r.via, r.taskId, r.workerId, r.teamId, r.chunkId])).toEqual([
+        ['mem-1', 1, 'runner_workspace_memory', 'push', TASK, WORKER, TEAM, null],
+        ['mem-2', 2, 'runner_workspace_memory', 'push', TASK, WORKER, TEAM, null],
+      ]);
+
+      inserts.length = 0;
+      await GET(req('query=fix&limit=5'), { params });
+      await new Promise(r => setTimeout(r, 10));
+      expect(inserts).toHaveLength(0);
+    } finally {
+      teamIdForTest = 'team-1';
+    }
   });
 
   it('plain list (no query, no files): same store call', async () => {

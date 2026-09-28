@@ -2741,6 +2741,42 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
 }));
 
+// Memory use ledger: one row per memory a retrieval returned, and how it
+// reached the agent. Written fire-and-forget by retrieveMemory
+// (packages/core/memory-retrieval.ts), one INSERT per retrieval.
+//
+// `via` is push (injected into a prompt or reply the agent did not ask for)
+// or pull (the agent asked: recall, query_knowledge). `gatedBy` names the rule
+// that retrieved the memory but kept it out of the output (score floor,
+// handoff exclusion, cross-corpus cap); null means it was shown. `outcome` is
+// filled after the task completes (used / ignored / contradicted) and is null
+// until then. No FKs: the ledger must never make a claim fail, and it outlives
+// the rows it points at.
+export const memoryUses = pgTable('memory_uses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').notNull(),
+  workspaceId: uuid('workspace_id'),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  /** knowledge_chunks.source_id in `{teamId}:memory`; null for a store (ILIKE) search hit. */
+  chunkId: text('chunk_id'),
+  memoryId: text('memory_id').notNull(),
+  /** Which read path retrieved it; see MemoryCaller in packages/core/memory-retrieval.ts. */
+  caller: text('caller').notNull(),
+  via: text('via').notNull().$type<'push' | 'pull'>(),
+  /** 1-based position in the retrieval's result list. */
+  rank: integer('rank').notNull(),
+  /** Store score; null for a store (ILIKE) search, which has no score. */
+  score: real('score'),
+  gatedBy: text('gated_by'),
+  outcome: text('outcome').$type<'used' | 'ignored' | 'contradicted'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  memoryIdx: index('memory_uses_memory_idx').on(t.teamId, t.memoryId),
+  taskIdx: index('memory_uses_task_idx').on(t.taskId),
+  createdIdx: index('memory_uses_created_idx').on(t.createdAt),
+}));
+
 // Phase 2: knowledge entities — canonical nodes for the entity graph.
 // workspace_id doubles as a scope id (team or workspace depending on corpus).
 export const knowledgeEntities = pgTable('knowledge_entities', {
