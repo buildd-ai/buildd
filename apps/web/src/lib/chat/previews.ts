@@ -296,6 +296,13 @@ const updateMission: Builder = async (input, env) => {
     changes.push({ label, before: clip(m[k]), after: clip(input[k]) });
   }
   if (input.startMode !== undefined) changes.push({ label: 'Start', before: m.isHeld ? 'held' : 'armed', after: String(input.startMode) });
+  if (input.autoSurfaceAudit !== undefined) {
+    // The column defaults to on: a mission row without it has the audit on.
+    const on = asBool(input.autoSurfaceAudit, true);
+    changes.push({ label: 'Automatic visual audit', before: m.autoSurfaceAudit === false ? 'off' : 'on', after: on ? 'on' : 'off' });
+    // The route takes a boolean only; run what the card said.
+    input = { ...input, autoSurfaceAudit: on };
+  }
   if (input.executor !== undefined) changes.push({ label: 'Runs in', before: m.executor === 'local' ? 'a local session' : 'runners', after: input.executor === 'local' ? 'a local session' : 'runners' });
   // Add or remove criteria against the mission's CURRENT list, so a change
   // never drops a criterion the model couldn't see in full.

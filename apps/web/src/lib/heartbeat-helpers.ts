@@ -206,7 +206,9 @@ export interface PhaseAssessment {
  * `stalled` is read from state alone: work finished, nothing open, no plan.
  */
 export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
-  const { completedTasks, activeTasks, failedTasks, artifacts, hasWorkspace, prCount } = data;
+  // `failedTasks` is deliberately unread: task auto-retry owns failures, so no
+  // phase turns them into a "retry" action for the organizer.
+  const { completedTasks, activeTasks, artifacts, hasWorkspace, prCount } = data;
 
   const builderCompleted = completedTasks.filter(t => t.roleSlug === 'builder');
   const activeBuilders = activeTasks.filter(t => t.roleSlug === 'builder');
@@ -223,9 +225,9 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     return {
       phase: 'building',
       reason: `${activeBuilders.length} builder task(s) in progress`,
+      // No "retry failed tasks" action: task auto-retry already does that.
       actions: [
         'Monitor builder progress',
-        ...(failedTasks.length > 0 ? [`Retry ${failedTasks.length} failed task(s) with failureContext`] : []),
       ],
     };
   }
@@ -235,10 +237,11 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     return {
       phase: 'reviewing',
       reason: `${prCount} PR(s) created by tasks`,
+      // No conflict or retry actions: CI retry, the conflict sweep and
+      // pr-reconcile handle a PR that conflicts or goes red, and a reviewer's
+      // request-changes dispatches its own fix.
       actions: [
-        'Check PR merge status',
-        'If PR has conflicts: retry the originating task (create_task with parentTaskId=<id>, failureContext describing conflict) — do NOT create a separate integration task',
-        'Before creating a "CI-green, awaiting approval" escalation for an open PR, call get_pr_review first — a terminal changes_requested verdict is a real defect needing rework, not a human-approval bottleneck. Skip or reword the escalation and retry the originating task instead',
+        'Before creating a "CI-green, awaiting approval" escalation for an open PR, call get_pr_review first — a terminal changes_requested verdict is a real defect the platform sends back for rework, not a human-approval bottleneck. Skip or reword the escalation',
         'If all PRs merged, create next batch of tasks from the plan or summarize completion',
       ],
     };
@@ -315,7 +318,6 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     reason: 'Active work in progress.',
     actions: [
       'Monitor task progress',
-      ...(failedTasks.length > 0 ? [`Retry ${failedTasks.length} failed task(s)`] : []),
     ],
   };
 }

@@ -186,7 +186,7 @@ export const notableTxn = defineDecision({
   mode: 'shadow',                     // 'shadow' | 'gated' | 'live'
   minConfidence: 0.9,                 // required for 'gated' choice questions
 });
-// notableTxn.version     => `${promptVersion}|${JEV_MODEL}|kit-${KIT_VERSION}`
+// notableTxn.version     => `${promptVersion}|${JEV_MODEL}|engine-${DECIDE_ENGINE_VERSION}` (kit release: notableTxn.kitVersion)
 // notableTxn.fingerprint => hash of questions + definitions, asserted by a test helper
 ```
 

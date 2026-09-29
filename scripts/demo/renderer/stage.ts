@@ -2,29 +2,38 @@
  * The browser stage: builds the frame's DOM once from a cut, then
  * `window.__render(t)` poses it for time t. Bundled by render.ts (Bun.build)
  * and driven frame by frame; nothing here animates on its own, so every frame
- * is a pure function of t.
+ * is a pure function of t (the clock is timeline.ts).
  *
  * Look: square corners, 2px rules, hard offset shadows, flat fills (no blur,
- * no gradients), IBM Plex Mono caption chips with the accent square.
+ * no gradients), IBM Plex Mono caption chips with the accent square. A dark
+ * and a light palette, picked by the cut's `theme`.
+ *
+ * On a screen shot, everything the edit adds (spotlight, masks, marks, the
+ * Board's flying tiles) lives in an `fx` layer inside the transformed image,
+ * in image pixels, so it tracks the camera exactly.
  */
-import { cameraAt, captionsAt, clamp, cutDuration, fadeOutAt, layersAt, placeScreen, stillAt, tapAt, type Cut, type Shot } from './timeline';
+import { burstAt, cameraAt, captionsAt, clamp, cutDuration, fadeOutAt, fleetAt, layersAt, maskAt, placeScreen, spotAt, stillAt, tapAt, type Cut, type Rect, type Shot } from './timeline';
 
-const BG = '#12110f';
-const SURFACE = '#1a1816';
-const TEXT = '#ede8e2';
-const MUTED = 'rgba(237,232,226,0.62)';
-const RULE = 'rgba(255,245,230,0.55)';
+type Palette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; dim: string; track: string };
+const PALETTES: Record<'dark' | 'light', Palette> = {
+  dark: { bg: '#12110f', surface: '#1a1816', text: '#ede8e2', muted: 'rgba(237,232,226,0.62)', rule: 'rgba(255,245,230,0.55)', shadow: '#000000', dim: '#0a0908', track: '#26231f' },
+  light: { bg: '#ebe6de', surface: '#f7f4ee', text: '#1f1b17', muted: 'rgba(31,27,23,0.6)', rule: '#1a1512', shadow: '#1a1512', dim: '#f4f0e9', track: '#ddd7cc' },
+};
 const ACCENT = '#f4811f';
-const SHADOW = '#000000';
+const MONO = "'Plex Mono Demo', 'IBM Plex Mono', Menlo, monospace";
 
 type Built = {
   shot: Shot;
   layer: HTMLDivElement;
   body: HTMLDivElement;
   imgs: HTMLImageElement[];
+  fx?: { root: HTMLDivElement; svg: SVGSVGElement; path: SVGPathElement; masks: HTMLDivElement[]; marks: HTMLDivElement[]; sprites: HTMLDivElement[]; covers: HTMLDivElement[] };
+  fleet?: { bars: HTMLDivElement[]; rows: HTMLDivElement[]; count: HTMLSpanElement };
   chips: HTMLDivElement[];
   tap: HTMLDivElement;
 };
+
+let P: Palette = PALETTES.dark;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, style: Partial<CSSStyleDeclaration> = {}, parent?: HTMLElement): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -45,30 +54,87 @@ function phoneGeometry(cut: Cut, shot: Shot) {
   return { bezel, scale, screenW, screenH, w, h, x: centerX - w / 2, y: (cut.height - h) / 2 };
 }
 
-function chip(parent: HTMLElement, big: boolean): HTMLDivElement {
+function chip(parent: HTMLElement, cut: Cut, side: boolean): HTMLDivElement {
+  const size = cut.captionSize ?? 32;
   const c = el('div', {
-    position: 'absolute', display: 'flex', alignItems: 'center', gap: big ? '20px' : '16px',
-    background: SURFACE, color: TEXT, border: `2px solid ${RULE}`, boxShadow: `6px 6px 0 0 ${SHADOW}`,
-    fontFamily: "'Plex Mono Demo', 'IBM Plex Mono', Menlo, monospace", fontWeight: '500',
-    fontSize: big ? '36px' : '32px', lineHeight: '1.3', letterSpacing: '-0.005em',
-    padding: big ? '22px 30px' : '16px 26px 16px 22px', opacity: '0', whiteSpace: big ? 'normal' : 'nowrap',
+    position: 'absolute', display: 'flex', alignItems: 'center', gap: `${Math.round(size * 0.55)}px`,
+    background: P.surface, color: P.text, border: `2px solid ${P.rule}`, boxShadow: `6px 6px 0 0 ${P.shadow}`,
+    fontFamily: MONO, fontWeight: '500', fontSize: `${size}px`, lineHeight: '1.3', letterSpacing: '-0.005em',
+    padding: `${Math.round(size * 0.55)}px ${Math.round(size * 0.85)}px ${Math.round(size * 0.55)}px ${Math.round(size * 0.7)}px`,
+    opacity: '0', whiteSpace: side ? 'normal' : 'nowrap', zIndex: '5',
   }, parent);
-  el('span', { width: big ? '14px' : '12px', height: big ? '14px' : '12px', background: ACCENT, flex: '0 0 auto' }, c);
+  const sq = Math.round(size * 0.38);
+  el('span', { width: `${sq}px`, height: `${sq}px`, background: ACCENT, flex: '0 0 auto' }, c);
   el('span', {}, c);
   return c;
 }
 
+const SVG = 'http://www.w3.org/2000/svg';
+
+function buildFx(shot: Shot, body: HTMLElement): Built['fx'] {
+  if (!shot.spot && !shot.masks && !shot.marks && !shot.burst) return undefined;
+  // Above the stills (z-index 1), as its own stacking context.
+  const root = el('div', { position: 'absolute', left: '0', top: '0', pointerEvents: 'none', zIndex: '2' }, body);
+  const box = { position: 'absolute', left: '0', top: '0', opacity: '0' } as Partial<CSSStyleDeclaration>;
+  const masks = (shot.masks ?? []).map(() => el('div', { ...box }, root));
+  const covers = (shot.burst?.tiles ?? []).map(() => el('div', { ...box }, root));
+  const svg = document.createElementNS(SVG, 'svg');
+  Object.assign(svg.style, { position: 'absolute', left: '0', top: '0', overflow: 'visible' });
+  const path = document.createElementNS(SVG, 'path');
+  path.setAttribute('fill-rule', 'evenodd');
+  path.setAttribute('fill', P.dim);
+  svg.appendChild(path);
+  root.appendChild(svg);
+  const sprites = (shot.burst?.tiles ?? []).map(() => el('div', { ...box, backgroundRepeat: 'no-repeat', transformOrigin: '50% 50%' }, root));
+  const marks = (shot.marks ?? []).map(() => el('div', { ...box, background: ACCENT }, root));
+  return { root, svg, path, masks, marks, sprites, covers };
+}
+
+function buildFleet(shot: Shot, layer: HTMLElement): Built['fleet'] {
+  const f = shot.fleet!;
+  const wrap = el('div', { position: 'absolute', left: '160px', right: '160px', top: '120px', fontFamily: MONO, color: P.text }, layer);
+  const head = el('div', { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '34px' }, wrap);
+  el('div', { fontSize: '24px', letterSpacing: '0.2em', color: P.muted, fontWeight: '600' }, head).textContent = `FLEET · ${f.runners.length} RUNNERS × ${f.runners[0]?.slots.length ?? 0} SLOTS`;
+  const countBox = el('div', { fontSize: '30px', color: P.muted }, head);
+  const count = el('span', { fontSize: '64px', fontWeight: '600', color: ACCENT }, countBox);
+  el('span', {}, countBox).textContent = ` / ${f.total} agents live`;
+  const grid = el('div', { border: `2px solid ${P.rule}`, background: P.surface, boxShadow: `8px 8px 0 0 ${P.shadow}` }, wrap);
+  const bars: HTMLDivElement[] = [];
+  const rows: HTMLDivElement[] = [];
+  f.runners.forEach((r, ri) => {
+    const row = el('div', { display: 'flex', borderTop: ri ? `2px solid ${P.track}` : 'none' }, grid);
+    const name = el('div', { width: '260px', padding: '22px 28px', borderRight: `2px solid ${P.track}` }, row);
+    el('div', { fontSize: '30px', fontWeight: '600' }, name).textContent = r.name;
+    el('div', { fontSize: '20px', color: P.muted, marginTop: '6px' }, name).textContent = r.sub;
+    const lanes = el('div', { flex: '1', display: 'flex', flexDirection: 'column', gap: '14px', padding: '20px 28px', justifyContent: 'center' }, row);
+    for (const slot of r.slots) {
+      const lane = el('div', { height: '44px', background: P.track, position: 'relative' }, lanes);
+      if (!slot) {
+        el('div', { position: 'absolute', left: '16px', top: '9px', fontSize: '20px', color: P.muted }, lane).textContent = 'idle';
+        continue;
+      }
+      const bar = el('div', { position: 'absolute', left: '0', top: '0', bottom: '0', width: '0', background: slot.color, overflow: 'hidden' }, lane);
+      el('div', { position: 'absolute', left: '16px', top: '8px', fontSize: '22px', fontWeight: '600', color: '#ffffff', whiteSpace: 'nowrap' }, bar).textContent = slot.label;
+      bars.push(bar);
+      rows.push(lane);
+    }
+  });
+  return { bars, rows, count };
+}
+
 function build(cut: Cut, root: HTMLElement): Built[] {
-  Object.assign(root.style, { position: 'relative', width: `${cut.width}px`, height: `${cut.height}px`, overflow: 'hidden', background: BG });
+  Object.assign(root.style, { position: 'relative', width: `${cut.width}px`, height: `${cut.height}px`, overflow: 'hidden', background: P.bg });
   return cut.shots.map((shot) => {
-    const layer = el('div', { position: 'absolute', inset: '0', opacity: '0', background: BG }, root);
+    const layer = el('div', { position: 'absolute', inset: '0', opacity: '0', background: P.bg }, root);
     const body = el('div', { position: 'absolute', left: '0', top: '0', transformOrigin: '0 0' }, layer);
     const imgs: HTMLImageElement[] = [];
+    let fx: Built['fx'];
+    let fleet: Built['fleet'];
     if (shot.layout === 'phone') {
       const g = phoneGeometry(cut, shot);
       Object.assign(body.style, {
         left: `${g.x}px`, top: `${g.y}px`, width: `${g.w}px`, height: `${g.h}px`, background: '#0a0908',
-        border: `2px solid ${RULE}`, boxShadow: `12px 12px 0 0 ${SHADOW}`, transformOrigin: '50% 50%',
+        border: `2px solid ${P.rule}`, boxShadow: `12px 12px 0 0 ${P.shadow}`, transformOrigin: '50% 50%',
       });
       const screen = el('div', { position: 'absolute', left: `${g.bezel - 2}px`, top: `${g.bezel - 2}px`, width: `${g.screenW}px`, height: `${g.screenH}px`, overflow: 'hidden' }, body);
       for (const im of shot.images) {
@@ -82,22 +148,125 @@ function build(cut: Cut, root: HTMLElement): Built[] {
         i.dataset.src = im.src;
         imgs.push(i);
       }
+      fx = buildFx(shot, body);
+    } else if (shot.layout === 'fleet' && shot.fleet) {
+      fleet = buildFleet(shot, layer);
     } else if (shot.card) {
       const box = el('div', { position: 'absolute', inset: '0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '22px' }, layer);
-      const title = el('div', { display: 'flex', alignItems: 'center', gap: '22px', fontFamily: "'Plex Mono Demo', 'IBM Plex Mono', monospace", fontWeight: '600', fontSize: '72px', color: TEXT }, box);
+      const title = el('div', { display: 'flex', alignItems: 'center', gap: '22px', fontFamily: MONO, fontWeight: '600', fontSize: '72px', color: P.text }, box);
       el('span', { width: '26px', height: '26px', background: ACCENT }, title);
       el('span', {}, title).textContent = shot.card.title;
-      if (shot.card.sub) el('div', { fontFamily: "'Plex Mono Demo', 'IBM Plex Mono', monospace", fontSize: '30px', color: MUTED }, box).textContent = shot.card.sub;
+      if (shot.card.sub) el('div', { fontFamily: MONO, fontSize: '30px', color: P.muted }, box).textContent = shot.card.sub;
     }
     const n = !shot.caption ? 0 : typeof shot.caption === 'string' ? 1 : shot.caption.length;
-    const chips = Array.from({ length: cut.captions === false ? 0 : n }, () => chip(layer, shot.layout === 'phone'));
+    const chips = Array.from({ length: cut.captions === false ? 0 : n }, () => chip(layer, cut, shot.layout === 'phone'));
     const tap = el('div', {
       position: 'absolute', width: '72px', height: '72px', marginLeft: '-36px', marginTop: '-36px',
-      border: `4px solid ${ACCENT}`, boxShadow: `4px 4px 0 0 ${SHADOW}`, opacity: '0', boxSizing: 'border-box',
+      border: `4px solid ${ACCENT}`, boxShadow: `4px 4px 0 0 ${P.shadow}`, opacity: '0', boxSizing: 'border-box', zIndex: '6',
     }, layer);
     el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
-    return { shot, layer, body, imgs, chips, tap };
+    return { shot, layer, body, imgs, fx, fleet, chips, tap };
   });
+}
+
+// ── Colour sampling for 'auto' masks: what is behind the cover, from the still itself.
+const sampled = new Map<string, string>();
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1;
+const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+function sampleAt(img: HTMLImageElement, x: number, y: number): string {
+  const key = `${img.dataset.src}|${x.toFixed(4)}|${y.toFixed(4)}`;
+  let c = sampled.get(key);
+  if (!c) {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.drawImage(img, Math.round(x * img.naturalWidth), Math.round(y * img.naturalHeight), 1, 1, 0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    c = `rgb(${r},${g},${b})`;
+    sampled.set(key, c);
+  }
+  return c;
+}
+
+function px(r: Rect, W: number, H: number) {
+  return { left: r.x * W, top: r.y * H, width: r.w * W, height: r.h * H };
+}
+
+function poseFx(b: Built, local: number, img: HTMLImageElement, W: number, H: number, scale: number) {
+  const fx = b.fx!;
+  const { shot } = b;
+  Object.assign(fx.root.style, { width: `${W}px`, height: `${H}px` });
+  // Masks: covers that fade or wipe away to reveal what is under them.
+  (shot.masks ?? []).forEach((m, i) => {
+    const s = maskAt(m, local, shot.dur + 5);
+    const d = fx.masks[i];
+    if (s.opacity <= 0) { d.style.opacity = '0'; return; }
+    const r = px(m.rect, W, H);
+    const fill = m.fill === 'dim' ? P.dim : !m.fill || m.fill === 'auto'
+      ? sampleAt(img, m.sample?.x ?? m.rect.x + 3 / W, m.sample?.y ?? m.rect.y + 3 / H)
+      : m.fill;
+    Object.assign(d.style, {
+      left: `${r.left + r.width * s.left}px`, top: `${r.top}px`, width: `${r.width * (1 - s.left)}px`, height: `${r.height}px`,
+      background: fill, opacity: String(m.fill === 'dim' ? s.opacity * 0.62 : s.opacity),
+    });
+  });
+  // The burst: each tile lifted off the still, flying from the origin to its place.
+  if (shot.burst) {
+    const bu = shot.burst;
+    bu.tiles.forEach((t, i) => {
+      const p = burstAt(bu, i, local);
+      const r = px(t, W, H);
+      const cover = fx.covers[i];
+      const sp = fx.sprites[i];
+      if (p >= 1) { cover.style.opacity = '0'; sp.style.opacity = '0'; return; }
+      const sx = bu.sample === 'left' ? t.x - 8 / W : t.x + 3 / W;
+      Object.assign(cover.style, { left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 6}px`, height: `${r.height + 6}px`, background: sampleAt(img, sx, t.y + t.h / 2), opacity: '1' });
+      const dx = (bu.origin.x * W - (r.left + r.width / 2)) * (1 - p);
+      const dy = (bu.origin.y * H - (r.top + r.height / 2)) * (1 - p);
+      const sh = Math.round(8 * (1 - p)) / scale;
+      Object.assign(sp.style, {
+        left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
+        backgroundImage: `url("${img.dataset.src}")`, backgroundSize: `${W}px ${H}px`, backgroundPosition: `${-r.left}px ${-r.top}px`,
+        transform: `translate(${dx}px, ${dy}px) scale(${0.3 + 0.7 * p})`, opacity: String(p <= 0 ? 0 : Math.min(1, p * 5)),
+        boxShadow: sh > 0 ? `${sh}px ${sh}px 0 0 ${P.shadow}` : 'none', zIndex: '2',
+      });
+    });
+  }
+  // The spotlight: one flat dim over everything but the holes.
+  const spot = spotAt(shot.spot, local);
+  if (spot.dim > 0) {
+    const holes = spot.rects.map((r) => {
+      const q = px(r, W, H);
+      return `M${q.left} ${q.top}h${q.width}v${q.height}h${-q.width}Z`;
+    }).join('');
+    fx.svg.setAttribute('width', String(W));
+    fx.svg.setAttribute('height', String(H));
+    fx.path.setAttribute('d', `M0 0H${W}V${H}H0Z${holes}`);
+    fx.path.setAttribute('fill-opacity', String(spot.dim));
+    fx.svg.style.display = 'block';
+  } else {
+    fx.svg.style.display = 'none';
+  }
+  // Marks: an accent underline under a phrase.
+  (shot.marks ?? []).forEach((m, i) => {
+    const o = Math.min(ease01((local - m.from) / 0.3), 1 - ease01((local - m.to) / 0.3));
+    const r = px(m.rect, W, H);
+    const d = fx.marks[i];
+    const grow = ease01((local - m.from) / 0.5);
+    Object.assign(d.style, { left: `${r.left}px`, top: `${r.top + r.height + 4 / scale}px`, width: `${r.width * grow}px`, height: `${5 / scale}px`, opacity: String(Math.max(0, o)), zIndex: '3' });
+  });
+}
+
+function ease01(u: number) {
+  const x = clamp(u);
+  return x * x * (3 - 2 * x);
+}
+
+function poseFleet(b: Built, local: number) {
+  const f = fleetAt(b.shot.fleet!, local);
+  b.fleet!.bars.forEach((bar, i) => {
+    bar.style.width = `${Math.round(f.bars[i] * (56 + ((i * 17) % 38)))}%`;
+  });
+  b.fleet!.count.textContent = String(f.live);
 }
 
 function pose(cut: Cut, b: Built, local: number, opacity: number) {
@@ -106,34 +275,35 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
   b.layer.style.display = opacity > 0 ? 'block' : 'none';
   const u = clamp(local / shot.dur);
   const cam = cameraAt(shot.camera, u);
-  const still = stillAt(shot.images, local);
-  b.imgs.forEach((img, i) => {
-    img.style.opacity = i === still.index ? String(still.alpha) : still.prev && shot.images[i].src === still.prev ? '1' : '0';
-    img.style.zIndex = i === still.index ? '2' : '1';
-  });
-  // Where a point of the shot lands on the frame, for the tap marker.
   let toFrame = (x: number, y: number) => ({ x, y });
-  if (shot.layout === 'screen') {
-    const img = shot.images[still.index];
-    const p = placeScreen(img, cut, cam);
-    b.body.style.transform = `translate(${p.x}px, ${p.y}px) scale(${p.scale})`;
-    // Framed (zoom < 1): a window with a rule and a hard shadow, both in output px.
-    const framed = cam.zoom < 1;
-    b.body.style.outline = framed ? `${2 / p.scale}px solid ${RULE}` : 'none';
-    b.body.style.boxShadow = framed ? `${12 / p.scale}px ${12 / p.scale}px 0 0 ${SHADOW}` : 'none';
-    b.body.style.width = `${img.width}px`;
-    b.body.style.height = `${img.height}px`;
-    toFrame = (x, y) => ({ x: p.x + x * img.width * p.scale, y: p.y + y * img.height * p.scale });
-  } else if (shot.layout === 'phone') {
-    const g = phoneGeometry(cut, shot);
-    b.body.style.transform = `scale(${cam.zoom})`;
-    const cx = g.x + g.w / 2, cy = g.y + g.h / 2;
-    toFrame = (x, y) => ({
-      x: cx + (g.x + g.bezel + x * g.screenW - cx) * cam.zoom,
-      y: cy + (g.y + g.bezel + y * g.screenH - cy) * cam.zoom,
+  if (b.imgs.length) {
+    const still = stillAt(shot.images, local);
+    b.imgs.forEach((img, i) => {
+      img.style.opacity = i === still.index ? String(still.alpha) : still.prev && shot.images[i].src === still.prev ? '1' : '0';
+      img.style.zIndex = i === still.index ? '1' : '0';
     });
+    if (shot.layout === 'screen') {
+      const img = shot.images[still.index];
+      const p = placeScreen(img, cut, cam);
+      b.body.style.transform = `translate(${p.x}px, ${p.y}px) scale(${p.scale})`;
+      const framed = cam.zoom < 1;
+      b.body.style.outline = framed ? `${2 / p.scale}px solid ${P.rule}` : 'none';
+      b.body.style.boxShadow = framed ? `${12 / p.scale}px ${12 / p.scale}px 0 0 ${P.shadow}` : 'none';
+      b.body.style.width = `${img.width}px`;
+      b.body.style.height = `${img.height}px`;
+      if (b.fx) poseFx(b, local, b.imgs[still.index], img.width, img.height, p.scale);
+      toFrame = (x, y) => ({ x: p.x + x * img.width * p.scale, y: p.y + y * img.height * p.scale });
+    } else if (shot.layout === 'phone') {
+      const g = phoneGeometry(cut, shot);
+      b.body.style.transform = `scale(${cam.zoom})`;
+      const cx = g.x + g.w / 2, cy = g.y + g.h / 2;
+      toFrame = (x, y) => ({
+        x: cx + (g.x + g.bezel + x * g.screenW - cx) * cam.zoom,
+        y: cy + (g.y + g.bezel + y * g.screenH - cy) * cam.zoom,
+      });
+    }
   }
-  // The last shot keeps its caption until the closing fade takes everything.
+  if (b.fleet) poseFleet(b, local);
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
   b.chips.forEach((c, i) => {
@@ -162,7 +332,7 @@ declare global {
 
 let built: Built[] = [];
 
-/** Load and decode a shot's stills; fails loudly so a frame is never shot with a missing image. */
+/** Load a shot's stills; fails loudly so a frame is never shot with a missing image. */
 async function ensure(b: Built) {
   await Promise.all(b.imgs.map(async (i) => {
     if (i.getAttribute('src')) return;
@@ -185,10 +355,12 @@ let curtain: HTMLDivElement | null = null;
 
 window.__load = async (cut: Cut) => {
   current = cut;
+  P = PALETTES[cut.theme ?? 'dark'];
+  document.body.style.background = P.bg;
   const root = document.getElementById('frame') as HTMLDivElement;
   root.innerHTML = '';
   built = build(cut, root);
-  curtain = el('div', { position: 'absolute', inset: '0', background: BG, opacity: '0', zIndex: '10' }, root);
+  curtain = el('div', { position: 'absolute', inset: '0', background: P.bg, opacity: '0', zIndex: '10' }, root);
   // Stills are large; only the shots on screen hold decoded images (see __render).
   for (const b of built) await ensure(b);
   for (const b of built) release(b);

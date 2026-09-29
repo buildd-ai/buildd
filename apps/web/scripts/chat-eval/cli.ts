@@ -14,7 +14,7 @@
  *   questions --classify --timeout 900   observe routing at production's deadline: outcome
  *       and latency tally, stored classifications untouched
  *   questions --list
- *   run --surface chat|mcp [--routing jev|fallback|all] [--model sonnet|haiku|opus|tier]
+ *   run --surface chat|mcp [--routing jev|fallback|all] [--mcp-tools groups|legacy] [--model sonnet|haiku|opus|tier]
  *       [--limit N] [--ids a,b] [--area tasks] [--workspace name] [--concurrency 2] [--label x]
  *       [--timeout 900]        route each question live at this deadline (a timeout is a fallback turn)
  *   judge --run <id>           Jev judges answered / efficiency / obstacle per question
@@ -28,8 +28,8 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } 
 import { join } from 'node:path';
 import { arg, dataPath, DATA_DIR, estTokens, flag, readJsonl } from './lib/env';
 import {
-  activeChatDefs, chatGroups, chatSystemPrompt, chatToolDefs, MCP_SERVER_INSTRUCTIONS, MCP_SYSTEM_PROMPT, mcpToolDefs,
-  type Surface, type ToolDef,
+  activeChatDefs, chatGroups, chatSystemPrompt, chatToolDefs, MCP_SYSTEM_PROMPT, mcpServerInstructionsFor, mcpToolDefs,
+  parseMcpTools, runIdFor, type Surface, type ToolDef,
 } from './lib/surfaces';
 import { runClaude, type ClaudeRun } from './lib/claude';
 import { callRemoteTool } from './lib/remote';
@@ -76,10 +76,11 @@ function cmdStatic() {
   }
   const legacy = mcpToolDefs('legacy');
   console.log(`mcp legacy tools (${legacy.map(d => d.name).join(', ')})  ${lpad(sum(legacy), 6)}`);
-  console.log(`mcp tools, every one (${mcp.length})            ${lpad(sum(mcp), 6)}`);
+  console.log(`mcp legacy server instructions      ${lpad(estTokens(mcpServerInstructionsFor('legacy')), 6)}`);
+  console.log(`mcp groups tools, every one (${mcp.length})     ${lpad(sum(mcp), 6)}`);
   for (const d of mcp) console.log(`  mcp ${pad(d.name, 30)} ${lpad(sum([d]), 6)}`);
   console.log(`mcp, a visual question (${MCP_VISUAL_TOOLS.join(' + ')})  ${lpad(sum(mcp.filter(d => MCP_VISUAL_TOOLS.includes(d.name))), 6)}`);
-  console.log(`mcp server instructions             ${lpad(estTokens(MCP_SERVER_INSTRUCTIONS), 6)}`);
+  console.log(`mcp groups server instructions      ${lpad(estTokens(mcpServerInstructionsFor('groups')), 6)}`);
 
   console.log('\nPer chat tool (largest first):');
   console.log(`${pad('tool', 26)}${pad('group', 14)}${lpad('desc', 6)}${lpad('schema', 8)}${lpad('≈tok', 7)}`);
@@ -103,13 +104,13 @@ async function cmdProbe() {
   const chat = chatToolDefs();
   const prompt = chatSystemPrompt({ workspace: null, workspaces: [{ id: crypto.randomUUID(), name: 'example' }] });
   const dir = dataPath('probe', 'x');
-  const variants: Array<{ label: string; surface: Surface; system: string; tools: ToolDef[] | null }> = [
+  const variants: Array<{ label: string; surface: Surface; system: string; tools: ToolDef[] | null; mcpTools?: 'legacy' }> = [
     { label: 'no tools, one-line system prompt', surface: 'chat', system: 'Reply OK.', tools: null },
     { label: 'no tools, chat system prompt', surface: 'chat', system: prompt, tools: null },
     { label: 'chat fallback turn', surface: 'chat', system: prompt, tools: activeChatDefs(chat, chatGroups(null)) },
     ...TOOL_GROUPS.map(g => ({ label: `chat routed: ${g}`, surface: 'chat' as Surface, system: prompt, tools: activeChatDefs(chat, chatGroups(g)) })),
     { label: 'chat every tool', surface: 'chat', system: prompt, tools: chat },
-    { label: 'mcp legacy (buildd + others)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs('legacy') },
+    { label: 'mcp legacy (buildd + others)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs('legacy'), mcpTools: 'legacy' },
     { label: 'mcp groups (every tool)', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs() },
     { label: 'mcp groups: missions + runners', surface: 'mcp', system: MCP_SYSTEM_PROMPT, tools: mcpToolDefs().filter(d => MCP_VISUAL_TOOLS.includes(d.name)) },
   ];
@@ -125,7 +126,7 @@ async function cmdProbe() {
     if (v.tools) {
       const f = join(dir, '..', `tools-${rows.length}.json`);
       writeFileSync(f, JSON.stringify(v.tools));
-      server = proxyServer(v.surface, f, join(dir, '..', 'probe-calls.jsonl'), 'probe');
+      server = proxyServer(v.surface, f, join(dir, '..', 'probe-calls.jsonl'), 'probe', { CHAT_EVAL_MCP_TOOLS: v.mcpTools ?? 'groups' });
     }
     const r = await runClaude({ prompt: 'Reply with the single word OK. Do not call any tool.', systemPrompt: v.system, model, mcpServer: server, maxTurns: 1 });
     if (!v.tools) bare.set(v.system, r.firstStepInput);
@@ -285,14 +286,15 @@ async function cmdRun() {
   qs = qs.slice(0, Number(arg(argv, 'limit') ?? qs.length));
   if (!qs.length) throw new Error('no questions: run `questions --synth 30` (and --classify) first');
 
-  const runId = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${surface}${surface === 'chat' ? `-${routing}` : ''}-${modelArg}${arg(argv, 'label') ? `-${arg(argv, 'label')}` : ''}`;
+  const mcpTools = parseMcpTools(arg(argv, 'mcp-tools'));
+  const runId = runIdFor({ at: new Date(), surface, mcpTools, routing, model: modelArg, label: arg(argv, 'label') });
   const out = (f: string) => dataPath('runs', runId, f);
   const all = await workspacesInReach();
   const pinName = arg(argv, 'workspace');
   const pinned = pinName ? all.find(w => w.name === pinName || w.id === pinName) ?? null : null;
   if (pinName && !pinned) throw new Error(`workspace ${pinName} not in reach`);
-  writeFileSync(out('meta.json'), JSON.stringify({ runId, surface, routing, routingTimeoutMs: liveTimeout, model: modelArg, workspace: pinned?.name ?? null, questions: qs.length, at: new Date().toISOString() }, null, 2));
-  console.log(`run ${runId}: ${qs.length} questions on ${surface}${surface === 'chat' ? ` (routing ${routing})` : ''}, model ${modelArg}`);
+  writeFileSync(out('meta.json'), JSON.stringify({ runId, surface, routing, routingTimeoutMs: liveTimeout, ...(surface === 'mcp' ? { mcpTools } : {}), model: modelArg, workspace: pinned?.name ?? null, questions: qs.length, at: new Date().toISOString() }, null, 2));
+  console.log(`run ${runId}: ${qs.length} questions on ${surface}${surface === 'chat' ? ` (routing ${routing})` : ` (${mcpTools} tools)`}, model ${modelArg}`);
 
   await pool(qs, Number(arg(argv, 'concurrency') ?? 2), async q => {
     let defs: ToolDef[];
@@ -314,7 +316,7 @@ async function cmdRun() {
       if (modelArg === 'tier') model = TIER_MODEL[route?.tier ?? 'standard'];
       system = chatSystemPrompt({ workspace: pinned, workspaces: all, tier: route?.tier });
     } else {
-      defs = mcpToolDefs();
+      defs = mcpToolDefs(mcpTools);
       system = MCP_SYSTEM_PROMPT;
       if (modelArg === 'tier') model = 'sonnet';
     }
@@ -324,6 +326,7 @@ async function cmdRun() {
     try {
       run = await runClaude({ prompt: q.text, systemPrompt: system, model, mcpServer: proxyServer(surface, toolsFile, out('calls.jsonl'), q.id, {
         CHAT_EVAL_WORKSPACE_ID: pinned?.id ?? '',
+        CHAT_EVAL_MCP_TOOLS: mcpTools,
         // Every workspace counts as active: the harness can't see task activity.
         CHAT_EVAL_WORKSPACES: JSON.stringify(all.map(w => ({ ...w, lastActiveAt: new Date().toISOString() }))),
       }), maxTurns: 9 });
@@ -420,7 +423,7 @@ function cmdReport() {
   const col = (a: number, b?: number) => b === undefined ? k(a) : `${k(a)} | ${k(b)} | ${b ? `${a > b ? '+' : ''}${Math.round((100 * (a - b)) / b)}%` : ''}`;
   const lines: string[] = [];
   lines.push(`# Chat eval: ${runId}`, '');
-  lines.push(`surface **${s.meta.surface}**${s.meta.surface === 'chat' ? `, routing **${s.meta.routing}**` : ''}, model **${s.meta.model}**, ${s.n} questions (weighted by likelihood)${vs ? `, vs \`${vs.runId}\`` : ''}`, '');
+  lines.push(`surface **${s.meta.surface}**${s.meta.surface === 'chat' ? `, routing **${s.meta.routing}**` : `, tools **${s.meta.mcpTools ?? 'groups'}**`}, model **${s.meta.model}**, ${s.n} questions (weighted by likelihood)${vs ? `, vs \`${vs.runId}\`` : ''}`, '');
   lines.push(vs ? '| per question (weighted avg) | this | vs | Δ |' : '| per question (weighted avg) | value |', vs ? '|---|---|---|---|' : '|---|---|');
   const row = (label: string, a: number, b?: number) => lines.push(`| ${label} | ${col(a, b)} |`);
   lines.push(`| handled well (Jev: full, declined or clarified correctly) | ${Math.round(100 * s.fullRate)}%${vs ? ` | ${Math.round(100 * vs.fullRate)}% |` : ''} |`);

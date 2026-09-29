@@ -612,6 +612,43 @@ describe('GET /api/workers/active', () => {
     expect(row.upToDateWithDeployed).toBeNull();
   });
 
+  describe('open workspaces reach only their own team\'s runners (claim rule)', () => {
+    const runner = (accountId: string, teamId: string, url: string) => ({
+      localUiUrl: url, viewerToken: 't', accountId,
+      maxConcurrentWorkers: 3, activeWorkerCount: 0, lastHeartbeatAt: new Date(),
+      account: { id: accountId, name: `Runner ${accountId}`, maxConcurrentWorkers: 3, teamId },
+    });
+
+    it('hides a runner from another team whose only overlap is an open workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-open']);
+      mockGetCachedOpenWorkspaceIds.mockResolvedValue(['ws-open'] as any);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-open', name: 'Open WS', teamId: 'team-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]); // no explicit links
+      mockHeartbeatsFindMany.mockResolvedValue([
+        runner('acct-own', 'team-1', 'http://own'),
+        runner('acct-foreign', 'team-2', 'http://foreign'),
+      ]);
+
+      const data = await (await GET(createMockRequest())).json();
+      const urls = data.activeLocalUis.map((r: any) => r.localUiUrl);
+      expect(urls).toEqual(['http://own']);
+      expect(data.activeLocalUis[0].workspaceIds).toEqual(['ws-open']);
+    });
+
+    it('still shows another team\'s runner reaching the workspace through an explicit link', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-open']);
+      mockGetCachedOpenWorkspaceIds.mockResolvedValue(['ws-open'] as any);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-open', name: 'Open WS', teamId: 'team-1' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-open', canClaim: true, canCreate: false }]);
+      mockHeartbeatsFindMany.mockResolvedValue([runner('acct-foreign', 'team-2', 'http://foreign')]);
+
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis.map((r: any) => r.localUiUrl)).toEqual(['http://foreign']);
+    });
+  });
+
   it('supports API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });

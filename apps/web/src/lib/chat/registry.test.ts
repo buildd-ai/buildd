@@ -133,3 +133,13 @@ describe('visual review from chat (docs/design/visual-qa-human-review.md, Chat)'
     expect(matchChatRoute('GET', '/api/missions/m1/visual-review')?.entry.pattern).toBe('/api/missions/:id/visual-review');
   });
 });
+
+describe('runner status from chat', () => {
+  it('list_runners is a read in the workers group that reaches only GET /api/workers/active (and the workspace list)', () => {
+    const op = CHAT_TOOL_SPECS.list_runners.ops[''];
+    expect(CHAT_TOOL_SPECS.list_runners.group).toBe('workers');
+    expect(op.class).toBe('read');
+    expect([...op.routes].sort()).toEqual(['GET /api/workers/active', 'GET /api/workspaces']);
+    expect(CHAT_READ_TOOLS as readonly string[]).toContain('list_runners');
+  });
+});

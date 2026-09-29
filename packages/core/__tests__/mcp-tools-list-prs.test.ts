@@ -69,4 +69,39 @@ describe('list_prs', () => {
     expect(text).toContain('get_pr');
     expect(calls).toEqual([]);
   });
+
+  describe('signals, only when they matter', () => {
+    it('a quiet PR line has none', async () => {
+      const { text } = await run({}, { state: 'open', prs: [pr({})] });
+      expect(text).not.toMatch(/NEEDS YOU|fixing|reviewing|→|checked|attempt/);
+    });
+
+    it('waiting on you leads the line and counts in the header', async () => {
+      const { text } = await run({}, { state: 'open', prs: [pr({ status: 'ci_green', waitingOnYou: 'reviewer escalated' })] });
+      expect(text.split('\n')[0]).toBe('1 open PR (1 needs you):');
+      expect(text).toContain('#12 NEEDS YOU (reviewer escalated) · CI green ·');
+    });
+
+    it('red CI with its fix attempts, and an agent already fixing it', async () => {
+      const { text } = await run({}, { state: 'open', prs: [pr({ status: 'ci_failed', ciFixAttempts: 2, resolving: 'ci' })] });
+      expect(text).toContain('#12 CI FAILED (2 fix attempts) · agent fixing CI ·');
+      const one = await run({}, { state: 'open', prs: [pr({ status: 'ci_failed', ciFixAttempts: 1 })] });
+      expect(one.text).toContain('#12 CI FAILED (1 fix attempt) ·');
+    });
+
+    it('a conflict being resolved, a review in flight', async () => {
+      const { text } = await run({}, { state: 'open', prs: [
+        pr({ prNumber: 1, status: 'conflict', resolving: 'conflict' }),
+        pr({ prNumber: 2, status: 'ci_green', resolving: 'review' }),
+      ] });
+      expect(text).toContain('#1 CONFLICT · agent resolving the conflict ·');
+      expect(text).toContain('#2 CI green · agent reviewing ·');
+    });
+
+    it('a mission-branch base and a stale state', async () => {
+      const { text } = await run({}, { state: 'open', prs: [pr({ intoMissionBranch: 'mission/x', checkedHoursAgo: 5 })] });
+      expect(text).toContain('→ mission/x');
+      expect(text).toContain('state checked 5h ago');
+    });
+  });
 });

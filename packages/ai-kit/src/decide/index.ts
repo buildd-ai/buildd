@@ -11,7 +11,8 @@
  * - `defineDecision`: modes (`shadow | gated | live`), per-question
  *   thresholds, a `version` to stamp on rows, and a `fingerprint` that
  *   `expectDecisionPinned` checks so a changed definition fails a test until
- *   its version is bumped.
+ *   its version is bumped. Both come from the definition and
+ *   `DECIDE_ENGINE_VERSION`, never the kit release (0.10.0).
  * - `runDecisionEval`: accuracy and coverage at thresholds over labelled rows.
  * - Receipts (`DecisionReceipt`) are metadata only; `toModelsUsage` feeds `/models`' `recordUsage`.
  * - Endpoints (0.7.0): `systemone` (default: Jev on OpenRouter, or another
@@ -927,15 +928,86 @@ export async function runDecisionPool<T, R>(
  * a new decision version. The fingerprint is a hash of all of that; an app's
  * test pins it with `expectDecisionPinned`, which fails until the author bumps
  * `promptVersion` and re-pins. The full `version` string
- * (`promptVersion|model|kit-<kit version>`) is what gets stamped on every
- * persisted row, so live metrics can be split by version.
+ * (`promptVersion|model|engine-<DECIDE_ENGINE_VERSION>`) is what gets stamped
+ * on every persisted row, so live metrics can be split by version.
+ *
+ * A decision's identity is its content, never the kit release (0.10.0+). The
+ * kit's own part in a decision's behaviour is `DECIDE_ENGINE_VERSION`, which
+ * moves only when the decide internals change; the kit release is metadata
+ * (`kitVersion` on the decision, its runs and eval reports). Before 0.10.0 the
+ * version ended `|kit-<kit version>`; `normalizeDecisionVersion` maps those
+ * strings to the current form so history can be grouped.
  *
  * Generalised from money-app's `JEV_CLASSIFIER_VERSION` +
  * `JEV_CONFIG_FINGERPRINT` + fingerprint test.
  */
 
-/** This package's version. `define.test.ts` asserts it matches package.json. */
-export const KIT_VERSION = '0.9.1';
+/** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
+export const KIT_VERSION = '0.10.0';
+
+/**
+ * The version of the kit logic that turns a decision's definition into
+ * outcomes. It is part of every decision's identity (its `version` and, from 2
+ * on, its fingerprint), so a bump fails every app's pin until the app re-runs
+ * its eval.
+ *
+ * Bump it when anything below changes what a decision does for the same
+ * definition and model:
+ * - the request sent for a definition (the System One body; the `chat`
+ *   endpoint's prompt, option lettering, sampling parameters);
+ * - how a response becomes answers (answer validation, logprob → probability
+ *   mapping, score/confidence derivation);
+ * - how answers become outcomes (`readAnswer`, `gateAnswer`, policy
+ *   resolution) and the `/surfaces` ranker (`defineRankSurface.rank`);
+ * - the default model (`JEV_MODEL`) is already in the fingerprint and needs no
+ *   bump; neither do transport-only changes (timeouts, retries, receipts).
+ *
+ * `engine.test.ts` pins a digest of that behaviour over fixed fixtures and
+ * fails when it moves without a bump. Engine 1 is every kit release through
+ * 0.9.1 (the behaviour did not change across them) and 0.10.0.
+ */
+export const DECIDE_ENGINE_VERSION = 1;
+
+/**
+ * Kit releases before 0.10.0 stamped `|kit-<version>` instead of an engine.
+ * Every one of them ran engine 1.
+ */
+const LEGACY_KIT_ENGINE = 1;
+
+export interface ParsedDecisionVersion {
+  promptVersion: string;
+  model: string;
+  /** The decide engine: from `engine-N`, or inferred for a legacy `kit-x.y.z` string. */
+  engine: number;
+  /** Only for a legacy string: the kit release it named. */
+  kitVersion: string | null;
+  /** True when the string was the pre-0.10.0 `…|kit-x.y.z` form. */
+  legacy: boolean;
+}
+
+const VERSION_RE = /^([^|\s]+)\|([^|\s]+)\|(?:engine-(\d+)|kit-(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?))$/;
+
+/** Split a decision version (either form) into its parts; null when it is neither. */
+export function parseDecisionVersion(version: string): ParsedDecisionVersion | null {
+  const m = VERSION_RE.exec(version.trim());
+  if (!m) return null;
+  const [, promptVersion, model, engine, kit] = m;
+  return kit
+    ? { promptVersion, model, engine: LEGACY_KIT_ENGINE, kitVersion: kit, legacy: true }
+    : { promptVersion, model, engine: Number(engine), kitVersion: null, legacy: false };
+}
+
+/**
+ * A decision version in the current (`…|engine-N`) form. A legacy
+ * `…|kit-x.y.z` string maps to the engine that release ran, so rows stamped by
+ * different kit releases of the same definition group together. Anything else
+ * (an app's own pre-kit version string, say) comes back unchanged. Pure; use it
+ * when reading rows, never to rewrite them.
+ */
+export function normalizeDecisionVersion(version: string): string {
+  const p = parseDecisionVersion(version);
+  return p ? `${p.promptVersion}|${p.model}|engine-${p.engine}` : version;
+}
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 
@@ -967,7 +1039,14 @@ export interface DecisionConfig<Q extends DecisionQuestions> {
 export interface DecisionRun<Q extends DecisionQuestions> {
   ok: boolean;
   decisionId: string;
+  /** The decision's identity (`promptVersion|model|engine-N`). Stamp it on persisted rows. */
   version: string;
+  /**
+   * The kit release that ran it. Metadata: log it if useful, never group or
+   * pin by it. Always set by the kit; optional so code that builds its own
+   * runs (fallbacks, test fakes) still type-checks.
+   */
+  kitVersion?: string;
   outcomes: DecisionOutcomes<Q>;
   result: DecideResult<Q>;
   /** Present when the call reached the network. Metadata only. */
@@ -1003,10 +1082,14 @@ export interface Decision<Q extends DecisionQuestions> {
   readonly id: string;
   readonly promptVersion: string;
   readonly model: string;
-  /** `${promptVersion}|${model}|kit-${KIT_VERSION}`. Stamp it on every persisted row. */
+  /** `${promptVersion}|${model}|engine-${DECIDE_ENGINE_VERSION}`. Stamp it on every persisted row. */
   readonly version: string;
-  /** 12 hex chars over questions, modes, thresholds and model. Pin it with `expectDecisionPinned`. */
+  /** 12 hex chars over questions, modes, thresholds, model (and engine, from 2). Pin it with `expectDecisionPinned`. */
   readonly fingerprint: string;
+  /** `DECIDE_ENGINE_VERSION` when it was defined. Part of the identity. */
+  readonly engine: number;
+  /** The kit release. Metadata only: not in `version` or `fingerprint`. */
+  readonly kitVersion: string;
   readonly questions: Q;
   policyOf(name: keyof Q & string): QuestionPolicy;
   /** One call for one state. Never throws. */
@@ -1039,13 +1122,28 @@ export function shortHash(text: string): string {
   return h.toString(16).padStart(16, '0').slice(0, 12);
 }
 
-/** The fingerprint of a config: what Jev is asked, how answers are acted on, and which model. */
-export function decisionFingerprint<Q extends DecisionQuestions>(config: DecisionConfig<Q>): string {
+/**
+ * The fingerprint of a config: what Jev is asked, how answers are acted on,
+ * which model, and (from engine 2) which decide engine acts on them. Never the
+ * kit release.
+ */
+export function decisionFingerprint<Q extends DecisionQuestions>(
+  config: DecisionConfig<Q>,
+  engine: number = DECIDE_ENGINE_VERSION,
+): string {
   const policies = Object.fromEntries(Object.keys(config.questions).map(name => [name, resolvePolicy(config, name)]));
-  // The endpoint kind joins only when it is not the default, so every existing
-  // fingerprint is unchanged.
+  // The endpoint kind and the engine join only when they are not the defaults,
+  // so every fingerprint pinned before them is unchanged. An engine bump
+  // changes every fingerprint, so a pin that checks only the fingerprint still
+  // fails on it.
   const endpoint = config.endpoint?.kind === 'chat' ? 'chat' : undefined;
-  return shortHash(canonicalJson({ questions: config.questions, policies, model: config.model ?? JEV_MODEL, endpoint }));
+  return shortHash(canonicalJson({
+    questions: config.questions,
+    policies,
+    model: config.model ?? JEV_MODEL,
+    endpoint,
+    engine: engine === 1 ? undefined : engine,
+  }));
 }
 
 function resolvePolicy<Q extends DecisionQuestions>(config: DecisionConfig<Q>, name: string): QuestionPolicy {
@@ -1058,6 +1156,10 @@ function resolvePolicy<Q extends DecisionQuestions>(config: DecisionConfig<Q>, n
 /**
  * Throws unless the decision still has the pinned fingerprint (and, when given,
  * version). Use in the app's test suite; works under any test runner.
+ *
+ * A pinned legacy version (`…|kit-x.y.z`, before 0.10.0) is compared in its
+ * normalised form, so an old pin keeps passing while the decision is unchanged;
+ * re-pin to the `…|engine-N` form when convenient.
  */
 export function expectDecisionPinned(
   decision: Pick<Decision<DecisionQuestions>, 'id' | 'fingerprint' | 'version' | 'promptVersion'>,
@@ -1070,10 +1172,10 @@ export function expectDecisionPinned(
       `Re-run its eval, bump promptVersion, then pin fingerprint '${decision.fingerprint}'.`,
     );
   }
-  if (pinned.version !== undefined && decision.version !== pinned.version) {
+  if (pinned.version !== undefined && normalizeDecisionVersion(decision.version) !== normalizeDecisionVersion(pinned.version)) {
     throw new Error(
       `decision '${decision.id}' version is '${decision.version}', pinned '${pinned.version}'. ` +
-      'The model or kit release changed: re-run the eval before re-pinning.',
+      'The prompt version, model or decide engine changed: re-run the eval before re-pinning.',
     );
   }
 }
@@ -1117,7 +1219,8 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
     if (tooMany) throw new Error(`decision '${config.id}': ${tooMany}`);
   }
   const model = config.model ?? JEV_MODEL;
-  const version = `${config.promptVersion}|${model}|kit-${KIT_VERSION}`;
+  const engine = DECIDE_ENGINE_VERSION;
+  const version = `${config.promptVersion}|${model}|engine-${engine}`;
   const policyOf = (name: keyof Q & string) => resolvePolicy(config, name);
 
   const run = async (opts: RunOptions<Q>): Promise<DecisionRun<Q>> => {
@@ -1134,6 +1237,7 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
       ok: result.ok,
       decisionId: config.id,
       version,
+      kitVersion: KIT_VERSION,
       outcomes: applyDecisionPolicy(config.questions, result, policyOf),
       result,
       receipt: result.attempts > 0
@@ -1176,7 +1280,9 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
     promptVersion: config.promptVersion,
     model,
     version,
-    fingerprint: decisionFingerprint(config),
+    fingerprint: decisionFingerprint(config, engine),
+    engine,
+    kitVersion: KIT_VERSION,
     questions: config.questions,
     policyOf,
     run,
@@ -1238,6 +1344,8 @@ export interface EvalReport {
   decisionId: string;
   version: string;
   fingerprint: string;
+  /** The kit release that ran the eval. Metadata only. */
+  kitVersion: string;
   question: string;
   split: EvalSplit;
   predictions: EvalPrediction[];
@@ -1379,6 +1487,7 @@ export async function runDecisionEval<T, Q extends DecisionQuestions>(params: Ru
     decisionId: decision.id,
     version: decision.version,
     fingerprint: decision.fingerprint,
+    kitVersion: decision.kitVersion,
     question,
     split,
     predictions,

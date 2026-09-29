@@ -548,6 +548,7 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
       ok: false,
       decisionId: decision.id,
       version: decision.version,
+      kitVersion: decision.kitVersion,
       outcomes: {} as DecisionRun<Q>['outcomes'],
       result: { ok: false, error, latencyMs: now() - started, attempts: 0 },
       receipt: null,

@@ -231,6 +231,43 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
     await expect(api('/api/pr?workspaceId=ws-ok')).rejects.toThrow('API error: 404');
   });
 
+  describe('runner rows carry a workspaceIds array (list_runners, GET /api/workers/active)', () => {
+    const runnersApi = (body: unknown) => createInProcessApi({
+      origin: 'http://localhost', headers: new Headers(), reach,
+      routes: [{ pattern: '/api/workers/active', methods: ['GET'], reach: reachOf('/api/workers/active'), load: async () => ({ GET: async () => Response.json(body) }) }],
+    });
+    const rows = [
+      { localUiUrl: 'http://r-both', accountName: 'both', workspaceIds: ['ws-ok', 'ws-sensitive'], workspaceNames: ['ok', 's'] },
+      { localUiUrl: 'http://r-out', accountName: 'out', workspaceIds: ['ws-sensitive', 'ws-other-team'], workspaceNames: ['s', 'o'] },
+      { localUiUrl: 'http://r-none', accountName: 'none', workspaceIds: [], workspaceNames: [] },
+      { localUiUrl: 'http://r-ok', accountName: 'ok', workspaceIds: ['ws-ok'], workspaceNames: ['ok'] },
+    ];
+
+    it('hides a runner that serves only out-of-reach workspaces (or none)', async () => {
+      const out = await runnersApi({ activeLocalUis: rows })('/api/workers/active');
+      expect(out.activeLocalUis.map((r: any) => r.accountName)).toEqual(['both', 'ok']);
+    });
+
+    it('strips workspace ids outside reach from each row, and their names with them', async () => {
+      const out = await runnersApi({ activeLocalUis: rows })('/api/workers/active');
+      const both = out.activeLocalUis[0];
+      expect(both.workspaceIds).toEqual(['ws-ok']);
+      expect(both.workspaceNames).toEqual(['ok']);
+      expect(JSON.stringify(out)).not.toContain('ws-sensitive');
+      expect(JSON.stringify(out)).not.toContain('ws-other-team');
+    });
+
+    it('refuses a workspaceId outside reach before dispatch, and allows one in reach', async () => {
+      await expect(runnersApi({ activeLocalUis: rows })('/api/workers/active?workspaceId=ws-sensitive')).rejects.toThrow('API error: 404');
+      const out = await runnersApi({ activeLocalUis: rows, workspace: { id: 'ws-ok', name: 'ok' }, browserRunnerOnline: true })('/api/workers/active?workspaceId=ws-ok');
+      expect(out.browserRunnerOnline).toBe(true);
+    });
+
+    it('is not shadowed by /api/workers/:id', () => {
+      expect(matchChatRoute('GET', '/api/workers/active')?.entry.pattern).toBe('/api/workers/active');
+    });
+  });
+
   it('a requireQuery route with no pinning param is refused before dispatch', async () => {
     let dispatched = 0;
     const api = createInProcessApi({

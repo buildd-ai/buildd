@@ -977,3 +977,24 @@ describe('titles: the docked object, and the re-title question', () => {
   });
 });
 
+describe('routing receives the previous assistant text', () => {
+  it('passes the last assistant message to routeTurn so the routing decision sees context', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const routed: any[] = [];
+    const { turn } = harness({
+      model,
+      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+    });
+
+    // First turn: no previous assistant message exists
+    await turn(userMsg('what is in flight?'));
+    expect(routed[0]).toMatchObject({ message: 'what is in flight?' });
+    expect(routed[0].previous ?? null).toBeNull();
+
+    // Second turn: user responds with a short affirmation, routing should see what the assistant said
+    await turn(userMsg('yes'));
+    expect(routed[1]).toMatchObject({ message: 'yes' });
+    expect(routed[1].previous).toBe('ok');
+  });
+});
+

@@ -12,6 +12,7 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
 import { CAPABILITY_BROWSER } from '@buildd/shared';
+import { accountReachesWorkspace } from '@/lib/workspace-reach';
 
 // Runner heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min)
 // to let Neon suspend. Stale threshold is 2.5× so a single dropped beat isn't fatal.
@@ -64,29 +65,29 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
     const linkedWs = linkedWsIds.length > 0
       ? await db.query.workspaces.findMany({
           where: inArray(workspaces.id, linkedWsIds),
-          columns: { id: true, name: true },
+          columns: { id: true, name: true, teamId: true },
         })
       : [];
     // Try Redis cache first for open workspaces
     let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-    let openWs: { id: string; name: string }[];
+    let openWs: { id: string; name: string; teamId?: string | null }[];
     if (openWorkspaceIds) {
       // Cache hit - fetch names only for the cached IDs
       openWs = await db.query.workspaces.findMany({
         where: inArray(workspaces.id, openWorkspaceIds),
-        columns: { id: true, name: true },
+        columns: { id: true, name: true, teamId: true },
       });
     } else {
       // Cache miss - query DB and cache IDs
       openWs = await db.query.workspaces.findMany({
         where: eq(workspaces.accessMode, 'open'),
-        columns: { id: true, name: true },
+        columns: { id: true, name: true, teamId: true },
         limit: 100,
       });
       await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
     }
     const seen = new Set<string>();
-    const result: { id: string; name: string }[] = [];
+    const result: { id: string; name: string; teamId?: string | null }[] = [];
     for (const w of linkedWs) {
       if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
     }
@@ -97,31 +98,31 @@ async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<type
   }
   // Session auth: get workspaces via team membership + open workspaces
   const teamWsIds = await getUserWorkspaceIds(auth.user.id);
-  let teamWs: { id: string; name: string }[] = [];
+  let teamWs: { id: string; name: string; teamId?: string | null }[] = [];
   if (teamWsIds.length > 0) {
     teamWs = await db.query.workspaces.findMany({
       where: inArray(workspaces.id, teamWsIds),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
   }
   // Try Redis cache first for open workspaces
   let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-  let openWs: { id: string; name: string }[];
+  let openWs: { id: string; name: string; teamId?: string | null }[];
   if (openWorkspaceIds) {
     openWs = await db.query.workspaces.findMany({
       where: inArray(workspaces.id, openWorkspaceIds),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
     });
   } else {
     openWs = await db.query.workspaces.findMany({
       where: eq(workspaces.accessMode, 'open'),
-      columns: { id: true, name: true },
+      columns: { id: true, name: true, teamId: true },
       limit: 100,
     });
     await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
   }
   const seen = new Set<string>();
-  const result: { id: string; name: string }[] = [];
+  const result: { id: string; name: string; teamId?: string | null }[] = [];
   for (const w of teamWs) {
     if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
   }
@@ -141,6 +142,9 @@ export async function GET(req: NextRequest) {
     const userWorkspaces = await getWorkspaceIdsAndNames(auth);
     const workspaceIds = userWorkspaces.map(w => w.id);
     const workspaceNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
+    // Owning team per workspace the caller sees: an open workspace reaches a
+    // runner only when it belongs to the runner account's own team.
+    const workspaceTeamMap = new Map(userWorkspaces.map(w => [w.id, w.teamId ?? null]));
 
     const askedWorkspaceId = new URL(req.url).searchParams.get('workspaceId');
     if (askedWorkspaceId && !workspaceIds.includes(askedWorkspaceId)) {
@@ -157,7 +161,7 @@ export async function GET(req: NextRequest) {
       where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
       with: {
         account: {
-          columns: { id: true, name: true, maxConcurrentWorkers: true },
+          columns: { id: true, name: true, maxConcurrentWorkers: true, teamId: true },
         },
       },
     });
@@ -205,13 +209,22 @@ export async function GET(req: NextRequest) {
     const activeLocalUis = await Promise.all(
       heartbeats.map(async hb => {
         // Compute which workspaces this heartbeat can access (cached)
+        // The claim rule (accountReachesWorkspace): an explicit link, or an
+        // open workspace of the runner account's OWN team. The open list is
+        // platform-wide, so without the team check every team's runner would
+        // appear to reach this team's open workspaces.
         const permissions = await getAccountWorkspacePermissions(hb.accountId);
+        const accountTeamId = (hb.account as { teamId?: string | null } | null)?.teamId ?? null;
         const hbWorkspaceIds = [
           ...permissions.map(p => p.workspaceId),
-          ...openWorkspaceIds!,
+          ...openWorkspaceIds!.filter(id => {
+            const teamId = workspaceTeamMap.get(id);
+            return !!teamId && !!accountTeamId
+              && accountReachesWorkspace({ teamId: accountTeamId }, { teamId, accessMode: 'open' }, null);
+          }),
         ];
 
-        const overlapping = hbWorkspaceIds.filter(id => workspaceIds.includes(id));
+        const overlapping = [...new Set(hbWorkspaceIds)].filter(id => workspaceIds.includes(id));
         if (overlapping.length === 0) return null;
 
         // Use the higher of heartbeat-reported count and actual DB count

@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.9.0
+npm i -E @builddai/ai-kit@0.10.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -419,7 +419,8 @@ export const emailTriage = defineDecision({
 
 const run = await emailTriage.run({ apiKey: openRouterKey, state: { from, subject, body } });
 if (run.outcomes.concerning.status === 'applied' && run.outcomes.concerning.value) holdForTriage();
-// run.version is `promptVersion|model|kit-<version>`: stamp it on every row you persist.
+// run.version is `promptVersion|model|engine-<n>`: stamp it on every row you persist.
+// run.kitVersion is the kit release that ran it: metadata, not identity.
 
 // Many states (one per request) with ~8 workers and one run budget:
 const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: toState, budgetMs: 10_000 });
@@ -466,6 +467,17 @@ const { items, stats } = await emailTriage.runEach(emails, { apiKey, stateOf: to
   ```ts
   it('is pinned', () => expectDecisionPinned(emailTriage, { fingerprint: '3f1c…' }));
   ```
+
+  A decision's identity (`version`, `fingerprint`) is its content plus
+  `DECIDE_ENGINE_VERSION`, never the kit release (0.10.0). A kit upgrade that
+  doesn't change decide behaviour changes no pin and no stored version. When
+  the kit's decide logic does change (the request it sends, how answers are
+  parsed or gated, the rank surface), the engine version moves, and with it
+  every decision's `version` and fingerprint: re-run your eval, then re-pin.
+  The kit release is still on `decision.kitVersion`, `run.kitVersion` and eval
+  reports, for logs. Rows stamped before 0.10.0 end `|kit-x.y.z`; group them
+  with new rows through `normalizeDecisionVersion` (or split them with
+  `parseDecisionVersion`) when reading. Don't rewrite them.
 - **Eval**: `runDecisionEval({ decision, rows, stateOf, labelOf, idOf, split: 'even-odd', run: { apiKey } })`
   reports accuracy, coverage and accuracy at each threshold, per-label
   precision/recall, confusions, cost per 1k and latency. Tune on one half,
