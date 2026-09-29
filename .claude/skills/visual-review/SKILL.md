@@ -62,6 +62,9 @@ gh workflow run visual-qa.yml --ref <branch> \
 RUN=$(gh run list --workflow visual-qa.yml --branch <branch> --event workflow_dispatch \
   --limit 1 --json databaseId -q '.[0].databaseId')
 gh run watch "$RUN" --exit-status
+# No TTY (most agent shells): gh run watch returns immediately instead of
+# blocking. Poll instead, still in the foreground:
+#   until gh run view "$RUN" --json status -q .status | grep -q completed; do sleep 15; done
 gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 # → /tmp/qa-ci/screenshots/*.png, /tmp/qa-ci/a11y/*.json, /tmp/qa-ci/captures.json
 # The repo is public, so any GitHub user can download this artifact. It holds
@@ -69,6 +72,13 @@ gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id' \
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
+
+**Wait for the run in the same turn — never end your turn saying you'll wait for a
+notification or a background watcher.** A worker agent's session is not resumed by a
+background job finishing: a runner-hosted turn that ends is recorded as complete
+regardless of what's still running, so the screenshots never get read and completion
+fails for missing evidence. Run the watch/poll step in the foreground (not
+backgrounded, not fired-and-forgotten) and block on it before moving on.
 
 Never paste screenshot contents into PR bodies, commits or comments, even from a
 scrubbed run. Describe what you saw generically. If a CI shot ever shows real
