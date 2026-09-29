@@ -2761,7 +2761,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   surface: text('surface').default('web').notNull().$type<'web' | 'slack' | 'discord' | 'teams'>(),
   tier: text('tier'),
   model: text('model'),
-  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null; latencyMs?: number }>(),
+  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null; latencyMs?: number; routedWorkspaceId?: string }>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),

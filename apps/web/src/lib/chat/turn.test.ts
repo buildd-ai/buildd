@@ -909,6 +909,39 @@ describe('workspace scope: all workspaces by default, routed per turn', () => {
     await turn(userMsg('hi'));
     expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('all workspaces in reach');
   });
+
+  it('the docked object\'s workspace is handed to routing', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      api: (_m, path) => path.startsWith('/api/missions/') ? { id: 'm-1', title: 'Docs refresh', workspaceId: 'ws-2', tasks: [] } : {},
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+    } as any);
+    await turn(userMsg('how is this going?'), { entry: { about: { kind: 'mission', id: '00000000-0000-4000-8000-000000000001' } } });
+    expect(asked[0].impliedWorkspaceId).toBe('ws-2');
+  });
+
+  it('sticky: the routed workspace is saved on the user turn and offered to the next turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const picks = ['ws-2', undefined];
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      route: async (i: any) => {
+        asked.push(i);
+        const workspaceId = picks.shift();
+        return { tier: 'standard', allowWrites: true, source: 'fallback', ...(workspaceId ? { workspaceId, workspaceSource: 'named' } : {}) };
+      },
+    } as any);
+    await turn(userMsg('what changed in docs-site?'));
+    expect(asked[0].previousWorkspaceId).toBeUndefined();
+    expect(messages.find(m => m.role === 'user')!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routedWorkspaceId: 'ws-2' });
+    await turn(userMsg('and last week?'));
+    expect(asked[1].previousWorkspaceId).toBe('ws-2');
+    // An unrouted turn saves nothing, so stickiness ends there.
+    expect(messages.filter(m => m.role === 'user').at(-1)!.usage).toBeNull();
+  });
 });
 
 describe('titles: the docked object, and the re-title question', () => {

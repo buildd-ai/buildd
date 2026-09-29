@@ -202,6 +202,15 @@ export async function runChatTurn(args: {
     deps.limits({ teamId: conv.teamId, userId: user.id, now }),
     loadMessages(conv.id, STORED_MESSAGE_LIMIT),
   ]);
+  const entry = turnEntry(body.entry);
+  // Reads for the docked object and for approval cards: every chat GET, still
+  // reach-guarded, never a write route. The docked object loads alongside the
+  // limits: its workspace settles an unpinned turn's scope without asking.
+  const read = deps.makeApi(() => {}, { routes: chatReadRoutes() });
+  const dockedPromise = (async () => {
+    const linkedMissionId = entry?.about ? null : await (deps.linkedMissionId?.() ?? Promise.resolve(null)).catch(() => null);
+    return loadDocked(read, entry?.about ?? null, linkedMissionId);
+  })();
   // The person's rules load alongside everything else; never fails the turn.
   const rulesPromise = deps.directives ? deps.directives.load().catch(() => []) : Promise.resolve([]);
   if (!verdict.ok) {
@@ -212,15 +221,23 @@ export async function runChatTurn(args: {
     });
   }
   const routable = args.workspace ? undefined : args.workspaces;
+  const routeWorkspaces = routable && routable.length > 1 ? routable : undefined;
   const checkTitle = text && deps.retitle ? titleToCheck(conv, stored.filter(m => m.role === 'user').length + 1) : null;
   const lastAssistantMsg = lastAssistantText(stored);
   const routePromise = text
-    ? (deps.route ?? routeTurn)({
-      teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
-      ...(lastAssistantMsg ? { previous: lastAssistantMsg } : {}),
-      ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
-      ...(checkTitle ? { title: checkTitle } : {}),
-    })
+    ? (async () => {
+      // Only an unpinned turn choosing between workspaces waits on the dock.
+      const impliedWorkspaceId = routeWorkspaces ? (await dockedPromise)?.workspaceId ?? null : null;
+      const previousWorkspaceId = routeWorkspaces ? lastRoutedWorkspaceId(stored) : null;
+      return (deps.route ?? routeTurn)({
+        teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
+        ...(lastAssistantMsg ? { previous: lastAssistantMsg } : {}),
+        ...(routeWorkspaces ? { workspaces: routeWorkspaces } : {}),
+        ...(impliedWorkspaceId ? { impliedWorkspaceId } : {}),
+        ...(previousWorkspaceId ? { previousWorkspaceId } : {}),
+        ...(checkTitle ? { title: checkTitle } : {}),
+      });
+    })()
     : null;
 
   const history = toUiHistory(stored);
@@ -301,8 +318,11 @@ export async function runChatTurn(args: {
     const saved = await insertMessage({
       conversationId: conv.id, role: 'user', authorUserId: user.id,
       parts: [{ type: 'text', text: text! }],
-      // The routing decision call's spend, so the daily budget counts it.
-      usage: route.usage ?? null,
+      // The routing decision call's spend, so the daily budget counts it, and
+      // the routed workspace, so the next turn can carry it over.
+      usage: routedWs
+        ? { ...(route.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: null }), routedWorkspaceId: routedWs.id }
+        : route.usage ?? null,
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];
@@ -311,13 +331,7 @@ export async function runChatTurn(args: {
   }
 
   const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
-  const entry = turnEntry(body.entry);
-
-  // Reads for the docked object and for approval cards: every chat GET, still
-  // reach-guarded, never a write route.
-  const read = deps.makeApi(() => {}, { routes: chatReadRoutes() });
-  const linkedMissionId = entry?.about ? null : await (deps.linkedMissionId?.() ?? Promise.resolve(null)).catch(() => null);
-  const docked = await loadDocked(read, entry?.about ?? null, linkedMissionId);
+  const docked = await dockedPromise;
   const previewEnv = {
     read,
     scope: { missionId: docked?.missionId ?? null, missionTitle: docked?.missionTitle ?? null, workspaceId: scopeWs?.id ?? null },
@@ -511,6 +525,11 @@ export async function runChatTurn(args: {
 function rulesBlock(rules: Parameters<typeof renderStandingRules>[0], workspaceId: string | null): string {
   const block = renderStandingRules(rules, { workspaceId });
   return block ? `\n\n${block}` : '';
+}
+
+/** The workspace the latest user turn was routed to, for sticky routing. */
+function lastRoutedWorkspaceId(stored: MessageRow[]): string | null {
+  return stored.filter(m => m.role === 'user').at(-1)?.usage?.routedWorkspaceId ?? null;
 }
 
 /** The latest assistant reply's text, as context for the chat-tier question. */

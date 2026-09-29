@@ -7,7 +7,7 @@ mock.module('@buildd/core/decision-client', () => ({
     : { apply: false, reason: 'low_confidence', label: a.choice, confidence: a.confidence }),
 }));
 
-const { routeTurn, FALLBACK_TIER, workspaceHint, TITLE_TOPIC_QUESTION } = await import('./routing');
+const { routeTurn, FALLBACK_TIER, workspaceHint, workspaceTerms, namedWorkspace, workspacesToAsk, MAX_ASKED_WORKSPACES, TITLE_TOPIC_QUESTION } = await import('./routing');
 
 const input = { teamId: 't', workspaceId: null, userId: 'u', message: 'make this a mission' };
 const answer = (complexity: [string, number], intent: [string, number]) => async () => ({
@@ -121,6 +121,154 @@ describe('routeTurn: which workspace (unpinned conversations)', () => {
     const r = await routeTurn({ ...input, workspaces: dupes }, { decide });
     expect(Object.keys(seen[0].questions.workspace.criteria)).toEqual(['web (ws-a)', 'web (ws-b)']);
     expect(r.workspaceId).toBe('ws-b');
+  });
+});
+
+describe('routeTurn: settling the workspace without asking', () => {
+  const workspaces = [
+    { id: 'ws-a', name: 'billing-web', terms: ['billing-web', 'checkout'] },
+    { id: 'ws-b', name: 'docs-site', terms: ['docs-site'] },
+    { id: 'ws-c', name: 'ops', terms: ['ops', 'infra'] },
+  ];
+  const recording = (ws?: [string, number]) => {
+    const seen: any[] = [];
+    const decide = async (p: any) => {
+      seen.push(p);
+      return {
+        ok: true as const,
+        answers: {
+          complexity: { choice: 'standard', confidence: 0.9 }, intent: { choice: 'act', confidence: 0.95 },
+          ...(ws ? { workspace: { choice: ws[0], confidence: ws[1] } } : {}),
+        },
+      } as any;
+    };
+    return { decide, seen };
+  };
+
+  it('the docked object\'s workspace decides, and the question is not asked', async () => {
+    const { decide, seen } = recording(['docs-site', 0.99]);
+    const r = await routeTurn({ ...input, workspaces, impliedWorkspaceId: 'ws-a' }, { decide });
+    expect(seen[0].questions.workspace).toBeUndefined();
+    expect(r.workspaceId).toBe('ws-a');
+    expect(r.workspaceSource).toBe('docked');
+  });
+
+  it('a docked workspace outside the offered list is ignored', async () => {
+    const { decide, seen } = recording(['docs-site', 0.99]);
+    const r = await routeTurn({ ...input, workspaces, impliedWorkspaceId: 'ws-elsewhere' }, { decide });
+    expect(seen[0].questions.workspace).toBeDefined();
+    expect(r.workspaceId).toBe('ws-b');
+    expect(r.workspaceSource).toBe('decision');
+  });
+
+  it('a workspace, repo or project named in the message decides without asking', async () => {
+    const { decide, seen } = recording(['docs-site', 0.99]);
+    const r = await routeTurn({ ...input, message: 'is the Checkout flow broken?', workspaces }, { decide });
+    expect(seen[0].questions.workspace).toBeUndefined();
+    expect(r).toMatchObject({ workspaceId: 'ws-a', workspaceSource: 'named' });
+  });
+
+  it('names two workspaces: no deterministic pick, the question decides', async () => {
+    const { decide, seen } = recording(['docs-site', 0.99]);
+    const r = await routeTurn({ ...input, message: 'compare checkout and docs-site', workspaces }, { decide });
+    expect(seen[0].questions.workspace).toBeDefined();
+    expect(r.workspaceSource).toBe('decision');
+  });
+
+  it('a settled workspace survives a failed decision call', async () => {
+    const r = await routeTurn({ ...input, message: 'status of infra?', workspaces }, { decide: async () => { throw new Error('boom'); } });
+    expect(r).toMatchObject({ source: 'fallback', workspaceId: 'ws-c', workspaceSource: 'named' });
+  });
+
+  it('sticky: the previous turn\'s workspace carries over when the message names none', async () => {
+    const { decide, seen } = recording(['docs-site', 0.99]);
+    const r = await routeTurn({ ...input, message: 'and what about the failing one?', workspaces, previousWorkspaceId: 'ws-c' }, { decide });
+    expect(seen[0].questions.workspace).toBeUndefined();
+    expect(r).toMatchObject({ workspaceId: 'ws-c', workspaceSource: 'sticky' });
+  });
+
+  it('sticky yields to a workspace the message names', async () => {
+    const r = await routeTurn({ ...input, message: 'now the docs-site one', workspaces, previousWorkspaceId: 'ws-c' }, recording());
+    expect(r).toMatchObject({ workspaceId: 'ws-b', workspaceSource: 'named' });
+  });
+
+  it('the docked object wins over a sticky workspace', async () => {
+    const r = await routeTurn({ ...input, workspaces, previousWorkspaceId: 'ws-c', impliedWorkspaceId: 'ws-a' }, recording());
+    expect(r).toMatchObject({ workspaceId: 'ws-a', workspaceSource: 'docked' });
+  });
+
+  it('a sticky workspace no longer offered is dropped, and the question is asked', async () => {
+    const { decide, seen } = recording();
+    const r = await routeTurn({ ...input, workspaces, previousWorkspaceId: 'ws-gone' }, { decide });
+    expect(seen[0].questions.workspace).toBeDefined();
+    expect(r.workspaceId).toBeUndefined();
+  });
+});
+
+describe('namedWorkspace', () => {
+  const ws = [
+    { id: 'a', name: 'buildd', terms: ['buildd'] },
+    { id: 'b', name: 'buildd-docs', terms: ['buildd-docs'] },
+    { id: 'c', name: 'ops', terms: ['ops', 'x'] },
+  ];
+  it('matches whole words, case-insensitively', () => {
+    expect(namedWorkspace('what is OPS doing', ws)).toBe('c');
+    expect(namedWorkspace('any stops today?', ws)).toBeNull();
+  });
+  it('a longer name wins over the shorter name it contains', () => {
+    expect(namedWorkspace('ship the buildd-docs change', ws)).toBe('b');
+    expect(namedWorkspace('ship the buildd change', ws)).toBe('a');
+  });
+  it('two workspaces named: no match', () => {
+    expect(namedWorkspace('buildd vs ops', ws)).toBeNull();
+  });
+  it('ignores terms too short to mean anything', () => {
+    expect(namedWorkspace('x marks the spot', ws)).toBeNull();
+  });
+  it('falls back to the name when a workspace carries no terms', () => {
+    expect(namedWorkspace('billing is down', [{ id: 'z', name: 'Billing' }])).toBe('z');
+  });
+});
+
+describe('workspacesToAsk: the question stays bounded', () => {
+  const at = (d: number) => new Date(Date.UTC(2026, 0, d)).toISOString();
+  it('keeps recently active workspaces, most recent first, capped', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ id: `w${i}`, name: `w${i}`, lastActiveAt: at(i + 1) }));
+    const asked = workspacesToAsk(many);
+    expect(asked.length).toBe(MAX_ASKED_WORKSPACES);
+    expect(asked[0].id).toBe('w39');
+    expect(MAX_ASKED_WORKSPACES).toBeGreaterThanOrEqual(10);
+    expect(MAX_ASKED_WORKSPACES).toBeLessThanOrEqual(20);
+  });
+  it('drops idle workspaces', () => {
+    const asked = workspacesToAsk([
+      { id: 'a', name: 'a', lastActiveAt: null },
+      { id: 'b', name: 'b', lastActiveAt: at(2) },
+      { id: 'c', name: 'c', lastActiveAt: at(3) },
+    ]);
+    expect(asked.map(w => w.id)).toEqual(['c', 'b']);
+  });
+  it('activity unknown (lookup failed): keeps list order, still capped', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, name: `w${i}` }));
+    const asked = workspacesToAsk(many);
+    expect(asked.length).toBe(MAX_ASKED_WORKSPACES);
+    expect(asked[0].id).toBe('w0');
+  });
+  it('routeTurn asks only over the bounded list', async () => {
+    const seen: any[] = [];
+    const many = Array.from({ length: 40 }, (_, i) => ({ id: `w${i}`, name: `space${i}`, lastActiveAt: i % 2 ? at(i + 1) : null }));
+    await routeTurn({ ...input, workspaces: many }, { decide: async (p: any) => { seen.push(p); return { ok: false } as any; } });
+    const labels = Object.keys(seen[0].questions.workspace.criteria);
+    expect(labels.length).toBe(MAX_ASKED_WORKSPACES);
+    expect(labels[0]).toBe('space39');
+  });
+});
+
+describe('workspaceTerms', () => {
+  it('name, repo name and project names', () => {
+    expect(workspaceTerms({ name: 'Billing', repo: 'https://github.com/acme/billing-web.git', projects: [{ name: 'checkout' }] }))
+      .toEqual(['Billing', 'billing-web', 'checkout']);
+    expect(workspaceTerms({ name: 'docs', repo: null })).toEqual(['docs']);
   });
 });
 
