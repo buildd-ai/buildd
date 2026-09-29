@@ -61,6 +61,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   commits: true,
   prCreated: true,
   prUrl: true,
+  noDeliverableNudged: true,
   output: true,
   toolCalls: true,
   messages: true,

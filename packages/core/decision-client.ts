@@ -69,6 +69,7 @@ import {
   type DecisionQuestions,
   type DecisionUsage,
   type DecisionEndpoint,
+  type UsageSink,
 } from '@builddai/ai-kit/decide';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
@@ -102,6 +103,8 @@ export type {
   DecisionAnswers,
   DecisionUsage,
   GateOutcome,
+  DecisionReceipt,
+  UsageSink,
 } from '@builddai/ai-kit/decide';
 
 /** OpenRouter's System One API root, per OpenRouter's TypeSafe SDK guide. */
@@ -308,6 +311,13 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   /** With `apiKey` only: where to send it (default Jev on OpenRouter). A team call uses the team's decision model. */
   endpoint?: DecisionEndpoint;
   /**
+   * Receipt sink (the kit's): called once per call that reached the provider,
+   * timeouts and errors included; never for a gated or keyless call.
+   */
+  onUsage?: UsageSink;
+  /** Stamped on the receipt, e.g. the `ai_usage` kind. */
+  decisionId?: string;
+  /**
    * The team's policy check and key, already resolved (`resolveDecisionAccess`),
    * so the deadline covers only the request. A refusal is returned as the result.
    */
@@ -372,6 +382,8 @@ export async function decisionCall<Q extends DecisionQuestions>(
     retryBackoffMs: 250,
     minRetryBudgetMs: 500,
     headers: { ...ATTRIBUTION_HEADERS },
+    ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+    ...(params.decisionId ? { decisionId: params.decisionId } : {}),
     fetch: fetcher,
     sleep,
     now,

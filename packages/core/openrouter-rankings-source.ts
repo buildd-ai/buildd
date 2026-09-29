@@ -36,7 +36,7 @@ export interface RankingsRefresh {
   unmapped: number;
 }
 
-async function readCache<T>(key: string, now: Date = new Date()): Promise<T | null> {
+async function readCache<T>(key: string, now: Date): Promise<T | null> {
   const [row] = await db.select().from(systemCache).where(eq(systemCache.key, key)).limit(1);
   if (!row) return null;
   if (row.expiresAt && row.expiresAt.getTime() <= now.getTime()) return null;

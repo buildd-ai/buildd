@@ -86,6 +86,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { HUMAN_UI_DENIAL } from './runner-denial';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
@@ -283,6 +284,16 @@ const CLOSING_TURN_INSTRUCTION =
   '`handoff` object if one is requested, and any other field named by its ' +
   'Output Requirement section. Do no other work — no new investigation, no ' +
   'additional edits.';
+
+// The one extra turn given to a pr_required session that ended naturally with
+// no PR, no commits and no way to open one (see startSession's
+// shouldFailForMissingPr branch). Unlike CLOSING_TURN_INSTRUCTION it does not
+// assume work was delivered: it names both ways out of the dead end, and the
+// blocked way out (AskUserQuestion) parks the task instead of failing it.
+const NO_DELIVERABLE_NUDGE =
+  'Your session is about to end with nothing delivered. Write your deliverable ' +
+  '(PR or artifact) now, or call complete_task. If you are genuinely blocked, ' +
+  'use AskUserQuestion.';
 
 /**
  * SDK maxTurns for a closing turn. The SDK counts model round trips, and
@@ -2194,7 +2205,7 @@ export class WorkerManager {
       } else if (decision === 'allow_always') {
         pending.resolve({ behavior: 'allow', updatedPermissions: pending.suggestions });
       } else {
-        pending.resolve({ behavior: 'deny', message: 'Denied by user via runner' });
+        pending.resolve({ behavior: 'deny', message: HUMAN_UI_DENIAL });
       }
     } else {
       // PermissionRequest hook path: resolve with hookSpecificOutput
@@ -2226,7 +2237,7 @@ export class WorkerManager {
             hookEventName: 'PermissionRequest',
             decision: {
               behavior: 'deny',
-              message: 'Denied by user via runner',
+              message: HUMAN_UI_DENIAL,
             },
           },
         });
@@ -4166,7 +4177,7 @@ export class WorkerManager {
       // task prompt. Send ONLY the closing instruction — rebuilding the prompt
       // re-sent every section (workflow, output requirement, memory) as if it
       // were a fresh task, inviting the model to start over.
-      if (isClosingTurn) promptText = CLOSING_TURN_INSTRUCTION;
+      if (isClosingTurn) promptText = task.description;
 
       // One composition record per prompt build — what the workspace-memory
       // block cost, on the durable rail the concluded memory-digest
@@ -4246,7 +4257,9 @@ export class WorkerManager {
       // when an explicit output requirement (PR/artifact) isn't met yet.
       // (resultSubtype itself is declared above the try — see comment there.)
       let outputReqNudgeCount = 0;
-      const maxOutputReqNudges = 2;
+      // A closing/nudge turn is one bounded extra turn: the in-loop nudge must
+      // not stretch it into more.
+      const maxOutputReqNudges = isClosingTurn ? 0 : 2;
 
       // Codex rejects Claude model ids ("claude-* not supported with a ChatGPT
       // account"). The runner's configured model is Claude by default, so for Codex
@@ -4484,6 +4497,33 @@ export class WorkerManager {
         // the failure is truthful. (When commits exist we fall through to the
         // server, which can still auto-detect a PR opened via `gh pr create`.)
         sessionLog(worker.id, 'warn', 'output_requirement_unmet', 'pr_required (no commits)', worker.taskId);
+
+        // One last nudge before giving up. The session ended by its own choice
+        // (it paused to wait, stopped after a denied tool, asked in prose), so
+        // the failure below throws away real work the agent may still be able
+        // to hand over — or park properly with AskUserQuestion. Everything that
+        // is not a voluntary end never reaches this branch (auth, budget and
+        // rate-limit exits, aborts, needs_input parks and waiting workers all
+        // returned above or went through the catch block).
+        //
+        // Bounded: never from a closing/nudge turn itself, and never twice for
+        // one worker even across separately resumed sessions.
+        if (!isClosingTurn && !worker.noDeliverableNudged) {
+          const remote = await this.remoteSessionState(worker);
+          const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
+          if (!remote.workerTerminal && !remote.taskCancelled && resumeId) {
+            worker.noDeliverableNudged = true;
+            sessionLog(worker.id, 'info', 'no_deliverable_nudge', `resume=${resumeId}`, worker.taskId);
+            this.addMilestone(worker, { type: 'status', label: 'Session ended with nothing delivered — giving one last turn', ts: Date.now() });
+            const nudgeTask: BuilddTask = { ...task, description: NO_DELIVERABLE_NUDGE };
+            delegatedToClosingTurn = true;
+            await this.startSession(worker, cwd, nudgeTask, resumeId, true, structuredOutput);
+            // The nested call owns this worker's whole completion lifecycle
+            // from here, exactly as with a closing turn.
+            return;
+          }
+        }
+
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const diagnosis = (worker.lastAssistantMessage || '').trim();
         const errMsg = diagnosis
@@ -4498,7 +4538,11 @@ export class WorkerManager {
           status: 'failed',
           error: errMsg,
           milestones: worker.milestones,
-          resultMeta: { closingTurnOutcome: 'skipped:no_deliverable' },
+          resultMeta: {
+            closingTurnOutcome: isClosingTurn
+              ? (closingTurnFailure ? `declined:${closingTurnFailure}` as const : 'declined' as const)
+              : 'skipped:no_deliverable' as const,
+          },
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
