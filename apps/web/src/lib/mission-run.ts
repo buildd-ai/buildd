@@ -229,6 +229,12 @@ export interface CycleContext {
   cycleNumber: number;
   triggerChainId: string;
   triggerSource: OrganizerTriggerSource;
+  /**
+   * For `event`: the task whose terminal state started this run. Stamped on
+   * `tasks.context.triggerTaskId` so the Organizer runs timeline can say
+   * "after <task> finished" (lib/mission-checkins.ts).
+   */
+  triggerTaskId?: string;
 }
 
 export interface RunMissionOptions {
@@ -572,6 +578,7 @@ export async function runMission(
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
+    ...(cycleCtx.triggerTaskId ? { triggerTaskId: cycleCtx.triggerTaskId } : {}),
     // The organizer's planning task must NOT be checked out on the integration
     // branch once that branch is real work.
     //

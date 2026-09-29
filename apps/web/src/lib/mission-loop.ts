@@ -325,7 +325,12 @@ export async function maybeRetriggerMission(
   // 9. All guards pass — retrigger
   const nextCycle: CycleContext = wakeReason
     ? { cycleNumber: 1, triggerChainId, triggerSource: `wake:${wakeReason}` }
-    : { cycleNumber: currentCycle + 1, triggerChainId, triggerSource: 'event' };
+    : {
+        cycleNumber: currentCycle + 1,
+        triggerChainId,
+        triggerSource: 'event',
+        ...(completedPlanningTaskId ? { triggerTaskId: completedPlanningTaskId } : {}),
+      };
 
   const run = _runMission ?? (await import('@/lib/mission-run')).runMission;
   const runResult = await run(missionId, {
