@@ -1,6 +1,34 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+# Shipped: events plan every auto mission and wake it on non-task events (S1,
+# PR #3117), the organizer checklist trim (S3, PR #3114), and the heartbeat as
+# a stuck-check backstop with default check-ins (S2). The UI copy (S4) follows.
+assertions:
+  - id: "wake-mission"
+    type: "symbol"
+    name: "wakeMission"
+    path: "apps/web/src/lib/mission-wake.ts"
+  - id: "stuck-check"
+    type: "symbol"
+    name: "isMissionStuck"
+    path: "apps/web/src/lib/mission-stuck.ts"
+  - id: "backstop-grace"
+    type: "symbol"
+    name: "BACKSTOP_GRACE_MS"
+    path: "apps/web/src/lib/mission-stuck.ts"
+  - id: "stuck-check-in-cron"
+    type: "symbol_reachable"
+    symbol: "isMissionStuck"
+    entry: "apps/web/src/app/api/cron/schedules/route.ts"
+    as: "call"
+  - id: "stuck-check-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-stuck.test.ts"
+---
 # Event-Driven Mission Replanning, with the Heartbeat as a Backstop
 
-**Status:** Proposed
+**Status:** Implemented (S1 PR #3117, S3 PR #3114, S2 the backstop; the UI copy in §5 follows as S4)
 **Related:** `apps/web/src/lib/mission-loop.ts` (`maybeRetriggerMission`, `retriggerMissionOnFailure`), `apps/web/src/lib/task-dependencies.ts` (`resolveCompletedTask`), `apps/web/src/app/api/cron/schedules/route.ts`, `apps/web/src/lib/heartbeat-prepass.ts`, `apps/web/src/lib/heartbeat-helpers.ts`, `apps/web/src/lib/mission-context.ts` (`buildHeartbeatContext`), `apps/web/src/lib/criteria-rearm.ts`, `apps/web/src/lib/mission-dependency.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `docs/specs/mission-heartbeat-schedule-lifecycle.md`, `docs/design/heartbeat-triage.md`
 
 ## Problem
@@ -93,14 +121,26 @@ the organizer on `invoke_llm`, it now dispatches only if the mission is
 
 - no open task and no active planning task, excluding the prepass's known
   self-resolving waits; **and**
-- no organizer run (event or cron) in the last `BACKSTOP_GRACE` (2 hours), so
-  a step the event loop just planned is never planned again; **and** one of:
-  - the prepass reports `invoke_llm`: the state changed and nothing planned
-    it. That means a missed event, or retries exhausted;
-  - the criteria re-arm fires (unchanged: already here, once per verdict
-    shape);
-  - the last event re-plan ended `depth_exceeded` or `stuck_planning`. The
-    sweep then starts a new chain, at most once per `BACKSTOP_GRACE`.
+- no organizer run (any trigger source) in the last `BACKSTOP_GRACE_MS`
+  (2 hours), so a step the event loop just planned is never planned again;
+  **and**
+- the prepass reports `invoke_llm`: the state changed and nothing planned
+  it. That means a missed event, retries exhausted, or an event chain that
+  ended `depth_exceeded` / `stuck_planning`. Those outcomes are not persisted
+  (they are Pusher events only), so the check derives them: no organizer run
+  in the grace period while the state changed. A backstop dispatch starts a
+  new trigger chain.
+
+The criteria re-arm is not gated by the stuck check. It keeps its own guard
+(once per verdict shape) and dispatches as before.
+
+As built (`isMissionStuck`, `apps/web/src/lib/mission-stuck.ts`, pure): the
+prepass's `invoke_llm` decision carries `openTaskCount`, `planningActive` and
+`lastOrganizerRunAt`, read from the task rows it already loads, so the check
+costs no query. A failed prepass fails closed (defers). A not-stuck deferral
+records `lastDeferralReason: 'heartbeat_not_stuck'` and does not write the
+no-change hash, so a later tick still sees the state as changed. A heartbeat
+dispatch is stamped `triggerSource: 'backstop'`.
 
 Otherwise the cycle records its deferral (`lastDeferralReason`) and moves on,
 with no model call.

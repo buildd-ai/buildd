@@ -2,13 +2,13 @@
 title: Mission Heartbeat Schedule Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 summary: A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/app/api/missions/[id]/route.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/mission-stuck.ts]
 related: [mission-task-lifecycle]
 keywords: [heartbeat, taskschedule, scheduleid, isheartbeat, orchestrationmode, held, archivestaledonemissions, completemissionifverified, dormancy, evaluation log]
-verified_by: [apps/web/src/lib/mission-archive.test.ts, apps/web/src/app/api/cron/schedules/route.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/schedule-health.test.ts]
+verified_by: [apps/web/src/lib/mission-archive.test.ts, apps/web/src/app/api/cron/schedules/route.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/schedule-health.test.ts, apps/web/src/lib/mission-stuck.test.ts, apps/web/src/app/api/missions/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -24,6 +24,15 @@ assertions:
   - id: "mission-archive-tests"
     type: "test_file"
     path: "apps/web/src/lib/mission-archive.test.ts"
+  - id: "stuck-check"
+    type: "symbol"
+    name: "isMissionStuck"
+    path: "apps/web/src/lib/mission-stuck.ts"
+  - id: "stuck-check-gates-cron"
+    type: "symbol_reachable"
+    symbol: "isMissionStuck"
+    entry: "apps/web/src/app/api/cron/schedules/route.ts"
+    as: "call"
 ---
 # Mission Heartbeat Schedule Lifecycle
 
@@ -45,6 +54,34 @@ rule for a heartbeat mission with no open work — a case the system had no
 path for at all before PR #2300. Both gaps are now closed; see below.
 
 ---
+
+## Role
+
+The heartbeat does not drive a mission's progress. Events do
+(`docs/design/event-driven-mission-replanning.md`). The heartbeat is a
+deterministic backstop for when the event chain broke.
+
+**Invariants**:
+
+- Events plan every auto mission, heartbeat or not: a task of the mission
+  reaching a terminal state re-plans through `maybeRetriggerMission`, and a
+  non-task event (dependency met, resume, budget raised, PR merged by
+  webhook, owner note or answer) re-plans through `wakeMission`.
+- A heartbeat tick dispatches the organizer only when `isMissionStuck`
+  (`apps/web/src/lib/mission-stuck.ts`) holds: the prepass reports
+  `invoke_llm`, there is no open task (the prepass's self-resolving waits
+  excluded) and no active planning task, and no organizer run of any trigger
+  source started within `BACKSTOP_GRACE_MS` (2 hours). That dispatch is
+  stamped `triggerSource: 'backstop'`.
+- Otherwise the tick records `lastDeferralReason: 'heartbeat_not_stuck'`,
+  makes no model call, and does not write `lastHeartbeatStateHash`, so a
+  stall is still visible to a later tick.
+- The criteria re-arm is the one other heartbeat dispatch. It is not gated
+  by the stuck check; it keeps its own once-per-verdict-shape guard.
+- The heartbeat makes no model call to decide whether to dispatch.
+  Heartbeat triage no longer runs.
+- A new auto mission gets a heartbeat (check-in) schedule by default;
+  `isHeartbeat: false` opts out. Existing missions are not back-filled.
 
 ## Ownership and rendering
 
@@ -155,6 +192,21 @@ completes to fire that trigger via the existing task-completion-driven path
   *(Implemented — collapsed heartbeat group in `SchedulesUnified.tsx`; see
   slice 3.)*
 
+- AC-6: [GIVEN an auto mission with a heartbeat schedule whose prepass
+  reports `invoke_llm`] WHEN its cron tick fires THEN the organizer is
+  dispatched, stamped `triggerSource: 'backstop'`, only if there is no open
+  task and no active planning task and no organizer run started within
+  `BACKSTOP_GRACE_MS`; otherwise the tick defers with
+  `lastDeferralReason: 'heartbeat_not_stuck'`, writes no state hash, and
+  makes no model call (heartbeat triage is not called). *(Implemented —
+  regression-tested by `apps/web/src/lib/mission-stuck.test.ts` and
+  `apps/web/src/app/api/cron/schedules/route.test.ts`.)*
+- AC-7: [GIVEN a mission created in `orchestrationMode='auto'`] WHEN it is
+  created without `isHeartbeat` THEN it gets a heartbeat schedule; WHEN it is
+  created with `isHeartbeat: false` THEN it gets none. *(Implemented —
+  `apps/web/src/app/api/missions/route.ts`, regression-tested by
+  `apps/web/src/app/api/missions/route.test.ts`.)*
+
 ## Code surface
 
 - `apps/web/src/lib/mission-completion.ts` — `canCompleteMission`,
@@ -166,6 +218,10 @@ completes to fire that trigger via the existing task-completion-driven path
 - `apps/web/src/app/api/cron/schedules/route.ts` — the cron dispatcher;
   the `orchestrationMode==='manual'` defer branch runs the retirement rule
   before rescheduling.
+- `apps/web/src/lib/mission-stuck.ts` — `isMissionStuck`, `BACKSTOP_GRACE_MS`:
+  the pure stuck check that gates the heartbeat's organizer dispatch.
+- `apps/web/src/app/api/missions/route.ts` — mission creation; gives a new
+  auto mission its default heartbeat schedule.
 - `apps/web/src/app/api/missions/[id]/route.ts` — the one PATCH/DELETE route
   every explicit transition (dashboard and MCP `manage_missions`) shares.
 - `packages/core/mcp-tools.ts` — `list_schedules`'s `type` param

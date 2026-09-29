@@ -162,7 +162,11 @@ mock.module('@/lib/pushover', () => ({
 // Heartbeat decision chain. Inert for non-heartbeat schedules (the prepass is
 // only consulted when taskTemplate.context.heartbeat === true), so these mocks
 // do not disturb the rest of the file.
-const mockPrepass = mock(() => Promise.resolve({ action: 'invoke_llm', stateKey: 'sk-1' } as any));
+// The default prepass is a stuck mission (state changed, nothing open, no
+// organizer run ever), so the heartbeat tests below reach the dispatch path;
+// the backstop tests override it.
+const STUCK_PREPASS = { action: 'invoke_llm', stateKey: 'sk-1', openTaskCount: 0, planningActive: false, lastOrganizerRunAt: null };
+const mockPrepass = mock(() => Promise.resolve(STUCK_PREPASS as any));
 mock.module('@/lib/heartbeat-prepass', () => ({
   evaluateHeartbeatPrepass: mockPrepass,
 }));
@@ -295,7 +299,7 @@ describe('GET /api/cron/schedules', () => {
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     mockPrepass.mockReset();
-    mockPrepass.mockResolvedValue({ action: 'invoke_llm', stateKey: 'sk-1' } as any);
+    mockPrepass.mockResolvedValue(STUCK_PREPASS as any);
     mockEvaluateBreaker.mockReset();
     mockEvaluateBreaker.mockResolvedValue({ tripped: false, count: 0, errorSignature: '' } as any);
     mockTripBreaker.mockReset();
@@ -644,7 +648,7 @@ describe('GET /api/cron/schedules', () => {
     expect(updateCall.set.enabled).toBe(false);
   });
 
-  it('should pass triggerSource cron to buildMissionContext for mission-linked schedules', async () => {
+  it('stamps triggerSource backstop on a heartbeat dispatch, and passes it to buildMissionContext', async () => {
     const { buildMissionContext } = await import('@/lib/mission-context');
     const mockBuildCtx = buildMissionContext as ReturnType<typeof mock>;
     mockBuildCtx.mockResolvedValue({
@@ -667,11 +671,13 @@ describe('GET /api/cron/schedules', () => {
 
     await GET(makeRequest());
 
-    // buildMissionContext should receive triggerSource: 'cron' so heartbeat mode activates
+    // A heartbeat cycle that dispatches is the stuck-check backstop; the
+    // context builder keeps its heartbeat mode for it.
     expect(mockBuildCtx).toHaveBeenCalledWith('mission-1', expect.objectContaining({
-      triggerSource: 'cron',
+      triggerSource: 'backstop',
       heartbeat: true,
     }));
+    expect(tasksInsertValues?.context?.triggerSource).toBe('backstop');
   });
 
   describe('heartbeat circuit breaker', () => {
@@ -838,7 +844,7 @@ describe('GET /api/cron/schedules', () => {
     it('resumes planning on the next cycle once evaluateHeartbeatPrepass no longer reports skip_waiting', async () => {
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
       mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
-      mockPrepass.mockResolvedValue({ action: 'invoke_llm', stateKey: 'sk-2' } as any);
+      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, stateKey: 'sk-2' } as any);
 
       const res = await GET(makeRequest());
       const body = await res.json();
@@ -850,74 +856,120 @@ describe('GET /api/cron/schedules', () => {
     });
   });
 
-  describe('heartbeat triage', () => {
+  describe('heartbeat backstop (stuck check)', () => {
     function heartbeatSchedule() {
       return makeSchedule({
         workspaceId: 'ws-1',
         lastHeartbeatStateHash: 'sk-prev',
-        taskTemplate: { title: 'Mission: Triage', description: 'heartbeat context', mode: 'planning', priority: 0, context: { heartbeat: true } },
+        taskTemplate: { title: 'Mission: Backstop', description: 'heartbeat context', mode: 'planning', priority: 0, context: { heartbeat: true } },
       });
     }
+    // teamId set: the removed triage call site ran only for a mission with one.
     const mission = { id: 'mission-1', workspaceId: 'ws-1', teamId: 'team-1', status: 'active' };
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
 
-    it('outside an experiment: shadow, the look recorded against the dispatched task and kept off its context', async () => {
-      const { buildMissionContext } = await import('@/lib/mission-context');
-      (buildMissionContext as ReturnType<typeof mock>).mockResolvedValue({ description: 'heartbeat context', context: {} });
+    it('defers a changed state when an organizer ran recently (the event loop planned it)', async () => {
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
       mockMissionsFindFirst.mockResolvedValue(mission);
-
-      const res = await GET(makeRequest());
-      const body = await res.json();
-
-      expect(mockTriage).toHaveBeenCalledTimes(1);
-      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', description: 'heartbeat context', apply: false });
-      expect(tasksInsertValues?.context?.heartbeatTriage).toBeUndefined();
-      expect(mockRecordTriageLook).toHaveBeenCalledTimes(1);
-      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ missionId: 'mission-1', taskId: 'task-1', arm: null, pick: 'act', skipped: false });
-      expect(body.triageHeartbeatSkips).toBe(0);
-    });
-
-    it('in the treatment arm: triage may apply, with the experiment\'s threshold', async () => {
-      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
-      mockMissionsFindFirst.mockResolvedValue(mission);
-      const arm = { experimentId: 'exp-1', policyVersion: 1, arm: 'treatment', propensity: 0.3, apply: true, waitMinConfidence: 0.95 };
-      mockResolveTriageArm.mockResolvedValue(arm);
-
-      await GET(makeRequest());
-
-      expect(mockResolveTriageArm).toHaveBeenCalledWith('team-1', 'mission-1');
-      expect((mockTriage.mock.calls[0] as any[])[0]).toMatchObject({ apply: true, waitMinConfidence: 0.95 });
-      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ arm });
-    });
-
-    it('skips the organizer on an applied wait, restoring the no-change hash', async () => {
-      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
-      mockMissionsFindFirst.mockResolvedValue(mission);
-      mockTriage.mockResolvedValue({ ...shadowTriage, pick: 'wait', confidence: 0.97, skipped: true, reason: null } as any);
+      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, lastOrganizerRunAt: minutesAgo(30) } as any);
 
       const res = await GET(makeRequest());
       const body = await res.json();
 
       expect(tasksInsertValues).toBeNull();
-      expect(body.triageHeartbeatSkips).toBe(1);
+      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_not_stuck');
+      expect(deferral).toBeDefined();
+      // Not writing the hash keeps the state "changed", so the tick after the
+      // grace period still sees it and can dispatch if nothing planned it.
+      expect(taskSchedulesUpdateCalls.find(c => 'lastHeartbeatStateHash' in (c.set ?? {}))).toBeUndefined();
+      expect(body.backstopDeferrals).toBe(1);
+      expect(body.backstopDispatches).toBe(0);
       expect(body.llmHeartbeatInvocations).toBe(0);
-      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_triage_wait');
-      expect(deferral?.set?.lastHeartbeatStateHash).toBe('sk-prev');
-      expect(deferral?.set?.nextRunAt).toBeInstanceOf(Date);
-      expect((mockRecordTriageLook.mock.calls[0] as any[])[0]).toMatchObject({ missionId: 'mission-1', taskId: null, skipped: true, pick: 'wait' });
     });
 
-    it('never triages a criteria re-arm', async () => {
+    it('dispatches the same state once, as backstop, past the grace period', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, lastOrganizerRunAt: minutesAgo(3 * 60) } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).not.toBeNull();
+      expect(tasksInsertValues.context.triggerSource).toBe('backstop');
+      expect(taskSchedulesUpdateCalls.find(c => c.set?.lastHeartbeatStateHash === 'sk-1')).toBeDefined();
+      expect(body.backstopDispatches).toBe(1);
+      expect(body.backstopDeferrals).toBe(0);
+      expect(body.created).toBe(1);
+    });
+
+    it('defers while the mission has open work', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, openTaskCount: 2 } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(body.backstopDeferrals).toBe(1);
+    });
+
+    it('defers when the prepass fails and no backoff is holding (fail closed)', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      mockPrepass.mockRejectedValue(new Error('prepass boom'));
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_not_stuck')).toBeDefined();
+      expect(body.backstopDeferrals).toBe(1);
+    });
+
+    it('does not count a dispatch that lost the planning-uniqueness race', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      insertConflict = true;
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.backstopDispatches).toBe(0);
+      expect(body.created).toBe(0);
+    });
+
+    it('never calls heartbeat triage, whether it dispatches or defers', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue(mission);
+      await GET(makeRequest());
+      expect(tasksInsertValues).not.toBeNull();
+
+      tasksInsertValues = null;
+      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, lastOrganizerRunAt: minutesAgo(10) } as any);
+      await GET(makeRequest());
+      expect(tasksInsertValues).toBeNull();
+
+      expect(mockTriage).not.toHaveBeenCalled();
+      expect(mockResolveTriageArm).not.toHaveBeenCalled();
+      expect(mockRecordTriageLook).not.toHaveBeenCalled();
+    });
+
+    it('does not gate a criteria re-arm on the stuck check (unchanged: once per verdict shape)', async () => {
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
       mockMissionsFindFirst.mockResolvedValue(mission);
       mockPrepass.mockResolvedValue({ action: 'skip_complete' } as any);
       mockCompleteMission.mockResolvedValue({ completed: false, decision: { code: 'criteria_failed', reason: 'r', criteriaVerdict: { kind: 'value', value: 'fail' } } } as any);
       mockApplyCriteriaRearm.mockResolvedValue({ action: 'rearm', reason: 'r', verdictLines: 'v', nextCycles: 0, fingerprint: 'fp' } as any);
 
-      await GET(makeRequest());
+      const res = await GET(makeRequest());
+      const body = await res.json();
 
-      expect(mockTriage).not.toHaveBeenCalled();
       expect(tasksInsertValues).not.toBeNull();
+      expect(body.criteriaRearmInvocations).toBe(1);
+      expect(body.backstopDeferrals).toBe(0);
+      expect(mockTriage).not.toHaveBeenCalled();
     });
   });
 
@@ -1274,7 +1326,24 @@ describe('GET /api/cron/schedules', () => {
     // on the unique index instead of dispatching a second worker.
     expect(tasksInsertValues.heartbeatTickAnchor).toMatch(/^sched-1:\d{4}-\d{2}-\d{2}T/);
     // Every organizer task records what started it; the mission timeline reads it.
+    // A heartbeat cycle that dispatches is the stuck-check backstop.
+    expect(tasksInsertValues.context.triggerSource).toBe('backstop');
+  });
+
+  it('stamps triggerSource cron on a mission-linked schedule that is not a heartbeat', async () => {
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      taskTemplate: { title: 'Mission: Plain', mode: 'planning', priority: 0, context: {} },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(mockPrepass).not.toHaveBeenCalled();
     expect(tasksInsertValues.context.triggerSource).toBe('cron');
+    expect(body.backstopDispatches).toBe(0);
   });
 
   // A bare (non-mission) schedule with no explicit mode still defaults to
