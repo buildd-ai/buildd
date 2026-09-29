@@ -25,6 +25,7 @@ import {
 import { runChatTurn } from '@/lib/chat/turn';
 import { loadAllowedToolGroups } from '@/lib/chat/permissions-store';
 import { checkChatLimits } from '@/lib/chat/limits';
+import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
@@ -199,6 +200,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       scopeFor: wsId => scopeFor(wsId),
       allowedToolGroups,
       limits: a => checkChatLimits({ ...a, settings }),
+      routingAccess: scope => resolveDecisionAccess({ capability: 'chat', ...scope, team: settings.decisionTeam }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),
       memory: base.memory,
       actionContext: base.actionContext,
