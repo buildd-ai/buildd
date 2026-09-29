@@ -461,7 +461,7 @@ export async function runChatTurn(args: {
         if (card) parts.push(directivePart(card));
         let usage: ChatUsage | null = null;
         try {
-          const u = await result.usage;
+          const u = await result.totalUsage;
           const meta = (await result.providerMetadata) as Record<string, unknown> | undefined;
           usage = {
             inputTokens: u?.inputTokens ?? 0,
