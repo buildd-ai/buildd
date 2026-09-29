@@ -1,8 +1,18 @@
 ---
-status: implemented
+status: superseded
+superseded_by: docs/design/event-driven-mission-replanning.md
+superseded_on: 2026-09-28
+superseded_reason: >
+  Events now plan every auto mission, and the heartbeat dispatches the
+  organizer only when the deterministic stuck check (isMissionStuck) holds.
+  That answers this doc's question ("does this cycle need the organizer?")
+  without a model call, so the triage call site was removed from the
+  schedules cron and the heartbeat_triage experiment concluded. The module,
+  the looks table and the experiment kind stay until a follow-up drops them,
+  so the concluded experiment's readout still works.
 # Structural conformance only; passing does not certify every prose invariant.
-# Shipped: the triage look, its call site in the schedules cron, the
-# heartbeat_triage experiment kind that gates a skip, and its readout.
+# Still present: the triage look, the experiment kind, the looks table and the
+# readout. Its call site in the schedules cron is gone (see superseded_reason).
 assertions:
   - id: "triage-look"
     type: "symbol"
@@ -12,11 +22,6 @@ assertions:
     type: "symbol"
     name: "gateHeartbeatTriage"
     path: "apps/web/src/lib/heartbeat-triage.ts"
-  - id: "triage-in-cron"
-    type: "symbol_reachable"
-    symbol: "triageHeartbeat"
-    entry: "apps/web/src/app/api/cron/schedules/route.ts"
-    as: "call"
   - id: "experiment-arm"
     type: "symbol"
     name: "decideHeartbeatTriageArm"
@@ -32,7 +37,7 @@ assertions:
 ---
 # Heartbeat Triage: Ask a Decision Model Before Hiring the Organizer
 
-**Status:** Implemented (shadow everywhere; skips only inside a `heartbeat_triage` experiment)
+**Status:** Superseded by [`event-driven-mission-replanning.md`](event-driven-mission-replanning.md). The heartbeat is now a deterministic stuck-check backstop, and triage no longer runs.
 **Related:** `apps/web/src/lib/heartbeat-triage.ts`, `apps/web/src/lib/heartbeat-prepass.ts`, `apps/web/src/app/api/cron/schedules/route.ts`, `apps/web/src/lib/mission-context.ts` (`buildHeartbeatContext`), `packages/core/inference-policy.ts`, `packages/core/decision-client.ts`, `scripts/decision-benchmark.ts`, `docs/design/decision-calls.md`
 
 ## Problem
