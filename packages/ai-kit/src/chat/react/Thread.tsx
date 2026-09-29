@@ -7,7 +7,8 @@
  * replaced per app (`renderText` for markdown, `renderObject` for the app's
  * own object kinds, `renderTool` for a special tool), and since 0.9.0 an app
  * can add a header and footer to each message, draw consecutive tool calls as
- * one group, supply its own checklist and name its own event part.
+ * one group, supply its own checklist and name its own event part. Since
+ * 0.11.0 `toolRows="rich"` draws each run of calls as `ToolCallGroup`.
  */
 import { useMemo, type ReactNode } from 'react';
 import {
@@ -29,6 +30,8 @@ import {
 } from '@builddai/ai-kit/chat/contract';
 import { ApprovalCard, HandoffCard, ThinkingPanel } from './cards';
 import { isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary } from './model';
+import { ToolCallGroup } from './ToolCalls';
+import type { ToolCallOptions } from './tool-calls';
 
 export type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error';
 
@@ -64,6 +67,16 @@ export interface ChatThreadProps {
    * nothing don't. Without it, each call is its own row.
    */
   renderToolGroup?(parts: readonly ChatToolPart[], message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
+  /**
+   * How tool calls look when `renderToolGroup` isn't passed (0.11.0).
+   * `line` (default): one line per call, as before. `rich`: each run of
+   * consecutive calls is a `ToolCallGroup` (key arguments, live state, a
+   * result line, expand to the raw input and output, a count header over
+   * two or more), followed by what the calls returned (`renderObject`).
+   */
+  toolRows?: 'line' | 'rich';
+  /** The app's hooks for `toolRows="rich"`: tool labels, key arguments, read-only calls, the result line. */
+  toolCallOptions?: ToolCallOptions;
   /** Replace an event row (`role: 'event'`). */
   renderEvent?(data: EventData, message: ChatMessage): ReactNode;
   /**
@@ -118,7 +131,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
-  renderTool, renderToolGroup, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
+  renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
   renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle,
   viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
@@ -127,6 +140,17 @@ export function ChatThread({
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
   const waitingForFirstChunk = status === 'submitted' && messages.at(-1)?.role === 'user';
   const lastHasTurnError = !!messages.at(-1)?.parts.some(isTurnErrorPart);
+  const renderToolGroup = appToolGroup ?? (toolRows === 'rich'
+    ? (parts: readonly ChatToolPart[]) => (
+      <>
+        <ToolCallGroup calls={parts} {...toolCallOptions} />
+        {renderObject && parts.flatMap(p => {
+          const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
+          return Array.isArray(objects) ? objects.map((o, j) => <div key={`${p.toolCallId}:${o.kind}:${o.id}:${j}`}>{renderObject(o, p)}</div>) : [];
+        })}
+      </>
+    )
+    : undefined);
 
   if (messages.length === 0 && empty) return <div className={`kit-chat${className ? ` ${className}` : ''}`}>{empty}</div>;
 

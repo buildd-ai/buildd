@@ -750,8 +750,8 @@ function resolve(input: MissionStateInput): Resolution {
       waitingOn: {
         kind: 'self_resolving_wait',
         tone: 'neutral',
-        label: 'Waiting: the heartbeat is holding this cycle',
-        reason: 'heartbeat wait',
+        label: 'Waiting: the check-in is holding this cycle',
+        reason: 'check-in wait',
         waitUntil: null,
       },
       displayState: 'active',

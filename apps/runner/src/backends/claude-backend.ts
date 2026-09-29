@@ -2,6 +2,28 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { OutputFormat } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 
+/**
+ * The initial prompt followed by every follow-up message, as one open-ended
+ * stream — see the comment at the query() call in runStreamed for why this
+ * must never be a string or a finite iterable.
+ */
+export async function* withFollowUps(
+  prompt: string | AsyncIterable<unknown>,
+  followUps: AsyncIterable<unknown>,
+): AsyncIterable<unknown> {
+  if (typeof prompt === 'string') {
+    yield {
+      type: 'user',
+      session_id: '',
+      message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      parent_tool_use_id: null,
+    };
+  } else {
+    yield* prompt;
+  }
+  yield* followUps;
+}
+
 export interface ClaudeBackendConfig {
   /** Pre-built query options from workers.ts (excludes sessionId, cwd, model, maxTurns, env — those come from RunStreamedOpts) */
   options: Record<string, unknown>;
@@ -54,15 +76,26 @@ export class ClaudeBackend implements AgentBackend {
       queryOptions.sessionId = opts.sessionId;
     }
 
+    // The SDK's stdin to the CLI is also the control channel every runner hook
+    // and canUseTool callback answers on. Hand query() ONE stream — the initial
+    // prompt followed by the runner's multi-turn inputStream (nudges, user
+    // responses, steering) — so stdin stays open until the runner ends that
+    // stream. A string prompt marks the query single-turn and the SDK closes
+    // stdin on the first `result`; a separate streamInput() call does not
+    // prevent that, and neither does a finite prompt iterable (its streamInput
+    // ends input once the first result lands). After that, any further turn —
+    // a background subagent's completion notification, a closing-turn prompt
+    // queued behind one — runs with no channel: each PreToolUse hook is
+    // cancelled ("control stream closed") and the CLI hands the model its
+    // built-in user-rejection text ("The user doesn't want to take this
+    // action right now. STOP…"), so the agent stops and waits for a human who
+    // does not exist. Runner nudges enqueued after that point are dropped.
     const queryInstance = query({
-      prompt: opts.prompt as Parameters<typeof query>[0]['prompt'],
+      prompt: withFollowUps(opts.prompt, this.config.inputStream) as Parameters<typeof query>[0]['prompt'],
       options: queryOptions as Parameters<typeof query>[0]['options'],
     });
 
     this.queryInstance = queryInstance;
-
-    // Connect multi-turn input stream (allows output-requirement nudges and user responses)
-    queryInstance.streamInput(this.config.inputStream as any);
 
     // Notify caller with the query instance so they can set up discovery/rewindFiles
     this.config.onInit?.(queryInstance);

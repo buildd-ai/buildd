@@ -192,7 +192,7 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
       <div className="card p-4 space-y-2 text-xs">
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
         <p className="text-text-muted">
-          Answers buildd&apos;s quick labelled checks (task categories, heartbeat triage). Any model that returns token
+          Answers buildd&apos;s quick labelled checks (task categories). Any model that returns token
           logprobs works, including open-weights models. Thresholds were measured on Jev, so another model&apos;s picks are
           recorded but not applied until it has its own eval.
         </p>

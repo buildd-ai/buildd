@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
+import { ORGANIZER_CHECKLIST_EXPLAINER } from '@/lib/mission-checkins';
 
 interface HeartbeatChecklistEditorProps {
   missionId: string;
@@ -42,8 +43,8 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="section-label">Heartbeat Checklist</h2>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="section-label">Organizer checklist</h2>
         <div className="flex items-center gap-3">
           {!editing && checklist && (
             <button
@@ -64,12 +65,14 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
         </div>
       </div>
 
+      <p className="text-[11px] text-text-muted mb-2">{ORGANIZER_CHECKLIST_EXPLAINER}</p>
+
       {editing ? (
         <div className="space-y-2">
           <textarea
             value={value}
             onChange={e => setValue(e.target.value)}
-            placeholder="Add a checklist for the heartbeat agent to follow...&#10;&#10;Example:&#10;- Check if CI is green&#10;- Verify no critical alerts&#10;- Review dependency updates"
+            placeholder="Add what the organizer should follow when it plans the next step…&#10;&#10;Example:&#10;- File each build task with the files it will touch&#10;- Keep the API change and the UI change in separate tasks&#10;- Propose completion once the release PR is merged"
             rows={8}
             className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 resize-y font-mono transition-colors"
             autoFocus

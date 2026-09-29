@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { formatRoutingSummary, parseTimeoutMs, summarizeRouting } from './lib/routing-summary';
 
 const rec = (outcome: string, latencyMs: number) => ({
-  outcome, latencyMs, attempts: 1, questionCount: 3, workspaceCount: 0, topicAsked: false, answers: {},
+  outcome, latencyMs, attempts: 1, questionCount: 3, workspaceCount: 0, answers: {},
 }) as any;
 
 describe('summarizeRouting', () => {

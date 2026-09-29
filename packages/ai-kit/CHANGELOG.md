@@ -12,6 +12,38 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.11.0 — 2026-09-29
+
+Rich tool rows, lifted from buildd's chat. Minor: opt-in; without it the
+thread renders the same markup as on 0.10.0 (pinned byte for byte in
+`tool-calls.dom.test.tsx`).
+
+- `/chat/react` `ToolCallRow` and `ToolCallGroup`: every call is a compact
+  row (the tool as the verb, its `input.action`, up to two key arguments, a
+  live state mark, a one-line result) that expands to the raw input and
+  output (the error, when it failed). A write that ran under "Allow"
+  (`ToolResult.allowed`) carries an `allowed` badge. A run of two or more
+  calls sits under a header that folds them: "3 tool calls · read-only ·
+  1 running". Styled only through `kit-toolcall*` classes and `--kit-*`
+  properties; state on `data-state` / `data-live` / `data-flush`.
+- `ChatThread`: `toolRows?: 'line' | 'rich'` (default `line`, unchanged) and
+  `toolCallOptions`. `rich` draws each run of calls as a `ToolCallGroup`,
+  followed by what they returned (`renderObject`). An app's
+  `renderToolGroup` still wins.
+- App hooks (`ToolCallOptions`): `toolLabel(name, part)` (a label table;
+  default the tool's name), `keyArgs` (`{ skip, prefer, max }` or a function
+  per call), `isReadOnly(part)` (default none, so "read-only" never shows),
+  `result(part)` (default `toolCallResult`).
+- New pure exports: `toolCallView`, `toolCallState` (finer than
+  `toolRowState`: an approved write still running is `approved`),
+  `toolCallResult`, `keyArgs`, `toolGroupSummary`, `DEFAULT_KEY_ARG_SKIP`,
+  and their types.
+- `/chat/theme.css`: seven new variables, read only by the rich rows:
+  `--kit-ink-soft`, `--kit-accent-text`, `--kit-accent-soft`, `--kit-raised`,
+  `--kit-ok`, `--kit-warn`, `--kit-danger` (also in `KIT_CSS_VARS`).
+- `KIT_VERSION` is `0.11.0` (metadata only: decision versions and
+  fingerprints are unchanged, engine still 1).
+
 ## 0.10.0 — 2026-09-28
 
 Decision identity no longer changes with the kit release. Minor: every

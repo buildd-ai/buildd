@@ -103,7 +103,7 @@ export async function resolveCriteriaEscalation(
     missionId,
     type: 'update',
     title: 'Goal-criteria escalation cleared',
-    body: `Resolved because ${EXIT_LABELS[reason]}.${rearmedSchedule ? ' Heartbeat re-enabled.' : ''}`,
+    body: `Resolved because ${EXIT_LABELS[reason]}.${rearmedSchedule ? ' Check-ins re-enabled.' : ''}`,
     actor,
   }).catch(e => console.error(`[criteria-escalation] feed note failed for ${missionId}:`, e));
 

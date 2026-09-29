@@ -2267,6 +2267,58 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.waitingFor).toBeNull();
   });
 
+  // The runner's abort path (recovery.ts abort) resolves a pending permission
+  // hook as deny and reports status=failed — without touching waitingFor. The
+  // ended worker then kept rendering a live "Allow once / Deny" card that could
+  // grant nothing. A permission prompt dies with its session; a question does
+  // not (an AskUserQuestion abort is answered after the fact).
+  describe('terminal status and a leftover waitingFor', () => {
+    function captureSets() {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          sets.push(updates);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+      return sets;
+    }
+
+    async function patchFailed(waitingFor: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'waiting_input',
+        workspaceId: 'ws-1',
+        waitingFor,
+        pendingInstructions: null,
+      });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Aborted by user' },
+      });
+      return PATCH(req, { params: mockParams });
+    }
+
+    it('clears a permission prompt when the worker ends', async () => {
+      const sets = captureSets();
+      await patchFailed({ type: 'permission', prompt: 'Permission required for Bash: rm -rf *' });
+      expect(sets.some(s => 'waitingFor' in s && s.waitingFor === null)).toBe(true);
+    });
+
+    it('keeps a question open when the worker ends', async () => {
+      const sets = captureSets();
+      await patchFailed({ type: 'question', prompt: 'Which auth?' });
+      expect(sets.some(s => 'waitingFor' in s)).toBe(false);
+    });
+  });
+
   it('includes phases and lastQuestion in task.result on completion', async () => {
     let capturedTaskSet: any = null;
     mockTasksUpdate.mockReturnValue({

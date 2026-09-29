@@ -15,7 +15,7 @@
 export const HEARTBEAT_PROTOCOL_BLOCK = `\n## Protocol
 You are running a mission heartbeat. Your job is to **drive the mission forward**, not just report status.
 - Assess the phase above and execute the required actions.
-- If you created tasks, retried failures, or made changes, report status "action_taken" with what you did.
+- If you created tasks, escalated, or made changes, report status "action_taken" with what you did. (Failed tasks are retried by the platform, not by you.)
 - Only report "ok" if the mission is actively progressing and no action is needed RIGHT NOW.
 - If the mission phase above is STALLED, you MUST take action or escalate — never report "ok" for a stalled mission.
 - If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.

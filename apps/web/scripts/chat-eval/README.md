@@ -20,7 +20,7 @@ any good.
   object. On `mcp` it forwards to the remote server. A write gets the answer an
   approval card would ("nothing ran; the user decides") and is logged as a
   proposal. Read vs write on `mcp`: the chat registry's op class for an action
-  chat exposes, else `MCP_ONLY_CLASS` in `lib/surfaces.ts` (so `list_runners`,
+  chat exposes, else `MCP_ONLY_CLASS` in `lib/surfaces.ts` (so `get_usage_stats`,
   deferred in chat, still runs on `mcp`). `safety.test.ts` checks every MCP
   action is classified by exactly one of the two; unknown actions and tools
   count as writes.

@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 let secretRows: any[] = [];
 let teamRow: any = { chatDisabled: false, inferenceFeatureModes: null };
 let secretsThrows = false;
+let teamReads = 0;
 
 mock.module('../db', () => ({
   db: {
@@ -19,7 +20,7 @@ mock.module('../db', () => ({
       secrets: {
         findMany: () => (secretsThrows ? Promise.reject(new Error('db down')) : Promise.resolve(secretRows)),
       },
-      teams: { findFirst: () => Promise.resolve(teamRow) },
+      teams: { findFirst: () => { teamReads += 1; return Promise.resolve(teamRow); } },
     },
   },
 }));
@@ -47,6 +48,7 @@ mock.module('drizzle-orm', () => ({
 
 const {
   decisionCall,
+  resolveDecisionAccess,
   resolveDecisionKey,
   validateDecisionRequest,
   parseDecisionAnswers,
@@ -122,6 +124,7 @@ beforeEach(() => {
   secretRows = [secretRow()];
   teamRow = { chatDisabled: false, inferenceFeatureModes: null };
   secretsThrows = false;
+  teamReads = 0;
   delete process.env.OPENROUTER_API_KEY;
 });
 
@@ -273,6 +276,83 @@ describe('decisionCall gating', () => {
     }));
     expect(res.ok).toBe(true);
     expect(auth).toBe('Bearer sk-or-eval');
+  });
+});
+
+// ── policy and key resolved ahead ────────────────────────────────────────────
+
+describe('resolveDecisionAccess + decisionCall({ access })', () => {
+  it('resolves the policy and key without spending, and the call then uses them', async () => {
+    const access = await resolveDecisionAccess({ capability: 'chat', teamId: 'team-1' });
+    expect(access).toEqual({ ok: true, apiKey: 'sk-or-team', model: DEFAULT_DECISION_MODEL });
+    expect(teamReads).toBe(2); // the settings row, then the key policy (the row had none)
+
+    secretRows = []; // a lookup now would find nothing: the call must not look
+    let auth = '';
+    const res = await decisionCall(params({
+      capability: 'chat',
+      access,
+      fetcher: async (_u: string, init: RequestInit) => {
+        auth = new Headers(init.headers).get('authorization') ?? '';
+        return jsonResponse(OK_BODY);
+      },
+    }));
+    expect(res.ok).toBe(true);
+    expect(auth).toBe('Bearer sk-or-team');
+    expect(teamReads).toBe(2);
+  });
+
+  it('takes the team row from the caller when it has one: no team read at all', async () => {
+    const access = await resolveDecisionAccess({
+      capability: 'chat', teamId: 'team-1', team: { inferenceFeatureModes: null, decisionModel: null, inferenceKeyPolicy: 'team_or_own' },
+    });
+    expect(access.ok).toBe(true);
+    expect(teamReads).toBe(0);
+  });
+
+  it('reads the key policy with the settings row, not a second time', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: null, inferenceKeyPolicy: 'team_or_own' };
+    expect((await resolveDecisionAccess({ capability: 'chat', teamId: 'team-1' })).ok).toBe(true);
+    expect(teamReads).toBe(1);
+  });
+
+  it('the passed key policy binds: `own` spends no team key', async () => {
+    const access = await resolveDecisionAccess({
+      capability: 'chat', teamId: 'team-1', userId: 'u-1', team: { inferenceFeatureModes: null, decisionModel: null, inferenceKeyPolicy: 'own' },
+    });
+    expect(access).toEqual({ ok: false, error: { kind: 'missing_key' } });
+  });
+
+  it('a refused access is the call\'s result, with nothing fetched', async () => {
+    const fetcher = mock(async () => jsonResponse(OK_BODY));
+    const res = await decisionCall(params({ fetcher, access: Promise.resolve({ ok: false as const, error: { kind: 'missing_key' as const } }) }));
+    expect(!res.ok && res.error).toEqual({ kind: 'missing_key' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('the deadline starts at the call, not at the lookup', async () => {
+    let t = 0;
+    const now = () => t;
+    const access = await resolveDecisionAccess({ capability: 'chat', teamId: 'team-1' });
+    t = 10_000; // however long the lookup took, it is not charged to the call
+    const res = await decisionCall(params({
+      now, access, timeoutMs: 900,
+      fetcher: async () => { t += 400; return jsonResponse(OK_BODY); },
+    }));
+    expect(res.ok).toBe(true);
+    expect(res.latencyMs).toBe(400);
+  });
+
+  it('never throws: a failing key lookup is missing_key', async () => {
+    secretsThrows = true;
+    const access = await resolveDecisionAccess({ capability: 'chat', teamId: 'team-1' });
+    expect(access).toEqual({ ok: false, error: { kind: 'missing_key' } });
+  });
+
+  it('fails closed without a team row', async () => {
+    teamRow = undefined;
+    expect(await resolveDecisionAccess({ capability: 'task_category', teamId: 'team-1' }))
+      .toEqual({ ok: false, error: { kind: 'capability_disabled', capability: 'task_category' } });
   });
 });
 

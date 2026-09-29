@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
+import { listOpenWorkspaces } from '@/lib/open-workspaces';
 import { getWorkspaceRoles } from '@/lib/mission-context';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -37,10 +38,8 @@ export async function GET(req: NextRequest) {
     if (apiAccount) {
       const [perms, openWs] = await Promise.all([
         getAccountWorkspacePermissions(apiAccount.id),
-        db.query.workspaces.findMany({
-          where: eq(workspaces.accessMode, 'open'),
-          columns: { id: true },
-        }),
+        // "Open" is open within the account's own team.
+        listOpenWorkspaces([apiAccount.teamId], { id: true }),
       ]);
       const linkedIds = perms.map(p => p.workspaceId);
       const openIds = openWs.map(w => w.id);

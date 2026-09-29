@@ -32,17 +32,20 @@ mock.module('pusher-js', () => ({
 }));
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (_opts: any) => {
+  query: (opts: any) => {
     const msgs = [...mockMessages];
     let idx = 0;
+    // The prompt is one stream: the task prompt, then every follow-up the
+    // runner enqueues. Drain it like the SDK would and keep the follow-ups.
+    void (async () => {
+      let first = true;
+      for await (const message of opts.prompt) {
+        if (first) { first = false; continue; }
+        followUpMessages.push(message);
+      }
+    })();
     return {
-      streamInput: (stream: any) => {
-        const enqueue = stream.enqueue.bind(stream);
-        stream.enqueue = (message: any) => {
-          followUpMessages.push(message);
-          enqueue(message);
-        };
-      },
+      streamInput: () => {},
       supportedModels: async () => [],
       [Symbol.asyncIterator]() {
         return {

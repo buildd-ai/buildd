@@ -26,6 +26,7 @@ import { runChatTurn } from '@/lib/chat/turn';
 import { routeTurn } from '@/lib/chat/routing';
 import { loadAllowedToolGroups } from '@/lib/chat/permissions-store';
 import { checkChatLimits } from '@/lib/chat/limits';
+import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
@@ -205,6 +206,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       route: input => routeTurn(input, {
         onUsage: receipt => { decisionWrites.push(insertDecisionReceipts([receipt], { teamId: conv.teamId, accountId: null })); },
       }),
+      routingAccess: scope => resolveDecisionAccess({ capability: 'chat', ...scope, team: settings.decisionTeam }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),
       memory: base.memory,
       actionContext: base.actionContext,

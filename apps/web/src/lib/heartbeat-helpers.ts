@@ -10,7 +10,10 @@ export const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat Checklist
 - Review calendar for events in next 2 hours
 - Check pending tasks for blockers`;
 
-export const DEFAULT_HEARTBEAT_CRON = '*/30 * * * *';
+// Hourly: the schedules cron runs hourly, so a finer default only overstated
+// the cadence. A check-in is a stuck check (lib/mission-stuck.ts); the next
+// step is planned when work finishes either way.
+export const DEFAULT_HEARTBEAT_CRON = '0 * * * *';
 
 /**
  * The organizer checklist. Only the items the organizer alone can do: the

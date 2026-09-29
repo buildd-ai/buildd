@@ -7,7 +7,7 @@ mock.module('@buildd/core/decision-client', () => ({
     : { apply: false, reason: 'low_confidence', label: a.choice, confidence: a.confidence }),
 }));
 
-const { routeTurn, FALLBACK_TIER, workspaceHint, TITLE_TOPIC_QUESTION, ROUTING_DECISION_ID, logRoutingRecord } = await import('./routing');
+const { routeTurn, FALLBACK_TIER, workspaceHint, askTopicQuestion, TITLE_TOPIC_QUESTION, isAcknowledgement, offeredAction, ROUTING_DECISION_ID, logRoutingRecord } = await import('./routing');
 
 const input = { teamId: 't', workspaceId: null, userId: 'u', message: 'make this a mission' };
 const answer = (complexity: [string, number], intent: [string, number]) => async () => ({
@@ -50,6 +50,9 @@ describe('routeTurn', () => {
       answers: { complexity: { choice: 'standard', confidence: 0.9 }, intent: { choice: 'act', confidence: 0.95 }, area: { choice: area[0], confidence: area[1] } },
     }) as any;
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.9]) })).area).toBe('schedules');
+    // 0.8 gate: 0.79 confidence drops the area routing (narrowing is too risky)
+    expect((await routeTurn(input, { decide: withArea(['schedules', 0.79]) })).area).toBeUndefined();
+    // Below gate, fallback set (missions + tasks + workers) is used
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.5]) })).area).toBeUndefined();
     expect((await routeTurn(input, { decide: withArea(['general', 0.99]) })).area).toBeUndefined();
     // No area answer at all (an older decision) is the fallback set, not an error.
@@ -130,46 +133,43 @@ describe('workspaceHint', () => {
   });
 });
 
-describe('routeTurn: title topic (re-title shadow)', () => {
+describe('askTopicQuestion', () => {
   const withTopic = (topic?: [string, number]) => async (p: any) => {
-    asked.push(p);
     return {
       ok: true as const,
       answers: {
-        complexity: { choice: 'standard', confidence: 0.9 },
-        intent: { choice: 'needs_tools', confidence: 0.5 },
         ...(topic ? { topic: { choice: topic[0], confidence: topic[1] } } : {}),
       },
     } as any;
   };
-  let asked: any[] = [];
 
-  it('asks the topic question, with the title in state, only when a title is passed', async () => {
-    asked = [];
-    await routeTurn(input, { decide: withTopic() });
-    expect(asked[0].questions.topic).toBeUndefined();
-    expect(asked[0].state.turn.title).toBeUndefined();
-    await routeTurn({ ...input, title: 'Release status' }, { decide: withTopic(['new_topic', 0.95]) });
-    expect(asked[1].questions.topic).toBe(TITLE_TOPIC_QUESTION);
-    expect(asked[1].state.turn.title).toBe('Release status');
+  it('returns the answer ungated; absent when not answered', async () => {
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: withTopic(['new_topic', 0.4]) }
+    )).toEqual({ label: 'new_topic', confidence: 0.4 });
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: withTopic() }
+    )).toBeUndefined();
   });
 
-  it('returns the answer ungated; absent when not asked or not answered', async () => {
-    expect((await routeTurn({ ...input, title: 'T' }, { decide: withTopic(['new_topic', 0.4]) })).topic).toEqual({ label: 'new_topic', confidence: 0.4 });
-    expect((await routeTurn({ ...input, title: 'T' }, { decide: withTopic() })).topic).toBeUndefined();
-    expect((await routeTurn(input, { decide: withTopic(['new_topic', 0.99]) })).topic).toBeUndefined();
+  it('returns undefined on decision call failure', async () => {
+    const throwingDecide = async () => { throw new Error('boom'); };
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: throwingDecide }
+    )).toBeUndefined();
   });
 });
 
-
 describe('routeTurn: the routing record (content-free)', () => {
   const MESSAGE = 'SECRET-MESSAGE-TEXT please pause checkout';
-  const TITLE = 'SECRET-TITLE Release status';
   const workspaces = [
     { id: 'ws-a', name: 'SECRET-WS-billing', hint: 'SECRET-HINT stripe' },
     { id: 'ws-b', name: 'docs-site', hint: null },
   ];
-  const full = { ...input, message: MESSAGE, previous: 'SECRET-PREVIOUS', title: TITLE, workspaces };
+  const full = { ...input, message: MESSAGE, previous: 'SECRET-PREVIOUS', workspaces };
   const failed = (error: any) => async () => ({ ok: false as const, error, latencyMs: 912, attempts: 1 }) as any;
   const answered = (a: Record<string, [string, number]>) => async () => ({
     ok: true as const,
@@ -181,17 +181,16 @@ describe('routeTurn: the routing record (content-free)', () => {
   it('a gate applied: outcome decision, with latency, attempts, shape and every answer', async () => {
     const r = await routeTurn(full, { decide: answered({
       complexity: ['simple', 0.95], intent: ['act', 0.95], area: ['tasks', 0.5],
-      workspace: ['SECRET-WS-billing', 0.9], topic: ['new_topic', 0.6],
+      workspace: ['SECRET-WS-billing', 0.9],
     }) });
     expect(r.routing).toEqual({
       outcome: 'decision', latencyMs: 420, attempts: 1,
-      questionCount: 5, workspaceCount: 2, topicAsked: true,
+      questionCount: 4, workspaceCount: 2,
       answers: {
         complexity: { label: 'simple', confidence: 0.95, applied: true },
         intent: { label: 'act', confidence: 0.95, applied: true },
         area: { label: 'tasks', confidence: 0.5, applied: false },
         workspace: { label: 'ws-a', confidence: 0.9, applied: true },
-        topic: { label: 'new_topic', confidence: 0.6, applied: true },
       },
     });
     expect(r.source).toBe('decision');
@@ -200,7 +199,7 @@ describe('routeTurn: the routing record (content-free)', () => {
   it('answered but nothing cleared a gate: low_confidence, not an error', async () => {
     const r = await routeTurn(input, { decide: answered({ complexity: ['simple', 0.5], intent: ['act', 0.5], area: ['tasks', 0.3] }) });
     expect(r.source).toBe('fallback');
-    expect(r.routing).toMatchObject({ outcome: 'low_confidence', questionCount: 3, workspaceCount: 0, topicAsked: false });
+    expect(r.routing).toMatchObject({ outcome: 'low_confidence', questionCount: 3, workspaceCount: 0 });
     expect(r.routing!.answers.complexity).toEqual({ label: 'simple', confidence: 0.5, applied: false });
     expect(r.routing!.answers.workspace).toBeUndefined();
   });
@@ -225,7 +224,7 @@ describe('routeTurn: the routing record (content-free)', () => {
       expect(r).toMatchObject({ tier: 'standard', allowWrites: true, source: 'fallback' });
       expect(r.routing).toEqual({
         outcome: `error:${error.kind}` as any, latencyMs: 912, attempts: 1,
-        questionCount: 5, workspaceCount: 2, topicAsked: true, answers: {},
+        questionCount: 4, workspaceCount: 2, answers: {},
       });
     });
   }
@@ -233,12 +232,12 @@ describe('routeTurn: the routing record (content-free)', () => {
   it('a throw records error:threw with the measured latency', async () => {
     let t = 1_000;
     const r = await routeTurn(input, { now: () => t, decide: async () => { t += 37; throw new Error('boom SECRET-MESSAGE-TEXT'); } });
-    expect(r.routing).toEqual({ outcome: 'error:threw', latencyMs: 37, attempts: 0, questionCount: 3, workspaceCount: 0, topicAsked: false, answers: {} });
+    expect(r.routing).toEqual({ outcome: 'error:threw', latencyMs: 37, attempts: 0, questionCount: 3, workspaceCount: 0, answers: {} });
   });
 
-  it('never carries message, previous, title, workspace names or hints, whatever the outcome', async () => {
+  it('never carries message, previous, workspace names or hints, whatever the outcome', async () => {
     const outcomes = [
-      await routeTurn(full, { decide: answered({ complexity: ['simple', 0.95], intent: ['act', 0.95], area: ['tasks', 0.9], workspace: ['SECRET-WS-billing', 0.99], topic: ['same_topic', 0.9] }) }),
+      await routeTurn(full, { decide: answered({ complexity: ['simple', 0.95], intent: ['act', 0.95], area: ['tasks', 0.9], workspace: ['SECRET-WS-billing', 0.99] }) }),
       await routeTurn(full, { decide: answered({ complexity: ['simple', 0.1], intent: ['act', 0.1], workspace: ['SECRET-WS-billing', 0.1] }) }),
       await routeTurn(full, { decide: failed({ kind: 'provider_error', status: 500, body: 'SECRET-MESSAGE-TEXT' }) }),
       await routeTurn(full, { decide: async () => { throw new Error('SECRET-MESSAGE-TEXT'); } }),
@@ -258,5 +257,68 @@ describe('routeTurn: the routing record (content-free)', () => {
     expect(seen[0].decisionId).toBe(ROUTING_DECISION_ID);
     expect(ROUTING_DECISION_ID).toBe('chat_routing');
     expect(seen[0].onUsage).toBe(onUsage);
+  });
+});
+
+describe('routeTurn: acknowledgements skip the routing call', () => {
+  const never = async () => { throw new Error('the routing call must not run'); };
+
+  it('recognises a whole-message thanks / ok / greeting / emoji, and nothing longer', () => {
+    for (const m of ['thanks', 'Thank you!', 'ok', 'OK.', 'okay thanks', 'hi', 'hey', 'good morning', '👍', 'ok 👍', 'great, thanks!', 'yes', 'sounds good']) {
+      expect(isAcknowledgement(m)).toBe(true);
+    }
+    for (const m of ['thanks, now pause checkout', 'ok what failed?', 'hi, what is running', 'yes create the mission', '', 'status?']) {
+      expect(isAcknowledgement(m)).toBe(false);
+    }
+    expect(isAcknowledgement('thanks '.repeat(10))).toBe(false); // over the length cap
+  });
+
+  it('routes an acknowledgement as budget tier with the fallback groups, no call', async () => {
+    const route = await routeTurn({ ...input, message: 'thanks!' }, { decide: never });
+    expect(route).toEqual({ tier: 'budget', allowWrites: false, source: 'fallback' });
+    expect(route.area).toBeUndefined();
+  });
+
+  it('keeps the write tools only when the previous turn offered to do something', async () => {
+    expect((await routeTurn({ ...input, message: 'ok', previous: 'Want me to file this as a mission?' }, { decide: never })).allowWrites).toBe(true);
+    expect((await routeTurn({ ...input, message: 'yes', previous: 'I can pause checkout for you.' }, { decide: never })).allowWrites).toBe(true);
+    expect((await routeTurn({ ...input, message: 'ok', previous: 'Checkout shipped in PR 12.' }, { decide: never })).allowWrites).toBe(false);
+  });
+
+  it('offeredAction: a closing question or an offer phrase', () => {
+    expect(offeredAction('Shall I retry it?')).toBe(true);
+    expect(offeredAction('Should I cancel it? It has been stuck for a day.')).toBe(true);
+    expect(offeredAction('Three tasks are running.')).toBe(false);
+    expect(offeredAction(null)).toBe(false);
+  });
+});
+
+describe('routeTurn: a pinned tier', () => {
+  it('does not ask the complexity question, whose answer would be overwritten', async () => {
+    const seen: any[] = [];
+    const decide = async (p: any) => {
+      seen.push(p);
+      return { ok: true as const, answers: { intent: { choice: 'needs_tools', confidence: 0.95 }, area: { choice: 'tasks', confidence: 0.9 } } } as any;
+    };
+    const route = await routeTurn({ ...input, tierPinned: true }, { decide });
+    expect(Object.keys(seen[0].questions)).toEqual(['intent', 'area']);
+    expect(route).toMatchObject({ tier: FALLBACK_TIER, allowWrites: false, area: 'tasks', source: 'decision' });
+    expect(route.routing!.questionCount).toBe(2);
+  });
+
+  it('still asks it when the tier is not pinned', async () => {
+    const seen: any[] = [];
+    await routeTurn(input, { decide: async (p: any) => { seen.push(p); return { ok: false, error: { kind: 'timeout' } } as any; } });
+    expect(Object.keys(seen[0].questions)).toEqual(['complexity', 'intent', 'area']);
+  });
+});
+
+describe('routeTurn: the decision key resolved ahead', () => {
+  it('hands the pre-resolved access to the decision call', async () => {
+    const access = Promise.resolve({ ok: true as const, apiKey: 'sk', model: 'm' });
+    const seen: any[] = [];
+    await routeTurn({ ...input, access }, { decide: async (p: any) => { seen.push(p); return { ok: false, error: { kind: 'timeout' } } as any; } });
+    expect(seen[0].access).toBe(access);
+    expect(seen[0].timeoutMs).toBe(900);
   });
 });

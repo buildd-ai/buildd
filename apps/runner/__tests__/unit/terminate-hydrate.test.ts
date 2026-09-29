@@ -684,7 +684,9 @@ describe('WorkerManager — terminate and hydrate (resume layers)', () => {
       const queryCall = allQueryOpts[0];
       expect(queryCall).toBeDefined();
       // The prompt includes the follow-up message (via task.description in reconstruction)
-      const promptText = typeof queryCall.prompt === 'string' ? queryCall.prompt : '';
+      // The prompt is a stream whose first message is the task prompt.
+      const first = (await queryCall.prompt[Symbol.asyncIterator]().next()).value;
+      const promptText: string = first?.message?.content?.[0]?.text ?? '';
       expect(promptText).toContain('Add password reset');
     });
   });
