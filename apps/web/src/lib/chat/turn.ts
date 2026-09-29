@@ -462,11 +462,29 @@ export async function runChatTurn(args: {
         let usage: ChatUsage | null = null;
         try {
           const u = await result.totalUsage;
-          const meta = (await result.providerMetadata) as Record<string, unknown> | undefined;
+          let costUsd: number | null = null;
+          try {
+            const steps = await (result as any).steps?.();
+            if (steps && steps.length > 0) {
+              const stepCosts = (steps as Array<{ providerMetadata?: unknown }>).map(
+                s => (s.providerMetadata as { openrouter?: { usage?: { cost?: unknown } } } | undefined)?.openrouter?.usage?.cost
+              );
+              const reportedCosts = stepCosts.filter((c): c is number => typeof c === 'number');
+              if (reportedCosts.length > 0) {
+                costUsd = reportedCosts.reduce((a, b) => a + b, 0);
+                const unreportedCount = steps.length - reportedCosts.length;
+                if (unreportedCount > 0) {
+                  const avgEstimate = turnCostUsd(resolved.modelId, u, undefined) ?? 0;
+                  if (avgEstimate !== null) costUsd += avgEstimate * (unreportedCount / steps.length);
+                }
+              }
+            }
+          } catch { /* steps may not be available */ }
+          if (costUsd === null) costUsd = turnCostUsd(resolved.modelId, u, undefined);
           usage = {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
-            costUsd: turnCostUsd(resolved.modelId, u, meta),
+            costUsd,
             latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }

@@ -624,7 +624,24 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       try {
         const u = await result.totalUsage;
         tokens = { input: u?.inputTokens ?? 0, output: u?.outputTokens ?? 0 };
-        providerCost = reportedCost(await result.providerMetadata);
+        try {
+          const steps = await (result as any).steps?.();
+          if (steps && steps.length > 0) {
+            const stepCosts = (steps as Array<{ providerMetadata?: unknown }>).map(
+              s => (s.providerMetadata as { openrouter?: { usage?: { cost?: unknown } } } | undefined)?.openrouter?.usage?.cost
+            );
+            const reportedCosts = stepCosts.filter((c): c is number => typeof c === 'number');
+            if (reportedCosts.length > 0) {
+              providerCost = reportedCosts.reduce((a, b) => a + b, 0);
+              const unreportedCount = steps.length - reportedCosts.length;
+              if (unreportedCount > 0) {
+                const avgEstimate = estimatedCost(resolved.plan.price, tokens.input, tokens.output);
+                if (avgEstimate !== null) providerCost += avgEstimate * (unreportedCount / steps.length);
+              }
+            }
+          }
+        } catch { /* steps may not be available */ }
+        if (providerCost === null) providerCost = reportedCost(await result.providerMetadata);
       } catch { /* an aborted stream may have no usage */ }
       const latencyMs = clock() - startedAt;
       const costUsd = providerCost ?? estimatedCost(resolved.plan.price, tokens.input, tokens.output);

@@ -216,6 +216,22 @@ describe('usage', () => {
     expect(ledger[0]).toMatchObject({ userId: 'u-1', conversationId: 'c-1', inputTokens: 20, outputTokens: 10, costUsd: 0.00004, outcome: 'ok', continuation: false });
     expect(lastAssistant().usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
   });
+
+  it('continuation sums prior cost with new turn cost', async () => {
+    const { send } = harness({
+      model: mockModel(toolStream(['w1', 'create_note', { title: 'Note 1' }]), textStream('Card.'), textStream('Done.')),
+    });
+    await send(userMsg('add a note'));
+    const firstCost = ledger[0].costUsd ?? 0;
+    const confirm = answer(true);
+    await send(confirm);
+    expect(ledger).toHaveLength(2);
+    const firstTurn = ledger[0];
+    const continuation = ledger[1];
+    expect(firstTurn.continuation).toBe(false);
+    expect(continuation.continuation).toBe(true);
+    expect(lastAssistant().usage?.costUsd).toBe(firstCost + (continuation.costUsd ?? 0));
+  });
 });
 
 describe('reads and thinking steps', () => {
