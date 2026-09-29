@@ -98,8 +98,7 @@ async function main() {
 
   // Trigger a prod write: /api/workers/active (API-key auth) exercises
   // authenticateApiKey -> setCachedApiKey (buildd:api_key:{hash}),
-  // getAccountWorkspacePermissions -> setCachedAccountWorkspaces, and
-  // setCachedOpenWorkspaceIds -> buildd:open_workspaces.
+  // and getAccountWorkspacePermissions -> setCachedAccountWorkspaces.
   const hash = createHash('sha256').update(API_KEY).digest('hex');
   const apiKeyCacheKey = `buildd:api_key:${hash}`;
 

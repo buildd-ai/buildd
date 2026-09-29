@@ -15,6 +15,7 @@ let workspaceRow: any = null;
 let noteCountRows: any[] = [{ value: 0 }];
 let currentUser: any = { id: 'u-1', email: 'max@example.com' };
 let apiAccountRow: any = null;
+let linkRow: any = null;
 
 const mockEvaluateCriteriaNow = mock((_id: string, _opts: any) => Promise.resolve({
   evaluatedAt: '2026-08-29T12:00:00.000Z',
@@ -39,6 +40,7 @@ mock.module('@buildd/core/db/schema', () => ({
   missions: Symbol('missions'),
   missionNotes: { missionId: 'mission_id', title: 'title', createdAt: 'created_at' },
   workspaces: Symbol('workspaces'),
+  accountWorkspaces: { accountId: 'account_id', workspaceId: 'workspace_id' },
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -46,6 +48,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: () => Promise.resolve(missionRow) },
       workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
+      accountWorkspaces: { findFirst: () => Promise.resolve(linkRow) },
     },
     select: () => ({ from: () => ({ where: () => Promise.resolve(noteCountRows) }) }),
   },
@@ -87,6 +90,7 @@ function reset() {
     goalCriteriaState: null,
   };
   workspaceRow = { accessMode: 'team' };
+  linkRow = null;
   noteCountRows = [{ value: 0 }];
   currentUser = { id: 'u-1', email: 'max@example.com' };
   apiAccountRow = null;
@@ -125,9 +129,29 @@ describe('POST /api/missions/[id]/evaluate — auth', () => {
     expect(res.status).toBe(404);
   });
 
-  it('allows an open-access workspace mission from another team', async () => {
+  // "Open" is open within the owning team: another team's open workspace
+  // does not make its missions reachable.
+  it('404s a mission in another team\'s open workspace', async () => {
     missionRow = { ...missionRow, teamId: 'other-team' };
-    workspaceRow = { accessMode: 'open' };
+    workspaceRow = { teamId: 'other-team', accessMode: 'open' };
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
+    expect(res.status).toBe(404);
+    expect(mockEvaluateCriteriaNow).not.toHaveBeenCalled();
+  });
+
+  it('allows a mission whose open workspace belongs to the caller\'s team', async () => {
+    missionRow = { ...missionRow, teamId: 'other-team' };
+    workspaceRow = { teamId: 'team-1', accessMode: 'open' };
+    const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
+    expect(res.status).toBe(200);
+  });
+
+  it('allows another team\'s open workspace for an API account linked to it', async () => {
+    currentUser = null;
+    apiAccountRow = { id: 'acct-1', level: 'admin', teamId: 'team-1' };
+    missionRow = { ...missionRow, teamId: 'other-team' };
+    workspaceRow = { teamId: 'other-team', accessMode: 'open' };
+    linkRow = { workspaceId: 'ws-1' };
     const res = await POST(post(), { params: makeParams('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb') });
     expect(res.status).toBe(200);
   });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { initiatives, missions, artifacts, workspaces } from '@buildd/core/db/schema';
+import { initiatives, missions, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -8,10 +8,11 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
-async function loadInitiative(id: string, teamIds: string[]) {
+async function loadInitiative(id: string, teamIds: string[], accountId?: string | null) {
   const initiative = await db.query.initiatives.findFirst({
     where: eq(initiatives.id, id),
     columns: { id: true, teamId: true, workspaceId: true },
@@ -20,11 +21,7 @@ async function loadInitiative(id: string, teamIds: string[]) {
   if (!teamIds.includes(initiative.teamId)) {
     let allowed = false;
     if (initiative.workspaceId) {
-      const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, initiative.workspaceId),
-        columns: { accessMode: true },
-      });
-      if (ws?.accessMode === 'open') allowed = true;
+      if (await workspaceOpenToCaller(initiative.workspaceId, { teamIds, accountId })) allowed = true;
     }
     if (!allowed) return { error: NextResponse.json({ error: 'Initiative not found' }, { status: 404 }) };
   }
@@ -54,7 +51,7 @@ export async function GET(
   }
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
-  const { initiative, error } = await loadInitiative(id, teamIds);
+  const { initiative, error } = await loadInitiative(id, teamIds, apiAccount?.id);
   if (error) return error;
 
   // Child mission ids for the rollup.
@@ -96,7 +93,7 @@ export async function POST(
   }
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
-  const { initiative, error } = await loadInitiative(id, teamIds);
+  const { initiative, error } = await loadInitiative(id, teamIds, apiAccount?.id);
   if (error) return error;
 
   const body = await req.json();

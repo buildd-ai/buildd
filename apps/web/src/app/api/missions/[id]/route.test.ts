@@ -15,6 +15,7 @@ const mockMissionsFindFirst = mock(() => ({
   priority: 0,
 }) as any);
 const mockInitiativesFindFirst = mock(() => null as any);
+const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 let updatedSetData: any = null;
 const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
@@ -109,7 +110,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: mockMissionsFindFirst },
       taskSchedules: { findFirst: mockScheduleFindFirst },
-      workspaces: { findFirst: mock(() => ({ id: 'ws-1' })) },
+      workspaces: { findFirst: mockWorkspacesFindFirst },
+      accountWorkspaces: { findFirst: mock(() => Promise.resolve(null)) },
       initiatives: { findFirst: mockInitiativesFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst },
       workers: { findFirst: mock(() => Promise.resolve(null)) },
@@ -175,6 +177,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockScheduleFindFirst.mockReset();
     mockScheduleUpdate.mockReset();
     mockInitiativesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
     updatedSetData = null;
     insertedScheduleValues = null;
     updatedScheduleData = null;
@@ -222,6 +226,22 @@ describe('PATCH /api/missions/[id]', () => {
         return { where: mock(() => ({})) };
       }),
     }));
+  });
+
+  // "Open" is open within the owning team: another team's open workspace
+  // does not make its missions editable.
+  it('404s a mission in another team\'s open workspace and writes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: '11111111-1111-4111-8111-111111111111', teamId: 'team-2', title: 'Theirs',
+      workspaceId: 'ws-2', scheduleId: null, priority: 0,
+    });
+    mockWorkspacesFindFirst.mockReturnValue({ teamId: 'team-2', accessMode: 'open' });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH', body: JSON.stringify({ title: 'Mine now' }),
+    });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(404);
+    expect(updatedSetData).toBeNull();
   });
 
   it('404s a non-UUID id (e.g. a short 8-hex id) without querying the db', async () => {
