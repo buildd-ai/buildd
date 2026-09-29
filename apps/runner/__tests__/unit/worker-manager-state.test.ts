@@ -18,6 +18,11 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // Mock SDK query — returns an async iterable that yields controlled messages
 let mockMessages: any[] = [];
+// Opt-in per-call scripts: each query() call shifts one off (falling back to
+// mockMessages when empty), so a test can script a session and its resumed
+// nudge turn differently. Prompts the SDK was called with are recorded too.
+let mockMessagesQueue: any[][] = [];
+let mockQueryPrompts: string[] = [];
 let mockStreamInputFn = mock(() => {});
 // Opt-in (default off, reset every test): when true, the iterator throws an
 // AbortError the moment the real AbortController passed into query() has been
@@ -31,7 +36,8 @@ let mockThrowOnAbort = false;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
-    const msgs = [...mockMessages];
+    const msgs = [...(mockMessagesQueue.shift() ?? mockMessages)];
+    mockQueryPrompts.push(typeof opts?.prompt === 'string' ? opts.prompt : '');
     let idx = 0;
     const signal = opts?.options?.abortController?.signal as AbortSignal | undefined;
     return {
@@ -209,6 +215,8 @@ describe('WorkerManager — state transitions', () => {
 
   beforeEach(() => {
     mockMessages = [];
+    mockMessagesQueue = [];
+    mockQueryPrompts = [];
     mockThrowOnAbort = false;
     mockUpdateWorker.mockClear();
     mockClaimTask.mockReset();
@@ -553,6 +561,54 @@ describe('WorkerManager — state transitions', () => {
         (call: any[]) => call[1]?.status === 'waiting_input'
       );
       expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // The nudge turn a pr_required session gets when it ends with nothing
+    // delivered is itself a session: an AskUserQuestion inside it takes the
+    // real abort path (the SDK generator throws) and must park the worker as
+    // waiting_input — the "genuinely blocked" way out the nudge offers — not
+    // fail it, and not earn a second nudge.
+    test('AskUserQuestion during the no-deliverable nudge turn parks as waiting_input, not failed', async () => {
+      mockThrowOnAbort = true;
+      mockMessagesQueue = [
+        [
+          { type: 'system', subtype: 'init', session_id: 'sess-nudge-park' },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'I will pause here and wait.' }] } },
+          { type: 'result', subtype: 'success', session_id: 'sess-nudge-park' },
+        ],
+        [
+          {
+            type: 'assistant',
+            message: {
+              content: [{
+                type: 'tool_use',
+                id: 'toolu_nudge_park',
+                name: 'AskUserQuestion',
+                input: { questions: [{ question: 'The shell is denied; how should I proceed?', header: 'Blocked' }] },
+              }],
+            },
+          },
+          { type: 'result', subtype: 'success', session_id: 'sess-nudge-park' },
+        ],
+        // Consumed only if a second nudge/session were (wrongly) started.
+        [{ type: 'result', subtype: 'success', session_id: 'sess-nudge-park' }],
+      ];
+      const task = { ...makeTask(), outputRequirement: 'pr_required' };
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-nudge-park', branch: 'buildd/nudge-park', task }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(task);
+      await new Promise(r => setTimeout(r, 300));
+
+      expect(mockQueryPrompts.length).toBe(2);
+      expect(mockQueryPrompts[1]).toContain('Your session is about to end with nothing delivered.');
+
+      const worker = manager.getWorker('w-nudge-park');
+      expect(worker?.status).toBe('waiting');
+      expect(worker?.error).toContain('needs_input');
+      expect(worker?.waitingFor?.prompt).toBe('The shell is denied; how should I proceed?');
+      expect(mockUpdateWorker.mock.calls.filter((c: any[]) => c[1]?.status === 'failed').length).toBe(0);
+      expect(mockUpdateWorker.mock.calls.filter((c: any[]) => c[1]?.status === 'waiting_input').length).toBeGreaterThanOrEqual(1);
     });
 
     test('syncs waiting_input to server and stays waiting_input (never marks failed)', async () => {

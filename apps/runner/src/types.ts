@@ -190,6 +190,9 @@ export interface LocalWorker {
   prCreated?: boolean;
   // PR URL captured from a successful create_pr result, when parseable.
   prUrl?: string;
+  // Set once the runner has spent its single "nothing delivered" nudge turn on
+  // this worker, so a later resumed session can never earn a second one.
+  noDeliverableNudged?: boolean;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
