@@ -229,7 +229,20 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
+
+    // pathManifest is set at creation (POST /api/tasks) and only ever grows from
+    // there, via check_path_claim / POST /api/tasks/[id]/path-claim, which take a
+    // real path_claims lock for each added path. There is no matching "release"
+    // path for dropping entries, so a PATCH here would silently desync the
+    // declarative manifest from any held claims — reject rather than accept and
+    // do nothing (see friction task 2a201508).
+    if (pathManifest !== undefined) {
+      return NextResponse.json(
+        { error: 'pathManifest is immutable after creation via PATCH — use check_path_claim (MCP) or POST /api/tasks/[id]/path-claim to add paths to it.' },
+        { status: 400 },
+      );
+    }
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
