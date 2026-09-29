@@ -37,7 +37,19 @@ let mockThrowOnAbort = false;
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
     const msgs = [...(mockMessagesQueue.shift() ?? mockMessages)];
-    mockQueryPrompts.push(typeof opts?.prompt === 'string' ? opts.prompt : '');
+    // The prompt is one open stream: its first message is the task prompt.
+    // Read it lazily so the stream is not consumed ahead of the runner.
+    const slot = mockQueryPrompts.push('') - 1;
+    if (typeof opts?.prompt === 'string') {
+      mockQueryPrompts[slot] = opts.prompt;
+    } else {
+      void (async () => {
+        for await (const message of opts.prompt) {
+          mockQueryPrompts[slot] = (message as any)?.message?.content?.[0]?.text ?? '';
+          break;
+        }
+      })();
+    }
     let idx = 0;
     const signal = opts?.options?.abortController?.signal as AbortSignal | undefined;
     return {
