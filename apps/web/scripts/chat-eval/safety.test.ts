@@ -91,7 +91,8 @@ describe('groupRouterReply (mcp group tools)', () => {
   it("answers a malformed group call with the server's own error, not as a blocked write", () => {
     const r = groupRouterReply('buildd_missions', { action: 'list', params: {} });
     expect(r?.isError).toBe(true);
-    expect(r?.text).toContain('Unknown action "list"');
+    // The server names the right call for a sub-action instead of "Unknown action".
+    expect(r?.text).toContain('"list" is a sub-action');
     expect(groupRouterReply('buildd_missions', { action: 'list_runners', params: {} })?.text).toContain('buildd_runners');
     expect(groupRouterReply('buildd_work', { action: 'help', params: {} })?.isError).toBe(false);
   });
