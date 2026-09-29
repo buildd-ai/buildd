@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, workspaces } from '@buildd/core/db/schema';
+import { missions } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { reconcileMissionPrState } from '@/lib/pr-state-reconcile';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 /**
  * POST /api/missions/[id]/reconcile
@@ -46,11 +47,7 @@ export async function POST(
     if (!teamIds.includes(mission.teamId)) {
       let allowed = false;
       if (mission.workspaceId) {
-        const ws = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, mission.workspaceId),
-          columns: { accessMode: true },
-        });
-        if (ws?.accessMode === 'open') allowed = true;
+        if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) allowed = true;
       }
       if (!allowed) {
         return NextResponse.json({ error: 'Mission not found' }, { status: 404 });

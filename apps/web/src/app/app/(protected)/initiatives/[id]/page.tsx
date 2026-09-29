@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, artifacts, workspaces, externalLinks } from '@buildd/core/db/schema';
+import { missions, artifacts, externalLinks } from '@buildd/core/db/schema';
 import { eq, and, desc, inArray, ne, or, isNull } from 'drizzle-orm';
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
@@ -17,6 +17,7 @@ import {
 } from '@/components/initiatives/InitiativeCard';
 import InitiativeStatusControl from '@/components/initiatives/InitiativeStatusControl';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,11 +39,7 @@ export default async function InitiativeDetailPage({ params }: { params: Promise
   // Team-scoped access: team match OR open-access workspace.
   let hasAccess = teamIds.includes(loaded.teamId);
   if (!hasAccess && loaded.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, loaded.workspaceId),
-      columns: { accessMode: true },
-    });
-    hasAccess = ws?.accessMode === 'open';
+    hasAccess = await workspaceOpenToCaller(loaded.workspaceId, { teamIds });
   }
   if (!hasAccess) notFound();
 

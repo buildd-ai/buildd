@@ -8,6 +8,7 @@ import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
 import type { InitiativeStatus } from '@/lib/initiative-view';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 // GET /api/initiatives — list initiatives for the user's team(s), with rolled-up progress
 export async function GET(req: NextRequest) {
@@ -115,7 +116,10 @@ export async function POST(req: NextRequest) {
       if (!ws) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
-      if (apiAccount && ws.teamId !== teamId && ws.accessMode !== 'open') {
+      // Another team's workspace is reachable only when it is open AND the
+      // account is linked to it ("open" is open within the owning team).
+      if (apiAccount && ws.teamId !== teamId
+        && !(await workspaceOpenToCaller(ws.id, { teamIds: [teamId], accountId: apiAccount.id }))) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
       if (!apiAccount && !userTeamIds.includes(ws.teamId)) {

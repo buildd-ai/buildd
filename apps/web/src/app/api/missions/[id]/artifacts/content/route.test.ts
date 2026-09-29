@@ -129,10 +129,19 @@ describe('GET /api/missions/[id]/artifacts/content', () => {
     expect(p.filter(x => typeof x === 'string' && x.startsWith('44444444'))).toHaveLength(MAX_IDS);
   });
 
-  it('allows an open-access workspace mission outside the caller’s teams', async () => {
+  // "Open" is open within the owning team.
+  it('404s a mission in another team\'s open workspace', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-other', workspaceId: 'ws-1' });
-    mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'open' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-other', accessMode: 'open' });
+    const res = await GET(req(`?ids=${A1}`), { params });
+    expect(res.status).toBe(404);
+  });
+
+  it('allows a mission whose open workspace belongs to the caller\'s team', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-other', workspaceId: 'ws-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
     const res = await GET(req(`?ids=${A1}`), { params });
     expect(res.status).toBe(200);
   });

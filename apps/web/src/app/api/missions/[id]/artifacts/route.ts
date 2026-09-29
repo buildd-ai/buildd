@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, artifacts, workspaces } from '@buildd/core/db/schema';
+import { missions, artifacts } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -8,6 +8,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 
 /**
@@ -47,11 +48,7 @@ export async function POST(
     // Allow access to open-access workspace missions
     let allowed = false;
     if (mission.workspaceId) {
-      const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
-        columns: { accessMode: true },
-      });
-      if (ws?.accessMode === 'open') allowed = true;
+      if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) allowed = true;
     }
     if (!allowed) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
@@ -205,11 +202,7 @@ export async function GET(
   if (!teamIds.includes(mission.teamId)) {
     let allowed = false;
     if (mission.workspaceId) {
-      const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
-        columns: { accessMode: true },
-      });
-      if (ws?.accessMode === 'open') allowed = true;
+      if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) allowed = true;
     }
     if (!allowed) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });

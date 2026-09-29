@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces, initiatives } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -24,18 +24,15 @@ import type { GoalCriteriaState } from '@buildd/shared';
 import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
 /** Check if a mission is accessible: team match OR open-access workspace */
-async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
+async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[], accountId?: string | null): Promise<boolean> {
   if (teamIds.includes(mission.teamId)) return true;
   if (mission.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return true;
+    if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId })) return true;
   }
   return false;
 }
@@ -80,7 +77,7 @@ export async function GET(
       },
     });
 
-    if (!mission || !(await hasMissionAccess(mission, teamIds))) {
+    if (!mission || !(await hasMissionAccess(mission, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
@@ -210,7 +207,7 @@ export async function PATCH(
       where: eq(missions.id, id),
     });
 
-    if (!existing || !(await hasMissionAccess(existing, teamIds))) {
+    if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
@@ -882,7 +879,7 @@ export async function DELETE(
       where: eq(missions.id, id),
     });
 
-    if (!existing || !(await hasMissionAccess(existing, teamIds))) {
+    if (!existing || !(await hasMissionAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 

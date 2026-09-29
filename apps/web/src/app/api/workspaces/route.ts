@@ -5,7 +5,6 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
@@ -259,11 +258,6 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
-
-    // Invalidate cache if workspace is open (affects heartbeat queries)
-    if (workspace.accessMode === 'open') {
-      await invalidateOpenWorkspacesCache();
-    }
 
     // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was provided.
     if (repoUrl) {
