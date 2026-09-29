@@ -943,7 +943,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
-export const KIT_VERSION = '0.11.0';
+export const KIT_VERSION = '0.11.1';
 
 /**
  * The version of the kit logic that turns a decision's definition into
@@ -964,7 +964,7 @@ export const KIT_VERSION = '0.11.0';
  *
  * `engine.test.ts` pins a digest of that behaviour over fixed fixtures and
  * fails when it moves without a bump. Engine 1 is every kit release through
- * 0.9.1 (the behaviour did not change across them), 0.10.0 and 0.11.0.
+ * 0.9.1 (the behaviour did not change across them), 0.10.0 and 0.11.x.
  */
 export const DECIDE_ENGINE_VERSION = 1;
 

@@ -1013,7 +1013,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* The phone fold: "▸ Show details · 3 changes". */
   .buildd-approval .kit-fold-toggle { min-height: 36px; color: var(--text-muted); }
   .buildd-approval .kit-fold-toggle > span:first-child, .buildd-approval .kit-fold-label { color: var(--text-secondary); }
-  .buildd-approval .kit-actions { flex-wrap: nowrap; gap: 8px; padding-top: 4px; }
+  /* Three actions don't fit one row at 320px: they wrap (the kit's default). */
+  .buildd-approval .kit-actions { gap: 8px; padding-top: 4px; }
   .buildd-approval .kit-btn {
     min-height: 44px; padding: 0 14px; white-space: nowrap;
     font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;
