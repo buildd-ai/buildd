@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionError, type DecisionResult, type DecisionUsage, type GateOutcome, type UsageSink, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
 
@@ -171,7 +171,54 @@ export interface TurnRoute {
   usage?: DecisionUsage;
   /** The workspace routing picked for an unpinned conversation, when confident. */
   workspaceId?: string;
+  /** What routing did, for the record (`RoutingRecord`). Absent on turns routing didn't run for. */
+  routing?: RoutingRecord;
 }
+
+/** `ai_usage.kind` of the routing call's receipt (surface `decision`). */
+export const ROUTING_DECISION_ID = 'chat_routing';
+
+/**
+ * How the routing call ended: some gate applied (`decision`, same rule as
+ * `source`), it answered and nothing cleared a gate (`low_confidence`), or it
+ * failed (`error:<DecisionError kind>`; `error:threw` for a throw, which
+ * `decisionCall` never does).
+ */
+export type RoutingOutcome = 'decision' | 'low_confidence' | `error:${DecisionError['kind'] | 'threw'}`;
+
+/**
+ * One question's answer: the label (a workspace pick is recorded as its id),
+ * its confidence, and whether routing acted on it. Null label/confidence: not
+ * answered.
+ */
+export interface RoutingAnswerRecord { label: string | null; confidence: number | null; applied: boolean }
+
+/**
+ * A content-free record of one routing call: labels, numbers and ids only,
+ * never message text, titles or workspace names. Persisted with the user
+ * message (`usage.routing`) and logged as `[chat-routing] {json}`.
+ */
+export interface RoutingRecord {
+  outcome: RoutingOutcome;
+  latencyMs: number;
+  attempts: number;
+  /** Questions asked (3 base, or 2 with a pinned tier, + workspace). */
+  questionCount: number;
+  /** Workspaces offered to the workspace question (0 when not asked). */
+  workspaceCount: number;
+  /** Per question; empty when the call failed. */
+  answers: Partial<Record<'complexity' | 'intent' | 'area' | 'workspace', RoutingAnswerRecord>>;
+}
+
+/** The one log line per routed turn. Never throws. */
+export function logRoutingRecord(record: RoutingRecord, log: (line: string) => void = console.info): void {
+  try { log(`[chat-routing] ${JSON.stringify(record)}`); } catch { /* a log line never fails a turn */ }
+}
+
+function answerRecord(gate: GateOutcome<string>, label: string | null | undefined = gate.label): RoutingAnswerRecord {
+  return { label: label ?? null, confidence: gate.confidence ?? null, applied: gate.apply };
+}
+
 
 /** Longest message the acknowledgement fast path considers. */
 const ACK_MAX_LENGTH = 40;
@@ -261,9 +308,13 @@ export async function routeTurn(
      */
     access?: Promise<DecisionAccess>;
   },
-  deps: { decide?: Decide } = {},
+  deps: {
+    decide?: Decide;
+    /** Receipt sink for the routing call (`ai_usage`, kind `ROUTING_DECISION_ID`). */
+    onUsage?: UsageSink;
+    now?: () => number;
+  } = {},
 ): Promise<TurnRoute> {
-  const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
   // An acknowledgement or greeting needs no reasoning and no tools beyond the
   // fallback set: the cheap tier, without a routing call. Writes stay offered
   // only when the previous turn offered something ("Shall I file it?" → "ok").
@@ -271,6 +322,7 @@ export async function routeTurn(
     return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback' };
   }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
+  const now = deps.now ?? (() => Date.now());
   const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
   const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
   const questions: RoutingQuestions = {
@@ -278,6 +330,12 @@ export async function routeTurn(
     ...base,
     ...(ws ? { workspace: ws.question } : {}),
   };
+  const shape = {
+    questionCount: Object.keys(questions).length,
+    workspaceCount: ws ? ws.idFor.size : 0,
+  };
+  const fallback = (routing: RoutingRecord): TurnRoute => ({ tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', routing });
+  const started = now();
   let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
@@ -288,12 +346,18 @@ export async function routeTurn(
       state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
+      decisionId: ROUTING_DECISION_ID,
+      ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
       ...(input.access ? { access: input.access } : {}),
     });
   } catch {
-    return fallback;
+    return fallback({ outcome: 'error:threw', latencyMs: now() - started, attempts: 0, ...shape, answers: {} });
   }
-  if (!res.ok) return fallback;
+  const timing = {
+    latencyMs: typeof res.latencyMs === 'number' ? res.latencyMs : now() - started,
+    attempts: typeof res.attempts === 'number' ? res.attempts : 0,
+  };
+  if (!res.ok) return fallback({ outcome: `error:${res.error.kind}`, ...timing, ...shape, answers: {} });
 
   // Unanswered when not asked (a pinned tier): no answer, fallback tier.
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
@@ -303,14 +367,23 @@ export async function routeTurn(
   const wsAnswer = (res.answers as { workspace?: Parameters<typeof gateChoice>[0] }).workspace;
   const wsGate = ws && wsAnswer ? gateChoice(wsAnswer, WORKSPACE_MIN_CONFIDENCE) : null;
   const workspaceId = wsGate?.apply ? ws!.idFor.get(wsGate.label) : undefined;
+  const source = tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback';
+  const answers: RoutingRecord['answers'] = {
+    complexity: answerRecord(tierGate),
+    intent: answerRecord(intentGate),
+    area: answerRecord(areaGate),
+    // The label is a workspace name: record the id it maps to instead.
+    ...(ws ? { workspace: answerRecord(wsGate ?? { apply: false, reason: 'no_answer' }, wsGate?.label !== undefined ? ws.idFor.get(wsGate.label) ?? null : null) } : {}),
+  };
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
     // Withhold the write tools only on a confident "not acting"; low
     // confidence keeps them (the approval card is the backstop either way).
     allowWrites: !(intentGate.apply && intentGate.label !== 'act'),
     ...(area ? { area } : {}),
-    source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
+    source,
     ...(res.usage ? { usage: res.usage } : {}),
     ...(workspaceId ? { workspaceId } : {}),
+    routing: { outcome: source === 'decision' ? 'decision' : 'low_confidence', ...timing, ...shape, answers },
   };
 }

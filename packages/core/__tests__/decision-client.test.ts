@@ -439,6 +439,33 @@ describe('decisionCall retry contract', () => {
 
 // ── SDK configuration ────────────────────────────────────────────────────────
 
+describe('decisionCall usage receipts', () => {
+  it('emits one receipt stamped with decisionId for a call that answered', async () => {
+    const receipts: any[] = [];
+    const res = await decisionCall(params({ fetcher: async () => jsonResponse(OK_BODY), onUsage: (r: any) => { receipts.push(r); }, decisionId: 'chat_routing' }));
+    expect(res.ok).toBe(true);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ kind: 'decision', decisionId: 'chat_routing', outcome: 'ok', attempts: 1, usage: { inputTokens: 476, outputTokens: 70 } });
+  });
+
+  it('emits an error receipt for a call that reached the provider and timed out', async () => {
+    const receipts: any[] = [];
+    const fetcher = async () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; };
+    const res = await decisionCall(params({ fetcher, timeoutMs: 100, onUsage: (r: any) => { receipts.push(r); }, decisionId: 'chat_routing' }));
+    expect(!res.ok && res.error.kind).toBe('timeout');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ decisionId: 'chat_routing', outcome: 'error', attempts: 1 });
+  });
+
+  it('emits nothing when no request was made (no key)', async () => {
+    secretRows = [];
+    const receipts: any[] = [];
+    const res = await decisionCall(params({ fetcher: async () => jsonResponse(OK_BODY), onUsage: (r: any) => { receipts.push(r); } }));
+    expect(!res.ok && res.error.kind).toBe('missing_key');
+    expect(receipts).toHaveLength(0);
+  });
+});
+
 describe('decisionCall SDK configuration', () => {
   const ENV_KEYS = ['TYPESAFE_BASE_URL', 'TYPESAFE_API_KEY', 'TYPESAFE_DEFAULT_MODEL', 'TYPESAFE_LOG_LEVEL'];
   afterEach(() => { for (const k of ENV_KEYS) delete process.env[k]; });

@@ -62,8 +62,18 @@ mock.module('@/lib/chat/directives-store', () => ({
   loadStandingRules: async (userId: string) => { ruleLoads.push(userId); return []; },
 }));
 const decisionDeps: any[] = [];
+const receiptWrites: any[] = [];
 mock.module('@/lib/memory-decisions', () => ({
   webMemoryDecisionDeps: (opts: any) => { decisionDeps.push(opts); return { opts }; },
+  insertDecisionReceipts: async (receipts: any[], scope: any) => { receiptWrites.push({ receipts, scope }); },
+}));
+const routeCalls: any[] = [];
+mock.module('@/lib/chat/routing', () => ({
+  routeTurn: async (input: any, deps: any) => {
+    routeCalls.push({ input, deps });
+    deps?.onUsage?.({ kind: 'decision', decisionId: 'chat_routing', outcome: 'error', attempts: 1 });
+    return { tier: 'standard', allowWrites: true, source: 'fallback' };
+  },
 }));
 mock.module('@buildd/core/memory-decisions', () => ({
   createMemoryDecider: (deps: any) => ({ judgeChatDirective: async (input: any) => { judged.push({ ...input, deps }); return null; } }),
@@ -196,6 +206,15 @@ describe('/api/chat/[id]: tier pin and tool permissions', () => {
     // Log rows and receipts are collected for the request's own after() flush, not scheduled mid-stream.
     expect(Array.isArray(decisionDeps.at(-1).pending)).toBe(true);
     expect(judged[0].deps.opts.pending).toBe(decisionDeps.at(-1).pending);
+  });
+
+  it('routing\'s ai_usage receipt is written on the conversation team, queued for the after() flush', async () => {
+    receiptWrites.length = 0; routeCalls.length = 0;
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
+    await turnCalls.at(-1).deps.route({ teamId: 't-1', workspaceId: null, userId: 'u-1', message: 'hi' });
+    expect(typeof routeCalls[0].deps.onUsage).toBe('function');
+    expect(receiptWrites).toEqual([{ receipts: [{ kind: 'decision', decisionId: 'chat_routing', outcome: 'error', attempts: 1 }], scope: { teamId: 't-1', accountId: null } }]);
+    expect(decisionDeps.at(-1).pending.length).toBeGreaterThan(0);
   });
 });
 
