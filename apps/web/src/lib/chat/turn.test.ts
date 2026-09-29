@@ -1024,22 +1024,29 @@ describe('titles: the docked object, and the re-title question', () => {
     expect(titled).toEqual([null]);
   });
 
-  it('every third user turn of an auto-titled chat asks routing about the title and hands the answer on', async () => {
+  it('every third user turn of an auto-titled chat asks about the title post-response and hands the answer to retitle', async () => {
     const routed: any[] = [];
+    const topicAsked: any[] = [];
     const verdicts: any[] = [];
     const topic = { label: 'new_topic', confidence: 0.95 };
     const opts = {
       conversation: { title: 'Release status', titleSource: 'auto' },
-      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'decision', topic }; },
-      extraDeps: { retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push({ t, n: msgs.length }); } },
+      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'decision' }; },
+      extraDeps: {
+        askTopicQuestion: async (input?: any) => { topicAsked.push(input); return topic; },
+        retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push({ t, n: msgs.length }); },
+      },
     };
     seed(2);
     await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('different subject now'));
-    expect(routed[0].title).toBe('Release status');
+    expect(routed[0].title).toBeUndefined();
+    expect(topicAsked).toHaveLength(1);
+    expect(topicAsked[0].title).toBe('Release status');
     expect(verdicts).toEqual([{ t: topic, n: 6 }]);
 
     await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('fourth turn'));
     expect(routed[1].title).toBeUndefined();
+    expect(topicAsked).toHaveLength(1);
     expect(verdicts).toHaveLength(1);
   });
 
