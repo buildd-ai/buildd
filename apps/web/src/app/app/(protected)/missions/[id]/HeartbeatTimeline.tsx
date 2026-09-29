@@ -91,9 +91,12 @@ export default function HeartbeatTimeline({ runs, defaultExpanded = false }: Hea
                   outcome === 'error' ? 'bg-status-error/60' :
                   'bg-border-default'
                 }`} />
-                <span className="text-[11px] text-text-muted shrink-0 w-12 tabular-nums">{timeAgo(run.createdAt)}</span>
-                <span className="shrink-0 max-w-[45%] truncate font-medium text-text-primary">{run.triggerLabel}</span>
-                <span className="flex-1 min-w-0 truncate text-text-secondary">{summary}</span>
+                <span className="text-[11px] text-text-muted shrink-0 w-16 whitespace-nowrap tabular-nums">{timeAgo(run.createdAt)}</span>
+                {/* Phone: trigger over summary, so neither truncates to nothing. */}
+                <span className="flex-1 min-w-0 flex flex-col md:flex-row md:items-center md:gap-3">
+                  <span className="min-w-0 truncate font-medium text-text-primary md:shrink-0 md:max-w-[45%]">{run.triggerLabel}</span>
+                  <span className="min-w-0 truncate text-text-secondary md:flex-1">{summary}</span>
+                </span>
                 <span onClick={(e) => e.stopPropagation()}>
                   <AiFeedback entityType="heartbeat" entityId={run.id} showDismiss compact />
                 </span>

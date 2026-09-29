@@ -454,9 +454,10 @@ export default function SchedulesUnified({
     }
   }
 
-  const filterTabs: { key: FilterType; label: string; count: number }[] = [
+  // `shortLabel` is the phone label, so all four tabs fit at 390px without scrolling.
+  const filterTabs: { key: FilterType; label: string; shortLabel?: string; count: number }[] = [
     { key: 'all', label: 'All', count: total },
-    { key: 'heartbeat', label: 'Mission check-ins', count: heartbeats },
+    { key: 'heartbeat', label: 'Mission check-ins', shortLabel: 'Check-ins', count: heartbeats },
     { key: 'cron-mission', label: 'Missions', count: missions },
     { key: 'workspace-schedule', label: 'Workspace', count: scheduleCount },
   ];
@@ -574,7 +575,12 @@ export default function SchedulesUnified({
                   : 'border-transparent text-text-secondary hover:text-text-primary'
               }`}
             >
-              {tab.label}
+              {tab.shortLabel ? (
+                <>
+                  <span className="md:hidden">{tab.shortLabel}</span>
+                  <span className="hidden md:inline">{tab.label}</span>
+                </>
+              ) : tab.label}
               {tab.count > 0 && (
                 <span className="ml-1.5 text-[11px] md:text-[10px] text-text-muted">{tab.count}</span>
               )}
@@ -666,7 +672,7 @@ export default function SchedulesUnified({
               </svg>
               Mission check-in
             </div>
-            An hourly stuck check. The next step is planned when work finishes either way; the check-in starts the organizer only when a mission is stuck.
+            An hourly stuck check. Finished work plans the next step; the check-in starts the organizer only when a mission is stuck.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-primary font-medium">
