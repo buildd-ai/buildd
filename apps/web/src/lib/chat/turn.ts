@@ -512,7 +512,7 @@ export async function runChatTurn(args: {
           later(async () => {
             const topic = await (deps.askTopicQuestion ?? askTopicQuestion)({
               teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id,
-              message: text, title: checkTitle,
+              message: text!, title: checkTitle,
               ...(routingAccess ? { access: routingAccess } : {}),
             });
             if (topic) await deps.retitle!(conv, messages, topic);

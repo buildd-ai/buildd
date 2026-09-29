@@ -204,6 +204,8 @@ type RoutingQuestions = Omit<typeof CHAT_ROUTING_QUESTIONS, 'complexity'> & {
 };
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
+type TopicDecide = (p: Parameters<typeof decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }>>[0])
+  => Promise<DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>>;
 
 /**
  * Ask the topic question in a post-response call (made after the turn is saved,
@@ -218,9 +220,9 @@ export async function askTopicQuestion(
      */
     access?: Promise<DecisionAccess>;
   },
-  deps: { decide?: Decide } = {},
+  deps: { decide?: TopicDecide } = {},
 ): Promise<{ label: 'same_topic' | 'new_topic'; confidence: number } | undefined> {
-  const decide = deps.decide ?? decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }>;
+  const decide = deps.decide ?? decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }> as TopicDecide;
   let res: DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>;
   try {
     res = await decide({
