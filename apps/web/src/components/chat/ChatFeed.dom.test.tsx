@@ -207,6 +207,26 @@ describe('tool rows', () => {
     expect(first.querySelector('[data-testid="tool-call-raw"]')?.textContent).toContain('"action": "list"');
   });
 
+  it('the rows are the kit\'s, with buildd\'s key args, read classes and result line', async () => {
+    const call = (id: string, name: string, input: Record<string, unknown>, output: unknown) =>
+      ({ type: `tool-${name}`, toolCallId: id, state: 'output-available', input, output });
+    await render([{ id: 'a', role: 'assistant', parts: [
+      call('c1', 'manage_missions', { action: 'list', workspaceId: '5f0c7a51-2b9e-4c1e-9d55-0c3a4b1d2e3f', teamId: 'team-a', repo: 'web', workspace: 'billing-web' }, { data: [1, 2], objects: [] }),
+      call('c2', 'create_task', { title: 'Fix checkout' }, { data: {}, objects: [], summary: 'filed', allowed: true }),
+      { type: 'text', text: 'Done.' },
+    ] }] as unknown as Msgs);
+    const group = q('[data-testid="tool-call-group"]')!;
+    expect(group.classList.contains('kit-toolcalls')).toBe(true);
+    // A write in the run: not read-only.
+    expect(group.textContent).not.toContain('read-only');
+    const [read, write] = qa('[data-testid="tool-call-row"]');
+    expect(read.classList.contains('kit-toolcall')).toBe(true);
+    // buildd's arg order (workspace before repo), its skips (teamId), and its count result.
+    expect(read.querySelector('.kit-toolcall-args')?.textContent).toBe('· billing-web · web');
+    expect(read.querySelector('.kit-toolcall-result')?.textContent).toBe('→ 2 results');
+    expect(write.querySelector('[data-testid="tool-call-allowed"]')).not.toBeNull();
+  });
+
   it('while a turn streams, the Thinking panel shows the server\'s steps, in plain words', async () => {
     await act(async () => {
       root.render(<ChatFeed messages={fixtures.chatFixture('streaming').messages as Msgs} agent={fixtures.ORGANIZER} status="streaming" />);
