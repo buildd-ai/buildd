@@ -1076,6 +1076,18 @@ export async function PATCH(
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
+  // A permission prompt dies with its session: the runner resolves the blocked
+  // PermissionRequest hook as deny when it aborts, but reports only the terminal
+  // status. Left in place, the ended worker renders a live "Allow once / Deny"
+  // card that can grant nothing. A question is kept — an AskUserQuestion abort
+  // is meant to be answered after the session ends.
+  if (
+    waitingFor === undefined
+    && isTerminalWorkerStatus(status)
+    && (worker.waitingFor as { type?: string } | null)?.type === 'permission'
+  ) {
+    updates.waitingFor = null;
+  }
   // SDK result metadata
   if (resultMeta !== undefined) updates.resultMeta = resultMeta;
   // Subagent spans (terminal flush — runner only sends on completed/failed/error).
