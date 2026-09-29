@@ -469,6 +469,31 @@ describe('limits', () => {
     const saved = messages.find(m => m.role === 'user')!;
     expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
   });
+
+  it('the routing record is saved under usage.routing, with the spend; nothing of the message', async () => {
+    const routing = {
+      outcome: 'decision', latencyMs: 420, attempts: 1, questionCount: 3, workspaceCount: 0,
+      answers: { complexity: { label: 'simple', confidence: 0.95, applied: true } },
+    };
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model,
+      route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision', usage: { inputTokens: 40, outputTokens: 4, costUsd: 0.0007 }, routing }),
+    });
+    await turn(userMsg('SECRET-MESSAGE-TEXT hello'));
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007, routing });
+    expect(JSON.stringify(saved.usage)).not.toContain('SECRET');
+  });
+
+  it('a failed routing call is still recorded: zero tokens, null cost, the error outcome', async () => {
+    const routing = { outcome: 'error:timeout', latencyMs: 903, attempts: 1, questionCount: 3, workspaceCount: 0, answers: {} };
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: true, source: 'fallback', routing }) });
+    await turn(userMsg('hello'));
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routing });
+  });
 });
 
 describe('routing\'s decision key: looked up alongside the limits check', () => {
