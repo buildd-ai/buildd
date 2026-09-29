@@ -237,7 +237,7 @@ describe('POST /api/missions', () => {
     expect(insertedMissionValues).not.toBeNull();
     expect(insertedMissionValues.title).toBe('Ship auth module');
     expect(insertedScheduleValues).not.toBeNull();
-    expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
+    expect(insertedScheduleValues.cronExpression).toBe('0 * * * *');
     expect(insertedScheduleValues.taskTemplate.context.heartbeat).toBe(true);
     expect(scheduleLinkValues?.scheduleId).toBe('sched-1');
   });
@@ -268,7 +268,7 @@ describe('POST /api/missions', () => {
 
     // Schedule auto-created with heartbeat but no default active hours
     expect(insertedScheduleValues).not.toBeNull();
-    expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
+    expect(insertedScheduleValues.cronExpression).toBe('0 * * * *');
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.heartbeatChecklist).toBeDefined();
