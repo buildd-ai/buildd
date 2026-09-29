@@ -14,8 +14,9 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+const mockAuthenticateApiKey = mock(async (_key: any) => null as any);
 mock.module('@/lib/api-auth', () => ({
-  authenticateApiKey: mock(() => Promise.resolve(null)),
+  authenticateApiKey: mockAuthenticateApiKey,
 }));
 
 mock.module('@/lib/team-access', () => ({
@@ -56,7 +57,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
-  workspaces: { id: 'id', accessMode: 'accessMode' },
+  workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   workspaceSkills: {
     id: 'id', workspaceId: 'workspace_id', teamId: 'team_id',
     slug: 'slug', name: 'name', isRole: 'is_role', enabled: 'enabled', accountId: 'account_id',
@@ -78,6 +79,8 @@ import { GET, POST } from './route';
 
 describe('GET /api/roles', () => {
   beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetCurrentUser.mockReset();
     mockGetUserWorkspaceIds.mockReset();
     mockGetWorkspaceRoles.mockReset();
@@ -200,3 +203,38 @@ describe('POST /api/roles', () => {
     expect(data.skill.teamId).toBe('team1');
   });
 });
+
+describe('GET /api/roles: open means open within the owning team', () => {
+  // Evaluates the stubbed predicates, so what the route asks for decides
+  // which workspaces come back.
+  const table = [
+    { id: 'ws-a-open', teamId: 'team-a', accessMode: 'open' },
+    { id: 'ws-b-open', teamId: 'team-b', accessMode: 'open' },
+  ];
+  const matches = (row: any, w: any): boolean => {
+    if (!w) return true;
+    if ('c' in w) return w.c.filter(Boolean).every((x: any) => matches(row, x));
+    if (Array.isArray(w.v)) return w.v.includes(row[w.f]);
+    return row[w.f] === w.v;
+  };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockGetWorkspaceRoles.mockReset();
+    mockGetWorkspaceRoles.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockImplementation((async (args: any) => table.filter(r => matches(r, args?.where))) as any);
+  });
+
+  it('an API account reads roles from its own team\'s open workspaces only', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a' });
+    const res = await GET(new NextRequest('http://localhost/api/roles', { headers: { authorization: 'Bearer bld_x' } }));
+    expect(res.status).toBe(200);
+    const asked = mockGetWorkspaceRoles.mock.calls.map((c: any) => c[0]);
+    expect(asked).toEqual(['ws-a-open']);
+    const where = (mockWorkspacesFindMany.mock.calls[0] as any)[0].where;
+    expect(where.c).toContainEqual({ f: 'teamId', v: ['team-a'] });
+  });
+});
+

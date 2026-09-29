@@ -9,19 +9,17 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchLinearProgress, parseLinearUrl } from '@/lib/work-tracker';
 import type { TrackerProgressItem, TrackerProgressResponse } from '@/lib/tracker-progress-types';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(
   initiative: { teamId: string; workspaceId: string | null },
   teamIds: string[],
+  accountId?: string | null,
 ): Promise<boolean> {
   if (teamIds.includes(initiative.teamId)) return true;
   if (initiative.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, initiative.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return true;
+    if (await workspaceOpenToCaller(initiative.workspaceId, { teamIds, accountId })) return true;
   }
   return false;
 }
@@ -154,7 +152,7 @@ export async function GET(
       columns: { id: true, teamId: true, workspaceId: true },
     });
 
-    if (!initiative || !(await hasInitiativeAccess(initiative, teamIds))) {
+    if (!initiative || !(await hasInitiativeAccess(initiative, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }
 

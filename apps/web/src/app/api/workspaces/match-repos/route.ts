@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubInstallations, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { listOpenWorkspaces } from '@/lib/open-workspaces';
 
 interface RepoDescriptor {
   path: string;
@@ -54,14 +54,16 @@ export async function POST(req: NextRequest) {
       with: { workspace: true },
     });
 
-    // Also get open workspaces
-    const openWorkspaces = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
-      limit: 200,
-    });
+    // Plus the open workspaces of the account's own team ("open" is open
+    // within the owning team).
+    const openWorkspaces = await listOpenWorkspaces(
+      [account.teamId],
+      { id: true, name: true, repo: true },
+      { limit: 200 },
+    );
 
     // Combine into a deduplicated list
-    const allWorkspaces = new Map<string, typeof workspaces.$inferSelect>();
+    const allWorkspaces = new Map<string, Pick<typeof workspaces.$inferSelect, 'id' | 'name' | 'repo'>>();
     for (const aw of accountWs) {
       if (aw.workspace) allWorkspaces.set(aw.workspace.id, aw.workspace);
     }

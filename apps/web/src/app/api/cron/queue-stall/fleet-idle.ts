@@ -63,6 +63,7 @@ import {
   DEP_UNBLOCKING_PR_LIFECYCLE,
 } from '@/lib/dep-gate-contract';
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
+import { isOpenWithinTeams } from '@/lib/open-workspaces';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -143,6 +144,8 @@ interface LiveAccount {
   lastHeartbeatAt: Date;
   /** At least one of the account's fresh runners has a free worker slot. */
   spareCapacity: boolean;
+  /** The account's team: an open workspace is claimable only within it. */
+  teamId: string | null;
 }
 
 /**
@@ -162,6 +165,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
       activeWorkerCount: true,
       maxConcurrentWorkers: true,
     },
+    with: { account: { columns: { teamId: true } } },
   });
 
   const live = new Map<string, LiveAccount>();
@@ -170,6 +174,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
     lastHeartbeatAt: Date | string;
     activeWorkerCount: number | null;
     maxConcurrentWorkers: number | null;
+    account?: { teamId: string | null } | null;
   }>) {
     const beat = new Date(hb.lastHeartbeatAt);
     // Re-checked in TypeScript, not only in SQL, and deliberately so: the
@@ -182,6 +187,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
     live.set(hb.accountId, {
       lastHeartbeatAt: prev && prev.lastHeartbeatAt > beat ? prev.lastHeartbeatAt : beat,
       spareCapacity: (prev?.spareCapacity ?? false) || spare,
+      teamId: hb.account?.teamId ?? prev?.teamId ?? null,
     });
   }
   return live;
@@ -291,7 +297,8 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
  * Which of these accounts could claim each workspace's work.
  *
  * Mirrors the claim route's own resolution: an `open` workspace is claimable
- * by any account, a `restricted` one only with a `canClaim` grant. Read
+ * by the accounts of its owning team ("open" is open within the team), any
+ * workspace by an account with a `canClaim` grant. Read
  * straight from the table rather than through the cached permissions helper,
  * which reaches for Redis — this pass makes no network calls, and that is the
  * property that lets it run at 03:00.
@@ -299,18 +306,19 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
 async function claimableWorkspacesByAccount(
   accountIds: string[],
   workspaceIds: string[],
-): Promise<{ open: Set<string>; granted: Map<string, Set<string>>; names: Map<string, string> }> {
-  const open = new Set<string>();
+): Promise<{ open: Map<string, string>; granted: Map<string, Set<string>>; names: Map<string, string> }> {
+  /** Open workspace id → owning team id. */
+  const open = new Map<string, string>();
   const names = new Map<string, string>();
   const granted = new Map<string, Set<string>>();
   if (workspaceIds.length === 0) return { open, granted, names };
 
   const wsRows = (await db.query.workspaces.findMany({
     where: inArray(workspaces.id, workspaceIds),
-    columns: { id: true, name: true, accessMode: true },
-  })) as unknown as Array<{ id: string; name: string | null; accessMode: string | null }>;
+    columns: { id: true, name: true, teamId: true, accessMode: true },
+  })) as unknown as Array<{ id: string; name: string | null; teamId: string | null; accessMode: string | null }>;
   for (const ws of wsRows) {
-    if (ws.accessMode === 'open') open.add(ws.id);
+    if (ws.teamId && isOpenWithinTeams(ws, [ws.teamId])) open.set(ws.id, ws.teamId);
     if (ws.name) names.set(ws.id, ws.name);
   }
 
@@ -373,8 +381,10 @@ export async function detectFleetIdle(now: Date = new Date()): Promise<FleetIdle
   const attributable = new Set<string>();
 
   for (const accountId of candidates.slice(0, MAX_ACCOUNTS_PER_RUN)) {
+    const accountTeamId = live.get(accountId)?.teamId ?? null;
     const reachable = pending.filter(
-      t => open.has(t.workspaceId) || granted.get(accountId)?.has(t.workspaceId),
+      t => (!!accountTeamId && open.get(t.workspaceId) === accountTeamId)
+        || granted.get(accountId)?.has(t.workspaceId),
     );
     if (reachable.length === 0) continue;
     for (const t of reachable) attributable.add(t.id);

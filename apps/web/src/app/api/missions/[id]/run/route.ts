@@ -4,9 +4,10 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { runMission } from '@/lib/mission-run';
 import { db } from '@buildd/core/db';
-import { missions, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { missions, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -55,11 +56,7 @@ export async function POST(
       // Check if workspace is open-access
       let allowed = false;
       if (mission.workspaceId) {
-        const ws = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, mission.workspaceId),
-          columns: { accessMode: true },
-        });
-        if (ws?.accessMode === 'open') allowed = true;
+        if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) allowed = true;
       }
       if (!allowed) {
         return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
