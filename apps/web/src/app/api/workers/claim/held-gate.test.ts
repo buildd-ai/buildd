@@ -2,16 +2,18 @@ import { describe, it, expect, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const mockMissionsFindFirst = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
   },
 }));
 
-import { missionNotHeld, missionNotLocal, checkMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
+import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -186,5 +188,29 @@ describe('checkMissionLocal — query shape', () => {
     expect(params).toEqual(['mission-abc', 'local']);
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-abc' });
     expect(await checkMissionLocal('mission-abc')).toBe(true);
+  });
+});
+
+describe('checkTaskMissionLocal', () => {
+  it('returns false when the task has no mission', async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: null });
+    expect(await checkTaskMissionLocal('task-1')).toBe(false);
+  });
+
+  it('returns false when the task is not found', async () => {
+    mockTasksFindFirst.mockResolvedValue(null);
+    expect(await checkTaskMissionLocal('task-1')).toBe(false);
+  });
+
+  it("returns false when the task's mission is not local", async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-abc' });
+    mockMissionsFindFirst.mockResolvedValue(null);
+    expect(await checkTaskMissionLocal('task-1')).toBe(false);
+  });
+
+  it("returns true when the task's mission has executor='local'", async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-abc' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-abc' });
+    expect(await checkTaskMissionLocal('task-1')).toBe(true);
   });
 });

@@ -50,7 +50,7 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { missionNotHeld, missionNotLocal, taskNotHeld } from './held-gate';
+import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
@@ -629,7 +629,20 @@ export async function POST(req: NextRequest) {
   // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
   // (visual-auditor) need an explicit availableSkills match; every other role
   // keeps the legacy rule, where an empty list claims anything.
-  const roleConditions = roleSlugGate(availableSkills);
+  //
+  // Exception: an interactive session's explicit claim (taskId + interactiveSession)
+  // on a task whose mission runs locally (executor='local') skips the explicit-slug
+  // requirement too. Runners never see a local mission's tasks at all (missionLocal
+  // above already exempts this same claim from that gate), so the role gate's
+  // browser-capability signal has no runner to protect here — the person's own
+  // session can produce the same evidence a browser-capable runner would
+  // (scripts/qa/shoot.sh, or dispatching visual-qa.yml, per the visual-review
+  // skill), and the visual_evidence completion gate (workers/[id]/route.ts) still
+  // enforces it regardless of who claims. Scoped to local missions only: a
+  // runner-executed mission's browser-capability requirement is untouched, and a
+  // force claim still never lifts this gate (see the force-claim comment above).
+  const roleGateExempt = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId);
+  const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
   if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
   claimableConditions.push(...roleConditions);
 
