@@ -99,7 +99,6 @@ export const MCP_SYSTEM_PROMPT = 'You are an assistant with access to buildd, a 
  * Multi-op actions listed here are writes whole (fail closed).
  */
 export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
-  list_runners: 'read',
   get_usage_stats: 'read',
   merge_pr: 'write',
   close_pr: 'write',
