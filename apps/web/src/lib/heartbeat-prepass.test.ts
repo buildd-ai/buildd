@@ -490,7 +490,7 @@ describe('evaluateHeartbeatPrepass', () => {
     const result = await evaluateHeartbeatPrepass(BASE_INPUT);
     expect(result.action).toBe('skip_waiting');
     if (result.action === 'skip_waiting') {
-      expect(result.reason).toContain('heartbeat cycle');
+      expect(result.reason).toContain('(organizer run)');
     }
   });
 
@@ -606,7 +606,7 @@ describe('classifyLastHeartbeatCycleWait', () => {
       },
     ], now);
     expect(result).not.toBeNull();
-    expect(result?.reason).toContain('heartbeat cycle');
+    expect(result?.reason).toContain('(organizer run)');
   });
 
   it('falls back to createdAt + SESSION_WINDOW_MS when the error text has no parseable reset clause', () => {

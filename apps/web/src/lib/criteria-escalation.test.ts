@@ -131,7 +131,7 @@ describe('resolveCriteriaEscalation', () => {
     expect(feedEvents).toHaveLength(1);
     expect(feedEvents[0].title).toMatch(/escalation cleared/i);
     expect(feedEvents[0].body).toMatch(/mission was completed/i);
-    expect(feedEvents[0].body).toMatch(/heartbeat re-enabled/i);
+    expect(feedEvents[0].body).toMatch(/check-ins re-enabled/i);
   });
 
   it('does not touch a schedule row that was already deleted (mission closed)', async () => {
@@ -141,7 +141,7 @@ describe('resolveCriteriaEscalation', () => {
 
     expect(result.cleared).toBe(true);
     expect(mockScheduleUpdate).not.toHaveBeenCalled();
-    expect(feedEvents[0].body).not.toMatch(/heartbeat re-enabled/i);
+    expect(feedEvents[0].body).not.toMatch(/check-ins re-enabled/i);
   });
 
   it('is a no-op on the schedule step when the mission never had one', async () => {

@@ -72,6 +72,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
+  inArray: (field: any, value: any[]) => ({ field, value, type: 'inArray' }),
   desc: (field: any) => ({ field, type: 'desc' }),
 }));
 

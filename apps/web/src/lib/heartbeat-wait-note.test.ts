@@ -8,6 +8,7 @@ const updateCalls: { id: string; set: any }[] = [];
 mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', args: [col, val] }),
   and: (...args: any[]) => ({ _op: 'and', args }),
+  inArray: (col: any, vals: any[]) => ({ _op: 'inArray', args: [col, vals] }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -17,6 +18,7 @@ mock.module('@buildd/core/db/schema', () => ({
 function eqValue(where: any, col: string): any {
   if (!where) return undefined;
   if (where._op === 'eq') return where.args[0] === col ? where.args[1] : undefined;
+  if (where._op === 'inArray') return where.args[0] === col ? { anyOf: where.args[1] } : undefined;
   if (where._op === 'and') {
     for (const part of where.args) {
       const v = eqValue(part, col);
@@ -33,7 +35,7 @@ function matchesWhere(row: any, where: any): boolean {
   const status = eqValue(where, 'mission_notes.status');
   const id = eqValue(where, 'mission_notes.id');
   if (missionId !== undefined && row.missionId !== missionId) return false;
-  if (title !== undefined && row.title !== title) return false;
+  if (title !== undefined && !(title?.anyOf ? title.anyOf.includes(row.title) : row.title === title)) return false;
   if (status !== undefined && row.status !== status) return false;
   if (id !== undefined && row.id !== id) return false;
   return true;
@@ -82,7 +84,7 @@ describe('recordHeartbeatWaitNote', () => {
   it('posts a new open note the first time', async () => {
     await recordHeartbeatWaitNote('m-1', 'provider budget/rate-limit pause', new Date('2026-01-01T01:00:00Z'));
     expect(insertedValues.length).toBe(1);
-    expect(insertedValues[0].title).toBe('Heartbeat waiting');
+    expect(insertedValues[0].title).toBe('Check-in waiting');
     expect(insertedValues[0].body).toContain('provider budget/rate-limit pause');
     expect(insertedValues[0].status).toBe('open');
   });
@@ -101,6 +103,23 @@ describe('recordHeartbeatWaitNote', () => {
     expect(insertedValues.length).toBe(1);
     expect(updateCalls.length).toBe(1);
     expect(updateCalls[0].set.body).toContain('reviewer/retry task queued');
+  });
+});
+
+describe('the note opened before the check-in rename', () => {
+  const legacy = () => ({ id: 'old-1', missionId: 'm-1', title: 'Heartbeat waiting', body: 'waiting: x until y', status: 'open' });
+
+  it('is updated in place, not duplicated', async () => {
+    noteRows.push(legacy());
+    await recordHeartbeatWaitNote('m-1', 'reviewer/retry task queued', new Date('2026-01-01T02:00:00Z'));
+    expect(insertedValues.length).toBe(0);
+    expect(updateCalls[0].id).toBe('old-1');
+  });
+
+  it('is resolved', async () => {
+    noteRows.push(legacy());
+    await resolveHeartbeatWaitNote('m-1');
+    expect(noteRows[0].status).toBe('superseded');
   });
 });
 

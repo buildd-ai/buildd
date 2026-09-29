@@ -11,6 +11,8 @@ interface MissionMonitoringToggleProps {
   hasSchedule: boolean;
   schedule: { nextRunAt: string | null; lastRunAt: string | null } | null;
   orchestrationMode: 'auto' | 'manual';
+  /** The schedule is the mission's check-in (a stuck check), not its driver. */
+  isHeartbeat?: boolean;
 }
 
 export default function MissionMonitoringToggle({
@@ -19,6 +21,7 @@ export default function MissionMonitoringToggle({
   hasSchedule,
   schedule,
   orchestrationMode,
+  isHeartbeat = false,
 }: MissionMonitoringToggleProps) {
   const router = useRouter();
   const [status, setStatus] = useState(initialStatus);
@@ -69,7 +72,9 @@ export default function MissionMonitoringToggle({
         </div>
       </div>
       <p className="text-[11px] text-text-muted">
-        Runs heartbeat checks on the configured schedule.
+        {isHeartbeat
+          ? 'Pausing stops both the next steps and the check-ins.'
+          : 'Runs the organizer on the configured schedule.'}
       </p>
     </div>
   );

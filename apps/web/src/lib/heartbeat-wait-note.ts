@@ -1,10 +1,14 @@
 import { db } from '@buildd/core/db';
 import { missionNotes } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 // One durable note per mission, not one per heartbeat cycle — same "post once,
 // update in place" pattern as mission-run.ts's INTEGRATION_BRANCH_NOTE_TITLE.
-const HEARTBEAT_WAIT_NOTE_TITLE = 'Heartbeat waiting';
+// Users read "check-in", not "heartbeat" (docs/design/event-driven-mission-replanning.md §5).
+// The legacy title is still matched so a note opened before the rename is
+// updated and resolved, not orphaned.
+const HEARTBEAT_WAIT_NOTE_TITLE = 'Check-in waiting';
+const WAIT_NOTE_TITLES = [HEARTBEAT_WAIT_NOTE_TITLE, 'Heartbeat waiting'];
 
 function noteBody(reason: string, waitUntil: Date): string {
   return `waiting: ${reason} until ${waitUntil.toISOString()}`;
@@ -12,7 +16,7 @@ function noteBody(reason: string, waitUntil: Date): string {
 
 /**
  * Post (or, if already open, update in place) the one note that tells a human
- * why this mission's heartbeat isn't planning right now. Only writes when the
+ * why this mission's check-in isn't planning right now. Only writes when the
  * reason text actually changed, so a mission blocked for hours on the same
  * condition gets one note, not one per cycle.
  */
@@ -25,7 +29,7 @@ export async function recordHeartbeatWaitNote(
   const existing = await db.query.missionNotes.findFirst({
     where: and(
       eq(missionNotes.missionId, missionId),
-      eq(missionNotes.title, HEARTBEAT_WAIT_NOTE_TITLE),
+      inArray(missionNotes.title, WAIT_NOTE_TITLES),
       eq(missionNotes.status, 'open'),
     ),
     columns: { id: true, body: true },
@@ -55,7 +59,7 @@ export async function resolveHeartbeatWaitNote(missionId: string): Promise<void>
     .set({ status: 'superseded' })
     .where(and(
       eq(missionNotes.missionId, missionId),
-      eq(missionNotes.title, HEARTBEAT_WAIT_NOTE_TITLE),
+      inArray(missionNotes.title, WAIT_NOTE_TITLES),
       eq(missionNotes.status, 'open'),
     ));
 }

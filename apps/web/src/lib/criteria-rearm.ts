@@ -284,7 +284,7 @@ export async function applyCriteriaRearm(input: {
           `Last evaluated: ${state?.evaluatedAt ?? 'unknown'}\n\n` +
           `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
           readingLine +
-          `The heartbeat has been stood down so this stops re-evaluating on a cadence. ` +
+          `Check-ins have been stood down so this stops re-evaluating on a cadence. ` +
           `Either the criterion is wrong or unmeasurable as written (fix it via ` +
           `\`manage_missions action=update goalCriteria=...\`), or the work it names has no owner ` +
           `(file it as a task). Changing any verdict re-arms the organizer automatically.`,
