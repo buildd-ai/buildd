@@ -30,9 +30,6 @@ const SCAN_ROOTS = [/^apps\/web\/src\/app\//, /^apps\/web\/src\/components\//];
  * is a claim about a specific path, not a category.
  */
 const ALLOWLIST: Array<[pattern: RegExp, reason: string]> = [
-  // Being redesigned elsewhere (see task instructions for this sweep); not
-  // this guard's job to touch, and not a claim that its copy is clean.
-  [/\/chat\//, 'components/chat is being redesigned elsewhere'],
   // A delimiter regex that reads an AGENT-authored option string (a worker's
   // own question payload), not copy this app wrote. The character class
   // covers em dash, en dash, and hyphen because the agent's choice of

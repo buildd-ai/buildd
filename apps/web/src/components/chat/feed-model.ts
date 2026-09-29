@@ -7,6 +7,10 @@ import {
   chatToolIsRead, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, messageMeta, objectsOf, refKey, toolNameOf,
   type BuilddObjectRef, type ChatEventData, type ChatMessage, type ChatPart, type ChatToolPart,
 } from './chat-contract';
+import {
+  keyArgs as kitKeyArgs, toolCallState, toolCallView, toolGroupSummary as kitToolGroupSummary,
+  type KeyArgsOptions, type ToolCallOptions, type ToolCallState, type ToolCallView, type ToolGroupSummary,
+} from '@builddai/ai-kit/chat/react';
 
 // ── Tool classes ─────────────────────────────────────────────────────────────
 
@@ -25,60 +29,22 @@ export function isReadTool(part: ChatToolPart): boolean {
 }
 
 // ── One row per call ─────────────────────────────────────────────────────────
+// The row itself is the kit's (`ToolCallRow` / `ToolCallGroup`,
+// @builddai/ai-kit/chat/react); buildd supplies which args are key, which
+// calls are reads, and the result line (`BUILDD_TOOL_CALLS`).
 
-export type ToolRowState = 'running' | 'done' | 'failed' | 'denied' | 'awaiting' | 'approved';
+export type ToolRowState = ToolCallState;
+export const toolRowState = toolCallState;
 
-export function toolRowState(part: ChatToolPart): ToolRowState {
-  switch (part.state) {
-    case 'input-streaming':
-    case 'input-available':
-      return 'running';
-    case 'approval-requested':
-      return 'awaiting';
-    case 'approval-responded':
-      return part.approval?.approved === false ? 'denied' : 'approved';
-    case 'output-available':
-      return 'done';
-    case 'output-error':
-      return 'failed';
-    case 'output-denied':
-      return 'denied';
-    default:
-      return 'running';
-  }
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Args that say nothing to a reader, or are the verb already. */
-const SKIP_ARGS: ReadonlySet<string> = new Set(['action', 'workspaceId', 'teamId', 'conversationId', 'limit', 'offset', 'cursor']);
-/** Args that name the subject, in the order a reader wants them. */
-const PREFERRED_ARGS = ['workspace', 'title', 'query', 'status', 'mission', 'task', 'repo', 'prNumber', 'key', 'content'];
-
-function shortValue(v: unknown): string | null {
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (typeof v !== 'string') return null;
-  const s = v.replace(/\s+/g, ' ').trim();
-  if (!s || UUID_RE.test(s)) return null;
-  return s.length > 40 ? `${s.slice(0, 39)}…` : s;
-}
+/** Args that say nothing to a reader, or are the verb already; then the args that name the subject, in the order a reader wants them. */
+export const BUILDD_KEY_ARGS: KeyArgsOptions = {
+  skip: ['action', 'workspaceId', 'teamId', 'conversationId', 'limit', 'offset', 'cursor'],
+  prefer: ['workspace', 'title', 'query', 'status', 'mission', 'task', 'repo', 'prNumber', 'key', 'content'],
+};
 
 /** Up to two short, human-meaningful argument values. UUIDs and paging args are dropped. */
 export function keyArgs(input: unknown, max = 2): string[] {
-  if (!input || typeof input !== 'object') return [];
-  const rec = input as Record<string, unknown>;
-  const keys = Object.keys(rec).filter(k => !SKIP_ARGS.has(k));
-  keys.sort((a, b) => {
-    const ia = PREFERRED_ARGS.indexOf(a);
-    const ib = PREFERRED_ARGS.indexOf(b);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-  });
-  const out: string[] = [];
-  for (const k of keys) {
-    const v = shortValue(rec[k]);
-    if (v) out.push(v);
-    if (out.length >= max) break;
-  }
-  return out;
+  return kitKeyArgs(input, { ...BUILDD_KEY_ARGS, max });
 }
 
 function firstLine(s: string): string {
@@ -108,32 +74,17 @@ export function toolResultLine(part: ChatToolPart): string | null {
   return 'done';
 }
 
-export interface ToolRowView {
-  id: string;
-  name: string;
-  action: string | null;
-  args: string[];
-  state: ToolRowState;
-  result: string | null;
-  readOnly: boolean;
-  input: unknown;
-  output: unknown;
-  errorText?: string;
-}
+export type ToolRowView = ToolCallView;
+
+/** buildd's hooks for the kit's rich tool rows. */
+export const BUILDD_TOOL_CALLS: ToolCallOptions = {
+  keyArgs: BUILDD_KEY_ARGS,
+  isReadOnly: isReadTool,
+  result: toolResultLine,
+};
 
 export function toolRowView(part: ChatToolPart): ToolRowView {
-  return {
-    id: part.toolCallId,
-    name: toolNameOf(part),
-    action: toolAction(part),
-    args: keyArgs(part.input),
-    state: toolRowState(part),
-    result: toolResultLine(part),
-    readOnly: isReadTool(part),
-    input: part.input,
-    output: part.output,
-    errorText: part.errorText,
-  };
+  return toolCallView(part, BUILDD_TOOL_CALLS);
 }
 
 // ── Segments ─────────────────────────────────────────────────────────────────
@@ -252,21 +203,10 @@ export function feedSegments(parts: readonly ChatPart[], opts: { hideEventRefs?:
   return out;
 }
 
-export interface ToolGroupSummary {
-  count: number;
-  readOnly: boolean;
-  running: number;
-  failed: number;
-}
+export type { ToolGroupSummary };
 
 export function toolGroupSummary(calls: readonly ChatToolPart[]): ToolGroupSummary {
-  const views = calls.map(toolRowView);
-  return {
-    count: views.length,
-    readOnly: views.every(v => v.readOnly),
-    running: views.filter(v => v.state === 'running').length,
-    failed: views.filter(v => v.state === 'failed').length,
-  };
+  return kitToolGroupSummary(calls.map(toolRowView));
 }
 
 // ── What the pane follows ────────────────────────────────────────────────────
