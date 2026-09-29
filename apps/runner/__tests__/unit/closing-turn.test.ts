@@ -15,6 +15,7 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
+import { createPr, builddAction } from '../fixtures/task-shape-stream';
 
 // ─── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -546,5 +547,158 @@ describe('closing turn', () => {
     expect(closingPrompt.startsWith('Your last session ended without calling `complete_task`.')).toBe(true);
     expect(closingPrompt).not.toContain('UNIQUE-ORIGINAL-DESCRIPTION');
     expect(closingPrompt).not.toContain('## ');
+  });
+});
+
+// ─── One last nudge: pr_required session ending with nothing delivered ───────
+//
+// The session ended by its own choice with no PR and no commits. Before the
+// runner fails it (losing whatever the agent could still hand over), it gets
+// exactly one more turn that names both ways out: deliver, or AskUserQuestion.
+
+const NUDGE_PREFIX = 'Your session is about to end with nothing delivered.';
+
+function askUserQuestionToolUse() {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu-ask', name: 'AskUserQuestion', input: { questions: [{ question: 'Which branch should I use?', header: 'Branch' }] } }] },
+  };
+}
+
+describe('no-deliverable nudge', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('voluntary end with no deliverable gets exactly one nudge turn, then a normal failure', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I will pause here and wait.'), successResult('sess-1')],
+      [assistantText('Still nothing to deliver.'), successResult('sess-1')],
+      // Consumed only if a second nudge were (wrongly) attempted.
+      [assistantText('unexpected third session'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-nudge-declined', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(createBackendCalls[1].config.options?.resume).toBe('sess-1');
+    expect(runStreamedCalls[1].prompt).toBe(
+      'Your session is about to end with nothing delivered. Write your deliverable (PR or artifact) now, '
+      + 'or call complete_task. If you are genuinely blocked, use AskUserQuestion.',
+    );
+    // Bounded to the same small fixed budget as any closing turn.
+    expect(runStreamedCalls[1].maxTurns).toBe(3);
+
+    expect(completionCall()).toBeUndefined();
+    const call = failedCall();
+    expect(call).toBeDefined();
+    expect(call!.payload.error).toContain('No PR was created and no commits were made.');
+    expect(call!.payload.error).toContain('Still nothing to deliver.');
+    expect(call!.payload.resultMeta?.closingTurnOutcome).toBe('declined');
+    expect(updateCalls.filter(c => c.payload?.status === 'failed').length).toBe(1);
+    expect(manager.getWorker('w-nudge-declined')?.status).toBe('error');
+  });
+
+  test('a nudge turn that opens the PR completes instead of failing', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Pausing to wait for the tests.'), successResult('sess-1')],
+      [...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-nudge-delivers', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    expect(completionCall()).toBeDefined();
+  });
+
+  test('a session that delivered a PR gets the ordinary closing turn, never the nudge', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), ...createPr(), assistantText('Opened the PR.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-delivered', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(runStreamedCalls[1].prompt.startsWith('Your last session ended without calling `complete_task`.')).toBe(true);
+    expect(runStreamedCalls.map(c => String(c.prompt)).some(p => p.startsWith(NUDGE_PREFIX))).toBe(false);
+    expect(failedCall()).toBeUndefined();
+  });
+
+  test('a session parked on AskUserQuestion is not nudged', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), askUserQuestionToolUse(), successResult('sess-1')],
+      [assistantText('unexpected second session'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-parked', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    expect(manager.getWorker('w-parked')?.status).toBe('waiting');
+  });
+
+  test('a nudge turn that asks AskUserQuestion parks instead of failing', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('I cannot run the shell here.'), successResult('sess-1')],
+      [askUserQuestionToolUse(), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-nudge-parks', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeUndefined();
+    expect(manager.getWorker('w-nudge-parks')?.status).toBe('waiting');
+  });
+
+  test('a session-budget exit is not nudged', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), { type: 'result', subtype: 'error_max_budget_usd', is_error: true, session_id: 'sess-1', result: 'Reached maximum budget' }],
+      [assistantText('unexpected second session'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-budget', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()!.payload.resultMeta?.closingTurnOutcome).toMatch(/^skipped:(?!no_deliverable)/);
+  });
+
+  test('a session that cannot be resumed is failed without a nudge', async () => {
+    scriptQueue = [
+      [assistantText('Nothing to deliver.'), successResult('')],
+      [assistantText('unexpected second session'), successResult('')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-no-resume', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()!.payload.resultMeta?.closingTurnOutcome).toBe('skipped:no_deliverable');
+  });
+
+  test('outputRequirement auto is unaffected: closing turn only, no nudge', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Nothing to ship.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-auto', { outputRequirement: 'auto' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(runStreamedCalls.map(c => String(c.prompt)).some(p => p.startsWith(NUDGE_PREFIX))).toBe(false);
+  });
+
+  test('the in-session PR nudge does not stretch the nudge turn into more turns', async () => {
+    // Would re-nudge inside the nudge turn if maxOutputReqNudges were not zeroed.
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Waiting.'), successResult('sess-1')],
+      [assistantText('Still waiting.'), successResult('sess-1'), assistantText('Second wind.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-no-stretch', { outputRequirement: 'pr_required' });
+
+    expect(createBackendCalls.length).toBe(2);
+    expect(failedCall()).toBeDefined();
   });
 });

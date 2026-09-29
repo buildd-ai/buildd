@@ -373,13 +373,25 @@ const SHAPES: Shape[] = [
 
   // ── Failure shapes ────────────────────────────────────────────────────────
   {
-    name: 'pr_required with no PR and no commits fails with the agent report, no closing turn',
+    name: 'pr_required with no PR and no commits: one last nudge turn, declined, then fails with the agent report',
     task: { outputRequirement: 'pr_required' },
-    scripts: [[init(), say('Could not run the shell in this sandbox.'), success()]],
+    scripts: [
+      [init(), say('Could not run the shell in this sandbox.'), success()],
+      [say('Still cannot run the shell.'), success()],
+    ],
     expect: {
-      status: 'failed', writer: 'runner', sessions: 1, closingTurnOutcome: 'skipped:no_deliverable',
-      errorMatches: /Could not run the shell/,
+      status: 'failed', writer: 'runner', sessions: 2, closingTurnOutcome: 'declined',
+      errorMatches: /Still cannot run the shell/,
     },
+  },
+  {
+    name: 'pr_required with no PR and no commits: the nudge turn opens the PR, task completes',
+    task: { outputRequirement: 'pr_required' },
+    scripts: [
+      [init(), say('I will pause here and wait.'), success()],
+      [...createPr(), ...completeTask('Opened the PR.'), success()],
+    ],
+    expect: { status: 'completed', writer: 'agent', sessions: 2 },
   },
   {
     name: 'max turns: exactly one closing turn past the cap, which authors complete_task',
