@@ -91,7 +91,7 @@ These are the integration requirements (R1/R2 from the parity work) that make th
 
 ## 4. Multi-turn loop + completion + abort
 
-`CodexBackend` runs a **turn loop** on a single persistent Codex `Thread` (`thread.runStreamed(prompt)` is callable repeatedly). `CodexBackendConfig.inputStream` (an `AsyncIterable`) carries `workers.ts`'s nudge/steering enqueues into Codex, mirroring the Claude `streamInput` path (`workers.ts` passes `inputStream` at ~L1552/L1570).
+`CodexBackend` runs a **turn loop** on a single persistent Codex `Thread` (`thread.runStreamed(prompt)` is callable repeatedly). `CodexBackendConfig.inputStream` (an `AsyncIterable`) carries `workers.ts`'s nudge/steering enqueues into Codex, mirroring the Claude path (where `ClaudeBackend` passes the initial prompt followed by `inputStream` to `query()` as one open stream) (`workers.ts` passes `inputStream` at ~L1552/L1570).
 
 Loop shape: run initial prompt → on `turn.completed`, park on `inputStream.next()` → a message drives another turn on the same thread; stream-end (or no stream) yields `complete` and returns.
 

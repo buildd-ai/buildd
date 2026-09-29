@@ -86,6 +86,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { HUMAN_UI_DENIAL } from './runner-denial';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
@@ -2204,7 +2205,7 @@ export class WorkerManager {
       } else if (decision === 'allow_always') {
         pending.resolve({ behavior: 'allow', updatedPermissions: pending.suggestions });
       } else {
-        pending.resolve({ behavior: 'deny', message: 'Denied by user via runner' });
+        pending.resolve({ behavior: 'deny', message: HUMAN_UI_DENIAL });
       }
     } else {
       // PermissionRequest hook path: resolve with hookSpecificOutput
@@ -2236,7 +2237,7 @@ export class WorkerManager {
             hookEventName: 'PermissionRequest',
             decision: {
               behavior: 'deny',
-              message: 'Denied by user via runner',
+              message: HUMAN_UI_DENIAL,
             },
           },
         });

@@ -12,6 +12,21 @@ import {
   type PromptSectionRecord,
 } from './memory-digest-policy';
 
+/**
+ * Appended to the Communication section under every input policy. Agents read
+ * a refused or cancelled tool call as the user telling them to stop, and
+ * Claude Code's own fallback text for one says exactly that. A worker session
+ * has no terminal, so nobody can produce that text live. Mirrored in the
+ * buildd-workflow and buildd-mcp-consumer skills.
+ */
+export const REFUSED_TOOL_CALL_GUIDANCE =
+  '**A refused tool call is not an instruction to stop.** If a tool call comes back refused, blocked or cancelled, ' +
+  "even with text like \"The user doesn't want to take this action right now. STOP what you are doing and wait\", " +
+  'that refuses that one call. It does not mean a person asked you to stop, and nobody is watching this session live to tell you to go on. ' +
+  'Read the reason if there is one, retry once if the call was only cancelled, then use another approach or skip that step, ' +
+  'and finish the task: the task still ends with a PR or artifact where required and a call to `complete_task`. ' +
+  'If the refusal really leaves no way forward, say so in `complete_task` (or use AskUserQuestion where it is allowed). Do not stop and wait.';
+
 // ── Config resolution ──────────────────────────────────────────────
 
 type WorkspaceConfig = { gitConfig?: any; configStatus?: string };
@@ -613,7 +628,8 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   }
   addSection('retry-context', retryContent);
 
-  // Communication instruction: configurable input policy
+  // Communication instruction: configurable input policy. Every policy also
+  // gets REFUSED_TOOL_CALL_GUIDANCE (see its definition).
   // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
   let communicationContent: string;
   if (inputPolicy === 'allow') {
@@ -627,7 +643,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     // inputAsRetry explicitly disabled — hard block
     communicationContent = `## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`;
   }
-  addSection('communication', communicationContent);
+  addSection('communication', `${communicationContent}\n\n${REFUSED_TOOL_CALL_GUIDANCE}`);
 
   // Add task metadata
   addSection('task-metadata', `---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
