@@ -346,9 +346,13 @@ new model's price. The worst case is 2 extra prefix writes per conversation.
 
 **Shadow mode first.** Ask the question and record the answer, confidence and
 cache-state inputs on the turn's stored route (`tierSource: 'held'`,
-`ratchet: { label, confidence, applied: false }`). Apply nothing. Recording goes
-through the existing decision-call trace, so no new table is needed unless open
-question 4 says otherwise.
+`ratchet: { label, confidence, applied: false }`). Apply nothing. The existing
+decision-call path only produces a result and a log line (`decision-calls.md`
+records shadow output as a `[task-category] {json}` log, later a per-row
+provenance column), so it can't serve as a queryable trace here. The record goes
+on the turn's own usage/route jsonb (open question 4), which needs no new table.
+The result's `model` and `costUsd` are stored with it, as the decision-calls
+design requires.
 
 **Eval before auto-apply.** Over a shadow window, on held conversations:
 
@@ -398,9 +402,51 @@ estimate, not a model). The decision only runs when the saving estimate exceeds
 the break cost by a margin (proposed 2×). This deterministic pre-check keeps the
 call off most turns.
 
-**Question.** For each candidate block, a Noul: "does the next reply still need
-this?". It's asked in one request, with a moderate gate. Low confidence keeps
-the block.
+**Question: a Choice, not a Noul.** For each candidate block, a Choice
+question: `keep | stub | drop`, i.e. "does the next reply still need this block
+in full, only as a one-line stub, or not at all?". A Noul was the first idea, but
+a Noul answer carries no `confidence` (`docs/design/decision-calls.md`, Point 2),
+so there would be nothing to gate on and no Choice threshold carries over to it.
+A Choice returns a label and a probability distribution, so the gate is real, and
+`stub` gives a cheaper middle answer than a hard drop.
+
+**Gate.** Asymmetric, because the two errors cost different things. Keeping a
+block that could have gone costs tokens. Dropping one the reply needed costs
+correctness. So `keep` is the default and the fallback: `stub` applies only at
+confidence ≥ T_stub, `drop` only at ≥ T_drop, with T_drop > T_stub, and anything
+below its gate, an unavailable decision call, or a timeout leaves the block
+untouched. Starting values (proposed, to be replaced): T_stub 0.8, T_drop 0.9.
+These are **tuned for this question from data** (the shadow records and the
+offline eval below). They are not copied from the Phase 2 ratchet or any other
+site. Until the eval sets them, nothing applies.
+
+**Bounding the input.** Jev's accuracy falls as irrelevant state grows, and its
+limit is 32K tokens for the state plus the longest question
+(`docs/design/decision-calls.md`, "when not to use"). Phase 3 exists for the
+longest conversations, so sending the history would defeat it. The state is
+built to a fixed budget instead:
+
+- **Candidate stubs only, never bodies.** Each candidate is rendered as one line:
+  block id, kind, age in turns, token size, and the stub text it would become
+  ("listed 34 tasks"). A tool result's full body is never sent.
+- **A short recent-turn summary.** The last user message and the previous
+  assistant turn's summary line (the same context Phase 2 uses), plus a one-line
+  summary of the last K turns. Not the transcript.
+- **A cap on candidates per call.** At most N = 12 (proposed) blocks per request,
+  chosen by largest `dropped_tokens` first, since those matter to the saving. The
+  rest stay `keep` for this turn and are reconsidered on a later one.
+- **A hard state budget.** About 4K tokens for the whole state (proposed), far
+  under 32K, with each question one short line. If the rendered state would exceed
+  the budget, drop the lowest-saving candidates until it fits. If the budget can't
+  be met at all, skip the call and keep everything.
+
+The risk if the bound is not enforced: the state grows with the conversation, so
+the call gets less accurate exactly on the conversations where trimming pays most,
+and past the limit it can fail or be truncated. Both directions are bad. A
+degraded `drop` answer removes something the reply needs, and only the gate and
+the fallback to `keep` catch that. The bound is therefore a precondition of the
+gate, not a tuning detail. The shadow records log the rendered state size so a
+budget breach shows up in the data.
 
 **Relationship to Phase 2.** A ratchet already breaks the whole cache: the new
 model has no cache at all. So a trim that coincides with a ratchet costs no
@@ -410,8 +456,9 @@ step boundary from 3c, which is also already a break. So Phase 3 only trims at
 moments when the cache is already broken. That is the simplest correct
 coupling, and it removes the break-cost term from all but the pre-check.
 
-**Shadow mode.** Record the candidates, the answers and the counterfactual token
-saving on the turn. Send the untrimmed context.
+**Shadow mode.** Record the candidates, the `keep|stub|drop` answers with
+confidence, the rendered state size and the counterfactual token saving on the
+turn. Send the untrimmed context. The offline eval is what sets T_stub and T_drop.
 
 **Offline eval.** From the shadow records, sample conversations and replay the
 next turn twice: once with full context, once trimmed per the decision. Then:
@@ -439,9 +486,10 @@ Auto-apply comes only after the trimmed rate is within the noise floor.
 3. **1-hour TTL.** It fits chat's pace better than 5 min, since people read a
    reply before answering, but it doubles the write price. Decide from Phase 1's
    data: the share of turns arriving 5–60 min after the previous one.
-4. **Where ratchet and trim shadow records live.** The decision-call trace, or
-   fields on `conversation_messages.usage`? I lean toward usage jsonb for the
-   per-turn fields, because it keeps the cost math in one row.
+4. **Where ratchet and trim shadow records live.** There's no decision-call trace
+   table (shadow output is a log line, or a column on the row it concerns), so the
+   choice is the turn's `conversation_messages.usage` jsonb or a log line. I lean
+   toward usage jsonb, because it's queryable and keeps the cost math in one row.
 5. **Pools and holds.** Should a pool chain also stop ending on a tier change
    once a hold exists? With a hold, the tier doesn't change except by ratchet,
    so today's chain rule is already right. Flagging it in case pools add
