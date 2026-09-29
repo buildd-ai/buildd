@@ -88,15 +88,24 @@ export function decisionUsageRow(receipt: DecisionReceipt, scope: { teamId: stri
   };
 }
 
+/**
+ * Write decision receipts as `ai_usage` rows. Never throws; inert under test.
+ * Also used for decisions outside the memory decider (chat routing).
+ */
+export async function insertDecisionReceipts(receipts: DecisionReceipt[], scope: { teamId: string; accountId?: string | null }): Promise<void> {
+  if (receipts.length === 0 || inert()) return;
+  try {
+    const { db } = await import('@buildd/core/db');
+    const { aiUsage } = await import('@buildd/core/db/schema');
+    await db.insert(aiUsage).values(receipts.map(r => decisionUsageRow(r, { teamId: scope.teamId, accountId: scope.accountId ?? null })));
+  } catch { /* a receipt never fails the call it records */ }
+}
+
 async function insertDecisionRows(rows: MemoryDecisionRow[], receipts: DecisionReceipt[], scope: MemoryDecisionScope): Promise<void> {
   const { db } = await import('@buildd/core/db');
-  const { memoryDecisions, aiUsage } = await import('@buildd/core/db/schema');
+  const { memoryDecisions } = await import('@buildd/core/db/schema');
   if (rows.length > 0) await db.insert(memoryDecisions).values(rows).catch(() => {});
-  if (receipts.length > 0) {
-    await db.insert(aiUsage)
-      .values(receipts.map(r => decisionUsageRow(r, { teamId: scope.teamId, accountId: scope.accountId ?? null })))
-      .catch(() => {});
-  }
+  await insertDecisionReceipts(receipts, scope);
 }
 
 async function resolveKey(scope: MemoryDecisionScope): Promise<string | null> {

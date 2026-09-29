@@ -45,6 +45,15 @@ describe('styles.css', () => {
     // The phone sheet stays full width.
     expect(styles).toMatch(/\.kit-sheet-layer > \.kit-menu-panel\[data-sheet\]\s*\{[^}]*width:\s*auto/);
   });
+  it('rows in a tool group keep their 1px divider over the flush row reset', () => {
+    // A grouped row is `.kit-toolcall[data-flush]` (border: 0, specificity
+    // 0,2,0); the divider has to out-rank it or the rows run together.
+    const flush = styles.match(/\.kit-toolcall\[data-flush\]\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(flush).toMatch(/border:\s*0/);
+    expect(styles).toMatch(
+      /\.kit-toolcalls-body > \.kit-toolcall\[data-flush\] \+ \.kit-toolcall\[data-flush\][^{]*\{[^}]*border-top:\s*1px solid var\(--kit-rule\)/,
+    );
+  });
 });
 
 describe('exports', () => {

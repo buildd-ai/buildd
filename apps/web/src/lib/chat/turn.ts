@@ -37,7 +37,8 @@ import {
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
 import { CHAT_INSTRUCTIONS } from './instructions';
-import { routeTurn, FALLBACK_TIER, type RoutableWorkspace, type TurnRoute } from './routing';
+import { routeTurn, askTopicQuestion, isAcknowledgement, logRoutingRecord, FALLBACK_TIER, type RoutableWorkspace, type RoutingRecord, type TurnRoute } from './routing';
+import { resolveDecisionAccess, type DecisionAccess } from '@buildd/core/decision-client';
 import { titleToCheck } from './retitle-policy';
 import { resolveChatModel, turnCostUsd, type ChatPoolContext, type ChatTier, type ResolvedChatModel } from './models';
 import { recordChatPoolAssignment } from '@buildd/core/tier-pool-source';
@@ -86,6 +87,12 @@ export interface TurnDeps {
    */
   limits: (args: { teamId: string; userId: string; now: Date }) => Promise<LimitVerdict>;
   route?: (input: Parameters<typeof routeTurn>[0]) => Promise<TurnRoute>;
+  /**
+   * The routing call's decision policy and key (`resolveDecisionAccess`),
+   * started alongside the limits check. The route passes the team row it
+   * already loaded, so this is no second team read.
+   */
+  routingAccess?: (scope: { teamId: string; workspaceId: string | null; userId: string }) => Promise<DecisionAccess>;
   resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string; pool?: ChatPoolContext }) => Promise<ResolvedChatModel>;
   /** Persist a tier-pool assignment for a saved assistant turn. */
   recordPoolAssignment?: typeof recordChatPoolAssignment;
@@ -107,8 +114,10 @@ export interface TurnDeps {
   later?: (fn: () => Promise<void>) => void;
   /** `about`: the object the chat was opened on (entry.about), whose name can be the title. */
   autoTitle?: (conversation: ConversationRow, messages: UIMessage[], model: ResolvedChatModel & { ok: true }, about: { kind: 'mission' | 'task'; title: string } | null) => Promise<void>;
-  /** Routing answered the title-topic question this turn (chat/retitle.ts). */
-  retitle?: (conversation: ConversationRow, messages: UIMessage[], topic: NonNullable<TurnRoute['topic']>) => Promise<void>;
+  /** Ask the title-topic question in a post-response call (chat/routing.ts). */
+  askTopicQuestion?: typeof askTopicQuestion;
+  /** Handle the title-topic answer and potentially retitle the conversation (chat/retitle.ts). */
+  retitle?: (conversation: ConversationRow, messages: UIMessage[], topic: { label: 'same_topic' | 'new_topic'; confidence: number }) => Promise<void>;
   /** Test seam: replace the streamText call. */
   streamTextImpl?: typeof streamText;
   /**
@@ -164,6 +173,16 @@ export function turnEntry(raw: unknown): ChatTurnEntry | null {
   return intent || about ? { intent, about } : null;
 }
 
+/**
+ * The user message's `usage`: the routing call's spend plus its record under
+ * `routing` (jsonb, no migration). A call that failed spent nothing, so the
+ * record rides on zero tokens with a null cost, which the budget sums skip.
+ */
+export function userTurnUsage(route: Pick<TurnRoute, 'usage' | 'routing'>): (ChatUsage & { routing?: RoutingRecord }) | null {
+  if (!route.routing) return route.usage ?? null;
+  return { ...(route.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: null }), routing: route.routing };
+}
+
 function userText(message: ChatTurnRequest['message']): string | null {
   const texts = message.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? ''));
   const text = texts.join('\n').trim();
@@ -195,9 +214,17 @@ export async function runChatTurn(args: {
   if (message.role === 'user' && !text) {
     return Response.json({ error: `a text message of 1–${MAX_USER_TEXT} characters is required` }, { status: 400 });
   }
-  // Limits (budget, then atomic admission) and history load in parallel. Routing
-  // waits for the verdict: its decision call is metered spend too, so a refused
-  // turn spends nothing.
+  // Limits (budget, then atomic admission), history and the routing call's
+  // policy + key lookup run in parallel: the lookup spends nothing, and doing it
+  // here leaves routing's whole deadline to the provider. The routing call
+  // itself waits for the verdict: it is metered spend too, so a refused turn
+  // spends nothing. An acknowledgement skips the routing call (routing.ts), so
+  // it needs no key.
+  const routingAccess = text && !isAcknowledgement(text)
+    ? (deps.routingAccess ?? (s => resolveDecisionAccess({ capability: 'chat', ...s })))({
+      teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id,
+    }).catch((): DecisionAccess => ({ ok: false, error: { kind: 'missing_key' } }))
+    : undefined;
   const [verdict, stored] = await Promise.all([
     deps.limits({ teamId: conv.teamId, userId: user.id, now }),
     loadMessages(conv.id, STORED_MESSAGE_LIMIT),
@@ -219,7 +246,9 @@ export async function runChatTurn(args: {
       teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id, message: text,
       ...(lastAssistantMsg ? { previous: lastAssistantMsg } : {}),
       ...(routable && routable.length > 1 ? { workspaces: routable } : {}),
-      ...(checkTitle ? { title: checkTitle } : {}),
+      // A pinned tier overwrites routing's pick below, so it isn't asked.
+      ...(conv.tier ? { tierPinned: true } : {}),
+      ...(routingAccess ? { access: routingAccess } : {}),
     })
     : null;
 
@@ -235,6 +264,7 @@ export async function runChatTurn(args: {
 
   if (message.role === 'user') {
     route = await routePromise!;
+    if (route.routing) logRoutingRecord(route.routing);
     // A tier the person pinned for this conversation wins over routing's pick.
     if (conv.tier) route = { ...route, tier: conv.tier };
   } else {
@@ -301,8 +331,9 @@ export async function runChatTurn(args: {
     const saved = await insertMessage({
       conversationId: conv.id, role: 'user', authorUserId: user.id,
       parts: [{ type: 'text', text: text! }],
-      // The routing decision call's spend, so the daily budget counts it.
-      usage: route.usage ?? null,
+      // The routing decision call's spend, so the daily budget counts it, and
+      // its content-free record (a failed call spent nothing: zero, cost null).
+      usage: userTurnUsage(route),
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];
@@ -488,10 +519,16 @@ export async function runChatTurn(args: {
             : null;
           const messages = done();
           later(() => deps.autoTitle!(conv, messages, resolved, about));
-        } else if (checkTitle && route.topic && deps.retitle) {
+        } else if (text && !isAcknowledgement(text) && checkTitle && deps.retitle) {
           const messages = done();
-          const topic = route.topic;
-          later(() => deps.retitle!(conv, messages, topic));
+          later(async () => {
+            const topic = await (deps.askTopicQuestion ?? askTopicQuestion)({
+              teamId: conv.teamId, workspaceId: args.workspace?.id ?? null, userId: user.id,
+              message: text!, title: checkTitle,
+              ...(routingAccess ? { access: routingAccess } : {}),
+            });
+            if (topic) await deps.retitle!(conv, messages, topic);
+          });
         }
       } catch (e) {
         console.error(`[chat] failed to persist turn for conversation ${conv.id}:`, e);

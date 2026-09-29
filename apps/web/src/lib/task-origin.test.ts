@@ -56,7 +56,7 @@ describe('deriveTaskOrigin — agent-created via worker', () => {
   });
 
   it('renders the design line: actor · mechanism with cycle', () => {
-    expect(line(origin)).toBe('Organizer agent · mission heartbeat cycle 4');
+    expect(line(origin)).toBe('Organizer agent · mission planning cycle 4');
   });
 
   it('links the worker run, the mission and the schedule', () => {

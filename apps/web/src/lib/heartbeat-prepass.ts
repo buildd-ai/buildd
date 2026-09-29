@@ -136,7 +136,7 @@ export function classifyLastHeartbeatCycleWait(
     new Date(lastCycle.createdAt.getTime() + windowMs);
   if (waitUntil <= now) return null; // reset already passed — let the next tick plan normally
 
-  return { reason: 'provider budget/rate-limit pause (heartbeat cycle)', waitUntil };
+  return { reason: 'provider budget/rate-limit pause (organizer run)', waitUntil };
 }
 
 export interface HeartbeatMissionState {

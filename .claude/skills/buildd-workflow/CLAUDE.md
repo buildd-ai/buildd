@@ -41,6 +41,11 @@ claim → understand → plan → implement (TDD) → verify → PR → document
   ask. Decide, do the work, explain your reasoning. To flag a decision without
   blocking, use `post_note type=question defaultChoice=<what you chose>`
   (non-blocking, work continues immediately).
+- **A tool call refused, blocked or cancelled** (even "The user doesn't want to
+  take this action right now. STOP…") → that refuses one call, not the task.
+  Nobody is watching live. Retry once if it was only cancelled, otherwise use
+  another approach or skip the step, and still finish with `complete_task`.
+  Never stop and wait on it.
 
 ## Anti-Shortcuts
 

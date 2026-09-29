@@ -182,7 +182,7 @@ describe('ClaudeBackend.runStreamed', () => {
     expect((progressEvents[1] as any).type).toBe('result');
   });
 
-  test('connects inputStream to queryInstance', async () => {
+  test('connects inputStream through the prompt stream, not a separate streamInput', async () => {
     mockMessages = [{ type: 'result', subtype: 'success' }];
 
     const backend = new ClaudeBackend({
@@ -196,7 +196,9 @@ describe('ClaudeBackend.runStreamed', () => {
       cwd: '/tmp',
     })) {}
 
-    expect(mockStreamInputFn).toHaveBeenCalled();
+    // A string prompt (or a streamInput call) lets the SDK close the control
+    // channel after the first result — see claude-backend.ts.
+    expect(mockStreamInputFn).not.toHaveBeenCalled();
   });
 
   test('calls onInit with queryInstance before first message', async () => {

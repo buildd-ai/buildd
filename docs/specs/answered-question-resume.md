@@ -2,7 +2,7 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-09-23
+last_verified: 2026-09-29
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
 surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts]
@@ -84,7 +84,7 @@ the common case the cold path inherits neither the reasoning nor the work.
 | G1 parked | `workerStatus === 'waiting_input'` | `worker_not_parked` |
 | G2 transcript held | `now − workerUpdatedAt ≤ RESUME_RUNNER_FRESH_MS` | `runner_not_holding_transcript` |
 | G3 confirmable | `supportsInstructionAck === true` | `runner_cannot_confirm_delivery` |
-| G4 headroom | `workerTurns ≤ RESUME_MAX_TURNS` | `context_ceiling` |
+| G4 headroom | `workerTurns ≤ RESUME_MAX_TURNS`, or `waitingForType === 'permission'` | `context_ceiling` |
 | G5 credential | preflight returned `ok` or `unknown` | `credential_unhealthy` |
 
 A **revoked** credential is handled before the gates rather than by them: the
@@ -93,8 +93,9 @@ preflight section). The gates decide between resuming and going cold; a revoked
 credential means neither can run, so there is nothing for them to decide.
 
 **G1 — parked, not merely question-bearing.** `/respond` is deliberately
-status-agnostic (it gates on `waitingFor` alone, so an answer is never
-swallowed by a worker that also went `error`/`failed`). Resume is not.
+status-agnostic for a question (it gates on `waitingFor` alone, so an answer is
+never swallowed by a worker that also went `error`/`failed`). Resume is not.
+A permission prompt is the exception — see "Permission prompts" below.
 `startSession`'s `finally` block in `apps/runner/src/workers.ts` preserves the
 worktree only for a worker whose local status is `done` or `waiting`; every
 other exit deletes it. A worker carrying `waitingFor` on an `error` row
@@ -140,6 +141,13 @@ ourselves at resume time would be strictly worse — the transcript is
 materialised before any instruction of ours can run, so a self-issued compact
 cannot prevent an over-ceiling load; only not resuming can.
 
+G4 does not apply to a permission prompt. Nothing is resumed there: the
+runner's `PermissionRequest` hook is blocked inside the still-running session,
+and the queued answer resolves that hook (`sendMessage` → `resolvePermission`
+in `apps/runner/src/workers.ts`). Transcript size cannot matter. Applying G4
+anyway superseded a live session thousands of turns deep and gave a fresh
+continuation a bare "Allow once" it had no context for.
+
 **G5 — a parked session may have sat for hours.** See the credential preflight
 section below. G5 covers the recoverable case only — a token that is expired and
 could not be refreshed. A revoked credential never reaches the gates.
@@ -178,6 +186,52 @@ could not be refreshed. A revoked credential never reaches the gates.
   worker's worktree, and the 10s sync that keeps `updatedAt` fresh
 - `apps/runner/src/worker-sync.ts` — `consumeInstructions` on every waiting
   worker's sync
+
+---
+
+## Permission prompts and stale cards
+
+**Decision: a background runner session's permission request DOES surface to
+the owner**, as a `waitingFor` of `type: 'permission'` with Allow once / Deny,
+but only while the session is blocked on it. It is a live hook, not a parked
+question. The prompt means nothing once the session ends: the runner resolves
+the pending hook as deny when it aborts. So:
+
+- `isAnswerableWaitingFor` (`apps/web/src/lib/answer-resume.ts`) is the single
+  rule. A question is answerable whenever `waitingFor` is set. A permission
+  prompt is answerable only while `workerStatus === 'waiting_input'`. The task
+  page renders a needs-input card only when this holds, and `/respond` refuses
+  when it does not, so a card that is shown can be answered.
+- `PATCH /api/workers/[id]` clears a `permission` `waitingFor` when the worker
+  reaches a terminal status. The runner's abort path reports only the status.
+- A cold continuation is never created from a permission answer on an ended
+  worker. A fresh session would receive "Allow once" with nothing to allow.
+
+**A stale card gets a reason, not a gate name.** When `/respond` finds nothing
+answerable, it returns `400` with `reasonCode` (`already_answered` |
+`worker_ended` | `no_longer_waiting`), a plain-language `error`, and a
+`nextAction` (`open_task` with the continuation's `taskId` | `follow_up` |
+`refresh`) from `explainNotWaiting`. The task page shows that message and link,
+then refetches so the stale card goes away.
+
+**Other open views are told.** The cold path supersedes the worker outside the
+PATCH route, so it emits its own `worker:progress` with `status: 'superseded'`
+on the worker and task channels. That is the status change open views refresh on
+immediately. Before this, a second device kept showing a question that had
+already been answered.
+
+**Acceptance criteria**:
+- AC-AQR-P1: GIVEN a `waiting_input` worker with a `permission` prompt, a fresh
+  sync, ack support and `turns` far above `RESUME_MAX_TURNS` WHEN answered THEN
+  the path is `resume` and no continuation task is inserted.
+- AC-AQR-P2: GIVEN a `failed`/`error`/`completed` worker still carrying a
+  `permission` prompt WHEN answered THEN `/respond` returns `400`,
+  `reasonCode: 'worker_ended'`, and writes nothing.
+- AC-AQR-P3: GIVEN a `superseded` worker with a `continuationTaskId` WHEN
+  answered THEN the reply carries `reasonCode: 'already_answered'` and
+  `nextAction: { kind: 'open_task', taskId }`.
+- AC-AQR-P4: GIVEN a terminal status PATCH for a worker carrying a `permission`
+  prompt THEN `waitingFor` is cleared. A `question` prompt is kept.
 
 ---
 

@@ -27,6 +27,16 @@
   /* Height of app chrome fixed to the screen bottom (a tab bar, with its own
      safe-area padding). The phone menu sheet sits above it. */
   --kit-sheet-bottom-offset: 0px;
+  /* 0.11.0, for the rich tool rows: secondary text, the accent as text (AA on
+     --kit-surface), a live row's tint, a hovered row, and the done / waiting /
+     failed marks. */
+  --kit-ink-soft: #45423f;
+  --kit-accent-text: #b4460a;
+  --kit-accent-soft: #fbe9dd;
+  --kit-raised: #edebe7;
+  --kit-ok: #2e7d4f;
+  --kit-warn: #8a6a12;
+  --kit-danger: #b3261e;
   /* --kit-scrim (0.8.0) is deliberately unset: the phone sheet's scrim is
      then mixed from --kit-ink. A dark theme sets it, e.g. rgb(0 0 0 / 0.5). */
 }

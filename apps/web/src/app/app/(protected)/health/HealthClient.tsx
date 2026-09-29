@@ -847,7 +847,7 @@ export function HealthClient({
             </svg>
             Schedules
             <span className="font-normal text-text-muted ml-1">
-              ({activeRegular.length} active{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${heartbeatSchedules.length} heartbeat` : ''})
+              ({activeRegular.length} active{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${heartbeatSchedules.length} check-in${heartbeatSchedules.length !== 1 ? 's' : ''}` : ''})
             </span>
           </button>
 
@@ -866,12 +866,12 @@ export function HealthClient({
               {overdueHeartbeatCount > 0 && (
                 <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
                   <div className="font-medium text-status-warning">
-                    {overdueHeartbeatCount} overdue heartbeat{overdueHeartbeatCount > 1 ? 's' : ''}
+                    {overdueHeartbeatCount} overdue mission check-in{overdueHeartbeatCount > 1 ? 's' : ''}
                   </div>
                   <p className="text-text-secondary mt-1">
                     {overdueHeartbeatCount === 1
-                      ? 'A heartbeat schedule missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
-                      : `${overdueHeartbeatCount} heartbeat schedules missed their last run. The cron may have stalled. Check schedules below.`}
+                      ? 'A mission check-in missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
+                      : `${overdueHeartbeatCount} mission check-ins missed their last run. The cron may have stalled. Check schedules below.`}
                   </p>
                 </div>
               )}
@@ -1012,7 +1012,7 @@ export function HealthClient({
                           >
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                           </svg>
-                          {heartbeatSchedules.length} mission heartbeat{heartbeatSchedules.length !== 1 ? 's' : ''}
+                          {heartbeatSchedules.length} mission check-in{heartbeatSchedules.length !== 1 ? 's' : ''}
                         </button>
                         {showHeartbeatSchedules && (
                           <div className="card divide-y divide-border-default opacity-75">

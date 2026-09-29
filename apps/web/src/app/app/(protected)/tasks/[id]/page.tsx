@@ -6,6 +6,7 @@ import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspac
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
+import { isAnswerableWaitingFor } from '@/lib/answer-resume';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -508,9 +509,18 @@ export default async function TaskDetailPage({
   // the session when AskUserQuestion fires, leaving the worker in
   // status=error with waitingFor populated — without this fallback the
   // task page renders no worker and the user has nothing to click.
-  const activeWorker =
+  //
+  // Both steps go through isAnswerableWaitingFor — the rule /respond enforces —
+  // so a card is only ever rendered when answering it can work. A permission
+  // prompt left on an ended worker (its hook was denied when the session
+  // stopped) is dropped rather than offered as a live "Allow once".
+  const activeWorkerRow =
     taskWorkers.find(w => ['running', 'starting', 'waiting_input'].includes(w.status)) ||
-    taskWorkers.find(w => w.waitingFor);
+    taskWorkers.find(w => isAnswerableWaitingFor(w.status, w.waitingFor as { type?: string } | null));
+  const activeWorker = activeWorkerRow?.waitingFor
+    && !isAnswerableWaitingFor(activeWorkerRow.status, activeWorkerRow.waitingFor as { type?: string } | null)
+    ? { ...activeWorkerRow, waitingFor: null }
+    : activeWorkerRow;
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".

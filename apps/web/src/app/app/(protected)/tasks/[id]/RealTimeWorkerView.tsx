@@ -15,6 +15,7 @@ import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-ac
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
+import { isAnswerableWaitingFor, type NotWaitingReason } from '@/lib/answer-resume';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Exported for testing: whether a worker-channel event should bypass the
@@ -37,6 +38,33 @@ export async function parseErrorMessage(res: Response, fallback: string): Promis
     // non-JSON body — fall back
   }
   return fallback;
+}
+
+const STALE_REASONS: ReadonlySet<string> = new Set<NotWaitingReason>(['already_answered', 'worker_ended', 'no_longer_waiting']);
+
+export interface StaleAnswerNotice {
+  message: string;
+  href: string | null;
+  linkLabel: string | null;
+}
+
+// Exported for testing: /respond's reply when the card being answered is
+// stale — the worker stopped waiting after this page rendered. Returns null
+// for every other rejection (e.g. a revoked credential), where the question
+// is still open and the answer can be retried in place.
+export function staleAnswerNotice(data: unknown, taskId: string): StaleAnswerNotice | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as { error?: unknown; reasonCode?: unknown; nextAction?: { kind?: string; taskId?: string } };
+  if (typeof d.reasonCode !== 'string' || !STALE_REASONS.has(d.reasonCode)) return null;
+  const message = typeof d.error === 'string' ? d.error : 'This is no longer waiting on you.';
+  const next = d.nextAction;
+  if (next?.kind === 'open_task' && typeof next.taskId === 'string') {
+    return { message, href: `/app/tasks/${next.taskId}`, linkLabel: 'Open the follow-up task' };
+  }
+  if (next?.kind === 'follow_up') {
+    return { message, href: `/app/tasks/${taskId}`, linkLabel: 'Retry or start a follow-up from this task' };
+  }
+  return { message, href: null, linkLabel: null };
 }
 
 /** Elapsed as a clock (`4:21`) under ten hours, compact units beyond. */
@@ -124,6 +152,9 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   // no second task to point at and this stays null.
   const [continuationTaskId, setContinuationTaskId] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<{ message: string; credentialRevoked?: boolean } | null>(null);
+  // Set when /respond said the card was stale. Outlives the card: the refresh
+  // it triggers drops the question, and this is what explains where it went.
+  const [staleNotice, setStaleNotice] = useState<StaleAnswerNotice | null>(null);
   // What the server said it did with the answer — resumed the parked session,
   // or fell back to a continuation and why. Never invent this client-side: the
   // path is the server's decision, and a wrong caption is the silent
@@ -221,15 +252,23 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: option }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
+        // The worker stopped waiting after this page rendered: say what
+        // happened, and refetch so the stale card goes away.
+        const stale = staleAnswerNotice(data, taskId);
+        if (stale) {
+          setStaleNotice(stale);
+          flushRefresh(router, taskId);
+          return;
+        }
         // A known-revoked backend credential is refused here rather than
         // silently dispatched into a continuation that would just fail again
         // — the question stays open (waitingFor is untouched server-side) so
         // this can be retried once the credential is reconnected.
         setAnswerError({
-          message: data.error || 'Failed to send answer',
-          credentialRevoked: data.credentialRevoked === true,
+          message: data?.error || 'Failed to send answer',
+          credentialRevoked: data?.credentialRevoked === true,
         });
         return;
       }
@@ -258,7 +297,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
     } finally {
       setAnswerSending(null);
     }
-  }, [worker.id, worker.waitingFor?.prompt, noteId, taskId, markAnswerSent]);
+  }, [worker.id, worker.waitingFor?.prompt, noteId, taskId, markAnswerSent, router]);
 
   const nowMs = nowProp ?? Date.now();
   const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
@@ -293,11 +332,24 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
     />
   );
 
-  // Waiting for input — render whenever waitingFor is set, even if the worker
-  // was marked failed/error (inputAsRetry mode aborts the session after
-  // AskUserQuestion, leaving waitingFor populated). The question is the hero;
-  // everything else about the run folds away beneath it.
-  if (worker.waitingFor) {
+  const staleBanner = staleNotice && (
+    <div data-testid="worker-answer-stale" className="mb-4 border-2 border-border-strong px-4 py-3 text-sm text-text-secondary">
+      {staleNotice.message}
+      {staleNotice.href && (
+        <>
+          {' '}<a href={staleNotice.href} className="underline hover:no-underline">{staleNotice.linkLabel} →</a>
+        </>
+      )}
+    </div>
+  );
+
+  // Waiting for input — render whenever the ask is still answerable, even if
+  // the worker was marked failed/error (inputAsRetry mode aborts the session
+  // after AskUserQuestion, leaving waitingFor populated). A permission prompt
+  // is only answerable while the session is parked on it — the same rule
+  // /respond enforces. The question is the hero; everything else about the run
+  // folds away beneath it.
+  if (worker.waitingFor && isAnswerableWaitingFor(worker.status, worker.waitingFor)) {
     const question = unifyWorkerQuestion(worker.waitingFor, questionNote);
     const askedTs = questionNote?.createdAt ? new Date(questionNote.createdAt).getTime() : now.updatedTs;
     return (
@@ -312,7 +364,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
             onAnswer={handleAnswer}
             sending={answerSending}
             enableKeys
-            error={answerError && (
+            error={staleBanner || answerError && (
               <>
                 {answerError.message}
                 {answerError.credentialRevoked && ' Your answer is saved. Reconnect the credential, then retry.'}
@@ -355,6 +407,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
 
   return (
     <div data-testid="worker-view" data-state="running">
+      {staleBanner}
       {isActive ? (
         <NowStrip now={now} nowMs={nowMs} />
       ) : (

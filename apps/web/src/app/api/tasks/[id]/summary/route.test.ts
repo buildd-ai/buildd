@@ -762,7 +762,7 @@ describe('GET /api/tasks/[id]/summary', () => {
 
       const data = await (await callGET(TASK)).json();
       expect(data.origin.actor).toBe('Organizer agent');
-      expect(data.origin.parts).toEqual(['mission heartbeat cycle 3']);
+      expect(data.origin.parts).toEqual(['mission planning cycle 3']);
       expect(data.origin.links).toContainEqual({ key: 'worker', label: 'Agent run', href: '/app/tasks/task-9' });
     });
 

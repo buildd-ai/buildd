@@ -46,25 +46,45 @@ export interface Classification {
   route: TurnRoute;
 }
 
-/** Chat's own router, on the eval's key. Same questions, same gates. */
-export async function classify(message: string): Promise<Classification | null> {
+/**
+ * The eval's routing deadline. Generous, so a classification is about the
+ * questions rather than the network; `--timeout 900` observes production's
+ * (`ROUTING_TIMEOUT_MS`), where a slow call is a fallback turn.
+ */
+export const EVAL_ROUTING_TIMEOUT_MS = 8_000;
+
+/**
+ * Chat's own router, on the eval's key, at `timeoutMs`. Same questions, same
+ * gates. `route` is what chat would do with the turn even when the call
+ * failed (then `classification` is null and `route.routing` says why).
+ */
+export async function routeForEval(message: string, timeoutMs = EVAL_ROUTING_TIMEOUT_MS): Promise<{ classification: Classification | null; route: TurnRoute }> {
   const apiKey = await jevKey();
   let raw: Record<string, { choice: string; confidence: number }> | null = null;
   const route = await routeTurn(
     { teamId: 'eval', workspaceId: null, userId: 'eval', message },
     { decide: async p => {
-      const r = await decisionCall({ ...p, apiKey, timeoutMs: 8_000 });
+      // Production's deadline also covers the policy check and key lookup;
+      // the eval passes its key, so the whole budget is the provider's.
+      const r = await decisionCall({ ...p, apiKey, timeoutMs });
       if (r.ok) raw = r.answers as never;
       return r;
     } },
   );
-  if (!raw) return null;
+  if (!raw) return { classification: null, route };
   const a = raw as Record<string, { choice: string; confidence: number }>;
   return {
-    complexity: a.complexity.choice, intent: a.intent.choice, area: a.area.choice,
-    confidence: { complexity: a.complexity.confidence, intent: a.intent.confidence, area: a.area.confidence },
+    classification: {
+      complexity: a.complexity.choice, intent: a.intent.choice, area: a.area.choice,
+      confidence: { complexity: a.complexity.confidence, intent: a.intent.confidence, area: a.area.confidence },
+      route,
+    },
     route,
   };
+}
+
+export async function classify(message: string, timeoutMs?: number): Promise<Classification | null> {
+  return (await routeForEval(message, timeoutMs)).classification;
 }
 
 export const JUDGE_QUESTIONS = {

@@ -116,6 +116,18 @@ describe('DEFAULT_ROLES', () => {
       expect(c).toMatch(/never open (a )?PR/i);
     });
 
+    // Task 8bc5b5ac: an auditor dispatched the workflow, said it would wait for a
+    // background watcher, and ended its turn — the runner recorded that as
+    // completion, so the evidence check rejected it for missing screenshots. The
+    // prompt must tell the auditor to block on the run itself, in the same turn.
+    it('prompt blocks on the dispatched run in the foreground, never ends the turn to wait for a notification', () => {
+      const c = role().content;
+      expect(c).toMatch(/never end your turn/i);
+      expect(c).toMatch(/background watcher|notification/i);
+      expect(c).toMatch(/foreground/i);
+      expect(c).toContain('gh run watch');
+    });
+
     // The fix-task title is parsed by ensureMissionSurfaceAudit
     // (surfaceFixRoute) to scope the round-2 re-check, so its shape is
     // load-bearing, not a style preference.

@@ -1,47 +1,31 @@
 'use client';
 
+import type { LastCheck, LastCheckTone } from '@/lib/mission-checkins';
+
+/** The mission's last check-in, in the owner's words (lib/mission-checkins.ts). */
 interface HeartbeatStatusBadgeProps {
-  lastStatus: 'ok' | 'action_taken' | 'error' | null;
-  lastAt: string | null;
-  isOverdue: boolean;
+  check: LastCheck;
 }
 
-export default function HeartbeatStatusBadge({ lastStatus, lastAt, isOverdue }: HeartbeatStatusBadgeProps) {
-  let dotColor: string;
-  let bgColor: string;
-  let label: string;
-  let pulse = false;
+const TONE: Record<LastCheckTone, { dot: string; chip: string }> = {
+  success: { dot: 'bg-status-success', chip: 'bg-status-success/10 text-status-success border border-status-success/20' },
+  warning: { dot: 'bg-status-warning', chip: 'bg-status-warning/10 text-status-warning border border-status-warning/20' },
+  error: { dot: 'bg-status-error', chip: 'bg-status-error/10 text-status-error border border-status-error/20' },
+  muted: { dot: 'bg-text-muted', chip: 'bg-surface-3 text-text-muted border border-border-default' },
+};
 
-  if (isOverdue) {
-    dotColor = 'bg-status-error';
-    bgColor = 'bg-status-error/10 text-status-error border border-status-error/20';
-    label = 'Missed';
-  } else if (lastStatus === 'ok') {
-    dotColor = 'bg-status-success';
-    bgColor = 'bg-status-success/10 text-status-success border border-status-success/20';
-    label = 'OK';
-    pulse = true;
-  } else if (lastStatus === 'action_taken') {
-    dotColor = 'bg-status-warning';
-    bgColor = 'bg-status-warning/10 text-status-warning border border-status-warning/20';
-    label = 'Action Taken';
-  } else if (lastStatus === 'error') {
-    dotColor = 'bg-status-error';
-    bgColor = 'bg-status-error/10 text-status-error border border-status-error/20';
-    label = 'Error';
-  } else {
-    dotColor = 'bg-text-muted';
-    bgColor = 'bg-surface-3 text-text-muted border border-border-default';
-    label = 'Pending';
-  }
-
+export default function HeartbeatStatusBadge({ check }: HeartbeatStatusBadgeProps) {
+  const tone = TONE[check.tone];
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${bgColor}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${dotColor} ${pulse ? 'animate-pulse' : ''}`} />
-      {label}
-      {lastAt && (
+    <span
+      data-testid="mission-last-check"
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium ${tone.chip}`}
+    >
+      <span className={`w-1.5 h-1.5 shrink-0 ${tone.dot}`} />
+      {check.label}
+      {check.at && (
         <span className="opacity-60 ml-0.5">
-          {timeAgoShort(lastAt)}
+          {timeAgoShort(check.at)}
         </span>
       )}
     </span>

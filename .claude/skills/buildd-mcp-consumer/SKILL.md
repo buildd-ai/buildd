@@ -101,6 +101,15 @@ Why: buildd sessions have dedicated coordination tools that are the single sourc
   action=post_note` with `type=question` and `defaultChoice` set to what you
   chose. Non-blocking — work continues immediately. State the assumption and
   move on.
+- **A tool call came back refused, blocked or cancelled:** this is neither of
+  the above. It refuses that one call, even when the text is Claude Code's
+  "The user doesn't want to take this action right now. STOP what you are
+  doing and wait…". It does not mean a person asked you to stop, and in a
+  worker session nobody is watching live to tell you to carry on. Read the
+  reason if there is one. If the call was only cancelled, retry it once.
+  Otherwise use another approach or skip the step, and still finish with
+  `complete_task`. Only if that leaves no way forward is it a hard block (see
+  above).
 
 ## Friction Reporting
 
