@@ -130,9 +130,13 @@ don't turn it on by habit.
 - **Port 3100 (shoot.sh's default) is often taken** by another session. Always pass
   a free `QA_PORT`. If the port is busy, the readiness probe can hit someone else's server.
 - **Headless comes up in the dark theme.** A shot being dark is not a regression.
-- **The task page can fail locally under Turbopack**: an external module doesn't
-  resolve under bun's isolated install. It's an environment problem, not your change.
-  Use the CI dispatch for `/app/tasks/<id>`.
+- **`Failed to load external module <pkg>-<hash>` is a real bug, locally and in CI.**
+  Next auto-externalizes some packages (its `server-external-packages.jsonc`), and
+  under `bun --bun next dev` Bun cannot resolve Turbopack's hashed alias for them.
+  The CI dispatch runs the same `bun dev`, so it fails there too. This blanked
+  `/app/tasks/<id>` via `@aws-sdk/client-s3`. The fix is to add the package to
+  `transpilePackages` in `apps/web/next.config.mjs`. `src/lib/next-config.test.ts`
+  enforces that for direct dependencies.
 - **Vercel previews are behind org auth.** Pointing `QA_BASE_URL` at a preview gets
   you the Vercel login page unless you have `VERCEL_AUTOMATION_BYPASS_SECRET` or a
   storage state. Use the dispatch instead.
