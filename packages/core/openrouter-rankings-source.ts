@@ -36,10 +36,10 @@ export interface RankingsRefresh {
   unmapped: number;
 }
 
-async function readCache<T>(key: string): Promise<T | null> {
+async function readCache<T>(key: string, now: Date = new Date()): Promise<T | null> {
   const [row] = await db.select().from(systemCache).where(eq(systemCache.key, key)).limit(1);
   if (!row) return null;
-  if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return null;
+  if (row.expiresAt && row.expiresAt.getTime() <= now.getTime()) return null;
   return row.value as T;
 }
 
@@ -63,7 +63,7 @@ export async function refreshTeamRankings(args: {
   const out: RankingsRefresh = { status: 'not_due', written: [], failed: [], unmapped: 0 };
   const today = utcDay(args.now);
   if (args.now.getUTCHours() < RANKINGS_FETCH_AFTER_UTC_HOUR) return out;
-  const attempt = await readCache<{ date: string }>(rankingsAttemptKey(args.teamId));
+  const attempt = await readCache<{ date: string }>(rankingsAttemptKey(args.teamId), args.now);
   if (attempt?.date === today) return out;
 
   const cred = await resolveInferenceCredential({ provider: 'openrouter', teamId: args.teamId });
