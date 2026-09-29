@@ -233,7 +233,9 @@ describe('mission-loop', () => {
     expect(result.action).toBe('retriggered');
     expect(mockRunMission).toHaveBeenCalledTimes(1);
     const cycleContext = (mockRunMission.mock.calls[0] as any[])[1].cycleContext;
-    expect(cycleContext).toEqual({ cycleNumber: 2, triggerChainId: 'chain-1', triggerSource: 'event' });
+    // triggerTaskId names the finished task, so the timeline can say
+    // "after <task> finished" without a second lookup.
+    expect(cycleContext).toEqual({ cycleNumber: 2, triggerChainId: 'chain-1', triggerSource: 'event', triggerTaskId: 'pt1' });
   });
 
   it('a heartbeat mission still stops at the depth cap', async () => {
@@ -793,6 +795,7 @@ describe('maybeRetriggerMission — wake entry (mission-wake.ts)', () => {
       const cycleContext = (mockRunMission.mock.calls[0] as any[])[1].cycleContext;
       expect(cycleContext.cycleNumber).toBe(1);
       expect(cycleContext.triggerSource).toBe(`wake:${reason}`);
+      expect(cycleContext.triggerTaskId).toBeUndefined();
       expect(typeof cycleContext.triggerChainId).toBe('string');
       expect(cycleContext.triggerChainId).not.toBe('');
     },

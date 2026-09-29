@@ -77,7 +77,7 @@ function TypeBadge({ type }: { type: UnifiedScheduleItem['type'] }) {
         <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
         </svg>
-        heartbeat
+        check-in
       </span>
     );
   }
@@ -456,7 +456,7 @@ export default function SchedulesUnified({
 
   const filterTabs: { key: FilterType; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: total },
-    { key: 'heartbeat', label: 'Heartbeats', count: heartbeats },
+    { key: 'heartbeat', label: 'Mission check-ins', count: heartbeats },
     { key: 'cron-mission', label: 'Missions', count: missions },
     { key: 'workspace-schedule', label: 'Workspace', count: scheduleCount },
   ];
@@ -475,7 +475,7 @@ export default function SchedulesUnified({
           </div>
           <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
           <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Add a heartbeat for periodic checks, or put a mission on a cron.
+            Missions get an hourly check-in by default. Put a mission on a cron, or add a workspace schedule.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
@@ -504,7 +504,7 @@ export default function SchedulesUnified({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Schedules</h1>
-          <p className="text-sm text-text-secondary mt-0.5">Heartbeats, mission crons and task schedules across your workspaces</p>
+          <p className="text-sm text-text-secondary mt-0.5">Mission check-ins, mission crons and task schedules across your workspaces</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -547,7 +547,7 @@ export default function SchedulesUnified({
           </div>
         )}
         <div className="sm:ml-auto flex flex-wrap gap-3 text-xs text-text-muted self-center">
-          {heartbeats > 0 && <span>{heartbeats} heartbeat{heartbeats !== 1 ? 's' : ''}</span>}
+          {heartbeats > 0 && <span>{heartbeats} mission check-in{heartbeats !== 1 ? 's' : ''}</span>}
           {missions > 0 && <span>{missions} mission{missions !== 1 ? 's' : ''}</span>}
           {scheduleCount > 0 && <span>{scheduleCount} workspace schedule{scheduleCount !== 1 ? 's' : ''}</span>}
         </div>
@@ -632,7 +632,7 @@ export default function SchedulesUnified({
                 >
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                {heartbeatItems.length} mission heartbeat{heartbeatItems.length !== 1 ? 's' : ''}
+                {heartbeatItems.length} mission check-in{heartbeatItems.length !== 1 ? 's' : ''}
               </button>
               {showHeartbeats && (
                 <div className="space-y-2 opacity-75">
@@ -664,9 +664,9 @@ export default function SchedulesUnified({
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
                 <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
               </svg>
-              Heartbeat
+              Mission check-in
             </div>
-            Periodic check against a checklist. Posts nothing when nothing needs attention.
+            An hourly stuck check. The next step is planned when work finishes either way; the check-in starts the organizer only when a mission is stuck.
           </div>
           <div>
             <div className="flex items-center gap-1.5 mb-1 text-primary font-medium">

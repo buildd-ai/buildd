@@ -385,6 +385,28 @@ describe('runMission', () => {
     expect(insertCall.context.triggerSource).toBe(expected);
   });
 
+  it('stamps the task that finished (triggerTaskId) on an event-triggered organizer task', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Stamped Mission',
+      priority: 0,
+      schedule: null,
+    });
+    mockBuildMissionContext.mockResolvedValue({ description: 'x', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test WS' });
+
+    await runMission('obj-1', {
+      cycleContext: { cycleNumber: 2, triggerChainId: 'chain-1', triggerSource: 'event', triggerTaskId: 'done-1' },
+    }, deps);
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, any>;
+    expect(insertCall.context.triggerTaskId).toBe('done-1');
+  });
+
   it('sets manualRun in context when option is true', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'obj-1',

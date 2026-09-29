@@ -20,7 +20,7 @@
  */
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, taskSchedules, tasks } from '@buildd/core/db/schema';
-import { and, desc, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { isDiedEarly, normalizeErrorSignature } from './failure-analytics';
 import { notify } from './pushover';
@@ -137,7 +137,7 @@ export async function tripHeartbeatCircuitBreaker(input: {
     .where(eq(taskSchedules.id, input.scheduleId));
 
   const body =
-    `${input.count} consecutive heartbeat cycles failed within moments of starting, all with the same ` +
+    `${input.count} consecutive check-in organizer runs failed within moments of starting, all with the same ` +
     `signature: ${input.errorSignature}. Paused to stop burning cycles into the same wall instead of ` +
     `retrying blind. Re-arm once the cause is resolved (manage_missions action=arm, or set status: active) — ` +
     `that gives the mission a fresh run before the breaker can trip again.`;
@@ -146,14 +146,14 @@ export async function tripHeartbeatCircuitBreaker(input: {
     missionId: input.missionId,
     authorType: 'system',
     type: 'warning',
-    title: 'Heartbeat paused: repeated early failures',
+    title: 'Check-ins paused: repeated early failures',
     body,
     status: 'open',
   }).catch(e => console.error(`[heartbeat-circuit-breaker] note failed for ${input.missionId}:`, e));
 
   notify({
     app: 'tasks',
-    title: `Heartbeat paused: ${input.missionTitle}`,
+    title: `Check-ins paused: ${input.missionTitle}`,
     message: body,
     priority: 0,
   });
@@ -199,7 +199,10 @@ export interface HeartbeatPlanningBackoff {
 }
 
 /** One durable note per backoff episode, updated in place on each later step. */
-const PLANNING_BACKOFF_NOTE_TITLE = 'Heartbeat backing off: repeated planning failures';
+const PLANNING_BACKOFF_NOTE_TITLE = 'Check-ins backing off: repeated planning failures';
+// Matched too, so a note opened before the "check-in" rename is updated and
+// resolved rather than orphaned.
+const PLANNING_BACKOFF_NOTE_TITLES = [PLANNING_BACKOFF_NOTE_TITLE, 'Heartbeat backing off: repeated planning failures'];
 
 /** One recent heartbeat cycle, as the planning backoff reads it. */
 export interface HeartbeatPlanningCycle {
@@ -310,9 +313,9 @@ export async function evaluateHeartbeatPlanningBackoff(
 
 function planningBackoffNoteBody(backoff: HeartbeatPlanningBackoff): string {
   return (
-    `${backoff.streak} consecutive heartbeat cycles failed. The next cycle is held until ` +
+    `${backoff.streak} consecutive check-in organizer runs failed. The next check-in is held until ` +
     `${backoff.resumeAt?.toISOString()}, and the wait doubles with each further failure. ` +
-    `Check the latest cycle's error: a goal criterion the organizer cannot move, or a plan it ` +
+    `Check the latest run's error: a goal criterion the organizer cannot move, or a plan it ` +
     `cannot return, repeats on every cycle until the cause changes.`
   );
 }
@@ -344,7 +347,7 @@ export async function applyHeartbeatPlanningBackoff(input: {
     const existing = await db.query.missionNotes.findFirst({
       where: and(
         eq(missionNotes.missionId, input.missionId),
-        eq(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLE),
+        inArray(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLES),
         eq(missionNotes.status, 'open'),
       ),
       columns: { id: true, body: true },
@@ -375,7 +378,7 @@ export async function resolveHeartbeatPlanningBackoffNote(missionId: string): Pr
     .set({ status: 'superseded' })
     .where(and(
       eq(missionNotes.missionId, missionId),
-      eq(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLE),
+      inArray(missionNotes.title, PLANNING_BACKOFF_NOTE_TITLES),
       eq(missionNotes.status, 'open'),
     ));
 }

@@ -3,7 +3,8 @@ status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 # Shipped: events plan every auto mission and wake it on non-task events (S1,
 # PR #3117), the organizer checklist trim (S3, PR #3114), and the heartbeat as
-# a stuck-check backstop with default check-ins (S2). The UI copy (S4) follows.
+# a stuck-check backstop with default check-ins (S2), and the UI copy (S4):
+# check-ins and organizer runs labelled by trigger (lib/mission-checkins.ts).
 assertions:
   - id: "wake-mission"
     type: "symbol"
@@ -25,10 +26,21 @@ assertions:
   - id: "stuck-check-tests"
     type: "test_file"
     path: "apps/web/src/lib/mission-stuck.test.ts"
+  - id: "organizer-run-label"
+    type: "symbol"
+    name: "organizerRunLabel"
+    path: "apps/web/src/lib/mission-checkins.ts"
+  - id: "last-check"
+    type: "symbol"
+    name: "describeLastCheck"
+    path: "apps/web/src/lib/mission-checkins.ts"
+  - id: "checkins-copy-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-checkins.test.ts"
 ---
 # Event-Driven Mission Replanning, with the Heartbeat as a Backstop
 
-**Status:** Implemented (S1 PR #3117, S3 PR #3114, S2 the backstop; the UI copy in §5 follows as S4)
+**Status:** Implemented (S1 PR #3117, S3 PR #3114, S2 PR #3122 the backstop, S4 the UI copy in §5)
 **Related:** `apps/web/src/lib/mission-loop.ts` (`maybeRetriggerMission`, `retriggerMissionOnFailure`), `apps/web/src/lib/task-dependencies.ts` (`resolveCompletedTask`), `apps/web/src/app/api/cron/schedules/route.ts`, `apps/web/src/lib/heartbeat-prepass.ts`, `apps/web/src/lib/heartbeat-helpers.ts`, `apps/web/src/lib/mission-context.ts` (`buildHeartbeatContext`), `apps/web/src/lib/criteria-rearm.ts`, `apps/web/src/lib/mission-dependency.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `docs/specs/mission-heartbeat-schedule-lifecycle.md`, `docs/design/heartbeat-triage.md`
 
 ## Problem
@@ -183,8 +195,19 @@ that keeps the mission alive", and that stops being true.
 | Settings → Decision model | "(task categories, heartbeat triage)" | "(task categories)" |
 
 Every organizer task records its trigger (`context.triggerSource`: `event`,
-`wake:<reason>`, `backstop`, `manual`). The timeline and the overview read
-it, and the next measurement of this change reads it too.
+`wake:<reason>`, `backstop`, `manual`, `cron`, `auto_retry`). The timeline and
+the overview read it, and the next measurement of this change reads it too.
+
+As built (S4, `apps/web/src/lib/mission-checkins.ts`, pure):
+`organizerRunLabel` maps each trigger to its label, and an `event` run also
+records the finished task (`context.triggerTaskId`) so the timeline can say
+*after X finished*. `selectOrganizerRuns` feeds the timeline every
+planning-mode task of the mission, whatever started it. `describeLastCheck`
+reads the schedule's `lastDeferralReason`: a not-stuck or no-change deferral is
+*on track*, a backstop run created after the last tick is *stuck, organizer
+started*, and the known waits are *waiting on …*. The MCP `manage_missions`
+wording is left to the task that holds `packages/core/mcp-tools.ts`. The web
+forms have no heartbeat toggle to reword.
 
 ## Implementation sketch
 
