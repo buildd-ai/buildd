@@ -519,6 +519,16 @@ tool set for intent. If decision calls are unavailable, every turn uses
 `standard` with all tools. The router can pick a cheaper tier than `standard` for
 a turn. It never changes which model backs a tier.
 
+Routing has a tight deadline (`ROUTING_TIMEOUT_MS`), so everything it can do
+before the request happens outside that deadline. The decision policy check
+and key lookup (`resolveDecisionAccess`) run alongside the limits check. They
+spend nothing, and they read the team row the route already loaded. The
+routing request itself still waits for the limits verdict. A whole-message
+acknowledgement or greeting ("thanks", "ok 👍", "hi") makes no routing call:
+it gets `budget` and the fallback groups, and keeps the write tools only if the
+previous reply offered to do something. A pinned tier drops the complexity
+question.
+
 **buildd can suggest a new mapping, but it can't make one on its own.** A change
 to a tier's mapping comes from an experiment (`docs/design/model-routing-experiment.md`,
 `manage_experiments`) and shows as a suggestion card with its evidence attached.

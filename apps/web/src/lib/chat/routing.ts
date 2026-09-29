@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
 
@@ -176,7 +176,35 @@ export interface TurnRoute {
   topic?: { label: 'same_topic' | 'new_topic'; confidence: number };
 }
 
-type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string>; topic?: typeof TITLE_TOPIC_QUESTION };
+/** Longest message the acknowledgement fast path considers. */
+const ACK_MAX_LENGTH = 40;
+const ACK_WORD = String.raw`(?:thanks?(?: you)?(?: so much| a lot)?|thx|ty|cheers|ok(?:ay)?|k|kk|cool|great|nice|perfect|awesome|got it|sounds good|sure|yes|yep|yeah|yup|no|nope|hi|hello|hey|yo|morning|good (?:morning|afternoon|evening)|go (?:ahead|for it)|do it|please do|lgtm)`;
+const ACK_RE = new RegExp(String.raw`^(?:${ACK_WORD}|\p{Extended_Pictographic}+)(?:[\s,.!]+(?:${ACK_WORD}|\p{Extended_Pictographic}+))*[\s.!]*$`, 'iu');
+
+/**
+ * A whole message that is only an acknowledgement or a greeting ("thanks",
+ * "ok 👍", "hi"). Such a turn skips the routing call (`routeTurn`). Short and
+ * anchored: "thanks, now pause checkout" is not one.
+ */
+export function isAcknowledgement(message: string): boolean {
+  const m = message.trim();
+  return m.length > 0 && m.length <= ACK_MAX_LENGTH && ACK_RE.test(m);
+}
+
+/**
+ * Did the previous assistant turn offer to do something, so that "ok" / "yes"
+ * may mean "go ahead"? Conservative on the side of keeping writes: a question
+ * at the end, or an offer phrase anywhere.
+ */
+export function offeredAction(previous: string | null | undefined): boolean {
+  const p = (previous ?? '').trim();
+  if (!p) return false;
+  return /\?\s*$/.test(p) || /\b(?:want me to|should I|shall I|would you like|I can|I could|do you want|let me know if)\b/i.test(p);
+}
+
+type RoutingQuestions = Omit<typeof CHAT_ROUTING_QUESTIONS, 'complexity'> & {
+  complexity?: typeof CHAT_ROUTING_QUESTIONS.complexity; workspace?: ChoiceQuestion<string>; topic?: typeof TITLE_TOPIC_QUESTION;
+};
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
 
@@ -187,14 +215,30 @@ export async function routeTurn(
     workspaces?: readonly RoutableWorkspace[];
     /** The conversation's auto title, to ask whether the conversation has moved on (`TITLE_TOPIC_QUESTION`). */
     title?: string;
+    /** The conversation pins its tier: the complexity answer would be overwritten, so it isn't asked. */
+    tierPinned?: boolean;
+    /**
+     * The decision policy and key, resolved ahead (`resolveDecisionAccess`), so
+     * the whole `ROUTING_TIMEOUT_MS` goes to the provider. Absent ⇒ resolved
+     * inside the call, inside the deadline.
+     */
+    access?: Promise<DecisionAccess>;
   },
   deps: { decide?: Decide } = {},
 ): Promise<TurnRoute> {
   const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
+  // An acknowledgement or greeting needs no reasoning and no tools beyond the
+  // fallback set: the cheap tier, without a routing call. Writes stay offered
+  // only when the previous turn offered something ("Shall I file it?" → "ok").
+  if (isAcknowledgement(input.message)) {
+    return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback' };
+  }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
   const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
+  const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
   const questions: RoutingQuestions = {
-    ...CHAT_ROUTING_QUESTIONS,
+    ...(input.tierPinned ? {} : { complexity }),
+    ...base,
     ...(ws ? { workspace: ws.question } : {}),
     ...(input.title ? { topic: TITLE_TOPIC_QUESTION } : {}),
   };
@@ -208,12 +252,14 @@ export async function routeTurn(
       state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000), ...(input.title ? { title: input.title } : {}) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
+      ...(input.access ? { access: input.access } : {}),
     });
   } catch {
     return fallback;
   }
   if (!res.ok) return fallback;
 
+  // Unanswered when not asked (a pinned tier): no answer, fallback tier.
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
   const intentGate = gateChoice(res.answers.intent, INTENT_MIN_CONFIDENCE);
   const areaGate = gateChoice(res.answers.area, AREA_MIN_CONFIDENCE);

@@ -12,13 +12,18 @@ const turnCalls: any[] = [];
 const titles: Array<[string, string, string]> = [];
 const tiers: Array<[string, string | null]> = [];
 const pins: Array<[string, string | null]> = [];
+const TEAM_DECISION_ROW = { inferenceFeatureModes: null, decisionModel: null, inferenceKeyPolicy: 'team_or_own' };
+const accessCalls: any[] = [];
+mock.module('@buildd/core/decision-client', () => ({
+  resolveDecisionAccess: async (o: any) => { accessCalls.push(o); return { ok: false, error: { kind: 'missing_key' } }; },
+}));
 mock.module('@/lib/chat/permissions-store', () => ({
   loadAllowedToolGroups: async (teamId: string, userId: string) => new Set(teamId === 't-1' && userId === 'u-1' ? ['tasks'] : []),
 }));
 
 mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
-  loadTeamChatSettings: async () => ({ timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null }),
+  loadTeamChatSettings: async () => ({ timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null, decisionTeam: TEAM_DECISION_ROW }),
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
   workspaceForConversation: async (id: string | null, teamId: string) => (teamId === 't-1' && (id === 'ws-ok' || id === 'ws-sensitive') ? { id, name: id } : null),
   isSensitiveWorkspace: async (id: string) => id === 'ws-sensitive',
@@ -112,6 +117,14 @@ describe('/api/chat/[id]', () => {
     limitCalls.length = 0;
     await turnCalls.at(-1).deps.limits({ teamId: 't-1', userId: 'u-1', now: new Date() });
     expect(limitCalls[0]).toMatchObject({ teamId: 't-1', userId: 'u-1', settings: { timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null } });
+  });
+
+  it('POST resolves the routing call\'s key from the team row it already loaded: no second team read', async () => {
+    const body = { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'what is in flight?' }] } };
+    await POST(req('POST', body), ctx('c-1'));
+    accessCalls.length = 0;
+    await turnCalls.at(-1).deps.routingAccess({ teamId: 't-1', workspaceId: null, userId: 'u-1' });
+    expect(accessCalls).toEqual([{ capability: 'chat', teamId: 't-1', workspaceId: null, userId: 'u-1', team: TEAM_DECISION_ROW }]);
   });
 
   it('404s the caller\'s own conversation in a team they no longer belong to, for every method', async () => {
