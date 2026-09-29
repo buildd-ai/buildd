@@ -44,7 +44,7 @@ describe('SchedulesUnified — default heartbeat grouping (AC-5)', () => {
     // Collapsed by default: the heartbeat row's own content is not rendered,
     // only the group's toggle summary is.
     expect(html).not.toContain('Heartbeat row');
-    expect(html).toContain('1 mission heartbeat');
+    expect(html).toContain('1 mission check-in');
     // The non-heartbeat row renders normally, outside/above the group.
     const wsIdx = html.indexOf('Workspace row');
     expect(wsIdx).toBeGreaterThan(-1);

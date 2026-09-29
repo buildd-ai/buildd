@@ -323,6 +323,8 @@ describe('assertion coverage over the real migration corpus', () => {
     // 9: 0197 is a lone ALTER COLUMN (ai_usage.tier DROP NOT NULL). DbShape has
     // no nullability, and a column_exists stand-in would "verify" it even if it
     // never ran, so it stays unverifiable: a backfill refuses it loudly.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(9);
+    // 10: *_chat_directives_per_user_cap is a function + trigger (the standing
+    // rule cap under concurrent saves). DbShape has no triggers or functions.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(10);
   });
 });

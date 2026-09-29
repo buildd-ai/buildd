@@ -44,9 +44,13 @@ const mockSchedulesInsert = mock(() => ({
   }),
 }));
 let updatedMissionValues: any = null;
+let scheduleLinkValues: any = null;
 const mockMissionsUpdate = mock(() => ({
   set: mock((vals: any) => {
-    updatedMissionValues = vals;
+    // Linking the check-in schedule is its own update; keep it apart so the
+    // branch-strategy tests still see only the working-branch write.
+    if ('scheduleId' in vals) scheduleLinkValues = vals;
+    else updatedMissionValues = vals;
     return {
       where: mock(() => ({
         returning: mock(() => []),
@@ -156,6 +160,7 @@ describe('POST /api/missions', () => {
     insertedMissionValues = null;
     insertedScheduleValues = null;
     updatedMissionValues = null;
+    scheduleLinkValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -218,7 +223,9 @@ describe('POST /api/missions', () => {
     expect(ctx.activeHoursTimezone).toBe('America/New_York');
   });
 
-  it('UI-created mission (session auth, no cron, no isHeartbeat) runs once — no schedule', async () => {
+  it('UI-created auto mission (session auth, no cron, no isHeartbeat) gets a check-in schedule by default', async () => {
+    // Events plan the next step; the check-in is the hourly stuck check that
+    // recovers a mission whose event chain broke (event-driven-mission-replanning.md).
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({ title: 'Ship auth module' }),
@@ -229,7 +236,20 @@ describe('POST /api/missions', () => {
 
     expect(insertedMissionValues).not.toBeNull();
     expect(insertedMissionValues.title).toBe('Ship auth module');
-    // No schedule created — UI missions run once by default
+    expect(insertedScheduleValues).not.toBeNull();
+    expect(insertedScheduleValues.cronExpression).toBe('0 * * * *');
+    expect(insertedScheduleValues.taskTemplate.context.heartbeat).toBe(true);
+    expect(scheduleLinkValues?.scheduleId).toBe('sched-1');
+  });
+
+  it('UI-created manual mission gets no default check-in schedule', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Owner-driven', orchestrationMode: 'manual' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
     expect(insertedScheduleValues).toBeNull();
   });
 
@@ -248,7 +268,7 @@ describe('POST /api/missions', () => {
 
     // Schedule auto-created with heartbeat but no default active hours
     expect(insertedScheduleValues).not.toBeNull();
-    expect(insertedScheduleValues.cronExpression).toBe('*/30 * * * *');
+    expect(insertedScheduleValues.cronExpression).toBe('0 * * * *');
     const ctx = insertedScheduleValues.taskTemplate.context;
     expect(ctx.heartbeat).toBe(true);
     expect(ctx.heartbeatChecklist).toBeDefined();
@@ -978,6 +998,7 @@ describe('POST /api/missions — goalCriteria validation', () => {
     mockPostMissionFeedEvent.mockReset();
     insertedMissionValues = null;
     updatedMissionValues = null;
+    scheduleLinkValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);

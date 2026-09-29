@@ -20,6 +20,12 @@ mock.module('@/lib/pusher', () => ({
   channels: { task: (id: string) => `task-${id}`, mission: (id: string) => `mission-${id}` },
   events: { MISSION_NOTE_POSTED: 'mission:note_posted' },
 }));
+// wakeMission's own gating is covered in lib/mission-wake.test.ts.
+const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
+  wakeMissionAfterResponse: mockWakeMissionAfterResponse,
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -57,6 +63,7 @@ describe('POST /api/missions/[id]/notes/[noteId]/reply', () => {
   beforeEach(() => {
     mockTriggerEvent.mockClear();
     mockInsertValues.mockClear();
+    mockWakeMissionAfterResponse.mockClear();
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
@@ -91,5 +98,20 @@ describe('POST /api/missions/[id]/notes/[noteId]/reply', () => {
     await POST(createRequest({ title: 'Ship it' }), { params });
 
     expect(mockTriggerEvent.mock.calls.map((c: any[]) => c[0])).toEqual(['mission-dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'task-task-7']);
+  });
+
+  // An owner answering a question the organizer asked wakes the mission.
+  it('wakes the mission with owner_answer when a signed-in user replies', async () => {
+    await POST(createRequest({ title: 'Use Redis' }), { params });
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'owner_answer');
+  });
+
+  it('does not wake on an API-key (agent) reply', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const res = await POST(createRequest({ title: 'Agent reply' }), { params });
+    expect(res.status).toBe(201);
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
   });
 });

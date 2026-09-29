@@ -25,9 +25,11 @@ import {
 import { runChatTurn } from '@/lib/chat/turn';
 import { loadAllowedToolGroups } from '@/lib/chat/permissions-store';
 import { checkChatLimits } from '@/lib/chat/limits';
+import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
+import { handleTopicVerdict } from '@/lib/chat/retitle';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
@@ -198,13 +200,15 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       scopeFor: wsId => scopeFor(wsId),
       allowedToolGroups,
       limits: a => checkChatLimits({ ...a, settings }),
+      routingAccess: scope => resolveDecisionAccess({ capability: 'chat', ...scope, team: settings.decisionTeam }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),
       memory: base.memory,
       actionContext: base.actionContext,
       linkMission: missionId => linkMissionToConversation(missionId, conv.id, conv.teamId),
       linkedMissionId: () => linkedMissionFor(conv.id, conv.teamId),
       later: fn => after(fn),
-      autoTitle: (c, messages) => autoTitleConversation(c, messages, user.id),
+      autoTitle: (c, messages, _model, about) => autoTitleConversation(c, messages, user.id, { about }),
+      retitle: (c, messages, topic) => handleTopicVerdict(c, messages, topic, user.id),
       // Standing rules: the caller's own, loaded every turn; a card when a message states one.
       directives: {
         load: () => loadStandingRules(r.caller.user.id),

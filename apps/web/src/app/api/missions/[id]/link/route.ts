@@ -8,19 +8,17 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { linkExternal } from '@buildd/core/external-links';
 import { parseLinearUrl, getConnectorAccessToken, linearGraphQL } from '@/lib/work-tracker';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 /** Check if a mission is accessible: team match OR open-access workspace. */
 async function hasMissionAccess(
   mission: { teamId: string; workspaceId: string | null },
   teamIds: string[],
+  accountId?: string | null,
 ): Promise<boolean> {
   if (teamIds.includes(mission.teamId)) return true;
   if (mission.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return true;
+    if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId })) return true;
   }
   return false;
 }
@@ -56,7 +54,7 @@ export async function POST(
       columns: { id: true, teamId: true, workspaceId: true },
     });
 
-    if (!mission || !(await hasMissionAccess(mission, teamIds))) {
+    if (!mission || !(await hasMissionAccess(mission, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 

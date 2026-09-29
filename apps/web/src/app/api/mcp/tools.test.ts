@@ -192,6 +192,45 @@ describe('listMcpTools — group tools', () => {
     expect(visual.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5000);
   });
 
+  it('types the params a common question needs, so no help call is needed to find them', () => {
+    type P = Record<string, { type?: string; description?: string }>;
+    const params = (name: string) => (groupTools('admin').find(t => t.name === name)!.inputSchema.properties.params as unknown as { properties?: P }).properties ?? {};
+    const m = params('buildd_missions');
+    expect(m.autoSurfaceAudit?.type).toBe('boolean');
+    expect(m.workspaceId?.description).toMatch(/awaiting your review/);
+    expect(params('buildd_runners').workspaceId?.description?.toLowerCase()).toContain('browser');
+    for (const n of ['taskId', 'status', 'workspaceId']) expect(params('buildd_tasks')[n], n).toBeDefined();
+    // Worker level sees only the discrepancy ledger, so no mission fields.
+    const w = (groupTools('worker').find(t => t.name === 'buildd_missions')!.inputSchema.properties.params as unknown as { properties?: P }).properties ?? {};
+    expect(w.autoSurfaceAudit).toBeUndefined();
+  });
+
+  it("the missions description says get_visual_review with only workspaceId lists what awaits review", () => {
+    const d = groupTools('admin').find(t => t.name === 'buildd_missions')!.description;
+    const line = d.split('\n').find(l => l.startsWith('- get_visual_review'))!;
+    expect(line).toMatch(/workspaceId alone/);
+  });
+
+  it('warns that update by UUID with workspaceId moves the mission', () => {
+    type P = Record<string, { description?: string }>;
+    const m = (groupTools('admin').find(t => t.name === 'buildd_missions')!.inputSchema.properties.params as unknown as { properties: P }).properties;
+    expect(m.workspaceId.description).toMatch(/update by UUID: moves the mission/);
+  });
+
+  it('does not repeat the help line of the description in params', () => {
+    for (const t of groupTools('admin')) {
+      const props = (t.inputSchema.properties.params as unknown as { properties?: Record<string, { description?: string }> }).properties ?? {};
+      for (const [k, v] of Object.entries(props)) expect(v.description ?? '', `${t.name}.${k}`).not.toMatch(/^help:|\. help:/);
+    }
+  });
+
+  // Budget: 6k tokens (docs/specs/mcp-action-contracts.md). Stay >=150 under it so
+  // one more action summary does not turn a parallel PR red.
+  it('keeps the whole groups surface under 6k tokens with headroom', () => {
+    const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000 - 150);
+  });
+
   it('is far smaller than the legacy buildd tool', () => {
     const groups = groupTools('admin').reduce((s, t) => s + estTokens(t), 0);
     const [legacy] = tools({ accountLevel: 'admin', isSensitive: false, surface: 'legacy' });
@@ -205,6 +244,28 @@ describe('routeGroupToolCall', () => {
       .toEqual({ kind: 'dispatch', action: 'manage_missions', params: { action: 'list' } });
     expect(routeGroupToolCall('work', { action: 'claim_task' }, 'worker'))
       .toEqual({ kind: 'dispatch', action: 'claim_task', params: {} });
+  });
+
+  it('folds fields passed beside action into params when params is absent (a flattened call)', () => {
+    expect(routeGroupToolCall('missions', { action: 'manage_missions', title: 'x', autoSurfaceAudit: false }, 'admin'))
+      .toEqual({ kind: 'dispatch', action: 'manage_missions', params: { title: 'x', autoSurfaceAudit: false } });
+    // An explicit params object wins; stray top-level keys are not merged into it.
+    expect(routeGroupToolCall('missions', { action: 'manage_missions', params: { action: 'list' }, title: 'x' }, 'admin'))
+      .toEqual({ kind: 'dispatch', action: 'manage_missions', params: { action: 'list' } });
+  });
+
+  it("names the action for a sub-action passed as the tool's action", () => {
+    const r = routeGroupToolCall('missions', { action: 'update', title: 'x' }, 'admin');
+    expect(r.kind).toBe('reply');
+    if (r.kind !== 'reply') return;
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('params.action');
+    expect(r.text).toContain('manage_missions');
+  });
+
+  it("the tool's action field says a sub-action goes in params", () => {
+    const t = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' }).find(x => x.name === 'buildd_missions')!;
+    expect((t.inputSchema.properties.action as { description?: string }).description).toContain('params');
   });
 
   it('dispatches above-level actions too, so the handler refuses them as buildd does', () => {

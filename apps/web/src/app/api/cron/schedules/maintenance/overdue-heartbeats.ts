@@ -46,8 +46,8 @@ export async function runOverdueHeartbeatAlerts(now: Date): Promise<number> {
 
       notify({
         app: 'alerts',
-        title: `Heartbeat overdue: ${missionTitle}`,
-        message: `Mission heartbeat is ${overdueMin}m overdue — monitoring may have stalled`,
+        title: `Check-in overdue: ${missionTitle}`,
+        message: `Mission check-in is ${overdueMin}m overdue. The cron may have stalled.`,
         priority: 0,
       });
 

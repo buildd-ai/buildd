@@ -6,7 +6,16 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
 const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
-const mockUpdateWhere = mock(() => Promise.resolve([{ id: 'updated' }]));
+// `.where(...).returning()` — the rows the dependencyMetAt write actually cleared.
+let updateReturningRows: any[] = [{ id: 'updated' }];
+const mockUpdateWhere = mock(() => ({ returning: () => Promise.resolve(updateReturningRows) }) as any);
+
+// wakeMission is covered in mission-wake.test.ts; here only who gets woken.
+const mockWakeMission = mock((_id: string, _reason: string) => Promise.resolve({ woken: true }));
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mockWakeMission,
+  wakeMissionAfterResponse: mock(() => {}),
+}));
 
 /**
  * The two COUNT(*) probes behind the `merged` gate, in the order
@@ -235,7 +244,52 @@ describe('checkAndUnblockDependentMissions', () => {
     countQueue = [];
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue([{ id: 'unblocked' }]);
+    updateReturningRows = [{ id: 'unblocked' }];
+    mockUpdateWhere.mockImplementation(() => ({ returning: () => Promise.resolve(updateReturningRows) }) as any);
+    mockWakeMission.mockClear();
+  });
+
+  it('wakes each unblocked mission with reason dependency_met', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'completed' },
+      { id: 'downstream-2', gateCondition: 'completed' },
+    ]);
+
+    await checkAndUnblockDependentMissions('upstream-1', 'completed');
+
+    expect(mockWakeMission).toHaveBeenCalledTimes(2);
+    expect(mockWakeMission).toHaveBeenCalledWith('downstream-1', 'dependency_met');
+    expect(mockWakeMission).toHaveBeenCalledWith('downstream-2', 'dependency_met');
+  });
+
+  it('does not wake (or report) a mission whose gate another caller already cleared', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'downstream-1', gateCondition: 'merged' }]);
+    countQueue = [0, 0];
+    updateReturningRows = []; // the IS NULL guard matched nothing: a redelivery lost the race
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(unblocked).toEqual([]);
+    expect(mockWakeMission).not.toHaveBeenCalled();
+  });
+
+  it('does not wake anything when the merged gate stays shut', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'downstream-1', gateCondition: 'merged' }]);
+    countQueue = [1];
+
+    await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(mockWakeMission).not.toHaveBeenCalled();
+  });
+
+  it('uses an injected wake when given', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'downstream-1', gateCondition: 'completed' }]);
+    const injected = mock(() => Promise.resolve());
+
+    await checkAndUnblockDependentMissions('upstream-1', 'completed', { wake: injected });
+
+    expect(injected).toHaveBeenCalledWith('downstream-1', 'dependency_met');
+    expect(mockWakeMission).not.toHaveBeenCalled();
   });
 
   it('sets dependencyMetAt for matching missions on merged signal', async () => {

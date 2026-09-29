@@ -88,7 +88,7 @@ export async function POST(
   if (!job) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   }
-  const accessible = await getIngestAccessibleWorkspaceIds(account.id);
+  const accessible = await getIngestAccessibleWorkspaceIds(account);
   if (!accessible.has(job.workspaceId)) {
     return NextResponse.json({ error: 'No access to this workspace' }, { status: 403 });
   }

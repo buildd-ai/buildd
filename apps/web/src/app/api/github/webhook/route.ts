@@ -30,7 +30,8 @@ import {
   shouldAnnounceBaseAdvance,
 } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
-import { checkDependsOnResolved } from '@/lib/task-dependencies';
+import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
   countPendingTasksForMission,
@@ -80,6 +81,7 @@ import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-ver
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
+import { recordPrReverts } from '@/lib/pr-reverts';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -131,6 +133,10 @@ export async function POST(req: NextRequest) {
 
       case 'workflow_run':
         await handleWorkflowRunEvent(data);
+        break;
+
+      case 'push':
+        await handlePushEvent(data);
         break;
 
       case 'ping':
@@ -627,6 +633,7 @@ async function handlePullRequestEvent(event: {
   pull_request: {
     number: number;
     title?: string;
+    body?: string | null;
     merged: boolean;
     draft?: boolean;
     merge_commit_sha?: string | null;
@@ -924,6 +931,17 @@ async function handlePullRequestEvent(event: {
     console.error('[knowledge-ingest] enqueue failed (non-fatal):', err);
   }
 
+  // Revert ledger: a merged PR whose title/body reverts another PR (or a
+  // commit) holds that PR's candidate memories back from promotion.
+  if (pr.merged) {
+    await recordPrReverts({
+      repoFullName: repository.full_name,
+      revertedBy: `pr#${pr.number}`,
+      revertingPrNumber: pr.number,
+      text: [pr.title, pr.body].filter(Boolean).join('\n'),
+    }).catch(err => console.error(`[webhook] recordPrReverts failed for PR #${pr.number} on ${repository.full_name}:`, err));
+  }
+
   // Dark-check detection: track required checks that consistently report
   // 'skipped', alerting the workspace owner when N consecutive PRs show the
   // pattern. Fire-and-forget — never blocks the webhook response path.
@@ -1212,19 +1230,43 @@ async function handlePullRequestEvent(event: {
     // forever, and only when the human clicked Merge on GitHub rather than in
     // buildd, because the dashboard merge route raises the signal itself.
     if (worker.task.status !== 'completed') {
-      await db
+      // Guarded on the row, not only on the copy read above: the worker's own
+      // completion (PATCH /api/workers/[id]) can land between that read and
+      // this write, and it resolves the task itself. Only the writer that
+      // actually flips the row resolves it, so the task is resolved once.
+      const [flipped] = await db
         .update(tasks)
         .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(tasks.id, worker.task.id));
-      console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
-      // Same fact as the worker route's completion, same dedupe key: one row.
-      await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
+        .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
+        .returning({ id: tasks.id });
+      if (flipped) {
+        console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
+        // Same fact as the worker route's completion, same dedupe key: one row.
+        await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
 
-      // Work-tracker: post completion comment and transition issue to "Done".
-      // Stays inside the transition guard deliberately: a "Done" comment is a
-      // one-shot announcement, and re-posting it on every delivery is spam on
-      // someone's issue tracker.
-      maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
+        // Work-tracker: post completion comment and transition issue to "Done".
+        // Stays inside the transition guard deliberately: a "Done" comment is a
+        // one-shot announcement, and re-posting it on every delivery is spam on
+        // someone's issue tracker.
+        maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
+
+        // The same post-completion path every other completion takes: parent
+        // rollup, dependents, mission completion and re-planning. Writing the
+        // status alone left a mission waiting for its next heartbeat tick.
+        // A loop task still waiting on this merge is resolved by
+        // evaluateAndAdvanceLoopOnMerge above, which runs resolveCompletedTask
+        // itself; doing it here too would resolve it twice.
+        if (worker.task.loopState !== 'condition_unmet') {
+          await resolveCompletedTask(worker.task.id, worker.task.workspaceId).catch(e =>
+            console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
+          );
+        }
+      }
+    } else if (mergeIsNew && worker.task.missionId) {
+      // The task was already completed (its worker finished with the PR open),
+      // so no completion fires now — but the mission's loop may be paused on
+      // exactly this open PR (evaluateMissionOpenPrGate). Wake it.
+      wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
     }
 
     // ── Effects of the merge itself ──────────────────────────────────────────
@@ -1448,10 +1490,13 @@ async function handlePullRequestEvent(event: {
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
-      await db
+      // Row-guarded for the same reason as the worker-match path above.
+      const [flipped] = await db
         .update(tasks)
         .set({ status: 'completed', updatedAt: new Date() })
-        .where(eq(tasks.id, matchingTask.id));
+        .where(and(eq(tasks.id, matchingTask.id), ne(tasks.status, 'completed')))
+        .returning({ id: tasks.id });
+      if (!flipped) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
       if (matchingTask.missionId) {
@@ -1459,6 +1504,11 @@ async function handlePullRequestEvent(event: {
           console.error(`[webhook] unblock failed for branch-match merged PR mission ${matchingTask.missionId}:`, e)
         );
       }
+
+      // Dependents, mission completion and re-planning, as for any completion.
+      await resolveCompletedTask(matchingTask.id, matchingTask.workspaceId).catch(e =>
+        console.error(`[webhook] resolveCompletedTask failed for branch-matched task ${matchingTask.id}:`, e),
+      );
     }
   }
 }
@@ -2691,6 +2741,33 @@ async function handleReleasePrCiFailure(
  * Fires for ALL workflows, not just release ones — the runId lookup makes this
  * naturally idempotent and O(1): if no task carries that runId we no-op.
  */
+/** A branch is the repo's default one; unknown (no default in the payload) counts as yes. */
+function isDefaultBranch(branch: string | null | undefined, defaultBranch: string | undefined): boolean {
+  if (!branch) return false;
+  return !defaultBranch || branch === defaultBranch;
+}
+
+/**
+ * `push`: commit messages on the default branch go to the revert ledger (a
+ * `git revert` of a merge commit names its sha). Inert unless the GitHub App
+ * subscribes to push events; the push-triggered workflow_run covers the head
+ * commit either way.
+ */
+async function handlePushEvent(event: {
+  ref?: string;
+  repository?: { full_name?: string; default_branch?: string };
+  commits?: Array<{ id?: string; message?: string }>;
+}): Promise<void> {
+  const repo = event.repository?.full_name;
+  const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
+  if (!repo || !isDefaultBranch(branch, event.repository?.default_branch)) return;
+  for (const c of event.commits ?? []) {
+    if (!c.id || !c.message) continue;
+    await recordPrReverts({ repoFullName: repo, revertedBy: c.id, text: c.message })
+      .catch(err => console.error(`[webhook] recordPrReverts failed for ${c.id} on ${repo}:`, err));
+  }
+}
+
 async function handleWorkflowRunEvent(event: {
   action: string;
   workflow_run: {
@@ -2703,13 +2780,26 @@ async function handleWorkflowRunEvent(event: {
     head_sha: string;
     event?: string;
     path?: string;
+    head_commit?: { id?: string; message?: string } | null;
     repository: { full_name: string };
   };
+  repository?: { full_name: string; default_branch?: string };
   installation?: { id: number };
 }): Promise<void> {
   if (event.action !== 'completed') return;
 
   const run = event.workflow_run;
+
+  // Revert ledger: CI runs on every push to the default branch, so its head
+  // commit is how a revert pushed there (directly, or as a squashed revert PR)
+  // reaches us without a push-event subscription.
+  if (run.event === 'push' && run.head_commit?.message && isDefaultBranch(run.head_branch, event.repository?.default_branch)) {
+    await recordPrReverts({
+      repoFullName: run.repository.full_name,
+      revertedBy: run.head_commit.id ?? run.head_sha,
+      text: run.head_commit.message,
+    }).catch(err => console.error(`[webhook] recordPrReverts failed for run ${run.id}:`, err));
+  }
 
   // Find the task whose releaseResult.runId matches this workflow run.
   //

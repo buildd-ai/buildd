@@ -8,7 +8,40 @@
  * pixels for anything placed on the frame.
  */
 
-export type Layout = 'screen' | 'phone' | 'card';
+export type Layout = 'screen' | 'phone' | 'card' | 'fleet';
+
+/** A box on a still, in image fractions (0..1). */
+export type Rect = { x: number; y: number; w: number; h: number };
+
+/**
+ * Spotlight keys: from `at`, everything outside `rects` is dimmed by `dim`
+ * (0 = off, 0.65 = the rest at ~35%). Moving between keys eases over
+ * SPOT_MOVE; flat fills only, no blur.
+ */
+export type SpotKey = { at: number; rects: Rect[]; dim: number };
+
+/**
+ * Covers `rect` from `from` (default: the start) until `until` (default:
+ * the end), then fades out, or wipes away left to right over `wipe` seconds.
+ * `fill`: 'auto' samples the still at `sample` (default: just inside the
+ * rect's top-left) so the cover matches what is behind; 'dim' is the
+ * spotlight's dim colour; anything else is a CSS colour.
+ */
+export type Mask = { rect: Rect; from?: number; until?: number; wipe?: number; fill?: string; sample?: { x: number; y: number } };
+
+/** An accent underline under a phrase, on from `from` to `to`. */
+export type Mark = { rect: Rect; from: number; to: number };
+
+/**
+ * The Board fan-out: each tile is lifted off the still and flies from
+ * `origin` to where it really sits, one after another; its real spot is
+ * covered until it lands, so the last frame is the still itself.
+ */
+export type Burst = { origin: { x: number; y: number }; tiles: Rect[]; from: number; stagger: number; dur: number; sample?: 'left' };
+
+/** The abstract fleet: runners with their slots; each live slot's bar grows in turn. */
+export type FleetRunner = { name: string; sub: string; slots: Array<{ label: string; color: string } | null> };
+export type Fleet = { runners: FleetRunner[]; from: number; stagger: number; grow: number; total: number };
 
 /** A camera key: at `at` (0..1 of the shot) the point (cx, cy) of the image sits at the frame centre, `zoom` over fit-width. */
 export type CamKey = { at: number; cx: number; cy: number; zoom: number };
@@ -33,6 +66,13 @@ export type Shot = {
   keys?: number[];
   /** Seconds into the shot for the completion chime. */
   chime?: number;
+  /** Soft pentatonic plucks (note = index into PLUCK_NOTES). */
+  plucks?: Array<{ at: number; note: number }>;
+  spot?: SpotKey[];
+  masks?: Mask[];
+  marks?: Mark[];
+  burst?: Burst;
+  fleet?: Fleet;
   /** Card layout: the lines of text. */
   card?: { title: string; sub?: string };
 };
@@ -47,6 +87,11 @@ export type Cut = {
   /** Seamless: the last shot fades into the first, and the cut is exactly sum(dur) long. */
   loop?: boolean;
   captions?: boolean;
+  theme?: 'dark' | 'light';
+  /** Caption chip font size in px (default 32). */
+  captionSize?: number;
+  /** Named review stills written as key-<name>.png, at seconds into the cut. */
+  keyStills?: Record<string, number>;
   /** Seconds into the cut for the poster frame (default 0). */
   poster?: number;
   /** Fade the last shot to the background over this long at the very end (not in a loop). */
@@ -58,6 +103,8 @@ export const SWAP_FADE = 0.35;
 export const TAP_LIFE = 0.8;
 export const CAPTION_IN = { from: 0.45, to: 1.0 };
 export const CAPTION_OUT = 0.45;
+export const SPOT_MOVE = 0.6;
+export const MASK_FADE = 0.4;
 
 export function clamp(v: number, lo = 0, hi = 1): number {
   return Math.min(hi, Math.max(lo, v));
@@ -191,16 +238,90 @@ export function tapAt(taps: Tap[] | undefined, local: number): { x: number; y: n
   return null;
 }
 
-/** Every sound event on the cut's clock: key ticks, tap clicks, the chime. */
-export function soundCues(cut: Cut): Array<{ type: 'key' | 'click' | 'chime'; at: number }> {
+export type SoundCue = { type: 'key' | 'tap' | 'pluck' | 'chime'; at: number; note?: number };
+
+/** Every sound event on the cut's clock: key ticks, taps, plucks (burst tiles and bars landing), the chime. */
+export function soundCues(cut: Cut): SoundCue[] {
   const starts = shotStarts(cut);
-  const out: Array<{ type: 'key' | 'click' | 'chime'; at: number }> = [];
+  const out: SoundCue[] = [];
   cut.shots.forEach((s, i) => {
-    for (const k of s.keys ?? []) out.push({ type: 'key', at: starts[i] + k });
-    for (const tap of s.taps ?? []) out.push({ type: 'click', at: starts[i] + tap.at });
-    if (s.chime !== undefined) out.push({ type: 'chime', at: starts[i] + s.chime });
+    const t0 = starts[i];
+    for (const k of s.keys ?? []) out.push({ type: 'key', at: t0 + k });
+    for (const tap of s.taps ?? []) out.push({ type: 'tap', at: t0 + tap.at });
+    for (const p of s.plucks ?? []) out.push({ type: 'pluck', at: t0 + p.at, note: p.note });
+    // Every third tile lands on a note, rising: a light patter, not a drum roll.
+    if (s.burst) s.burst.tiles.forEach((_, j) => { if (j % 3 === 0) out.push({ type: 'pluck', at: t0 + s.burst!.from + j * s.burst!.stagger + s.burst!.dur, note: j / 3 }); });
+    if (s.fleet) {
+      let j = 0;
+      for (const r of s.fleet.runners) for (const slot of r.slots) if (slot) { out.push({ type: 'pluck', at: t0 + s.fleet.from + j * s.fleet.stagger, note: j }); j++; }
+    }
+    if (s.chime !== undefined) out.push({ type: 'chime', at: t0 + s.chime });
   });
   return out.sort((a, b) => a.at - b.at);
+}
+
+const lerp = (a: number, b: number, e: number) => a + (b - a) * e;
+const lerpRect = (a: Rect, b: Rect, e: number): Rect => ({ x: lerp(a.x, b.x, e), y: lerp(a.y, b.y, e), w: lerp(a.w, b.w, e), h: lerp(a.h, b.h, e) });
+
+/**
+ * The spotlight at `local`. Between two keys with the same number of rects
+ * the rects glide; otherwise the dim eases out and back in around the change,
+ * so holes never pop.
+ */
+export function spotAt(keys: SpotKey[] | undefined, local: number, move = SPOT_MOVE): { rects: Rect[]; dim: number } {
+  if (!keys?.length) return { rects: [], dim: 0 };
+  let k = -1;
+  for (let j = 0; j < keys.length; j++) if (keys[j].at <= local) k = j;
+  if (k < 0) return { rects: keys[0].rects, dim: 0 };
+  const cur = keys[k];
+  const prev = k > 0 ? keys[k - 1] : { at: cur.at, rects: cur.rects, dim: 0 };
+  const e = ease((local - cur.at) / move);
+  if (e >= 1) return { rects: cur.rects, dim: cur.dim };
+  if (prev.rects.length === cur.rects.length) return { rects: cur.rects.map((r, i) => lerpRect(prev.rects[i], r, e)), dim: lerp(prev.dim, cur.dim, e) };
+  return e < 0.5 ? { rects: prev.rects, dim: prev.dim * (1 - 2 * e) } : { rects: cur.rects, dim: cur.dim * (2 * e - 1) };
+}
+
+/** A mask's cover at `local`: how opaque, and how much of its width is still covered (a wipe eats it from the left). */
+export function maskAt(m: Mask, local: number, dur = Infinity): { opacity: number; left: number } {
+  const from = m.from ?? -Infinity;
+  const until = m.until ?? dur;
+  if (local < from) return { opacity: 0, left: 1 };
+  const fin = Number.isFinite(from) ? ease((local - from) / MASK_FADE) : 1;
+  if (local < until) return { opacity: fin, left: 0 };
+  if (m.wipe) {
+    const e = ease((local - until) / m.wipe);
+    return e >= 1 ? { opacity: 0, left: 1 } : { opacity: fin, left: e };
+  }
+  return { opacity: fin * (1 - ease((local - until) / MASK_FADE)), left: 0 };
+}
+
+/** One burst tile at `local`: 0 at the origin (hidden), 1 landed. */
+export function burstAt(b: Burst, index: number, local: number): number {
+  const u = (local - (b.from + index * b.stagger)) / b.dur;
+  return u >= 1 - 1e-9 ? 1 : ease(u);
+}
+
+/** When the burst's last tile has landed (seconds into the shot). */
+export function burstEnd(b: Burst): number {
+  return b.from + (b.tiles.length - 1) * b.stagger + b.dur;
+}
+
+/** The abstract fleet at `local`: each live slot's bar length (0..1) and how many are live so far. */
+export function fleetAt(f: Fleet, local: number): { bars: number[]; live: number } {
+  const bars: number[] = [];
+  let j = 0;
+  for (const r of f.runners) for (const slot of r.slots) if (slot) { bars.push(ease((local - (f.from + j * f.stagger)) / f.grow)); j++; }
+  return { bars, live: bars.filter((b) => b > 0).length };
+}
+
+/**
+ * A camera key that frames `rect` (image fractions of an image `img` px) in a
+ * `frame`, with `pad` of breathing room; never below fit-width.
+ */
+export function focus(rect: Rect, img: { width: number; height: number }, frame: { width: number; height: number }, pad = 1.25, at = 0): CamKey {
+  const byW = 1 / (rect.w * pad);
+  const byH = (frame.height * img.width) / (pad * rect.h * img.height * frame.width);
+  return { at, cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, zoom: Math.max(1, Math.min(byW, byH)) };
 }
 
 /** Frame count at the cut's fps; a loop drops the frame that would repeat t = 0. */

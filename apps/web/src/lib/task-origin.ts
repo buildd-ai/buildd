@@ -115,7 +115,7 @@ const MECHANISM_LABEL: Record<string, string> = {
   webhook: 'webhook',
   github: 'webhook',
   schedule: 'schedule',
-  orchestrator: 'mission heartbeat',
+  orchestrator: 'mission planning',
   conflict: 'conflict resolution',
 };
 

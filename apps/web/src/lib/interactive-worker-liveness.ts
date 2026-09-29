@@ -35,6 +35,14 @@ export const INTERACTIVE_TOUCH_THROTTLE_MS = 60_000;
  */
 export const INTERACTIVE_CLAIM_USER_KEY = 'interactiveClaimUserId' as const;
 
+/**
+ * Task-context key the claim route stamps with the MCP session that made an
+ * interactive claim (the key of the session id /api/mcp minted; see
+ * mintMcpSessionId in lib/interactive-session.ts). A bld_ key carries no
+ * user, so without it every session on the key was one identity.
+ */
+export const INTERACTIVE_CLAIM_SESSION_KEY = 'interactiveClaimSessionKey' as const;
+
 /** Only sessions that can hold claims keep them alive; a trigger token cannot claim. */
 const LIVENESS_LEVELS = new Set(['worker', 'admin']);
 
@@ -50,11 +58,13 @@ export function runnerWorkerOnly(): SQL {
 
 /**
  * Which rows one MCP call keeps alive: the calling account's live interactive
- * workers and, when the session carries a user, only the ones that user
- * claimed. A token with no user (a bld_ key) is one identity, so it covers the
- * account's interactive workers. Never another account's rows, never a runner's.
+ * workers, narrowed to the caller's own claims. With a session user, only the
+ * ones that user claimed. With a session key, only the ones that session
+ * claimed; with none (a client that does not echo the session id, the OAuth
+ * route), only claims no keyed session made, so a keyless session never keeps
+ * a keyed one's work alive. Never another account's rows, never a runner's.
  */
-export function interactiveTouchScope(accountId: string, userId: string | null, now: Date): SQL {
+export function interactiveTouchScope(accountId: string, userId: string | null, now: Date, sessionKey: string | null = null): SQL {
   // Nested fragment so the column renders qualified inside the subquery.
   const workerTaskId = sql`${workers.taskId}`;
   return and(
@@ -69,6 +79,17 @@ export function interactiveTouchScope(accountId: string, userId: string | null, 
           AND t_claim.context->>${INTERACTIVE_CLAIM_USER_KEY} = ${userId}
         )`
       : undefined,
+    sessionKey
+      ? sql`EXISTS (
+          SELECT 1 FROM ${tasks} t_sess
+          WHERE t_sess.id = ${workerTaskId}
+          AND t_sess.context->>${INTERACTIVE_CLAIM_SESSION_KEY} = ${sessionKey}
+        )`
+      : sql`NOT EXISTS (
+          SELECT 1 FROM ${tasks} t_sess
+          WHERE t_sess.id = ${workerTaskId}
+          AND t_sess.context->>${INTERACTIVE_CLAIM_SESSION_KEY} IS NOT NULL
+        )`,
   )!;
 }
 
@@ -86,7 +107,7 @@ export function interactiveAbandonedScope(accountId: string, now: Date): SQL {
   )!;
 }
 
-/** Per-instance memo: (account, user) → last touch. Saves the round trip on bursts. */
+/** Per-instance memo: (account, user, session) → last touch. Saves the round trip on bursts. */
 const lastTouch = new Map<string, number>();
 const MEMO_MAX = 5_000;
 
@@ -102,13 +123,15 @@ export function resetInteractiveTouchMemo(): void {
 export async function touchInteractiveWorkers(opts: {
   accountId: string | null | undefined;
   userId?: string | null;
+  sessionKey?: string | null;
   now?: Date;
 }): Promise<void> {
   const { accountId } = opts;
   if (!accountId) return;
   const userId = opts.userId ?? null;
+  const sessionKey = opts.sessionKey ?? null;
   const now = opts.now ?? new Date();
-  const key = `${accountId}:${userId ?? '*'}`;
+  const key = `${accountId}:${userId ?? '*'}:${sessionKey ?? '*'}`;
   const prev = lastTouch.get(key);
   if (prev !== undefined && now.getTime() - prev < INTERACTIVE_TOUCH_THROTTLE_MS) return;
   if (lastTouch.size >= MEMO_MAX) lastTouch.clear();
@@ -116,7 +139,7 @@ export async function touchInteractiveWorkers(opts: {
   try {
     await db.update(workers)
       .set({ updatedAt: now })
-      .where(interactiveTouchScope(accountId, userId, now));
+      .where(interactiveTouchScope(accountId, userId, now, sessionKey));
   } catch (err) {
     console.warn(`[mcp] interactive worker liveness touch failed for account ${accountId}:`, err);
   }
@@ -130,10 +153,11 @@ export async function touchInteractiveWorkers(opts: {
 export function scheduleInteractiveTouch(opts: {
   accountId: string | null | undefined;
   userId?: string | null;
+  sessionKey?: string | null;
   level: string | null | undefined;
 }): void {
   if (!opts.accountId || !opts.level || !LIVENESS_LEVELS.has(opts.level)) return;
-  const run = () => touchInteractiveWorkers({ accountId: opts.accountId, userId: opts.userId ?? null });
+  const run = () => touchInteractiveWorkers({ accountId: opts.accountId, userId: opts.userId ?? null, sessionKey: opts.sessionKey ?? null });
   try {
     after(run);
   } catch {

@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
 
@@ -58,6 +58,22 @@ export const CHAT_ROUTING_QUESTIONS = {
   } satisfies ChoiceQuestion<ToolGroup | 'general'>,
 };
 
+/**
+ * Asked post-response to check whether the conversation has moved on from its auto title (see
+ * `retitle.ts`). Made as a separate decision call after the response is saved, not during routing.
+ */
+export const TITLE_TOPIC_QUESTION = {
+  type: 'choice',
+  instructions: {
+    question: 'Does the conversation title in `turn.title` still name what the latest message in `turn.message` is about?',
+    rule: 'Choose new_topic only when the message starts a clearly different subject. A follow-up, a detail, a thank-you or a next step on the same work is same_topic.',
+  },
+  criteria: {
+    same_topic: 'The message continues, narrows or follows up on the subject the title names, or is small talk.',
+    new_topic: 'The message is about a different mission, task, system or goal than the title names.',
+  },
+} satisfies ChoiceQuestion<'same_topic' | 'new_topic'>;
+
 /** Thresholds live next to the questions; retuning one is a reviewed change. */
 export const TIER_MIN_CONFIDENCE = 0.8;
 /** Only used to *withhold* write tools, so it's gated high. */
@@ -73,8 +89,14 @@ const TIER_FOR: Record<'simple' | 'standard' | 'complex', ChatTier> = {
   simple: 'budget', standard: 'standard', complex: 'premium',
 };
 
-/** An area answer is only used to *add* a tool group, so it's gated lower. */
-export const AREA_MIN_CONFIDENCE = 0.7;
+/**
+ * An area answer narrows the tool set from the fallback (missions + tasks +
+ * workers) to just the routed area. Narrowing saves ~1.7k tokens per turn
+ * (routing costs are offset by the generative savings on the model side).
+ * High gate ensures mis-routed turns that still need workers diagnostics
+ * (stalled tasks, error investigation) don't lose access to them.
+ */
+export const AREA_MIN_CONFIDENCE = 0.8;
 /**
  * A workspace pick becomes the turn's default scope for tool calls, so it's
  * gated high. Below it the turn has no default: the agent asks which one, or
@@ -151,22 +173,111 @@ export interface TurnRoute {
   workspaceId?: string;
 }
 
-type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string> };
+/** Longest message the acknowledgement fast path considers. */
+const ACK_MAX_LENGTH = 40;
+const ACK_WORD = String.raw`(?:thanks?(?: you)?(?: so much| a lot)?|thx|ty|cheers|ok(?:ay)?|k|kk|cool|great|nice|perfect|awesome|got it|sounds good|sure|yes|yep|yeah|yup|no|nope|hi|hello|hey|yo|morning|good (?:morning|afternoon|evening)|go (?:ahead|for it)|do it|please do|lgtm)`;
+const ACK_RE = new RegExp(String.raw`^(?:${ACK_WORD}|\p{Extended_Pictographic}+)(?:[\s,.!]+(?:${ACK_WORD}|\p{Extended_Pictographic}+))*[\s.!]*$`, 'iu');
+
+/**
+ * A whole message that is only an acknowledgement or a greeting ("thanks",
+ * "ok 👍", "hi"). Such a turn skips the routing call (`routeTurn`). Short and
+ * anchored: "thanks, now pause checkout" is not one.
+ */
+export function isAcknowledgement(message: string): boolean {
+  const m = message.trim();
+  return m.length > 0 && m.length <= ACK_MAX_LENGTH && ACK_RE.test(m);
+}
+
+/**
+ * Did the previous assistant turn offer to do something, so that "ok" / "yes"
+ * may mean "go ahead"? Conservative on the side of keeping writes: a question
+ * at the end, or an offer phrase anywhere.
+ */
+export function offeredAction(previous: string | null | undefined): boolean {
+  const p = (previous ?? '').trim();
+  if (!p) return false;
+  return /\?\s*$/.test(p) || /\b(?:want me to|should I|shall I|would you like|I can|I could|do you want|let me know if)\b/i.test(p);
+}
+
+type RoutingQuestions = Omit<typeof CHAT_ROUTING_QUESTIONS, 'complexity'> & {
+  complexity?: typeof CHAT_ROUTING_QUESTIONS.complexity; workspace?: ChoiceQuestion<string>;
+};
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
+type TopicDecide = (p: Parameters<typeof decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }>>[0])
+  => Promise<DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>>;
+
+/**
+ * Ask the topic question in a post-response call (made after the turn is saved,
+ * in the `later` callback). Returns the answer ungated.
+ */
+export async function askTopicQuestion(
+  input: {
+    teamId: string; workspaceId: string | null; userId: string; message: string; title: string;
+    /**
+     * The decision policy and key, resolved ahead, so the whole `ROUTING_TIMEOUT_MS`
+     * goes to the provider. Absent ⇒ resolved inside the call.
+     */
+    access?: Promise<DecisionAccess>;
+  },
+  deps: { decide?: TopicDecide } = {},
+): Promise<{ label: 'same_topic' | 'new_topic'; confidence: number } | undefined> {
+  const decide = deps.decide ?? decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }> as TopicDecide;
+  let res: DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>;
+  try {
+    res = await decide({
+      capability: 'chat',
+      teamId: input.teamId,
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      state: { turn: { message: input.message.slice(0, 2000), title: input.title } },
+      questions: { topic: TITLE_TOPIC_QUESTION },
+      timeoutMs: ROUTING_TIMEOUT_MS,
+      ...(input.access ? { access: input.access } : {}),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!res.ok) return undefined;
+
+  const topicAnswer = (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic;
+  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
+    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
+    : undefined;
+  return topic;
+}
 
 export async function routeTurn(
   input: {
     teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string;
     /** Unpinned conversations: the in-reach workspaces to pick the turn's scope from. */
     workspaces?: readonly RoutableWorkspace[];
+    /** The conversation pins its tier: the complexity answer would be overwritten, so it isn't asked. */
+    tierPinned?: boolean;
+    /**
+     * The decision policy and key, resolved ahead (`resolveDecisionAccess`), so
+     * the whole `ROUTING_TIMEOUT_MS` goes to the provider. Absent ⇒ resolved
+     * inside the call, inside the deadline.
+     */
+    access?: Promise<DecisionAccess>;
   },
   deps: { decide?: Decide } = {},
 ): Promise<TurnRoute> {
   const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
+  // An acknowledgement or greeting needs no reasoning and no tools beyond the
+  // fallback set: the cheap tier, without a routing call. Writes stay offered
+  // only when the previous turn offered something ("Shall I file it?" → "ok").
+  if (isAcknowledgement(input.message)) {
+    return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback' };
+  }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
   const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
-  const questions: RoutingQuestions = ws ? { ...CHAT_ROUTING_QUESTIONS, workspace: ws.question } : CHAT_ROUTING_QUESTIONS;
+  const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
+  const questions: RoutingQuestions = {
+    ...(input.tierPinned ? {} : { complexity }),
+    ...base,
+    ...(ws ? { workspace: ws.question } : {}),
+  };
   let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
@@ -177,12 +288,14 @@ export async function routeTurn(
       state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
+      ...(input.access ? { access: input.access } : {}),
     });
   } catch {
     return fallback;
   }
   if (!res.ok) return fallback;
 
+  // Unanswered when not asked (a pinned tier): no answer, fallback tier.
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
   const intentGate = gateChoice(res.answers.intent, INTENT_MIN_CONFIDENCE);
   const areaGate = gateChoice(res.answers.area, AREA_MIN_CONFIDENCE);

@@ -445,11 +445,12 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   // ── Heartbeat mode ──
-  // Only use heartbeat context for cron-triggered runs. Initial creation,
-  // manual runs, and retriggers should use full planning mode so the
-  // orchestrator actually creates execution subtasks instead of just reporting.
+  // Only use heartbeat context for runs the schedule started (`cron`, or the
+  // stuck-check `backstop`). Initial creation, manual runs, and retriggers
+  // should use full planning mode so the orchestrator actually creates
+  // execution subtasks instead of just reporting.
   const triggerSource = templateContext?.triggerSource as string | undefined;
-  const useHeartbeatMode = isHeartbeat && triggerSource === 'cron';
+  const useHeartbeatMode = isHeartbeat && (triggerSource === 'cron' || triggerSource === 'backstop');
 
   if (useHeartbeatMode) {
     // Resolve skillSlugs from templateContext or schedule for role-gated sections
@@ -684,7 +685,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // Coordinate-only mode — injected when pre-filed tasks were detected at first evaluation.
   // The organizer runs the coordination checklist but must NOT create new build tasks on its
-  // own initiative (only retry children for terminally-failed tasks are allowed).
+  // own initiative. Retries and PR conflicts are not on it: task auto-retry, CI retry, the
+  // conflict sweep and pr-reconcile already handle those.
   const decompositionSkippedCtx = templateContext?.decompositionSkipped as boolean | undefined;
   if (decompositionSkippedCtx) {
     descParts.push(
@@ -692,11 +694,10 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       'Pre-filed tasks were detected when this mission was first evaluated. ' +
       '**You must NOT create new build tasks.** Your role is coordination:\n\n' +
       '- [ ] Monitor the tasks listed in "Active Tasks" below\n' +
-      '- [ ] Retry any failed tasks by creating a child task with `parentTaskId=<original task id>` and `failureContext` describing what went wrong (include the exact error)\n' +
-      '- [ ] Check PR merge status — if a PR has merge conflicts, retry the originating task (create_task with parentTaskId + failureContext)\n' +
       '- [ ] Report blocked tasks and notify via post_note if a human decision is needed\n' +
       '- [ ] When ALL pre-filed tasks are terminal (completed/failed/cancelled), signal `missionComplete: true` in structuredOutput\n\n' +
-      'Do NOT create new tasks unless (a) a listed task failed terminally and needs a retry child with `parentTaskId`, ' +
+      'The platform retries failed tasks and handles PR conflicts and CI failures itself. Do not file retry tasks for them.\n\n' +
+      'Do NOT create new tasks unless (a) a listed task failed terminally because its approach is wrong, and you file a replacement with a different approach (`parentTaskId=<original task id>`, `failureContext` naming the change), ' +
       'or (b) the mission description explicitly authorizes gap-filling. ' +
       'Adding tasks beyond the pre-filed chain creates duplicates and wasted work.'
     );
@@ -852,7 +853,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
 
     if (retryableEntries.length > 0) {
-      descParts.push('\n## Failed Tasks (may retry with different approach)');
+      descParts.push('\n## Failed Tasks (the platform retries these; replan only if the approach itself is wrong)');
       for (const e of retryableEntries) {
         descParts.push(e);
       }
@@ -1110,7 +1111,7 @@ async function buildHeartbeatContext(mission: {
     | null;
   // Query mission state in parallel
   const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
-    // Last 3 heartbeat results
+    // Last 3 completed runs (the "Prior organizer runs" section)
     db.query.tasks.findMany({
       where: and(
         eq(tasks.missionId, mission.id),
@@ -1168,13 +1169,6 @@ async function buildHeartbeatContext(mission: {
     }),
   ]);
 
-  // Extract prior heartbeat statuses for stall detection
-  const priorStatuses = priorHeartbeats.map(t => {
-    const result = t.result as Record<string, unknown> | null;
-    const so = result?.structuredOutput as Record<string, unknown> | undefined;
-    return (so?.status as string) || 'unknown';
-  });
-
   // Non-auto-generated artifacts (actual deliverables, not heartbeat/mission summaries)
   const deliverableArtifacts = missionArtifacts.filter(a =>
     !a.key?.startsWith('heartbeat-') && !a.key?.startsWith('mission-')
@@ -1191,7 +1185,6 @@ async function buildHeartbeatContext(mission: {
     artifacts: deliverableArtifacts.map(a => ({ type: a.type, key: a.key })),
     hasWorkspace: !!mission.workspaceId,
     prCount: tasksWithPRs.length,
-    priorHeartbeatStatuses: priorStatuses,
   };
   const phase = detectMissionPhase(phaseData);
 
@@ -1242,9 +1235,11 @@ async function buildHeartbeatContext(mission: {
   // on roleSlug — see apps/runner/src/prompt-builder.ts. Rendering it here
   // AND there would duplicate it in every prompt; keep it to exactly one path.
 
-  // Prior heartbeats — read only operational count fields (no content-bearing strings)
+  // Prior organizer runs — read only operational count fields (no
+  // content-bearing strings). Kept so the organizer can see what the last runs
+  // did and not repeat itself; it no longer drives phase detection.
   if (priorHeartbeats.length > 0) {
-    descParts.push('\n## Prior Heartbeats');
+    descParts.push('\n## Prior organizer runs');
     for (const t of priorHeartbeats) {
       const result = t.result as Record<string, unknown> | null;
       const so = result?.structuredOutput as Record<string, unknown> | undefined;
@@ -1312,7 +1307,7 @@ async function buildHeartbeatContext(mission: {
     }
 
     if (singleFailures.length > 0) {
-      descParts.push('\n## Failed Tasks (first failure — may retry with different approach)');
+      descParts.push('\n## Failed Tasks (first failure — the platform retries these; replan only if the approach itself is wrong)');
       for (const f of singleFailures) {
         descParts.push(f);
       }

@@ -131,6 +131,68 @@ export interface AdoptablePr {
   user?: { login?: string | null; type?: string | null } | null;
 }
 
+/** Minimal shape of a PR's merge state, off the same GitHub response. */
+export interface PrMergeState {
+  state?: string | null;
+  merged?: boolean | null;
+  merged_at?: string | null;
+}
+
+/**
+ * Insert the placeholder worker that maps a task to a PR buildd did not push:
+ * `runner: 'external'`, already `completed`, carrying the PR number/url and its
+ * lifecycle. Shared by adoption (which also creates the task) and by attaching
+ * a PR to an existing task that was closed without a worker
+ * (`attachPrToTask` in `./task-pr-attach`). Returns null if the insert failed.
+ */
+export async function insertPrOwnerWorker(params: {
+  workspaceId: string;
+  taskId: string;
+  installationId: number;
+  repoFullName: string;
+  pr: AdoptablePr & PrMergeState;
+  accountId?: string | null;
+  name: string;
+}): Promise<{ id: string } | null> {
+  const { workspaceId, taskId, installationId, repoFullName, pr, accountId, name } = params;
+  const prNumber = pr.number;
+
+  // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a migration
+  // snapshot must not inflate the number shown on task/PR cards.
+  const split = typeof pr.additions === 'number'
+    ? await fetchSplitPrStats(installationId, repoFullName, prNumber)
+    : null;
+
+  // Adoption only ever sees an open PR; an attach may land on one that already
+  // merged or closed, and mission completion reads exactly these two fields.
+  const merged = pr.merged === true || Boolean(pr.merged_at);
+  const lifecycle = merged ? 'merged' : pr.state === 'closed' ? 'closed' : 'pr_open';
+
+  const [row] = await db
+    .insert(workers)
+    .values({
+      workspaceId,
+      taskId,
+      accountId: accountId ?? null,
+      name,
+      // Not a runner buildd operates — the commits came from elsewhere.
+      runner: 'external',
+      branch: pr.head?.ref ?? `pr-${prNumber}`,
+      status: 'completed',
+      prNumber,
+      prUrl: pr.html_url,
+      prLifecycleStatus: lifecycle,
+      ...(merged ? { mergedAt: pr.merged_at ? new Date(pr.merged_at) : new Date() } : {}),
+      ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
+      ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
+      ...(split ? { linesAdded: split.reviewable.additions } : {}),
+      ...(split ? { linesRemoved: split.reviewable.deletions } : {}),
+      ...(split ? { filesChanged: split.reviewable.files } : {}),
+    })
+    .returning({ id: workers.id });
+  return row?.id ? { id: row.id } : null;
+}
+
 /**
  * Resolve the worker that owns a PR, adopting it as a task + worker first when
  * buildd has none.
@@ -218,35 +280,16 @@ export async function resolveOrAdoptPrOwner(params: {
     throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (task insert failed)`);
   }
 
-  // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a migration
-  // snapshot must not inflate the number shown on task/PR cards.
-  const adoptSplit = typeof pr.additions === 'number'
-    ? await fetchSplitPrStats(installationId, repoFullName, prNumber)
-    : null;
-
-  const [adoptedWorker] = await db
-    .insert(workers)
-    .values({
-      workspaceId,
-      taskId: adoptedTask.id,
-      accountId: accountId ?? null,
-      name: `pr-${prNumber}-adopted`,
-      // Not a runner buildd operates — the commits came from elsewhere.
-      runner: 'external',
-      branch: pr.head?.ref ?? `pr-${prNumber}`,
-      status: 'completed',
-      prNumber,
-      prUrl: pr.html_url,
-      prLifecycleStatus: 'pr_open',
-      ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
-      ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
-      ...(adoptSplit ? { linesAdded: adoptSplit.reviewable.additions } : {}),
-      ...(adoptSplit ? { linesRemoved: adoptSplit.reviewable.deletions } : {}),
-      ...(adoptSplit ? { filesChanged: adoptSplit.reviewable.files } : {}),
-    })
-    .returning({ id: workers.id });
-
-  if (!adoptedWorker?.id) {
+  const adoptedWorker = await insertPrOwnerWorker({
+    workspaceId,
+    taskId: adoptedTask.id,
+    installationId,
+    repoFullName,
+    pr,
+    accountId,
+    name: `pr-${prNumber}-adopted`,
+  });
+  if (!adoptedWorker) {
     throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (worker insert failed)`);
   }
 

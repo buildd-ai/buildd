@@ -112,7 +112,8 @@ describe('buildd_memory search/context — scoped to the caller project', () => 
   it('context sends the caller project and refuses a foreign one', async () => {
     const mc = makeMemStore();
     await handleMemoryAction(mc as any, 'context', {}, ctxFor(OWN));
-    expect(mc.called('getContext')[0].args[0]).toBe(OWN);
+    // Context reads through retrieveMemory's store search, not getContext.
+    expect((mc.called('search')[0].args[0] as any).project).toBe(OWN);
 
     const mc2 = makeMemStore();
     const res = await handleMemoryAction(mc2 as any, 'context', { project: FOREIGN }, ctxFor(OWN));
@@ -120,11 +121,11 @@ describe('buildd_memory search/context — scoped to the caller project', () => 
     expect(mc2.calls).toHaveLength(0);
   });
 
-  it('context with no caller project never calls getContext unscoped', async () => {
+  it('context with no caller project never reads unscoped', async () => {
     const mc = makeMemStore();
     const res = await handleMemoryAction(mc as any, 'context', {}, ctxFor(undefined));
     expect(res.isError).toBe(true);
-    expect(mc.called('getContext')).toHaveLength(0);
+    expect(mc.calls).toHaveLength(0);
   });
 });
 

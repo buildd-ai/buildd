@@ -7,7 +7,7 @@ mock.module('@buildd/core/decision-client', () => ({
     : { apply: false, reason: 'low_confidence', label: a.choice, confidence: a.confidence }),
 }));
 
-const { routeTurn, FALLBACK_TIER, workspaceHint } = await import('./routing');
+const { routeTurn, FALLBACK_TIER, workspaceHint, askTopicQuestion, TITLE_TOPIC_QUESTION, isAcknowledgement, offeredAction } = await import('./routing');
 
 const input = { teamId: 't', workspaceId: null, userId: 'u', message: 'make this a mission' };
 const answer = (complexity: [string, number], intent: [string, number]) => async () => ({
@@ -50,6 +50,9 @@ describe('routeTurn', () => {
       answers: { complexity: { choice: 'standard', confidence: 0.9 }, intent: { choice: 'act', confidence: 0.95 }, area: { choice: area[0], confidence: area[1] } },
     }) as any;
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.9]) })).area).toBe('schedules');
+    // 0.8 gate: 0.79 confidence drops the area routing (narrowing is too risky)
+    expect((await routeTurn(input, { decide: withArea(['schedules', 0.79]) })).area).toBeUndefined();
+    // Below gate, fallback set (missions + tasks + workers) is used
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.5]) })).area).toBeUndefined();
     expect((await routeTurn(input, { decide: withArea(['general', 0.99]) })).area).toBeUndefined();
     // No area answer at all (an older decision) is the fallback set, not an error.
@@ -127,5 +130,97 @@ describe('workspaceHint', () => {
       .toBe('repo billing-web · projects: checkout (Stripe); invoices');
     expect(workspaceHint({ repo: 'git@github.com:acme/docs-site' })).toBe('repo docs-site');
     expect(workspaceHint({ repo: null, projects: [] })).toBeNull();
+  });
+});
+
+describe('askTopicQuestion', () => {
+  const withTopic = (topic?: [string, number]) => async (p: any) => {
+    return {
+      ok: true as const,
+      answers: {
+        ...(topic ? { topic: { choice: topic[0], confidence: topic[1] } } : {}),
+      },
+    } as any;
+  };
+
+  it('returns the answer ungated; absent when not answered', async () => {
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: withTopic(['new_topic', 0.4]) }
+    )).toEqual({ label: 'new_topic', confidence: 0.4 });
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: withTopic() }
+    )).toBeUndefined();
+  });
+
+  it('returns undefined on decision call failure', async () => {
+    const throwingDecide = async () => { throw new Error('boom'); };
+    expect(await askTopicQuestion(
+      { teamId: 't', workspaceId: null, userId: 'u', message: 'test', title: 'T' },
+      { decide: throwingDecide }
+    )).toBeUndefined();
+  });
+});
+
+describe('routeTurn: acknowledgements skip the routing call', () => {
+  const never = async () => { throw new Error('the routing call must not run'); };
+
+  it('recognises a whole-message thanks / ok / greeting / emoji, and nothing longer', () => {
+    for (const m of ['thanks', 'Thank you!', 'ok', 'OK.', 'okay thanks', 'hi', 'hey', 'good morning', '👍', 'ok 👍', 'great, thanks!', 'yes', 'sounds good']) {
+      expect(isAcknowledgement(m)).toBe(true);
+    }
+    for (const m of ['thanks, now pause checkout', 'ok what failed?', 'hi, what is running', 'yes create the mission', '', 'status?']) {
+      expect(isAcknowledgement(m)).toBe(false);
+    }
+    expect(isAcknowledgement('thanks '.repeat(10))).toBe(false); // over the length cap
+  });
+
+  it('routes an acknowledgement as budget tier with the fallback groups, no call', async () => {
+    const route = await routeTurn({ ...input, message: 'thanks!' }, { decide: never });
+    expect(route).toEqual({ tier: 'budget', allowWrites: false, source: 'fallback' });
+    expect(route.area).toBeUndefined();
+  });
+
+  it('keeps the write tools only when the previous turn offered to do something', async () => {
+    expect((await routeTurn({ ...input, message: 'ok', previous: 'Want me to file this as a mission?' }, { decide: never })).allowWrites).toBe(true);
+    expect((await routeTurn({ ...input, message: 'yes', previous: 'I can pause checkout for you.' }, { decide: never })).allowWrites).toBe(true);
+    expect((await routeTurn({ ...input, message: 'ok', previous: 'Checkout shipped in PR 12.' }, { decide: never })).allowWrites).toBe(false);
+  });
+
+  it('offeredAction: a closing question or an offer phrase', () => {
+    expect(offeredAction('Shall I retry it?')).toBe(true);
+    expect(offeredAction('Should I cancel it? It has been stuck for a day.')).toBe(true);
+    expect(offeredAction('Three tasks are running.')).toBe(false);
+    expect(offeredAction(null)).toBe(false);
+  });
+});
+
+describe('routeTurn: a pinned tier', () => {
+  it('does not ask the complexity question, whose answer would be overwritten', async () => {
+    const seen: any[] = [];
+    const decide = async (p: any) => {
+      seen.push(p);
+      return { ok: true as const, answers: { intent: { choice: 'needs_tools', confidence: 0.95 }, area: { choice: 'tasks', confidence: 0.9 } } } as any;
+    };
+    const route = await routeTurn({ ...input, tierPinned: true }, { decide });
+    expect(Object.keys(seen[0].questions)).toEqual(['intent', 'area']);
+    expect(route).toEqual({ tier: FALLBACK_TIER, allowWrites: false, area: 'tasks', source: 'decision' });
+  });
+
+  it('still asks it when the tier is not pinned', async () => {
+    const seen: any[] = [];
+    await routeTurn(input, { decide: async (p: any) => { seen.push(p); return { ok: false, error: { kind: 'timeout' } } as any; } });
+    expect(Object.keys(seen[0].questions)).toEqual(['complexity', 'intent', 'area']);
+  });
+});
+
+describe('routeTurn: the decision key resolved ahead', () => {
+  it('hands the pre-resolved access to the decision call', async () => {
+    const access = Promise.resolve({ ok: true as const, apiKey: 'sk', model: 'm' });
+    const seen: any[] = [];
+    await routeTurn({ ...input, access }, { decide: async (p: any) => { seen.push(p); return { ok: false, error: { kind: 'timeout' } } as any; } });
+    expect(seen[0].access).toBe(access);
+    expect(seen[0].timeoutMs).toBe(900);
   });
 });

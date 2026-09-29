@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
 
   // Worker tokens are scoped to their accessible workspaces; admin tokens can reach any workspace.
   if (account.level !== 'admin') {
-    const accessible = await getIngestAccessibleWorkspaceIds(account.id);
+    const accessible = await getIngestAccessibleWorkspaceIds(account);
     if (!accessible.has(workspaceId)) {
       return NextResponse.json({ error: 'Workspace not found or not accessible' }, { status: 404 });
     }

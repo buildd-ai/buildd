@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
 import { githubInstallations } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { createSign, createPrivateKey, createHmac, timingSafeEqual } from 'crypto';
@@ -473,15 +474,7 @@ export async function fetchCiLifecycleStatus(
       installationId,
       `/repos/${repoFullName}/commits/${headSha}/check-suites`,
     );
-    const suites = data.check_suites as Array<{ status: string; conclusion: string | null }> | undefined;
-    if (!suites || suites.length === 0) return null;
-
-    if (suites.some(s => s.status !== 'completed')) return 'ci_running';
-
-    const allPassed = suites.every(
-      s => s.conclusion === 'success' || s.conclusion === 'skipped' || s.conclusion === 'neutral',
-    );
-    return allPassed ? 'ci_green' : 'ci_failed';
+    return ciLifecycleFromSuites(data.check_suites);
   } catch (error) {
     console.warn(`[github] fetchCiLifecycleStatus failed for ${repoFullName}@${headSha}:`, error);
     return null;

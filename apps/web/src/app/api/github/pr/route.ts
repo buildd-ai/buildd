@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
@@ -1627,6 +1628,8 @@ export async function GET(req: NextRequest) {
         : checkRuns.every(passing) ? 'success' as const
         : checkRuns.some(failing) ? 'failure' as const
         : 'pending' as const,
+      // Which ones, by the latest run of each name (lib/failed-checks.ts).
+      failedChecks: failedChecks(checkRuns),
     };
 
     // Summarise reviews — count only the latest actionable review per user.

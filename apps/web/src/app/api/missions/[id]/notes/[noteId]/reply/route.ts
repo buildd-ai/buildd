@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
+import { missionNotes, missions } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
+import { wakeMissionAfterResponse } from '@/lib/mission-wake';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 // POST /api/missions/[id]/notes/[noteId]/reply — reply to a specific note
 export async function POST(
@@ -47,11 +49,7 @@ export async function POST(
 
   let hasAccess = teamIds.includes(mission.teamId);
   if (!hasAccess && mission.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') hasAccess = true;
+    if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) hasAccess = true;
   }
   if (!hasAccess) {
     return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
@@ -105,6 +103,13 @@ export async function POST(
     await triggerEvent(channels.mission(id), events.MISSION_NOTE_POSTED, payload);
     if (parentNote.taskId) {
       await triggerEvent(channels.task(parentNote.taskId), events.MISSION_NOTE_POSTED, payload);
+    }
+
+    // The owner answered (typically a question the organizer asked): plan with
+    // the answer now. Only a signed-in user's reply — an API-key reply is an
+    // agent, and must not re-plan the mission on its own words.
+    if (reply.authorType === 'user') {
+      wakeMissionAfterResponse(id, 'owner_answer');
     }
 
     return NextResponse.json(reply, { status: 201 });

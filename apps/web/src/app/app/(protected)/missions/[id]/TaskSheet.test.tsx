@@ -109,7 +109,7 @@ describe('TaskSheet — body', () => {
           ],
           origin: {
             actor: 'Organizer agent',
-            parts: ['mission heartbeat cycle 3'],
+            parts: ['mission planning cycle 3'],
             links: [
               { key: 'worker', label: 'Agent run', href: '/app/tasks/t9' },
               { key: 'mission', label: 'Example mission', href: '/app/missions/m1' },
@@ -126,7 +126,7 @@ describe('TaskSheet — body', () => {
     // An untitled record falls back to its type.
     expect(html).toMatch(/href="\/app\/artifacts\/art-2"[^>]*>summary</);
     expect(html).toContain('data-testid="task-sheet-origin"');
-    expect(html).toContain('Organizer agent · mission heartbeat cycle 3');
+    expect(html).toContain('Organizer agent · mission planning cycle 3');
     expect(html).toContain('href="/app/tasks/t9"');
     // The sheet is already over the mission: no link back to it.
     expect(html).not.toContain('>Example mission</a>');

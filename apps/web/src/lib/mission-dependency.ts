@@ -153,11 +153,16 @@ async function missionHasUnmergedWork(missionId: string): Promise<boolean> {
  * signal (the webhook's worker-match and branch-match paths, and the manual
  * merge route) and they must not be able to drift apart.
  *
+ * Each unblocked mission is then woken (`wakeMission(id, 'dependency_met')`),
+ * so its next step is planned now rather than on the next heartbeat tick.
+ *
  * Returns the IDs of missions that were unblocked.
  */
 export async function checkAndUnblockDependentMissions(
   upstreamMissionId: string,
   signal: 'completed' | 'merged',
+  /** Injected for testing — defaults to wakeMission (lib/mission-wake.ts) */
+  deps?: { wake?: (missionId: string, reason: 'dependency_met') => Promise<unknown> },
 ): Promise<string[]> {
   const dependents = await db.query.missions.findMany({
     where: and(
@@ -182,11 +187,25 @@ export async function checkAndUnblockDependentMissions(
   const unblockedIds: string[] = [];
 
   for (const dep of toUnblock) {
-    await db
+    // `.returning()` so only the caller whose write actually cleared the gate
+    // wakes the mission: GitHub redelivers, and two merges can race here.
+    const [cleared] = await db
       .update(missions)
       .set({ dependencyMetAt: now, updatedAt: now })
-      .where(and(eq(missions.id, dep.id), isNull(missions.dependencyMetAt)));
-    unblockedIds.push(dep.id);
+      .where(and(eq(missions.id, dep.id), isNull(missions.dependencyMetAt)))
+      .returning({ id: missions.id });
+    if (cleared) unblockedIds.push(dep.id);
+  }
+
+  // Clearing the gate used to only let the next heartbeat tick through; a
+  // mission without one stayed idle. Wake each one now (a no-op for manual,
+  // held or otherwise ineligible missions; never throws). Dynamic import:
+  // mission-wake → mission-loop → this module.
+  if (unblockedIds.length > 0) {
+    const wake = deps?.wake ?? (await import('@/lib/mission-wake')).wakeMission;
+    for (const id of unblockedIds) {
+      await wake(id, 'dependency_met');
+    }
   }
 
   return unblockedIds;

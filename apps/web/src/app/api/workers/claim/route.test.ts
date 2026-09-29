@@ -43,6 +43,11 @@ const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockMissionsFindMany = mock(() => [] as any[]);
+// checkTaskMissionLocal's two-step lookup (task → missionId, then the mission's
+// executor). Defaults to "not found" so existing tests that never touch a local
+// mission keep the role gate applying exactly as before.
+const mockTasksFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 const mockOauthEpisodesFindMany = mock(() => [] as any[]);
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
@@ -107,7 +112,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findMany: mockWorkspacesFindMany },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
-      tasks: { findMany: mockTasksFindMany },
+      tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
@@ -122,7 +127,7 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
-      missions: { findMany: mockMissionsFindMany },
+      missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
@@ -6794,13 +6799,16 @@ describe('explicit taskId claims (organizer workflow)', () => {
     process.env.AUTH_SECRET = 'organizer-test-secret';
     resetExplicitClaimRateLimit();
     for (const m of [mockAuthenticateApiKey, mockGetAccountWorkspacePermissions, mockWorkersFindMany, mockWorkspacesFindMany,
-      mockTasksFindMany, mockMissionsFindMany, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
+      mockTasksFindMany, mockMissionsFindMany, mockTasksFindFirst, mockMissionsFindFirst, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
       mockEvaluateForcedGates, mockGetActiveClaimsByWorkspace, mockFireGateEvent] as any[]) m.mockReset();
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
     mockWorkersFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindMany.mockResolvedValue([]);
+    // checkTaskMissionLocal's lookup: not a local mission unless a test says so.
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockResolvedValue(null);
     mockTeamsFindFirst.mockResolvedValue(null);
     mockHasCodexCredential.mockResolvedValue(false);
     mockDiagnoseExplicitTaskExclusion.mockResolvedValue(null);
@@ -6911,6 +6919,59 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany.mockResolvedValueOnce(forceTarget());
     await claim({ runner: 'runner-7', forceOverride: true });
     expect(probedGates()).not.toContain('missionLocal');
+  });
+
+  // ── friction 22b389df: a local mission's own audit task was unclaimable ────
+  // The `[surface audit]` task ensureMissionSurfaceAudit appends carries
+  // roleSlug='visual-auditor' (EXPLICIT_ROLE_SLUGS), which an interactive
+  // session never advertises in availableSkills — so even the missionLocal
+  // exemption above left it stuck with role_mismatch, including under an
+  // admin force claim (role/runner routing is never force-bypassed).
+  it("local executor: a verified interactive session's explicit claim is exempt from the role gate too", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+
+    // Empty candidate set so the route falls into the explicit-taskId diagnosis
+    // path and names which gates it actually built (same pattern the missionLocal
+    // exemption test above uses) — the mocked query result never observes real
+    // WHERE-clause filtering.
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+
+    expect(probedGates()).not.toContain('role');
+  });
+
+  it('local executor: an exempted audit task still claims end to end', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', roleSlug: 'visual-auditor' })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('local executor: the role exemption is scoped to local missions — a non-local mission still gates on role', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    // checkTaskMissionLocal resolves the task's own mission, which is NOT local.
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-R' });
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+
+    expect(probedGates()).toContain('role');
+  });
+
+  it('local executor: an admin force claim still does NOT lift the role gate on the audit task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    // Not an interactive session, so checkTaskMissionLocal is never consulted —
+    // force alone must not open the explicit-role-slug gate.
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(probedGates()).toContain('role');
   });
 
   it('rate-limits a session\'s explicit claims of one task to one per window', async () => {
@@ -7101,6 +7162,22 @@ describe('claim route: interactive session marker', () => {
     const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
     expect(ctx().interactiveClaimUserId).toBe('user-1');
+  });
+
+  // Review of #3072: a bld_ key has no user; the MCP session key is what
+  // tells its sessions apart, so the claim records it too.
+  it('an interactive claim stamps the MCP session key; a keyless one drops a stale stamp', async () => {
+    const ctx = claimedContext();
+    const marker = signInteractiveSession({ accountId: 'account-1', userId: null, sessionKey: 'sess-a' });
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
+    expect(ctx().interactiveClaimSessionKey).toBe('sess-a');
+
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: { interactiveClaimSessionKey: 'sess-old' }, workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }]);
+    const ctx2 = claimedContext();
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId: 'account-1', userId: null }) }, body: { runner: 'mcp' } }));
+    expect('interactiveClaimSessionKey' in ctx2()).toBe(false);
   });
 
   it('a claim without a verified session user drops a stale stamp', async () => {

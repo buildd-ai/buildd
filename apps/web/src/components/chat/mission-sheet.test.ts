@@ -110,6 +110,18 @@ describe('objectSheetTitle', () => {
   it('anything else keeps its own words', () => {
     expect(objectSheetTitle({ kind: 'question', fallbackText: 'The builder asks: which one?' })).toBe('The builder asks: which one?');
   });
+  // Regression (demo capture): the sheet kept saying a question was waiting
+  // after the person had answered it.
+  it('an open question keeps its words', () => {
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: true })).toBe('A question is waiting on you');
+  });
+  it('an answered question the agent has not picked up says the answer went', () => {
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: false, awaitingAgent: true }))
+      .toBe('Answer sent, waiting for the agent');
+  });
+  it('an answered question the agent has picked up says so', () => {
+    expect(objectSheetTitle({ kind: 'question', fallbackText: 'A question is waiting on you' }, { kind: 'question', open: false })).toBe('Question answered');
+  });
 });
 
 describe('segments', () => {

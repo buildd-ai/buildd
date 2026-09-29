@@ -58,6 +58,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/tasks/:id/notes', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/notes/route'), reach: byTask },
   { pattern: '/api/tasks/:id/approve-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/approve-plan/route'), reach: byTask },
   { pattern: '/api/tasks/:id/reject-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/reject-plan/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/attach-pr', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/attach-pr/route'), reach: byTask },
 
   // ── missions and initiatives ──
   { pattern: '/api/missions', methods: ['GET', 'POST'], load: () => import('@/app/api/missions/route'), reach: { pinTeam: true, ...ROWS } },
@@ -82,6 +83,11 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/discrepancies/:id/promote', methods: ['POST'], load: () => import('@/app/api/discrepancies/[id]/promote/route'), reach: { path: path(['id', 'discrepancy']), ...ROWS } },
 
   // ── workers ──
+  // Before /api/workers/:id, which would take "active" as a worker id.
+  {
+    pattern: '/api/workers/active', methods: ['GET'], load: () => import('@/app/api/workers/active/route'),
+    reach: { unpinned: 'lists the runners serving the caller\'s workspaces; every row carries its workspaceIds, and a row is kept only for the ones in reach (the rest are stripped)', ...ROWS },
+  },
   { pattern: '/api/workers/:id', methods: ['GET'], load: () => import('@/app/api/workers/[id]/route'), reach: byWorker },
   { pattern: '/api/workers/:id/instruct', methods: ['POST'], load: () => import('@/app/api/workers/[id]/instruct/route'), reach: byWorker },
   { pattern: '/api/workers/:id/respond', methods: ['POST'], load: () => import('@/app/api/workers/[id]/respond/route'), reach: byWorker },
@@ -312,18 +318,44 @@ function rowInReach(reach: ChatReach, row: unknown, isWorkspaceList: boolean): b
   return true;
 }
 
-/** Drop out-of-reach rows at every depth. */
+/**
+ * A row that serves several workspaces (a runner: `workspaceIds`, with
+ * `workspaceNames` alongside) is kept with only the in-reach ones; with none
+ * left it is out of reach. Other rows pass through.
+ */
+function narrowWorkspaceIds(reach: ChatReach, row: Record<string, unknown>): Record<string, unknown> | null {
+  const ids = row.workspaceIds;
+  if (!Array.isArray(ids)) return row;
+  const keep = ids.map(id => typeof id === 'string' && reach.workspaceIds.has(id));
+  if (!keep.some(Boolean)) return null;
+  const out: Record<string, unknown> = { ...row, workspaceIds: ids.filter((_, i) => keep[i]) };
+  const names = row.workspaceNames;
+  if (Array.isArray(names)) out.workspaceNames = names.length === ids.length ? names.filter((_, i) => keep[i]) : [];
+  return out;
+}
+
+/** filterInReach's mark for an object that is out of reach once narrowed. */
+const OUT = Symbol('out-of-reach');
+
+/** Drop out-of-reach rows at every depth; OUT when the value itself is out. */
 function filterInReach(reach: ChatReach, value: unknown, depth = 0, key = ''): unknown {
   if (depth > 8 || !value || typeof value !== 'object') return value;
   if (Array.isArray(value)) {
     return value
       .filter(v => rowInReach(reach, v, depth === 1 && key === 'workspaces'))
-      .map(v => filterInReach(reach, v, depth + 1));
+      .map(v => filterInReach(reach, v, depth + 1))
+      .filter(v => v !== OUT);
   }
+  const row = narrowWorkspaceIds(reach, value as Record<string, unknown>);
+  if (!row) return OUT;
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = filterInReach(reach, v, depth + 1, k);
+  for (const [k, v] of Object.entries(row)) {
+    const kept = filterInReach(reach, v, depth + 1, k);
+    if (kept !== OUT) out[k] = kept;
+  }
   return out;
 }
+
 
 /** After dispatch: declared claims must be in reach; a foreign single object is refused; lists are filtered. */
 async function guardResponse(reach: ChatReach, entry: RouteEntry, body: unknown): Promise<unknown> {
@@ -331,7 +363,9 @@ async function guardResponse(reach: ChatReach, entry: RouteEntry, body: unknown)
     for (const c of entry.reach.result(body)) if (!(await claimInReach(reach, c))) outOfReach();
   }
   if (body && typeof body === 'object' && !Array.isArray(body) && !rowInReach(reach, body, false)) outOfReach();
-  return filterInReach(reach, body);
+  const kept = filterInReach(reach, body);
+  if (kept === OUT) outOfReach();
+  return kept;
 }
 
 export interface ApiCall {

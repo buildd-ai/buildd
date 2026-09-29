@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { expectDecisionPinned, JEV_MODEL, KIT_VERSION } from '@builddai/ai-kit/decide';
+import { DECIDE_ENGINE_VERSION, expectDecisionPinned, JEV_MODEL } from '@builddai/ai-kit/decide';
 import { DEFAULT_RANK_LEVELS, defineRankSurface } from './index';
 
 const catalogue = [
@@ -28,7 +28,7 @@ describe('defineRankSurface', () => {
     expect(Object.keys(s.decision.questions)).toEqual(['cash', 'due', 'sync', 'classify']);
     expect(s.decision.questions.cash).toMatchObject({ type: 'score', instructions: 'Offer "Why did cash move?"?' });
     expect(s.decision.questions.cash.criteria).toEqual([...DEFAULT_RANK_LEVELS]);
-    expect(s.version).toBe(`2026-09-28.a|${JEV_MODEL}|kit-${KIT_VERSION}`);
+    expect(s.version).toBe(`2026-09-28.a|${JEV_MODEL}|engine-${DECIDE_ENGINE_VERSION}`);
     expectDecisionPinned(s.decision, { fingerprint: s.decision.fingerprint });
   });
 

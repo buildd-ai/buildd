@@ -2,43 +2,49 @@
 
 import { useState } from 'react';
 import { timeAgo } from '@/lib/mission-helpers';
+import type { OrganizerRun } from '@/lib/mission-checkins';
 import AiFeedback from '@/components/AiFeedback';
 
+/**
+ * Organizer runs: every time the organizer planned the next step, labelled by
+ * what started it (`tasks.context.triggerSource`, lib/mission-checkins.ts).
+ * The file keeps its old name; users read "Organizer runs".
+ */
 interface HeartbeatTimelineProps {
-  tasks: Array<{
-    id: string;
-    createdAt: Date | string;
-    status: string;
-    result: any;
-  }>;
+  runs: Array<OrganizerRun & { result: any }>;
+  /** Open on first render (the dev fixture); the mission page starts collapsed. */
+  defaultExpanded?: boolean;
 }
 
-type HeartbeatStatus = 'ok' | 'action_taken' | 'error';
+type RunOutcome = 'ok' | 'action_taken' | 'error';
 
-function getTaskHeartbeatStatus(task: HeartbeatTimelineProps['tasks'][0]): HeartbeatStatus | null {
-  const status = task.result?.structuredOutput?.status;
+const OPEN_STATUSES = new Set(['pending', 'assigned', 'in_progress', 'waiting_input']);
+
+function getRunOutcome(run: HeartbeatTimelineProps['runs'][0]): RunOutcome | null {
+  if (run.status === 'failed') return 'error';
+  const status = run.result?.structuredOutput?.status;
   if (status === 'ok' || status === 'action_taken' || status === 'error') return status;
   return null;
 }
 
-function getSummary(task: HeartbeatTimelineProps['tasks'][0]): string {
-  const summary = task.result?.structuredOutput?.summary || task.result?.summary;
+function getSummary(run: HeartbeatTimelineProps['runs'][0]): string {
+  const summary = run.result?.structuredOutput?.summary || run.result?.summary;
   if (summary) return summary;
-  const status = getTaskHeartbeatStatus(task);
-  if (status === 'ok') return 'No issues found';
-  if (status === 'action_taken') return 'Agent took action';
-  if (status === 'error') return 'Error';
-  return task.status === 'completed' ? 'Completed' : task.status;
+  if (OPEN_STATUSES.has(run.status)) return 'Running';
+  const outcome = getRunOutcome(run);
+  if (outcome === 'ok') return 'Nothing to do';
+  if (outcome === 'action_taken') return 'Planned the next step';
+  if (outcome === 'error') return 'Failed';
+  return run.status === 'completed' ? 'Completed' : run.status;
 }
 
-export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
-  const entries = tasks.slice(0, 20);
-  const [expanded, setExpanded] = useState(false);
+export default function HeartbeatTimeline({ runs, defaultExpanded = false }: HeartbeatTimelineProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
-  if (entries.length === 0) return null;
+  if (runs.length === 0) return null;
 
   return (
-    <div className="card p-4">
+    <div className="card p-4" data-testid="organizer-runs">
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
@@ -46,12 +52,12 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
         aria-expanded={expanded}
       >
         <span className="flex items-center gap-1.5 flex-1 min-w-0">
-          {/* EKG/pulse wave icon — distinct from task icons */}
-          <svg className="w-3.5 h-3.5 text-[#059669] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          {/* Pulse wave icon, distinct from task icons */}
+          <svg className="w-3.5 h-3.5 text-status-success shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12h3l2-7 4 14 3-10 2 3h4" />
           </svg>
-          <h2 className="section-label">Evaluation Log</h2>
-          <span className="text-[11px] text-text-muted shrink-0">({entries.length})</span>
+          <h2 className="section-label">Organizer runs</h2>
+          <span className="text-[11px] text-text-muted shrink-0">({runs.length})</span>
         </span>
         <svg
           className={`w-4 h-4 text-text-muted shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
@@ -61,52 +67,38 @@ export default function HeartbeatTimeline({ tasks }: HeartbeatTimelineProps) {
         </svg>
       </button>
       <p className="text-[11px] text-text-muted mt-0.5">
-        Heartbeat re-evaluation cycles
+        Each time the organizer planned the next step, and what started it.
       </p>
 
       {expanded && (
         <div className="space-y-1 mt-3 border-t border-border-default pt-3">
-          {entries.map(task => {
-            const hbStatus = getTaskHeartbeatStatus(task);
-            const summary = getSummary(task);
-
-            let statusLabel = '';
-            let statusClass = 'text-text-muted';
-            let rowClass = '';
-
-            if (hbStatus === 'ok') {
-              statusLabel = 'OK';
-              statusClass = 'text-status-success';
-            } else if (hbStatus === 'action_taken') {
-              statusLabel = 'ACTED';
-              statusClass = 'text-status-warning';
-              rowClass = 'bg-status-warning/5';
-            } else if (hbStatus === 'error') {
-              statusLabel = 'ERROR';
-              statusClass = 'text-status-error';
-              rowClass = 'bg-status-error/5';
-            } else {
-              statusLabel = 'PENDING';
-            }
+          {runs.map(run => {
+            const outcome = getRunOutcome(run);
+            const summary = getSummary(run);
+            const rowClass = outcome === 'error' ? 'bg-status-error/5' : '';
 
             return (
               <button
-                key={task.id}
-                data-task-id={task.id}
-                className={`w-full flex items-center gap-3 px-2.5 py-1.5 rounded-md hover:bg-card-hover transition-colors text-[12px] text-left ${rowClass}`}
+                key={run.id}
+                data-task-id={run.id}
+                data-trigger-source={run.triggerSource ?? ''}
+                className={`w-full flex items-center gap-3 px-2.5 py-1.5 hover:bg-card-hover transition-colors text-[12px] text-left ${rowClass}`}
               >
-                {/* Evaluation marker — square, not circle (distinct from worker dots) */}
-                <span className={`w-2 h-2 rounded-sm shrink-0 ${
-                  hbStatus === 'ok' ? 'bg-status-success/60' :
-                  hbStatus === 'action_taken' ? 'bg-status-warning/60' :
-                  hbStatus === 'error' ? 'bg-status-error/60' :
+                {/* Run marker: square, distinct from worker dots */}
+                <span className={`w-2 h-2 shrink-0 ${
+                  outcome === 'ok' ? 'bg-status-success/60' :
+                  outcome === 'action_taken' ? 'bg-status-warning/60' :
+                  outcome === 'error' ? 'bg-status-error/60' :
                   'bg-border-default'
                 }`} />
-                <span className={`text-[11px] md:text-[9px] font-bold tracking-wider w-12 md:w-8 shrink-0 ${statusClass}`}>{statusLabel}</span>
-                <span className="text-[11px] text-text-muted shrink-0 w-12 tabular-nums">{timeAgo(task.createdAt)}</span>
-                <span className="flex-1 truncate text-text-secondary">{summary}</span>
+                <span className="text-[11px] text-text-muted shrink-0 w-16 whitespace-nowrap tabular-nums">{timeAgo(run.createdAt)}</span>
+                {/* Phone: trigger over summary, so neither truncates to nothing. */}
+                <span className="flex-1 min-w-0 flex flex-col md:flex-row md:items-center md:gap-3">
+                  <span className="min-w-0 truncate font-medium text-text-primary md:shrink-0 md:max-w-[45%]">{run.triggerLabel}</span>
+                  <span className="min-w-0 truncate text-text-secondary md:flex-1">{summary}</span>
+                </span>
                 <span onClick={(e) => e.stopPropagation()}>
-                  <AiFeedback entityType="heartbeat" entityId={task.id} showDismiss compact />
+                  <AiFeedback entityType="heartbeat" entityId={run.id} showDismiss compact />
                 </span>
                 <svg className="w-3 h-3 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

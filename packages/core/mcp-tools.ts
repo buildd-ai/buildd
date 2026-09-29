@@ -496,7 +496,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
-    list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url. Open lists conflicts first, then red CI, then newest. Closed PRs are never listed; read one with get_pr.',
+    list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist in the same repo and already be MERGED, and must differ from the PR being superseded; a 404/409 names which check failed. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
@@ -527,7 +527,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean (check-ins, default true for a new auto mission: an hourly stuck check that starts the organizer only when the mission is stuck; the next step is planned when work finishes either way. false opts out), heartbeatChecklist?: string (the organizer checklist), activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "planned" | "active" | "paused" | "completed" | "archived" (set by a person; nothing derives or auto-advances it), priority?: number, ownerUserId?: string (a member of the initiative\'s team; null falls back to the creator; create defaults to the caller), targetDate?: "YYYY-MM-DD" | null (optional calendar target). Initiatives carry no KPIs: put checkable outcomes in mission goalCriteria. } — an initiative is an execution-free container above missions (initiative → mission → task), like a Linear initiative. Progress is missions done over missions. "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; gitConfig.criteriaGrader: "auto"|"api"|"runner" sets the workspace default grader for prose goal criteria; to apply a detected policyConfig from action=init, use gitConfig.policyConfig; merge-policy paths are detected by action=init, never typed), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Paths are grouped into named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -552,7 +552,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
-    correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
+    correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR or the task already records a different one; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -601,6 +601,10 @@ function fmtTokens(n: number | null | undefined): string {
   return `${Math.round(n)}`;
 }
 
+const PR_RESOLVING_LABEL: Record<string, string> = {
+  conflict: 'agent resolving the conflict', ci: 'agent fixing CI', review: 'agent reviewing',
+};
+
 const PR_STATE_LABEL: Record<string, string> = {
   conflict: 'CONFLICT', ci_failed: 'CI FAILED', ci_running: 'CI running', ci_green: 'CI green', pr_open: 'open', merged: 'merged',
 };
@@ -621,9 +625,10 @@ export function renderPrList(data: { state?: string; sinceDays?: number; workspa
       : state === 'open' ? `No open PRs${scope}.`
       : `No open PRs in state ${state}${scope}.`;
   }
+  const needsYou = prs.filter(p => p.waitingOnYou).length;
   const conflicts = prs.filter(p => p.status === 'conflict').length;
   const red = prs.filter(p => p.status === 'ci_failed').length;
-  const flags = [conflicts ? `${conflicts} conflicting` : '', red ? `${red} with failing CI` : ''].filter(Boolean).join(', ');
+  const flags = [needsYou ? `${needsYou} needs you` : '', conflicts ? `${conflicts} conflicting` : '', red ? `${red} with failing CI` : ''].filter(Boolean).join(', ');
   const header = state === 'merged' ? `${noun(prs.length)} merged ${window}${scope}:`
     : state === 'open' ? `${prs.length} open PR${prs.length === 1 ? '' : 's'}${scope}${flags ? ` (${flags})` : ''}:`
     : `${noun(prs.length)} ${state === 'attention' ? 'needing attention' : `in state ${state}`}${scope}${flags ? ` (${flags})` : ''}:`;
@@ -632,12 +637,19 @@ export function renderPrList(data: { state?: string; sinceDays?: number; workspa
     const when = state === 'merged' ? `merged ${day(p.mergedAt)}`
       : p.status === 'conflict' && p.conflictDetectedAt ? `conflicting since ${day(p.conflictDetectedAt)}`
       : p.startedAt ? `opened ${day(p.startedAt)}` : null;
-    return `- #${p.prNumber ?? '?'} ${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'} · ${[
+    // Signals only appear when they matter; a quiet PR's line is unchanged.
+    const lead = p.waitingOnYou ? `NEEDS YOU (${p.waitingOnYou}) · ` : '';
+    const attempts = p.ciFixAttempts ? ` (${p.ciFixAttempts} fix attempt${p.ciFixAttempts === 1 ? '' : 's'})` : '';
+    const label = `${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'}${attempts}`;
+    return `- #${p.prNumber ?? '?'} ${lead}${label} · ${[
+      p.resolving ? PR_RESOLVING_LABEL[p.resolving] : null,
       p.taskTitle ?? '(no task)',
       p.workspaceName,
       p.missionTitle ? `mission "${p.missionTitle}"` : null,
       p.taskId ? `task ${String(p.taskId).slice(0, 8)}` : null,
+      p.intoMissionBranch ? `→ ${p.intoMissionBranch}` : null,
       when,
+      p.checkedHoursAgo ? `state checked ${p.checkedHoursAgo}h ago` : null,
     ].filter(Boolean).join(' · ')}\n  ${p.prUrl}`;
   });
   return `${header}\n${lines.join('\n')}`;
@@ -2268,6 +2280,11 @@ export async function handleBuilddAction(
         ? 'CI: none configured'
         : `CI: ${checks.state} (${checks.passed}/${checks.total} passed${checks.failed > 0 ? `, ${checks.failed} failed` : ''}${checks.pending > 0 ? `, ${checks.pending} pending` : ''})`;
 
+      const failing = Array.isArray(checks.failedChecks) ? checks.failedChecks as Array<{ name: string; url: string | null }> : [];
+      const failingLine = failing.length > 0
+        ? `Failing: ${failing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}`
+        : '';
+
       const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
         ? `Reviews: ${reviews.approved} approved${reviews.changesRequested > 0 ? `, ${reviews.changesRequested} changes requested` : ''}`
         : 'Reviews: none';
@@ -2314,6 +2331,7 @@ export async function handleBuilddAction(
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
         ciLine,
+        failingLine,
         reviewLine,
         statsLine,
         supersededLine,
@@ -2567,23 +2585,49 @@ export async function handleBuilddAction(
 
     case 'correct_task_result': {
       requireFullUuid(params.taskId, 'taskId');
-      if (typeof params.summary !== 'string' || params.summary.trim() === '') {
+      const hasSummary = params.summary !== undefined;
+      const hasPr = params.prUrl !== undefined || params.prNumber !== undefined;
+      if (!hasSummary && !hasPr) {
+        throw new Error('summary, prUrl or prNumber is required');
+      }
+      if (hasSummary && (typeof params.summary !== 'string' || params.summary.trim() === '')) {
         throw new Error('summary is required and must be a non-empty string');
       }
 
-      const correctedBy = ctx.workerId ? `worker:${ctx.workerId}` : 'admin_token';
-      const updated = await api(`/api/tasks/${params.taskId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ resultSummary: params.summary, correctedBy }),
-      });
+      const lines: string[] = [];
+      // PR first: if the PR cannot be verified, the summary (which usually
+      // cites it) is left untouched rather than half-applied.
+      if (hasPr) {
+        const attached = await api(`/api/tasks/${params.taskId}/attach-pr`, {
+          method: 'POST',
+          body: JSON.stringify({
+            ...(params.prUrl !== undefined ? { prUrl: params.prUrl } : {}),
+            ...(params.prNumber !== undefined ? { prNumber: params.prNumber } : {}),
+          }),
+        });
+        lines.push(
+          `PR #${attached.prNumber} (${attached.prState}) ${attached.alreadyAttached ? 'was already attached' : 'attached'} `
+          + `to task "${attached.title}" (ID: ${attached.taskId}).`,
+          `PR: ${attached.prUrl}`,
+        );
+      }
 
-      const previous = updated.result?.previousSummary;
-      return text(
-        `Result summary corrected for task "${updated.title}" (ID: ${updated.id}).\n`
-        + `New summary: ${updated.result?.summary}\n`
-        + (previous ? `Previous summary: ${previous}\n` : '')
-        + `Corrected at: ${updated.result?.summaryCorrectedAt}`,
-      );
+      if (hasSummary) {
+        const correctedBy = ctx.workerId ? `worker:${ctx.workerId}` : 'admin_token';
+        const updated = await api(`/api/tasks/${params.taskId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ resultSummary: params.summary, correctedBy }),
+        });
+        const previous = updated.result?.previousSummary;
+        lines.push(
+          `Result summary corrected for task "${updated.title}" (ID: ${updated.id}).`,
+          `New summary: ${updated.result?.summary}`,
+          ...(previous ? [`Previous summary: ${previous}`] : []),
+          `Corrected at: ${updated.result?.summaryCorrectedAt}`,
+        );
+      }
+
+      return text(lines.join('\n'));
     }
 
     case 'create_task': {
@@ -5606,14 +5650,15 @@ export async function handleBuilddAction(
 
 // ── Memory Action Handler ────────────────────────────────────────────────────
 
-import { MemoryStore } from './memory-store';
+import { MemoryStore, type MemoryRecord } from './memory-store';
+import { MEMORY_CONTEXT_LIMIT, renderMemoryContext } from './memory-context';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
-import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter } from './memory-retrieval';
-import { memoryStateOf, pullMemoryStates, type MemoryProvenance } from './memory-candidates';
+import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter, type MemoryStoreSearcher } from './memory-retrieval';
+import { memoryStateOf, type MemoryProvenance } from './memory-candidates';
 import {
   buildMemoryIndex,
   isMemoryIndexEnabled,
@@ -6614,37 +6659,54 @@ export async function handleMemoryAction(
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const scoped = ownMemoryProject(ctx, params.project);
       if ('error' in scoped) return errorResult(scoped.error);
-      const data = await mc.getContext(scoped.project);
-      return text(data.markdown || '(No memories yet)');
+      // The same rows getContext reads (the newest active memories), through
+      // the door so the use ledger records what the agent was shown.
+      const { memories } = await retrieveMemory<MemoryRecord>({
+        strategy: 'store-search',
+        searcher: mc,
+        search: { limit: MEMORY_CONTEXT_LIMIT },
+        scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, project: scoped.project },
+        caller: 'buildd_memory_context',
+        attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+        ledger: ctx.memoryLedger,
+      });
+      return text(renderMemoryContext(memories).markdown || '(No memories yet)');
     }
 
     case 'search': {
       if (ctx.isSensitive) return text('(No results — memory access is disabled for sensitive workspaces.)');
       const scoped = ownMemoryProject(ctx, params.project);
       if ('error' in scoped) return errorResult(scoped.error);
-      const data = await mc.search({
-        query: params.query as string | undefined,
-        type: params.type as string | undefined,
-        project: scoped.project,
-        files: params.files as string[] | undefined,
+      // Through the door, so the use ledger records each memory returned. A
+      // failed hydration still answers with the search's summary rows.
+      let searched: { results: any[]; total: number } = { results: [], total: 0 };
+      const searcher: MemoryStoreSearcher = {
+        search: async (p) => (searched = await mc.search(p)),
+        batch: async (ids) => {
+          try { return await mc.batch(ids); } catch { return { memories: [] }; }
+        },
+      };
+      const { memories: fetched } = await retrieveMemory<any>({
+        strategy: 'store-search',
+        searcher,
+        search: {
+          query: params.query as string | undefined,
+          type: params.type as string | undefined,
+          files: params.files as string[] | undefined,
+          limit: Math.min((params.limit as number) || 10, 50),
+          offset: params.offset as number | undefined,
+        },
+        scope: { teamId: ctx.teamId, workspaceId: ctx.workspaceId, project: scoped.project },
+        caller: 'buildd_memory_search',
         // A pull: active memories, and candidates when asked for.
-        states: pullMemoryStates(params.includeCandidates === true),
-        limit: Math.min((params.limit as number) || 10, 50),
-        offset: params.offset as number | undefined,
+        includeCandidates: params.includeCandidates === true,
+        attribution: { taskId: ctx.taskId, workerId: ctx.workerId },
+        ledger: ctx.memoryLedger,
       });
+      const data = searched;
 
       if (!data.results || data.results.length === 0) {
         return text(`No memories found${params.query ? ` matching "${params.query}"` : ''}. Use \`learn\` to record memories.`);
-      }
-
-      // Fetch full content
-      const ids = data.results.map(r => r.id);
-      let fetched: any[] = [];
-      try {
-        const batchData = await mc.batch(ids);
-        fetched = batchData.memories || [];
-      } catch {
-        fetched = [];
       }
 
       if (fetched.length > 0) {

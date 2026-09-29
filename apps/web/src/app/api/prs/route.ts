@@ -9,9 +9,11 @@ import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/li
  * GET /api/prs?workspaceId=&state=open|attention|conflict|ci_failed|merged&sinceDays=&limit=
  *
  * PRs buildd opened or adopted, across the caller's reachable workspaces (or
- * one of them), one row per PR. Default `open`, conflicts and red CI first.
- * `merged` covers the last `sinceDays` (default 7). Closed PRs are never
- * listed (lib/pr-list.ts). Backs the `list_prs` MCP action and chat tool.
+ * one of them), one row per PR, with what needs a person and what an agent
+ * is already on (lib/pr-list.ts prSignals). Default `open`, what needs you
+ * first. `attention`: conflicts, red CI and PRs waiting on you. `merged`: the
+ * last `sinceDays` (default 7). Closed PRs are never listed. Backs the
+ * `list_prs` MCP action and chat tool.
  */
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');

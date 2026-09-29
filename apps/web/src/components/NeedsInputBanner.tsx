@@ -18,14 +18,18 @@ export default function NeedsInputBanner() {
   const { tasks: waiting, alertPermission, enableAlerts } = useNeedsInput();
   // A question whose own sheet or pane is open is answered right there; the
   // banner naming it on top of that sheet only repeats it.
-  const tasks = bannerTasks(waiting, useHiddenNeedsInput());
+  const shown = bannerTasks(waiting, useHiddenNeedsInput());
+  // An answered question is not waiting on anyone but the agent.
+  const tasks = shown.filter(t => !t.answerSent);
+  const sent = shown.filter(t => t.answerSent);
   const count = tasks.length;
   // The phone chat canvas in needs-you mood already says it (needs-input-hidden.ts).
   const phoneHidden = usePhoneBannerHidden();
   // The summoned chat canvas is up: the banner would sit bright above its scrim.
   const hidden = useBannerHidden();
 
-  if (count === 0 || hidden) return null;
+  if (hidden) return null;
+  if (count === 0) return sent.length > 0 ? <AnswerSentBanner task={sent[0]} phoneHidden={phoneHidden} /> : null;
 
   const firstTask = tasks[0];
   // The sentence every page shows, not the raw "feat(scope): …" title.
@@ -91,6 +95,26 @@ export default function NeedsInputBanner() {
             Enable alerts
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Quiet, no ping: nothing is asked of the person any more, the agent is next. */
+function AnswerSentBanner({ task, phoneHidden }: { task: { id: string; title: string; missionId?: string | null }; phoneHidden: boolean }) {
+  return (
+    <div
+      data-testid="global-answer-sent-banner"
+      className={`${phoneHidden ? 'hidden md:block ' : ''}bg-surface-2 border-b border-border-default px-4 py-2`}
+    >
+      <div className="flex items-center justify-center gap-2 text-sm text-text-secondary">
+        <span className="text-status-success" aria-hidden="true">✓</span>
+        <span>
+          <Link href={needsInputTaskHref(task)} className="underline underline-offset-2 hover:text-text-primary">
+            {taskHeading(task, null).heading}
+          </Link>
+          {': Answer sent, waiting for the agent'}
+        </span>
       </div>
     </div>
   );

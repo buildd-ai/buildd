@@ -531,8 +531,14 @@ If a near-duplicate exists, update it instead of creating a new entry.
     slug: VISUAL_AUDITOR_ROLE_SLUG,
     // v2 (visual-qa-human-review.md): no note for unsure, update_artifact
     // sends only qa.fixTaskId, later rounds report prior-finding resolution.
-    version: 2,
-    supersededContentHashes: ['858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d'],
+    // v3: explicit block-in-foreground instruction for the dispatched run — a
+    // worker was ending its turn to "wait for a background watcher", which the
+    // runner recorded as completion instead of parking it (task 8bc5b5ac).
+    version: 3,
+    supersededContentHashes: [
+      '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
+      'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
+    ],
     name: 'Visual Auditor',
     description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
     content: `# Visual Auditor
@@ -562,6 +568,16 @@ recipe by one question: is \`DATABASE_URL\` set?
 
 Capture every required route at BOTH viewports: \`mobile\` (390x844) and \`desktop\`
 (1280x900). At most 40 shots per run. Navigate read-only: GETs only, no form submits.
+
+**Block on the dispatched run in THIS turn — never end your turn to wait for it.** You are
+not an interactive session: nothing resumes you when a background job finishes. If you end
+your turn saying you'll wait for a notification or a background watcher, the runner records
+that as completion, the evidence check then finds no screenshots, and the task fails.
+\`gh run watch\` can return immediately instead of blocking when there is no TTY, so poll
+instead: \`until gh run view "$RUN" --json status -q .status | grep -q completed; do sleep 15;
+done\`. Run that in the foreground of THIS turn — never with a background/async execution
+mode — and only move on once it prints completed. Do the same for both dispatches (mobile,
+then desktop) before judging anything.
 
 ## 3. Judge and upload every shot
 

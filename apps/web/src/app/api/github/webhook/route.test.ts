@@ -70,6 +70,10 @@ mock.module('@/lib/subscriptions', () => ({
   prCiFailedEvent: (a: any) => ({ type: 'pr.ci_failed', ...a }),
   taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
 }));
+// Revert ledger: the writer is stood in; what it parses and writes is covered
+// in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
+const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
+mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
 mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
   applyTaskReopenSideEffects: mockApplyTaskReopenSideEffects,
@@ -301,6 +305,23 @@ mock.module('@/lib/mission-dependency', () => ({
   // importer loaded in it.
   isMissionBlocked: mock(() => Promise.resolve({ blocked: false })),
   wouldCreateCycle: mock(() => Promise.resolve(false)),
+}));
+
+// Post-completion path. The webhook used to write tasks.status directly on a
+// merge, so dependents, mission completion and re-planning never ran from it.
+// Its internals are covered in lib/task-dependencies.test.ts.
+const mockResolveCompletedTask = mock((_taskId: string, _workspaceId: string) => Promise.resolve());
+const mockCheckDependsOnResolved = mock((_taskId: string) => Promise.resolve());
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+  checkDependsOnResolved: mockCheckDependsOnResolved,
+  requirePlanApprovalEnabled: () => false,
+  shouldAutoApprovePlan: () => true,
+}));
+const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
+  wakeMissionAfterResponse: mockWakeMissionAfterResponse,
 }));
 
 // The shared completion predicate. The webhook release path used to check only
@@ -572,6 +593,9 @@ function makeCheckSuitePayload(overrides: Record<string, any> = {}) {
 }
 
 function resetAll() {
+  mockResolveCompletedTask.mockClear();
+  mockCheckDependsOnResolved.mockClear();
+  mockWakeMissionAfterResponse.mockClear();
   mockVerifyWebhookSignature.mockReset();
   mockGithubApi.mockReset();
   mockAllCheckSuitesPassed.mockReset();
@@ -4957,6 +4981,80 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
   });
 
+  // ── Merge completes the task through resolveCompletedTask (S1) ───────────
+  it('routes a merge-completed task through resolveCompletedTask', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, missionId: 'm2' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).toHaveBeenCalledTimes(1);
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-task', 'ws1');
+    // It already re-plans through the event loop: no separate wake.
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve the task when the worker path completed it first (row guard lost)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+    updateReturningByStatus = { completed: [] };
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    const statusWrite = updateCalls.find(c => (c.setValues as any).status === 'completed');
+    expect(statusWrite).toBeDefined();
+    // The write is guarded on the row still being non-completed.
+    expect(JSON.stringify(statusWrite!.condition)).toContain('"type":"ne"');
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves a loop task waiting on this merge to the loop path, which resolves it itself', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, loopState: 'condition_unmet' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('does not re-resolve an already-completed task, but wakes its mission with pr_merged', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, status: 'completed', missionId: 'm3' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith('m3', 'pr_merged');
+  });
+
+  it('a redelivered merge of an already-completed task wakes nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({
+      mergedAt: new Date('2026-01-01T00:00:00Z'),
+      task: { ...taskPrWorker().task, status: 'completed', missionId: 'm3' },
+    }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('routes a branch-matched merge (no owning worker) through resolveCompletedTask', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abc12345-task', status: 'in_progress', workspaceId: 'ws9', missionId: null });
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('abc12345-task', 'ws9');
+  });
+
+  it('does not resolve a branch-matched task another path completed first', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abc12345-task', status: 'in_progress', workspaceId: 'ws9', missionId: null });
+    updateReturningByStatus = { completed: [] };
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
   // ── V8 / V14: a merge on GitHub versus the review ────────────────────────
   function taskPrWorker(overrides: Record<string, any> = {}) {
     return {
@@ -5170,5 +5268,101 @@ describe('subscriptions ledger: the webhook records the right event', () => {
   it('a green check suite records no CI failure', async () => {
     await POST(createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } })));
     expect(recorded().filter((e: any) => e.type === 'pr.ci_failed')).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Revert ledger: what blocks a candidate memory's promotion. A merged PR's
+// title and body, and commit messages on the repo's default branch (from a
+// push, or the push-triggered CI run's head commit), are handed to the writer.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('revert ledger: merged PRs and default-branch commits are recorded', () => {
+  beforeEach(() => { mockRecordPrReverts.mockClear(); });
+
+  it('a merged PR hands its title and body to the writer, as itself', async () => {
+    await POST(createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: 130, merged: true, draft: false, title: 'Revert "feat: thing"', body: 'Reverts test-org/test-repo#123',
+        head: { ref: 'revert-123', sha: 'sha-130' }, base: { ref: 'dev' },
+        html_url: 'https://github.com/test-org/test-repo/pull/130', merge_commit_sha: 'm130',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    }));
+    expect(mockRecordPrReverts).toHaveBeenCalledWith({
+      repoFullName: 'test-org/test-repo',
+      revertedBy: 'pr#130',
+      revertingPrNumber: 130,
+      text: 'Revert "feat: thing"\nReverts test-org/test-repo#123',
+    });
+  });
+
+  it('a PR closed without merging records nothing', async () => {
+    await POST(createWebhookRequest('pull_request', {
+      action: 'closed',
+      pull_request: {
+        number: 131, merged: false, title: 'Revert #123', body: null,
+        head: { ref: 'x', sha: 'sha-131' }, base: { ref: 'dev' }, html_url: 'https://github.com/test-org/test-repo/pull/131',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+    }));
+    expect(mockRecordPrReverts).not.toHaveBeenCalled();
+  });
+
+  it('a push to the default branch hands each commit message over, as that commit', async () => {
+    const res = await POST(createWebhookRequest('push', {
+      ref: 'refs/heads/dev',
+      repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      commits: [
+        { id: 'c1', message: 'Revert "fix: x"\n\nThis reverts commit abcdef1.' },
+        { id: 'c2', message: 'chore: bump' },
+      ],
+    }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrReverts.mock.calls.map(c => c[0])).toEqual([
+      { repoFullName: 'test-org/test-repo', revertedBy: 'c1', text: 'Revert "fix: x"\n\nThis reverts commit abcdef1.' },
+      { repoFullName: 'test-org/test-repo', revertedBy: 'c2', text: 'chore: bump' },
+    ]);
+  });
+
+  it('a push to another branch records nothing', async () => {
+    await POST(createWebhookRequest('push', {
+      ref: 'refs/heads/feature',
+      repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      commits: [{ id: 'c1', message: 'This reverts commit abcdef1.' }],
+    }));
+    expect(mockRecordPrReverts).not.toHaveBeenCalled();
+  });
+
+  it("a push-triggered CI run on the default branch hands over its head commit", async () => {
+    await POST(createWebhookRequest('workflow_run', {
+      action: 'completed',
+      workflow_run: {
+        id: 424242, name: 'Build & Test', status: 'completed', conclusion: 'success',
+        html_url: 'https://github.com/test-org/test-repo/actions/runs/424242',
+        head_branch: 'dev', head_sha: 'c9', event: 'push', path: '.github/workflows/build.yml',
+        head_commit: { id: 'c9', message: 'This reverts commit abcdef1.' },
+        repository: { full_name: 'test-org/test-repo' },
+      },
+      repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+    }));
+    expect(mockRecordPrReverts).toHaveBeenCalledWith({ repoFullName: 'test-org/test-repo', revertedBy: 'c9', text: 'This reverts commit abcdef1.' });
+  });
+
+  it('a CI run not triggered by a push (or off the default branch) records nothing', async () => {
+    for (const run of [{ event: 'pull_request', head_branch: 'dev' }, { event: 'push', head_branch: 'feature' }]) {
+      await POST(createWebhookRequest('workflow_run', {
+        action: 'completed',
+        workflow_run: {
+          id: 424243, name: 'Build & Test', status: 'completed', conclusion: 'success',
+          html_url: 'https://github.com/test-org/test-repo/actions/runs/424243', head_sha: 'c9', path: '.github/workflows/build.yml',
+          head_commit: { id: 'c9', message: 'This reverts commit abcdef1.' },
+          repository: { full_name: 'test-org/test-repo' }, ...run,
+        },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+    }
+    expect(mockRecordPrReverts).not.toHaveBeenCalled();
   });
 });

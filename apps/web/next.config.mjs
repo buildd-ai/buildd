@@ -1,6 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['@buildd/shared', '@buildd/core', '@builddai/ai-kit'],
+  // @aws-sdk/client-s3 is on Next's default server-external list. Left
+  // external, Turbopack loads it in `bun --bun next dev` through a hashed alias
+  // (`@aws-sdk/client-s3-<hash>`) that Bun's resolver can't find, so every page
+  // or route importing lib/storage (the task detail page among them) throws
+  // "Failed to load external module". Listing it here bundles it instead.
+  // Guarded by src/lib/next-config.test.ts.
+  transpilePackages: ['@buildd/shared', '@buildd/core', '@builddai/ai-kit', '@aws-sdk/client-s3'],
   // @ast-grep/napi is a native napi binary loaded via dynamic import() in
   // packages/core/knowledge-store/symbol-extractor.ts. Turbopack statically
   // traces the dynamic import and cannot place the .node asset in an ESM

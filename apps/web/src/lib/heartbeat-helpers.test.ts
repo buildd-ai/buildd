@@ -87,8 +87,25 @@ describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('roleSlug=builder');
   });
 
-  it('warns against false OK reporting', () => {
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('Do NOT report OK if the mission has not made forward progress');
+  it('keeps the organizer-only items: workspace, sibling work, completion', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('manage_workspaces');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('NEVER re-implement');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('missionComplete: true');
+  });
+
+  // The platform already does these: task auto-retry, CI retry + the conflict
+  // sweep, and the backstop stuck check. Restating them made the organizer
+  // spend runs on work nothing needed from it.
+  it('drops items that duplicate platform code', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain('Retry any failed tasks');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toMatch(/merge conflicts/i);
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain('Do NOT report OK');
+  });
+
+  it('does not name the heartbeat as the driver', () => {
+    // The organizer now runs when work finishes, on wake events, or when the
+    // stuck check fires — not on a heartbeat.
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toMatch(/heartbeat/i);
   });
 
   it('states that only a concrete pathManifest buys serialization', () => {
@@ -100,12 +117,6 @@ describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
     );
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('concrete');
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('no serialization');
-  });
-
-  it('instructs to retry originating task for PR conflicts — not create an integration task', () => {
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('parentTaskId');
-    // Must not instruct to CREATE an integration task (negation context is fine)
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain('create integration task if conflicts exist');
   });
 });
 
@@ -130,7 +141,6 @@ function makePhaseData(overrides: Partial<MissionPhaseData> = {}): MissionPhaseD
     artifacts: [],
     hasWorkspace: true,
     prCount: 0,
-    priorHeartbeatStatuses: [],
     ...overrides,
   };
 }
@@ -197,41 +207,44 @@ describe('detectMissionPhase', () => {
     expect(result.reason).toContain('builder task(s) completed');
   });
 
-  it('detects stalled when 3+ consecutive ok heartbeats', () => {
+  it('detects stalled when work finished and nothing is open or planned', () => {
     const result = detectMissionPhase(makePhaseData({
       completedTasks: [
-        { roleSlug: 'organizer', result: { summary: 'Plan done' } },
+        { roleSlug: 'organizer', result: { summary: 'Research done' } },
       ],
-      priorHeartbeatStatuses: ['ok', 'ok', 'ok'],
     }));
     expect(result.phase).toBe('stalled');
-    expect(result.actions.some(a => a.includes('Do NOT report OK'))).toBe(true);
+    // The cron-idling guard is gone: stalls are the backstop's job now.
+    expect(result.actions.some(a => a.includes('Do NOT report OK'))).toBe(false);
+    expect(result.reason).not.toMatch(/heartbeat/i);
   });
 
-  it('does not detect stalled with fewer than 3 ok heartbeats', () => {
-    const result = detectMissionPhase(makePhaseData({
+  it('prior organizer statuses are not an input to phase detection', () => {
+    // A history of "ok" runs used to force `stalled`. It no longer can: the
+    // field is gone, and a mission with a plan still reads as planning.
+    const data = makePhaseData({
       completedTasks: [
         { roleSlug: 'organizer', result: { summary: 'Plan done' } },
       ],
       artifacts: [{ type: 'report', key: 'plan' }],
-      priorHeartbeatStatuses: ['ok', 'ok'],
-    }));
-    // Should be planning, not stalled
-    expect(result.phase).toBe('planning');
+    });
+    expect('priorHeartbeatStatuses' in data).toBe(false);
+    expect(detectMissionPhase(data).phase).toBe('planning');
   });
 
-  it('does not detect stalled when action_taken is mixed in', () => {
+  it('is not stalled while non-builder work is still open', () => {
     const result = detectMissionPhase(makePhaseData({
       completedTasks: [
         { roleSlug: 'organizer', result: { summary: 'Plan done' } },
       ],
-      artifacts: [{ type: 'report', key: 'plan' }],
-      priorHeartbeatStatuses: ['ok', 'action_taken', 'ok'],
+      activeTasks: [{ status: 'in_progress', roleSlug: 'researcher' }],
     }));
-    expect(result.phase).not.toBe('stalled');
+    expect(result.phase).toBe('building');
   });
 
-  it('includes failed task retry in building phase actions', () => {
+  // Task auto-retry already retries failed tasks. Telling the organizer to do
+  // it too made it spend runs filing duplicate retry children.
+  it('building phase does not tell the organizer to retry failed tasks', () => {
     const result = detectMissionPhase(makePhaseData({
       activeTasks: [
         { status: 'in_progress', roleSlug: 'builder' },
@@ -241,7 +254,17 @@ describe('detectMissionPhase', () => {
       ],
     }));
     expect(result.phase).toBe('building');
-    expect(result.actions.some(a => a.includes('Retry'))).toBe(true);
+    expect(result.actions.some(a => /retry/i.test(a))).toBe(false);
+    expect(result.actions.some(a => a.includes('failureContext'))).toBe(false);
+  });
+
+  it('default building phase does not tell the organizer to retry failed tasks either', () => {
+    const result = detectMissionPhase(makePhaseData({
+      activeTasks: [{ status: 'in_progress', roleSlug: 'researcher' }],
+      failedTasks: [{ title: 'Scaffold project' }],
+    }));
+    expect(result.phase).toBe('building');
+    expect(result.actions.some(a => /retry/i.test(a))).toBe(false);
   });
 
   it('prioritizes active builders over PRs', () => {
@@ -255,16 +278,20 @@ describe('detectMissionPhase', () => {
     expect(result.phase).toBe('building');
   });
 
-  it('reviewing phase advises retrying originating task for conflicts, not creating integration task', () => {
+  // CI retry, the conflict sweep and pr-reconcile already handle a PR that
+  // conflicts or goes red; the organizer is not told to do it by hand.
+  it('reviewing phase leaves PR conflicts and retries to the platform', () => {
     const result = detectMissionPhase(makePhaseData({
       completedTasks: [{ roleSlug: 'builder', result: { prUrl: 'https://github.com/...' } }],
       prCount: 1,
     }));
     expect(result.phase).toBe('reviewing');
-    // Must NOT instruct to create a separate integration task
+    expect(result.actions.some(a => /conflict/i.test(a))).toBe(false);
+    expect(result.actions.some(a => a.includes('parentTaskId'))).toBe(false);
+    expect(result.actions.some(a => /retry the originating task/i.test(a))).toBe(false);
     expect(result.actions.some(a => /^create integration task/i.test(a.trim()))).toBe(false);
-    // Must suggest retry of originating task
-    expect(result.actions.some(a => a.includes('parentTaskId') || a.includes('originating task'))).toBe(true);
+    // What only the organizer can do stays: the next batch, or completion.
+    expect(result.actions.some(a => a.includes('next batch'))).toBe(true);
   });
 
   it('reviewing phase tells the organizer to check the review verdict before escalating for approval', () => {

@@ -5,8 +5,8 @@ import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
-import { getCachedOpenWorkspaceIds, setCachedOpenWorkspaceIds } from '@/lib/redis';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { listOpenWorkspaces, isOpenWithinTeams } from '@/lib/open-workspaces';
+import { getUserWorkspaceIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
@@ -56,79 +56,45 @@ async function authenticateRequest(req: NextRequest) {
   return null;
 }
 
-async function getWorkspaceIdsAndNames(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>) {
+type CallerWorkspace = { id: string; name: string; teamId: string | null; accessMode: string | null };
+const CALLER_WS_COLUMNS = { id: true, name: true, teamId: true, accessMode: true } as const;
+
+/**
+ * The workspaces the caller can see, by the same rule every workspace list
+ * uses (lib/workspace-access.ts): "open" means open within the owning team.
+ *
+ * - API account: its explicit links, plus its own team's open workspaces.
+ * - Session: every workspace of the user's teams, which already includes those
+ *   teams' open workspaces. Another team's open workspace is not one of them.
+ */
+async function getWorkspaceIdsAndNames(
+  auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>,
+): Promise<CallerWorkspace[]> {
+  let rows: CallerWorkspace[];
   if (auth.type === 'api') {
-    // API key auth: get workspaces via cached permissions + open workspaces
     const permissions = await getAccountWorkspacePermissions(auth.account.id);
     const linkedWsIds = permissions.map(p => p.workspaceId);
-    const linkedWs = linkedWsIds.length > 0
-      ? await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, linkedWsIds),
-          columns: { id: true, name: true },
-        })
-      : [];
-    // Try Redis cache first for open workspaces
-    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-    let openWs: { id: string; name: string }[];
-    if (openWorkspaceIds) {
-      // Cache hit - fetch names only for the cached IDs
-      openWs = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, openWorkspaceIds),
-        columns: { id: true, name: true },
-      });
-    } else {
-      // Cache miss - query DB and cache IDs
-      openWs = await db.query.workspaces.findMany({
-        where: eq(workspaces.accessMode, 'open'),
-        columns: { id: true, name: true },
-        limit: 100,
-      });
-      await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
-    }
-    const seen = new Set<string>();
-    const result: { id: string; name: string }[] = [];
-    for (const w of linkedWs) {
-      if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
-    }
-    for (const w of openWs) {
-      if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
-    }
-    return result;
-  }
-  // Session auth: get workspaces via team membership + open workspaces
-  const teamWsIds = await getUserWorkspaceIds(auth.user.id);
-  let teamWs: { id: string; name: string }[] = [];
-  if (teamWsIds.length > 0) {
-    teamWs = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, teamWsIds),
-      columns: { id: true, name: true },
-    });
-  }
-  // Try Redis cache first for open workspaces
-  let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-  let openWs: { id: string; name: string }[];
-  if (openWorkspaceIds) {
-    openWs = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, openWorkspaceIds),
-      columns: { id: true, name: true },
-    });
+    const [linkedWs, openWs] = await Promise.all([
+      linkedWsIds.length > 0
+        ? db.query.workspaces.findMany({
+            where: inArray(workspaces.id, linkedWsIds),
+            columns: CALLER_WS_COLUMNS,
+          })
+        : Promise.resolve([]),
+      listOpenWorkspaces([auth.account.teamId], CALLER_WS_COLUMNS),
+    ]);
+    rows = [...linkedWs, ...openWs] as CallerWorkspace[];
   } else {
-    openWs = await db.query.workspaces.findMany({
-      where: eq(workspaces.accessMode, 'open'),
-      columns: { id: true, name: true },
-      limit: 100,
-    });
-    await setCachedOpenWorkspaceIds(openWs.map(w => w.id));
+    const teamWsIds = await getUserWorkspaceIds(auth.user.id);
+    rows = teamWsIds.length > 0
+      ? (await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, teamWsIds),
+          columns: CALLER_WS_COLUMNS,
+        })) as CallerWorkspace[]
+      : [];
   }
   const seen = new Set<string>();
-  const result: { id: string; name: string }[] = [];
-  for (const w of teamWs) {
-    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
-  }
-  for (const w of openWs) {
-    if (!seen.has(w.id)) { seen.add(w.id); result.push(w); }
-  }
-  return result;
+  return rows.filter(w => (seen.has(w.id) ? false : (seen.add(w.id), true)));
 }
 
 export async function GET(req: NextRequest) {
@@ -157,23 +123,10 @@ export async function GET(req: NextRequest) {
       where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
       with: {
         account: {
-          columns: { id: true, name: true, maxConcurrentWorkers: true },
+          columns: { id: true, name: true, maxConcurrentWorkers: true, teamId: true },
         },
       },
     });
-
-    // Compute workspace access on-demand for each heartbeat
-    // Cache open workspaces once for all heartbeats
-    let openWorkspaceIds = await getCachedOpenWorkspaceIds();
-    if (!openWorkspaceIds) {
-      const openWs = await db.query.workspaces.findMany({
-        where: eq(workspaces.accessMode, 'open'),
-        columns: { id: true },
-        limit: 100,
-      });
-      openWorkspaceIds = openWs.map(w => w.id);
-      await setCachedOpenWorkspaceIds(openWorkspaceIds);
-    }
 
     // Cross-reference with actual running workers from DB for each account
     // This prevents showing stale capacity when workers are stuck
@@ -204,14 +157,15 @@ export async function GET(req: NextRequest) {
     // Filter to only heartbeats that have access to user's workspaces
     const activeLocalUis = await Promise.all(
       heartbeats.map(async hb => {
-        // Compute which workspaces this heartbeat can access (cached)
+        // The claim rule (accountReachesWorkspace), over the caller's own
+        // workspaces only: an explicit link, or an open workspace of the
+        // runner account's OWN team.
         const permissions = await getAccountWorkspacePermissions(hb.accountId);
-        const hbWorkspaceIds = [
-          ...permissions.map(p => p.workspaceId),
-          ...openWorkspaceIds!,
-        ];
-
-        const overlapping = hbWorkspaceIds.filter(id => workspaceIds.includes(id));
+        const linked = new Set(permissions.map(p => p.workspaceId));
+        const accountTeamId = (hb.account as { teamId?: string | null } | null)?.teamId ?? null;
+        const overlapping = userWorkspaces
+          .filter(w => linked.has(w.id) || (!!accountTeamId && isOpenWithinTeams(w, [accountTeamId])))
+          .map(w => w.id);
         if (overlapping.length === 0) return null;
 
         // Use the higher of heartbeat-reported count and actual DB count

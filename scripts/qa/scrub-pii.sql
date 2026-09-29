@@ -224,7 +224,7 @@ DELETE FROM task_area_prediction_events;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
-  pending_entity_refs, knowledge_edges, knowledge_ingest_jobs;
+  pending_entity_refs, knowledge_edges, knowledge_ingest_jobs, pr_reverts;
 
 -- ---------------------------------------------------------------------------
 -- People and tenancy

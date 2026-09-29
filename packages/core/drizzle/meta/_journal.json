@@ -1450,6 +1450,20 @@
       "when": 1790628035734,
       "tag": "0209_stale_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1790631206674,
+      "tag": "0210_chat_directives_per_user_cap",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1790631417489,
+      "tag": "0211_gorgeous_earthquake",
+      "breakpoints": true
     }
   ]
 }

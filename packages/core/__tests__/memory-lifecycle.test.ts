@@ -87,6 +87,17 @@ describe('promotionCandidatesQuery', () => {
     expect(sql).toContain('js.workspace_id = pr.workspace_id');
   });
 
+  it('also sees a revert recorded from GitHub after the merge: a later PR naming the source PR, or a commit reverting its merge sha', () => {
+    expect(sql).toContain('FROM pr_reverts rv');
+    expect(sql).toContain('rv.workspace_id = pr.workspace_id');
+    expect(sql).toContain('rv.created_at > pr.merged_at');
+    expect(sql).toContain('rv.reverted_pr_number = pr.pr_number');
+    // The source PR's merge sha is the one its merge ingest job recorded; an
+    // abbreviated sha in a revert message matches by prefix.
+    expect(sql).toContain("sj.workspace_id = pr.workspace_id AND sj.pr_number = pr.pr_number AND sj.trigger = 'pr_merged'");
+    expect(sql).toContain('starts_with(sj.sha, rv.reverted_sha)');
+  });
+
   it('corroboration is ONLY the corroborated_by link, to an own-project candidate or active row from a different task', () => {
     expect(sql).toContain("m.source_kind = 'learn' AND src.task_id IS NOT NULL AND m.corroborated_by IS NOT NULL");
     expect(sql).toContain('m2.id = m.corroborated_by');

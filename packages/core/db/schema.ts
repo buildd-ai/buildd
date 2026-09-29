@@ -2264,7 +2264,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker' | 'heartbeat_planning_backoff' | 'heartbeat_triage_wait'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker' | 'heartbeat_planning_backoff' | 'heartbeat_triage_wait' | 'heartbeat_not_stuck'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -3104,6 +3104,31 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   activeFullIdx: uniqueIndex('knowledge_ingest_jobs_active_full_idx')
     .on(t.workspaceId, t.repo)
     .where(sql`${t.scope} = 'full' AND ${t.status} IN ('queued', 'running')`),
+}));
+
+// Reverts recorded from GitHub: a merged PR whose title/body reverts another
+// PR, or a commit (on the branch a push or CI run reports) whose message
+// reverts a commit. One row per reference per bound workspace; parsed by
+// packages/core/pr-reverts.ts. Read by promotionCandidatesQuery
+// (packages/core/memory-lifecycle.ts): a candidate memory whose source PR, or
+// its merge sha, was reverted is never auto-promoted.
+export const prReverts = pgTable('pr_reverts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  /** "owner/name". */
+  repo: text('repo').notNull(),
+  /** What did the reverting: `pr#N` for a merged PR, else the commit sha. */
+  revertedBy: text('reverted_by').notNull(),
+  /** The PR it names as reverted; null for a commit reference. */
+  revertedPrNumber: integer('reverted_pr_number'),
+  /** The commit it names as reverted (lowercase, possibly abbreviated); null for a PR reference. */
+  revertedSha: text('reverted_sha'),
+  /** `${revertedBy}>${reference}`: a redelivered webhook inserts nothing new. */
+  dedupeKey: text('dedupe_key').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceDedupeIdx: uniqueIndex('pr_reverts_workspace_dedupe_idx').on(t.workspaceId, t.dedupeKey),
+  workspacePrIdx: index('pr_reverts_workspace_pr_idx').on(t.workspaceId, t.revertedPrNumber),
 }));
 
 // Relations

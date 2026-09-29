@@ -62,6 +62,9 @@ gh workflow run visual-qa.yml --ref <branch> \
 RUN=$(gh run list --workflow visual-qa.yml --branch <branch> --event workflow_dispatch \
   --limit 1 --json databaseId -q '.[0].databaseId')
 gh run watch "$RUN" --exit-status
+# No TTY (most agent shells): gh run watch returns immediately instead of
+# blocking. Poll instead, still in the foreground:
+#   until gh run view "$RUN" --json status -q .status | grep -q completed; do sleep 15; done
 gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 # → /tmp/qa-ci/screenshots/*.png, /tmp/qa-ci/a11y/*.json, /tmp/qa-ci/captures.json
 # The repo is public, so any GitHub user can download this artifact. It holds
@@ -69,6 +72,13 @@ gh run download "$RUN" -n qa-screenshots -D /tmp/qa-ci
 gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id' \
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
+
+**Wait for the run in the same turn — never end your turn saying you'll wait for a
+notification or a background watcher.** A worker agent's session is not resumed by a
+background job finishing: a runner-hosted turn that ends is recorded as complete
+regardless of what's still running, so the screenshots never get read and completion
+fails for missing evidence. Run the watch/poll step in the foreground (not
+backgrounded, not fired-and-forgotten) and block on it before moving on.
 
 Never paste screenshot contents into PR bodies, commits or comments, even from a
 scrubbed run. Describe what you saw generically. If a CI shot ever shows real
@@ -130,9 +140,13 @@ don't turn it on by habit.
 - **Port 3100 (shoot.sh's default) is often taken** by another session. Always pass
   a free `QA_PORT`. If the port is busy, the readiness probe can hit someone else's server.
 - **Headless comes up in the dark theme.** A shot being dark is not a regression.
-- **The task page can fail locally under Turbopack**: an external module doesn't
-  resolve under bun's isolated install. It's an environment problem, not your change.
-  Use the CI dispatch for `/app/tasks/<id>`.
+- **`Failed to load external module <pkg>-<hash>` is a real bug, locally and in CI.**
+  Next auto-externalizes some packages (its `server-external-packages.jsonc`), and
+  under `bun --bun next dev` Bun cannot resolve Turbopack's hashed alias for them.
+  The CI dispatch runs the same `bun dev`, so it fails there too. This blanked
+  `/app/tasks/<id>` via `@aws-sdk/client-s3`. The fix is to add the package to
+  `transpilePackages` in `apps/web/next.config.mjs`. `src/lib/next-config.test.ts`
+  enforces that for direct dependencies.
 - **Vercel previews are behind org auth.** Pointing `QA_BASE_URL` at a preview gets
   you the Vercel login page unless you have `VERCEL_AUTOMATION_BYPASS_SECRET` or a
   storage state. Use the dispatch instead.
