@@ -507,7 +507,7 @@ export async function runChatTurn(args: {
             : null;
           const messages = done();
           later(() => deps.autoTitle!(conv, messages, resolved, about));
-        } else if (checkTitle && deps.retitle) {
+        } else if (text && !isAcknowledgement(text) && checkTitle && deps.retitle) {
           const messages = done();
           later(async () => {
             const topic = await (deps.askTopicQuestion ?? askTopicQuestion)({

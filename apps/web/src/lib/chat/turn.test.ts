@@ -1050,6 +1050,23 @@ describe('titles: the docked object, and the re-title question', () => {
     expect(verdicts).toHaveLength(1);
   });
 
+  it('an acknowledgement on the 3rd user turn of an auto-titled chat does not call askTopicQuestion', async () => {
+    const topicAsked: any[] = [];
+    const verdicts: any[] = [];
+    const opts = {
+      conversation: { title: 'Release status', titleSource: 'auto' },
+      route: async () => { return { tier: 'budget', allowWrites: false, source: 'fallback' }; },
+      extraDeps: {
+        askTopicQuestion: async (input?: any) => { topicAsked.push(input); return undefined; },
+        retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push(t); },
+      },
+    };
+    seed(2);
+    await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('thanks'));
+    expect(topicAsked).toHaveLength(0);
+    expect(verdicts).toHaveLength(0);
+  });
+
   it('a title the person set is never asked about', async () => {
     const routed: any[] = [];
     seed(2);
