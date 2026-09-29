@@ -1,5 +1,5 @@
 /**
- * 0.10.0: rich tool rows (`ToolCallRow`, `ToolCallGroup`, `ChatThread
+ * 0.11.0: rich tool rows (`ToolCallRow`, `ToolCallGroup`, `ChatThread
  * toolRows="rich"`). The first test pins the default thread's tool markup
  * byte for byte (checked against the 0.9.1 component), so apps that never
  * opt in (Cue, moa) render exactly what they did.

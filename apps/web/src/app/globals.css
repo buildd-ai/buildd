@@ -877,7 +877,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --kit-sheet-bottom-offset: 0px;
   /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
   --kit-scrim: rgb(0 0 0 / 0.5);
-  /* The rich tool rows (kit 0.10.0): the accent as text, a live row's tint,
+  /* The rich tool rows (kit 0.11.0): the accent as text, a live row's tint,
      a hovered row, and the done / waiting / failed marks. */
   --kit-ink-soft: var(--text-secondary);
   --kit-accent-text: var(--accent-text);

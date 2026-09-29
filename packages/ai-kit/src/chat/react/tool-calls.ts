@@ -1,6 +1,6 @@
 /**
  * Pure view model for the rich tool rows (`ToolCallRow` / `ToolCallGroup`,
- * 0.10.0): a tool part → its one-line row (the tool as the verb, its key
+ * 0.11.0): a tool part → its one-line row (the tool as the verb, its key
  * arguments, a live state and a one-line result), and a run of calls → the
  * group header ("3 tool calls · read-only"). No React, no DOM.
  *

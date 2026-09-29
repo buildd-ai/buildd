@@ -245,7 +245,7 @@
   .kit-menu:not([data-open]):hover > .kit-menu-hover { display: block; }
 }
 
-/* ── Rich tool rows (0.10.0) ─────────────────────────────────────────────── */
+/* ── Rich tool rows (0.11.0) ─────────────────────────────────────────────── */
 /* `ToolCallRow` / `ToolCallGroup` (`ChatThread toolRows="rich"`). A row is a
    one-line button that expands to the raw input and output; the running call
    is the one row that takes the accent. Rows in a group have no frame of
@@ -281,7 +281,8 @@ button.kit-toolcalls-head { display: flex; align-items: center; gap: 8px; width:
 .kit-toolcalls-count { font-weight: 600; color: var(--kit-ink-soft); }
 .kit-toolcalls-tail { color: var(--kit-accent-text); }
 .kit-toolcalls-tail[data-tone="failed"] { color: var(--kit-danger); }
-.kit-toolcalls-body > * + * { border-top: 1px solid var(--kit-rule); }
+/* Out-ranks the `[data-flush]` border reset, or grouped rows run together. */
+.kit-toolcalls-body > .kit-toolcall[data-flush] + .kit-toolcall[data-flush] { border-top: 1px solid var(--kit-rule); }
 @keyframes kit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 @media (hover: hover) {
   button.kit-toolcall-head:hover { background: var(--kit-raised); }

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Rich tool rows (0.10.0, lifted from buildd's chat): every call is a compact
+ * Rich tool rows (0.11.0, lifted from buildd's chat): every call is a compact
  * row (the tool as the verb, its key arguments, a live state and a one-line
  * result) that expands to the raw input and output. A write that ran under
  * "Allow" carries an `allowed` badge. Consecutive calls group under one

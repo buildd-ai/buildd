@@ -26,7 +26,7 @@ export const KIT_CSS_VARS = [
   '--kit-font-mono',
   '--kit-sheet-bottom-offset',
   '--kit-scrim',
-  // 0.10.0: the rich tool rows (`ToolCallRow`, `ToolCallGroup`).
+  // 0.11.0: the rich tool rows (`ToolCallRow`, `ToolCallGroup`).
   '--kit-ink-soft',
   '--kit-accent-text',
   '--kit-accent-soft',

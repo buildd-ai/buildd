@@ -1,4 +1,4 @@
-/** 0.10.0: the rich tool rows' pure view model (`tool-calls.ts`). */
+/** 0.11.0: the rich tool rows' pure view model (`tool-calls.ts`). */
 import { describe, expect, it } from 'bun:test';
 import type { ChatToolPart } from '@builddai/ai-kit/chat/contract';
 import { DEFAULT_KEY_ARG_SKIP, keyArgs, toolCallResult, toolCallState, toolCallView, toolGroupSummary } from './index';

@@ -8,7 +8,7 @@
  * own object kinds, `renderTool` for a special tool), and since 0.9.0 an app
  * can add a header and footer to each message, draw consecutive tool calls as
  * one group, supply its own checklist and name its own event part. Since
- * 0.10.0 `toolRows="rich"` draws each run of calls as `ToolCallGroup`.
+ * 0.11.0 `toolRows="rich"` draws each run of calls as `ToolCallGroup`.
  */
 import { useMemo, type ReactNode } from 'react';
 import {
@@ -68,7 +68,7 @@ export interface ChatThreadProps {
    */
   renderToolGroup?(parts: readonly ChatToolPart[], message: ChatMessage, ctx: ThreadMessageContext): ReactNode;
   /**
-   * How tool calls look when `renderToolGroup` isn't passed (0.10.0).
+   * How tool calls look when `renderToolGroup` isn't passed (0.11.0).
    * `line` (default): one line per call, as before. `rich`: each run of
    * consecutive calls is a `ToolCallGroup` (key arguments, live state, a
    * result line, expand to the raw input and output, a count header over
