@@ -90,8 +90,14 @@ const TIER_FOR: Record<'simple' | 'standard' | 'complex', ChatTier> = {
   simple: 'budget', standard: 'standard', complex: 'premium',
 };
 
-/** An area answer is only used to *add* a tool group, so it's gated lower. */
-export const AREA_MIN_CONFIDENCE = 0.7;
+/**
+ * An area answer narrows the tool set from the fallback (missions + tasks +
+ * workers) to just the routed area. Narrowing saves ~1.7k tokens per turn
+ * (routing costs are offset by the generative savings on the model side).
+ * High gate ensures mis-routed turns that still need workers diagnostics
+ * (stalled tasks, error investigation) don't lose access to them.
+ */
+export const AREA_MIN_CONFIDENCE = 0.8;
 /**
  * A workspace pick becomes the turn's default scope for tool calls, so it's
  * gated high. Below it the turn has no default: the agent asks which one, or
