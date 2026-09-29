@@ -509,6 +509,25 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
     const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'fallback' }, continuing, canAdmin: false });
     expect(g.has('schedules')).toBe(true);
   });
+
+  it('turnGroups: area routing narrows to core + area, dropping workers from fallback', async () => {
+    const { turnGroups } = await import('./turn');
+    // No area routing: fallback set (missions, tasks, workers) added to core (missions, tasks, notifications)
+    const fallback = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'fallback' }, continuing: null, canAdmin: false });
+    expect(fallback.has('workers')).toBe(true);
+    expect([...fallback].sort()).toEqual(['missions', 'notifications', 'tasks', 'workers']);
+
+    // Area-routed to missions (core group): missions area + core groups, workers is dropped
+    const missions = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'missions' }, continuing: null, canAdmin: false });
+    expect([...missions].sort()).toEqual(['missions', 'notifications', 'tasks']);
+    expect(missions.has('workers')).toBe(false);
+
+    // Area-routed to prs (non-core): prs + core groups, workers is dropped
+    const prs = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'prs' }, continuing: null, canAdmin: false });
+    expect(prs.has('prs')).toBe(true);
+    expect(prs.has('missions')).toBe(true); // core
+    expect(prs.has('workers')).toBe(false); // not in fallback when area-routed
+  });
 });
 
 describe('steering a docked mission (fictional Harborline data)', () => {

@@ -50,6 +50,9 @@ describe('routeTurn', () => {
       answers: { complexity: { choice: 'standard', confidence: 0.9 }, intent: { choice: 'act', confidence: 0.95 }, area: { choice: area[0], confidence: area[1] } },
     }) as any;
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.9]) })).area).toBe('schedules');
+    // 0.8 gate: 0.79 confidence drops the area routing (narrowing is too risky)
+    expect((await routeTurn(input, { decide: withArea(['schedules', 0.79]) })).area).toBeUndefined();
+    // Below gate, fallback set (missions + tasks + workers) is used
     expect((await routeTurn(input, { decide: withArea(['schedules', 0.5]) })).area).toBeUndefined();
     expect((await routeTurn(input, { decide: withArea(['general', 0.99]) })).area).toBeUndefined();
     // No area answer at all (an older decision) is the fallback set, not an error.
