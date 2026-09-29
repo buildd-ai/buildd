@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
   // account. Used only for diagnostics — the lease TTL is what enforces liveness.
   const leaseOwner = typeof body.runnerId === 'string' && body.runnerId ? body.runnerId.slice(0, 200) : account.id;
 
-  const accessible = await getIngestAccessibleWorkspaceIds(account.id);
+  const accessible = await getIngestAccessibleWorkspaceIds(account);
 
   // Heal wedged rows first, so anything requeued is visible to the scan below
   // in THIS poll rather than the next one. Never throws.

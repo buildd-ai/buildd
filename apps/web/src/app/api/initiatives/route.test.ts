@@ -9,6 +9,7 @@ const mockInitiativesFindMany = mock(() => [] as any[]);
 const mockLinearLinkRows = mock(() => [] as Array<{ entityId: string }>);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1', teamId: 'team-1' }) as any);
 const mockTeamMembersFindFirst = mock(() => ({ userId: 'user-2' }) as any);
+const mockAccountWorkspacesFindFirst = mock(async () => null as any);
 let insertedInitiativeValues: any = null;
 const mockInitiativesInsert = mock(() => ({
   values: mock((vals: any) => {
@@ -33,6 +34,7 @@ mock.module('@buildd/core/db', () => ({
       initiatives: { findMany: mockInitiativesFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
+      accountWorkspaces: { findFirst: mockAccountWorkspacesFindFirst },
     },
     insert: () => mockInitiativesInsert(),
     // Batched Linear-link existence query (db.select(...).from(...).where(...)).
@@ -62,6 +64,8 @@ describe('POST /api/initiatives', () => {
     mockResolveAccountTeamIds.mockReset();
     mockInitiativesInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockAccountWorkspacesFindFirst.mockReset();
+    mockAccountWorkspacesFindFirst.mockResolvedValue(null);
     insertedInitiativeValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
@@ -154,6 +158,37 @@ describe('POST /api/initiatives', () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain('status');
+  });
+
+  // "Open" is open within the owning team: an API account reaches another
+  // team's open workspace only through an explicit link.
+  it('404s an API account naming another team\'s open workspace it is not linked to', async () => {
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-1', teamId: 'team-1', level: 'admin' });
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-2', teamId: 'team-2', accessMode: 'open' });
+    const req = new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_x' },
+      body: JSON.stringify({ title: 'X', workspaceId: 'ws-2' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+    expect(insertedInitiativeValues).toBeNull();
+  });
+
+  it('accepts another team\'s open workspace for an API account linked to it', async () => {
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-1', teamId: 'team-1', level: 'admin' });
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-2', teamId: 'team-2', accessMode: 'open' });
+    mockAccountWorkspacesFindFirst.mockResolvedValue({ workspaceId: 'ws-2' });
+    const req = new NextRequest('http://localhost/api/initiatives', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_x' },
+      body: JSON.stringify({ title: 'X', workspaceId: 'ws-2' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedInitiativeValues.teamId).toBe('team-2');
   });
 
   it('derives team from workspace when workspaceId provided', async () => {

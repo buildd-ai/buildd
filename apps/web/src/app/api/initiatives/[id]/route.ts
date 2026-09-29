@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { initiatives, artifacts, workspaces } from '@buildd/core/db/schema';
+import { initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -8,16 +8,13 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
-async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
+async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[], accountId?: string | null): Promise<boolean> {
   if (teamIds.includes(initiative.teamId)) return true;
   if (initiative.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, initiative.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return true;
+    if (await workspaceOpenToCaller(initiative.workspaceId, { teamIds, accountId })) return true;
   }
   return false;
 }
@@ -68,7 +65,7 @@ export async function GET(
       },
     });
 
-    if (!initiative || !(await hasInitiativeAccess(initiative, teamIds))) {
+    if (!initiative || !(await hasInitiativeAccess(initiative, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }
 
@@ -125,7 +122,7 @@ export async function PATCH(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const existing = await db.query.initiatives.findFirst({ where: eq(initiatives.id, id) });
-    if (!existing || !(await hasInitiativeAccess(existing, teamIds))) {
+    if (!existing || !(await hasInitiativeAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }
 
@@ -201,7 +198,7 @@ export async function DELETE(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const existing = await db.query.initiatives.findFirst({ where: eq(initiatives.id, id) });
-    if (!existing || !(await hasInitiativeAccess(existing, teamIds))) {
+    if (!existing || !(await hasInitiativeAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }
 

@@ -1,9 +1,5 @@
 import { Redis } from '@upstash/redis';
 
-// Cache open workspace IDs for 5 minutes
-const CACHE_KEY = 'buildd:open_workspaces';
-const CACHE_TTL = 5 * 60; // 5 minutes in seconds
-
 /**
  * Resolve Upstash/Vercel-KV connection config from an env-like object.
  *
@@ -82,18 +78,6 @@ async function safe<T>(op: string, fn: (r: Redis) => Promise<T>, fallback: T): P
     noteFailure(op, err);
     return fallback;
   }
-}
-
-export async function getCachedOpenWorkspaceIds(): Promise<string[] | null> {
-  return safe('get open_workspaces', r => r.get<string[]>(CACHE_KEY), null);
-}
-
-export async function setCachedOpenWorkspaceIds(ids: string[]): Promise<void> {
-  await safe('set open_workspaces', r => r.setex(CACHE_KEY, CACHE_TTL, ids), undefined);
-}
-
-export async function invalidateOpenWorkspacesCache(): Promise<void> {
-  await safe('del open_workspaces', r => r.del(CACHE_KEY), undefined);
 }
 
 // API key cache — key: buildd:api_key:{hash}, 5-min TTL

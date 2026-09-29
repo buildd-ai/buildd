@@ -86,7 +86,7 @@ Key config (all JSONB, migration-free to evolve):
   (`workflow_dispatch | branch_merge | script`), deploy target, post-deploy hooks,
   verification URL.
 - **`webhookConfig`**, **`discordConfig`**, **`slackConfig`** — external dispatch/notify.
-- `accessMode`: `open` (any token claims) | `restricted` (linked accounts only).
+- `accessMode`: `open` (open within the owning team: the team's tokens claim; another team's only through an explicit link) | `restricted` (linked accounts only).
 
 ### Mission
 A first-class **goal** that aggregates tasks. Status: `active | paused | completed |

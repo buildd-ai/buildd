@@ -153,10 +153,10 @@ describe('GET /api/workspaces/[id]/runners', () => {
     expect(body.runners[0].capacity).toBe(3);
   });
 
-  it('includes runners for open-access workspaces even without explicit account link', async () => {
+  it('includes the owning team\'s runners for an open workspace even without an explicit link', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
-    mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'open' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
 
     mockWorkerHeartbeatsFindMany.mockResolvedValue([
       {
@@ -167,7 +167,7 @@ describe('GET /api/workspaces/[id]/runners', () => {
         activeWorkerCount: 0,
         localUiUrl: null,
         environment: null,
-        account: { id: 'account-open', name: 'Open Runner', type: 'user' },
+        account: { id: 'account-open', name: 'Open Runner', type: 'user', teamId: 'team-1' },
       },
     ]);
 
@@ -179,6 +179,37 @@ describe('GET /api/workspaces/[id]/runners', () => {
     expect(res.status).toBe(200);
     expect(body.runners).toHaveLength(1);
     expect(body.runners[0].accountName).toBe('Open Runner');
+  });
+
+  it('does not list another team\'s unlinked runner for an open workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
+    const hb = (accountId: string, teamId: string) => ({
+      id: `hb-${accountId}`, accountId, lastHeartbeatAt: new Date(), maxConcurrentWorkers: 2,
+      activeWorkerCount: 0, localUiUrl: null, environment: null,
+      account: { id: accountId, name: accountId, type: 'user', teamId },
+    });
+    mockWorkerHeartbeatsFindMany.mockResolvedValue([hb('acct-own', 'team-1'), hb('acct-other', 'team-2')]);
+    mockAccountWorkspacesFindFirst.mockResolvedValue(null);
+
+    const body = await (await GET(makeRequest(), { params: Promise.resolve({ id: WS_ID }) })).json();
+    expect(body.runners.map((r: any) => r.accountId)).toEqual(['acct-own']);
+  });
+
+  it('still lists another team\'s runner linked to the workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
+    mockWorkerHeartbeatsFindMany.mockResolvedValue([{
+      id: 'hb-l', accountId: 'acct-other', lastHeartbeatAt: new Date(), maxConcurrentWorkers: 2,
+      activeWorkerCount: 0, localUiUrl: null, environment: null,
+      account: { id: 'acct-other', name: 'x', type: 'user', teamId: 'team-2' },
+    }]);
+    mockAccountWorkspacesFindFirst.mockResolvedValue({ workspaceId: WS_ID });
+
+    const body = await (await GET(makeRequest(), { params: Promise.resolve({ id: WS_ID }) })).json();
+    expect(body.runners.map((r: any) => r.accountId)).toEqual(['acct-other']);
   });
 
   it('passes both accountId and workspaceId to accountWorkspaces.findFirst query', async () => {
@@ -216,7 +247,7 @@ describe('GET /api/workspaces/[id]/runners', () => {
   it('marks runner as "online" when last heartbeat is within RUNNER_ONLINE_THRESHOLD_MS', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
-    mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'open' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
 
     // Just beat — well within the online window
     const recentBeat = new Date(Date.now() - 60_000); // 1 min ago
@@ -229,7 +260,7 @@ describe('GET /api/workspaces/[id]/runners', () => {
         activeWorkerCount: 0,
         localUiUrl: null,
         environment: null,
-        account: { id: 'account-live', name: 'Live Runner', type: 'service' },
+        account: { id: 'account-live', name: 'Live Runner', type: 'service', teamId: 'team-1' },
       },
     ]);
     mockAccountWorkspacesFindFirst.mockResolvedValue(null);
@@ -243,7 +274,7 @@ describe('GET /api/workspaces/[id]/runners', () => {
   it('marks runner as "stale" when last heartbeat exceeds RUNNER_ONLINE_THRESHOLD_MS', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
-    mockWorkspacesFindFirst.mockResolvedValue({ accessMode: 'open' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
 
     // Beat arrived at exactly 1.5× + 1 min past the interval — beyond online window.
     // 1.5 * 60 min + 1 min = 91 min ago (default RUNNER_ONLINE_THRESHOLD_MS is 90 min).
@@ -259,7 +290,7 @@ describe('GET /api/workspaces/[id]/runners', () => {
         activeWorkerCount: 0,
         localUiUrl: null,
         environment: null,
-        account: { id: 'account-slow', name: 'Slow Runner', type: 'service' },
+        account: { id: 'account-slow', name: 'Slow Runner', type: 'service', teamId: 'team-1' },
       },
     ]);
     mockAccountWorkspacesFindFirst.mockResolvedValue(null);
