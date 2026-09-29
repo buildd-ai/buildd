@@ -83,6 +83,22 @@ export async function checkMissionLocal(missionId: string): Promise<boolean> {
 }
 
 /**
+ * Per-task variant of `checkMissionLocal`, for the claim route's role gate:
+ * true when `taskId` belongs to a mission with executor='local'. Two queries
+ * (task → missionId, then the already-tested mission check) rather than a
+ * join, so a task with no mission short-circuits to false without a new SQL
+ * shape to test.
+ */
+export async function checkTaskMissionLocal(taskId: string): Promise<boolean> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { missionId: true },
+  });
+  if (!task?.missionId) return false;
+  return checkMissionLocal(task.missionId);
+}
+
+/**
  * Context key a single-task hold writes (PATCH /api/tasks/[id] `{ held: true }`,
  * e.g. "pause checkout until the rounding decision is in" from chat). Its value
  * is `{ at, userId, reason? }`; resuming removes the key.
