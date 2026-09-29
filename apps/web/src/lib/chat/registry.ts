@@ -144,7 +144,9 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_budget_forecast: one(read('GET /api/health/budget')),
   list_connectors: one(read('GET /api/connectors/mounted')),
   get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
-  list_runners: one(deferred('each row carries a workspaceIds array (a runner can serve several workspaces), and the generic reach filter only scopes rows by a single workspaceId field — exposing it needs array-aware filtering first')),
+  // A runner row carries a workspaceIds array: the reach filter keeps a row
+  // only if one of them is in reach, and strips the rest (in-process-api.ts).
+  list_runners: one(read('GET /api/workers/active')),
 
   // ── PRs, reviews, releases ──
   get_pr: one(read('GET /api/github/pr')),
@@ -220,7 +222,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   /**
    * The mission's visual review as text: per screen the route, viewport,
    * round, the agent's verdict and finding, the human decision and the fix.
-   * Chat runs its own image-free, link-free version of the MCP action
+   * Chat runs its own image-free version of the MCP action (artifact page links only)
    * (chat/visual-review-tool.ts, by missionId only). There is deliberately no
    * write tool: a human decides on the card (ChatActions.reviewShots), where
    * the tap is the consent. (docs/design/visual-qa-human-review.md, Chat)

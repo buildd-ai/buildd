@@ -407,10 +407,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // UI-created missions (session auth, no explicit cron/heartbeat) run once — no auto-heartbeat.
-    // API-created missions keep existing default (heartbeat ON) for backward compat.
-    const uiCreated = !apiAccount && !cronExpression && isHeartbeat === undefined;
-    const effectiveHeartbeat = uiCreated ? false : (isHeartbeat !== false);
+    // Every new auto mission gets a check-in (heartbeat) schedule by default.
+    // Events plan its next step as work finishes; the check-in is the hourly
+    // stuck check that dispatches the organizer only when that chain broke
+    // (lib/mission-stuck.ts), so it costs no model call otherwise.
+    // `isHeartbeat: false` opts out. A UI-created manual mission (no explicit
+    // cron/heartbeat) gets none: manual means the owner starts things.
+    // API-created missions keep their existing default (heartbeat ON).
+    const uiCreatedManual = !apiAccount && !cronExpression && isHeartbeat === undefined
+      && effectiveOrchestrationMode === 'manual';
+    const effectiveHeartbeat = uiCreatedManual ? false : (isHeartbeat !== false);
     const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
 
     if (effectiveCron) {

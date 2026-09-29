@@ -57,6 +57,17 @@ every supported action.
   `isError: true` naming the right tool, and run nothing. Its own actions run
   exactly as on `buildd`, including level refusals.
 - `help` with `params.action` returns that action's long parameter docs.
+- A group tool's `params` schema types the fields common questions need
+  (`MCP_GROUP_PARAMS`), each with one short description, and stays an open
+  object: untyped fields pass through. A level sees only the fields its listed
+  actions take.
+- Budget: the whole `groups` surface at admin level (group tools plus
+  `recall`, `learn` and the other listed tools) stays under 6k estimated tokens
+  (JSON length / 3.6, as `chat-eval static` counts). The test holds it 150 under,
+  so one added action summary does not turn a parallel PR red.
+- A call with no `params` object uses the fields beside `action` as its params.
+  A sub-action passed as the tool's `action` (e.g. `update`) MUST get an
+  `isError: true` naming the action and `params.action`, and run nothing.
 
 **Acceptance criteria**:
 - AC-21: GIVEN a trigger token WHEN tools/list is called with `?tools=groups` THEN the group tools

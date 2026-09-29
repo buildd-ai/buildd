@@ -12,10 +12,12 @@ import { useVisualReviewDecisions } from '@/components/visual-review/review-tran
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
+import MissionCheckInsFixture from './MissionCheckInsFixture';
 import {
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
+    MISSION_CHECK_INS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -50,6 +52,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
         return <MissionListExecutorFixture />;
+    }
+
+    if (state === MISSION_CHECK_INS_FIXTURE_STATE) {
+        return <MissionCheckInsFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

@@ -147,6 +147,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
         startMode: z.enum(['armed', 'held']).optional().describe('update: "held" pauses it — no task is claimed by anyone until armed. Not for work someone runs locally; use executor.'),
         executor: z.enum(['runner', 'local']).optional().describe('create / update: "local" when a person runs its tasks from their own session (runners leave them alone; the session claims each one). "runner" (default) for background runners.'),
+        autoSurfaceAudit: z.boolean().optional().describe('update: false turns off the automatic visual audit (screenshot QA of UI changes) for this mission; true turns it back on.'),
         priority: z.number().int().min(0).max(10).optional(),
       }).catchall(z.unknown());
     case 'create_task':
@@ -198,7 +199,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
     case 'list_prs':
       return z.object({
         state: z.enum(['open', 'attention', 'conflict', 'ci_failed', 'merged']).optional()
-          .describe('Default open. attention: conflicts and failing CI. merged: the last sinceDays.'),
+          .describe('Default open. attention: conflicts, failing CI, waiting on the user. merged: the last sinceDays.'),
         workspaceId: ws,
         sinceDays: z.number().int().min(1).max(90).optional().describe('merged: default 7.'),
         limit: z.number().int().min(1).max(50).optional(),
@@ -248,6 +249,8 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         taskTitleContains: z.string().optional(),
         workspaceId: ws,
       });
+    case 'list_runners':
+      return z.object({ workspaceId: z.string().optional().describe('Workspace id or name: only its runners, led by whether a browser-capable runner is online for it. Omit for every runner in reach.') });
     case 'list_artifacts':
       return z.object({
         workspaceId: ws,
@@ -278,7 +281,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
-  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task; plus other visual evidence (manual screenshots, validation reports with their verdict line). Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
+  get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task; plus other visual evidence (manual screenshots, validation reports with their verdict line). Each screen and screenshot carries its page link (/app/artifacts/<id>): give those when the user asks for the screenshots or links. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
 };
 
 /**
@@ -290,13 +293,14 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
 const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
-  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), or sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
+  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners), or turns its automatic visual audit off or on (autoSurfaceAudit). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
   create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
-  list_prs: 'PRs buildd opened or adopted, one line each. Default: open ones, conflicts and failing CI first. state attention lists only those; merged lists recent merges. Closed PRs are never listed.',
+  list_prs: 'PRs buildd opened or adopted, one line each, flagged when one needs the user, is red, or an agent is already on it. Default: open ones, what needs the user first. state attention: only conflicts, failing CI and PRs waiting on the user. merged: recent merges. Closed PRs are never listed.',
   get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos.',
+  list_runners: 'The runners serving your workspaces: busy of total slots, whether each has a browser (needed for the visual audit) and is online now, branch and build, last heartbeat. With workspaceId it starts with the answer to "can a visual audit run there now?".',
   list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };
 

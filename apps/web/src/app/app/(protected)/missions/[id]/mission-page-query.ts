@@ -166,7 +166,8 @@ export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
  * `deriveTaskOrigin`, the iteration counters in `attempt-strip.ts`), plus
  * `failureContext.errorType` for the failure reason, plus `visualQa` for the
- * Visual review's required routes.
+ * Visual review's required routes, plus `triggerSource` / `triggerTaskId`
+ * for the Organizer runs timeline.
  */
 export const CONTEXT_DIGEST_KEYS = [
   'driftDiagnosis',
@@ -182,6 +183,9 @@ export const CONTEXT_DIGEST_KEYS = [
   // Visual review n/m coverage: the round-2 planner's frozen
   // visualQa.requiredRoutes (auditRequiredRoutes). Small: a route list.
   'visualQa',
+  // Organizer runs timeline: what started each run (lib/mission-checkins.ts).
+  'triggerSource',
+  'triggerTaskId',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 

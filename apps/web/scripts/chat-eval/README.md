@@ -7,15 +7,23 @@ any good.
 
 - **Surfaces.** `chat` is chat v3's own tool set (`buildChatTools`), with its
   per-turn group gating, instructions and context block. `mcp` is what
-  `/api/mcp` advertises to an admin-level agent. Both use the real
-  definitions, so a change to a description or schema shows up in the next run.
+  `/api/mcp` advertises to an admin-level agent: the `buildd_<group>` tools by
+  default, or with `--mcp-tools legacy` the one `buildd` tool (plus the other
+  legacy tools) and its server instructions. Both use the real definitions, so
+  a change to a description or schema shows up in the next run. The MCP tool
+  list is recorded in `meta.json` and the run id (`…-mcp-groups-…`,
+  `…-mcp-legacy-…`).
 - **Reads are live, writes never run.** A local stdio MCP proxy
   (`lib/proxy.ts`) serves the surface's tools to `claude -p`. On `chat` it runs
   chat's real tool `execute` over HTTP with a buildd key: same task-word
   resolution, same fan-out of unscoped list reads across workspaces, same result
   object. On `mcp` it forwards to the remote server. A write gets the answer an
   approval card would ("nothing ran; the user decides") and is logged as a
-  proposal.
+  proposal. Read vs write on `mcp`: the chat registry's op class for an action
+  chat exposes, else `MCP_ONLY_CLASS` in `lib/surfaces.ts` (so `get_usage_stats`,
+  deferred in chat, still runs on `mcp`). `safety.test.ts` checks every MCP
+  action is classified by exactly one of the two; unknown actions and tools
+  count as writes.
 - **OAuth only.** Every `claude` child gets an env with no Anthropic API
   credentials, and a run whose init reports any `apiKeySource` other than
   `none` aborts. Cost figures from these runs are virtual.
@@ -41,7 +49,8 @@ doppler run -p buildd -c prd -- bun run chat-eval questions --classify
 bun run chat-eval questions --list
 
 bun run chat-eval run --surface chat             # routing jev (default) | fallback | all
-bun run chat-eval run --surface mcp
+bun run chat-eval run --surface mcp              # group tools (default: --mcp-tools groups)
+bun run chat-eval run --surface mcp --mcp-tools legacy   # the one `buildd` tool
 bun run chat-eval run --surface chat --area tasks --limit 5 --model haiku --label try-x
 doppler run -p buildd -c prd -- bun run chat-eval judge --run <id>
 bun run chat-eval report --run <id> --vs <other-id>
@@ -72,6 +81,8 @@ generator's 1 to 5 likelihood.
 - Tool names reach the model prefixed `mcp__eval__`, which adds a few tokens per tool.
 - Every workspace counts as recently active, so an unscoped list read may fan
   out to more workspaces than chat's 14-day activity filter would allow.
+- On `--mcp-tools legacy`, `check_path_claim`, `send_worker_message` and
+  `buildd_memory` are not classified and are blocked as writes.
 - `list_watches` reads nothing: watches belong to a signed-in person. `recall`
   goes to the remote server's recall.
 - One turn per question. Follow-ups and approval continuations aren't modelled.

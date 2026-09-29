@@ -215,7 +215,9 @@ describe('mission-loop', () => {
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
-  it('skips retrigger for heartbeat missions (no missionComplete)', async () => {
+  // Events plan every auto mission (docs/design/event-driven-mission-replanning.md
+  // §1): a heartbeat mission used to wait for the next hourly tick here.
+  it('re-plans a heartbeat mission on task completion, like any other auto mission', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = {
       taskTemplate: { context: { heartbeat: true } },
@@ -225,10 +227,25 @@ describe('mission-loop', () => {
       context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: { structuredOutput: { missionComplete: false, summary: 'Still working' } },
     };
-    // dormancy check sees no tasks → no auto-complete → falls through to heartbeat skip
-    tasksFindManyResults = [[]];
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [[{ id: 'pt1' }], [{ id: 'child1' }]];
     const result = await retrigger('m1', 'pt1');
-    expect(result.action).toBe('skipped');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+    const cycleContext = (mockRunMission.mock.calls[0] as any[])[1].cycleContext;
+    // triggerTaskId names the finished task, so the timeline can say
+    // "after <task> finished" without a second lookup.
+    expect(cycleContext).toEqual({ cycleNumber: 2, triggerChainId: 'chain-1', triggerSource: 'event', triggerTaskId: 'pt1' });
+  });
+
+  it('a heartbeat mission still stops at the depth cap', async () => {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
+    scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 5, triggerChainId: 'chain-1' }, result: {} };
+    selectResults = [[{ count: 5 }]];
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('depth_exceeded');
     expect(mockRunMission).not.toHaveBeenCalled();
   });
 
@@ -555,7 +572,7 @@ describe('mission-loop', () => {
     const runCall = mockRunMission.mock.calls[0];
     expect(runCall[0]).toBe('m1');
     expect((runCall[1] as any).cycleContext.cycleNumber).toBe(2);
-    expect((runCall[1] as any).cycleContext.triggerSource).toBe('retrigger');
+    expect((runCall[1] as any).cycleContext.triggerSource).toBe('event');
     expect((runCall[1] as any).cycleContext.triggerChainId).toBe('chain-1');
   });
 
@@ -719,7 +736,7 @@ describe('mission-loop', () => {
     expect(mockRunMission).toHaveBeenCalledTimes(1);
   });
 
-  it('heartbeat missions do not self-retrigger after a refused dormancy check', async () => {
+  it('heartbeat missions re-plan after a refused dormancy check', async () => {
     missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: 's1', updatedAt: new Date(Date.now() - 30000) };
     scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
     updateReturningResult = [{ id: 'm1' }];
@@ -727,12 +744,98 @@ describe('mission-loop', () => {
       context: { cycleNumber: 1, triggerChainId: 'chain-1' },
       result: {},
     };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [[{ id: 'pt1' }], [{ id: 'child1' }]];
     mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
       completed: false,
       decision: { ok: false, code: 'pending_deliverables', reason: '1 deliverable task(s) still open (1 pending)' },
     }) as any);
 
     const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
+  // A cron cycle racing the event re-plan: runMission's insert hits the
+  // tasks_active_planning_per_mission index and returns the in-flight task.
+  it('reports skipped, and announces no cycle, when runMission dedupes against an in-flight planning task', async () => {
+    guardsPass();
+    mockRunMission.mockImplementation(() => Promise.resolve({ task: { id: 'cron-task' }, deduped: true }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('skipped');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).not.toHaveBeenCalledWith(
+      'mission-m1', 'mission:cycle_started', expect.anything(),
+    );
+  });
+});
+
+describe('maybeRetriggerMission — wake entry (mission-wake.ts)', () => {
+  beforeEach(resetAll);
+
+  function wake(missionId: string, reason: any) {
+    return maybeRetriggerMission(missionId, null, mockRunMission as any, mockSpawnEvaluationTask as any, { wakeReason: reason });
+  }
+
+  function activeMission(overrides: Record<string, unknown> = {}) {
+    // updatedAt is NOW: every wake site has just written the mission row.
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(), ...overrides };
+    updateReturningResult = [{ id: 'm1' }];
+    selectResults = [[{ count: 0 }]];
+  }
+
+  it.each(['dependency_met', 'resumed', 'budget_raised', 'pr_merged', 'owner_note', 'owner_answer'])(
+    're-plans once on %s, with a fresh chain at cycle 1 and triggerSource wake:<reason>',
+    async (reason) => {
+      activeMission();
+      const result = await wake('m1', reason);
+      expect(result.action).toBe('retriggered');
+      expect(mockRunMission).toHaveBeenCalledTimes(1);
+      const cycleContext = (mockRunMission.mock.calls[0] as any[])[1].cycleContext;
+      expect(cycleContext.cycleNumber).toBe(1);
+      expect(cycleContext.triggerSource).toBe(`wake:${reason}`);
+      expect(cycleContext.triggerTaskId).toBeUndefined();
+      expect(typeof cycleContext.triggerChainId).toBe('string');
+      expect(cycleContext.triggerChainId).not.toBe('');
+    },
+  );
+
+  it('re-plans a heartbeat mission on a wake', async () => {
+    activeMission({ scheduleId: 's1' });
+    scheduleFindFirstResult = { taskTemplate: { context: { heartbeat: true } } };
+    const result = await wake('m1', 'owner_note');
+    expect(result.action).toBe('retriggered');
+  });
+
+  it('does not read a completed task — there is none', async () => {
+    activeMission();
+    // Were the task read, this would propose completion and never re-plan.
+    taskFindFirstResult = { context: {}, result: { missionComplete: true } };
+    const result = await wake('m1', 'resumed');
+    expect(result.action).toBe('retriggered');
+    expect(mockSpawnEvaluationTask).not.toHaveBeenCalled();
+  });
+
+  it('is not held back by the empty-cycle stall guard (one external event, not a loop)', async () => {
+    activeMission();
+    // Two prior completed planning cycles with no children: a stall for the event path.
+    tasksFindManyResults = [[{ id: 'pt1' }, { id: 'pt2' }], [], []];
+    const result = await wake('m1', 'owner_note');
+    expect(result.action).toBe('retriggered');
+  });
+
+  it('is a no-op for a manual mission', async () => {
+    activeMission({ orchestrationMode: 'manual' });
+    const result = await wake('m1', 'owner_note');
+    expect(result.action).toBe('skipped');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when the mission row is no longer active by the time of the claim', async () => {
+    activeMission();
+    updateReturningResult = [];
+    const result = await wake('m1', 'resumed');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
   });

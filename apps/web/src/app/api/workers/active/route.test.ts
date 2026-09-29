@@ -8,8 +8,6 @@ const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockHeartbeatsFindMany = mock(() => [] as any[]);
 const mockWorkersFindMany = mock(() => [] as any[]);
-const mockGetCachedOpenWorkspaceIds = mock(() => Promise.resolve(null));
-const mockSetCachedOpenWorkspaceIds = mock(() => Promise.resolve());
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -31,11 +29,6 @@ mock.module('@/lib/api-auth', () => ({
 const mockGetAccountWorkspacePermissions = mock(() => Promise.resolve([] as any[]));
 mock.module('@/lib/account-workspace-cache', () => ({
   getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
-}));
-
-mock.module('@/lib/redis', () => ({
-  getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
-  setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
 }));
 
 mock.module('@/lib/team-access', () => ({
@@ -90,16 +83,12 @@ describe('GET /api/workers/active', () => {
     mockWorkspacesFindMany.mockReset();
     mockHeartbeatsFindMany.mockReset();
     mockWorkersFindMany.mockReset();
-    mockGetCachedOpenWorkspaceIds.mockReset();
-    mockSetCachedOpenWorkspaceIds.mockReset();
     mockGetUserWorkspaceIds.mockReset();
     mockGetUserTeamIds.mockReset();
 
     // Default mocks
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
-    mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
-    mockSetCachedOpenWorkspaceIds.mockResolvedValue(undefined);
     mockGetUserWorkspaceIds.mockResolvedValue([]);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockWorkersFindMany.mockResolvedValue([]);
@@ -610,6 +599,97 @@ describe('GET /api/workers/active', () => {
     expect(row.updateAvailableSince).toBeNull();
     expect(row.trackedBranch).toBeNull();
     expect(row.upToDateWithDeployed).toBeNull();
+  });
+
+  describe('open workspaces reach only their own team\'s runners (claim rule)', () => {
+    const runner = (accountId: string, teamId: string, url: string) => ({
+      localUiUrl: url, viewerToken: 't', accountId,
+      maxConcurrentWorkers: 3, activeWorkerCount: 0, lastHeartbeatAt: new Date(),
+      account: { id: accountId, name: `Runner ${accountId}`, maxConcurrentWorkers: 3, teamId },
+    });
+
+    it('hides a runner from another team whose only overlap is an open workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-open']);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-open', name: 'Open WS', teamId: 'team-1', accessMode: 'open' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([]); // no explicit links
+      mockHeartbeatsFindMany.mockResolvedValue([
+        runner('acct-own', 'team-1', 'http://own'),
+        runner('acct-foreign', 'team-2', 'http://foreign'),
+      ]);
+
+      const data = await (await GET(createMockRequest())).json();
+      const urls = data.activeLocalUis.map((r: any) => r.localUiUrl);
+      expect(urls).toEqual(['http://own']);
+      expect(data.activeLocalUis[0].workspaceIds).toEqual(['ws-open']);
+    });
+
+    it('still shows another team\'s runner reaching the workspace through an explicit link', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-open']);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-open', name: 'Open WS', teamId: 'team-1', accessMode: 'open' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-open', canClaim: true, canCreate: false }]);
+      mockHeartbeatsFindMany.mockResolvedValue([runner('acct-foreign', 'team-2', 'http://foreign')]);
+
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis.map((r: any) => r.localUiUrl)).toEqual(['http://foreign']);
+    });
+  });
+
+  describe('the caller\'s workspace list: open means open within the owning team', () => {
+    // A tiny evaluator for the stubbed predicates above, so what the route
+    // ASKS for decides what comes back, not a canned row list.
+    const table = [
+      { id: 'ws-a', name: 'A restricted', teamId: 'team-a', accessMode: 'restricted' },
+      { id: 'ws-a-open', name: 'A open', teamId: 'team-a', accessMode: 'open' },
+      { id: 'ws-b-open', name: 'B open', teamId: 'team-b', accessMode: 'open' },
+    ];
+    const matches = (row: any, w: any): boolean => {
+      if (!w) return true;
+      if (w.type === 'and') return w.args.filter(Boolean).every((a: any) => matches(row, a));
+      if (w.type === 'eq') return row[w.field] === w.value;
+      if (w.type === 'inArray') return w.values.includes(row[w.field]);
+      throw new Error(`unexpected predicate ${w.type}`);
+    };
+    beforeEach(() => {
+      mockWorkspacesFindMany.mockImplementation(async (args: any) => table.filter(r => matches(r, args?.where)));
+      mockHeartbeatsFindMany.mockResolvedValue([]);
+    });
+
+    it('an API key sees its own team\'s open workspaces and not another team\'s', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a' });
+      const ok = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-a-open', {
+        headers: { authorization: 'Bearer bld_test' },
+      }));
+      expect(ok.status).toBe(200);
+      const other = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-b-open', {
+        headers: { authorization: 'Bearer bld_test' },
+      }));
+      expect(other.status).toBe(404);
+      // The open-workspace read itself carries the team predicate.
+      const openCall = mockWorkspacesFindMany.mock.calls
+        .map((c: any) => c[0]?.where)
+        .find((w: any) => w?.type === 'and' && w.args.some((a: any) => a?.type === 'eq' && a.field === 'accessMode'));
+      expect(openCall.args).toContainEqual({ field: 'teamId', values: ['team-a'], type: 'inArray' });
+    });
+
+    it('an API key with no team reads no open workspaces at all', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-x' });
+      const res = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-b-open', {
+        headers: { authorization: 'Bearer bld_test' },
+      }));
+      expect(res.status).toBe(404);
+      expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
+    });
+
+    it('a session user does not get another team\'s open workspace added to their list', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-a' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-a', 'ws-a-open']);
+      const res = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-b-open'));
+      expect(res.status).toBe(404);
+      const own = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-a-open'));
+      expect(own.status).toBe(200);
+    });
   });
 
   it('supports API key auth', async () => {

@@ -907,6 +907,7 @@ function heartbeat(over: Record<string, unknown> = {}) {
     lastHeartbeatAt: minutesAgo(1),
     activeWorkerCount: 0,
     maxConcurrentWorkers: 3,
+    account: { teamId: 'team-1' },
     ...over,
   };
 }
@@ -924,7 +925,7 @@ function pendingTask(over: Record<string, unknown> = {}) {
 }
 
 function workspaceRow(over: Record<string, unknown> = {}) {
-  return { id: 'ws-1', name: 'Platform', accessMode: 'open', ...over };
+  return { id: 'ws-1', name: 'Platform', teamId: 'team-1', accessMode: 'open', ...over };
 }
 
 describe('fleet-idle pass — alive but claiming nothing', () => {
@@ -1085,6 +1086,19 @@ describe('fleet-idle pass — what is not claimable work', () => {
     fleetHeartbeats = [heartbeat()];
     fleetPendingTasks = [pendingTask({ workspaceId: 'ws-locked' })];
     fleetWorkspaces = [workspaceRow({ id: 'ws-locked', accessMode: 'restricted' })];
+    fleetAccountLinks = [];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('does not count another team\'s open workspace (open is open within the owning team)', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ workspaceId: 'ws-other-team' })];
+    fleetWorkspaces = [workspaceRow({ id: 'ws-other-team', teamId: 'team-2' })];
     fleetAccountLinks = [];
     fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
 

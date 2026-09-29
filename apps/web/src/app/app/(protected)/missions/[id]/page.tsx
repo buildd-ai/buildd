@@ -12,7 +12,8 @@ import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
-import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
+import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
+import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary, describeOrchestratorRun, extractRunSummary } from '@/lib/mission-steering-events';
@@ -36,7 +37,7 @@ import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
 import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
-import HeartbeatStatusBadge from './HeartbeatStatusBadge';
+import MissionCheckIns from './MissionCheckIns';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
 import HeartbeatTimeline from './HeartbeatTimeline';
@@ -470,14 +471,17 @@ export default async function MissionDetailPage({
   if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
   const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
 
-  // Heartbeat status
-  const { lastStatus: lastHeartbeatStatus, lastAt: lastHeartbeatAt } = getHeartbeatStatus(
+  // Organizer runs from every trigger (event, wake, check-in, manual, retry),
+  // newest first, labelled by tasks.context.triggerSource.
+  const organizerRuns = selectOrganizerRuns(
     (mission.tasks || []).map(t => ({
       id: t.id,
+      mode: t.mode,
+      title: t.title,
       createdAt: t.createdAt,
       status: t.status,
-      result: digestOf(t.id).result,
-    }))
+      context: digestOf(t.id).context,
+    })),
   );
   const TERMINAL_STATUSES = ['completed', 'cancelled', 'budget_exhausted'];
   const heartbeatOverdue = isHeartbeat && !TERMINAL_STATUSES.includes(mission.status) && mission.schedule?.nextRunAt && scheduleCron
@@ -488,9 +492,14 @@ export default async function MissionDetailPage({
   const scheduleNextMs = scheduleNextRunAt ? new Date(scheduleNextRunAt).getTime() : null;
   const scheduleOverdue = mission.status === 'active' && scheduleNextMs != null && scheduleNextMs < Date.now();
   const scheduleOverdueMinutes = scheduleOverdue && scheduleNextMs != null ? Math.floor((Date.now() - scheduleNextMs) / 60000) : 0;
-  const heartbeatTasks = isHeartbeat
-    ? (mission.tasks || []).filter(t => t.status === 'completed' || t.status === 'failed')
-    : [];
+  // Check-ins: what the last hourly stuck check found (lib/mission-checkins.ts).
+  const lastCheck = describeLastCheck({
+    lastDeferralReason: (mission.schedule as any)?.lastDeferralReason ?? null,
+    lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ?? null,
+    lastRunAt: (mission.schedule as any)?.lastRunAt ?? null,
+    isOverdue: !!heartbeatOverdue,
+    latestOrganizerRun: organizerRuns[0] ?? null,
+  });
 
   // Build roles map for color lookup
   const rolesMap = new Map<string, { name: string; color: string }>();
@@ -1131,9 +1140,6 @@ export default async function MissionDetailPage({
         {displayState === 'active' && driveNextRun.text && (
           <span className="font-mono text-[11px]">{driveNextRun.text}</span>
         )}
-        {isHeartbeat && (
-          <HeartbeatStatusBadge lastStatus={lastHeartbeatStatus} lastAt={lastHeartbeatAt} isOverdue={heartbeatOverdue} />
-        )}
         {mission.workspaceId && (hasPolicyOverride || awaitingMerge > 0) && (
           <Link
             href={`/app/settings/workspace/${mission.workspaceId}`}
@@ -1169,8 +1175,12 @@ export default async function MissionDetailPage({
             lastRunAt: (mission.schedule as any).lastRunAt?.toISOString?.() || (mission.schedule as any).lastRunAt || null,
           } : null}
           orchestrationMode={orchestrationMode}
+          isHeartbeat={isHeartbeat}
         />
       )}
+
+      {/* Check-ins: the hourly stuck check (the internal "heartbeat" schedule). */}
+      {isHeartbeat && <MissionCheckIns lastCheck={lastCheck} />}
 
       {!['completed', 'archived'].includes(mission.status) && (
         <div>
@@ -1189,15 +1199,10 @@ export default async function MissionDetailPage({
         readonly={isTerminal}
       />
 
-      {/* Evaluation Log — heartbeat missions only */}
-      {isHeartbeat && heartbeatTasks.length > 0 && (
+      {/* Organizer runs, from every trigger */}
+      {organizerRuns.length > 0 && (
         <HeartbeatTimeline
-          tasks={heartbeatTasks.map(t => ({
-            id: t.id,
-            createdAt: t.createdAt,
-            status: t.status,
-            result: digestOf(t.id).result,
-          }))}
+          runs={organizerRuns.map(r => ({ ...r, result: digestOf(r.id).result }))}
         />
       )}
 

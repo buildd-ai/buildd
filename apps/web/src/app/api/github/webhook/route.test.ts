@@ -307,6 +307,23 @@ mock.module('@/lib/mission-dependency', () => ({
   wouldCreateCycle: mock(() => Promise.resolve(false)),
 }));
 
+// Post-completion path. The webhook used to write tasks.status directly on a
+// merge, so dependents, mission completion and re-planning never ran from it.
+// Its internals are covered in lib/task-dependencies.test.ts.
+const mockResolveCompletedTask = mock((_taskId: string, _workspaceId: string) => Promise.resolve());
+const mockCheckDependsOnResolved = mock((_taskId: string) => Promise.resolve());
+mock.module('@/lib/task-dependencies', () => ({
+  resolveCompletedTask: mockResolveCompletedTask,
+  checkDependsOnResolved: mockCheckDependsOnResolved,
+  requirePlanApprovalEnabled: () => false,
+  shouldAutoApprovePlan: () => true,
+}));
+const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
+mock.module('@/lib/mission-wake', () => ({
+  wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
+  wakeMissionAfterResponse: mockWakeMissionAfterResponse,
+}));
+
 // The shared completion predicate. The webhook release path used to check only
 // "no pending tasks", so a mission whose goal criteria read `fail` could ship
 // here and be refused by the completion path in the same minute. Default: clear.
@@ -576,6 +593,9 @@ function makeCheckSuitePayload(overrides: Record<string, any> = {}) {
 }
 
 function resetAll() {
+  mockResolveCompletedTask.mockClear();
+  mockCheckDependsOnResolved.mockClear();
+  mockWakeMissionAfterResponse.mockClear();
   mockVerifyWebhookSignature.mockReset();
   mockGithubApi.mockReset();
   mockAllCheckSuitesPassed.mockReset();
@@ -4959,6 +4979,80 @@ describe('pull_request merged — effects that belong to the merge, not the tran
 
     expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(true);
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
+  });
+
+  // ── Merge completes the task through resolveCompletedTask (S1) ───────────
+  it('routes a merge-completed task through resolveCompletedTask', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, missionId: 'm2' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).toHaveBeenCalledTimes(1);
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-task', 'ws1');
+    // It already re-plans through the event loop: no separate wake.
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve the task when the worker path completed it first (row guard lost)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+    updateReturningByStatus = { completed: [] };
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    const statusWrite = updateCalls.find(c => (c.setValues as any).status === 'completed');
+    expect(statusWrite).toBeDefined();
+    // The write is guarded on the row still being non-completed.
+    expect(JSON.stringify(statusWrite!.condition)).toContain('"type":"ne"');
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves a loop task waiting on this merge to the loop path, which resolves it itself', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, loopState: 'condition_unmet' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('does not re-resolve an already-completed task, but wakes its mission with pr_merged', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, status: 'completed', missionId: 'm3' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith('m3', 'pr_merged');
+  });
+
+  it('a redelivered merge of an already-completed task wakes nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({
+      mergedAt: new Date('2026-01-01T00:00:00Z'),
+      task: { ...taskPrWorker().task, status: 'completed', missionId: 'm3' },
+    }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it('routes a branch-matched merge (no owning worker) through resolveCompletedTask', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abc12345-task', status: 'in_progress', workspaceId: 'ws9', missionId: null });
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('abc12345-task', 'ws9');
+  });
+
+  it('does not resolve a branch-matched task another path completed first', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abc12345-task', status: 'in_progress', workspaceId: 'ws9', missionId: null });
+    updateReturningByStatus = { completed: [] };
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
   });
 
   // ── V8 / V14: a merge on GitHub versus the review ────────────────────────

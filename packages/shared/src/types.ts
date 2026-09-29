@@ -2776,6 +2776,18 @@ export interface PrListItem {
   taskTitle: string | null;
   missionId: string | null;
   missionTitle: string | null;
+  baseRef: string | null;
+  // Present only when they matter (apps/web/src/lib/pr-list.ts prSignals):
+  /** Why a person is needed: the escalation inbox's decision. */
+  waitingOnYou?: string;
+  /** An agent is already on it. */
+  resolving?: 'conflict' | 'ci' | 'review';
+  /** CI fix tasks buildd has dispatched for this PR (red only). */
+  ciFixAttempts?: number;
+  /** Targets a mission integration branch. */
+  intoMissionBranch?: string;
+  /** State last read from GitHub this many hours ago (over an hour). */
+  checkedHoursAgo?: number;
 }
 
 export interface ListPrsResponse {

@@ -138,3 +138,26 @@ export function typingPrefixes(text: string, frames: number): number[] {
   if (out[out.length - 1] !== text.length) out.push(text.length);
   return out;
 }
+
+/**
+ * Runs in the page (page.evaluate): for each phrase, the rects of its first
+ * visible occurrence (one per line it wraps onto) and the box of the element
+ * that holds it. Missing phrases come back with no rects. Self-contained.
+ */
+export function textBoxes(phrases: string[]) {
+  const box = (r: { x: number; y: number; width: number; height: number }) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
+  return phrases.map((text) => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = (n.textContent ?? '').indexOf(text);
+      const el = n.parentElement;
+      if (i < 0 || !el || !el.getClientRects().length) continue;
+      const range = document.createRange();
+      range.setStart(n, i);
+      range.setEnd(n, i + text.length);
+      const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0).map(box);
+      return { text, rects, block: box(el.getBoundingClientRect()) };
+    }
+    return { text, rects: [], block: null };
+  });
+}

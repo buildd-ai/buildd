@@ -42,8 +42,10 @@ import {
   actionHelp,
   actionSignature,
   actionsOfGroup,
+  derivedSignature,
   mcpGroupOf,
   mcpGroupToolName,
+  mcpGroupParamsSchema,
   type McpToolGroup,
 } from "@buildd/core/mcp-tool-groups";
 import type { BuilddAction } from "@buildd/core/mcp-tools";
@@ -89,12 +91,20 @@ export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccou
   return actionsOfGroup(group).filter(a => allowed.has(a));
 }
 
-const GROUP_PARAMS_DESCRIPTION = 'Params of the chosen action, as its signature above.';
+
+/** The group actions whose own sub-action selector (params.action) takes `value`. */
+function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel): string[] {
+  return groupActionsForLevel(group, accountLevel).filter(a => {
+    const m = (derivedSignature(a) ?? '').match(/\baction: ([a-z_|]+)/);
+    return !!m && m[1].split('|').includes(value);
+  });
+}
 
 /** A `buildd_<group>` tool for the given actions: short purpose, one line per action, and `help`. */
 export function groupToolDefinition(group: McpToolGroup, actions: readonly string[]): object {
   const lines = actions.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
   lines.push(`- ${HELP_ACTION} {action}: full docs for one action`);
+  const withSub = actions.find(a => /\baction: [a-z_|]*\bupdate\b/.test(derivedSignature(a) ?? ''));
   return {
     name: mcpGroupToolName(group),
     description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
@@ -106,8 +116,13 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
     inputSchema: {
       type: "object" as const,
       properties: {
-        action: { type: "string" as const, enum: [...actions, HELP_ACTION] },
-        params: { type: "object" as const, description: GROUP_PARAMS_DESCRIPTION },
+        action: {
+          type: "string" as const,
+          enum: [...actions, HELP_ACTION],
+          // Only where some action has a sub-action selector of its own.
+          ...(withSub ? { description: `A sub-action goes in params: {"action":"${withSub}","params":{"action":"update",...}}.` } : {}),
+        },
+        params: mcpGroupParamsSchema(group, actions),
       },
       required: ["action"],
     },
@@ -127,7 +142,10 @@ export type GroupToolCall =
 export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel): GroupToolCall {
   const tool = mcpGroupToolName(group);
   const action = typeof args?.action === 'string' ? args.action : '';
-  const params = (args?.params && typeof args.params === 'object' ? args.params : {}) as Record<string, unknown>;
+  // A model sometimes flattens a call ({action, title, ...}); with no params
+  // object, the fields beside action are the params.
+  const rest = args ? Object.fromEntries(Object.entries(args).filter(([k]) => k !== 'action' && k !== 'params')) : {};
+  const params = (args?.params && typeof args.params === 'object' ? args.params : rest) as Record<string, unknown>;
 
   if (action === HELP_ACTION) {
     const target = typeof params.action === 'string' ? params.action : '';
@@ -146,6 +164,10 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   const home = mcpGroupOf(action);
   if (!home) {
+    const owners = actionsWithSubAction(group, action, accountLevel);
+    if (owners.length > 0) {
+      return { kind: 'reply', isError: true, text: `"${action}" is a sub-action: call ${tool} with action "${owners[0]}" and params.action "${action}".` };
+    }
     return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel).join(', ')}, ${HELP_ACTION}.` };
   }
   if (home !== group) {

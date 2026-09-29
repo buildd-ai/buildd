@@ -136,7 +136,7 @@ export function classifyLastHeartbeatCycleWait(
     new Date(lastCycle.createdAt.getTime() + windowMs);
   if (waitUntil <= now) return null; // reset already passed — let the next tick plan normally
 
-  return { reason: 'provider budget/rate-limit pause (heartbeat cycle)', waitUntil };
+  return { reason: 'provider budget/rate-limit pause (organizer run)', waitUntil };
 }
 
 export interface HeartbeatMissionState {
@@ -149,7 +149,20 @@ export interface HeartbeatMissionState {
 }
 
 export type HeartbeatPrepassDecision =
-  | { action: 'invoke_llm'; stateKey: string }
+  /**
+   * The state changed. Carries the stuck-check inputs (lib/mission-stuck.ts),
+   * read from the task rows this prepass already loaded.
+   */
+  | {
+      action: 'invoke_llm';
+      stateKey: string;
+      /** Non-terminal, non-planning tasks that are not a known self-resolving wait. */
+      openTaskCount: number;
+      /** A planning (organizer) task is pending, assigned or in progress. */
+      planningActive: boolean;
+      /** `createdAt` of the newest planning task, whatever started it. */
+      lastOrganizerRunAt: Date | null;
+    }
   | { action: 'skip_blocked'; reason: string }
   /**
    * All deliverables are terminal — propose completion. Whether the mission
@@ -298,5 +311,25 @@ export async function evaluateHeartbeatPrepass(input: {
     return { action: 'skip_no_change', stateKey };
   }
 
-  return { action: 'invoke_llm', stateKey };
+  return { action: 'invoke_llm', stateKey, ...summarizeOpenWork(allTasks) };
+}
+
+/** The stuck check's view of the task rows (docs/design/event-driven-mission-replanning.md §3). */
+function summarizeOpenWork(
+  allTasks: Array<WaitClassifiableTask & { createdAt: Date }>,
+  now: Date = new Date(),
+): { openTaskCount: number; planningActive: boolean; lastOrganizerRunAt: Date | null } {
+  let openTaskCount = 0;
+  let planningActive = false;
+  let lastOrganizerRunAt: Date | null = null;
+  for (const t of allTasks) {
+    const open = NON_TERMINAL_STATUSES.has(t.status);
+    if (t.mode === 'planning') {
+      if (open) planningActive = true;
+      if (!lastOrganizerRunAt || t.createdAt > lastOrganizerRunAt) lastOrganizerRunAt = t.createdAt;
+    } else if (open && !classifySingleTaskWait(t, now)) {
+      openTaskCount++;
+    }
+  }
+  return { openTaskCount, planningActive, lastOrganizerRunAt };
 }

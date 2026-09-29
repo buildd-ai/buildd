@@ -11,11 +11,12 @@
  * say which tools' results cost the most.
  *
  * Env: CHAT_EVAL_SURFACE (chat|mcp), CHAT_EVAL_TOOLS (tools.json),
- *      CHAT_EVAL_LOG (calls.jsonl), CHAT_EVAL_QID (question id).
+ *      CHAT_EVAL_LOG (calls.jsonl), CHAT_EVAL_QID (question id),
+ *      CHAT_EVAL_MCP_TOOLS (groups|legacy: which server instructions to send).
  */
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { isWrite, MCP_SERVER_INSTRUCTIONS, type Surface, type ToolDef } from './surfaces';
+import { groupRouterReply, isWrite, mcpServerInstructionsFor, parseMcpTools, type Surface, type ToolDef } from './surfaces';
 import { builddKey, estTokens } from './env';
 import { callRemoteTool, httpApi } from './remote';
 import { buildChatTools } from '../../../src/lib/chat/tools';
@@ -27,6 +28,7 @@ const surface = (process.env.CHAT_EVAL_SURFACE ?? 'chat') as Surface;
 const tools: ToolDef[] = JSON.parse(readFileSync(process.env.CHAT_EVAL_TOOLS!, 'utf8'));
 const logFile = process.env.CHAT_EVAL_LOG;
 const qid = process.env.CHAT_EVAL_QID ?? '';
+const mcpTools = parseMcpTools(process.env.CHAT_EVAL_MCP_TOOLS || undefined);
 
 const send = (msg: unknown) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 
@@ -58,6 +60,10 @@ function chatTools() {
 let built: ReturnType<typeof chatTools> | null = null;
 
 async function execute(name: string, input: Record<string, unknown>): Promise<{ text: string; isError: boolean; write: boolean; dataChars?: number }> {
+  // A group call the router answers itself (help, unknown or wrong-group
+  // action) runs nothing, so it gets the server's own reply, not "blocked".
+  const reply = surface === 'mcp' ? groupRouterReply(name, input) : null;
+  if (reply) return { ...reply, write: false };
   if (isWrite(surface, name, input)) {
     const text = surface === 'chat'
       ? `[eval] An approval card for this ${name} call is now in front of the user, showing exactly what would change. Nothing has run; the user decides on the card.`
@@ -78,13 +84,13 @@ async function execute(name: string, input: Record<string, unknown>): Promise<{ 
     // dataChars: the part that is text; the rest is the objects array and summary.
     return { text: JSON.stringify(result), isError: failed, write: false, dataChars: String(result.data ?? '').length };
   }
-  // Group tools answer help and wrong-group calls exactly as /api/mcp does,
-  // and forward an action of their group to the one-tool `buildd`, which any
-  // deployed server has.
+  // A group tool forwards an action of its group (the router dispatched it:
+  // groupRouterReply was null) to the one-tool `buildd`, which any deployed
+  // server has.
   const group = mcpGroupOfToolName(name);
   if (group) {
     const routed = routeGroupToolCall(group, input, 'admin');
-    if (routed.kind === 'reply') return { text: routed.text, isError: routed.isError, write: false };
+    if (routed.kind !== 'dispatch') throw new Error('unreachable: groupRouterReply handles replies');
     const out = await callRemoteTool('buildd', { action: routed.action, params: routed.params });
     return { text: out.text, isError: out.isError, write: false };
   }
@@ -98,7 +104,7 @@ async function onMessage(msg: { id?: number | string; method: string; params?: R
       protocolVersion: (msg.params?.protocolVersion as string) ?? '2025-06-18',
       capabilities: { tools: {} },
       serverInfo: { name: 'buildd-eval', version: '0.0.1' },
-      ...(surface === 'mcp' ? { instructions: MCP_SERVER_INSTRUCTIONS } : {}),
+      ...(surface === 'mcp' ? { instructions: mcpServerInstructionsFor(mcpTools) } : {}),
     } });
   }
   if (msg.method === 'tools/list') {

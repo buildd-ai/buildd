@@ -162,9 +162,11 @@ describe('formatVisualReview for MCP', () => {
 });
 
 describe('formatVisualReview for chat', () => {
-  it('carries no links and keeps the "not seen" line', () => {
+  it('links each screenshot to its artifact page (never the image), and keeps the "not seen" line', () => {
     const text = formatVisualReview(model(), 'Example');
-    expect(text).not.toMatch(/\/download|\/app\/artifacts\//);
+    expect(text).toContain(`/app/artifacts/${SHOT1}`);
+    expect(text).toContain(`/app/artifacts/${SHOT2}`);
+    expect(text).not.toMatch(/\/download|\/api\/artifacts\//);
     expect(text).toMatch(/You have not seen these images/);
     expect(text).toMatch(/round 1: cancelled/);
   });
@@ -259,11 +261,12 @@ describe('other visual evidence', () => {
     expect(mcp(off(), unrelated)).toMatch(/No visual audit on this mission/);
   });
 
-  it('chat: same section, no links, and it does not claim the images were seen', () => {
+  it('chat: same section, page links but no image links, and it does not claim the images were seen', () => {
     const text = formatVisualReview(off(), 'Example', { artifacts: all });
     expect(text).toContain('No automatic visual audit ran; manual visual evidence below.');
     expect(text).toContain('Verdict: all checks passed.');
-    expect(text).not.toMatch(/\/app\/artifacts\/|\/download/);
+    expect(text).toContain(`/app/artifacts/${MANUAL}`);
+    expect(text).not.toMatch(/\/download|\/api\/artifacts\//);
     expect(text).toMatch(/You have not seen these screenshots/);
   });
 });

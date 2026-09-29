@@ -12,10 +12,11 @@
  */
 import { z } from 'zod';
 import { buildChatTools, CORE_GROUPS, FALLBACK_GROUPS, needsApproval, toolNamesForGroups } from '../../../src/lib/chat/tools';
-import { ALL_CHAT_TOOL_SPECS, opSpec, TOOL_GROUPS, type ToolGroup } from '../../../src/lib/chat/registry';
+import { ALL_CHAT_TOOL_SPECS, isExposed, opSpec, TOOL_GROUPS, type ToolGroup } from '../../../src/lib/chat/registry';
+import type { BuilddAction } from '@buildd/core/mcp-tools';
 import { CHAT_INSTRUCTIONS } from '../../../src/lib/chat/instructions';
 import { renderChatContextBlock } from '../../../src/lib/chat/context-block';
-import { listMcpTools, mcpServerInstructions, type McpToolSurface } from '../../../src/app/api/mcp/tools';
+import { listMcpTools, mcpServerInstructions, routeGroupToolCall, type McpToolSurface } from '../../../src/app/api/mcp/tools';
 import { mcpGroupOfToolName } from '@buildd/core/mcp-tool-groups';
 
 export type Surface = 'chat' | 'mcp';
@@ -90,9 +91,36 @@ export function chatSystemPrompt(args: {
 export const MCP_SYSTEM_PROMPT = 'You are an assistant with access to buildd, a task coordination system for AI coding agents, through its MCP tools. Answer the user from live buildd state; call the tools rather than guess. Be brief.';
 
 /**
+ * The MCP class of each action chat does not expose (not in the chat
+ * registry, or every op deferred there). Chat's `deferred` means "not offered
+ * in chat yet", not "a write", so it can't decide an MCP call. Everything
+ * chat exposes is classified by the registry's own op class instead; the
+ * safety test checks each MCP action is classified by exactly one of the two.
+ * Multi-op actions listed here are writes whole (fail closed).
+ */
+export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
+  get_usage_stats: 'read',
+  merge_pr: 'write',
+  close_pr: 'write',
+  request_pr_review: 'write',
+  update_artifact: 'write',
+  manage_model_tiers: 'write',
+  manage_secrets: 'write',
+  claim_task: 'write',
+  update_progress: 'write',
+  complete_task: 'write',
+  create_pr: 'write',
+  emit_event: 'write',
+  upload_artifact: 'write',
+  record_pr_supersession: 'write',
+  post_note: 'write',
+  suggest_schedule_update: 'write',
+};
+
+/**
  * Would this call change something? Chat: the registry's approval rule.
- * MCP: the chat registry's class for the same action/op; anything the
- * registry doesn't know (worker-only lifecycle actions) counts as a write.
+ * MCP: the chat registry's op class when chat exposes the action, else
+ * MCP_ONLY_CLASS; an unknown action or op counts as a write.
  */
 export function isWrite(surface: Surface, tool: string, input: Record<string, unknown>): boolean {
   if (surface === 'chat') return needsApproval(tool, input);
@@ -102,10 +130,38 @@ export function isWrite(surface: Surface, tool: string, input: Record<string, un
   const action = String(input.action ?? '');
   if (action === 'help' && tool !== 'buildd') return false;
   const params = (input.params && typeof input.params === 'object' ? input.params : {}) as Record<string, unknown>;
-  if (!ALL_CHAT_TOOL_SPECS[action]) return true;
+  const spec = ALL_CHAT_TOOL_SPECS[action];
+  if (!spec || !isExposed(spec)) return (MCP_ONLY_CLASS as Record<string, string>)[action] !== 'read';
   const s = opSpec(action, params);
   return !s || s.spec.class !== 'read';
 }
 
+/**
+ * What `/api/mcp` answers a group-tool call without running anything: help,
+ * an unknown action, an action of another group. The proxy returns this
+ * before classifying, so a malformed call gets the server's real error
+ * (which the model can recover from) instead of "writes are not run".
+ * Null when the router would dispatch the action, or for any other tool.
+ */
+export function groupRouterReply(tool: string, input: Record<string, unknown>): { text: string; isError: boolean } | null {
+  const group = mcpGroupOfToolName(tool);
+  if (!group) return null;
+  const routed = routeGroupToolCall(group, input, 'admin');
+  return routed.kind === 'reply' ? { text: routed.text, isError: routed.isError } : null;
+}
+
+/** `--mcp-tools legacy|groups`: which tool list `/api/mcp` advertises (default groups). */
+export function parseMcpTools(v: string | undefined): McpToolSurface {
+  if (v === undefined || v === 'groups') return 'groups';
+  if (v === 'legacy') return 'legacy';
+  throw new Error(`--mcp-tools must be legacy or groups, got ${v}`);
+}
+
+/** A run's id: time, surface (with its routing or MCP tool list), model, label. */
+export function runIdFor(a: { at: Date; surface: Surface; mcpTools: McpToolSurface; routing: string; model: string; label?: string }): string {
+  const variant = a.surface === 'chat' ? a.routing : a.mcpTools;
+  return `${a.at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${a.surface}-${variant}-${a.model}${a.label ? `-${a.label}` : ''}`;
+}
+
 /** `/api/mcp`'s server `instructions` at admin level (route.ts), sent on initialize. */
-export const MCP_SERVER_INSTRUCTIONS = mcpServerInstructions('admin', 'groups');
+export const mcpServerInstructionsFor = (surface: McpToolSurface): string => mcpServerInstructions('admin', surface);

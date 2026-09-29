@@ -241,7 +241,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_missions: 'list, read, create, edit, arm or delete missions; link tasks; evaluate criteria',
   manage_initiatives: 'initiatives: containers above missions',
   link_tracker: 'link a mission to a Linear project or issue',
-  get_visual_review: "a mission's visual QA: per screen verdict, decision, fix",
+  get_visual_review: "visual QA per screen, shot links; workspaceId alone: missions awaiting your review",
   list_discrepancies: 'spec vs code discrepancy rows',
   get_discrepancy: 'one discrepancy with its evidence',
   adjudicate_discrepancy: 'accept a discrepancy or flip its direction',
@@ -315,7 +315,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  manage_missions: '{action: list|create|get|update|arm|delete|link_task|unlink_task|evaluate|get_criteria_state, missionId?, title?, query?, description?, workspaceId?, initiativeId?, status?, limit?, taskId?, priority?, goalCriteria?, startMode?, executor?, maxConcurrentTasks?, costBudgetUsd?, branchStrategy?, …}',
+  manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */
@@ -398,3 +398,105 @@ export function actionSignature(action: string): string {
 
 /** Actions whose signature is hand-written (for the test that keeps them honest). */
 export const SIGNATURE_OVERRIDE_ACTIONS = Object.keys(SIGNATURE_OVERRIDES) as BuilddAction[];
+
+/**
+ * Typed params of each group tool: the fields common questions need, as JSON
+ * schema properties with one short description each, so a model reaches them
+ * without a `help` call. Not every param: the rest stay in the signatures and
+ * `help`, and the params object stays open, so untyped fields pass through.
+ *
+ * A field's description is built from parts tagged with the actions they
+ * describe, like the purpose line: a level that lists only part of a group
+ * sees only the fields (and the parts of a description) it can act on. A test
+ * holds that each tagged action's long docs name the field.
+ */
+type ParamPart = { text: string; actions: BuilddAction[] };
+export interface GroupParam {
+  name: string;
+  /** JSON schema of the field, without its description. */
+  schema: Record<string, unknown>;
+  parts: ParamPart[];
+  /** Every action a part is tagged with. */
+  actions: BuilddAction[];
+}
+
+const param = (name: string, schema: Record<string, unknown>, parts: ParamPart[]): GroupParam =>
+  ({ name, schema, parts, actions: [...new Set(parts.flatMap(p => p.actions))] });
+const str = { type: 'string' };
+const num = { type: 'number' };
+const bool = { type: 'boolean' };
+
+const WS = 'UUID, repo name or owner/repo';
+const MISSION_WRITES: BuilddAction[] = ['manage_missions'];
+
+export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
+  missions: [
+    param('action', str, [
+      { text: 'manage_missions: list|get|update|create|arm|delete|link_task|unlink_task|evaluate|get_criteria_state', actions: ['manage_missions'] },
+    ]),
+    param('missionId', str, [
+      { text: 'Mission UUID, or its title (looked up)', actions: ['manage_missions', 'get_visual_review'] },
+    ]),
+    param('missionTitle', str, [{ text: 'get_visual_review: title, team-wide unless workspaceId', actions: ['get_visual_review'] }]),
+    param('title', str, [{ text: 'create: the title. get/update: finds it by title, no list first', actions: MISSION_WRITES }]),
+    param('query', str, [{ text: 'list/get: title substring', actions: MISSION_WRITES }]),
+    param('workspaceId', str, [
+      { text: WS, actions: ['manage_missions', 'get_visual_review', 'list_discrepancies'] },
+      { text: 'get_visual_review with only this: missions awaiting your review', actions: ['get_visual_review'] },
+      { text: 'update by UUID: moves the mission there (omit to only scope a title)', actions: MISSION_WRITES },
+    ]),
+    param('status', str, [{ text: 'list: open (default) or all; update: set it', actions: MISSION_WRITES }]),
+    param('priority', num, [{ text: 'create/update', actions: MISSION_WRITES }]),
+    param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit when UI files change (default true)', actions: MISSION_WRITES }]),
+    param('autoVerify', bool, [{ text: 'Auto-evaluate goalCriteria (default true)', actions: MISSION_WRITES }]),
+    param('startMode', { type: 'string', enum: ['armed', 'held'] }, [{ text: 'held: no task is claimed until armed', actions: MISSION_WRITES }]),
+    param('goalCriteria', {
+      type: 'array',
+      items: { type: 'object', properties: { type: { type: 'string', enum: ['command', 'all_prs_merged', 'no_open_tasks', 'artifact_exists', 'description'] } } },
+    }, [{ text: 'Completion gates, null clears; prefer {type:"command",command}', actions: MISSION_WRITES }]),
+    param('awaitingOnly', bool, [{ text: 'get_visual_review: only screens awaiting you', actions: ['get_visual_review'] }]),
+  ],
+  tasks: [
+    param('taskId', str, [{ text: 'Task UUID', actions: ['get_task', 'update_task', 'get_task_messages', 'approve_plan', 'reject_plan', 'correct_task_result'] }]),
+    param('workspaceId', str, [{ text: WS, actions: ['list_tasks', 'create_task'] }]),
+    param('status', str, [
+      { text: 'list_tasks: active (default)|completed|failed|cancelled', actions: ['list_tasks'] },
+      { text: 'update_task: pending|completed|failed|cancelled (cancelled stops its worker)', actions: ['update_task'] },
+    ]),
+    param('limit', num, [{ text: 'list_tasks: page size (default 5, max 50)', actions: ['list_tasks'] }]),
+    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts'] } }, [{ text: 'get_task: default both', actions: ['get_task'] }]),
+    param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
+    param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
+  ],
+  runners: [
+    param('workspaceId', str, [
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'list_connectors', 'get_failure_analytics'] },
+      { text: 'list_runners with it: leads with whether a browser-capable runner is online', actions: ['list_runners'] },
+    ]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces', 'send_agent_message'] }]),
+  ],
+  prs: [
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
+  ],
+  artifacts: [
+    param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
+    param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
+  ],
+  schedules: [
+    param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
+  ],
+  work: [],
+  admin: [],
+};
+
+/** The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says. */
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; description: string; properties: Record<string, Record<string, unknown>> } {
+  const listed = new Set(actions);
+  const properties: Record<string, Record<string, unknown>> = {};
+  for (const f of MCP_GROUP_PARAMS[group]) {
+    const texts = f.parts.filter(p => p.actions.some(a => listed.has(a))).map(p => p.text);
+    if (texts.length === 0) continue;
+    properties[f.name] = { ...f.schema, description: texts.join('. ') };
+  }
+  return { type: 'object', description: 'Per the signature above.', properties };
+}
