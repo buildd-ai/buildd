@@ -10,7 +10,8 @@
  *   paragraph); a person's message is their bubble.
  * - `renderMessageHeader`: who and when (the agent's avatar, the author).
  * - `renderToolGroup` / `renderTool`: consecutive calls under one header
- *   (ToolCallRows), approvals as buildd's card, each followed by the objects
+ *   (the kit's `ToolCallGroup` with buildd's hooks, feed-model.ts
+ *   `BUILDD_TOOL_CALLS`), approvals as buildd's card, each followed by the objects
  *   its writes returned (feed-model.ts `feedSegments`).
  * - `renderMessageFooter`: the reads' objects after the answer (answer
  *   first), the collapsed "Also read" row, the thumbs, or a message's tag.
@@ -25,14 +26,13 @@
  * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo } from 'react';
-import { ChatThread, thinkingSteps, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
+import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
 import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
-import { eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
+import { BUILDD_TOOL_CALLS, eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
-import { ToolCallGroup } from './ToolCallRows';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
 import WatchNotice from './WatchNotice';
 import DirectiveCards from './DirectiveCard';
@@ -270,7 +270,7 @@ export default function ChatFeed({
           if (ctx.streaming) return null;
           return (
             <>
-              <ToolCallGroup calls={parts.filter(isToolPart)} />
+              <ToolCallGroup calls={parts.filter(isToolPart)} {...BUILDD_TOOL_CALLS} />
               {objectsAfter(km as ChatMessage, [parts[0].toolCallId])}
             </>
           );

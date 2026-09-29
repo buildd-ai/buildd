@@ -20,12 +20,11 @@
  * Newsreader. Plain buttons. No keycaps: nothing here has a key.
  */
 import { useState, type ReactNode } from 'react';
-import { ApprovalCard as KitApprovalCard } from '@builddai/ai-kit/chat/react';
+import { ApprovalCard as KitApprovalCard, ToolCallRow } from '@builddai/ai-kit/chat/react';
 import type { ChatToolPart } from './chat-contract';
 import { useChatActions } from './ChatActions';
 import { approvalDraft, approvalLabel, type ApprovalDraft, type MissionDraft } from './approval-draft';
 import { toolRowView } from './feed-model';
-import { ToolCallRow } from './ToolCallRows';
 
 /** "4 criteria · constraints · plan": what the folded details hold. */
 export function detailsSummary(draft: MissionDraft): string {
