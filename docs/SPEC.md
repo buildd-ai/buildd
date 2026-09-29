@@ -91,7 +91,20 @@ Key config (all JSONB, migration-free to evolve):
 ### Mission
 A first-class **goal** that aggregates tasks. Status: `active | paused | completed |
 archived` (lifecycle is stored; *health* is derived from task state via
-`deriveMissionHealth`, not stored). Notable fields:
+`deriveMissionHealth`, not stored).
+
+**How an auto mission moves** (`docs/design/event-driven-mission-replanning.md`,
+`docs/specs/mission-heartbeat-schedule-lifecycle.md` § Role): events plan the
+next step. A task of the mission reaching a terminal state re-plans through
+`maybeRetriggerMission`; a dependency met, a resume, a budget raise, a PR merged
+by webhook, or an owner note or answer re-plans through `wakeMission`. The
+heartbeat (check-in) schedule does not drive progress. It is an hourly,
+token-free backstop that dispatches the organizer (`triggerSource: 'backstop'`)
+only when `isMissionStuck` holds: the state changed, nothing is open or
+planning, and no organizer run started within `BACKSTOP_GRACE_MS` (2 hours).
+Every new auto mission gets one by default; `isHeartbeat: false` opts out.
+
+Notable fields:
 - **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — the mission's **integration
   branch** (shape `mission/<slug>-<id8>`, generated lazily once the mission's workspace
   has a repo) and the mission-level PR that tracks it. Mission tasks do **not** share a
@@ -270,7 +283,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 |---|---|---|
 | Runs | in the web app, seconds | on the team's runner, minutes to hours |
 | Shape | one call or a short streaming turn; no repo, no shell | Claude Code (Agent SDK) or Codex harness, worktree + tools |
-| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check, heartbeat triage | all engineering/research tasks, planning, prose-criteria grading fallback |
+| Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
 | Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | `oauth_token` / `claude_credential` (Claude subscription), `anthropic_api_key`, `codex_credential` (ChatGPT/Codex auth.json) or runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter` |
 | Billing | metered per token | seat/session window (virtual cost) or per token |
 | Code | `inference-client.ts` (`inferenceCall`), `decision-client.ts`, `apps/web/src/lib/chat/` | `apps/runner/src/backends/` |
@@ -296,11 +309,12 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     no toggle; they run whenever a key resolves.
   - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
     `mission_summary` declared with no call site and not shown in Settings).
-    `heartbeat_triage` asks a decision model (OpenRouter) whether a heartbeat
-    cycle needs the organizer before a runner is dispatched; every look is a
-    `heartbeat_triage_looks` row, and a confident wait skips the organizer only
-    in the treatment arm of a running `heartbeat_triage` experiment
-    (`docs/design/heartbeat-triage.md`). All default by billing
+    `heartbeat_triage` no longer runs: the heartbeat's stuck check
+    (`isMissionStuck`) answers deterministically whether a cycle needs the
+    organizer, so its cron call site was removed and its experiment concluded
+    (`docs/design/heartbeat-triage.md`, superseded). The module, the
+    `heartbeat_triage_looks` table and the experiment kind remain until a
+    follow-up drops them. All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
     overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
     CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.

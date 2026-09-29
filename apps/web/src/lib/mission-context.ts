@@ -445,11 +445,12 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   // ── Heartbeat mode ──
-  // Only use heartbeat context for cron-triggered runs. Initial creation,
-  // manual runs, and retriggers should use full planning mode so the
-  // orchestrator actually creates execution subtasks instead of just reporting.
+  // Only use heartbeat context for runs the schedule started (`cron`, or the
+  // stuck-check `backstop`). Initial creation, manual runs, and retriggers
+  // should use full planning mode so the orchestrator actually creates
+  // execution subtasks instead of just reporting.
   const triggerSource = templateContext?.triggerSource as string | undefined;
-  const useHeartbeatMode = isHeartbeat && triggerSource === 'cron';
+  const useHeartbeatMode = isHeartbeat && (triggerSource === 'cron' || triggerSource === 'backstop');
 
   if (useHeartbeatMode) {
     // Resolve skillSlugs from templateContext or schedule for role-gated sections

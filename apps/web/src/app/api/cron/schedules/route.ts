@@ -12,10 +12,9 @@ import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context'
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
+import { evaluateHeartbeatPrepass, type HeartbeatPrepassDecision } from '@/lib/heartbeat-prepass';
+import { isMissionStuck } from '@/lib/mission-stuck';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
-import { triageHeartbeat, loadHeartbeatTriageFacts, formatTriageLog, type HeartbeatTriageRecord } from '@/lib/heartbeat-triage';
-import { resolveHeartbeatTriageArm, recordHeartbeatTriageLook } from '@buildd/core/heartbeat-triage-experiment-source';
 import {
   evaluateHeartbeatCircuitBreaker,
   tripHeartbeatCircuitBreaker,
@@ -146,7 +145,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   let triggerChecks = 0;
   let deterministicHeartbeatSkips = 0;
   let llmHeartbeatInvocations = 0;
-  let triageHeartbeatSkips = 0;
+  // The heartbeat is a backstop (lib/mission-stuck.ts): a cycle that reaches
+  // the organizer dispatch either dispatches because the mission is stuck, or
+  // defers because it is not.
+  let backstopDispatches = 0;
+  let backstopDeferrals = 0;
   let criteriaRearmInvocations = 0;
 
   try {
@@ -540,6 +543,9 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         let criteriaRearmContext: Record<string, unknown> | null = null;
         let planningBackoff: HeartbeatPlanningBackoff | null = null;
         let holdForPlanningBackoff = false;
+        // The prepass decision that asked for planning, if any: the stuck check's input.
+        let changedStatePrepass: HeartbeatPrepassDecision | null = null;
+        let isBackstopDispatch = false;
 
         // Read heartbeat/activeHours config from the schedule's taskTemplate.context
         const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
@@ -725,14 +731,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               // organizer is never re-dispatched.
               holdForPlanningBackoff = true;
             } else if (prepass.action === 'invoke_llm') {
-              // Persist current state hash so the next heartbeat can detect no-change.
-              await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
-              // Real planning is resuming — close out any wait note left over
-              // from a prior cycle rather than leaving a stale "waiting" note visible.
-              await resolveHeartbeatWaitNote(linkedMission.id).catch(e =>
-                console.error(`[heartbeat-prepass] failed to resolve wait note for mission ${linkedMission.id}:`, e),
-              );
-              llmHeartbeatInvocations++;
+              // Decided below, after the backoff: dispatch only if the mission is stuck.
+              changedStatePrepass = prepass;
             }
             // Otherwise this is a criteria re-arm falling through from
             // skip_complete: state is unchanged by construction (every
@@ -741,8 +741,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             // suppress the cycle the re-arm just authorised.
           } catch (prepassErr) {
             console.warn(`[heartbeat-prepass] Error for mission ${linkedMission.id}:`, prepassErr instanceof Error ? prepassErr.message : prepassErr);
+            // No prepass result: the stuck check below fails closed.
             if (planningBackoff?.active) holdForPlanningBackoff = true;
-            else llmHeartbeatInvocations++;
           }
 
           // A criteria re-arm falling through from skip_complete is not held:
@@ -765,13 +765,53 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               console.error(`[heartbeat-planning-backoff] failed to resolve note for mission ${linkedMission.id}:`, e),
             );
           }
+
+          // The backstop gate (docs/design/event-driven-mission-replanning.md §3).
+          // Events plan every auto mission; this cycle dispatches the organizer
+          // only when the event loop had its chance and nothing moved. A
+          // criteria re-arm falling through from skip_complete is not gated:
+          // it is already one wake per verdict shape.
+          if (!criteriaRearmContext) {
+            const verdict = isMissionStuck({
+              prepass: changedStatePrepass,
+              lastOrganizerRunAt: changedStatePrepass?.action === 'invoke_llm' ? changedStatePrepass.lastOrganizerRunAt : null,
+              now,
+            });
+            if (!verdict.stuck) {
+              // The state hash is NOT written: the state stays "changed", so a
+              // later tick (past the grace period, with nothing open) still sees
+              // it and dispatches. Writing it would let skip_no_change hide the
+              // very stall this backstop exists to catch.
+              await db.update(taskSchedules).set({ lastDeferralReason: 'heartbeat_not_stuck', lastDeferredAt: now, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              console.log(`[cron-schedules] mission ${linkedMission.id}: backstop deferred (${verdict.reason})`);
+              backstopDeferrals++;
+              skipped++;
+              continue;
+            }
+            if (changedStatePrepass?.action === 'invoke_llm') {
+              // Persist current state hash so the next heartbeat can detect no-change.
+              await db.update(taskSchedules).set({ lastHeartbeatStateHash: changedStatePrepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+            }
+            // Real planning is resuming — close out any wait note left over
+            // from a prior cycle rather than leaving a stale "waiting" note visible.
+            await resolveHeartbeatWaitNote(linkedMission.id).catch(e =>
+              console.error(`[heartbeat-prepass] failed to resolve wait note for mission ${linkedMission.id}:`, e),
+            );
+            llmHeartbeatInvocations++;
+          }
+          isBackstopDispatch = true;
         }
+
+        // What started this organizer run (OrganizerTriggerSource in
+        // lib/mission-run.ts): a heartbeat cycle that got this far is the
+        // backstop; any other mission-linked schedule is a plain cron cycle.
+        const organizerTriggerSource = isBackstopDispatch ? 'backstop' : 'cron';
 
         // If linked to a mission, build rich planning context
         if (linkedMission) {
           const missionContext = await buildMissionContext(linkedMission.id, {
             ...template.context,
-            triggerSource: 'cron',
+            triggerSource: organizerTriggerSource,
             ...(criteriaRearmContext ?? {}),
           });
           if (missionContext) {
@@ -781,56 +821,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           // Every organizer task records what started it (OrganizerTriggerSource
           // in lib/mission-run.ts). buildMissionContext reads the value above
           // but does not echo it into the context it returns.
-          taskContext.triggerSource = 'cron';
-        }
-
-        // Heartbeat triage (lib/heartbeat-triage.ts): a decision model reads a
-        // condensed copy of the context the organizer is about to get and says
-        // whether this cycle needs it. A criteria re-arm is never triaged: it is
-        // already one deduped wake per verdict shape.
-        // A skip needs the mission in the treatment arm of the team's running
-        // heartbeat_triage experiment; anything else is shadow.
-        let triageLook: { record: HeartbeatTriageRecord; arm: Awaited<ReturnType<typeof resolveHeartbeatTriageArm>> } | null = null;
-        if (isHeartbeat && linkedMission?.teamId && !criteriaRearmContext && taskDescription) {
-          const [facts, arm] = await Promise.all([
-            loadHeartbeatTriageFacts(schedule.id, linkedMission.workspaceId ?? null)
-              .catch(() => ({ lastOrganizerAt: null, dataClass: null })),
-            resolveHeartbeatTriageArm(linkedMission.teamId, linkedMission.id),
-          ]);
-          const triage = await triageHeartbeat({
-            teamId: linkedMission.teamId,
-            workspaceId: linkedMission.workspaceId ?? null,
-            description: taskDescription,
-            ...facts,
-            apply: arm?.apply ?? false,
-            waitMinConfidence: arm?.waitMinConfidence,
-          });
-          console.log(formatTriageLog(linkedMission.id, triage));
-          triageLook = { record: triage, arm };
-          if (triage.skipped) {
-            // Restore the no-change hash the prepass just wrote, so the next
-            // tick triages this state again instead of reading "no change".
-            await db.update(taskSchedules).set({
-              nextRunAt: computeNextRunAt(schedule.cronExpression, schedule.timezone),
-              lastHeartbeatStateHash: schedule.lastHeartbeatStateHash ?? null,
-              lastDeferralReason: 'heartbeat_triage_wait',
-              lastDeferredAt: now,
-              updatedAt: now,
-            }).where(eq(taskSchedules.id, schedule.id));
-            await recordHeartbeatWaitNote(
-              linkedMission.id,
-              'nothing for the organizer to act on this cycle',
-              computeNextRunAt(schedule.cronExpression, schedule.timezone) ?? now,
-            ).catch(e => console.error(`[heartbeat-triage] failed to record wait note for mission ${linkedMission.id}:`, e));
-            await recordHeartbeatTriageLook(toTriageLook(linkedMission.id, schedule.id, null, triageLook));
-            llmHeartbeatInvocations--;
-            triageHeartbeatSkips++;
-            skipped++;
-            continue;
-          }
-          // The look is recorded once the organizer task exists (below), so its
-          // outcome on this same state grades the pick. Not on the task's
-          // context: the organizer reads that, and must not see the pick.
+          taskContext.triggerSource = organizerTriggerSource;
         }
 
         // Promote outputSchema from context to top-level column so the runner can read it
@@ -942,9 +933,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           continue;
         }
 
-        if (triageLook && linkedMission) {
-          await recordHeartbeatTriageLook(toTriageLook(linkedMission.id, schedule.id, task.id, triageLook));
-        }
+        // A criteria re-arm is counted in criteriaRearmInvocations, not here.
+        if (isBackstopDispatch && !criteriaRearmContext) backstopDispatches++;
 
         // Track seat consumption for this cron run
         if (schedule.workspaceId) {
@@ -1090,7 +1080,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       heartbeatOrphans,
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
-      triageHeartbeatSkips,
+      backstopDispatches,
+      backstopDeferrals,
       criteriaRearmInvocations,
       healthWatcher,
       archivedMissions,
@@ -1102,18 +1093,4 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     console.error('Cron schedules error:', error);
     return NextResponse.json({ error: 'Internal error' }, { status: 500 });
   }
-}
-
-/** A triage look as its `heartbeat_triage_looks` row. */
-function toTriageLook(
-  missionId: string,
-  scheduleId: string,
-  taskId: string | null,
-  look: { record: HeartbeatTriageRecord; arm: Awaited<ReturnType<typeof resolveHeartbeatTriageArm>> },
-) {
-  const r = look.record;
-  return {
-    missionId, scheduleId, taskId, arm: look.arm, promptVersion: r.v, model: r.model ?? null,
-    pick: r.pick, confidence: r.confidence, skipped: r.skipped, reason: r.reason,
-  };
 }

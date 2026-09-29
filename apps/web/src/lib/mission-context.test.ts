@@ -464,6 +464,25 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('Check API latency');
   });
 
+  it('the stuck-check backstop gets the heartbeat context too', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-backstop',
+      title: 'Daily health check',
+      description: 'Check all services',
+      status: 'active',
+      priority: 0,
+      workspaceId: null,
+      scheduleId: 'sched-1',
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- [ ] Check API latency' } },
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-backstop', { triggerSource: 'backstop' });
+    expect(result!.description).toContain('## Heartbeat: Daily health check');
+  });
+
   it('does not render the static Protocol/Direct Action text into the description', async () => {
     // That text is byte-identical across every heartbeat cycle, cause, and
     // mission, so it is hoisted into HEARTBEAT_PROTOCOL_BLOCK (@buildd/shared)
