@@ -368,11 +368,67 @@ describe('ClaudeBackend.runStreamed', () => {
   });
 
   describe('SDK wiring', () => {
-    test('calls streamInput with the inputStream', async () => {
+    // Regression: a string prompt makes the SDK treat the query as single-turn
+    // and close stdin — the hook/canUseTool control channel — on the first
+    // result. Every later turn (a background subagent's completion, a queued
+    // closing-turn prompt) then had each tool call cancelled with the CLI's
+    // "The user doesn't want to take this action right now. STOP…" text, and
+    // agents stopped "as you asked" with no human in the loop.
+    test('never hands query() a string prompt', async () => {
       mockMessages = [{ type: 'result', subtype: 'success' }];
       const backend = new ClaudeBackend({ options: {}, inputStream: emptyStream() });
       for await (const _ of backend.runStreamed({ prompt: 'hi', sessionId: 's', cwd: '/tmp' })) {}
-      expect(mockStreamInputFn).toHaveBeenCalled();
+      expect(typeof lastCapturedQueryOpts.prompt).not.toBe('string');
+      expect(typeof lastCapturedQueryOpts.prompt[Symbol.asyncIterator]).toBe('function');
+    });
+
+    test('does not call streamInput separately (it would end input after the first result)', async () => {
+      mockMessages = [{ type: 'result', subtype: 'success' }];
+      const backend = new ClaudeBackend({ options: {}, inputStream: emptyStream() });
+      for await (const _ of backend.runStreamed({ prompt: 'hi', sessionId: 's', cwd: '/tmp' })) {}
+      expect(mockStreamInputFn).not.toHaveBeenCalled();
+    });
+
+    test('prompt stream yields the initial prompt, then follow-ups, and stays open until inputStream ends', async () => {
+      mockMessages = [{ type: 'result', subtype: 'success' }];
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const followUps = (async function* () {
+        yield { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'nudge' }] } };
+        await gate;
+      })();
+      const backend = new ClaudeBackend({ options: {}, inputStream: followUps });
+      for await (const _ of backend.runStreamed({ prompt: 'task prompt', sessionId: 's', cwd: '/tmp' })) {}
+
+      const it = (lastCapturedQueryOpts.prompt as AsyncIterable<any>)[Symbol.asyncIterator]();
+      const first = await it.next();
+      expect(first.value.type).toBe('user');
+      expect(first.value.message.content[0].text).toBe('task prompt');
+      const second = await it.next();
+      expect(second.value.message.content[0].text).toBe('nudge');
+
+      // Still open: the runner has not ended its input stream yet.
+      let settled = false;
+      const third = it.next().then((r) => { settled = true; return r; });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(settled).toBe(false);
+      release();
+      expect((await third).done).toBe(true);
+    });
+
+    test('an iterable prompt (image blocks) is forwarded before follow-ups', async () => {
+      mockMessages = [{ type: 'result', subtype: 'success' }];
+      const promptParts = (async function* () {
+        yield { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'with image' }] } };
+      })();
+      const followUps = (async function* () {
+        yield { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'later' }] } };
+      })();
+      const backend = new ClaudeBackend({ options: {}, inputStream: followUps });
+      for await (const _ of backend.runStreamed({ prompt: promptParts, sessionId: 's', cwd: '/tmp' })) {}
+      const texts: string[] = [];
+      for await (const m of lastCapturedQueryOpts.prompt as AsyncIterable<any>) texts.push(m.message.content[0].text);
+      expect(texts).toEqual(['with image', 'later']);
     });
 
     test('calls onInit with queryInstance before yielding events', async () => {
