@@ -71,6 +71,7 @@ import {
   type DecisionEndpoint,
 } from '@builddai/ai-kit/decide';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
+import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
 
 // The question/answer types, request and response validation, `gateChoice` and
@@ -164,6 +165,8 @@ export async function resolveDecisionKey(opts: {
   workspaceId?: string | null;
   accountId?: string | null;
   userId?: string | null;
+  /** The team's key policy, when the caller already read it (else the resolver reads it). */
+  keyPolicy?: InferenceKeyPolicy;
 }): Promise<string | null> {
   const { resolveInferenceKey } = await import('./inference-keys');
   return resolveInferenceKey({
@@ -173,29 +176,79 @@ export async function resolveDecisionKey(opts: {
     accountId: opts.accountId,
     userId: opts.userId,
     purposes: [DECISION_KEY_PURPOSE, 'inference_key'],
+    ...(opts.keyPolicy ? { keyPolicy: opts.keyPolicy } : {}),
   });
+}
+
+/** The team columns a decision call reads. A caller that already loaded them can pass them in. */
+export interface TeamDecisionRow {
+  inferenceFeatureModes: unknown;
+  decisionModel: unknown;
+  /** The key policy the key resolver enforces; absent ⇒ it reads it. */
+  inferenceKeyPolicy?: unknown;
 }
 
 /**
  * The team row the call needs: may it spend on this capability, and which
  * decision model answers. Fails closed: a failed lookup means "not enabled",
- * never "spend anyway".
+ * never "spend anyway". `row` skips the read (undefined ⇒ read it; null ⇒ no team).
  */
-async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability): Promise<{ allowed: boolean; model: DecisionModelConfig | null }> {
+async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability, row?: TeamDecisionRow | null): Promise<{ allowed: boolean; model: DecisionModelConfig | null; keyPolicy?: InferenceKeyPolicy }> {
   try {
-    const { db } = await import('./db');
-    const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
-      columns: { inferenceFeatureModes: true, decisionModel: true },
-    });
+    let team = row;
+    if (team === undefined) {
+      const { db } = await import('./db');
+      team = await db.query.teams.findFirst({
+        where: eq(teams.id, teamId),
+        columns: { inferenceFeatureModes: true, decisionModel: true, inferenceKeyPolicy: true },
+      }) ?? null;
+    }
     return {
       allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null),
       model: readDecisionModel(team?.decisionModel),
+      ...(isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? { keyPolicy: team.inferenceKeyPolicy } : {}),
     };
   } catch (e) {
     console.warn(`[decision] capability lookup failed for team ${teamId}:`, e);
     return { allowed: false, model: null };
   }
+}
+
+/** What a team call spends and where: the policy check and key lookup, done. */
+export type DecisionAccess =
+  | { ok: true; apiKey: string; endpoint?: DecisionEndpoint; model: string }
+  | { ok: false; error: Extract<DecisionError, { kind: 'capability_disabled' | 'missing_key' }> };
+
+/**
+ * The policy check and key resolution a team `decisionCall` does before its
+ * request, on their own. Spends nothing, so a caller can run it alongside other
+ * work (the chat turn runs it alongside its limits check) and hand the result
+ * to `decisionCall({ access })`, leaving the call's whole deadline to the
+ * provider. Never throws; fails closed.
+ */
+export async function resolveDecisionAccess(opts: {
+  capability: InferenceCapability;
+  teamId: string;
+  workspaceId?: string | null;
+  accountId?: string | null;
+  userId?: string | null;
+  /** The team's decision columns, when the caller already has them. */
+  team?: TeamDecisionRow | null;
+}): Promise<DecisionAccess> {
+  const settings = await loadTeamDecisionSettings(opts.teamId, opts.capability, opts.team);
+  if (!settings.allowed) return { ok: false, error: { kind: 'capability_disabled', capability: opts.capability } };
+  let route: Awaited<ReturnType<typeof resolveDecisionRoute>>;
+  try {
+    route = await resolveDecisionRoute(settings.model, {
+      teamId: opts.teamId, workspaceId: opts.workspaceId, accountId: opts.accountId, userId: opts.userId,
+      ...(settings.keyPolicy ? { keyPolicy: settings.keyPolicy } : {}),
+    });
+  } catch (e) {
+    console.warn(`[decision] key lookup failed for team ${opts.teamId}:`, e);
+    return { ok: false, error: { kind: 'missing_key' } };
+  }
+  if (!route.apiKey) return { ok: false, error: { kind: 'missing_key' } };
+  return { ok: true, apiKey: route.apiKey, ...(route.endpoint ? { endpoint: route.endpoint } : {}), model: route.model };
 }
 
 /**
@@ -204,7 +257,7 @@ async function loadTeamDecisionSettings(teamId: string, capability: InferenceCap
  */
 export async function resolveDecisionRoute(
   config: DecisionModelConfig | null,
-  scope: { teamId: string; workspaceId?: string | null; accountId?: string | null; userId?: string | null },
+  scope: { teamId: string; workspaceId?: string | null; accountId?: string | null; userId?: string | null; keyPolicy?: InferenceKeyPolicy },
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
   if (!config) return { apiKey: await resolveDecisionKey(scope), model: DEFAULT_DECISION_MODEL };
   if (config.via === 'litellm') {
@@ -254,6 +307,11 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   apiKey?: string;
   /** With `apiKey` only: where to send it (default Jev on OpenRouter). A team call uses the team's decision model. */
   endpoint?: DecisionEndpoint;
+  /**
+   * The team's policy check and key, already resolved (`resolveDecisionAccess`),
+   * so the deadline covers only the request. A refusal is returned as the result.
+   */
+  access?: DecisionAccess | Promise<DecisionAccess>;
   /** Test seams. */
   fetcher?: Fetcher;
   sleep?: (ms: number) => Promise<void>;
@@ -284,24 +342,23 @@ export async function decisionCall<Q extends DecisionQuestions>(
   let endpoint = params.apiKey ? params.endpoint : undefined;
   let model = params.model ?? DEFAULT_DECISION_MODEL;
   if (!apiKey) {
-    const settings = await loadTeamDecisionSettings(params.teamId, params.capability);
-    if (!settings.allowed) {
-      return fail({ kind: 'capability_disabled', capability: params.capability }, 0);
-    }
-    const route = await resolveDecisionRoute(settings.model, {
-      teamId: params.teamId, workspaceId: params.workspaceId, accountId: params.accountId,
-      userId: params.userId,
-    });
-    apiKey = route.apiKey;
-    endpoint = route.endpoint;
+    const access = params.access
+      ? await params.access
+      : await resolveDecisionAccess({
+        capability: params.capability, teamId: params.teamId, workspaceId: params.workspaceId,
+        accountId: params.accountId, userId: params.userId,
+      });
+    if (!access.ok) return fail(access.error, 0);
+    apiKey = access.apiKey;
+    endpoint = access.endpoint;
     // An explicit model is the caller's; otherwise the team's decision model.
-    model = params.model ?? route.model;
-    if (!apiKey) return fail({ kind: 'missing_key' }, 0);
+    model = params.model ?? access.model;
   }
 
   // The kit's transport: SDK retry off, every SDK option explicit, one retry
   // inside the deadline. `startedAt` keeps the policy check and key lookup
-  // inside the same deadline and latency, as before.
+  // inside the same deadline and latency, as before; with `access` passed in,
+  // they happened before this call and the deadline is the provider's alone.
   return decide<Q>({
     apiKey,
     state: params.state,

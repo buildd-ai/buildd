@@ -33,7 +33,10 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
+    columns: {
+      timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true,
+      inferenceFeatureModes: true, decisionModel: true,
+    },
   });
   return {
     timezone: team?.timezone ?? null,
@@ -41,6 +44,8 @@ export async function loadTeamChatSettings(teamId: string) {
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
     userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
     keyPolicy: isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? team.inferenceKeyPolicy : null,
+    // For the routing call's policy check (resolveDecisionAccess), so it needn't re-read the team.
+    decisionTeam: team ? { inferenceFeatureModes: team.inferenceFeatureModes, decisionModel: team.decisionModel, inferenceKeyPolicy: team.inferenceKeyPolicy } : null,
   };
 }
 

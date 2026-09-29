@@ -92,6 +92,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
+    routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)
       ? { ok: true as const, model: opts.model!, provider: 'openrouter' as const, modelId: 'test-model', tier: o.tier, keyScope: 'team' as const, ...(opts.pool ? { pool: opts.pool } : {}) }
       : { ok: false as const, reason: 'no_key' as const, provider: 'anthropic', tier: o.tier }; },
@@ -467,6 +468,76 @@ describe('limits', () => {
     await turn(userMsg('hello'));
     const saved = messages.find(m => m.role === 'user')!;
     expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
+  });
+});
+
+describe('routing\'s decision key: looked up alongside the limits check', () => {
+  it('starts the lookup before the verdict, and hands the same promise to routing', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const order: string[] = [];
+    let releaseLimits!: () => void;
+    const access = { ok: true as const, apiKey: 'sk', model: 'm' };
+    let accessPromise: Promise<unknown> | null = null;
+    const routed: any[] = [];
+    const { turn } = harness({
+      model,
+      workspace: { id: 'ws-1', name: 'billing-web' },
+      limits: () => new Promise(r => { order.push('limits:start'); releaseLimits = () => { order.push('limits:done'); r({ ok: true, budgetWarning: false }); }; }),
+      route: async (i: any) => { order.push('route'); routed.push(i); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: {
+        routingAccess: (scope: any) => { order.push(`access:${scope.teamId}:${scope.workspaceId}:${scope.userId}`); accessPromise = Promise.resolve(access); return accessPromise; },
+      },
+    });
+    const pending = turn(userMsg('what is in flight?'));
+    await new Promise(r => setTimeout(r, 5));
+    // The lookup is under way while the verdict is still pending; routing is not.
+    expect(order).toEqual(['access:team-1:ws-1:u-1', 'limits:start']);
+    releaseLimits();
+    await pending;
+    expect(order).toEqual(['access:team-1:ws-1:u-1', 'limits:start', 'limits:done', 'route']);
+    expect(await routed[0].access).toEqual(access);
+  });
+
+  it('a refused turn never routes, though the (spend-free) lookup ran', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    let looked = 0; let routed = 0;
+    const { turn } = harness({
+      model,
+      limits: async () => ({ ok: false, reason: 'rate_limited', retryAfterSeconds: 60, message: 'Try again in 1 minute.' }),
+      route: async () => { routed++; return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: { routingAccess: async () => { looked++; return { ok: true, apiKey: 'sk', model: 'm' }; } },
+    });
+    const { res } = await turn(userMsg('what is in flight?'));
+    expect(res.status).toBe(429);
+    expect(looked).toBe(1);
+    expect(routed).toBe(0);
+  });
+
+  it('an acknowledgement looks up no key: routing makes no call for it', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('you\'re welcome') as any });
+    let looked = 0;
+    const routed: any[] = [];
+    const { turn } = harness({
+      model,
+      route: async (i: any) => { routed.push(i); return { tier: 'budget', allowWrites: false, source: 'fallback' }; },
+      extraDeps: { routingAccess: async () => { looked++; return { ok: true, apiKey: 'sk', model: 'm' }; } },
+    });
+    await turn(userMsg('thanks!'));
+    expect(looked).toBe(0);
+    expect(routed[0].access).toBeUndefined();
+  });
+
+  it('a failing lookup never fails the turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const routed: any[] = [];
+    const { turn } = harness({
+      model,
+      route: async (i: any) => { routed.push(i); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: { routingAccess: async () => { throw new Error('db down'); } },
+    });
+    const { res } = await turn(userMsg('what is in flight?'));
+    expect(res.status).toBe(200);
+    expect(await routed[0].access).toEqual({ ok: false, error: { kind: 'missing_key' } });
   });
 });
 
@@ -848,11 +919,25 @@ describe('a conversation pinned to a tier', () => {
     expect(lastAssistant().tier).toBe('premium');
   });
 
+  it('tells routing the tier is pinned, so it skips the complexity question', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const routed: any[] = [];
+    const { turn } = harness({
+      model,
+      conversation: { tier: 'premium' },
+      route: async (i: any) => { routed.push(i); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+    });
+    await turn(userMsg('what failed overnight?'));
+    expect(routed[0].tierPinned).toBe(true);
+  });
+
   it('unpinned: routing picks', async () => {
     const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
-    const { turn, tiersAsked } = harness({ model, route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }) });
+    const routed: any[] = [];
+    const { turn, tiersAsked } = harness({ model, route: async (i: any) => { routed.push(i); return { tier: 'budget', allowWrites: true, source: 'decision' }; } });
     await turn(userMsg('hi'));
     expect(tiersAsked[0]).toBe('budget');
+    expect(routed[0].tierPinned).toBeUndefined();
   });
 });
 
