@@ -9,6 +9,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 function invalidUuid(label: string, value: string, status: 400 | 404) {
   return NextResponse.json(
@@ -43,11 +44,7 @@ async function resolveMissionAccess(req: NextRequest, missionId: string) {
   // Check team access or open workspace
   if (teamIds.includes(mission.teamId)) return { mission, user, apiAccount };
   if (mission.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return { mission, user, apiAccount };
+    if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId: apiAccount?.id })) return { mission, user, apiAccount };
   }
 
   return null;

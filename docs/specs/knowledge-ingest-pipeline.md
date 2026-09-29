@@ -74,8 +74,8 @@ in-request.
   distinct — which is why the active-full index above exists.
 - **Enqueue and claim reject `trigger`-level API keys** (HTTP 403). Both routes
   additionally scope non-admin callers to workspaces from
-  `getIngestAccessibleWorkspaceIds` (explicit `canClaim` links plus
-  `accessMode = 'open'` workspaces); a workspace outside that set yields 404 on
+  `getIngestAccessibleWorkspaceIds` (explicit `canClaim` links plus the
+  account's own team's `accessMode = 'open'` workspaces); a workspace outside that set yields 404 on
   enqueue and is skipped as a claim candidate.
 - **`workspaceId` is always read from the job row, never from a request body.**
   The `/graph` route forces every entity, edge, and alias into the job's

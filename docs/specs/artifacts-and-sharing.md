@@ -128,7 +128,9 @@ route's accepted set with HTTP 400 before touching the database.
 - `POST /api/missions/[id]/artifacts` and `POST /api/initiatives/[id]/artifacts`
   accept an API key **or** a dashboard session, and require the resolved team
   set to contain the mission/initiative `teamId` — unless its workspace has
-  `accessMode = 'open'`. A miss returns HTTP 404 (not 403): the existence of
+  `accessMode = 'open'` and belongs to one of the caller's teams (or the API
+  account is linked to it); "open" is open within the owning team
+  (`lib/open-workspaces.ts`). A miss returns HTTP 404 (not 403): the existence of
   another team's mission is not disclosed.
 - Every write route validates `type` against the single shared vocabulary
   (`ARTIFACT_TYPES` / `isArtifactType` in `packages/shared`). A type outside it
@@ -350,13 +352,12 @@ that identifies the caller but never resolves scope is a cross-team read.
   check before expanding artifacts, and MUST scope the expansion to workers of
   that task.
 - Scope resolution is a **widening** function and its width is part of the
-  contract: `verifyAccountWorkspaceAccess` returns true for any account when
-  `workspaces.accessMode = 'open'` (the column default). `resolveAccountTeamIds`
+  contract: `verifyAccountWorkspaceAccess` returns true for an account of the
+  workspace's own team when `workspaces.accessMode = 'open'` (the column
+  default), and otherwise only through an explicit link. `resolveAccountTeamIds`
   maps an API account to exactly its own team (a session user to all of their
-  teams). A reader auditing tenancy must treat "workspace member" as
-  "any authenticated caller" for open workspaces. Narrowing this is a
-  `team-namespace-scoping` concern, not an artifact-route concern; what this spec
-  requires is that no artifact route skip the resolution entirely.
+  teams). "Open" is open within the owning team, never across teams. What this
+  spec requires is that no artifact route skip the resolution entirely.
 - No artifact read path MUST be satisfiable by authentication alone. Identifying
   the caller is not authorizing them.
 

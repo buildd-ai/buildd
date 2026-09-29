@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, missionNotes, workspaces } from '@buildd/core/db/schema';
+import { missions, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, gte, count } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -8,17 +8,14 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from '@/lib/mission-criteria-eval';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { isUuid } from '@/lib/uuid';
+import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 const RATE_LIMIT_PER_HOUR = 6;
 
-async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[]): Promise<boolean> {
+async function hasMissionAccess(mission: { teamId: string; workspaceId: string | null }, teamIds: string[], accountId?: string | null): Promise<boolean> {
   if (teamIds.includes(mission.teamId)) return true;
   if (mission.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mission.workspaceId),
-      columns: { accessMode: true },
-    });
-    if (ws?.accessMode === 'open') return true;
+    if (await workspaceOpenToCaller(mission.workspaceId, { teamIds, accountId })) return true;
   }
   return false;
 }
@@ -70,7 +67,7 @@ export async function POST(
       columns: { id: true, teamId: true, workspaceId: true, goalCriteria: true },
     });
 
-    if (!mission || !(await hasMissionAccess(mission, teamIds))) {
+    if (!mission || !(await hasMissionAccess(mission, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 
@@ -161,7 +158,7 @@ export async function GET(
       columns: { id: true, teamId: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
     });
 
-    if (!mission || !(await hasMissionAccess(mission, teamIds))) {
+    if (!mission || !(await hasMissionAccess(mission, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
 

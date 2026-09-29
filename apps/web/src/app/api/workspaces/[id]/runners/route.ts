@@ -5,6 +5,7 @@ import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { isOpenWithinTeams } from '@/lib/open-workspaces';
 
 /**
  * GET /api/workspaces/[id]/runners
@@ -29,10 +30,10 @@ export async function GET(
   }
 
   try {
-    // Check if workspace is open access
+    // Open access reaches only runners of the owning team (the claim rule).
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, id),
-      columns: { accessMode: true },
+      columns: { teamId: true, accessMode: true },
     });
 
     const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
@@ -40,7 +41,7 @@ export async function GET(
       where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
       with: {
         account: {
-          columns: { id: true, name: true, type: true },
+          columns: { id: true, name: true, type: true, teamId: true },
         },
       },
     });
@@ -56,7 +57,8 @@ export async function GET(
           ),
           columns: { workspaceId: true },
         });
-        const hasAccess = !!linked || workspace?.accessMode === 'open';
+        const runnerTeamId = (hb.account as { teamId?: string | null } | null)?.teamId;
+        const hasAccess = !!linked || (!!runnerTeamId && isOpenWithinTeams(workspace, [runnerTeamId]));
 
         if (!hasAccess) return null;
 
