@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -25,6 +25,7 @@ import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -667,6 +668,54 @@ export async function PATCH(
       .set(updateData)
       .where(eq(missions.id, id))
       .returning();
+
+    // When executor changes from 'local' to 'runner', re-dispatch pending/assigned
+    // tasks so runners can claim them. Tasks created under executor='local' are
+    // blocked from runner claims by the missionNotLocal() gate — they need an
+    // explicit dispatch via TASK_ASSIGNED when the executor changes.
+    if (executor === 'runner' && existing.executor === 'local' && updated && existing.workspaceId) {
+      try {
+        const ws = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, existing.workspaceId),
+          columns: { id: true, name: true, repo: true },
+        }).catch(() => null);
+
+        const missionTasks = await db.query.tasks.findMany({
+          where: and(
+            eq(tasks.missionId, id),
+            inArray(tasks.status, ['pending', 'assigned']),
+          ),
+          columns: {
+            id: true,
+            title: true,
+            description: true,
+            workspaceId: true,
+            mode: true,
+            priority: true,
+            missionId: true,
+            defaultBackend: true,
+          },
+        }).catch(() => []);
+
+        for (const task of missionTasks) {
+          await dispatchUnblockedTask(
+            {
+              id: task.id,
+              title: task.title,
+              description: task.description,
+              workspaceId: task.workspaceId,
+              mode: task.mode,
+              priority: task.priority,
+              missionId: task.missionId,
+              backend: task.defaultBackend,
+            },
+            ws || { id: existing.workspaceId },
+          ).catch(e => console.error(`[missions/patch] Failed to dispatch task ${task.id}:`, e));
+        }
+      } catch (e) {
+        console.error(`[missions/patch] Failed to re-dispatch tasks after executor change:`, e);
+      }
+    }
 
     // Rule P-1's write side (docs/design/mission-flight-strip.md): a person may
     // always override completion, so this explicit path is a second writer
