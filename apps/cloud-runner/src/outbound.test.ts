@@ -69,12 +69,30 @@ describe('classifyEgressHost', () => {
     ['anthropic.com.evil.example', 'passthrough'],
     ['github.com.evil.example', 'passthrough'],
     ['gist.github.com', 'passthrough'],
+    ['buildd-snapshots.invalid', 'snapshot'],
+    ['BUILDD-SNAPSHOTS.invalid.', 'snapshot'],
+    ['buildd-snapshots.invalid.evil.example', 'passthrough'],
   ] as const)('%s -> %s', (host, kind) => {
     expect(classifyEgressHost(host)).toBe(kind);
   });
 
   test('every intercepted host is one the rewrite handles', () => {
     for (const host of INTERCEPTED_HOSTS) expect(classifyEgressHost(host)).not.toBe('passthrough');
+  });
+
+  test('SNAPSHOT_HOST_NAME mirrors snapshots.ts', async () => {
+    const { SNAPSHOT_HOST } = await import('./snapshots');
+    const { SNAPSHOT_HOST_NAME } = await import('./outbound');
+    expect(SNAPSHOT_HOST_NAME).toBe(SNAPSHOT_HOST);
+  });
+
+  test('the snapshot host is never in the always-on list (it is intercepted only with warm repos on)', () => {
+    expect(INTERCEPTED_HOSTS).not.toContain('buildd-snapshots.invalid');
+  });
+
+  test('rewriteOutbound never forwards the snapshot host anywhere', () => {
+    const d = rewriteOutbound({ url: 'https://buildd-snapshots.invalid/warm', headers: {} }, { model: gateway });
+    expect(d.action).toBe('reject');
   });
 });
 
@@ -458,6 +476,14 @@ describe('parseGithubGrant', () => {
       token: 'ghs_x', expiresAt: new Date(NOW).toISOString(),
       repository: { owner: 'acme', name: 'widget', fullName: 'acme/widget' },
     })).toEqual({ token: 'ghs_x', expiresAt: NOW, owner: 'acme', repo: 'widget' });
+  });
+
+  test('keeps the workspace id buildd returns, and drops one that is not an id', () => {
+    const base = { token: 'ghs_x', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'acme', name: 'widget' } };
+    expect(parseGithubGrant({ ...base, workspaceId: 'ws-123' }).workspaceId).toBe('ws-123');
+    expect(parseGithubGrant({ ...base, workspaceId: '../ws' }).workspaceId).toBeUndefined();
+    expect(parseGithubGrant({ ...base, workspaceId: 7 }).workspaceId).toBeUndefined();
+    expect('workspaceId' in parseGithubGrant(base)).toBe(false);
   });
 
   test.each([

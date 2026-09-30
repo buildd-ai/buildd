@@ -35,4 +35,18 @@ export interface Env extends EgressEnv, OtelEgressEnv {
   CONTAINER_INSTANCE_TYPE?: string;
   /** Local smoke only: `1` makes the egress handler echo instead of forwarding. */
   EGRESS_DEBUG_ECHO?: string;
+  /**
+   * `1` turns on warm repos (Phase 2): the container restores and refreshes a
+   * per-workspace snapshot through the egress handler. Default off. Needs
+   * the SNAPSHOTS binding too (lifecycle.ts warmReposEnabled).
+   */
+  WARM_REPOS?: string;
+  /**
+   * `1` turns on resumable runs (Phase 2): a worker waiting for input is
+   * parked (container released) and a `task.resume` dispatch continues it.
+   * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).
+   */
+  RESUMABLE_RUNS?: string;
+  /** R2 bucket for snapshots (wrangler.jsonc `r2_buckets`). Only the Worker writes it. */
+  SNAPSHOTS?: R2Bucket;
 }

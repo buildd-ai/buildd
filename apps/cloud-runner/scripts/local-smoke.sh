@@ -12,8 +12,11 @@
 # linux/amd64 and runs the container on local Docker), dispatches a random
 # task ID, and checks that the agent records the runner's exit.
 #
-# BUILDD_SERVER is a fake buildd this script runs on the host (reached from
-# the container as host.docker.internal). It answers 404 to almost everything,
+# BUILDD_SERVER is a fake buildd this script runs on the host, at an address
+# both the Worker (on this host) and the containers reach: SMOKE_HOST_ADDR, or
+# the host's primary address, detected (smoke-host.sh). It answers 404 to
+# almost everything, including the team model-endpoint lookup (no team
+# endpoint, so the gateway route applies),
 # so the runner cannot fetch the task and exits 1: the expected result is
 # `status: exited, outcome: failed`. For one task ID it holds the task fetch
 # open for a while, which keeps a container alive long enough to check the
@@ -22,6 +25,12 @@
 # which is enough for the runner to print its clone phase lines and its
 # BUILDD_WORKER_ID, so the agent tries to deliver the run report. It accepts run report
 # artifact POSTs (`POST /api/workers/<id>/artifacts`) and logs their keys.
+# Warm repos (WARM_REPOS=1, local R2 simulation in a throwaway --persist-to
+# dir): two more tasks of one workspace clone a real repo the fake buildd
+# serves over git's dumb HTTP. The first finds no snapshot, clones and seeds
+# one; the second restores from it instead of cloning. The fake answers the
+# GitHub-token request (which carries the workspace ID the snapshot keys come
+# from) only for these two tasks.
 # Every run is checked for the run report recorded in `GET /tasks/:id`. Nothing here can reach a real buildd server;
 # the API key and gateway token are dummies, and EGRESS_DEBUG_ECHO=1 makes the
 # egress handler answer with the rewritten request instead of forwarding it.
@@ -36,10 +45,20 @@ READY_TIMEOUT_S="${READY_TIMEOUT_S:-2400}"   # first run builds the image under 
 RUN_TIMEOUT_S="${RUN_TIMEOUT_S:-900}"
 LOG="${LOG:-$(mktemp -t cloud-runner-smoke.XXXXXX)}"
 FAKE_PORT="${FAKE_PORT:-8798}"
-# How the container reaches the host. Docker Desktop provides this name.
-HOST_ADDR="${SMOKE_HOST_ADDR:-host.docker.internal}"
+# How the Worker and the containers reach the fake buildd (smoke-host.sh).
+source "$DIR/scripts/smoke-host.sh"
+HOST_ADDR="$(smoke_host_addr)"
+if [ -z "$HOST_ADDR" ]; then
+  echo "could not detect a host address; set SMOKE_HOST_ADDR to one both this host and the containers reach"
+  exit 2
+fi
 EGRESS_TASK="$TASK-egress"
 CLONE_TASK="$TASK-clone"
+WARM_TASK_1="$TASK-warm1"
+WARM_TASK_2="$TASK-warm2"
+WARM_WS="smoke-ws-warm"
+STATE_DIR="$(mktemp -d -t cloud-runner-smoke-state.XXXXXX)"
+GIT_DIR_ROOT="$(mktemp -d -t cloud-runner-smoke-git.XXXXXX)"
 EGRESS_HOLD_S="${EGRESS_HOLD_S:-90}"
 GW_TOKEN="smoke-gateway-token-$RANDOM$RANDOM"
 MODEL_ROUTE="${SMOKE_MODEL_ROUTE:-gateway}"
@@ -59,20 +78,64 @@ esac
 fail=0
 
 cd "$DIR"
-echo "== fake buildd on :$FAKE_PORT (404 for most; holds GET /api/tasks/$EGRESS_TASK for ${EGRESS_HOLD_S}s; serves $CLONE_TASK and its claim)"
-EGRESS_TASK="$EGRESS_TASK" CLONE_TASK="$CLONE_TASK" EGRESS_HOLD_S="$EGRESS_HOLD_S" FAKE_PORT="$FAKE_PORT" bun -e '
+# A small repo the containers can clone without GitHub: git's dumb HTTP
+# protocol is plain static files, which the fake buildd serves under /git/.
+(
+  set -e
+  src="$GIT_DIR_ROOT/src"; git init -q -b main "$src"
+  printf 'hello from the warm-repo smoke\n' > "$src/README.md"
+  git -C "$src" add README.md
+  git -C "$src" -c user.email=smoke@example.com -c user.name=smoke commit -qm 'smoke: initial commit'
+  git clone -q --bare "$src" "$GIT_DIR_ROOT/widget.git"
+  git -C "$GIT_DIR_ROOT/widget.git" symbolic-ref HEAD refs/heads/main
+  git -C "$GIT_DIR_ROOT/widget.git" update-server-info
+)
+echo "== fake buildd on $HOST_ADDR:$FAKE_PORT (404 for most; holds GET /api/tasks/$EGRESS_TASK for ${EGRESS_HOLD_S}s; serves $CLONE_TASK and its claim)"
+EGRESS_TASK="$EGRESS_TASK" CLONE_TASK="$CLONE_TASK" EGRESS_HOLD_S="$EGRESS_HOLD_S" FAKE_PORT="$FAKE_PORT" \
+WARM_TASKS="$WARM_TASK_1,$WARM_TASK_2" WARM_WS="$WARM_WS" GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" bun -e '
   const hold = `/api/tasks/${process.env.EGRESS_TASK}`;
   const cloneTask = process.env.CLONE_TASK;
   const task = { id: cloneTask, title: "smoke clone", description: "", workspaceId: "smoke-ws", status: "pending",
     workspace: { id: "smoke-ws", name: "smoke-widget", repo: "https://github.com/acme/widget.git" } };
+  const warmTasks = process.env.WARM_TASKS.split(",");
+  const warmWs = process.env.WARM_WS;
+  const warmRepo = `http://${process.env.HOST_ADDR}:${process.env.FAKE_PORT}/git/widget.git`;
+  const warmTask = (id) => ({ id, title: "smoke warm", description: "", workspaceId: warmWs, status: "pending",
+    workspace: { id: warmWs, name: "smoke-warm", repo: warmRepo } });
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   Bun.serve({ port: Number(process.env.FAKE_PORT), hostname: "0.0.0.0", idleTimeout: 0, async fetch(req) {
     const path = new URL(req.url).pathname;
     if (path === hold) await Bun.sleep(Number(process.env.EGRESS_HOLD_S) * 1000);
+    if (req.method === "GET" && path.startsWith("/git/") && !path.includes("..")) {
+      const f = Bun.file(`${process.env.GIT_DIR_ROOT}/${path.slice(5)}`);
+      if (await f.exists()) { console.log(`GIT_GET ${path}`); return new Response(f); }
+      return new Response("not found", { status: 404 });
+    }
     if (req.method === "GET" && path === `/api/tasks/${cloneTask}`) return json(task);
+    const warmId = warmTasks.find((t) => path === `/api/tasks/${t}`);
+    if (req.method === "GET" && warmId) return json(warmTask(warmId));
+    if (req.method === "POST" && path === "/api/runner/github-token") {
+      // Only the warm tasks get a grant, and with it the workspace ID the
+      // snapshot keys come from. The token is a dummy: nothing here talks to GitHub.
+      const body = await req.json().catch(() => ({}));
+      console.log(`GITHUB_TOKEN_REQUEST task=${body.taskId} dispatch_token=${req.headers.get("x-buildd-dispatch-token") ? "set" : "missing"}`);
+      if (warmTasks.includes(body.taskId)) {
+        return json({ token: "ghs_smoke_dummy", expiresAt: new Date(Date.now() + 3600e3).toISOString(),
+          repository: { owner: "acme", name: "widget", fullName: "acme/widget" }, workspaceId: warmWs });
+      }
+      return json({ error: "no" }, 409);
+    }
+    if (req.method === "POST" && path === "/api/runner/model-endpoint") {
+      // No team endpoint: the egress handler falls through to the gateway route.
+      const body = await req.json().catch(() => ({}));
+      console.log(`MODEL_ENDPOINT_REQUEST task=${body.taskId} dispatch_token=${req.headers.get("x-buildd-dispatch-token") ? "set" : "missing"}`);
+      return json({ error: "no team model endpoint" }, 404);
+    }
     if (req.method === "POST" && path === "/api/workers/claim") {
       const body = await req.json().catch(() => ({}));
       if (body.taskId === cloneTask) return json({ workers: [{ id: "smoke-worker-clone", taskId: cloneTask, branch: "buildd/smoke", task }] });
+      const w = warmTasks.indexOf(body.taskId);
+      if (w >= 0) return json({ workers: [{ id: `smoke-worker-warm${w + 1}`, taskId: body.taskId, branch: `buildd/smoke-warm${w + 1}`, task: warmTask(body.taskId) }] });
     }
     if (req.method === "POST" && /^\/api\/workers\/[^/]+\/artifacts$/.test(path)) {
       const body = await req.json().catch(() => ({}));
@@ -97,6 +160,8 @@ bunx wrangler dev --port "$PORT" --ip 127.0.0.1 \
   --var "OTEL_EXPORTER_OTLP_ENDPOINT:$OTLP_ENDPOINT" \
   --var "OTEL_EXPORTER_OTLP_AUTH_HEADER:$OTLP_HEADER" \
   --var "OTEL_EXPORTER_OTLP_AUTH_VALUE:$OTLP_KEY" \
+  --var "WARM_REPOS:1" \
+  --persist-to "$STATE_DIR" \
   ${proxy_vars[@]+"${proxy_vars[@]}"} \
   >"$LOG" 2>&1 &
 WRANGLER_PID=$!
@@ -110,8 +175,10 @@ cleanup() {
   kill "$FAKE_PID" 2>/dev/null || true
   wait "$FAKE_PID" 2>/dev/null || true
   docker ps -q --filter name=workerd-buildd-cloud-runner- | xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -rf "$STATE_DIR" "$GIT_DIR_ROOT"
 }
 trap cleanup EXIT
+require_host_reachable "$HOST_ADDR" "$FAKE_PORT"
 
 auth=(-H "Authorization: Bearer $TOKEN")
 code_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -232,6 +299,7 @@ else
     check "gateway credential set (by fingerprint)" "$(fp "Bearer $GW_TOKEN")" "$(echo_field "$a" headers.cf-aig-authorization)"
     check "container x-api-key stripped" "" "$(echo_field "$a" headers.x-api-key)"
     check "container authorization stripped" "" "$(echo_field "$a" headers.authorization)"
+    check "the Worker asked the fake buildd for the team model endpoint (404: none)" yes "$(grep -q -F "MODEL_ENDPOINT_REQUEST task=$EGRESS_TASK dispatch_token=set" "$LOG.fake" && echo yes || echo no)"
   fi
 
   # Bun (the runner, and Claude Code) trusting the CA through NODE_EXTRA_CA_CERTS.
@@ -306,18 +374,39 @@ for ((k = 0; k < 60; k++)); do
   [ "$(echo_field "$s" report.delivery)" != pending ] && break
   sleep 1
 done
-# The Worker runs on this host and uses the same BUILDD_SERVER as the
-# container. Docker Desktop's host.docker.internal resolves only inside
-# containers, so by default the Worker cannot reach the fake buildd.
-if curl -s -o /dev/null --max-time 2 "http://$HOST_ADDR:$FAKE_PORT/"; then
-  check "run report delivered" sent "$(echo_field "$s" report.delivery)"
-  check "fake buildd got the artifact POST" 1 "$(grep -c -F "ARTIFACT_POST /api/workers/smoke-worker-clone/artifacts key=cloud-run-report:smoke-worker-clone type=data" "$LOG.fake" || true)"
-else
-  echo "   note: this host cannot reach $HOST_ADDR:$FAKE_PORT, so the Worker's POST cannot reach the fake buildd;"
-  echo "         SMOKE_HOST_ADDR=<an address both this host and the container reach> checks delivery end to end"
-  check "delivery attempted, recorded as failed, outcome unaffected" "error failed" "$(echo_field "$s" report.delivery) $(field "$s" outcome)"
-  check "delivery tried at most twice" 2 "$(grep -c -F "run report failed" "$LOG" | tr -d ' ')"
-fi
+check "run report delivered" sent "$(echo_field "$s" report.delivery)"
+check "fake buildd got the artifact POST" 1 "$(grep -c -F "ARTIFACT_POST /api/workers/smoke-worker-clone/artifacts key=cloud-run-report:smoke-worker-clone type=data" "$LOG.fake" || true)"
+
+echo "== warm repos: two runs of one workspace; the second restores instead of cloning"
+check "the clone task got no workspace scope (no grant), so it cloned" "clone unavailable" "$(echo_field "$s" report.repo.source) $(echo_field "$s" report.repo.fallbackReason)"
+phases() { bun -e 'console.log(Object.keys(JSON.parse(process.argv[1]).report?.runnerPhases??{}).join(","))' "$1"; }
+TASK="$WARM_TASK_1"
+r7="$(post_dispatch)"; echo "   $r7"
+s="$(wait_exited)" || { echo "   FAIL warm run 1 never exited: $s"; fail=1; }
+echo "   warm run 1 repo: $(bun -e 'const r=JSON.parse(process.argv[1]).report??{}; console.log(JSON.stringify({repo:r.repo,clone:r.durationsMs?.clone,warmUpload:r.durationsMs?.warmUpload,phases:Object.keys(r.runnerPhases??{})}))' "$s")"
+echo "   warm run 1 last runner lines: $(bun -e 'const t=JSON.parse(process.argv[1]).outputTail??[]; console.log(JSON.stringify(t.filter(l=>/\[(warm|once|isolation)\]/.test(l)).slice(-6)))' "$s")"
+check "warm run 1: no snapshot yet, so it cloned" "clone no_snapshot" "$(echo_field "$s" report.repo.source) $(echo_field "$s" report.repo.fallbackReason)"
+check "warm run 1: the clone itself was timed" yes "$(bun -e 'const d=JSON.parse(process.argv[1]).report.durationsMs; console.log(typeof d.clone==="number"?"yes":"no")' "$s")"
+check "warm run 1: clone bytes measured" yes "$(bun -e 'const b=JSON.parse(process.argv[1]).report.repo.bytes; console.log(b.clone>0?"yes":"no")' "$s")"
+check "warm run 1: seeded a snapshot (upload timed, bytes > 0)" yes "$(bun -e 'const r=JSON.parse(process.argv[1]).report; console.log(typeof r.durationsMs.warmUpload==="number"&&r.repo.bytes.upload>0?"yes":"no")' "$s")"
+check "warm run 1: the Worker asked buildd for the grant with the dispatch token" yes "$(grep -q -F "GITHUB_TOKEN_REQUEST task=$WARM_TASK_1 dispatch_token=set" "$LOG.fake" && echo yes || echo no)"
+
+TASK="$WARM_TASK_2"
+objects_before="$(grep -c '^GIT_GET .*/objects/' "$LOG.fake" || true)"
+r8="$(post_dispatch)"; echo "   $r8"
+s="$(wait_exited)" || { echo "   FAIL warm run 2 never exited: $s"; fail=1; }
+echo "   warm run 2 repo: $(bun -e 'const r=JSON.parse(process.argv[1]).report??{}; console.log(JSON.stringify({repo:r.repo,restoreWarm:r.durationsMs?.restoreWarm,fetch:r.durationsMs?.fetch,clone:r.durationsMs?.clone,phases:Object.keys(r.runnerPhases??{})}))' "$s")"
+check "warm run 2: restored from the snapshot" warm "$(echo_field "$s" report.repo.source)"
+check "warm run 2: no git clone ran" no "$(phases "$s" | grep -q clone_start && echo yes || echo no)"
+check "warm run 2: restore and fetch timed" yes "$(bun -e 'const d=JSON.parse(process.argv[1]).report.durationsMs; console.log(typeof d.restoreWarm==="number"&&typeof d.fetch==="number"?"yes":"no")' "$s")"
+check "warm run 2: restore bytes > 0" yes "$(bun -e 'const b=JSON.parse(process.argv[1]).report.repo.bytes; console.log(b.restore>0?"yes":"no")' "$s")"
+check "warm run 2: nothing new to fetch" 0 "$(echo_field "$s" report.repo.bytes.fetch)"
+check "warm run 2: a fresh snapshot is not re-uploaded" "" "$(echo_field "$s" report.durationsMs.warmUpload)"
+# The fetch after restore asks for refs only; a clone would pull the pack.
+objects_after="$(grep -c '^GIT_GET .*/objects/' "$LOG.fake" || true)"
+check "warm run 1 fetched objects from origin (the clone)" yes "$([ "$objects_before" -gt 0 ] && echo yes || echo no)"
+check "warm run 2: no objects downloaded from origin" 0 "$((objects_after - objects_before))"
+check "report holds no snapshot key or URL" 0 "$(bun -e 'console.log(JSON.stringify(JSON.parse(process.argv[1]).report))' "$s" | grep -c -e "warm/$WARM_WS" -e 'buildd-snapshots' -e 'ghs_smoke' || true)"
 
 echo "== task containers left running (the agent destroys its container after each run)"
 sleep 2

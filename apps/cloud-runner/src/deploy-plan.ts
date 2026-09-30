@@ -25,7 +25,7 @@ export interface ObservedWebhook {
  * before the list existed), so the Worker must opt in to hear about retries,
  * approved-plan children and deferred-start re-dispatches.
  */
-export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry'] as const;
+export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] as const;
 export type DispatchEvent = (typeof DISPATCH_EVENTS)[number];
 
 export interface DeployInputs {
@@ -62,7 +62,22 @@ export type SecretName =
 /** Put with `wrangler secret put` so a later deploy keeps them, but not secret in substance: printed in the plan. */
 const PLAIN_SECRET_NAMES: ReadonlySet<SecretName> = new Set(['BUILDD_SERVER', 'MODEL_PROXY_URL', 'MODEL_PROXY_AUTH_HEADER']);
 
+/**
+ * The R2 bucket bound as SNAPSHOTS in wrangler.jsonc (warm repos), and the
+ * lifecycle rule that backstops the refresher's two-generation pruning.
+ * `wrangler deploy` fails on a binding to a bucket that does not exist, so
+ * the bucket is created (idempotently) before every deploy.
+ */
+export const SNAPSHOT_BUCKET = {
+  name: 'buildd-cloud-runner-snapshots',
+  lifecycle: [
+    { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
+    { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
+  ],
+} as const;
+
 export type DeployStep =
+  | { kind: 'ensure_snapshot_bucket' }
   | { kind: 'wrangler_deploy' }
   | { kind: 'put_secret'; name: SecretName; value: string; reason: string }
   | {
@@ -114,7 +129,7 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   }
 
   const secrets = new Set(i.workerSecretNames ?? []);
-  const steps: DeployStep[] = [{ kind: 'wrangler_deploy' }];
+  const steps: DeployStep[] = [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
   const notes: string[] = [];
 
   // BUILDD_SERVER: not a secret in substance, but kept with the others so a
@@ -234,6 +249,8 @@ export function describePlan(plan: DeployPlan): string[] {
   if (!plan.ok) return [`error: ${plan.error}`];
   const lines = plan.steps.map((s) => {
     switch (s.kind) {
+      case 'ensure_snapshot_bucket':
+        return `wrangler r2 bucket create ${SNAPSHOT_BUCKET.name} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
       case 'wrangler_deploy':
         return 'wrangler deploy (apps/cloud-runner)';
       case 'put_secret':

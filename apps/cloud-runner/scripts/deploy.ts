@@ -27,7 +27,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { describePlan, planDeploy, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
+import { SNAPSHOT_BUCKET, describePlan, planDeploy, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
 
 const APP_DIR = join(dirname(new URL(import.meta.url).pathname), '..');
 const WORKER_NAME = 'buildd-cloud-runner';
@@ -225,6 +225,16 @@ async function main() {
 
 async function execute(step: DeployStep, ctx: { server: string; adminKey: string; env: Record<string, string> | null }) {
   switch (step.kind) {
+    case 'ensure_snapshot_bucket': {
+      console.log(`→ ensure R2 bucket ${SNAPSHOT_BUCKET.name}`);
+      const created = await wrangler(['r2', 'bucket', 'create', SNAPSHOT_BUCKET.name], ctx.env!);
+      if (created.code !== 0 && !/already exists|already own/i.test(created.out)) die(`wrangler r2 bucket create failed:\n${created.out}`);
+      for (const rule of SNAPSHOT_BUCKET.lifecycle) {
+        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', SNAPSHOT_BUCKET.name, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], ctx.env!);
+        if (r.code !== 0 && !/already exists/i.test(r.out)) console.log(`  lifecycle rule ${rule.id} not set (set it by hand): ${r.out.trim().split('\n').at(-1)}`);
+      }
+      return;
+    }
     case 'wrangler_deploy': {
       console.log('→ wrangler deploy (builds the container image; slow the first time)');
       const r = await wrangler(['deploy'], ctx.env!);

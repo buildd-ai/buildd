@@ -3,7 +3,7 @@ status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 # Components 1-4 have shipped (run-once, the image, apps/cloud-runner, the
 # egress handler). The canary (implementation step 6) has not run.
-# Phase 2 (resumable runs, warm repos) is proposed only and asserts nothing.
+# Phase 2: warm repos are built (behind WARM_REPOS); resumable runs are proposed.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -17,13 +17,21 @@ assertions:
     type: "symbol"
     name: "EgressHandler"
     path: "apps/cloud-runner/src/egress.ts"
+  - id: "cloud-snapshot-store"
+    type: "symbol"
+    name: "SnapshotStore"
+    path: "apps/cloud-runner/src/snapshots.ts"
+  - id: "runner-warm-repo"
+    type: "symbol"
+    name: "WarmRepoSession"
+    path: "apps/runner/src/warm-repo.ts"
   - id: "cloud-canary-script"
     type: "test_file"
     path: "apps/cloud-runner/scripts/canary.sh"
 ---
 # Cloudflare Agents Runner
 
-**Status:** Partially implemented (Components 1-4; canary pending). [Phase 2](#phase-2-resumable-runs-and-warm-repos) proposed.
+**Status:** Partially implemented (Components 1-4; canary pending). [Phase 2](#phase-2-resumable-runs-and-warm-repos): warm repos built behind `WARM_REPOS`; resumable runs proposed.
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
@@ -304,9 +312,66 @@ setting in the dashboard.
 
 ## Phase 2: resumable runs and warm repos
 
-**Status:** Proposed. Nothing below is built. Every new behaviour ships behind
+**Status:** Warm repos are built (`apps/runner/src/warm-repo.ts`,
+`apps/cloud-runner/src/snapshots.ts`) behind the Worker var `WARM_REPOS`,
+default off. Resumable runs are built (`apps/runner/src/park.ts`,
+`apps/web/src/lib/worker-park.ts`) behind the Worker var `RESUMABLE_RUNS`,
+default off. Every new behaviour ships behind
 a Worker var that defaults off, so merging any slice changes nothing until a
 workspace opts in.
+
+> **As built (warm repos), where it differs from the text below.**
+> - Keys put the kind first: `warm/<workspaceId>/<generation>/…` (and
+>   `park/<workspaceId>/<workerId>` for resume), not `ws/<workspaceId>/warm/…`.
+>   R2 lifecycle rules match a literal prefix, so `ws/*/warm/` cannot be
+>   expressed; `warm/` can.
+> - A generation is `repo.bundle` + optional `bun-cache.tar` + a
+>   `manifest.json` written last (the commit). The in-flight guard is a lock
+>   object taken with a conditional put (create-only, or replace one older
+>   than 30 minutes), not a conditional put on the generation key.
+> - The bundle is `git bundle create --remotes` (origin's refs only), not
+>   `--all`: local branches in the base clone can hold a task's unpushed work.
+> - The restore runs `git fetch origin` itself (timed as `fetch`), rather than
+>   leaving it to `setupWorktree`, so the report can show the fetch delta.
+> - A workspace with no usable snapshot (none, or a corrupt one) is seeded
+>   after any run, not only a successful one: the bundle holds origin's refs
+>   only, so it does not depend on the outcome. Refreshing an existing
+>   generation (age over 24 h or fetch over 64 MiB) still needs success.
+> - With warm repos on, `--once` tries the isolated clone before any other
+>   checkout (`createOnceResolver`'s `preferIsolated`); otherwise the base
+>   resolver's auto-clone would bypass the restore.
+
+> **As built (resumable runs), where it differs from the text below.**
+> - The park marker is its own route, `POST /api/workers/[id]/park` (the
+>   server picks `parkedUntil`), with `DELETE` for the restore-failure path,
+>   rather than a field on the worker PATCH.
+> - `parkedUntil` is park time + 24 h, or 4 h for a mission task. A park also
+>   bumps `updatedAt`, so the `waiting_input` sweep's clock restarts with it;
+>   3 parks bound the total.
+> - Park and re-attach accept `running` as well as `waiting_input`: an orphan
+>   park (below) leaves the worker `running`.
+> - Orphan recovery execs `buildd-once --park-orphan <worker>` into the
+>   container that outlived its agent. That stops every other process of the
+>   image user except init's first child (the image's `sleep infinity`), and
+>   parks from disk. The agent then resumes the worker at once, with no answer
+>   to wait for, and the resumed session gets a short "the platform restarted"
+>   prompt. Three details the local smoke forced:
+>   - The park runs after `onStart` returns, not inside it. `onStart` holds the
+>     object's input gate, and the upload calls back into the agent for its
+>     snapshot scope, so awaiting the park there deadlocks.
+>   - The agent re-installs egress before the exec, because the interception
+>     belonged to the agent that was restarted.
+>   - The agent marks the park (`POST /park`), not the container. Under
+>     `wrangler dev` a container that survives a reload keeps its intercepted
+>     hosts but loses plain egress. Whether production behaves the same is
+>     unverified.
+> - Uncommitted work is captured as a commit built from a temporary index
+>   (untracked files included), not `git stash create`, which skips
+>   untracked files.
+> - The park count lives in `<BUILDD_HOME>/parks/<id>.json` and travels in
+>   the bundle, so every later container sees the same bound.
+> - The running-staleness and silent-start arms of `staleWorkerScope` skip a
+>   live park too, not only `heartbeatOrphanScope`.
 
 ### Problem
 

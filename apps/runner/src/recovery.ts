@@ -1,3 +1,4 @@
+import { emitMetric } from './phase-lines';
 import { existsSync } from 'fs';
 import type { LocalWorker, Milestone, BuilddTask, ChatMessage, Checkpoint } from './types';
 import type { BuilddClient } from './buildd';
@@ -437,6 +438,8 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
       const idLabel = isCodex ? `codexThreadId ${resumeId}` : `sessionId ${resumeId}`;
       sessionLog(worker.id, 'info', 'resume_layer1_attempt', `SDK resume with ${idLabel}`, worker.taskId);
       console.log(`[Worker ${worker.id}] Layer 1: Resuming ${idLabel} (cwd: ${sessionCwd})`);
+      // For the cloud run report (phase-lines.ts; cloud containers only).
+      emitMetric('resume_layer', 1);
 
       const task = {
         id: worker.taskId,
@@ -472,6 +475,7 @@ Budget: $1.00 max. Do NOT start new work or refactor anything.`);
     // Layer 2: Reconstructed context (text summary of previous session)
     sessionLog(worker.id, 'info', 'resume_layer2_attempt', 'Reconstructed context fallback', worker.taskId);
     console.log(`[Worker ${worker.id}] Layer 2: Reconstructed context`);
+    emitMetric('resume_layer', 2);
 
     try {
       await this.restartWithReconstructedContext(worker, sessionCwd, message);

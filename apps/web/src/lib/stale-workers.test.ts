@@ -2588,6 +2588,9 @@ describe('cleanupUnresumedAnswers', () => {
     const supersede = capturedWorkerUpdates[0];
     expect(supersede.status).toBe('superseded');
     expect(supersede.pendingInstructions).toBeNull();
+    // A cloud-parked worker whose resume never acknowledged is un-parked too,
+    // so nothing can re-attach to the superseded row.
+    expect(supersede.parkedUntil).toBeNull();
 
     expect(mockTasksInsert).toHaveBeenCalled();
   });

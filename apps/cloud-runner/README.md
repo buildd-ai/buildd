@@ -19,6 +19,7 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
 | `src/lifecycle.ts` | Pure decisions: exit code to outcome, dispatch dedupe, container env |
 | `src/run-report.ts` | The per-run report: phase lines, egress counters, assembly, delivery. Runtime-free |
+| `src/snapshots.ts` | The snapshot store behind the egress-intercepted pseudo-host (warm repos). Runtime-free |
 | `src/eval-report.ts`, `src/eval-client.ts`, `scripts/eval-report.ts` | The eval report over many runs (see Measuring runs) |
 
 The runtime-free files are what the Bun tests cover (`bun run test`); they
@@ -79,6 +80,9 @@ it as above).
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
+| `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
+| `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
@@ -116,6 +120,14 @@ The report is built from an allowlist of typed fields; identifiers that do not
 look like IDs are dropped. It never holds header values, tokens, URLs, request
 or response bodies, or runner output. Egress counters and timings are lost if
 the agent is evicted mid-run (the orphan report has what was persisted).
+
+The `repo` section (report version 2) says how the repo got onto the disk:
+`source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
+`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
+`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
+`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
+`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
 
 ### Eval report
 
@@ -157,8 +169,17 @@ Needs Docker. From this directory:
 
 ```bash
 bunx wrangler dev --var DISPATCH_TOKEN:dev --var BUILDD_API_KEY:<key> --var BUILDD_SERVER:<dev server>
-bash scripts/local-smoke.sh     # end-to-end check against an unreachable server
+bash scripts/local-smoke.sh     # end-to-end check against a fake buildd
 ```
+
+R2 works under `wrangler dev` (local simulation); the smoke keeps it in a
+throwaway `--persist-to` directory. The Worker runs on the host and the
+containers on Docker, and both use one `BUILDD_SERVER` (the Worker for the
+model-endpoint lookup, the GitHub grant and run-report delivery). Docker
+Desktop's `host.docker.internal` resolves only inside containers, so the
+smokes reach their fake buildd at the host's primary address instead,
+detected by `scripts/smoke-host.sh`. Set `SMOKE_HOST_ADDR` to override it;
+the smoke stops if this host cannot reach the fake at that address.
 
 The first run builds the image for linux/amd64, which is slow on an arm64 host
 (emulation).
@@ -313,6 +334,63 @@ only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
 
+### Warm repos
+
+Design Phase 2, "Warm repos". Off unless `WARM_REPOS=1` and the `SNAPSHOTS`
+binding exist. Then the container gets `BUILDD_WARM_REPO=1` and
+`BUILDD_SNAPSHOT_URL=https://buildd-snapshots.invalid`, and the agent
+intercepts that pseudo-host (HTTPS only) with the same `EgressHandler`. The
+handler never forwards it: it serves `src/snapshots.ts` against the R2
+binding, streaming bodies both ways.
+
+- **Keys are the Worker's.** The workspace comes from buildd: the
+  `/api/runner/github-token` grant (authenticated with the dispatch token)
+  now carries `workspaceId`, and `WorkerAgent.getSnapshotScope` hands it out
+  only while a run is live. The request path names an operation (`GET /warm`,
+  `POST /warm/begin`, `PUT /warm/<generation>/repo`, ...), never a key, and
+  the query string is ignored. No grant (no GitHub App link, token refused):
+  `503`, and the runner clones as usual.
+- **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
+  lifecycle rule can cover it.
+- **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
+  with a conditional put (create-only, or replace a lock older than 30
+  minutes), uploads go only to the lock's generation, and `commit` writes the
+  manifest last, so a half-uploaded generation is never visible. Commit keeps
+  the newest two committed generations and deletes the rest.
+- **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
+  (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
+  buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
+- **Limits.** `content-length` is required on uploads, at most 5 GB (single
+  part). The runner skips the warm path when the snapshot is over a quarter of
+  free disk.
+
+What goes in a snapshot and what the runner refuses to upload:
+`docs/runner-container.md`, "Warm repos".
+
+### Resumable runs
+
+Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
+`SNAPSHOTS` binding exist. The container then gets `BUILDD_ONCE_PARK=1`.
+
+- **Park on a question.** When the worker waits for an answer with no live
+  session, the runner uploads a park bundle (`PUT /park`, stored at
+  `park/<workspaceId>/<workerId>`), calls `POST /api/workers/[id]/park` and
+  exits 4. The agent records `outcome: parked`, sends no crash report and
+  destroys the container.
+- **Resume.** The answer queues on the same worker, and buildd sends
+  `task.resume` with `workerId`. The agent accepts it only when its last
+  attempt parked that worker. It starts a container and execs
+  `buildd-once --resume-worker <id>`, which restores the warm snapshot and then
+  the bundle, re-attaches (`POST /api/workers/[id]/reattach`) and drains the
+  answer into the old transcript.
+- **Orphan park.** A container still running when the agent restarts gets
+  `buildd-once --park-orphan <id>`, and the agent marks the park and resumes it
+  at once.
+- **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
+  mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
+- **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.
+
 ### Model routes
 
 `resolveModelRoute` in `src/outbound.ts` picks one, in this order:
@@ -403,11 +481,7 @@ them on the cloud runner.
 
 The smoke also checks the run report: recorded for every run, egress counters
 from the egress step, clone phase lines and `claimedAt` from a fake claim, and
-the artifact POST. The Worker runs on the host with the container's
-`BUILDD_SERVER`, and Docker Desktop's `host.docker.internal` does not resolve on
-the host, so by default the POST fails and the smoke checks it was tried twice
-and recorded as `error`. With `SMOKE_HOST_ADDR=<an address both reach, e.g. the
-host's LAN IP>` it checks `sent` and the fake buildd's receipt.
+the artifact POST: `sent`, and the fake buildd's receipt.
 
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
 "egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy

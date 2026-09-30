@@ -14,7 +14,10 @@ import {
   resolveInactivityTimeoutMs,
   resolveStartTimeoutMs,
   parseTaskTokenResponse,
+  resumableRunsEnabled,
   taskTokenRequest,
+  warmReposEnabled,
+  type DispatchRequest,
   type RunState,
 } from './lifecycle';
 import {
@@ -32,6 +35,7 @@ import {
 } from './outbound';
 import type { EgressProps } from './egress';
 import { otlpInterceptHosts } from './otel';
+import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
 import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
 
 /** `ctx.exports` loopback for the EgressHandler entrypoint exported from index.ts. */
@@ -71,6 +75,9 @@ export class WorkerAgent extends Agent<Env, RunState> {
         OTEL_EXPORTER_OTLP_PROTOCOL: env.OTEL_EXPORTER_OTLP_PROTOCOL,
         OTEL_LOG_TOOL_DETAILS: env.OTEL_LOG_TOOL_DETAILS,
         OTEL_TRACES_BETA: env.OTEL_TRACES_BETA,
+        WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
+        RESUMABLE_RUNS: resumableRunsEnabled(env) ? '1' : undefined,
+        resumableRuns: resumableRunsEnabled(env),
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
         instanceType: env.CONTAINER_INSTANCE_TYPE,
@@ -98,8 +105,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
   }
 
   /** RPC from the dispatcher Worker. Idempotent while a run is live. */
-  async dispatch(): Promise<DispatchResult> {
-    return this.supervisor.dispatch();
+  async dispatch(request: DispatchRequest = {}): Promise<DispatchResult> {
+    return this.supervisor.dispatch(request);
   }
 
   /** RPC from the dispatcher Worker, for `GET /tasks/:taskId`. */
@@ -135,6 +142,23 @@ export class WorkerAgent extends Agent<Env, RunState> {
   async getGithubGrant(): Promise<GithubGrant | null> {
     if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
     return this.githubTokens.get();
+  }
+
+  /**
+   * RPC from EgressHandler for the snapshot host: whose keys this run may
+   * touch. Only while a run is live and warm repos are on. The workspace ID
+   * is the one buildd returned with the GitHub grant (authenticated with the
+   * dispatch token), never anything the container or the webhook body said.
+   */
+  async getSnapshotScope(): Promise<SnapshotScope | null> {
+    if (!warmReposEnabled(this.env) && !resumableRunsEnabled(this.env)) return null;
+    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
+    const grant = await this.githubTokens.get();
+    if (!grant?.workspaceId) return null;
+    // The worker is the one this agent is running (its claim line, or the
+    // task.resume it was dispatched with), so a park bundle is only ever
+    // this run's own.
+    return { workspaceId: grant.workspaceId, ...(this.state.workerId ? { workerId: this.state.workerId } : {}) };
   }
 
   /**
@@ -222,5 +246,10 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const otlp = otlpInterceptHosts(this.env);
     for (const host of otlp.https) await container.interceptOutboundHttps(host, handler);
     for (const host of otlp.http) await container.interceptOutboundHttp(host, handler);
+    // The snapshot pseudo-host, HTTPS only, and only with warm repos or
+    // resumable runs on.
+    if (warmReposEnabled(this.env) || resumableRunsEnabled(this.env)) {
+      await container.interceptOutboundHttps(SNAPSHOT_HOST, handler);
+    }
   }
 }

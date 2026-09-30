@@ -1,11 +1,55 @@
 import { describe, expect, test } from 'bun:test';
-import { PHASE_LINE_PREFIX, RUN_PHASES, emitPhase, formatPhaseLine, phaseLinesEnabled } from '../../src/phase-lines';
+import {
+  METRIC_LINE_PREFIX,
+  PHASE_LINE_PREFIX,
+  REPO_FALLBACK_REASONS,
+  REPO_SOURCE_LINE_PREFIX,
+  RUN_METRICS,
+  RUN_PHASES,
+  emitMetric,
+  emitPhase,
+  emitRepoSource,
+  formatMetricLine,
+  formatPhaseLine,
+  formatRepoSourceLine,
+  phaseLinesEnabled,
+} from '../../src/phase-lines';
 
 describe('phase lines', () => {
   test('format: BUILDD_PHASE=<phase> <epoch ms>', () => {
     expect(PHASE_LINE_PREFIX).toBe('BUILDD_PHASE=');
     expect(formatPhaseLine('clone_start', 1_700_000_000_123)).toBe('BUILDD_PHASE=clone_start 1700000000123');
-    expect(RUN_PHASES).toEqual(['clone_start', 'clone_end', 'install_start', 'install_end']);
+    expect(RUN_PHASES).toEqual([
+      'clone_start', 'clone_end', 'install_start', 'install_end',
+      'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
+      'warm_upload_start', 'warm_upload_end',
+      'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+    ]);
+  });
+
+  test('metric lines: BUILDD_METRIC=<name> <non-negative integer>', () => {
+    expect(METRIC_LINE_PREFIX).toBe('BUILDD_METRIC=');
+    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer']);
+    expect(formatMetricLine('fetch_bytes', 1234.9)).toBe('BUILDD_METRIC=fetch_bytes 1234');
+    expect(formatMetricLine('fetch_bytes', -5)).toBe('BUILDD_METRIC=fetch_bytes 0');
+  });
+
+  test('repo source line: warm, or clone with a reason from a closed list', () => {
+    expect(REPO_SOURCE_LINE_PREFIX).toBe('BUILDD_REPO_SOURCE=');
+    expect(REPO_FALLBACK_REASONS).toEqual(['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed']);
+    expect(formatRepoSourceLine('warm')).toBe('BUILDD_REPO_SOURCE=warm');
+    expect(formatRepoSourceLine('clone', 'disk')).toBe('BUILDD_REPO_SOURCE=clone disk');
+  });
+
+  test('metric and source lines follow the same cloud-only switch', () => {
+    const out: string[] = [];
+    const on = { env: { BUILDD_EXECUTOR: 'cloud' }, log: (l: string) => out.push(l) };
+    const off = { env: {}, log: (l: string) => out.push(l) };
+    emitMetric('clone_bytes', 10, on);
+    emitMetric('clone_bytes', 10, off);
+    emitRepoSource('clone', 'no_snapshot', on);
+    emitRepoSource('warm', undefined, off);
+    expect(out).toEqual(['BUILDD_METRIC=clone_bytes 10', 'BUILDD_REPO_SOURCE=clone no_snapshot']);
   });
 
   test('only printed in a cloud container (BUILDD_EXECUTOR=cloud)', () => {

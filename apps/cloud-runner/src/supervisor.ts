@@ -13,19 +13,27 @@
  *    starting or running, and the check-and-set happens before any await.
  *  - One container per agent, fresh per attempt: a leftover container is
  *    destroyed before the next attempt starts.
+ *  - Resumable runs (Phase 2): a run that exits 4 is `parked`, not crashed.
+ *    Only a `task.resume` dispatch for that same worker continues it. The one
+ *    run the agent starts by itself is the resume of a run it parked while
+ *    recovering from its own restart (recoverOrphan), and the runner bounds
+ *    parks per worker.
  */
 import {
   appendTail,
   assertRunnerConfig,
   buildContainerEnv,
+  EXIT_PARKED,
   crashReportAction,
   decideDispatch,
+  orphanParkCommand,
   isOrphanedRun,
   outcomeForExitCode,
   parseWorkerIdLine,
   runnerCommand,
   type ContainerEnvSource,
   type CrashReport,
+  type DispatchRequest,
   type RunOutcome,
   type RunState,
 } from './lifecycle';
@@ -37,7 +45,10 @@ import {
   deliverRunReport,
   emptyEgressCounters,
   isEgressEvent,
+  parseMetricLine,
   parsePhaseLine,
+  parseRepoSourceLine,
+  recordMetric,
   recordPhase,
   runLabel,
   type EgressCounters,
@@ -71,6 +82,8 @@ export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   instanceType?: string;
   /** For the run report: the Durable Object ID the container is bound to. */
   containerInstanceId?: string;
+  /** RESUMABLE_RUNS on (and the binding present): park an orphaned running container on restart. */
+  resumableRuns?: boolean;
 }
 
 export interface SupervisorDeps {
@@ -98,11 +111,13 @@ export interface SupervisorDeps {
 
 export type DispatchResult =
   | { accepted: true; attempt: number }
-  | { accepted: false; reason: 'already_live'; attempt: number; status: RunState['status'] };
+  | { accepted: false; reason: 'already_live' | 'not_parked'; attempt: number; status: RunState['status'] };
 
 const READY_POLL_MS = 250;
 const OUTPUT_DRAIN_MS = 5_000;
 const CRASH_REPORT_TIMEOUT_MS = 10_000;
+/** How long the orphan park (kill the runner, bundle, upload, mark) may take. */
+const ORPHAN_PARK_TIMEOUT_MS = 10 * 60 * 1000;
 
 type Settled =
   | { kind: 'exit'; code: number }
@@ -136,13 +151,16 @@ export class TaskSupervisor {
    * Start a run unless one is live. Returns as soon as the state says
    * `starting`; the run itself continues under keepAlive + waitUntil.
    */
-  dispatch(): DispatchResult {
+  dispatch(request: DispatchRequest = {}): DispatchResult {
     const state = this.d.getState();
-    const decision = decideDispatch(state);
+    const decision = decideDispatch(state, request);
     if (decision.action === 'ignore') {
-      this.d.log(`[cloud-runner] task ${this.d.taskId}: duplicate dispatch ignored (attempt ${state.attempt} is ${state.status})`);
+      this.d.log(decision.reason === 'already_live'
+        ? `[cloud-runner] task ${this.d.taskId}: duplicate dispatch ignored (attempt ${state.attempt} is ${state.status})`
+        : `[cloud-runner] task ${this.d.taskId}: resume ignored (attempt ${state.attempt} did not park that worker)`);
       return { accepted: false, reason: decision.reason, attempt: state.attempt, status: state.status };
     }
+    const resume = decision.resumeWorkerId;
     // Check-and-set with no await in between: a second dispatch arriving
     // while this one is still starting sees `starting` and is ignored.
     const history = [...(state.reportHistory ?? []), ...(state.report ? [state.report] : [])].slice(-REPORT_HISTORY_MAX);
@@ -154,11 +172,14 @@ export class TaskSupervisor {
       outputTail: [],
       timings: {},
       ...(history.length ? { reportHistory: history } : {}),
+      // A resume continues the parked worker: its id is known up front (for
+      // the snapshot scope and a crash report), and no claim line will come.
+      ...(resume ? { workerId: resume, resumed: true, ...(state.endedAt !== undefined ? { parkedAt: state.endedAt } : {}) } : {}),
     });
     this.tail = [];
     this.egress = emptyEgressCounters();
-    this.d.log(`[cloud-runner] task ${this.d.taskId}: starting attempt ${decision.attempt}`);
-    const run = this.d.keepAliveWhile(() => this.run(decision.attempt))
+    this.d.log(`[cloud-runner] task ${this.d.taskId}: starting attempt ${decision.attempt}${resume ? ` (resuming worker ${resume})` : ''}`);
+    const run = this.d.keepAliveWhile(() => this.run(decision.attempt, resume))
       .catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: supervisor error: ${describe(err)}`))
       .finally(() => { if (this.live === run) this.live = null; });
     this.live = run;
@@ -174,9 +195,80 @@ export class TaskSupervisor {
   async recoverOrphan(): Promise<void> {
     const state = this.d.getState();
     if (!isOrphanedRun(state, this.hasLiveRun)) return;
+    // Resumable runs: a container still running under a restarted agent is
+    // parked (the runner is stopped, its worker bundled and marked parked),
+    // then resumed in a fresh container. Anything short of a clean park falls
+    // back to the crash path. Not awaited: this runs from onStart, under the
+    // runtime's blockConcurrencyWhile, and the park's upload goes through the
+    // snapshot route, which calls back into this agent for its scope. The
+    // state stays `running` meanwhile, so a dispatch is ignored as a duplicate.
+    if (this.d.config.resumableRuns && state.workerId && this.d.container.running) {
+      const workerId = state.workerId;
+      this.d.waitUntil(this.parkOrphanThenResume(workerId, state).catch((err) =>
+        this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan recovery error: ${describe(err)}`)));
+      return;
+    }
+    await this.crashOrphan(state);
+  }
+
+  private async parkOrphanThenResume(workerId: string, state: RunState): Promise<void> {
+    const parked = await this.d.keepAliveWhile(() => this.parkOrphan(workerId));
+    if (!parked || !(await this.markParked(workerId))) return this.crashOrphan(state);
+    await this.finish({ code: EXIT_PARKED, outcome: 'parked' });
+    this.dispatch({ resumeWorkerId: workerId });
+  }
+
+  /**
+   * POST /api/workers/[id]/park for an orphan park. The agent does this, not
+   * the container: the container outlived its agent, and its route to buildd
+   * may not have survived with it (under wrangler dev it does not).
+   */
+  private async markParked(workerId: string): Promise<boolean> {
+    const { BUILDD_SERVER: server, BUILDD_API_KEY: apiKey } = this.d.config;
+    if (!server || !apiKey) return false;
+    try {
+      const res = await this.d.fetch(`${server.replace(/\/+$/, '')}/api/workers/${encodeURIComponent(workerId)}/park`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(CRASH_REPORT_TIMEOUT_MS),
+      });
+      if (res.ok) return true;
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: park mark for worker ${workerId} returned ${res.status}`);
+    } catch (err) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: park mark for worker ${workerId} failed: ${describe(err)}`);
+    }
+    return false;
+  }
+
+  private async crashOrphan(state: RunState): Promise<void> {
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${state.attempt} was ${state.status} when the agent restarted; marking it crashed`);
     const error = 'The agent restarted during the run and could not re-attach to the runner process.';
     await this.finish({ code: null, outcome: 'crashed', error });
+  }
+
+  /** Exec the orphan park in the still-running container. True only on a clean exit 4. */
+  private async parkOrphan(workerId: string): Promise<boolean> {
+    this.d.log(`[cloud-runner] task ${this.d.taskId}: container still running after an agent restart; parking worker ${workerId}`);
+    try {
+      // The interception belonged to the agent before the restart; the park
+      // upload goes through the snapshot route, so this agent installs its own.
+      await this.d.installEgress();
+      const proc = await this.d.container.exec(orphanParkCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe' });
+      const pumps = Promise.all([this.pump(proc.stdout), this.pump(proc.stderr)]);
+      const code = await Promise.race([
+        proc.exitCode,
+        this.d.sleep(ORPHAN_PARK_TIMEOUT_MS).then(() => null),
+      ]);
+      await Promise.race([pumps, this.d.sleep(OUTPUT_DRAIN_MS)]);
+      if (code !== EXIT_PARKED) {
+        this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan park ended with ${code ?? 'a timeout'}; treating the run as crashed`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan park failed: ${describe(err)}`);
+      return false;
+    }
   }
 
   /**
@@ -192,7 +284,7 @@ export class TaskSupervisor {
     }
   }
 
-  private async run(attempt: number): Promise<void> {
+  private async run(attempt: number, resumeWorkerId?: string): Promise<void> {
     const c = this.d.container;
     let code: number | null = null;
     let error: string | undefined;
@@ -214,7 +306,7 @@ export class TaskSupervisor {
       await this.waitUntilRunning();
       this.patchTimings({ containerRunningAt: this.d.now() });
 
-      const proc = await c.exec(runnerCommand(this.d.taskId), { stdout: 'pipe', stderr: 'pipe' });
+      const proc = await c.exec(runnerCommand(this.d.taskId, resumeWorkerId), { stdout: 'pipe', stderr: 'pipe' });
       this.patch({ status: 'running' });
       this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${attempt} running`);
 
@@ -254,7 +346,7 @@ export class TaskSupervisor {
    */
   private async finish(r: { code: number | null; outcome: RunOutcome; error?: string }): Promise<void> {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
-    await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : 'run finished');
+    await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
     const state = this.d.getState();
     const report = assembleRunReport({
@@ -269,6 +361,8 @@ export class TaskSupervisor {
       exitCode: r.code,
       outcome: r.outcome,
       crashReport,
+      resumed: state.resumed,
+      parkedAt: state.parkedAt,
     });
     this.patch({
       status: 'exited',
@@ -341,7 +435,15 @@ export class TaskSupervisor {
       if (phase) {
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
         if (runnerPhases !== state.timings?.runnerPhases) this.patchTimings({ runnerPhases });
+        return;
       }
+      const metric = parseMetricLine(line);
+      if (metric) {
+        this.patchTimings({ runnerMetrics: recordMetric(state.timings?.runnerMetrics, metric.metric, metric.value) });
+        return;
+      }
+      const source = parseRepoSourceLine(line);
+      if (source) this.patchTimings({ repoSource: source });
     };
     try {
       for (;;) {
