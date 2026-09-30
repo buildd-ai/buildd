@@ -159,6 +159,9 @@ export interface LocalWorker {
   taskId: string;
   taskTitle: string;
   taskDescription?: string;
+  /** The task's parentTaskId at claim — lets a later retry recognise this
+   *  worker as part of its lineage (see classifyResumeBranchHolder). */
+  parentTaskId?: string | null;
   taskMode?: string;  // 'execution' or 'planning'
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
@@ -525,6 +528,8 @@ export interface LoopConfig {
 // Task from buildd
 export interface BuilddTask {
   id: string;
+  /** Set on retry/attempt tasks (the task they retry). Full claim rows carry it. */
+  parentTaskId?: string | null;
   title: string;
   description: string;
   workspaceId: string;

@@ -1800,6 +1800,7 @@ export class WorkerManager {
       taskId: fullTask.id,
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
+      parentTaskId: fullTask.parentTaskId ?? null,
       taskMode: fullTask.mode,
       taskBackend: fullTask.backend || 'claude',
       workspaceId: fullTask.workspaceId,
@@ -1980,6 +1981,13 @@ export class WorkerManager {
           // reclaimed, not even when its tree reads clean (committed-but-unpushed).
           this.workers,
           installEnv,
+          // M1: lets a terminal prior attempt of this lineage give up the
+          // resume branch (flag-gated; shadow logs only by default).
+          {
+            taskId: fullTask.id,
+            parentTaskId: fullTask.parentTaskId ?? null,
+            onHolderReleased: (holderId) => this.markWorktreeReleased(holderId, worker.id),
+          },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -6165,6 +6173,25 @@ export class WorkerManager {
     worker.phaseStart = null;
     worker.phaseToolCount = 0;
     worker.phaseTools = [];
+  }
+
+  /**
+   * A retry of this worker's lineage took its branch (setupWorktree detached
+   * the retained tree under it — M1). Drop the session resume handles so a
+   * late follow-up starts fresh instead of resuming onto a detached tree that
+   * no longer owns the PR branch.
+   */
+  markWorktreeReleased(holderWorkerId: string, byWorkerId: string): void {
+    const holder = this.workers.get(holderWorkerId);
+    if (!holder) return;
+    holder.sessionId = undefined;
+    holder.codexThreadId = undefined;
+    this.addMilestone(holder, {
+      type: 'status',
+      label: `Branch ${holder.branch} handed to retry worker ${byWorkerId.slice(0, 8)} — worktree detached, session no longer resumable`,
+      ts: Date.now(),
+    });
+    try { storeSaveWorker(holder); } catch { /* best effort */ }
   }
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {
