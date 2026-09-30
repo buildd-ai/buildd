@@ -60,6 +60,8 @@ const {
   MAX_CHOICE_OPTIONS,
 } = await import('../decision-client');
 
+const { createPublicGatewayFetcher } = await import('../net/fetch-public-gateway');
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 const QUESTIONS = {
@@ -683,11 +685,13 @@ describe('decisionCall with a team decision model', () => {
       encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
     })];
     const seen: { url: string; auth: string | null }[] = [];
-    const fetcher = mock(async (url: string, init?: RequestInit) => {
+    const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const innerFetcher = mock(async (url: string, init?: RequestInit) => {
       seen.push({ url, auth: new Headers(init?.headers).get('authorization') });
       return chatCompletion();
     });
-    const res = await decisionCall(params({ fetcher, questions: NOUL }));
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher: innerFetcher });
+    const res = await decisionCall(params({ gatewayFetcher, questions: NOUL }));
     expect(res.ok).toBe(true);
     expect(seen[0]).toEqual({ url: 'https://litellm.example.test/v1/chat/completions', auth: 'Bearer sk-lite' });
   });
@@ -704,6 +708,36 @@ describe('decisionCall with a team decision model', () => {
     teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'nope' } };
     const fetcher = mock(async (url: string) => { expect(url).toBe(DECISIONS_URL); return jsonResponse(OK_BODY); });
     expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
+  });
+
+  it('refuses a LiteLLM gateway call to a private address', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } };
+    secretRows = [secretRow({
+      id: 's-gw', purpose: 'inference_key', label: 'litellm', userId: null,
+      encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://private.example.test/v1' })}`,
+    })];
+    const privateAddrLookup = async () => [{ address: '192.168.1.1', family: 4 }];
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: privateAddrLookup as any });
+    const res = await decisionCall(params({ gatewayFetcher, questions: NOUL }));
+    expect(!res.ok && res.error.kind).toBe('transport');
+    expect(res.error && 'message' in res.error ? (res.error as any).message : '').toContain('not a public address');
+  });
+
+  it('refuses a redirect response from a LiteLLM gateway', async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } };
+    secretRows = [secretRow({
+      id: 's-gw', purpose: 'inference_key', label: 'litellm', userId: null,
+      encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
+    })];
+    const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const fetcher = mock(async (url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual');
+      return new Response('', { status: 302, headers: { Location: 'https://attacker.evil.test/' } });
+    });
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher });
+    const res = await decisionCall(params({ gatewayFetcher, questions: NOUL }));
+    expect(!res.ok && res.error.kind).toBe('transport');
+    expect(res.error && 'message' in res.error ? (res.error as any).message : '').toContain('redirect');
   });
 
 });

@@ -22,6 +22,7 @@ import type { ChatProvider } from '@buildd/shared';
 import { openRouterModelId } from './openrouter-id';
 import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { gatewayModel } from '@builddai/ai-kit/models';
+import { getDefaultPublicGatewayFetcher } from '@buildd/core/net/fetch-public-gateway';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
@@ -49,7 +50,7 @@ export { openRouterModelId };
 
 /** The planned model through a LiteLLM gateway, on its OpenAI-compatible API. */
 export function gatewayLanguageModel(gateway: LiteLLMGateway, provider: ChatProvider, modelId: string): LanguageModel {
-  return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL })
+  return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL, fetch: getDefaultPublicGatewayFetcher() })
     .chat(gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, modelId));
 }
 

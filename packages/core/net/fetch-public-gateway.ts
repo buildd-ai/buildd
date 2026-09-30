@@ -26,6 +26,20 @@ interface CacheEntry {
 }
 
 /**
+ * Default shared fetcher with public address validation and host caching.
+ * Used by inferenceCall and decisionCall to share DNS cache across calls.
+ * Lazily created to avoid instantiation if not needed.
+ */
+let defaultPublicGatewayFetcher: Fetcher | null = null;
+
+function getDefaultPublicGatewayFetcher(): Fetcher {
+  if (!defaultPublicGatewayFetcher) {
+    defaultPublicGatewayFetcher = createPublicGatewayFetcher();
+  }
+  return defaultPublicGatewayFetcher;
+}
+
+/**
  * Create a fetcher for LiteLLM gateway calls with public address checking
  * and host validation caching.
  *
@@ -69,3 +83,5 @@ export function createPublicGatewayFetcher(opts: {
     return res;
   };
 }
+
+export { getDefaultPublicGatewayFetcher };

@@ -74,6 +74,7 @@ import {
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
+import { getDefaultPublicGatewayFetcher } from './net/fetch-public-gateway';
 
 // The question/answer types, request and response validation, `gateChoice` and
 // the transport live in `@builddai/ai-kit/decide` (docs/design/shared-ai-kit.md
@@ -326,6 +327,8 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   fetcher?: Fetcher;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Test seams for LiteLLM gateway validation. */
+  gatewayFetcher?: Fetcher;
 }
 
 /**
@@ -369,6 +372,10 @@ export async function decisionCall<Q extends DecisionQuestions>(
   // inside the deadline. `startedAt` keeps the policy check and key lookup
   // inside the same deadline and latency, as before; with `access` passed in,
   // they happened before this call and the deadline is the provider's alone.
+  const useFetcher = endpoint?.kind === 'chat' && endpoint.provider === 'openai'
+    ? params.gatewayFetcher ?? getDefaultPublicGatewayFetcher()
+    : fetcher;
+
   return decide<Q>({
     apiKey,
     state: params.state,
@@ -384,7 +391,7 @@ export async function decisionCall<Q extends DecisionQuestions>(
     headers: { ...ATTRIBUTION_HEADERS },
     ...(params.onUsage ? { onUsage: params.onUsage } : {}),
     ...(params.decisionId ? { decisionId: params.decisionId } : {}),
-    fetch: fetcher,
+    fetch: useFetcher,
     sleep,
     now,
   });

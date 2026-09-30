@@ -45,7 +45,7 @@ import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { resolveLiteLLMGateway } from './litellm-gateway';
 import { gatewayModel } from '@builddai/ai-kit/models';
-import { createPublicGatewayFetcher } from './net/fetch-public-gateway';
+import { getDefaultPublicGatewayFetcher } from './net/fetch-public-gateway';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -399,7 +399,7 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       };
       if (gateway) {
-        const gatewayFetcher = params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher });
+        const gatewayFetcher = params.gatewayFetcher ?? getDefaultPublicGatewayFetcher();
         return await callOpenRouter({
           ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
           url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher as typeof fetch,

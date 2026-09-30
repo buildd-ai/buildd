@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'bun:test';
-import { openRouterModelId, resolveChatModel } from './models';
+import { describe, it, expect, mock } from 'bun:test';
+import { openRouterModelId, resolveChatModel, gatewayLanguageModel } from './models';
 
 describe('openRouterModelId', () => {
   it('maps native Anthropic ids to OpenRouter slugs', () => {
@@ -161,5 +161,14 @@ describe('resolveChatModel — tier pool step', () => {
       drawChatPoolArm: (async () => { throw new Error('boom'); }) as never,
     });
     expect(r.ok && r.modelId).toBe('claude-sonnet-5');
+  });
+});
+
+describe('gatewayLanguageModel — public address validation', () => {
+  it('creates a model for gateway-based chat', () => {
+    const gateway = { baseURL: 'https://litellm.example.test/v1', apiKey: 'sk-lite' };
+    const model = gatewayLanguageModel(gateway, 'anthropic', 'claude-sonnet-5');
+    expect(model).toBeDefined();
+    expect(model && typeof (model as any).doGenerate).toBe('function');
   });
 });
