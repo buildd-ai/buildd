@@ -697,7 +697,7 @@ export async function PATCH(
             mode: true,
             priority: true,
             missionId: true,
-            defaultBackend: true,
+            backend: true,
           },
         }).catch(() => []);
 
@@ -711,7 +711,7 @@ export async function PATCH(
               mode: task.mode,
               priority: task.priority,
               missionId: task.missionId,
-              backend: task.defaultBackend,
+              backend: task.backend,
             },
             ws || { id: existing.workspaceId },
           ).catch(e => console.error(`[missions/patch] Failed to dispatch task ${task.id}:`, e));
