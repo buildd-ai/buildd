@@ -12,6 +12,23 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.14.0 — 2026-09-30
+
+Minor: multi-slot surfaces, shadow first (docs/design/shared-ai-kit.md, P7).
+
+- `/surfaces` `defineSurface`: `rank` slots (chips) and `choice` slots (one
+  optional card) in one Jev call. Every slot defaults to shadow: it renders
+  its `default`, and `onPick` gets a `SurfaceLog` of what Jev would have
+  shown (no state).
+- A slot is `gated` only with a `SlotGate` from `gateFromEval`, which needs
+  at least `MIN_GATE_EVAL_ROWS` (700) held-out labelled rows and takes the
+  threshold from them. The gate is bound to `slotFingerprint(slot)`, so a
+  changed question, candidate, level, label or model refuses to define.
+- `runSurfaceEval`: one call per labelled row, every question of the slot
+  scored, pooled and per question, with `even-odd` halves.
+- The old types-only `SurfaceSlot`, `SurfaceDefinition` and `SurfacePick`
+  are replaced by the real ones. `defineRankSurface` is unchanged.
+
 ## 0.13.0 — 2026-09-30
 
 Minor: a turn's writes are the rows of one approval card instead of one card

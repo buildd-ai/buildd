@@ -2,8 +2,10 @@
  * `@builddai/ai-kit/surfaces`: Jev picks which of the app's own chips and cards
  * to show, and in what order (server; builds on `/decide`).
  *
- * Shipped: `defineRankSurface`, one rank slot (empty-state chips). The full
- * multi-slot `defineSurface` (rank + choice slots) is still types only.
+ * - `defineSurface` (0.14.0): several slots (rank chips, a choice card) in one
+ *   call, shadow first; a slot is gated only with a gate from `gateFromEval`
+ *   over at least `MIN_GATE_EVAL_ROWS` held-out labelled rows. See `./surface`.
+ * - `defineRankSurface`: one rank slot with a code fallback (0.3.0).
  *
  * Safety property: the output space is closed. Jev returns only candidate ids
  * the app registered; chip text, card props and URLs come from app code. A
@@ -22,26 +24,8 @@ import {
   type ScoreQuestion,
 } from '@builddai/ai-kit/decide';
 
-export interface SurfaceCandidate {
-  id: string;
-}
-
-export type SurfaceSlot<C extends SurfaceCandidate = SurfaceCandidate> =
-  /** One `score` question per candidate; the top `max` above the threshold, then `default`. */
-  | { type: 'rank'; candidates: readonly C[]; max: number; default: readonly string[] }
-  /** One `choice` question over registered labels. */
-  | { type: 'choice'; labels: readonly string[]; default: string };
-
-export interface SurfaceDefinition<Ctx = unknown> {
-  id: string;
-  slots: Record<string, SurfaceSlot>;
-  /** The app decides what Jev sees. */
-  state: (ctx: Ctx) => Promise<unknown> | unknown;
-  decision: { mode: DecisionMode; minConfidence: number };
-}
-
-/** What a surface resolves to: ids per slot, always from the registered set. */
-export type SurfacePick = Record<string, readonly string[] | string>;
+export * from './surface';
+import type { SurfaceCandidate } from './surface';
 
 // ── Rank surface ──────────────────────────────────────────────────────────────
 
