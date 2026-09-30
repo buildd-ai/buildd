@@ -93,13 +93,12 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
-import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
+import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 import {
   resumeAtForReset,
   claimHealth,
   DEGRADED_CLAIM_POLL_MS,
   SESSION_BUDGET_CAP_ERROR,
-  isSessionBudgetCapError,
   sdkMaxBudgetUsd,
 } from './claim-budget-signals';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
