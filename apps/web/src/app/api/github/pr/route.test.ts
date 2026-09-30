@@ -5185,6 +5185,24 @@ describe('create_pr — retry supersession', () => {
     expect(data.supersededPrs).toEqual([{ prNumber: 70, closed: true, reason: 'superseded (checked_out)' }]);
   });
 
+  it("passes the new PR's base branch, so only an attempt into the same base is closed", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(retryWorker({ taskClass: 'attempt', context: { iteration: 1, prNumber: 70 } }));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({ number: 77, html_url: 'https://github.com/owner/repo/pull/77', state: 'open', title: 'Fix it', base: { ref: 'dev' } });
+    mockGithubApi.mockResolvedValue({});
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-9', title: 'Fix it', head: WORKER_BRANCH },
+    }));
+    expect(res.status).toBe(200);
+    const [args] = mockCloseAncestorRetryPrs.mock.calls[0] as any[];
+    expect(args.successorBaseBranch).toBe('dev');
+  });
+
   it('awaits the close before responding', async () => {
     let settled = false;
     mockCloseAncestorRetryPrs.mockImplementation(async () => {

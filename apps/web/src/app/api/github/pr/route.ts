@@ -865,6 +865,7 @@ export async function POST(req: NextRequest) {
       supersededPrs = await closeAncestorRetryPrs({
         parentTaskId: worker.task.parentTaskId,
         successorPrNumber: prData.number,
+        successorBaseBranch: prData.base?.ref ?? null,
         installationId: repo.installation.installationId,
         repoFullName: repo.fullName,
         successorWorkerId: worker.id,
