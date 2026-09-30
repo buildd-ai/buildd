@@ -6,6 +6,8 @@ import {
   deriveDriveState,
   deriveTaskHealthSignal,
   unmetDependencyIds,
+  foreignDependencyIds,
+  missingDependencyRow,
   STALL_GRACE_MS,
   getDrivePresentation,
   selectInFlightTasks,
@@ -712,8 +714,33 @@ describe('deriveTaskHealthSignal', () => {
       expect(unmetDependencyIds({ dependsOn: ['retried'] }, byId)).toEqual(['retried']);
     });
 
-    it('a dependency with no row is unmet — the claim SQL requires the row to exist', () => {
-      expect(unmetDependencyIds({ dependsOn: ['not-loaded'] }, new Map())).toEqual(['not-loaded']);
+    // Not loaded (e.g. in another mission) is unknown, not unmet: the caller
+    // did not look, so a met out-of-mission dependency must not read as a wait.
+    it('a dependency that was not loaded is unknown, not unmet', () => {
+      expect(unmetDependencyIds({ dependsOn: ['not-loaded'] }, new Map())).toEqual([]);
+    });
+
+    it('a dependency looked up and found to have no row is unmet — the claim SQL requires the row', () => {
+      const byId = new Map([['gone', missingDependencyRow('gone')]]);
+      expect(unmetDependencyIds({ dependsOn: ['gone'] }, byId)).toEqual(['gone']);
+    });
+
+    it('foreignDependencyIds lists dependsOn entries outside the loaded rows, once each', () => {
+      expect(foreignDependencyIds([
+        { id: 'a', dependsOn: ['x', 'b'] },
+        { id: 'b', dependsOn: ['x', 'y'] },
+        { id: 'c', dependsOn: null },
+      ])).toEqual(['x', 'y']);
+    });
+
+    it('health reads loaded out-of-mission dependencies: an unmet one is a DAG wait, not STALLED', () => {
+      const tasks = [
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['foreign'], createdAt: ago(3_600_000) },
+      ];
+      // Unknown (not loaded): the row counts as claimable, so it can stall.
+      expect(deriveTaskHealthSignal(noDepMission, tasks, { now })).toBe<Health>('STALLED');
+      const dependencies = new Map([['foreign', { id: 'foreign', status: 'in_progress', workers: [] }]]);
+      expect(deriveTaskHealthSignal(noDepMission, tasks, { now, dependencies })).toBe<Health>('NOMINAL');
     });
 
     it('a mission whose only open row waits on a closed-PR dependency reads STALLED past grace', () => {

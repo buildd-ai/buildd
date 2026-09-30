@@ -135,8 +135,9 @@ function isFamilyHealthTask(t: { status: string; kind?: string | null; title?: s
  */
 export const STALL_GRACE_MS = 5 * 60_000;
 
-type DependencyRow = {
+export type DependencyRow = {
   id?: string;
+  title?: string | null;
   status: string;
   updatedAt?: Date | string | null;
   workers?: Array<{
@@ -162,11 +163,36 @@ function dependencyMet(dep: DependencyRow): boolean {
 }
 
 /**
+ * Status stamped on a dependency that was looked up by id and has no row. Not
+ * in DEP_SATISFYING_STATUSES, so it is unmet — the claim SQL's
+ * `EXISTS (... t2.id = dep_id ...)` blocks on it too.
+ */
+export const MISSING_DEPENDENCY_STATUS = 'missing';
+
+export function missingDependencyRow(id: string): DependencyRow {
+  return { id, status: MISSING_DEPENDENCY_STATUS, workers: [] };
+}
+
+/**
+ * `dependsOn` entries that point outside `rows` (another mission, or gone),
+ * deduplicated. A caller loads these by id (`loadDependencyRows`) and passes
+ * them as `dependencies` so an out-of-mission dependency is judged, not guessed.
+ */
+export function foreignDependencyIds(rows: ReadonlyArray<{ id?: string; dependsOn?: string[] | null }>): string[] {
+  const own = new Set(rows.map(r => r.id).filter((id): id is string => !!id));
+  const out = new Set<string>();
+  for (const r of rows) for (const id of Array.isArray(r.dependsOn) ? r.dependsOn : []) if (!own.has(id)) out.add(id);
+  return [...out];
+}
+
+/**
  * Ids of `task.dependsOn` entries that would still keep it out of the claim
- * query. A dependency absent from `byId` counts as unmet, as it does in the
- * claim SQL (`EXISTS (... t2.id = dep_id ...)`): callers pass every row the
- * task can depend on (the mission's tasks), so a missing row is a deleted or
- * foreign dependency the claim route will not see past either.
+ * query. Three cases, kept distinct:
+ *   - in `byId` and unmet (including `missingDependencyRow`) → listed
+ *   - in `byId` and met → not listed
+ *   - not in `byId` → UNKNOWN, not listed: the caller did not load it (e.g. a
+ *     dependency in another mission), and a display read must not invent a
+ *     wait. Callers that can, load foreign dependencies by id first.
  */
 export function unmetDependencyIds(
   task: { dependsOn?: string[] | null },
@@ -175,7 +201,7 @@ export function unmetDependencyIds(
   const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
   return deps.filter(id => {
     const dep = byId.get(id);
-    return dep === undefined || !dependencyMet(dep);
+    return dep !== undefined && !dependencyMet(dep);
   });
 }
 
@@ -250,7 +276,7 @@ export function deriveTaskHealthSignal(
     /** Select it: without it, pre-migration title heuristics decide what counts. */
     taskClass?: string | null;
     category?: string | null;
-    workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
+    workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null; prLifecycleStatus?: string | null }> | null;
     /**
      * True when this failed task's deliverable shipped anyway — its target PR
      * merged, or a title-equivalent sibling task completed with a merged PR
@@ -268,6 +294,12 @@ export function deriveTaskHealthSignal(
     scope?: 'mission' | 'family';
     /** Clock for the stall grace window. Defaults to `Date.now()`. */
     now?: Date;
+    /**
+     * Dependency rows outside `tasks` (`foreignDependencyIds` → `loadDependencyRows`).
+     * Without them an out-of-mission dependency is unknown and its dependent
+     * counts as claimable.
+     */
+    dependencies?: ReadonlyMap<string, DependencyRow>;
   } = {},
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
@@ -288,7 +320,7 @@ export function deriveTaskHealthSignal(
     activeTasks.length > 0 &&
     !tasks.some(t => OPEN_TASK_STATUSES.has(t.status) && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
   ) {
-    const byId = new Map<string, DependencyRow>();
+    const byId = new Map<string, DependencyRow>(opts.dependencies ?? []);
     for (const t of tasks) if (t.id) byId.set(t.id, t);
     // A row waiting on an unmet dependency cannot be claimed, so it is not
     // evidence the platform failed to progress anything. If every open row is

@@ -24,7 +24,8 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal, unmetDependencyIds } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, type DependencyRow } from '@/lib/mission-helpers';
+import { loadDependencyRows } from '@/lib/dependency-rows';
 import { derivePrDisplayState } from '@/lib/pr-presentation';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
@@ -285,6 +286,9 @@ async function viewForMission(missionId: string): Promise<{
   const heartbeatWaitingUntil =
     schedule?.lastDeferralReason === 'heartbeat_waiting' ? schedule?.nextRunAt ?? null : null;
 
+  // Dependencies outside this mission are judged from their own rows, never
+  // guessed (unknown is not unmet): one query by id list.
+  const foreignDeps = await loadDependencyRows(foreignDependencyIds(loaded));
   const deliverables = loaded.filter(isDeliverableTask);
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
   const supersededMap = await computeSupersededFailedTasks(
@@ -301,6 +305,7 @@ async function viewForMission(missionId: string): Promise<{
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+    { dependencies: foreignDeps },
   );
 
   // The card's n/N (`missionCardProgress`): rows folded (D1), cancelled out of
@@ -363,7 +368,8 @@ async function viewForMission(missionId: string): Promise<{
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
   // A pending row waiting on an unmet dependency cannot be the blocker; the
   // accessor cites the dependency instead (same rule as the claim gate).
-  const loadedById = new Map(loaded.map(t => [t.id, t]));
+  const loadedById = new Map<string, DependencyRow>(foreignDeps);
+  for (const t of loaded) loadedById.set(t.id, t);
   const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the

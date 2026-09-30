@@ -12,7 +12,8 @@ import { missions, workspaceSkills, missionNotes } from '@buildd/core/db/schema'
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
-import { deriveTaskHealthSignal } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds } from '@/lib/mission-helpers';
+import { loadDependencyRows } from '@/lib/dependency-rows';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -126,7 +127,9 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     executor: m.executor ?? null,
     orchestrationMode: (mission.orchestrationMode as string | null) ?? 'auto',
     activeAgents,
-    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || []),
+    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], {
+      dependencies: await loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
+    }),
     progress,
     dependsOnMissionId: mission.dependsOnMissionId ?? null,
     criteriaGate,
