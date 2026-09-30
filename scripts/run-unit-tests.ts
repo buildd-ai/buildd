@@ -18,6 +18,7 @@ const UNIT_TEST_ROOTS = [
   'apps/runner/__tests__/standalone/',
   'apps/runner/src/',
   'apps/responder/src/',
+  'apps/cloud-runner/src/',
   'packages/core/',
   'packages/ai-kit/',
   'scripts/',

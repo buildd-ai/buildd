@@ -760,4 +760,9 @@ export interface LocalUIConfig {
   // too — eliminating cross-workspace filesystem access.
   // Set via BUILDD_WORKSPACE_ISOLATION_ROOT env var.
   workspaceIsolationRoot?: string;
+  // Single-task mode (`buildd --once`, see run-once.ts). The WorkerManager runs
+  // only the task it is handed via claimAndStart: no claim polling, no
+  // knowledge-ingest jobs, no restore of other workers from disk, no worktree
+  // sweeps or server cleanup. Heartbeats, sync and Pusher commands still run.
+  singleTask?: boolean;
 }

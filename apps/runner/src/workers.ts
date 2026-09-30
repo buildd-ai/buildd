@@ -3,6 +3,7 @@ import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, 
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
+import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
@@ -789,8 +790,11 @@ export class WorkerManager {
     // Sync dirty worker state to server every 10s (immediate sync for critical changes via markDirty)
     this.syncInterval = setInterval(() => this.workerSync.syncToServer(), 10_000);
 
-    // Run cleanup every 30 minutes (includes session logs)
-    this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
+    // Run cleanup every 30 minutes (includes session logs). Not in single-task
+    // mode: the sweeps it runs act on worktrees this process does not own.
+    if (!config.singleTask) {
+      this.cleanupInterval = setInterval(() => { this.runCleanup(); cleanupOldLogs(); }, 30 * 60 * 1000);
+    }
 
     // Evict completed workers from memory every 5 minutes to prevent unbounded growth
     this.evictionInterval = setInterval(() => this.workerSync.evictCompletedWorkers(), 5 * 60 * 1000);
@@ -798,13 +802,17 @@ export class WorkerManager {
     // Persist dirty worker state to disk every 5s
     this.diskPersistInterval = setInterval(() => this.workerSync.persistDirtyWorkers(), 5_000);
 
-    // Restore workers from disk on startup
-    this.workerSync.restoreWorkersFromDisk();
+    // Single-task mode owns exactly one worker: other workers on disk (and
+    // their worktrees) belong to whichever runner created them.
+    if (!config.singleTask) {
+      // Restore workers from disk on startup
+      this.workerSync.restoreWorkersFromDisk();
 
-    // Already-terminal records stay on disk, unloaded, so eviction never
-    // reclaims their worktrees. Deferred so boot doesn't wait on git.
-    this.terminalWorktreeSweepTimer = setTimeout(() => { void this.sweepTerminalWorktreesOnDisk(); }, 5_000);
-    this.terminalWorktreeSweepTimer.unref?.();
+      // Already-terminal records stay on disk, unloaded, so eviction never
+      // reclaims their worktrees. Deferred so boot doesn't wait on git.
+      this.terminalWorktreeSweepTimer = setTimeout(() => { void this.sweepTerminalWorktreesOnDisk(); }, 5_000);
+      this.terminalWorktreeSweepTimer.unref?.();
+    }
 
     // Scan environment on startup (sync — runs once, fast enough for init)
     try {
@@ -871,7 +879,7 @@ export class WorkerManager {
         }
         // Idle runners pick up full knowledge-ingest jobs (fire-and-forget;
         // the poller serializes itself and never throws).
-        if (active === 0) {
+        if (active === 0 && !this.config.singleTask) {
           this.knowledgeIngestPoller.poll().catch(() => {});
         }
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
@@ -1270,6 +1278,25 @@ export class WorkerManager {
     return this.sessions.get(id);
   }
 
+  /** True while an SDK session for this worker is still live (not yet torn down). */
+  hasLiveSession(id: string): boolean {
+    return this.sessions.has(id);
+  }
+
+  /**
+   * Route this manager's server mutations through an outbox, so a PATCH that
+   * hits a 5xx or a network fault is queued for replay instead of lost. Used by
+   * `--once` mode, which must deliver its final report before the process exits.
+   */
+  attachOutbox(outbox: Outbox): void {
+    this.buildd.setOutbox(outbox);
+  }
+
+  /** Push every dirty worker to the server now instead of on the next 10s tick. */
+  async flushToServer(): Promise<void> {
+    await this.workerSync.syncToServer();
+  }
+
   markRead(workerId: string) {
     const worker = this.workers.get(workerId);
     if (worker) {
@@ -1280,6 +1307,8 @@ export class WorkerManager {
 
   // Claim any pending tasks the server has available (no specific task ID)
   async claimPendingTasks(): Promise<LocalWorker[]> {
+    // Single-task mode (`--once`) only ever runs the task handed to claimAndStart.
+    if (this.config?.singleTask) return [];
     if (!this.acceptRemoteTasks) return [];
     // Post-update canary tripped: this build fails a role deterministically.
     // Claiming more work would only fail it too while the rollback drains.

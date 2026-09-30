@@ -1,0 +1,354 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  CONTAINER_CREDENTIAL_HEADERS,
+  DISPATCH_TOKEN_HEADER,
+  GITHUB_TOKEN_FAILURE_BACKOFF_MS,
+  GITHUB_TOKEN_REFRESH_MARGIN_MS,
+  GithubTokenCache,
+  INTERCEPTED_HOSTS,
+  classifyEgressHost,
+  describeForwardForDebug,
+  fingerprint,
+  githubTokenRequest,
+  parseGithubGrant,
+  resolveModelRoute,
+  rewriteOutbound,
+  type GithubGrant,
+  type ModelRoute,
+} from './outbound';
+
+const GATEWAY_ENV = { AI_GATEWAY_ACCOUNT_ID: 'acct123', AI_GATEWAY_ID: 'gw-1', AI_GATEWAY_TOKEN: 'gw-secret-token' };
+const gateway = resolveModelRoute(GATEWAY_ENV);
+const NOW = 1_000_000_000_000;
+const GRANT: GithubGrant = { token: 'ghs_real_installation_token', expiresAt: NOW + 60 * 60 * 1000, owner: 'acme', repo: 'widget' };
+
+/** Every credential header a hostile or confused container could send. */
+function hostileHeaders(): Record<string, string> {
+  return {
+    'x-api-key': 'sk-ant-container-supplied',
+    authorization: 'Bearer container-supplied',
+    'proxy-authorization': 'Basic container-supplied',
+    'anthropic-api-key': 'container-supplied',
+    'cf-aig-authorization': 'Bearer container-supplied',
+    cookie: 'user_session=container-supplied',
+    host: 'evil.example',
+    'content-type': 'application/json',
+    'anthropic-version': '2023-06-01',
+  };
+}
+
+function forwarded(decision: ReturnType<typeof rewriteOutbound>) {
+  if (decision.action !== 'forward') throw new Error(`expected forward, got ${decision.action}`);
+  return decision;
+}
+
+function expectNoContainerCredential(headers: Headers) {
+  for (const [name, value] of headers) {
+    expect(value).not.toContain('container-supplied');
+    expect(name).not.toBe('host');
+  }
+}
+
+describe('classifyEgressHost', () => {
+  test.each([
+    ['api.anthropic.com', 'anthropic'],
+    ['API.Anthropic.com.', 'anthropic'],
+    ['github.com', 'github'],
+    ['api.github.com', 'github'],
+    ['uploads.github.com', 'github'],
+    ['codeload.github.com', 'github'],
+    ['registry.npmjs.org', 'passthrough'],
+    ['anthropic.com.evil.example', 'passthrough'],
+    ['github.com.evil.example', 'passthrough'],
+    ['gist.github.com', 'passthrough'],
+  ] as const)('%s -> %s', (host, kind) => {
+    expect(classifyEgressHost(host)).toBe(kind);
+  });
+
+  test('every intercepted host is one the rewrite handles', () => {
+    for (const host of INTERCEPTED_HOSTS) expect(classifyEgressHost(host)).not.toBe('passthrough');
+  });
+});
+
+describe('resolveModelRoute', () => {
+  test('gateway when all three are set', () => {
+    expect(gateway).toEqual({ kind: 'gateway', baseUrl: 'https://gateway.ai.cloudflare.com/v1/acct123/gw-1/anthropic', token: 'gw-secret-token' });
+  });
+
+  test('unconfigured when any gateway setting is missing', () => {
+    expect(resolveModelRoute({ AI_GATEWAY_ACCOUNT_ID: 'a', AI_GATEWAY_ID: 'g' }).kind).toBe('unconfigured');
+    expect(resolveModelRoute({}).kind).toBe('unconfigured');
+  });
+
+  test('refuses gateway ids that would change the URL path', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, AI_GATEWAY_ID: '../other' }).kind).toBe('unconfigured');
+  });
+
+  test('direct needs BOTH the opt-in var and the key', () => {
+    expect(resolveModelRoute({ ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' }).kind).toBe('unconfigured');
+    expect(resolveModelRoute({ ALLOW_DIRECT_ANTHROPIC: '1' }).kind).toBe('unconfigured');
+    expect(resolveModelRoute({ ALLOW_DIRECT_ANTHROPIC: 'true', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' }).kind).toBe('unconfigured');
+    expect(resolveModelRoute({ ALLOW_DIRECT_ANTHROPIC: '1', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' })).toEqual({ kind: 'direct', apiKey: 'sk-ant-dev' });
+  });
+
+  test('a stray direct key does not override the gateway', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' }).kind).toBe('gateway');
+  });
+});
+
+describe('rewriteOutbound: api.anthropic.com', () => {
+  test('rewrites to AI Gateway, keeps path and query, sets only the gateway credential', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', headers: hostileHeaders() },
+      { model: gateway },
+    ));
+    expect(d.url).toBe('https://gateway.ai.cloudflare.com/v1/acct123/gw-1/anthropic/v1/messages?beta=true');
+    expect(d.injected).toBe('gateway');
+    expect(d.headers.get('cf-aig-authorization')).toBe('Bearer gw-secret-token');
+    expect(d.headers.get('x-api-key')).toBeNull();
+    expect(d.headers.get('authorization')).toBeNull();
+    expect(d.headers.get('anthropic-version')).toBe('2023-06-01');
+    expect(d.headers.get('content-type')).toBe('application/json');
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('direct mode forwards to Anthropic with the Worker key, never the container one', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { model: { kind: 'direct', apiKey: 'sk-ant-worker-held' } },
+    ));
+    expect(d.url).toBe('https://api.anthropic.com/v1/messages');
+    expect(d.headers.get('x-api-key')).toBe('sk-ant-worker-held');
+    expect(d.headers.get('authorization')).toBeNull();
+    expect(d.headers.get('cf-aig-authorization')).toBeNull();
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('unconfigured is refused, not forwarded with the placeholder', () => {
+    const d = rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { model: resolveModelRoute({}) },
+    );
+    expect(d.action).toBe('reject');
+    if (d.action === 'reject') expect(d.status).toBe(503);
+  });
+
+  test('plaintext and odd ports are refused', () => {
+    expect(rewriteOutbound({ url: 'http://api.anthropic.com/v1/messages', headers: {} }, { model: gateway }).action).toBe('reject');
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com:8443/v1/messages', headers: {} }, { model: gateway }).action).toBe('reject');
+  });
+
+  test('URL userinfo from the container is dropped', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://user:container-supplied@api.anthropic.com/v1/messages', headers: {} },
+      { model: { kind: 'direct', apiKey: 'k' } },
+    ));
+    expect(d.url).not.toContain('container-supplied');
+  });
+});
+
+describe('rewriteOutbound: GitHub', () => {
+  const ctx = { model: gateway, github: GRANT, now: NOW };
+  const basic = `Basic ${btoa(`x-access-token:${GRANT.token}`)}`;
+
+  test.each([
+    'https://github.com/acme/widget.git/info/refs?service=git-upload-pack',
+    'https://github.com/acme/widget.git/git-receive-pack',
+    'https://github.com/ACME/Widget/info/refs?service=git-upload-pack',
+    'https://github.com/acme/widget',
+  ])('git over https to the task repo gets Basic x-access-token: %s', (url) => {
+    const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, ctx));
+    expect(d.headers.get('authorization')).toBe(basic);
+    expect(d.injected).toBe('github_basic');
+    expectNoContainerCredential(d.headers);
+  });
+
+  test.each([
+    'https://api.github.com/repos/acme/widget/pulls',
+    'https://api.github.com/repos/acme/widget',
+    'https://api.github.com/graphql',
+    'https://uploads.github.com/repos/acme/widget/releases/1/assets',
+  ])('REST/GraphQL for the task repo gets Bearer: %s', (url) => {
+    const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, ctx));
+    expect(d.headers.get('authorization')).toBe(`Bearer ${GRANT.token}`);
+    expectNoContainerCredential(d.headers);
+  });
+
+  test.each([
+    'https://github.com/acme/other.git/info/refs',
+    'https://github.com/other/widget.git/info/refs',
+    'https://github.com/acme/widget-fork.git/info/refs',
+    'https://github.com/acme',
+    'https://api.github.com/repos/acme/other/pulls',
+    'https://api.github.com/repos/acmex/widget',
+    'https://api.github.com/user',
+    'https://api.github.com/search/code?q=x',
+    'https://uploads.github.com/repos/other/widget/releases/1/assets',
+    'https://codeload.github.com/acme/widget/tar.gz/main',
+  ])('outside the task repo: container auth stripped, nothing added: %s', (url) => {
+    const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, ctx));
+    expect(d.headers.get('authorization')).toBeNull();
+    expect(d.injected).toBe('none');
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('no grant: forwarded unauthenticated, container auth still stripped', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/info/refs', headers: hostileHeaders() },
+      { model: gateway, github: null, now: NOW },
+    ));
+    expect(d.headers.get('authorization')).toBeNull();
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('an expired grant is not attached', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/info/refs', headers: {} },
+      { model: gateway, github: { ...GRANT, expiresAt: NOW - 1 }, now: NOW },
+    ));
+    expect(d.headers.get('authorization')).toBeNull();
+  });
+
+  test('plaintext GitHub is refused', () => {
+    expect(rewriteOutbound({ url: 'http://github.com/acme/widget.git/info/refs', headers: {} }, ctx).action).toBe('reject');
+  });
+});
+
+describe('rewriteOutbound: everything else', () => {
+  test('passes through untouched (the handler forwards the original request)', () => {
+    expect(rewriteOutbound({ url: 'https://registry.npmjs.org/left-pad', headers: hostileHeaders() }, { model: gateway }).action).toBe('passthrough');
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com.evil.example/', headers: hostileHeaders() }, { model: gateway }).action).toBe('passthrough');
+  });
+});
+
+describe('security: container-supplied credentials never reach a credentialed host', () => {
+  // Every intercepted host, every model route, with and without a grant: the
+  // forwarded request carries no header value the container supplied.
+  const routes: ModelRoute[] = [gateway, { kind: 'direct', apiKey: 'sk-ant-worker-held' }];
+  const urls = [
+    'https://api.anthropic.com/v1/messages',
+    'https://github.com/acme/widget.git/git-upload-pack',
+    'https://github.com/other/repo.git/git-upload-pack',
+    'https://api.github.com/repos/acme/widget',
+    'https://api.github.com/graphql',
+    'https://api.github.com/user',
+    'https://uploads.github.com/repos/acme/widget/x',
+    'https://codeload.github.com/acme/widget/zip/main',
+  ];
+  for (const model of routes) {
+    for (const github of [GRANT, null]) {
+      for (const url of urls) {
+        test(`${model.kind} ${github ? 'grant' : 'no grant'} ${url}`, () => {
+          const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, { model, github, now: NOW }));
+          expectNoContainerCredential(d.headers);
+          for (const name of CONTAINER_CREDENTIAL_HEADERS) {
+            const v = d.headers.get(name);
+            if (v !== null) expect(v).not.toContain('container-supplied');
+          }
+        });
+      }
+    }
+  }
+});
+
+describe('GithubTokenCache', () => {
+  function setup(fetchGrant: () => Promise<GithubGrant>) {
+    let now = NOW;
+    let calls = 0;
+    const cache = new GithubTokenCache({
+      fetchGrant: () => { calls++; return fetchGrant(); },
+      now: () => now,
+    });
+    return { cache, calls: () => calls, advance: (ms: number) => { now += ms; } };
+  }
+
+  test('fetches once and reuses until near expiry, then refetches', async () => {
+    const s = setup(async () => ({ ...GRANT, expiresAt: NOW + 60 * 60 * 1000 }));
+    expect((await s.cache.get())?.token).toBe(GRANT.token);
+    await s.cache.get();
+    expect(s.calls()).toBe(1);
+    s.advance(60 * 60 * 1000 - GITHUB_TOKEN_REFRESH_MARGIN_MS + 1);
+    await s.cache.get();
+    expect(s.calls()).toBe(2);
+  });
+
+  test('concurrent callers share one fetch', async () => {
+    let resolve!: (g: GithubGrant) => void;
+    const s = setup(() => new Promise(r => { resolve = r; }));
+    const a = s.cache.get();
+    const b = s.cache.get();
+    resolve(GRANT);
+    expect(await a).toEqual(GRANT);
+    expect(await b).toEqual(GRANT);
+    expect(s.calls()).toBe(1);
+  });
+
+  test('a failure yields null and backs off', async () => {
+    const s = setup(async () => { throw new Error('409 no active worker'); });
+    expect(await s.cache.get()).toBeNull();
+    expect(await s.cache.get()).toBeNull();
+    expect(s.calls()).toBe(1);
+    s.advance(GITHUB_TOKEN_FAILURE_BACKOFF_MS);
+    await s.cache.get();
+    expect(s.calls()).toBe(2);
+  });
+
+  test('reset drops the token and an in-flight fetch from the previous run', async () => {
+    let resolve!: (g: GithubGrant) => void;
+    const s = setup(() => new Promise(r => { resolve = r; }));
+    const stale = s.cache.get();
+    s.cache.reset();
+    resolve(GRANT);
+    expect(await stale).toBeNull();
+  });
+});
+
+describe('parseGithubGrant', () => {
+  test('parses the endpoint response', () => {
+    expect(parseGithubGrant({
+      token: 'ghs_x', expiresAt: new Date(NOW).toISOString(),
+      repository: { owner: 'acme', name: 'widget', fullName: 'acme/widget' },
+    })).toEqual({ token: 'ghs_x', expiresAt: NOW, owner: 'acme', repo: 'widget' });
+  });
+
+  test.each([
+    [null],
+    [{}],
+    [{ token: 'x', expiresAt: 'nope', repository: { owner: 'a', name: 'b' } }],
+    [{ token: 'x', expiresAt: new Date(NOW).toISOString() }],
+    [{ token: '', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'a', name: 'b' } }],
+  ])('rejects %p', (body) => {
+    expect(() => parseGithubGrant(body)).toThrow();
+  });
+});
+
+describe('githubTokenRequest', () => {
+  test('sends the API key and the dispatch token, and the task/worker ids', () => {
+    const { url, init } = githubTokenRequest(
+      { BUILDD_SERVER: 'https://buildd.example/', BUILDD_API_KEY: 'bld_k', DISPATCH_TOKEN: 'dt' }, 't-1', 'w-1');
+    expect(url).toBe('https://buildd.example/api/runner/github-token');
+    const h = init.headers as Record<string, string>;
+    expect(h.Authorization).toBe('Bearer bld_k');
+    expect(h[DISPATCH_TOKEN_HEADER]).toBe('dt');
+    expect(JSON.parse(init.body as string)).toEqual({ taskId: 't-1', workerId: 'w-1' });
+  });
+
+  test('refuses without the dispatch token (the container has the API key, never this)', () => {
+    expect(() => githubTokenRequest({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' }, 't')).toThrow(/DISPATCH_TOKEN/);
+  });
+});
+
+describe('describeForwardForDebug', () => {
+  test('fingerprints every header value and never prints one', async () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { model: gateway },
+    ));
+    const echo = await describeForwardForDebug(d);
+    expect(echo.url).toBe('https://gateway.ai.cloudflare.com/v1/acct123/gw-1/anthropic/v1/messages');
+    expect(echo.headers['cf-aig-authorization']).toBe(await fingerprint('Bearer gw-secret-token'));
+    expect(echo.headers['x-api-key']).toBeUndefined();
+    expect(JSON.stringify(echo)).not.toContain('gw-secret-token');
+    expect(JSON.stringify(echo)).not.toContain('container-supplied');
+  });
+});

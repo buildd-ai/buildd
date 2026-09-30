@@ -598,6 +598,15 @@ export interface WorkspaceWebhookConfig {
   enabled: boolean;
   // Optional: only dispatch tasks with specific runner preference
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  // Optional: which dispatch events this webhook receives (apps/web/src/lib/task-dispatch.ts).
+  // Absent = the legacy set, new and unblocked tasks only. Retries, approved-plan
+  // children and deferred-start re-dispatches reach a webhook only when listed here;
+  // otherwise they wake runners over Pusher. A listed config also has runnerPreference
+  // applied to unblocked dispatches.
+  events?: Array<'task.created' | 'task.unblocked' | 'task.retry'>;
+  // The same column also carries POST /api/webhooks/ingest's keys (webhookSecret,
+  // labelFilter, ...). PATCH /api/workspaces/[id] merges onto the stored object, so
+  // setting or clearing the dispatch keys above leaves those untouched.
 }
 
 // Schedule trigger - conditional check before creating a task
@@ -2652,7 +2661,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).

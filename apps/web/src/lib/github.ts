@@ -46,7 +46,7 @@ export function getGitHubAppConfig() {
 }
 
 // Generate JWT for GitHub App authentication
-function generateAppJWT(): string {
+export function generateAppJWT(): string {
   if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
     throw new Error('GitHub App not configured');
   }

@@ -633,6 +633,8 @@ describe('PATCH /api/tasks/[id]', () => {
       await patch({ status: 'pending' });
       expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
       expect((mockDispatchUnblockedTask.mock.calls[0] as any[])[0]).toMatchObject({ id: TASK_ID });
+      // A manual reset tells the webhook consumer it is a retry, not an unblock.
+      expect((mockDispatchUnblockedTask.mock.calls[0] as any[])[2]).toEqual({ event: 'task.retry' });
     });
 
     it('reset to pending with satisfied dependencies dispatches', async () => {

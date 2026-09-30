@@ -11,7 +11,8 @@ import { WorkerManager } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
-import { Outbox } from './outbox';
+import { Outbox, createReplayHandler } from './outbox';
+import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -89,9 +90,19 @@ if (
   process.exit(report.ok ? 0 : 1);
 }
 
+// `--once --task <id>` (run-once.ts): run one task and exit. Argument errors
+// exit here; the run itself is dispatched once the config is built, below.
+const ONCE_ARGS = parseOnceArgs(process.argv);
+if (ONCE_ARGS.once && 'error' in ONCE_ARGS) {
+  console.error(`${ONCE_ARGS.error}\n\n${ONCE_USAGE}`);
+  process.exit(EXIT_USAGE);
+}
+const ONCE_TASK_ID = ONCE_ARGS.once && 'taskId' in ONCE_ARGS ? ONCE_ARGS.taskId : null;
+
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
 // Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
-const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
+// Never in --once mode: there is no UI server to point at.
+const DEBUG_MODE = !ONCE_TASK_ID && (process.argv.includes('--debug') || !!process.env.PORT);
 
 // The local UI server listens on loopback unless BUILDD_UI_BIND names another
 // interface (e.g. a Tailscale address for remote viewing).
@@ -176,7 +187,8 @@ function setUpdating(on: boolean): void {
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
 
-if (projectRoots.length === 0) {
+// --once can run with no local checkouts: it clones on demand (run-once.ts).
+if (projectRoots.length === 0 && !ONCE_TASK_ID) {
   console.error('No valid project roots found. Set PROJECTS_ROOT env var (e.g., ~/projects,~/work)');
   process.exit(1);
 }
@@ -490,6 +502,21 @@ const config: LocalUIConfig = {
 
 const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolationRoot);
 
+// --once: everything below this point is the long-running runner (UI server,
+// claim loop, Pusher assignment, self-updater, update canary/drain, worktree
+// sweeps). Hand off before any of it starts.
+if (ONCE_TASK_ID) {
+  const code = await runOnceFromCli({
+    taskId: ONCE_TASK_ID,
+    config,
+    resolver,
+    builddHome: BUILDD_DIR,
+    host: hostname(),
+    env: process.env as Record<string, string | undefined>,
+  });
+  process.exit(code);
+}
+
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
@@ -789,22 +816,8 @@ function attachOutbox(client: BuilddClient | null) {
   if (client && !config.serverless) {
     client.setOutbox(outbox);
     // Set up flush handler to replay entries via raw fetch
-    outbox.setFlushHandler(async (entry) => {
-      try {
-        const res = await fetch(`${config.builddServer}${entry.endpoint}`, {
-          method: entry.method,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
-          },
-          body: entry.body,
-        });
-        // 2xx or 409 (already completed) = success
-        return res.ok || res.status === 409;
-      } catch {
-        return false;
-      }
-    });
+    // 2xx or 409 (already completed) = success
+    outbox.setFlushHandler(createReplayHandler(() => config));
   }
 }
 
