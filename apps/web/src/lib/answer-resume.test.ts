@@ -3,6 +3,7 @@ import {
   evaluateAnswerPath,
   describeAnswerPath,
   buildContinuationDescription,
+  buildContinuationTaskValues,
   buildAnswerDeliveryRecord,
   ANSWER_PATH_REASONS,
   RESUME_RUNNER_FRESH_MS,
@@ -374,5 +375,21 @@ describe('isAnswerableWaitingFor', () => {
   // status=error with the question open, and answering it is the whole point.
   it.each([['error'], ['failed'], ['waiting_input']])('keeps a question on a %s worker', (status) => {
     expect(isAnswerableWaitingFor(status, question)).toBe(true);
+  });
+});
+
+describe('buildContinuationTaskValues: runner preference', () => {
+  const args = {
+    workspaceId: 'ws-1', workerId: 'w-1', branch: 'buildd/x', milestones: [], question: 'q', answer: 'a',
+    delivery: { path: 'cold_continuation', reasonCode: 'worker_not_parked', reason: 'r', workerId: 'w-1', decidedAt: new Date(0).toISOString() } as any,
+  };
+
+  it.each(['user', 'service', 'action', 'any'] as const)('carries the parent preference %s', (runnerPreference) => {
+    expect(buildContinuationTaskValues({ ...args, task: { id: 't', runnerPreference } }).runnerPreference).toBe(runnerPreference);
+  });
+
+  it('no parent preference leaves the column default', () => {
+    expect(buildContinuationTaskValues({ ...args, task: { id: 't' } }).runnerPreference).toBeUndefined();
+    expect(buildContinuationTaskValues({ ...args, task: null }).runnerPreference).toBeUndefined();
   });
 });

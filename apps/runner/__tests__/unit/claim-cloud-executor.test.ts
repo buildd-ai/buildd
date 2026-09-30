@@ -111,4 +111,14 @@ describe('agent model endpoint on the claim (docs/design/agent-model-endpoint.md
     await makeClient().claimTask(1);
     expect(sentBodies[0].llmProviderOverride).toBe(false);
   });
+
+  test('the claim declares endpoint support, so the server may send modelEndpoint', async () => {
+    delete process.env.BUILDD_EXECUTOR;
+    respond([]);
+    await makeClient().claimTask(1);
+    const { AGENT_ENDPOINT_RUNNER_FEATURE } = await import('@buildd/core/agent-endpoint');
+    expect(AGENT_ENDPOINT_RUNNER_FEATURE).toBe('agent_endpoint');
+    expect(sentBodies[0].runnerFeatures).toContain(AGENT_ENDPOINT_RUNNER_FEATURE);
+    expect(sentBodies[0].runnerFeatures).toContain('cbm_withhold');
+  });
 });

@@ -462,7 +462,10 @@ async function respondByContinuation(args: {
   // Best-effort: the answer is already recorded, so a failed wake-up must not
   // turn it into an error.
   try {
-    await dispatchNewTask(newTask, worker.workspace ?? { id: worker.workspaceId });
+    // With the continuation's runner preference (inherited from the parent),
+    // so a webhook restricted to other runners does not take it.
+    const runnerPreference = newTask.runnerPreference ?? task?.runnerPreference ?? undefined;
+    await dispatchNewTask(newTask, worker.workspace ?? { id: worker.workspaceId }, runnerPreference ? { runnerPreference } : undefined);
   } catch (err) {
     console.error(`[Worker ${workerId}] Continuation task dispatch failed:`, err);
   }

@@ -179,6 +179,11 @@ from `serverApiKey` / `serverOauthToken` / `claudeAccessToken` /
 `pendingCredentialRefreshes` for that worker. `modelEndpoint` is added to
 `CLAIM_CREDENTIAL_FIELDS`, so a cloud claim strips it by construction.
 
+Only a runner that declares `runnerFeatures: ['agent_endpoint']`
+(`AGENT_ENDPOINT_RUNNER_FEATURE`) on its claim is given the endpoint. For any
+other runner the claim behaves as if no endpoint existed: nothing is resolved,
+nothing is withheld, and it gets today's credentials.
+
 The runner applies it in the same block as the per-machine provider:
 `ANTHROPIC_BASE_URL = baseUrl`, then `ANTHROPIC_AUTH_TOKEN = key` for
 `authorization` or `ANTHROPIC_API_KEY = key` for `x-api-key`, and deletes the
@@ -220,7 +225,11 @@ placeholder key; the dispatcher substitutes at egress, as today.
   override) > **server endpoint** > AI Gateway > `unconfigured` (refuse). The
   server endpoint produces the existing `proxy` route shape, so
   `rewriteOutbound` does not change: strip container credentials, set the one
-  header, forward to `baseUrl + path`.
+  header, forward to `baseUrl + path`. On every model route only the model API
+  paths are forwarded (`MODEL_API_ROUTES`: `POST /v1/messages`,
+  `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/models/<id>`,
+  in canonical form); anything else is refused with 403 before a credential
+  is added.
 
 Worker secrets stay the operator override so a self-hoster's current
 deployment keeps working and so an operator can pin a Worker to one proxy
@@ -234,7 +243,15 @@ tier model after mapping (§5), `max_tokens: 1`, with the configured header.
 This proves the key, the Anthropic route, and that the alias resolves, which
 LiteLLM's free `GET /models` (what `verifyGateway` uses) does not. Results map
 like `verifyGateway`: 2xx `healthy`, 401/403 `revoked`, anything else `unknown`
-(an outage never marks it dead), error text scrubbed of the key.
+(an outage never marks it dead).
+
+Both verifications go through `verifyByFetch` (`packages/core/net/public-address.ts`):
+the host must resolve only to public addresses, redirects are never followed
+(a 3xx fails the check), and the recorded error is a fixed message plus at
+most a status code, never reply text. A URL with userinfo, a query or a
+fragment is refused at validation; plain http and the loopback hosts only
+outside production. A save refuses a URL whose check was blocked (non-public
+host or redirect).
 
 Recorded on the existing columns: `healthStatus`, `lastVerifiedAt`,
 `lastVerificationError`, `lastSuccessAt`. Runtime auth failures (a host

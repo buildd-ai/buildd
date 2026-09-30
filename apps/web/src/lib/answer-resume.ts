@@ -349,6 +349,7 @@ export interface ContinuationParentTask {
   category?: 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research' | null;
   pathManifest?: string[] | null;
   backend?: 'claude' | 'codex' | null;
+  runnerPreference?: 'any' | 'user' | 'service' | 'action' | null;
   context?: unknown;
 }
 
@@ -428,6 +429,10 @@ export function buildContinuationTaskValues(opts: {
     category: opts.task?.category ?? undefined,
     pathManifest: opts.task?.pathManifest ?? undefined,
     backend: opts.task?.backend ?? undefined,
+    // Which runners may take the work: the continuation is the same work, so
+    // it goes where the parent was allowed to go (claim routing and webhook
+    // dispatch both read it).
+    runnerPreference: opts.task?.runnerPreference ?? undefined,
     context: {
       // Honored by the runner's worktree setup — but ONLY when `branch` already
       // exists on the remote, i.e. the original worker had already pushed. If

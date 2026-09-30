@@ -76,7 +76,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints } from './agent-endpoint-injection';
+import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
@@ -2381,7 +2381,10 @@ export async function POST(req: NextRequest) {
   // skip the Anthropic ones for those workers.
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, { llmProviderOverride: body.llmProviderOverride === true });
+    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
+        llmProviderOverride: body.llmProviderOverride === true,
+        runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+      });
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace

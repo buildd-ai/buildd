@@ -1296,7 +1296,9 @@ export async function cleanupUnresumedAnswers(
       if (continuation) {
         try {
           const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
-          await dispatchNewTask(continuation, workspace);
+          // The continuation's runner preference (inherited from the parent).
+          const runnerPreference = continuation.runnerPreference ?? (task.runnerPreference as string | undefined) ?? undefined;
+          await dispatchNewTask(continuation, workspace, runnerPreference ? { runnerPreference } : undefined);
         } catch (err) {
           console.error(`[Worker ${worker.id}] Continuation task dispatch failed:`, err);
         }

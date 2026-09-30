@@ -320,7 +320,7 @@ registers `ctx.container.interceptOutboundHttps(host, ctx.exports.EgressHandler(
 
 | Host | What the handler does |
 |---|---|
-| `api.anthropic.com` | Forwarded per the model route below (AI Gateway, your proxy, or local-only direct), with that route's credential. Unconfigured: `503`, never forwarded with the placeholder |
+| `api.anthropic.com` | Forwarded per the model route below (AI Gateway, your proxy, or local-only direct), with that route's credential. Only `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` and `GET /v1/models/<id>`, in canonical form; any other path is refused with `403`. Unconfigured: `503`, never forwarded with the placeholder |
 | `github.com` | `/<owner>/<repo>[.git]/...` of the task's repo: `Authorization: Basic base64(x-access-token:<token>)` (git over HTTPS) |
 | `api.github.com`, `uploads.github.com` | `/repos/<owner>/<repo>/...` of the task's repo, and `api.github.com/graphql`: `Authorization: Bearer <token>` |
 | `codeload.github.com`, and any other path on the hosts above | Nothing added |

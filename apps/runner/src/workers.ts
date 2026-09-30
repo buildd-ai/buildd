@@ -71,7 +71,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import {
@@ -3267,9 +3267,9 @@ export class WorkerManager {
       // Fallback: use claudeAccessToken from the claim response (always available if a
       // claude_credential exists), which remains valid until the broker has had time to
       // refresh it.
-      // Never alongside a team endpoint: a Claude seat token must not ride
-      // along to a third-party host.
-      if (!teamEndpointApplied && (worker.claudeAccessToken || worker.claudeCredentialId)) {
+      // Never alongside a team endpoint (shouldUseClaudeCredential): a Claude
+      // seat token must not ride along to a third-party host.
+      if (shouldUseClaudeCredential(modelEnv, worker)) {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 

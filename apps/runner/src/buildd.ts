@@ -1,5 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
+import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
@@ -158,7 +159,9 @@ export class BuilddClient {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // This build honours cbmExperiment.withheld (workers.ts); without the flag
       // the server does not enrol this runner's tasks in the CBM experiment.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE],
+      // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
+      // (workers.ts); without it the server keeps sending Anthropic credentials.
+      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
