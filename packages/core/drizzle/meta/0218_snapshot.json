@@ -1,6 +1,6 @@
 {
-  "id": "f7ff2e1f-95d8-48e3-af3a-55eda151f6f8",
-  "prevId": "57ed4def-72d8-49fa-a5d4-221f3dee56ef",
+  "id": "1244004e-7ca3-4510-8fe4-4344994d7b65",
+  "prevId": "94b9dcb1-e798-4abe-addb-387d859c15ee",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -12512,6 +12512,12 @@
         "inference_feature_modes": {
           "name": "inference_feature_modes",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled_decision_shadows": {
+          "name": "enabled_decision_shadows",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": false
         },

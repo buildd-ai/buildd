@@ -336,8 +336,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   runner-spawned agents send model traffic (the team gateway, OpenRouter, or any
   Anthropic-compatible URL). Ranked against the Anthropic key, OAuth seat and
   Claude credential in one precedence: the most specific scope wins, a tie goes
-  to the endpoint, and only the winner is delivered. Host runners get it on the
-  claim (`modelEndpoint`, stripped from cloud claims); the cloud dispatcher
+  to the endpoint, and only the winner is delivered. Host runners that declare
+  the `agent_endpoint` runner feature get it on the claim (`modelEndpoint`,
+  stripped from cloud claims; any other runner keeps today's credentials); the
+  cloud dispatcher, which forwards only the model API paths,
   fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
   `LLM_PROVIDER` still wins. Endpoint runs are metered.
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):

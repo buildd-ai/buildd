@@ -71,7 +71,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import {
@@ -91,7 +91,7 @@ import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { HUMAN_UI_DENIAL } from './runner-denial';
-import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
+import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
@@ -3267,9 +3267,9 @@ export class WorkerManager {
       // Fallback: use claudeAccessToken from the claim response (always available if a
       // claude_credential exists), which remains valid until the broker has had time to
       // refresh it.
-      // Never alongside a team endpoint: a Claude seat token must not ride
-      // along to a third-party host.
-      if (!teamEndpointApplied && (worker.claudeAccessToken || worker.claudeCredentialId)) {
+      // Never alongside a team endpoint (shouldUseClaudeCredential): a Claude
+      // seat token must not ride along to a third-party host.
+      if (shouldUseClaudeCredential(modelEnv, worker)) {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 
@@ -5962,6 +5962,16 @@ export class WorkerManager {
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
           });
+          // Every non-zero Bash exit, not just the known patterns — so a red
+          // test run or tsc leaves a record. See scanBashResult.
+          if (source === 'Bash') {
+            const bashCommand = (sourceInput as { command?: unknown } | undefined)?.command;
+            traces.push(...scanBashResult(
+              worker.id,
+              { command: typeof bashCommand === 'string' ? bashCommand : undefined, content: text, isError: block.is_error === true },
+              this.secretRedactors.get(worker.id),
+            ));
+          }
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);

@@ -30,7 +30,7 @@ describe('attachAgentEndpoints', () => {
   it('endpoint wins: attaches modelEndpoint and reports the worker so nothing else is attached', async () => {
     const { workers, tasks } = claim();
     const resolve = mock(async () => win);
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve });
     expect([...won]).toEqual(['worker-1']);
     expect(workers[0].modelEndpoint).toEqual({
       kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', authToken: 'sk-agent-example',
@@ -41,7 +41,7 @@ describe('attachAgentEndpoints', () => {
 
   it('endpoint loses the ranking: nothing attached, worker not reported', async () => {
     const { workers, tasks } = claim();
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve: async () => lose });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => lose });
     expect(won.size).toBe(0);
     expect('modelEndpoint' in workers[0]).toBe(false);
     expect('modelEndpointIgnored' in workers[0]).toBe(false);
@@ -50,14 +50,14 @@ describe('attachAgentEndpoints', () => {
   it('no endpoint: the worker is untouched', async () => {
     const { workers, tasks } = claim();
     const before = JSON.stringify(workers);
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve: async () => null });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => null });
     expect(won.size).toBe(0);
     expect(JSON.stringify(workers)).toBe(before);
   });
 
   it('per-machine override: the key is not sent, only the non-secret ignored marker', async () => {
     const { workers, tasks } = claim();
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: true }, { resolve: async () => win });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: true, runnerSupportsEndpoint: true }, { resolve: async () => win });
     expect([...won]).toEqual(['worker-1']);
     expect(workers[0].modelEndpoint).toBeUndefined();
     expect(workers[0].modelEndpointIgnored).toBe(true);
@@ -67,7 +67,7 @@ describe('attachAgentEndpoints', () => {
   it('codex tasks are skipped without resolving', async () => {
     const { workers, tasks } = claim('codex');
     const resolve = mock(async () => win);
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve });
     expect(won.size).toBe(0);
     expect(resolve).not.toHaveBeenCalled();
   });
@@ -76,14 +76,24 @@ describe('attachAgentEndpoints', () => {
     delete process.env.ENCRYPTION_KEY;
     const { workers, tasks } = claim();
     const resolve = mock(async () => win);
-    expect((await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve })).size).toBe(0);
+    expect((await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve })).size).toBe(0);
     expect(resolve).not.toHaveBeenCalled();
   });
 
   it('a resolver failure is non-fatal and attaches nothing', async () => {
     const { workers, tasks } = claim();
-    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false }, { resolve: async () => { throw new Error('boom'); } });
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => { throw new Error('boom'); } });
     expect(won.size).toBe(0);
     expect(workers[0].modelEndpoint).toBeUndefined();
+  });
+
+  it('a runner that does not support endpoints: nothing resolved, attached or withheld', async () => {
+    const { workers, tasks } = claim();
+    const before = JSON.stringify(workers);
+    const resolve = mock(async () => win);
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: false }, { resolve });
+    expect(won.size).toBe(0);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(JSON.stringify(workers)).toBe(before);
   });
 });

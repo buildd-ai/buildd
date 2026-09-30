@@ -566,6 +566,15 @@ mock.module('@buildd/core/path-claim', () => ({
   rearmWaiter: mockRearmWaiter,
 }));
 
+// The PR activity comment's "fix ended" write — its own module has its own
+// tests (lib/pr-activity-fix-claimed.test.ts); here we only check it is called.
+const mockAnnounceFixEnded = mock(async (_task: any, _outcome: string) => undefined);
+mock.module('@/lib/pr-activity-fix-claimed', () => ({
+  announceFixEnded: mockAnnounceFixEnded,
+  announceFixClaimed: mock(async () => undefined),
+  fixAttemptOf: () => null,
+}));
+
 // The terminal-record ledger is fire-and-forget over a real db client
 // (`packages/core/db/client`, same reason path-claim is stubbed above), so it
 // is mocked directly here rather than left to reach the network and be
@@ -2618,6 +2627,64 @@ describe('PATCH /api/workers/[id]', () => {
         body: { status: 'running', currentAction: 'Reading files' },
       }), { params: mockParams });
       expect(recorded()).toEqual([]);
+    });
+  });
+
+  describe('fix attempt ends — PR comment stops saying Fixing', () => {
+    function workerUpdateReturns(rows: any[]) {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => rows) })) })),
+      });
+    }
+    function withFixAttempt(workerStatus = 'running') {
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: workerStatus, workspaceId: 'ws-1', taskId: 'fix-1',
+        branch: 'feature/test', milestones: [], pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'fix-1', outputRequirement: 'none', missionId: null, title: '[builder · after review #1] Fix it',
+        status: 'in_progress', reviewerRetryPrNumber: 42, ciRetryPrNumber: null,
+        context: { iteration: 1, maxIterations: 3 },
+        workspace: { name: 'W', teamId: 'team-1' },
+      });
+    }
+    beforeEach(() => mockAnnounceFixEnded.mockClear());
+
+    it('a completed fix attempt closes its Fixing entry', async () => {
+      withFixAttempt();
+      workerUpdateReturns([{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]);
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Addressed review feedback.', summarySource: 'agent' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceFixEnded).toHaveBeenCalledTimes(1);
+      const [task, outcome] = mockAnnounceFixEnded.mock.calls[0] as [any, string];
+      expect(task).toMatchObject({ id: 'fix-1', workspaceId: 'ws-1', reviewerRetryPrNumber: 42 });
+      expect(outcome).toBe('completed');
+    });
+
+    it('a failed fix attempt closes it as failed', async () => {
+      withFixAttempt();
+      workerUpdateReturns([{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]);
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'tests still red' },
+      }), { params: mockParams });
+      expect(mockAnnounceFixEnded).toHaveBeenCalledTimes(1);
+      expect((mockAnnounceFixEnded.mock.calls[0] as [any, string])[1]).toBe('failed');
+    });
+
+    it('a progress update does not close it', async () => {
+      withFixAttempt();
+      workerUpdateReturns([{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]);
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Editing files' },
+      }), { params: mockParams });
+      expect(mockAnnounceFixEnded).not.toHaveBeenCalled();
     });
   });
 

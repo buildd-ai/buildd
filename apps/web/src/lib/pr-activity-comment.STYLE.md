@@ -33,6 +33,7 @@ deciding whether to step in, so every rule below comes down to two things:
 | migration-number collision, fix not claimed | `migration_collision_fixing` | ○ Migration slot conflict · fix N of M queued · waiting for a worker | none |
 | worker claimed the fix | `fix_started` | Fixing · fix N of M | spinner |
 | fix pushed | `changes_pushed` | ○ Pushed `abc1234` · waiting on checks | none |
+| fix task finished | `fix_ended` | ○ Fix N of M finished · waiting on checks (or `ended · failed`) | none |
 | approved, auto-merge pending | `review_approved` | ✓ Approved · merging once checks pass | none |
 | approved, human merges | `review_approved_awaiting_human` | ✓ Approved · ready to merge | none |
 | needs a human | `review_escalated`, `review_failed`, `human_review_required`, `ci_exhausted` | ⚑ … · needs a human | none |
@@ -45,6 +46,9 @@ Rules:
   `fix_started` is written only by the claim route
   (`pr-activity-fix-claimed.ts`), after the atomic claim. A queued fix reads as
   *queued*.
+- **Nothing says "fixing" after the fix task has ended.** The worker's terminal
+  update writes `fix_ended` (`announceFixEnded`, same module), and the next red
+  CI result appends `ci_fixing` or `ci_exhausted` after it.
 - **The spinner means an agent is working right now.** Queued, waiting on
   checks and approved are not motion.
 - **Always give the iteration** ("fix 1 of 3") when there is one, and link the
@@ -55,7 +59,8 @@ Rules:
 Use these words and no synonyms. They match the dashboard (`CondensedTimeline`,
 `PrStatusLine`): lowercase after the first word, `·` as the only separator.
 
-reviewing · re-reviewing · changes requested · queued · fixing · pushed ·
+reviewing · re-reviewing · changes requested · queued · fixing · finished ·
+ended · pushed ·
 waiting for a worker · waiting on checks · approved · ready to merge ·
 needs a human · merged · closed without merging
 

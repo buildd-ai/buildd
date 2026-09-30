@@ -19,12 +19,11 @@ interface Account {
   authType: string;
   apiKeyPrefix: string | null;
   maxConcurrentWorkers: number;
-  totalTasks: number;
   totalCost: string | null;
   activeSessions: number | null;
   maxConcurrentSessions: number | null;
-  budgetExhaustedAt: string | null;
-  budgetResetsAt: string | null;
+  budgetExhaustedAt: string | Date | null;
+  budgetResetsAt: string | Date | null;
   team: { name: string } | null;
   accountWorkspaces?: { workspaceId: string }[];
   createdAt?: string | Date | null;

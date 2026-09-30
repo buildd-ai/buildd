@@ -186,6 +186,8 @@ export async function resolveDecisionKey(opts: {
 /** The team columns a decision call reads. A caller that already loaded them can pass them in. */
 export interface TeamDecisionRow {
   inferenceFeatureModes: unknown;
+  /** `teams.enabledDecisionShadows`, read by opt_in capabilities; absent ⇒ none enabled. */
+  enabledDecisionShadows?: unknown;
   decisionModel: unknown;
   /** The key policy the key resolver enforces; absent ⇒ it reads it. */
   inferenceKeyPolicy?: unknown;
@@ -203,11 +205,11 @@ async function loadTeamDecisionSettings(teamId: string, capability: InferenceCap
       const { db } = await import('./db');
       team = await db.query.teams.findFirst({
         where: eq(teams.id, teamId),
-        columns: { inferenceFeatureModes: true, decisionModel: true, inferenceKeyPolicy: true },
+        columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true },
       }) ?? null;
     }
     return {
-      allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null),
+      allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null),
       model: readDecisionModel(team?.decisionModel),
       ...(isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? { keyPolicy: team.inferenceKeyPolicy } : {}),
     };

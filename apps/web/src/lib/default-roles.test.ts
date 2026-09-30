@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'crypto';
 import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
-import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, roleContentHash } from './default-roles';
+import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, planDefaultRoleRoutingBackfill, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
@@ -177,6 +177,17 @@ describe('DEFAULT_ROLES', () => {
       expect(role().version).toBeGreaterThanOrEqual(2);
       expect(role().supersededContentHashes.length).toBeGreaterThan(0);
       expect(role().supersededContentHashes).not.toContain(roleContentHash(role().content));
+    });
+
+    // docs/design/visual-qa-auditor.md, "Page source".
+    it('prompt asks for the page source first, records it on each shot, and parks the auth walls', () => {
+      const c = role().content;
+      expect(c).toContain('action=get_page_source');
+      expect(c).toContain('QA_PAGE_SOURCE=vercel-preview');
+      expect(c).toMatch(/source: "sandbox" \| "vercel-preview"/);
+      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
+      for (const e of ['preview_unavailable', 'protection_bypass_missing', 'app_auth_not_configured']) expect(boot).toContain(e);
+      expect(boot).toMatch(/never a visual finding/);
     });
 
     // post_note is non-blocking: the session would end, the runner's fallback
@@ -473,5 +484,37 @@ describe('DEFAULT_ROLES', () => {
     expect(c).toContain('`tier`');
     expect(c).toContain('premium');
     expect(c).toContain('budget');
+  });
+});
+
+describe('planDefaultRoleRoutingBackfill (role-routing.md §2 backfill)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const row = (over: Partial<{ id: string; slug: string; source: string | null; metadata: unknown }> = {}) => ({
+    id: 'r1', slug: 'builder', source: 'system', contentHash: null, metadata: {}, ...over,
+  });
+
+  it('fills a seeded default role that has no routing key, keeping the seeded text', () => {
+    const [p] = planDefaultRoleRoutingBackfill([row()], now);
+    const builder = DEFAULT_ROLES.find(r => r.slug === 'builder')!;
+    expect(p).toEqual({ id: 'r1', slug: 'builder', routing: { ...builder.routing, updatedAt: now.toISOString() } });
+  });
+
+  it('carries an explicit opt-out for reviewer', () => {
+    const [p] = planDefaultRoleRoutingBackfill([row({ slug: 'reviewer' })], now);
+    expect(p.routing).toMatchObject({ disabled: true });
+  });
+
+  it('never touches a row with any routing block, a non-system row, or a custom slug', () => {
+    expect(planDefaultRoleRoutingBackfill([
+      row({ metadata: { routing: { whenToUse: 'A team wrote their own text here.' } } }),
+      row({ metadata: { routing: { disabled: true } } }),
+      row({ source: 'manual' }),
+      row({ source: null }),
+      row({ slug: 'migrations' }),
+    ], now)).toEqual([]);
+  });
+
+  it('treats null metadata as absent routing', () => {
+    expect(planDefaultRoleRoutingBackfill([row({ metadata: null })], now)).toHaveLength(1);
   });
 });

@@ -54,6 +54,29 @@ export async function checkPrIsDraft(
   }
 }
 
+/**
+ * Draft + open/closed state in one read, for the CI-retry gate. Fails open like
+ * `checkPrIsDraft`: a failed read reports an open, non-draft PR, and a response
+ * without `state` is treated as open.
+ */
+export async function fetchPrRetryGate(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<{ draft: boolean; closed: boolean; merged: boolean }> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    return {
+      draft: pr?.draft === true,
+      closed: typeof pr?.state === 'string' && pr.state !== 'open',
+      merged: pr?.merged === true,
+    };
+  } catch (error) {
+    console.warn(`Failed to read PR #${prNumber} on ${repoFullName} for the CI-retry gate:`, error);
+    return { draft: false, closed: false, merged: false };
+  }
+}
+
 // Fetch the commit author/committer identity for the given SHA via the GitHub API.
 // Fails open — returns all-null on any error so the caller can still proceed.
 export async function fetchCommitAuthor(

@@ -213,7 +213,7 @@ mock.module('@buildd/core/db/schema', () => ({
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
 // Default null: no endpoint, so every other test sees today's claim.
 const mockResolveAgentModelRoute = mock(async (_o: any) => null as any);
-mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute }));
+mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute, AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint' }));
 
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
@@ -2667,10 +2667,11 @@ describe('POST /api/workers/claim', () => {
       };
       afterEach(() => { mockResolveAgentModelRoute.mockReset(); mockResolveAgentModelRoute.mockImplementation(async () => null); });
 
+      // A runner built with endpoint support declares it; see the old-runner case below.
       const claimWith = async (body: Record<string, unknown> = {}) => {
         const res = await POST(createMockRequest({
           headers: { Authorization: 'Bearer bld_test' },
-          body: { runner: 'test-runner', ...body },
+          body: { runner: 'test-runner', runnerFeatures: ['cbm_withhold', 'agent_endpoint'], ...body },
         }));
         return res.json();
       };
@@ -2721,6 +2722,22 @@ describe('POST /api/workers/claim', () => {
           expect(data.workers[0].modelEndpoint).toBeUndefined();
           expect(data.workers[0].serverApiKey).toBeUndefined();
           expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it('a runner that does not declare endpoint support keeps today\'s credentials and gets no endpoint', async () => {
+        await withEncryptionKey(async () => {
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          for (const runnerFeatures of [undefined, ['cbm_withhold'], 'agent_endpoint']) {
+            setupTeamWithEveryCredential();
+            const data = await claimWith({ runnerFeatures });
+            const w = data.workers[0];
+            expect(w.serverApiKey).toBe('decrypted-secret-value');
+            expect(w.serverOauthToken).toBe('decrypted-secret-value');
+            expect(w.modelEndpoint).toBeUndefined();
+            expect(w.modelEndpointIgnored).toBeUndefined();
+            expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+          }
         });
       });
 
