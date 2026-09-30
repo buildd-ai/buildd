@@ -451,3 +451,63 @@ describe('verifyEvidenceBackend', () => {
     expect(all).not.toContain('AKIAEXAMPLE');
   });
 });
+
+describe('generateEvidenceUploadUrl', () => {
+  const KEY = 'team-evidence/ws-1/root-1/task-1/worker-1/command_output/1700000000000-0.log.gz';
+
+  async function resolvedByo(over: Record<string, unknown> = {}) {
+    state.backends = [backend({ endpoint: null, region: 'us-east-1', ...over })];
+    return mod.resolveEvidenceBackend(WS);
+  }
+
+  it('signs a 15 minute PUT for the exact key with content-length bound in', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 4242));
+    expect(url.pathname).toContain(`/customer-bucket/${KEY}`);
+    expect(mod.EVIDENCE_UPLOAD_EXPIRY_SECONDS).toBe(900);
+    expect(url.searchParams.get('X-Amz-Expires')).toBe('900');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length');
+  });
+
+  it('never carries the secret access key in the URL', async () => {
+    const url = await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10);
+    expect(url).not.toContain('shh-secret');
+  });
+
+  // The PUT contract is "send the body with its Content-Length, nothing else":
+  // SSE rides in the signed query string, never as a header the runner must send.
+  it('hoists AES256 SSE into the query, so the PUT needs no SSE header', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'AES256' }), KEY, 10));
+    expect(url.searchParams.get('x-amz-server-side-encryption')).toBe('AES256');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+  });
+
+  it('hoists aws:kms SSE and its key id into the query', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'aws:kms', kmsKeyId: 'kms-key-1' }), KEY, 10));
+    expect(url.searchParams.get('x-amz-server-side-encryption')).toBe('aws:kms');
+    expect(url.searchParams.get('x-amz-server-side-encryption-aws-kms-key-id')).toBe('kms-key-1');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+  });
+
+  it('signs only content-length and host when SSE is off', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10));
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+    expect(url.searchParams.has('x-amz-server-side-encryption')).toBe(false);
+  });
+
+  // With the SDK's default checksum mode, a presigned PutObject carries the
+  // CRC32 of an EMPTY body in the query, and S3 rejects the real body against it.
+  it('carries no precomputed body checksum', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10));
+    expect([...url.searchParams.keys()].filter(k => k.toLowerCase().startsWith('x-amz-checksum'))).toEqual([]);
+    expect(url.searchParams.has('x-amz-sdk-checksum-algorithm')).toBe(false);
+  });
+
+  it('refuses an unusable backend', async () => {
+    state.secrets = {};
+    await expect(mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10)).rejects.toThrow();
+  });
+
+  it('refuses a non-positive size', async () => {
+    await expect(mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 0)).rejects.toThrow();
+  });
+});
