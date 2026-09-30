@@ -337,7 +337,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
         <div className="space-y-1">
           <label className="field-label" htmlFor="agent-endpoint-aliases">Model aliases (optional)</label>
           <textarea id="agent-endpoint-aliases" rows={3} value={aliases} onChange={(e) => setAliases(e.target.value)}
-            placeholder="claude-sonnet-5 = team-sonnet" className="w-full px-3 py-2 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs" spellCheck={false} />
+            placeholder="native-model-id = proxy-alias" className="w-full px-3 py-2 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs" spellCheck={false} />
           <p className="text-text-muted">One per line. Models without an alias are sent by their own id.</p>
         </div>
       )}
