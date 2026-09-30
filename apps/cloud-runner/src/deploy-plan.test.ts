@@ -182,3 +182,89 @@ describe('dispatchUrl', () => {
     expect(dispatchUrl(`${URL_}/`)).toBe(DISPATCH);
   });
 });
+
+describe('planDeploy: model proxy (--model-proxy-url)', () => {
+  const deployed = {
+    workerSecretNames: ['DISPATCH_TOKEN', 'BUILDD_API_KEY', 'BUILDD_SERVER'],
+    workspace: {
+      id: 'ws-1', name: 'demo',
+      webhookConfig: { url: DISPATCH, enabled: true, hasToken: true, events: [...DISPATCH_EVENTS] as string[] },
+    },
+    runnerApiKey: undefined,
+  };
+  const PROXY_KEY = 'proxy-secret-key-123';
+
+  it('puts the normalised URL and the key; the URL is printed, the key never is', () => {
+    const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com/anthropic/', key: PROXY_KEY } }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY']);
+    expect(p.steps.find((s) => s.kind === 'put_secret' && s.name === 'MODEL_PROXY_URL')).toMatchObject({ value: 'https://litellm.example.com/anthropic' });
+    const text = describePlan(p).join('\n');
+    expect(text).toContain('MODEL_PROXY_URL = https://litellm.example.com/anthropic');
+    expect(text).toContain('wrangler secret put MODEL_PROXY_KEY = <redacted');
+    expect(text).not.toContain(PROXY_KEY);
+    expect(p.notes.join(' ')).toContain('proxy');
+  });
+
+  it('puts MODEL_PROXY_AUTH_HEADER when given, lowercased', () => {
+    const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com', key: PROXY_KEY, authHeader: 'X-Api-Key' } }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY', 'put:MODEL_PROXY_AUTH_HEADER']);
+    if (!p.ok) return;
+    expect(p.steps.find((s) => s.kind === 'put_secret' && s.name === 'MODEL_PROXY_AUTH_HEADER')).toMatchObject({ value: 'x-api-key' });
+    expect(describePlan(p).join('\n')).toContain('MODEL_PROXY_AUTH_HEADER = x-api-key');
+  });
+
+  it('refuses an unknown auth header', () => {
+    const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com', key: PROXY_KEY, authHeader: 'cookie' } }));
+    expect(p.ok).toBe(false);
+    if (!p.ok) expect(p.error).toContain('MODEL_PROXY_AUTH_HEADER');
+  });
+
+  it('refuses a URL the Worker would refuse (plain http to a remote host, userinfo, query)', () => {
+    for (const url of ['http://litellm.example.com', 'https://u:p@litellm.example.com', 'https://litellm.example.com/?a=1', 'nope']) {
+      const p = planDeploy(inputs({ ...deployed, modelProxy: { url, key: PROXY_KEY } }));
+      expect(p.ok).toBe(false);
+      if (!p.ok) {
+        expect(p.error).toContain('MODEL_PROXY_URL');
+        expect(p.error).not.toContain(PROXY_KEY);
+      }
+    }
+  });
+
+  it('refuses a URL with no key when the Worker has none (it would never forward)', () => {
+    const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com' } }));
+    expect(p.ok).toBe(false);
+    if (!p.ok) expect(p.error).toContain('MODEL_PROXY_KEY');
+  });
+
+  it('keeps the stored key when the Worker already has one', () => {
+    const p = planDeploy(inputs({
+      ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_KEY'],
+      modelProxy: { url: 'https://litellm.example.com' },
+    }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL']);
+  });
+
+  it('a key or header alone needs a proxy URL, supplied or already on the Worker', () => {
+    expect(planDeploy(inputs({ ...deployed, modelProxy: { key: PROXY_KEY } })).ok).toBe(false);
+    expect(planDeploy(inputs({ ...deployed, modelProxy: { authHeader: 'x-api-key' } })).ok).toBe(false);
+    const p = planDeploy(inputs({
+      ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY'],
+      modelProxy: { key: PROXY_KEY },
+    }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_KEY']);
+  });
+
+  it('without proxy flags nothing proxy-related is written, and an existing proxy is noted', () => {
+    expect(kinds((planDeploy(inputs(deployed)) as { steps: DeployStep[] }).steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY'] }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(p.ok && p.notes.join(' ')).toContain('MODEL_PROXY_URL');
+  });
+
+  it('empty strings count as not supplied', () => {
+    const p = planDeploy(inputs({ ...deployed, modelProxy: { url: '', key: '', authHeader: '' } }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+  });
+});

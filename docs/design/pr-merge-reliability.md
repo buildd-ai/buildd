@@ -167,7 +167,7 @@ a holder outside the lineage.
 
 **Fallback:** today's behaviour — task branch, new PR, M2 supersede.
 
-**Flag:** `BUILDD_RELEASE_LINEAGE_HELD_BRANCH`, default off.
+**Flag:** `BUILDD_RELEASE_LINEAGE_HELD_BRANCH`, default on since the shadow phase was skipped for a single-operator fleet; `0`/`off` is the kill switch back to shadow.
 
 ### M2 — Make supersession synchronous, verified and honest
 

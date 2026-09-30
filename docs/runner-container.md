@@ -97,7 +97,10 @@ Everything else stays in the runner process.
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never
 put in the container env. The only real secret in the env is
-`BUILDD_API_KEY`.
+`BUILDD_API_KEY`. Model traffic can go to AI Gateway or to an
+Anthropic-compatible proxy such as LiteLLM (`MODEL_PROXY_URL`, Worker-side
+only; see `apps/cloud-runner/README.md`, "Model routes"); either way the
+container sees only `api.anthropic.com` and the placeholder key.
 
 ### Baked into the image
 
