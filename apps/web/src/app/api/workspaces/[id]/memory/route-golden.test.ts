@@ -194,13 +194,20 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
   const WORKER = '44444444-4444-4444-8444-444444444444';
   const wsParams = Promise.resolve({ id: WS });
   const ledgerRows = () => (inserts[0].values as any[]).map(r => [r.memoryId, r.rank, r.caller, r.via, r.taskId, r.workerId, r.teamId, r.chunkId]);
+  // The ledger write is fire-and-forget after the response: wait for it rather
+  // than sleeping a fixed 10ms, which loses the race on a loaded CI runner.
+  const untilInserts = async (n: number) => {
+    for (let i = 0; i < 200 && inserts.length < n; i++) await new Promise(r => setTimeout(r, 5));
+  };
+  // Nothing should be written: give a would-be write the same window to show up.
+  const settle = () => new Promise(r => setTimeout(r, 50));
 
   it('a runner search carrying its task writes one ledger INSERT; a dashboard search writes none', async () => {
     teamIdForTest = TEAM;
     attributionVerdict = { task_ok: true, worker_ok: true };
     try {
       await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
-      await new Promise(r => setTimeout(r, 10));
+      await untilInserts(1);
       expect(inserts).toHaveLength(1);
       // Ranked by the search's order (mem-1 first), not the batch's.
       expect(ledgerRows()).toEqual([
@@ -210,7 +217,7 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
 
       inserts.length = 0;
       await GET(req('query=fix&limit=5'), { params: wsParams });
-      await new Promise(r => setTimeout(r, 10));
+      await settle();
       expect(inserts).toHaveLength(0);
     } finally {
       teamIdForTest = 'team-1';
@@ -222,7 +229,7 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
     attributionVerdict = { task_ok: false, worker_ok: true };
     try {
       await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
-      await new Promise(r => setTimeout(r, 10));
+      await untilInserts(1);
       expect(ledgerRows().map(r => [r[4], r[5]])).toEqual([[null, null], [null, null]]);
     } finally {
       teamIdForTest = 'team-1';
