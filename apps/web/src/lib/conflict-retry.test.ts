@@ -535,6 +535,23 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.conflictRetryHeadSha).toBe('sha-abc123');
   });
 
+  it('does not make a collision repair depend on the task or PR it repairs', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'task-id', pathManifest },
+      { id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
+      { id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
+      { id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
+  });
+
   it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
