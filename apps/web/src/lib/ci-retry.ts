@@ -10,6 +10,7 @@
  */
 
 import { formatAttemptTitle } from '@/lib/task-title';
+import { lineageStamp } from '@/lib/attempt-lineage';
 
 /** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
 export const DEFAULT_MAX_CI_RETRIES = 3;
@@ -118,6 +119,8 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
         errorType: 'ci_failure' as const,
         ...(typeof ctx.lastCommitSha === 'string' ? { commitSha: ctx.lastCommitSha } : {}),
       },
+      // Chain identity: the root task and every PR number seen so far.
+      ...lineageStamp(originalTask, [worker.prNumber]),
       // Retry metadata
       iteration: nextIteration,
       maxIterations,

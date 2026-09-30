@@ -31,6 +31,19 @@ describe('buildCIRetryTask', () => {
     expect((t!.context.failureContext as any).summary).toBe('Job "test" failed');
   });
 
+  it('stamps the chain root and PR number, and carries them through a second retry', () => {
+    const first = buildCIRetryTask(baseParams);
+    expect(first!.context.rootTaskId).toBe('t1');
+    expect(first!.context.lineagePrNumbers).toEqual([42]);
+    const second = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, id: 't2', title: first!.title, context: first!.context },
+      worker: { id: 'w2', branch: 'buildd/new-branch', prNumber: 57 },
+    });
+    expect(second!.context.rootTaskId).toBe('t1');
+    expect(second!.context.lineagePrNumbers).toEqual([42, 57]);
+  });
+
   it('does not double-prefix the title on subsequent retries', () => {
     const t = buildCIRetryTask({
       ...baseParams,

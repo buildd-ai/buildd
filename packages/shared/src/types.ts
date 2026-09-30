@@ -646,6 +646,44 @@ export interface TaskResult {
    * authored outcome. Missing = written before this field existed.
    */
   summarySource?: 'agent' | 'fallback';
+  /** Compact failure evidence written on a terminal state. See TaskEvidence. */
+  evidence?: TaskEvidence;
+  /** Claims the record contradicts. See TaskMismatch. */
+  mismatch?: TaskMismatch[];
+}
+
+export const TASK_EVIDENCE_ERROR_CLASSES = [
+  'test_failure', 'type_error', 'lint_ratchet', 'timeout', 'infra', 'auth', 'unknown',
+] as const;
+export type TaskEvidenceErrorClass = (typeof TASK_EVIDENCE_ERROR_CLASSES)[number];
+
+/**
+ * A small, structured record of what a task hit — the key error lines, never
+ * the full log. Written by the server on a terminal state (`result.evidence`).
+ */
+export interface TaskEvidence {
+  errorClass: TaskEvidenceErrorClass;
+  /** Up to ~40 lines: failing test names and assertion/error messages, cleaned and redacted. */
+  keyLines: string[];
+  /** The last Bash command that exited non-zero, redacted, with its exit code. */
+  lastFailingCommand?: { command: string; exitCode: number | null };
+  /** Each check's name and state when the task ended. */
+  ciChecks?: Array<{ name: string; state: 'passed' | 'failed' | 'pending'; url: string | null }>;
+  /** Server-recorded diff size. */
+  diff: { files: number; added: number; removed: number };
+  /** Pointers only: the full log stays on GitHub. */
+  links: { ciRunUrl?: string; prUrl?: string; fullLogUrl?: string };
+  /** Where keyLines came from. `ci_digest` = seeded from the digest the task was given. */
+  keyLinesSource: 'traces' | 'ci_digest' | 'error' | 'none';
+  capturedAt: string;
+}
+
+export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed';
+
+/** One claim the task made that its own record contradicts. */
+export interface TaskMismatch {
+  kind: TaskMismatchKind;
+  detail: string;
 }
 
 /**

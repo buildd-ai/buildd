@@ -28,6 +28,7 @@ import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
+import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import type { MigrationCollision } from '@/lib/migration-safety';
@@ -246,6 +247,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
       prNumber: worker.prNumber,
+      ...lineageStamp(originalTask, [worker.prNumber]),
       // Cross-repo override: when the PR is in a different repo than the task's workspace,
       // pass the PR repo URL so the worker resolver can find the correct directory.
       // This enables conflict-retry on cross-repo PRs (e.g., a dispatch PR in a buildd workspace).
