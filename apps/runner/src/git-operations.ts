@@ -11,7 +11,12 @@ import {
   clearResumeContext,
   parseWorktreeList,
   isWorktreePathOwnedByOtherLiveWorker,
+  classifyResumeBranchHolder,
+  resolveReleaseHeldBranchMode,
+  RELEASE_LINEAGE_HELD_BRANCH_FLAG,
   type BranchFetchResult,
+  type LineageHolderRecord,
+  type ResumeLineage,
   type WorktreeOwnershipRecord,
 } from './worktree-utils';
 import { sessionLog as realSessionLog } from './session-logger';
@@ -470,6 +475,15 @@ export async function setupWorktree(
    * agent env). See installWorkspaceDeps.
    */
   installEnv?: Record<string, string>,
+  /**
+   * The retry's task identity (M1, docs/design/pr-merge-reliability.md). With
+   * it, a resume branch still checked out in a TERMINAL prior attempt's
+   * retained worktree of the same lineage can be released instead of diverting
+   * to a fresh branch (+ new PR). Gated by BUILDD_RELEASE_LINEAGE_HELD_BRANCH;
+   * off = shadow (log only). `onHolderReleased` must make the holder worker
+   * non-resumable — its tree is detached under it.
+   */
+  resumeLineage?: ResumeLineage & { onHolderReleased?: (holderWorkerId: string) => void },
 ): Promise<SetupWorktreeResult | null> {
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
@@ -809,6 +823,72 @@ export async function setupWorktree(
               looksLikeMissionIntegrationBranch(candidate)
             ? 'mission_branch'
             : null;
+
+    // M1 — lineage-held resume branch. The branch we mean to resume is still
+    // checked out in another worktree; usually the prior attempt's, retained
+    // for ~10 minutes after it went terminal. Diverting here opens a second PR
+    // and supersedes the first. When the holder is provably a terminal worker
+    // of this task's own retry lineage (the runner's registry, never the
+    // path's shape), with a clean tree and nothing unpushed, detach it and
+    // take the branch. One structured `resume_branch_held` line per held
+    // resume either way; with the flag off it only says what it would do.
+    if (
+      resumeCandidate && isDirectResumeTarget && requestedBranch === resumeCandidate &&
+      branchOwners.has(resumeCandidate)
+    ) {
+      const holderPath = branchOwners.get(resumeCandidate) as string;
+      const mode = resolveReleaseHeldBranchMode();
+      const verdict = liveWorkers
+        ? classifyResumeBranchHolder(
+            liveWorkers as Iterable<[string, LineageHolderRecord]>, holderPath, resumeLineage, workerId,
+            (p) => { try { return fs.realpathSync(p); } catch { return p; } },
+          )
+        : ({ eligible: false, reason: 'no_registry_owner' } as const);
+      let reason: string | undefined = verdict.eligible ? undefined : verdict.reason;
+      if (!reason && !worktreeIsReclaimable(holderPath, execOpts)) reason = 'holder_dirty';
+      if (!reason) {
+        // Commits on the local branch that its remote tip lacks — that is
+        // unpushed work only this ref holds. An inconclusive count (e.g. no
+        // origin/<branch>) is treated as unpushed.
+        try {
+          const n = parseInt(execSync(
+            `git rev-list --count "origin/${resumeCandidate}..refs/heads/${resumeCandidate}"`,
+            { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
+          ).trim(), 10);
+          if (isNaN(n) || n > 0) reason = 'holder_unpushed';
+        } catch {
+          reason = 'holder_unpushed';
+        }
+      }
+      let decision: 'released' | 'would_release' | 'refused' = reason ? 'refused' : mode === 'release' ? 'released' : 'would_release';
+      if (decision === 'released') {
+        try {
+          // Keeps the holder's tree (for forensics); frees only the branch ref.
+          execSync('git checkout --detach', { ...execOpts, cwd: holderPath, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+          branchOwners.delete(resumeCandidate);
+          const holderId = verdict.eligible ? verdict.holderWorkerId : undefined;
+          if (holderId) {
+            try { resumeLineage?.onHolderReleased?.(holderId); } catch { /* best effort */ }
+          }
+        } catch {
+          decision = 'refused';
+          reason = 'detach_failed';
+        }
+      }
+      const record = {
+        event: 'resume_branch_held',
+        flag: RELEASE_LINEAGE_HELD_BRANCH_FLAG,
+        mode,
+        decision,
+        released: decision === 'released',
+        candidate: resumeCandidate,
+        holder: holderPath,
+        ...(verdict.holderWorkerId ? { holderWorkerId: verdict.holderWorkerId } : {}),
+        ...(reason ? { reason } : {}),
+      };
+      console.log(`[Worker ${workerId}] [resume-branch-held] ${JSON.stringify(record)}`);
+      try { sessionLog(workerId, decision === 'released' ? 'info' : 'warn', 'resume_branch_held', JSON.stringify(record)); } catch { /* best effort */ }
+    }
 
     // Candidates in preference order. The task branch is NOT automatically a
     // safe fallback: it can itself be held (a mission carries a stable
