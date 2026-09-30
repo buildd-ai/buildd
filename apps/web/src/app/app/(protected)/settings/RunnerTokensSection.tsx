@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { TOKEN_SCOPE_DEFINITIONS } from '@buildd/core/token-scopes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import DeleteAccountButton from '../accounts/DeleteAccountButton';
@@ -15,6 +16,11 @@ interface Account {
   type: string;
   authType: string;
   apiKeyPrefix: string | null;
+  level?: string;
+  scopes?: string[] | null;
+  workspaceIds?: string[] | null;
+  lastUsedAt?: string | Date | null;
+  expiresAt?: string | Date | null;
   maxConcurrentWorkers: number;
   totalTasks: number;
   totalCost: string | null;
@@ -68,20 +74,20 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
 
   return (
     <SettingsSection
-      title="Runner tokens"
+      title="Access tokens"
       bare
       action={<Link href="/app/accounts/new" className="btn btn-quiet">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        A runner token signs your runner in to buildd. It holds no model credentials. Those go in
-        Agent backends above.
+        Tokens give runners, CI and analytics clients access to buildd. Choose only the capabilities
+        each client needs. Model credentials go in Agent backends above.
       </p>
 
       {accounts.length === 0 ? (
         <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No runner tokens yet</p>
+          <p className="text-text-muted text-sm mb-3">No access tokens yet</p>
           <Link href="/app/accounts/new" className="btn btn-primary">
-            Create a runner token
+            Create a token
           </Link>
         </div>
       ) : (
@@ -103,10 +109,21 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                       {account.team?.name && (
                         <span className="text-[11px] text-text-muted truncate flex-shrink-0">{account.team.name}</span>
                       )}
+                      <div className="text-xs space-y-2">
+                        <p className="section-label">Capabilities</p>
+                        {account.scopes == null ? <p className="text-text-secondary">Legacy {account.level || 'worker'} permissions</p> : account.scopes.length === 0 ? <p className="text-text-muted">No capabilities</p> : <ul className="space-y-1">{account.scopes.map(scope => <li key={scope}>{TOKEN_SCOPE_DEFINITIONS.find(def => def.scope === scope)?.label || scope} <code className="text-text-muted">{scope}</code></li>)}</ul>}
+                        <p className="text-text-secondary">{account.workspaceIds == null ? 'All linked workspaces' : `Restricted to: ${account.workspaceIds.map(id => workspaces.find(ws => ws.id === id)?.name || 'Linked workspace').join(', ') || 'none'}`}</p>
+                        <p className="text-text-muted">{account.expiresAt ? `Expires: ${new Date(account.expiresAt).toLocaleString()}` : 'No expiry'}</p>
+                      </div>
+
                       {hasWarning && (
                         <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
                       )}
                     </div>
+                    <p className="text-[11px] text-text-muted mt-1">
+                      Last used: {account.lastUsedAt ? new Date(account.lastUsedAt).toLocaleString() : 'Never'}
+                      {account.expiresAt && <span className={new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : ''}> · {new Date(account.expiresAt).getTime() <= Date.now() ? 'Expired' : 'Expires'} {new Date(account.expiresAt).toLocaleDateString()}</span>}
+                    </p>
                   </div>
                   <code className="text-xs text-text-muted font-mono flex-shrink-0">
                     {account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : 'no API key'}
@@ -120,7 +137,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                 {isExpanded && (
                   <div className="px-3 pb-3 space-y-3">
                     <div className="inset-panel space-y-2">
-                      <div className="flex items-center gap-2 text-xs text-text-muted">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
                         <span>Auth: {account.authType}</span>
                         <span>·</span>
                         <span>Type: {account.type}</span>
@@ -135,6 +152,13 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                         {account.budgetExhaustedAt && (
                           <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
                         )}
+                      </div>
+
+                      <div className="text-xs space-y-2">
+                        <p className="section-label">Capabilities</p>
+                        {account.scopes == null ? <p className="text-text-secondary">Legacy {account.level || 'worker'} permissions</p> : account.scopes.length === 0 ? <p className="text-text-muted">No capabilities</p> : <ul className="space-y-1">{account.scopes.map(scope => <li key={scope}>{TOKEN_SCOPE_DEFINITIONS.find(def => def.scope === scope)?.label || scope} <code className="text-text-muted">{scope}</code></li>)}</ul>}
+                        <p className="text-text-secondary">{account.workspaceIds == null ? 'All linked workspaces' : `Restricted to: ${account.workspaceIds.map(id => workspaces.find(ws => ws.id === id)?.name || 'Linked workspace').join(', ') || 'none'}`}</p>
+                        <p className="text-text-muted">{account.expiresAt ? `Expires: ${new Date(account.expiresAt).toLocaleString()}` : 'No expiry'}</p>
                       </div>
 
                       {hasWarning && (

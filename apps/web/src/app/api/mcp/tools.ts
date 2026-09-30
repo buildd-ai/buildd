@@ -1,3 +1,4 @@
+import { hasTokenScope, requiredScopeForAction } from '@buildd/core/token-scopes';
 /**
  * Tool descriptors advertised by the remote MCP server (ListTools).
  *
@@ -57,6 +58,7 @@ export type McpToolSurface = 'groups' | 'legacy';
 
 export interface ListMcpToolsOptions {
   accountLevel: McpAccountLevel;
+  scopes?: readonly string[] | null;
   /** Workspace data class is `sensitive` (fail-closed when unknown). */
   isSensitive: boolean;
   /** Default `legacy`. */
@@ -75,7 +77,13 @@ export function mcpToolSurfaceFor(opts: { toolsParam?: string | null; workerPara
 }
 
 /** Actions exposed in the `buildd` tool schema for a given token level. */
-export function actionsForLevel(accountLevel: McpAccountLevel): string[] {
+export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  if (scopes != null) return allActionsList.filter(action => {
+    const required = requiredScopeForAction(action);
+    return (required != null && hasTokenScope(scopes, required)) ||
+      (action === 'manage_experiments' && hasTokenScope(scopes, 'analytics:read')) ||
+      (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && hasTokenScope(scopes, 'tasks:read'));
+  });
   return accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -86,15 +94,15 @@ export function actionsForLevel(accountLevel: McpAccountLevel): string[] {
 export const HELP_ACTION = 'help';
 
 /** The actions of `group` the level may call, in allActions order. */
-export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel): string[] {
-  const allowed = new Set(actionsForLevel(accountLevel));
+export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  const allowed = new Set(actionsForLevel(accountLevel, scopes));
   return actionsOfGroup(group).filter(a => allowed.has(a));
 }
 
 
 /** The group actions whose own sub-action selector (params.action) takes `value`. */
-function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel): string[] {
-  return groupActionsForLevel(group, accountLevel).filter(a => {
+function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  return groupActionsForLevel(group, accountLevel, scopes).filter(a => {
     const m = (derivedSignature(a) ?? '').match(/\baction: ([a-z_|]+)/);
     return !!m && m[1].split('|').includes(value);
   });
@@ -139,7 +147,7 @@ export type GroupToolCall =
  * tool does. Level gating of the dispatched action stays where it is for
  * `buildd` (handleBuilddAction), so both tools refuse exactly alike.
  */
-export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel): GroupToolCall {
+export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): GroupToolCall {
   const tool = mcpGroupToolName(group);
   const action = typeof args?.action === 'string' ? args.action : '';
   // A model sometimes flattens a call ({action, title, ...}); with no params
@@ -149,13 +157,13 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   if (action === HELP_ACTION) {
     const target = typeof params.action === 'string' ? params.action : '';
-    const inGroup = groupActionsForLevel(group, accountLevel);
+    const inGroup = groupActionsForLevel(group, accountLevel, scopes);
     if (!target) {
       return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.` };
     }
     const help = actionHelp(target);
     if (!help) return { kind: 'reply', isError: true, text: `Unknown action "${target}".` };
-    if (!actionsForLevel(accountLevel).includes(target)) {
+    if (!actionsForLevel(accountLevel, scopes).includes(target)) {
       return { kind: 'reply', isError: true, text: `"${target}" is not available at your token level (${accountLevel}).` };
     }
     const home = mcpGroupOf(target)!;
@@ -164,14 +172,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   const home = mcpGroupOf(action);
   if (!home) {
-    const owners = actionsWithSubAction(group, action, accountLevel);
+    const owners = actionsWithSubAction(group, action, accountLevel, scopes);
     if (owners.length > 0) {
       return { kind: 'reply', isError: true, text: `"${action}" is a sub-action: call ${tool} with action "${owners[0]}" and params.action "${action}".` };
     }
-    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel).join(', ')}, ${HELP_ACTION}.` };
+    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel, scopes).join(', ')}, ${HELP_ACTION}.` };
   }
   if (home !== group) {
-    if (!actionsForLevel(accountLevel).includes(action)) {
+    if (!actionsForLevel(accountLevel, scopes).includes(action)) {
       return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
     }
     return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
@@ -220,17 +228,17 @@ function legacyBuilddTool(filteredActions: string[]): object {
   };
 }
 
-export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy' }: ListMcpToolsOptions): object[] {
+export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy', scopes }: ListMcpToolsOptions): object[] {
   const tools: object[] = surface === 'legacy'
-    ? [legacyBuilddTool(actionsForLevel(accountLevel))]
+    ? [legacyBuilddTool(actionsForLevel(accountLevel, scopes))]
     : MCP_TOOL_GROUPS
-      .map(g => [g, groupActionsForLevel(g, accountLevel)] as const)
+      .map(g => [g, groupActionsForLevel(g, accountLevel, scopes)] as const)
       .filter(([, actions]) => actions.length > 0)
       .map(([g, actions]) => groupToolDefinition(g, actions));
 
   // check_path_claim is available to worker and admin tokens (not trigger-only tokens).
   // Trigger tokens don't run agent work so they never need mid-task path expansion.
-  if (accountLevel === 'worker' || accountLevel === 'admin') {
+  if (scopes != null ? hasTokenScope(scopes, 'workers:write') : accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "check_path_claim",
       description: surface === 'groups'
@@ -262,7 +270,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
   }
 
   // send_worker_message is available to worker and admin tokens (not trigger-only tokens).
-  if (accountLevel === 'worker' || accountLevel === 'admin') {
+  if (scopes != null ? hasTokenScope(scopes, 'workers:write') : accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "send_worker_message",
       description: surface === 'groups'
@@ -345,5 +353,20 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     );
   }
 
-  return tools;
+  if (scopes == null) return tools;
+  return tools.flatMap(tool => {
+    const descriptor = tool as { name: string; inputSchema?: { properties: Record<string, any> }; description?: string };
+    if (descriptor.name === 'recall' && !hasTokenScope(scopes, 'tasks:read')) return [];
+    if (descriptor.name === 'learn' && !hasTokenScope(scopes, 'knowledge:write')) return [];
+    if (descriptor.name === 'buildd_memory') {
+      const actions = memoryActions.filter(action => hasTokenScope(scopes, action === 'save' || action === 'update' ? 'knowledge:write' : 'tasks:read'));
+      if (!actions.length) return [];
+      return [{ ...descriptor, description: `Legacy knowledge tool. Actions: ${actions.join(', ')}`, inputSchema: {
+        ...descriptor.inputSchema, properties: { ...descriptor.inputSchema!.properties,
+          action: { type: 'string', enum: actions }, params: { type: 'object', description: buildMemoryDescription(actions) },
+        },
+      } }];
+    }
+    return [tool];
+  });
 }

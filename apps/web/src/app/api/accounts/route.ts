@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
+import { isTokenScope } from '@buildd/core/token-scopes';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
@@ -55,7 +56,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId } = body;
+    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, scopes, workspaceIds, expiresAt } = body;
+    if (scopes !== undefined && (!Array.isArray(scopes) || !scopes.every(isTokenScope))) return NextResponse.json({error: "Invalid token scopes"}, {status:400});
+    if (workspaceIds != null && (!Array.isArray(workspaceIds) || !workspaceIds.every((id: unknown) => typeof id === "string"))) return NextResponse.json({error: "Invalid workspaces"}, {status:400});
+    const expiry = expiresAt == null ? null : new Date(expiresAt);
+    if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) return NextResponse.json({error: "Expiry must be in the future"}, {status:400});
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
@@ -92,8 +97,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel) }, { status: 403 });
     }
 
+    if (role === 'member' && scopes?.some((scope: string) => ['admin', 'secrets', 'releases', 'skills:admin', 'workspaces:admin', 'missions:admin', 'schedules:write'].includes(scope))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
+    let selectedWorkspaces: string[] = workspaceId ? [workspaceId] : [];
+    if (scopes !== undefined || workspaceIds != null) {
+      const teamWorkspaces = await db.query.workspaces.findMany({where: eq(workspaces.teamId, teamId), columns: {id:true}});
+      const allowed = teamWorkspaces.map(w => w.id);
+      selectedWorkspaces = workspaceIds ?? allowed;
+      if (selectedWorkspaces.some(id => !allowed.includes(id))) return NextResponse.json({error:'Workspace is outside this team'}, {status:403});
+    }
     const insertValues: Record<string, unknown> = {
       name,
+      scopes: scopes ?? null,
+      workspaceIds: workspaceIds ?? null,
+      expiresAt: expiry,
       type: type as 'user' | 'service' | 'action',
       level: requestedLevel,
       authType: authType as 'api' | 'oauth' || 'oauth',
@@ -126,10 +142,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Auto-create workspace binding if workspaceId provided
-    if (workspaceId) {
+    for (const selectedWorkspaceId of selectedWorkspaces) {
       await db.insert(accountWorkspaces).values({
         accountId: account.id,
-        workspaceId,
+        workspaceId: selectedWorkspaceId,
         canClaim: true,
         canCreate: true,
       });

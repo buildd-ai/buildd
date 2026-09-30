@@ -174,6 +174,11 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
+  // NULL preserves legacy levels; an empty list grants no capabilities.
+  scopes: jsonb('scopes').$type<string[]>(),
+  workspaceIds: jsonb('workspace_ids').$type<string[]>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
 
   // Authentication type

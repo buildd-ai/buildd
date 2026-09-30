@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { decodeCloudflareValue, findCloudflareSecret } from '@/lib/cloudflare-credential';
@@ -25,9 +26,9 @@ export async function POST(req: NextRequest) {
   if (!apiKey || !apiKey.startsWith('bld_')) {
     return NextResponse.json({ error: 'An admin API key (bld_…) is required' }, { status: 401, headers: NO_STORE });
   }
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE });
-  if (account.level !== 'admin') {
+  if (!hasTokenRouteAdminAccess(account, req)) {
     return NextResponse.json({ error: 'Requires an admin-level API key' }, { status: 403, headers: NO_STORE });
   }
 

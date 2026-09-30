@@ -50,7 +50,7 @@ function safeEqual(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return fail(401, 'Unauthorized');
   if (account.level === 'trigger') return fail(403, 'Trigger tokens cannot request GitHub tokens');
 

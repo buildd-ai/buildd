@@ -31,6 +31,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findMany: mockAccountsFindMany },
+      workspaces: {findMany: mock(() => Promise.resolve([]))},
     },
     insert: () => mockAccountsInsert(),
   },
@@ -45,6 +46,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   accounts: { teamId: 'teamId', createdAt: 'createdAt' },
   accountWorkspaces: {},
+  workspaces: {teamId: "teamId"},
 }));
 
 const mockSetOAuthToken = mock(() => Promise.resolve());
@@ -270,4 +272,12 @@ describe("POST /api/accounts — key level is capped by the creator's team role"
     expect(res.status).toBe(403);
     expect(mockGetUserTeamRole).toHaveBeenCalledWith('user-1', 'team-2');
   });
+});
+
+describe('POST scoped tokens', () => {
+  beforeEach(() => { process.env.NODE_ENV = 'production'; mockGetCurrentUser.mockResolvedValue({id:'user-1'}); mockGetUserTeamRole.mockResolvedValue('owner'); mockGetUserDefaultTeamId.mockResolvedValue('team-1'); });
+  const req = (fields: object) => new NextRequest('http://localhost/api/accounts', {method:'POST',body:JSON.stringify({name:'Scoped',type:'service',authType:'api',...fields})});
+  it('rejects unknown scopes', async () => { expect((await POST(req({scopes:['invented']}))).status).toBe(400); });
+  it('rejects expired creation dates', async () => { expect((await POST(req({scopes:['analytics:read'],expiresAt:'2000-01-01'}))).status).toBe(400); });
+  it('refuses admin scopes for members', async () => { mockGetUserTeamRole.mockResolvedValue('member'); expect((await POST(req({scopes:['secrets']}))).status).toBe(403); });
 });

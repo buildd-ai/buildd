@@ -22,6 +22,8 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@buildd/core/token-scopes";
+import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
@@ -163,7 +165,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy') {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'legacy', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -226,6 +228,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     authType,
     getWorkspaceId,
     getLevel: async () => accountLevel,
+    getScopes: async () => tokenScopes,
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
@@ -351,7 +354,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   // ── Tools ────────────────────────────────────────────────────────────────
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface }),
+    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface, scopes: tokenScopes }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -359,11 +362,21 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     let args = request.params.arguments;
 
     try {
+      if (tokenScopes != null) {
+        const p = (args?.params || {}) as Record<string, unknown>;
+        const action = args?.action as string;
+        const required = name === 'recall' ? 'tasks:read' : name === 'learn' ? 'knowledge:write' : name === 'buildd_memory' ? (['context', 'search', 'get', 'query_knowledge'].includes(action) ? 'tasks:read' : 'knowledge:write') : ['check_path_claim', 'send_worker_message'].includes(name) ? 'workers:write' : requiredScopeForAction(action, p);
+        if (action !== 'help' && (!required || !hasTokenScope(tokenScopes, required))) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
+        if (tokenWorkspaceIds != null) {
+          const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
+          if (!tokenWorkspaceAllowed(tokenWorkspaceIds, target)) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Workspace outside token restriction'})}],isError:true};
+        }
+      }
       // buildd_<group> tools: help and wrong-group errors answer here; an
       // action of the group then runs exactly as it does on `buildd`.
       const group = mcpGroupOfToolName(name);
       if (group) {
-        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel);
+        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel, tokenScopes);
         if (routed.kind === 'reply') {
           return { content: [{ type: "text" as const, text: routed.text }], ...(routed.isError ? { isError: true } : {}) };
         }
@@ -385,7 +398,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Admin-only knowledge management ops — moved out of buildd_memory to reduce builder schema cost
         if (action === 'consolidate_knowledge' || action === 'memory_delete') {
           // Guard: these are admin-only; non-admin tokens get a structured 403 (not a bare 401)
-          if (accountLevel !== 'admin') {
+          if (tokenScopes == null && accountLevel !== 'admin') {
             return {
               content: [{
                 type: "text" as const,
@@ -513,7 +526,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         }
       } else if (name === "send_worker_message") {
         // Requires worker or admin token — trigger tokens don't run agent work
-        if (accountLevel === 'trigger') {
+        if (tokenScopes == null && accountLevel === 'trigger') {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: 'forbidden', reason: 'send_worker_message requires worker or admin token level' }) }],
             isError: true,
@@ -695,7 +708,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   // ── Resources ──────────────────────────────────────────────────────────────
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: [
+    resources: tokenScopes != null && !hasTokenScope(tokenScopes, "tasks:read") ? [] : [
       {
         uri: "buildd://tasks/pending",
         name: "Pending Tasks",
@@ -719,10 +732,11 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const { uri } = request.params;
+    if (tokenScopes != null && !hasTokenScope(tokenScopes, "tasks:read")) throw new Error("forbidden: tasks:read scope required");
 
     switch (uri) {
       case "buildd://tasks/pending": {
-        const data = await api("/api/tasks");
+        const data = await api(`/api/tasks${workspaceId ? `?workspaceId=${workspaceId}` : ""}`);
         const pending = (data.tasks || [])
           .filter((t: any) => t.status === "pending")
           .sort((a: any, b: any) => (b.priority || 0) - (a.priority || 0));
@@ -794,7 +808,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return new Response(JSON.stringify({ error: "Invalid API key" }), {
       status: 401,
@@ -826,6 +840,8 @@ async function handleMcpRequest(req: Request): Promise<Response> {
       console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
     }
   }
+
+  if (account.workspaceIds != null && (!workspaceId || !tokenWorkspaceAllowed(account.workspaceIds, workspaceId) || !(await verifyAccountWorkspaceAccess(account.id, workspaceId)))) return new Response(JSON.stringify({error:'forbidden'}), {status:403});
 
   // A `?worker=` id is the worker this session acts as; it must be one the
   // calling account runs, or one in its own team's workspaces.
@@ -868,7 +884,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const dataClass = await resolveWorkspaceDataClass(workspaceId);
   const isSensitive = dataClass === 'sensitive';
   const toolSurface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get("tools"), workerParam, serverDefault: process.env.BUILDD_MCP_TOOL_SURFACE });
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

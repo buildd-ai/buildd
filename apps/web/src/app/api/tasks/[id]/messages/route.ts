@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
@@ -20,7 +21,7 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -59,7 +60,7 @@ export async function GET(
 
     // Whether this caller may send, by the same rule POST /api/workers/[id]/instruct
     // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
-    const canSend = apiAccount?.level === 'admin'
+    const canSend = apiAccount && hasTokenRouteAdminAccess(apiAccount, req)
       ? apiAccount.teamId === task.workspace?.teamId
       : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
 

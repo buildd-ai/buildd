@@ -54,7 +54,15 @@ billing:
   `budgetExhaustedAt`/`budgetResetsAt`).
 
 `type`: `user | service | action`. `level`: `trigger | worker | admin`. A team
-typically has separate trigger vs. worker accounts. `account_workspaces` is the
+typically has separate trigger vs. worker accounts. New API tokens carry explicit
+named capabilities (`tasks:read`, `tasks:write`, `workers:write`, `missions:admin`,
+`analytics:read`, `releases`, `secrets`, `skills:admin`, `workspaces:admin`,
+`schedules:write`, `knowledge:write`, `admin`) from runner, CI, analytics and admin
+presets. REST authentication and MCP dispatch enforce the same vocabulary;
+optional workspace restrictions never widen team access. Expiry applies on cache
+hits, and successful authentication records last use at most once per minute.
+`scopes = NULL` retains legacy level behavior. Workspace-restricted tokens cannot
+access team-wide credentials or reports lacking real workspace filters. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
@@ -477,7 +485,7 @@ gates, delays or alters the verdict.
 Four tools exposed (HTTP MCP at `/api/mcp`): **`buildd`** (task + admin actions —
 claim/update/create_pr/merge_pr/create_artifact/complete/get_task/
 send_agent_message/memory_delete/consolidate_knowledge/…; the action set available
-is gated by token level `trigger | worker | admin`, and `merge_pr` is additionally
+is gated by explicit token scopes (legacy tokens use `trigger | worker | admin`), and `merge_pr` is additionally
 gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`learn`**
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP

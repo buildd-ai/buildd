@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -176,7 +177,7 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1031,7 +1032,7 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1105,7 +1106,7 @@ export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1164,7 +1165,7 @@ export async function PUT(req: NextRequest) {
         workspaceId: worker.workspaceId ?? null,
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req) ? 'api' : 'worker',
         detail: { prNumber, ...(detail ?? {}) },
       });
     };
@@ -1241,7 +1242,7 @@ export async function PUT(req: NextRequest) {
     //                    no matter how green the PR is.
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
-    if (force && account.level !== 'admin') {
+    if (force && !hasTokenRouteAdminAccess(account, req)) {
       recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
@@ -1350,7 +1351,7 @@ export async function PUT(req: NextRequest) {
         surface: 'PUT /api/github/pr',
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req) ? 'api' : 'worker',
         carryForward: policyPr?.base?.ref
           ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
           : null,
@@ -1577,7 +1578,7 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });

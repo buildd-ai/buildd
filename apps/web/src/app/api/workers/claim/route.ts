@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
@@ -142,7 +143,7 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   // Incident-responder health probes hit this route once a minute with an empty
   // body and mark themselves with `X-Probe: true`. They still get the normal
   // 4xx below, but must not land in the gate ledger — every probe otherwise
@@ -205,7 +206,7 @@ export async function POST(req: NextRequest) {
   // the task, the mission budget, scope-undeclared serialization, role/runner
   // routing, provider walls, account limits). Granted below, once the task's
   // team is known.
-  const forceRequested = body.forceOverride === true && !!taskId && account.level === 'admin';
+  const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req);
   let forceClaim = false;
   // Gates a force claim actually lifted for its task, i.e. the ones that would
   // have excluded or deferred it. SQL-level ones are evaluated after the

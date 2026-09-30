@@ -12,7 +12,7 @@ async function authenticateRequest(req: NextRequest) {
     const apiKey = authHeader?.replace('Bearer ', '') || null;
 
     if (apiKey) {
-        const account = await authenticateApiKey(apiKey);
+        const account = await authenticateApiKey(apiKey, req);
         if (account) return { type: 'api' as const, account };
     }
 

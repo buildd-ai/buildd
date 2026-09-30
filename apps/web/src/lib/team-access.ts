@@ -86,6 +86,9 @@ export const verifyAccountWorkspaceAccess = cache(async (
   // A non-UUID can never name a workspace; querying with one throws 22P02 (a 500).
   if (!isUuid(workspaceId)) return false;
 
+  const scopeAccount = await db.query.accounts.findFirst({where: eq(accounts.id, accountId), columns: {workspaceIds:true, teamId:true}});
+  if (scopeAccount?.workspaceIds != null && !scopeAccount.workspaceIds.includes(workspaceId)) return false;
+
   // Check workspace access mode first
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
@@ -98,11 +101,7 @@ export const verifyAccountWorkspaceAccess = cache(async (
   // account's own team, or an explicit link with the permission. Only an open
   // workspace needs the account's team, so the account row is read only then.
   if (workspace.accessMode === 'open') {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, accountId),
-      columns: { teamId: true },
-    });
-    if (account && accountReachesWorkspace(account, workspace, null, permission)) return true;
+    if (scopeAccount && accountReachesWorkspace(scopeAccount, workspace, null, permission)) return true;
   }
 
   const link = await db.query.accountWorkspaces.findFirst({
