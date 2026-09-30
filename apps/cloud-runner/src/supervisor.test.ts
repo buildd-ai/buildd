@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, type RunState } from './lifecycle';
+import { INITIAL_STATE, buildContainerEnv, type RunState } from './lifecycle';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
@@ -128,6 +128,36 @@ describe('dispatch', () => {
     expect(env.BUILDD_EXECUTOR).toBe('cloud');
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  test('telemetry: no OTLP endpoint means the container env is exactly buildContainerEnv (pinned)', async () => {
+    const h = harness({ config: { OTEL_LOG_TOOL_DETAILS: '1', OTEL_TRACES_BETA: '1', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json' } });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test_key' }));
+  });
+
+  test('telemetry: an OTLP endpoint adds the Claude Code vars with this dispatch\'s task and attempt, never auth', async () => {
+    const h = harness({
+      config: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://otel.example.com' },
+      initial: { ...INITIAL_STATE, taskId: TASK_ID, attempt: 2, status: 'exited' },
+    });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.starts[0]!.env;
+    expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1');
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('https://otel.example.com');
+    expect(env.OTEL_RESOURCE_ATTRIBUTES).toBe(`buildd.task_id=${TASK_ID},buildd.attempt=3`);
+    expect(Object.keys(env).filter(k => k.includes('AUTH') || k.endsWith('_HEADERS'))).toEqual([]);
+  });
+
+  test('telemetry: an invalid OTLP endpoint fails the run before start', async () => {
+    const h = harness({ config: { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example.com' } });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.calls).not.toContain('start');
+    expect(h.state.status).toBe('exited');
+    expect(h.state.error).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
   });
 
   test('starts a container, execs buildd-once for the task, holds keepAlive while it runs', async () => {

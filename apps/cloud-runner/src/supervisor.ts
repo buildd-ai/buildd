@@ -44,6 +44,7 @@ import {
   type RunTimings,
   type StoredRunReport,
 } from './run-report';
+import { otelContainerEnv, type OtelEnv } from './otel';
 
 /** The slice of `ctx.container` (workers-types `Container`) the supervisor uses. */
 export interface ContainerPort {
@@ -62,7 +63,7 @@ export interface ProcessPort {
   readonly exitCode: Promise<number>;
 }
 
-export interface SupervisorConfig extends ContainerEnvSource {
+export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   inactivityTimeoutMs: number;
   startTimeoutMs: number;
   /** For the run report: the configured container instance type (CONTAINER_INSTANCE_TYPE). */
@@ -193,7 +194,7 @@ export class TaskSupervisor {
     try {
       let env: Record<string, string>;
       try {
-        env = buildContainerEnv(this.d.config);
+        env = { ...buildContainerEnv(this.d.config), ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }) };
       } catch (err) {
         configError = true;
         throw err;

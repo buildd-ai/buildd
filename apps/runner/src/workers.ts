@@ -52,7 +52,7 @@ import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
-import { buildAgentBaseEnv } from './agent-env';
+import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -2972,6 +2972,8 @@ export class WorkerManager {
       // visible to the agent — capability scoping, not permission prompts.
       // Credentials the agent actually needs are injected explicitly below.
       const cleanEnv = buildAgentBaseEnv();
+      // With OpenTelemetry on, tag the agent's exports with this worker.
+      withWorkerResourceAttribute(cleanEnv, worker.id);
       // Any runner code the agent runs (its tests, from any checkout on this
       // host, including ones that predate the in-repo test-home guard) would
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.

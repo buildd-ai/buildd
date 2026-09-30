@@ -45,6 +45,11 @@ GW_TOKEN="smoke-gateway-token-$RANDOM$RANDOM"
 MODEL_ROUTE="${SMOKE_MODEL_ROUTE:-gateway}"
 PROXY_BASE="https://litellm.example.com/anthropic"
 PROXY_KEY="smoke-proxy-key-$RANDOM$RANDOM"
+# Telemetry: an https collector (never contacted: the handler echoes) and its
+# credential, a Worker secret the egress handler adds for that origin only.
+OTLP_ENDPOINT="https://otel.example.com"
+OTLP_HEADER="x-otlp-key"
+OTLP_KEY="smoke-otlp-key-$RANDOM$RANDOM"
 proxy_vars=()
 case "$MODEL_ROUTE" in
   gateway) ;;
@@ -89,6 +94,9 @@ bunx wrangler dev --port "$PORT" --ip 127.0.0.1 \
   --var "AI_GATEWAY_ID:smokegw" \
   --var "AI_GATEWAY_TOKEN:$GW_TOKEN" \
   --var "EGRESS_DEBUG_ECHO:1" \
+  --var "OTEL_EXPORTER_OTLP_ENDPOINT:$OTLP_ENDPOINT" \
+  --var "OTEL_EXPORTER_OTLP_AUTH_HEADER:$OTLP_HEADER" \
+  --var "OTEL_EXPORTER_OTLP_AUTH_VALUE:$OTLP_KEY" \
   ${proxy_vars[@]+"${proxy_vars[@]}"} \
   >"$LOG" 2>&1 &
 WRANGLER_PID=$!
@@ -241,6 +249,36 @@ else
 
   p="$(docker exec "$c" curl -sS -o /dev/null -w '%{http_code}' http://api.anthropic.com/v1/messages 2>&1)"
   check "plain http to a credentialed host refused" 403 "$p"
+
+  # Telemetry (otel.ts): the container has Claude Code's OTel vars and this
+  # dispatch's attributes, never the collector credential; the egress handler
+  # adds it for the collector's origin after stripping the container's.
+  check "container env enables Claude Code telemetry" 1 "$(printf '%s\n' "$cenv" | sed -n 's/^CLAUDE_CODE_ENABLE_TELEMETRY=//p')"
+  check "container env has the OTLP endpoint" "$OTLP_ENDPOINT" "$(printf '%s\n' "$cenv" | sed -n 's/^OTEL_EXPORTER_OTLP_ENDPOINT=//p')"
+  check "container env has the dispatch attributes" "buildd.task_id=$EGRESS_TASK,buildd.attempt=1" "$(printf '%s\n' "$cenv" | sed -n 's/^OTEL_RESOURCE_ATTRIBUTES=//p')"
+  check "container env holds no OTLP credential or headers var" 0 "$(printf '%s\n' "$cenv" | grep -c -e "$OTLP_KEY" -e '^OTEL_EXPORTER_OTLP_AUTH' -e '^OTEL_EXPORTER_OTLP_HEADERS' || true)"
+  # otel.example.com has no DNS record; point it at example.com's address so
+  # the container can connect and the platform can intercept it (smoke only).
+  docker exec -u 0 "$c" sh -c 'ip="$(getent ahostsv4 example.com | awk "{print \$1; exit}")"; [ -n "$ip" ] && echo "$ip otel.example.com" >>/etc/hosts' || echo "   note: could not add an /etc/hosts entry for otel.example.com"
+  o="$(docker exec "$c" curl -sS --max-time 20 --cacert /tmp/buildd-ca-bundle.pem -X POST \
+        -H "$OTLP_HEADER: container-supplied" -H 'authorization: Bearer container-supplied' \
+        -H 'content-type: application/json' "$OTLP_ENDPOINT/v1/logs" -d '{"resourceLogs":[]}' 2>&1)"
+  echo "   otlp echo (synthetic POST): $o"
+  check "otlp: sent to the collector URL" "$OTLP_ENDPOINT/v1/logs" "$(echo_field "$o" url)"
+  check "otlp: injected" otlp "$(echo_field "$o" injected)"
+  check "otlp: Worker credential set (by fingerprint), container value replaced" "$(fp "$OTLP_KEY")" "$(echo_field "$o" headers.$OTLP_HEADER)"
+  check "otlp: container authorization stripped" "" "$(echo_field "$o" headers.authorization)"
+  check "otlp: plain http to the collector refused" 403 "$(docker exec "$c" curl -sS -o /dev/null -w '%{http_code}' "http://otel.example.com/v1/logs" 2>&1)"
+
+  # A real Claude Code session with the container's telemetry env. Its model
+  # call is answered by the echoing handler (not a valid response), so it
+  # fails; whatever it exports on the way out is logged by the handler.
+  docker exec "$c" sh -c 'eval "$(tr "\0" "\n" </proc/1/environ | grep -E "^(OTEL_|CLAUDE_CODE_|ANTHROPIC_API_KEY=)" | sed "s/^/export /")"; export NODE_EXTRA_CA_CERTS=/tmp/buildd-ca-bundle.pem OTEL_LOGS_EXPORT_INTERVAL=1000 OTEL_METRIC_EXPORT_INTERVAL=1000; cd /tmp && timeout 45 claude -p "say hi" --max-turns 1' >"$LOG.claude" 2>&1 || true
+  sleep 3
+  n_otlp="$(grep -c -F '[cloud-runner] otlp echo' "$LOG" || true)"
+  echo "   real Claude Code session: $(head -c 200 "$LOG.claude" | tr '\n' ' ')"
+  echo "   otlp exports seen at egress (synthetic + session): $n_otlp; paths: $(grep -o -F -e 'otlp echo /v1/logs' -e 'otlp echo /v1/metrics' -e 'otlp echo /v1/traces' "$LOG" | sort | uniq -c | tr '\n' ' ')"
+  if [ "$n_otlp" -gt 1 ]; then echo "   PASS a real Claude Code session exported through the egress handler"; else echo "   note: no export from the real session reached egress; only the synthetic POST was checked"; fi
 fi
 s="$(wait_exited)" || { echo "   FAIL egress run never exited: $s"; fail=1; }
 check "egress run outcome" failed "$(field "$s" outcome)"
