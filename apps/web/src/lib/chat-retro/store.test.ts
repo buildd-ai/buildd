@@ -26,7 +26,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 const { PgDialect } = await import('drizzle-orm/pg-core');
-const store = await import('./store');
+const { clusterWhere, deleteTeamLessons, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
 const dialect = new PgDialect();
 const render = (w: unknown) => dialect.sqlToQuery(w as any);
 
@@ -35,20 +35,20 @@ const NOW = new Date('2026-09-29T14:00:00Z');
 
 describe('opt-in: only teams whose stored lessons flag is literally true', () => {
   it('renders a predicate on chat_retro ->> lessons = true', () => {
-    const q = render(store.optedInTeamsWhere());
+    const q = render(optedInTeamsWhere());
     expect(q.sql).toContain(`"teams"."chat_retro" ->> 'lessons') = 'true'`);
   });
 });
 
 describe('every read and delete is scoped to one team', () => {
   it('lessons', () => {
-    const q = render(store.teamLessonsWhere(TEAM));
+    const q = render(teamLessonsWhere(TEAM));
     expect(q.sql).toBe('"chat_retros"."team_id" = $1');
     expect(q.params).toEqual([TEAM]);
   });
 
   it('pending conversations: team, idle, lookback, and a watermark from the same team', () => {
-    const q = render(store.pendingConversationsWhere(TEAM, NOW));
+    const q = render(pendingConversationsWhere(TEAM, NOW));
     expect(q.sql).toContain('"conversations"."team_id" = $1');
     expect(q.sql).toContain('"conversations"."last_message_at" <= $2');
     expect(q.sql).toMatch(/"chat_retros"\."team_id" = \$\d/);
@@ -57,7 +57,7 @@ describe('every read and delete is scoped to one team', () => {
   });
 
   it('clusters: team, judged, signed, last 14 days', () => {
-    const q = render(store.clusterWhere(TEAM, NOW));
+    const q = render(clusterWhere(TEAM, NOW));
     expect(q.sql).toContain('"chat_retros"."team_id" = $1');
     expect(q.sql).toContain('"chat_retros"."status" = $2');
     expect(q.sql).toContain('"chat_retros"."signature" is not null');
@@ -65,7 +65,7 @@ describe('every read and delete is scoped to one team', () => {
   });
 
   it('filed-today counts only this team\'s workspaces', () => {
-    const q = render(store.filedTodayWhere(TEAM, NOW));
+    const q = render(filedTodayWhere(TEAM, NOW));
     expect(q.sql).toContain(`"workspaces"."team_id" = $`);
     expect(q.params).toContain(TEAM);
     expect(q.params).toContain('chat-retro');
@@ -73,7 +73,7 @@ describe('every read and delete is scoped to one team', () => {
 
   it('delete-on-disable deletes by team and nothing wider', async () => {
     captured.length = 0;
-    const n = await store.deleteTeamLessons(TEAM);
+    const n = await deleteTeamLessons(TEAM);
     expect(n).toBe(2);
     const del = captured.find(c => c.op === 'delete')!;
     const q = render(del.where);
@@ -83,7 +83,7 @@ describe('every read and delete is scoped to one team', () => {
 
   it('the admin lesson list is scoped by team', async () => {
     captured.length = 0;
-    await store.listRecentLessons(TEAM);
+    await listRecentLessons(TEAM);
     expect(render(captured[0].where).params).toEqual([TEAM]);
   });
 
@@ -92,10 +92,23 @@ describe('every read and delete is scoped to one team', () => {
     const { db } = await import('@buildd/core/db');
     const orig = db.update;
     (db as any).update = () => ({ set: (v: unknown) => { sets.push(v); return { where: () => Promise.resolve() }; } });
-    await store.writeTeamSettings(TEAM, { lessons: false, proposals: false });
-    await store.writeTeamSettings(TEAM, { lessons: true, proposals: false });
+    await writeTeamSettings(TEAM, { lessons: false, proposals: false });
+    await writeTeamSettings(TEAM, { lessons: true, proposals: false });
     (db as any).update = orig;
     expect((sets[0] as any).chatRetro).toBeNull();
     expect((sets[1] as any).chatRetro).toEqual({ lessons: true, proposals: false });
+  });
+});
+
+describe('proposal dedupe: a prior filing is matched in the same workspace by origin and signature', () => {
+  it('scopes to the workspace and binds the signature as a parameter', () => {
+    const WS = '22222222-2222-4222-8222-222222222222';
+    const q = render(priorFilingWhere(WS, 'sig-abc'));
+    expect(q.sql).toContain('"tasks"."workspace_id" = $1');
+    expect(q.sql).toContain(`->> 'origin' =`);
+    expect(q.sql).toContain(`->> 'frictionSignature' =`);
+    expect(q.sql).not.toContain('sig-abc');
+    expect(q.params).toContain(WS);
+    expect(q.params).toContain('sig-abc');
   });
 });
