@@ -14,6 +14,12 @@ import { logCollapsed } from './log';
 // line per occurrence while still surfacing a genuine, sustained problem.
 const CLAIM_POLL_FAILURE_COLLAPSE_WINDOW_MS = 5 * 60_000;
 
+/** A targeted claim the server answered with no_pending_tasks (see WorkerManager.claimAndStart). */
+function isLostClaimRace(err: unknown): boolean {
+  const e = err as { claimError?: unknown; claimReason?: unknown } | null;
+  return !!e && e.claimError === 'server_rejected' && e.claimReason === 'no_pending_tasks';
+}
+
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
 
@@ -254,7 +260,14 @@ export class PusherManager {
         console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }
     } catch (err) {
-      console.error(`Failed to start assigned task ${task.id}:`, err);
+      // Losing the race for a broadcast assignment (another runner or our own
+      // poll claimed it first) is the expected outcome, not a failure: one
+      // info line, no stack. Anything else stays an error.
+      if (isLostClaimRace(err)) {
+        console.log(`Lost claim race for assigned task ${task.id}: already claimed or no longer pending`);
+      } else {
+        console.error(`Failed to start assigned task ${task.id}:`, err);
+      }
     }
   }
 

@@ -422,11 +422,29 @@ export function warnOnPrimaryCloneDrift(repoPath: string, expectedBranch: string
     dirtyEntries: lines(run('git status --porcelain')),
     stashes: lines(run('git stash list')),
   });
+  // Runs on every worker start: print a given drift once per repo per process,
+  // again only when it changes (or clears and comes back). The per-worker
+  // session log still records it every time.
+  const previous = lastPrimaryCloneDrift.get(repoPath);
   if (warning) {
-    console.warn(`[Worker ${workerId}] ${warning} (${repoPath})`);
+    if (warning !== previous) {
+      console.warn(`[Worker ${workerId}] ${warning} (${repoPath})`);
+      lastPrimaryCloneDrift.set(repoPath, warning);
+    }
     try { sessionLog(workerId, 'warn', 'primary_clone_drift', warning); } catch { /* best effort */ }
+  } else if (previous !== undefined) {
+    console.log(`[Worker ${workerId}] Primary clone drift cleared (${repoPath})`);
+    lastPrimaryCloneDrift.delete(repoPath);
   }
   return warning;
+}
+
+/** Last drift warning printed per primary clone path (this process only). */
+const lastPrimaryCloneDrift = new Map<string, string>();
+
+/** Test hook: forget which drift warnings were already printed. */
+export function __resetPrimaryCloneDriftWarnings(): void {
+  lastPrimaryCloneDrift.clear();
 }
 
 /** Branch name → directory name. The only place this mapping is spelled. */
