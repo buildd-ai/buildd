@@ -2787,6 +2787,8 @@ describe('POST /api/tasks', () => {
     const json = await response.json();
     expect(json.error).toContain('invalid task IDs');
     expect(json.error).toContain('must be valid UUIDs');
+    expect(json.error).toContain('not-a-uuid');
+    expect(json.error).toContain('typo123');
   });
 
   it('rejects dependsOn with mix of valid and invalid UUID formats', async () => {
@@ -2811,18 +2813,55 @@ describe('POST /api/tasks', () => {
     // Return empty result — UUID is valid format but not found
     mockTasksFindMany.mockResolvedValueOnce([]);
 
+    const missingId = '12345678-1234-1234-1234-123456789abc';
     const response = await POST(createMockRequest({
       method: 'POST',
       body: {
         workspaceId: 'ws-1',
         title: 'Task with nonexistent dependency',
-        dependsOn: ['12345678-1234-1234-1234-123456789abc'],
+        dependsOn: [missingId],
       },
     }));
 
     expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.error).toContain('dependsOn references unknown tasks in this workspace');
+    expect(json.error).toContain(missingId);
+  });
+
+  it('returns generic 500 error without exposing driver query text on database failure', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    // Simulate a database driver error with query text and params
+    const driverError = new Error(
+      'Failed query: INSERT INTO tasks (id, workspace_id, title) VALUES ($1, $2, $3) params: ["task-123", "ws-1", "Test task"]'
+    );
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(async () => {
+          throw driverError;
+        }),
+      })),
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Test task',
+      },
+    }));
+
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    // Verify no detail field is returned
+    expect(json.detail).toBeUndefined();
+    // Verify error message is generic
+    expect(json.error).toBe('Failed to create task');
+    // Verify query text is not leaked
+    expect(JSON.stringify(json)).not.toContain('INSERT INTO tasks');
+    expect(JSON.stringify(json)).not.toContain('workspace_id');
+    expect(JSON.stringify(json)).not.toContain('params:');
   });
 
   // ── Mandatory pathManifest gate (pr-producing mission tasks) ───────────────
