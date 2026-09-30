@@ -13,7 +13,7 @@
  * would print on nearly every card and read, next to "completed", as if nobody
  * did the work.
  */
-import { isLiveWorkerStatus } from '@buildd/shared';
+import { isLiveWorkerStatus, isOpenTaskStatus, isTerminalTaskStatus } from '@buildd/shared';
 
 export type TaskEyebrow =
   | { kind: 'role'; label: string; color: string | null; inferred: boolean; runner: string | null }
@@ -36,9 +36,6 @@ export interface TaskEyebrowInput {
   artifactCount?: number;
 }
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-const LIVE_TASK = new Set(['assigned', 'in_progress', 'running', 'waiting_input']);
-
 /** A role's display name, or null. The only place a missing role is decided. */
 export function roleDisplayName(slug: string | null | undefined, name?: string | null): string | null {
   return name || slug || null;
@@ -47,7 +44,7 @@ export function roleDisplayName(slug: string | null | undefined, name?: string |
 export function deriveTaskEyebrow(i: TaskEyebrowInput): TaskEyebrow {
   if (i.taskClass === 'bookkeeping') return null;
 
-  if (TERMINAL.has(i.status)) {
+  if (isTerminalTaskStatus(i.status)) {
     if (i.status === 'cancelled') return null;
     const n = i.pr?.number;
     if (n) {
@@ -60,7 +57,7 @@ export function deriveTaskEyebrow(i: TaskEyebrowInput): TaskEyebrow {
     return null;
   }
 
-  const live = isLiveWorkerStatus(i.workerStatus) || LIVE_TASK.has(i.status);
+  const live = isLiveWorkerStatus(i.workerStatus) || (isOpenTaskStatus(i.status) && i.status !== 'pending');
   const runner = live && (i.onlineRunners ?? 0) > 1 ? i.runner || null : null;
   const label = roleDisplayName(i.role?.slug, i.role?.name);
 
