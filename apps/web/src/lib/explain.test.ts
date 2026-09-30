@@ -648,6 +648,23 @@ describe('explainPr — a dirty mission PR', () => {
     expect(answer.because.map(l => l.claim).join('\n')).not.toContain('merged into `dev` after');
   });
 
+  it('carries the owning task\'s gate history so a stalled PR shows why', async () => {
+    gateEventRows = [
+      {
+        taskId: 'task-mission-pr',
+        gate: 'merge_base_freshness',
+        outcome: 'rejected',
+        reason: 'behind_base',
+        occurredAt: new Date('2026-01-03T00:00:00.000Z'),
+        detail: null,
+      },
+    ];
+    const answer = (await explainPr(subject))!.subjects[0];
+    expect(answer.gateHistory).toHaveLength(1);
+    expect(answer.gateHistory[0].gate).toBe('merge_base_freshness');
+    expect(answer.derivedFrom.gateHistory).toBe('gate_events.taskId');
+  });
+
   it('refuses a PR with no task attached rather than inventing a subject', async () => {
     expect(await explainPr({ ...subject, taskId: null })).toBeNull();
   });
