@@ -20,6 +20,7 @@
  * `planShotReviewEffect` and `planDecision` are pure; `applyDecision` and
  * `undoDecision` do the writes. Authorization is the caller's (the route).
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { artifacts, missionNotes, tasks, visualShotReviews, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
@@ -65,7 +66,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 /** What a decision does beyond recording itself. */
 export type ShotReviewIntent = 'none' | 'file_fix' | 'waive_fix' | 'guide_fix';
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
 
 /**
  * One shot's relation and intent. `linkedFix` is the cell's fix (an earlier
@@ -434,7 +435,7 @@ async function resolveQuestions(missionId: string, unsureArtifactIds: string[], 
     const open = await db.select({ id: tasks.id }).from(tasks).where(and(
       eq(tasks.missionId, missionId),
       sql`lower(ltrim(${tasks.title})) like ${SURFACE_FIX_LIKE}`,
-      notInArray(tasks.status, [...TERMINAL]),
+      notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
     )).limit(1) as Array<{ id: string }>;
     if (open.length === 0) {
       await db.update(missionNotes)

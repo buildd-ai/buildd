@@ -22,6 +22,7 @@
  *     in the tasks table prevents duplicate tasks for the same PR head SHA.
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, isNotNull, isNull, sql, desc } from 'drizzle-orm';
@@ -45,7 +46,7 @@ import { resolvePrRepo } from '@/lib/repo-scope';
 export type DeadZoneAction = 'spark' | 'exhaust' | 'skip';
 
 /** Terminal task statuses — no worker will resume them. */
-const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'] as const;
+const TERMINAL_STATUSES = TERMINAL_TASK_STATUSES;
 
 /**
  * Pure: should we spark/exhaust/skip based on retry counts?

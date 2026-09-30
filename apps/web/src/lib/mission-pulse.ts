@@ -8,6 +8,7 @@
  * the grouped list (`mission-feed-groups.ts`) and the `n / N` caption count the
  * same thing.
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { isAttempt, isDeliverableTask, stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -228,7 +229,7 @@ export function deriveFeedPrState(worker: MissionFeedWorkerInput | null | undefi
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
 const CLAIMED_TASK_STATUSES = new Set(['assigned', 'in_progress']);
 
 function isMoving(t: MissionFeedTaskInput): boolean {

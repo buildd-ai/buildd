@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core/db/schema';
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
@@ -58,7 +59,7 @@ async function recordOrganizerDuplicate(
 const OPEN_PR_WORKER_STATUSES = ['running', 'idle', 'starting', 'waiting_input', 'completed'] as const;
 
 /** Task states whose declared paths are work this mission has not landed yet. */
-const REMAINING_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const REMAINING_TASK_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
 export interface MissionOpenPrGate {
   /** True when planning must pause. */

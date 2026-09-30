@@ -1,5 +1,6 @@
 'use client';
 
+import { canDeleteTask } from '@buildd/shared';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Dialog, { BRAND_DIALOG_PANEL } from '@/components/ui/Dialog';
@@ -15,8 +16,8 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Allow deleting pending, assigned, or failed tasks (not running or completed)
-  const canDelete = ['pending', 'assigned', 'failed'].includes(taskStatus);
+  // The same rule DELETE /api/tasks/[id] enforces: anything but a running task.
+  const canDelete = canDeleteTask(taskStatus);
 
   const handleDelete = async () => {
     setLoading(true);

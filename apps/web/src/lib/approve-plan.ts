@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -76,9 +77,6 @@ export function collapseProposalPlan(plan: PlanStep[], docFix: SpecDocFixContext
 // PlanStep is defined once in @buildd/shared (the planning contract). Re-exported
 // here for the existing internal importers (task-dependencies, mission-loop, etc.).
 export type { PlanStep } from '@buildd/shared';
-
-/** Non-terminal statuses a sibling coordination task might be sitting in. */
-const OPEN_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
 
 export interface DroppedPlanStep {
   ref: string;

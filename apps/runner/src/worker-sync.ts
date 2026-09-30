@@ -1,3 +1,4 @@
+import { TERMINAL_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { LocalWorker, CheckpointEventType } from './types';
 import type { BuilddClient } from './buildd';
 import type { LocalUIConfig } from './types';
@@ -33,12 +34,14 @@ export const TERMINAL_WORKER_RETENTION_MS = 10 * 60 * 1000;
 /**
  * Server-side worker statuses that genuinely end a lease. A 409 that names one
  * of these is a real termination; anything else is coordination noise and must
- * not kill a live SDK session.
+ * not kill a live SDK session. The server's own set (@buildd/shared), so a
+ * `superseded` worker ends here too; `cancelled` stays as a defensive extra
+ * (it is a task status, but a cancel must never be read as noise).
  */
-export const SERVER_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'error', 'cancelled']);
+export const SERVER_TERMINAL_STATUSES: ReadonlySet<string> = new Set([...TERMINAL_WORKER_STATUSES, 'cancelled']);
 
 /** Server-side task statuses that end the task; a cancel counts. */
-export const SERVER_TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+export const SERVER_TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set(TERMINAL_TASK_STATUSES);
 
 /**
  * How long an injected human message suppresses re-injection of identical text.

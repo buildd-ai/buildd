@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
@@ -8,7 +9,7 @@ import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-ac
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { applyTaskCancelSideEffects } from '@/lib/task-cancel';
 
-const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
+// TERMINAL_TASK_STATUSES: @buildd/shared.
 const SIDE_EFFECT_BATCH = 10;
 
 interface BulkCleanupBody {
@@ -88,31 +89,31 @@ export async function POST(req: NextRequest) {
   const conditions = [inArray(tasks.workspaceId, accessibleWorkspaceIds)];
 
   // Never touch actively running tasks
-  const protectedStatuses = ['in_progress', 'assigned'];
+  const protectedStatuses: TaskStatusValue[] = ['in_progress', 'assigned'];
   conditions.push(not(inArray(tasks.status, protectedStatuses)));
 
   // Filter by status if specified
   if (status) {
     // Don't allow targeting protected statuses even if explicitly requested
-    if (protectedStatuses.includes(status)) {
+    if ((protectedStatuses as string[]).includes(status)) {
       return NextResponse.json(
         { error: `Cannot bulk-modify tasks with status "${status}" - they are actively being worked on` },
         { status: 400 }
       );
     }
     // Cancelling a finished task would overwrite its outcome — refuse outright.
-    if (action === 'cancel' && TERMINAL_STATUSES.includes(status)) {
+    if (action === 'cancel' && isTerminalTaskStatus(status)) {
       return NextResponse.json(
         { error: `Cannot bulk-cancel tasks with status "${status}" - they are already terminal` },
         { status: 400 }
       );
     }
-    conditions.push(eq(tasks.status, status));
+    conditions.push(eq(tasks.status, status as TaskStatusValue));
   }
 
   // Cancel only ever targets unfinished work, with or without a status filter.
   if (action === 'cancel') {
-    conditions.push(notInArray(tasks.status, TERMINAL_STATUSES));
+    conditions.push(notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]));
   }
 
   // Filter by age
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date(),
       })
       // Re-guard: a row that went terminal since the SELECT is left alone.
-      .where(and(inArray(tasks.id, taskIds), notInArray(tasks.status, TERMINAL_STATUSES)))
+      .where(and(inArray(tasks.id, taskIds), notInArray(tasks.status, [...TERMINAL_TASK_STATUSES])))
       .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
 
     // Up to 1000 rows: run the per-row side effects in bounded batches rather

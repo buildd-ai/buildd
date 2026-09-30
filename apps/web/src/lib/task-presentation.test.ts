@@ -27,6 +27,10 @@ describe('LIVE_WORKER_STATUSES', () => {
       ['idle', 'running', 'starting', 'waiting_input'].sort(),
     );
   });
+  it('is the @buildd/shared list, not a fork of it', async () => {
+    const shared = await import('@buildd/shared');
+    expect(LIVE_WORKER_STATUSES).toBe(shared.LIVE_WORKER_STATUSES);
+  });
 });
 
 // ─── findBlockingPrWorker ─────────────────────────────────────────────────────

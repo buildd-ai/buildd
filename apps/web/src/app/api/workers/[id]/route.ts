@@ -68,7 +68,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
@@ -96,11 +96,8 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
  * time its own write lands, so it 409s instead of silently overwriting the
  * answer's outcome.
  */
-const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error', 'superseded'];
-
-function isTerminalWorkerStatus(status: string | null | undefined): boolean {
-  return !!status && TERMINAL_WORKER_STATUSES.includes(status);
-}
+// TERMINAL_WORKER_STATUSES / isTerminalWorkerStatus: @buildd/shared (also
+// covers the legacy `done`).
 
 /**
  * The model this session actually ran on.

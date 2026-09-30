@@ -3,6 +3,7 @@
  * Organizer role's own name and colour), and the context panel — what needs
  * this person and the team's live missions. One parallel round.
  */
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces, workspaceSkills } from '@buildd/core/db/schema';
@@ -16,8 +17,6 @@ export interface ChatPageContext {
   missions: ContextMission[];
   fleet: { live: number; capacity: number } | null;
 }
-
-const LIVE = ['running', 'starting', 'waiting_input'];
 
 /** At most this many needs-you rows load; a full list means "at least this many". */
 export const NEEDS_YOU_LIMIT = 5;
@@ -78,7 +77,7 @@ export async function loadChatPageContext(input: { teamId: string; wsIds: string
       .limit(NEEDS_YOU_LIMIT)
       .catch(() => []),
     db.select({ id: workers.id }).from(workers)
-      .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.status, LIVE)))
+      .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.status, LIVE_WORKER_STATUSES)))
       .limit(200)
       .catch(() => []),
     loadFleetCapacity({ teamId, wsIds, now }).catch(() => 0),

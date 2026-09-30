@@ -1,3 +1,4 @@
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState } from '@buildd/shared';
 export type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState };
 import { type DerivedMetric, derivedValue, derivedUnavailable } from './derived-metric';
@@ -730,7 +731,7 @@ export interface MissionSegment {
 }
 
 /** Worker statuses that indicate an in-flight (live) worker. Mirrors task-presentation.ts. */
-export const MISSION_LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
+export const MISSION_LIVE_WORKER_STATUSES = LIVE_WORKER_STATUSES;
 const LIVE_SET = new Set(MISSION_LIVE_WORKER_STATUSES);
 
 // ─── TaskClass selectors ──────────────────────────────────────────────────────

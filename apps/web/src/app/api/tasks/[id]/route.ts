@@ -1,3 +1,4 @@
+import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
@@ -345,7 +346,7 @@ export async function PATCH(
       if (typeof held !== 'boolean') {
         return NextResponse.json({ error: 'held must be true or false' }, { status: 400 });
       }
-      if (held && ['completed', 'failed', 'cancelled'].includes(task.status)) {
+      if (held && isTerminalTaskStatus(task.status)) {
         return NextResponse.json({ error: `A ${task.status} task can't be held` }, { status: 400 });
       }
       const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
@@ -417,9 +418,9 @@ export async function PATCH(
       if (typeof resultSummary !== 'string' || resultSummary.trim() === '') {
         return NextResponse.json({ error: 'resultSummary must be a non-empty string' }, { status: 400 });
       }
-      if (!['completed', 'failed'].includes(task.status)) {
+      if (!isTerminalTaskStatus(task.status)) {
         return NextResponse.json(
-          { error: `Cannot correct result.summary on a '${task.status}' task — only completed or failed tasks have a stored result to correct.` },
+          { error: `Cannot correct result.summary on a '${task.status}' task — only a finished (completed, failed or cancelled) task has a stored result to correct.` },
           { status: 400 },
         );
       }
@@ -506,7 +507,7 @@ export async function PATCH(
 
     // When a task transitions to a non-terminal status (un-cancel, re-open, or new
     // missionId link), reopen the mission if it's currently completed. Idempotent.
-    const isNowOpen = status !== undefined && !['completed', 'failed', 'cancelled'].includes(status as string);
+    const isNowOpen = status !== undefined && !isTerminalTaskStatus(status as string);
     const missionLinkAdded = missionId !== undefined && updated?.missionId && updated.missionId !== task.missionId;
     const missionUnlinked = missionId !== undefined && !updated?.missionId && task.missionId;
 
@@ -590,8 +591,8 @@ export async function DELETE(
     const force = req.nextUrl.searchParams.get('force') === 'true';
 
     if (!force) {
-      // Only allow deleting pending, assigned, failed, completed, or cancelled tasks (not actively running)
-      if (!['pending', 'assigned', 'failed', 'completed', 'cancelled'].includes(task.status)) {
+      // Anything but a running task — the same rule the delete button shows by.
+      if (!canDeleteTask(task.status)) {
         return NextResponse.json(
           { error: `Cannot delete ${task.status} tasks. Wait for completion or use reassign.` },
           { status: 400 }

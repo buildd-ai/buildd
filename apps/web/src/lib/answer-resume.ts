@@ -19,6 +19,8 @@
  * without a database. See docs/specs/answered-question-resume.md.
  */
 
+import { isTerminalWorkerStatus } from '@buildd/shared';
+
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
  * this worker's transcript and worktree is alive and will drain its queue".
@@ -183,7 +185,6 @@ export interface NotWaitingExplanation {
   nextAction: NotWaitingNextAction;
 }
 
-const ENDED_WORKER_STATUSES = new Set(['completed', 'failed', 'error']);
 
 export function explainNotWaiting(input: {
   workerStatus: string | null;
@@ -199,7 +200,7 @@ export function explainNotWaiting(input: {
         : { kind: 'refresh' },
     };
   }
-  if (input.workerStatus && ENDED_WORKER_STATUSES.has(input.workerStatus)) {
+  if (isTerminalWorkerStatus(input.workerStatus)) {
     return {
       reasonCode: 'worker_ended',
       message: 'This agent has already stopped, so it can no longer take an answer. Retry the task or start a follow-up from it.',

@@ -15,6 +15,7 @@
  * dedup-append, no read-then-CAS retry loop (that loop starved under
  * concurrent calls and returned a bare "Concurrent update conflict").
  */
+import { isOpenTaskStatus } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -29,8 +30,6 @@ import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-led
 
 export const PATH_CLAIM_WILDCARD_ERROR =
   'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
-
-const CLAIMABLE_STATUSES = ['pending', 'assigned', 'in_progress'];
 
 export interface PathClaimTask {
   id: string;
@@ -112,7 +111,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
   if (!task) return { kind: 'not_found' };
   if (input.authorize && !(await input.authorize(task))) return { kind: 'not_found' };
 
-  if (!CLAIMABLE_STATUSES.includes(task.status)) {
+  if (!isOpenTaskStatus(task.status)) {
     return { kind: 'bad_status', error: `Cannot claim paths for a task with status "${task.status}"` };
   }
 

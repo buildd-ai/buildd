@@ -88,6 +88,7 @@ const _pathOverlapMod = await import('@buildd/core/path-overlap');
 const _subjectAnchorObserveMod = await import('@buildd/core/subject-anchor-observe');
 const _subjectAnchorExtractorMod = await import('@buildd/core/subject-anchor-extractor');
 const _frictionManifestMod = await import('@buildd/core/friction-manifest');
+const realShared = await import('@buildd/shared');
 // subject-intake has only node:crypto + type imports — safe to load before any mock.module call.
 // Restoring the real module prevents the stub (intakeSubject → {task:{id:'t1'}}) from leaking
 // into route.test.ts via Bun ESM live bindings and breaking its 42 POST tests.
@@ -214,7 +215,7 @@ mock.module('@buildd/core/friction-manifest', () => _frictionManifestMod);
 mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock(() => 'healthy') }));
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
 // VISUAL_AUDITOR_ROLE_SLUG: read at import by lib/mission-surface-audit.
-mock.module('@buildd/shared', () => ({ TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor', EXPLICIT_ROLE_SLUGS: ['visual-auditor'] }));
+mock.module('@buildd/shared', () => ({ ...realShared, TaskCategory: {}, VISUAL_AUDITOR_ROLE_SLUG: 'visual-auditor', EXPLICIT_ROLE_SLUGS: ['visual-auditor'] }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 

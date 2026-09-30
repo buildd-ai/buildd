@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -868,7 +868,7 @@ export const missions = pgTable('missions', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted'>(),
+  status: text('status').default('active').notNull().$type<MissionStatusValue>(),
   costBudgetUsd: decimal('cost_budget_usd', { precision: 10, scale: 2 }),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -1136,7 +1136,7 @@ export const tasks = pgTable('tasks', {
   label: varchar('label', { length: 48 }),
   description: text('description'),
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
-  status: text('status').default('pending').notNull(),
+  status: text('status').default('pending').notNull().$type<TaskStatusValue>(),
   priority: integer('priority').default(0).notNull(),
   mode: text('mode').default('execution').notNull().$type<'execution' | 'planning'>(),
   runnerPreference: text('runner_preference').default('any').notNull().$type<'any' | 'user' | 'service' | 'action'>(),
@@ -1529,7 +1529,7 @@ export const workers = pgTable('workers', {
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
-  status: text('status').default('idle').notNull(),
+  status: text('status').default('idle').notNull().$type<WorkerStatusValue>(),
   waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
   // Token usage (for seat-based accounts where cost isn't meaningful)

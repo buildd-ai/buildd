@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -272,10 +273,9 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check maxConcurrentFromSchedule - count active tasks from this schedule
         if (schedule.maxConcurrentFromSchedule > 0) {
-          const activeStatuses = ['pending', 'assigned', 'in_progress'];
           const concurrentConditions = [
             ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
-            inArray(tasks.status, activeStatuses),
+            inArray(tasks.status, OPEN_TASK_STATUSES),
             sql`${tasks.context}->>'scheduleId' = ${schedule.id}`,
           ] as const;
           const [activeCount] = await db
@@ -443,13 +443,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check mission-level maxConcurrentTasks cap
         if (linkedMission && linkedMission.maxConcurrentTasks != null && linkedMission.maxConcurrentTasks > 0) {
-          const activeStatuses = ['pending', 'assigned', 'in_progress'];
           const [missionActiveCount] = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(tasks)
             .where(and(
               eq(tasks.missionId, linkedMission.id),
-              inArray(tasks.status, activeStatuses),
+              inArray(tasks.status, OPEN_TASK_STATUSES),
             ));
 
           if ((missionActiveCount?.count ?? 0) >= linkedMission.maxConcurrentTasks) {

@@ -17,7 +17,7 @@ import { db } from '@buildd/core/db';
 import { githubRepos, tasks, teamMembers, workers, workspaces } from '@buildd/core/db/schema';
 import type { Subscription } from './subscriptions';
 
-export const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'] as const;
+export { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 
 /** The caller is a member of workspace `workspaces`' team. */
 const callerSees = (userId: string) => sql`exists (select 1 from ${teamMembers} where ${teamMembers.teamId} = ${workspaces.teamId} and ${teamMembers.userId} = ${userId})`;
