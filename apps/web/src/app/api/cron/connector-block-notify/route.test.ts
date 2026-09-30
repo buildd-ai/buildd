@@ -54,6 +54,12 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockNotifyExpiry = mock((_ctx: any) => Promise.resolve(true));
 const mockNotifyReminder = mock(() => Promise.resolve(false));
 
+// The held/local gate renders real SQL against the schema this file stubs;
+// its SQL is asserted in a PgDialect test, so a marker suffices here.
+mock.module('@/app/api/workers/claim/held-gate', () => ({
+  notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
+}));
+
 mock.module('../../workers/claim/connector-block-notify', () => ({
   notifyConnectorBlockReminder: mockNotifyReminder,
   notifyConnectorExpiry: mockNotifyExpiry,
