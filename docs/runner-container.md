@@ -88,7 +88,8 @@ Everything else stays in the runner process.
 | `BUILDD_API_KEY` | **yes** | yes | no | Runner API key, ideally scoped to one workspace. Missing: exit 64. |
 | `BUILDD_SERVER` | no | yes | no | buildd base URL. Defaults to `https://buildd.dev` if unset, so always set it outside production. |
 | `ANTHROPIC_API_KEY` | placeholder on Cloudflare; **yes** locally | yes | yes | On Cloudflare this is a dummy value. Claude Code needs *some* key to start, and the egress handler strips it and adds the real gateway credential. Setting it also stops the runner from injecting the server-managed API key (it only fills an unset variable). Locally, a real key works. |
-| `ANTHROPIC_BASE_URL` | no | no | yes | Gateway endpoint. Leave it unset on Cloudflare if the egress handler rewrites `api.anthropic.com`. Set it to talk to a gateway directly. |
+| `ANTHROPIC_BASE_URL` | no | no | yes | Gateway endpoint. The `WorkerAgent` never passes it: on Cloudflare model traffic must go to `api.anthropic.com`, where the egress handler rewrites it to AI Gateway. Elsewhere, set it to talk to a gateway directly. |
+| `BUILDD_EXECUTOR` | no | no (on Cloudflare) | no | `cloud` on Cloudflare, set by the `WorkerAgent`. The claim then sends `executor: 'cloud'` and the server omits every credential from the response (`CLAIM_CREDENTIAL_FIELDS` in `packages/shared/src/executor.ts`); the runner drops any that arrive anyway and does not start the credential broker. Unset (or `host`) on any other host. Any other value makes the claim fail with 400. Not baked into the image, so the image stays usable elsewhere. |
 | `GH_TOKEN` | **yes** | local only | yes | Used by `gh` and, through `gh auth setup-git` in `buildd-once`, by `git` for https clones and pushes. **Do not set it on Cloudflare**: the egress handler adds a short-lived installation token to `github.com` / `api.github.com` requests. |
 | `BUILDD_ONCE_MAX_WAIT_MS` | no | no | no | Maximum continuous wait for user input before the worker is aborted (exit 1). Default 6h. |
 | `BUILDD_WORKSPACE_ISOLATION_ROOT` | no | no | no | Where the task repo is cloned. Default `<BUILDD_HOME>/once-workspaces`. |
@@ -113,13 +114,28 @@ put in the container env. The only real secret in the env is
 
 - **`IS_SANDBOX`**: not needed, because the image is non-root. It is also not
   on the agent allowlist, so setting it on the runner would do nothing.
-- **`CLAUDE_CODE_OAUTH_TOKEN`**: not set in env. But if the team has a
-  server-managed OAuth credential, the claim response still delivers it, and
-  the runner writes it into the session's Claude config dir
-  (`materializeClaudeConfigDir` in `workers.ts`). So a real credential can end
-  up inside the container even though the env holds only a placeholder key.
-  Which credential Claude Code then sends when a placeholder
-  `ANTHROPIC_API_KEY` and a stored OAuth credential are both present has not
-  been checked here. Before the canary, either stop delivering credentials to
-  cloud-dispatched claims (a server change) or confirm that egress replaces
-  whichever one is sent.
+- **`CLAUDE_CODE_OAUTH_TOKEN`**: not set in env, and with `BUILDD_EXECUTOR=cloud`
+  not delivered any other way either. A host claim can carry the team's
+  server-managed model credential, which the runner writes into the session's
+  Claude config dir (`materializeClaudeConfigDir` in `workers.ts`). A cloud
+  claim carries none (see `BUILDD_EXECUTOR` above), so the only model
+  credential the container's traffic ever uses is the one the egress handler
+  adds.
+
+## Egress and TLS trust (Cloudflare)
+
+The `WorkerAgent` routes the container's traffic for `api.anthropic.com`,
+`github.com`, `api.github.com`, `uploads.github.com` and `codeload.github.com`
+through its egress handler (`apps/cloud-runner/src/outbound.ts`). Every other
+host has open egress. For HTTPS the platform re-signs the connection with a
+per-container CA written to `/etc/cloudflare/certs/cloudflare-containers-ca.crt`
+after start. `buildd-once` waits for it (when `BUILDD_EXECUTOR=cloud`) and sets:
+
+| Variable | Value | For |
+|---|---|---|
+| `NODE_EXTRA_CA_CERTS` | the Cloudflare CA | Bun (the runner) and Claude Code |
+| `SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` | `$TMPDIR/buildd-ca-bundle.pem` (system roots + the Cloudflare CA) | git, curl, gh, Python |
+
+All are on the agent env allowlist, so the agent's own tools trust the CA too.
+The combined bundle keeps non-intercepted hosts verifying against the normal
+roots. Outside Cloudflare the CA file does not exist and nothing is set.

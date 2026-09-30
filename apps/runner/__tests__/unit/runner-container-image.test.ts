@@ -61,6 +61,22 @@ describe('runner --once container image', () => {
     expect(dockerfile).toMatch(/^CMD \["sleep", "infinity"\]$/m);
   });
 
+  it('helper trusts the Cloudflare egress CA, and the agent gets the trust vars', () => {
+    expect(helper).toContain('/etc/cloudflare/certs/cloudflare-containers-ca.crt');
+    for (const key of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE']) {
+      expect(helper).toContain(key);
+      expect(RUNNER_ENV_PASSTHROUGH.has(key)).toBe(true);
+    }
+  });
+
+  it('never bakes a credential or the executor marker into the image', () => {
+    // BUILDD_EXECUTOR=cloud comes from the WorkerAgent's container env, so the
+    // image stays usable on any Docker host. No token may be baked in at all.
+    for (const key of ['BUILDD_EXECUTOR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'BUILDD_API_KEY']) {
+      expect(env[key]).toBeUndefined();
+    }
+  });
+
   it('helper runs the runner in --once mode from the repo root', () => {
     expect(helper).toContain('cd "${BUILDD_REPO_ROOT:-/opt/buildd}"');
     expect(helper).toContain('exec bun run apps/runner/src/index.ts --once "$@"');

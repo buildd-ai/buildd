@@ -59,7 +59,7 @@ function fakeContainer() {
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState } = {}) {
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const fc = fakeContainer();
   const fetches: Array<{ url: string; init: RequestInit }> = [];
@@ -80,7 +80,10 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
     },
     keepAliveWhile: async (fn) => { keepAliveHeld++; try { return await fn(); } finally { keepAliveHeld--; } },
     waitUntil: (p) => { pending.push(p); },
-    installEgress: async () => { fc.calls.push('installEgress'); },
+    installEgress: async () => {
+      fc.calls.push('installEgress');
+      if (opts.egressFails) throw new Error('interceptOutboundHttps failed');
+    },
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, init });
       if (opts.fetchThrows) throw new Error('network down');
@@ -106,6 +109,26 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
 }
 
 describe('dispatch', () => {
+  test('egress that cannot be installed means the container never starts (fail closed)', async () => {
+    const h = harness({ egressFails: true });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.calls).not.toContain('start');
+    expect(h.fc.execs).toEqual([]);
+    expect(h.state.status).toBe('exited');
+    expect(h.state.error).toContain('interceptOutboundHttps failed');
+  });
+
+  test('the started container gets the cloud executor marker and no GitHub token', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.starts[0]!.env;
+    expect(env.BUILDD_EXECUTOR).toBe('cloud');
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+
   test('starts a container, execs buildd-once for the task, holds keepAlive while it runs', async () => {
     const h = harness();
     expect(h.sup.dispatch()).toEqual({ accepted: true, attempt: 1 });

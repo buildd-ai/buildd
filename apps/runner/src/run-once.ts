@@ -290,14 +290,18 @@ export async function runOnceFromCli(opts: {
   const client = new BuilddClient(config);
   const wm = new WorkerManager(config, resolver);
   wm.attachOutbox(outbox);
-  // Mid-session credential refresh for long tasks.
-  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
+  // Mid-session credential refresh for long tasks. Not in a cloud container:
+  // it holds no credential to refresh (the claim carries none, see
+  // packages/shared/src/executor.ts), and a broker there would only be a way
+  // to lease and bootstrap one.
+  const cloud = opts.env.BUILDD_EXECUTOR === 'cloud';
+  if (!cloud) credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
 
   return runOnce({ taskId: opts.taskId }, {
     getTask: (id) => client.getTask(id) as Promise<OnceTask | null>,
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
-    shutdown: () => credentialBroker.shutdown(),
+    shutdown: () => (cloud ? Promise.resolve() : credentialBroker.shutdown()),
     maxWaitMs: resolveOnceMaxWaitMs(opts.env),
     pollMs: DEFAULT_POLL_MS,
     now: Date.now,

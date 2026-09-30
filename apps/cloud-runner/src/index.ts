@@ -8,6 +8,8 @@ import type { Env } from './env';
 import { handleRequest, type AgentHandle } from './http';
 
 export { WorkerAgent } from './worker-agent';
+// Must be a top-level export: WorkerAgent reaches it through ctx.exports.
+export { EgressHandler } from './egress';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
