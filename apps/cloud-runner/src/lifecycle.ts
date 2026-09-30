@@ -21,6 +21,8 @@ export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
+import type { RunTimings, StoredRunReport } from './run-report';
+
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
 /**
@@ -50,6 +52,12 @@ export interface RunState {
   crashReport?: CrashReport;
   /** Last few lines of runner output, for `GET /tasks/:id`. */
   outputTail?: string[];
+  /** Phase timestamps gathered while the run is live (run-report.ts). */
+  timings?: RunTimings;
+  /** This attempt's run report, once it exited, with what happened to its delivery. */
+  report?: StoredRunReport;
+  /** Earlier attempts' reports, oldest first, at most REPORT_HISTORY_MAX. */
+  reportHistory?: StoredRunReport[];
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };

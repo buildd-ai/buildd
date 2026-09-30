@@ -37,6 +37,8 @@
   // (dashboard, `--var`, or an env block). The Worker refuses to dispatch
   // without it, because the runner would otherwise fall back to production.
   "vars": {
+    // Must equal containers[0].instance_type above (run report; run-report.test.ts checks).
+    "CONTAINER_INSTANCE_TYPE": "standard-1",
     "CONTAINER_INACTIVITY_TIMEOUT_MS": "1800000",
     "CONTAINER_START_TIMEOUT_MS": "300000"
   }

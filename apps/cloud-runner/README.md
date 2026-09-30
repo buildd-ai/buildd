@@ -18,6 +18,8 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 | `src/worker-agent.ts` | `WorkerAgent`: wires the supervisor to `ctx.container`, state and keepAlive |
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
 | `src/lifecycle.ts` | Pure decisions: exit code to outcome, dispatch dedupe, container env |
+| `src/run-report.ts` | The per-run report: phase lines, egress counters, assembly, delivery. Runtime-free |
+| `src/eval-report.ts`, `src/eval-client.ts`, `scripts/eval-report.ts` | The eval report over many runs (see Measuring runs) |
 
 The runtime-free files are what the Bun tests cover (`bun run test`); they
 never import `agents` or `cloudflare:workers`.
@@ -75,9 +77,78 @@ it as above).
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
+| `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
+
+## Measuring runs
+
+Every attempt ends with a **run report**, built in `src/run-report.ts`. It is
+stored in the agent's state (`report` in `GET /tasks/:taskId`; earlier
+attempts in `reportHistory`, last 10) and, when the run claimed a worker,
+posted to buildd as a worker artifact: `POST /api/workers/<workerId>/artifacts`,
+`type: data`, key `cloud-run-report:<workerId>`, report in `metadata.report` and
+in `content`. The POST uses the Worker's `BUILDD_API_KEY`, the runner key the
+container claimed with (the route only accepts the worker's own account), same
+as the crash report. It runs after the run is marked `exited`, so it never
+holds up the outcome; one retry after a network error or a 5xx, none after
+any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
+`no_worker_id` (no claim, nothing to attach it to) or `not_configured`.
+
+| Field | Source |
+|---|---|
+| `timestamps.dispatchReceivedAt` | The dispatch that started the attempt (agent clock, epoch ms) |
+| `timestamps.containerRunningAt` | `ctx.container.running` after `start()` |
+| `timestamps.claimedAt` | When the `BUILDD_WORKER_ID=` line was read |
+| `timestamps.firstModelRequestAt` | First `api.anthropic.com` request the egress handler saw |
+| `timestamps.exitedAt` | The runner process exited or the container died |
+| `runnerPhases`, `durationsMs.clone`, `durationsMs.install` | `BUILDD_PHASE=` lines from the runner (container clock); see `docs/runner-container.md`. The install is the runner's own `bun install`; a repo with a declared install (`.buildd/env.yaml`) or a non-bun toolchain has none |
+| `durationsMs.*` | Derived; null when either end is missing |
+| `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
+| `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
+| `instanceType` | `CONTAINER_INSTANCE_TYPE` |
+| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
+| `exitCode`, `outcome`, `crashReport`, `attempt`, `taskId`, `workerId` | As in the state |
+
+The report is built from an allowlist of typed fields; identifiers that do not
+look like IDs are dropped. It never holds header values, tokens, URLs, request
+or response bodies, or runner output. Egress counters and timings are lost if
+the agent is evicted mid-run (the orphan report has what was persisted).
+
+### Eval report
+
+`scripts/eval-report.ts` lists the reports for a window and joins them with
+Cloudflare's container analytics:
+
+```bash
+export BUILDD_SERVER=https://buildd.dev BUILDD_API_KEY=bld_…          # a key with access to the workspace
+export CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=…                   # optional; without them, report columns only
+bun apps/cloud-runner/scripts/eval-report.ts --workspace <workspace-id> --since 2026-09-01T00:00:00Z [--until <iso>] [--out <dir>]
+```
+
+It writes `cloud-runs.csv` (one row per run) and `cloud-runs.md` (phase p50/p90,
+outcomes by cause, active vCPU-seconds, peak and average memory, rx/tx, egress
+totals, estimated compute cost per run) and prints the summary.
+
+- Reports: `GET /api/workspaces/<id>/artifacts?keyPrefix=cloud-run-report:&type=data&since=…&before=…`,
+  paged newest first by `updatedAt`.
+- Metrics: Cloudflare GraphQL `containersMetricsAdaptiveGroups` (the workload
+  alone: `cpuTimeSec`, `rxBytes`, `txBytes`, `max.memory` per minute) and
+  `containersUsageAdaptiveGroups` (billed: `cpuTimeSec`, `allocatedMemory`,
+  `allocatedDisk` in byte-seconds), grouped by `instanceId` and the `bd_run`
+  label. If Cloudflare rejects the label dimension the script retries without it
+  and matches runs by instance ID and time window; billed usage is per day, so
+  two attempts of one agent on the same day cannot be split and get none.
+- Memory is reported in whatever unit the dataset uses (not stated in the docs).
+  Average memory is the mean of the per-minute peaks.
+- Cost: list prices (memory $0.0000025/GiB-s, vCPU $0.000020/vCPU-s, disk
+  $0.00000007/GB-s, [Containers pricing](https://developers.cloudflare.com/containers/pricing/))
+  applied to billed usage, before the monthly included allowance, without
+  Workers or Durable Object charges.
+
+Token permission: **Account Analytics: Read** on the account (the GraphQL
+Analytics API). The buildd key needs read access to the workspace.
 
 ## Local development
 
@@ -312,6 +383,14 @@ carries no credential material (`CLAIM_CREDENTIAL_FIELDS` in
 secrets and connectors, role env secrets, credential-refresh ids). Consequence
 for phase 1: roles that need MCP connectors or role env secrets run without
 them on the cloud runner.
+
+The smoke also checks the run report: recorded for every run, egress counters
+from the egress step, clone phase lines and `claimedAt` from a fake claim, and
+the artifact POST. The Worker runs on the host with the container's
+`BUILDD_SERVER`, and Docker Desktop's `host.docker.internal` does not resolve on
+the host, so by default the POST fails and the smoke checks it was tried twice
+and recorded as `error`. With `SMOKE_HOST_ADDR=<an address both reach, e.g. the
+host's LAN IP>` it checks `sent` and the fake buildd's receipt.
 
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
 "egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy

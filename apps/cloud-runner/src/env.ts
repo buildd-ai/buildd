@@ -26,6 +26,8 @@ export interface Env extends EgressEnv {
   BUILDD_ONCE_MAX_WAIT_MS?: string;
   CONTAINER_INACTIVITY_TIMEOUT_MS?: string;
   CONTAINER_START_TIMEOUT_MS?: string;
+  /** Mirrors `containers[].instance_type` in wrangler.jsonc, for the run report (not readable at runtime otherwise). */
+  CONTAINER_INSTANCE_TYPE?: string;
   /** Local smoke only: `1` makes the egress handler echo instead of forwarding. */
   EGRESS_DEBUG_ECHO?: string;
 }
