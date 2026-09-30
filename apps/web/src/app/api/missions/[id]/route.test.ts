@@ -83,6 +83,24 @@ mock.module('@/lib/mission-integration-branch', () => ({
   reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
+let dispatchUnblockedTaskCalls: Array<any> = [];
+let shouldDispatchReject = false;
+
+const mockDispatchUnblockedTask = mock(async (task: any, workspace: any) => {
+  if (shouldDispatchReject) {
+    throw new Error('Dispatch failed');
+  }
+  dispatchUnblockedTaskCalls.push({ task, workspace });
+});
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchUnblockedTask: mockDispatchUnblockedTask,
+}));
+
+let missionTasksToReturn: any[] = [];
+const mockTasksFindManyForExecutorChange = mock(async () => {
+  return missionTasksToReturn;
+});
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -118,7 +136,10 @@ mock.module('@buildd/core/db', () => ({
       initiatives: { findFirst: mockInitiativesFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst },
       workers: { findFirst: mock(() => Promise.resolve(null)) },
-      tasks: { findFirst: mock(() => Promise.resolve(null)), findMany: mock(() => Promise.resolve([])) },
+      tasks: {
+        findFirst: mock(() => Promise.resolve(null)),
+        findMany: mockTasksFindManyForExecutorChange,
+      },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
@@ -198,6 +219,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
     mockWakeMissionAfterResponse.mockClear();
+    dispatchUnblockedTaskCalls = [];
+    mockDispatchUnblockedTask.mockClear();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -1426,4 +1449,293 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(insertedNotes.filter((n) => n.title === 'Mission status changed').length).toBe(2);
   });
 
+});
+
+describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () => {
+  const MID = '11111111-1111-4111-8111-111111111111';
+  const WS_ID = 'ws-1';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReturnValue({ id: WS_ID, name: 'test-ws', repo: 'owner/repo' });
+    mockMissionsUpdate.mockReset();
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = { ...updatedSetData, ...data };
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: MID, ...data }]),
+          })),
+        };
+      }),
+    }));
+    updatedSetData = null;
+    dispatchUnblockedTaskCalls = [];
+    shouldDispatchReject = false;
+    missionTasksToReturn = [];
+  });
+
+  it('re-dispatches pending tasks when executor changes from local to runner', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Local Mission',
+      workspaceId: WS_ID,
+      executor: 'local',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    missionTasksToReturn = [
+      {
+        id: 'task-1',
+        title: 'Task 1',
+        description: 'Description 1',
+        workspaceId: WS_ID,
+        mode: 'planning',
+        priority: 0,
+        missionId: MID,
+        defaultBackend: 'claude',
+      },
+      {
+        id: 'task-2',
+        title: 'Task 2',
+        description: null,
+        workspaceId: WS_ID,
+        mode: 'coding',
+        priority: 1,
+        missionId: MID,
+        defaultBackend: null,
+      },
+    ];
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(200);
+
+    // Should have called dispatchUnblockedTask twice (once per task)
+    expect(dispatchUnblockedTaskCalls.length).toBe(2);
+    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-1');
+    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-2');
+    expect(dispatchUnblockedTaskCalls[0].workspace.id).toBe(WS_ID);
+  });
+
+  it('does not re-dispatch when executor is unchanged', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Runner Mission',
+      workspaceId: WS_ID,
+      executor: 'runner',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    missionTasksToReturn = [
+      { id: 'task-1', title: 'Task 1', description: null, workspaceId: WS_ID, mode: 'planning', priority: 0, missionId: MID, defaultBackend: null },
+    ];
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(200);
+
+    // No dispatch when executor is unchanged
+    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+  });
+
+  it('does not re-dispatch when executor changes from runner to local', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Runner Mission',
+      workspaceId: WS_ID,
+      executor: 'runner',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    missionTasksToReturn = [
+      { id: 'task-1', title: 'Task 1', description: null, workspaceId: WS_ID, mode: 'planning', priority: 0, missionId: MID, defaultBackend: null },
+    ];
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'local' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(200);
+
+    // No dispatch when changing runner -> local
+    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+  });
+
+  it('does not re-dispatch tasks in running or completed status', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Local Mission',
+      workspaceId: WS_ID,
+      executor: 'local',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    // The route filters tasks by status, so only pending/assigned are returned
+    missionTasksToReturn = [
+      {
+        id: 'task-pending',
+        title: 'Pending Task',
+        description: null,
+        workspaceId: WS_ID,
+        mode: 'planning',
+        priority: 0,
+        missionId: MID,
+        defaultBackend: null,
+      },
+    ];
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(200);
+
+    // The route filters tasks by status, so running/completed tasks never reach dispatchUnblockedTask
+    expect(dispatchUnblockedTaskCalls.length).toBe(1);
+  });
+
+  it('returns 200 even if dispatchUnblockedTask rejects', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Local Mission',
+      workspaceId: WS_ID,
+      executor: 'local',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    missionTasksToReturn = [
+      {
+        id: 'task-1',
+        title: 'Task 1',
+        description: null,
+        workspaceId: WS_ID,
+        mode: 'planning',
+        priority: 0,
+        missionId: MID,
+        defaultBackend: null,
+      },
+    ];
+
+    // Make dispatchUnblockedTask reject
+    shouldDispatchReject = true;
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+
+    // Should still return 200 despite dispatch failure
+    expect(res.status).toBe(200);
+    expect(updatedSetData.executor).toBe('runner');
+  });
+
+  it('returns 200 even if tasks.findMany fails', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Local Mission',
+      workspaceId: WS_ID,
+      executor: 'local',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    // Create a temporary mock that rejects
+    missionTasksToReturn = null as any;
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+
+    // Should still return 200 despite tasks query failure
+    expect(res.status).toBe(200);
+    expect(updatedSetData.executor).toBe('runner');
+    // No dispatch calls attempted since query failed
+    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+  });
+
+  it('re-dispatches only pending and assigned tasks', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID,
+      teamId: 'team-1',
+      title: 'Local Mission',
+      workspaceId: WS_ID,
+      executor: 'local',
+      scheduleId: null,
+      priority: 0,
+    });
+
+    // The route uses inArray(tasks.status, ['pending', 'assigned'])
+    // so only those statuses will be returned by the mock
+    missionTasksToReturn = [
+      {
+        id: 'task-pending',
+        title: 'Pending Task',
+        description: null,
+        workspaceId: WS_ID,
+        mode: 'planning',
+        priority: 0,
+        missionId: MID,
+        defaultBackend: null,
+      },
+      {
+        id: 'task-assigned',
+        title: 'Assigned Task',
+        description: null,
+        workspaceId: WS_ID,
+        mode: 'coding',
+        priority: 1,
+        missionId: MID,
+        defaultBackend: 'claude',
+      },
+    ];
+
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(200);
+
+    // Both pending and assigned tasks dispatched
+    expect(dispatchUnblockedTaskCalls.length).toBe(2);
+    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-pending');
+    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-assigned');
+  });
 });
