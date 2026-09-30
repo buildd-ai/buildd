@@ -92,6 +92,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   delete_skill: 'admin',
   manage_experiments: 'admin',
   manage_model_tiers: 'admin',
+  manage_evidence_backends: 'admin',
   manage_secrets: 'admin',
   // a worker's own lifecycle: never a chat tool
   claim_task: 'work',
@@ -219,7 +220,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'skills and roles', actions: ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill'] },
       { text: 'secrets', actions: ['manage_secrets'] },
       { text: 'experiments', actions: ['manage_experiments'] },
-      { text: 'model tiers', actions: ['manage_model_tiers'] },
+      { text: 'model tiers, evidence storage', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
       { text: 'releases', actions: ['trigger_release'] },
       { text: 'knowledge maintenance', actions: ['consolidate_knowledge', 'memory_delete'] },
@@ -292,6 +293,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   delete_skill: 'delete a skill',
   manage_experiments: 'experiments and their readouts',
   manage_model_tiers: 'model per tier',
+  manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
   consolidate_knowledge: 'find duplicate or decayed knowledge; archive',
   memory_delete: 'permanently delete a memory',
@@ -316,6 +318,9 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
+  manage_evidence_backends: '{action, backendId?, provider?, bucket?, endpoint?, credentials?, …}',
+  register_skill: '{name, content, description?, slug?, model?, allowedTools?, isRole?, …}',
+  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, allowedTools?, isRole?, enabled?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */

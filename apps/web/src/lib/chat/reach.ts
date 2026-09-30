@@ -13,7 +13,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
-  artifacts, experiments, initiatives, missions, releases, specDiscrepancies, subscriptions, taskSchedules, tasks,
+  artifacts, evidenceBackends, experiments, initiatives, missions, releases, specDiscrepancies, subscriptions, taskSchedules, tasks,
   watchedProjects, workers, workspaceSkills, workspaces,
 } from '@buildd/core/db/schema';
 import type { ChatObjectOwner, ChatReach } from './in-process-api';
@@ -89,6 +89,9 @@ export const OWNER_LOOKUPS: Record<OwnedKind, (id: string) => Promise<Owner | nu
     const row = await one(db.select({ teamId: experiments.teamId }).from(experiments).where(eq(experiments.id, id)).limit(1));
     return row ? { teamId: row.teamId, workspaceId: null } : null;
   },
+  // A workspace-scoped backend is reachable only with its workspace; a team default only with its team.
+  evidence_backend: async (id) => one(db.select({ teamId: evidenceBackends.teamId, workspaceId: evidenceBackends.workspaceId })
+    .from(evidenceBackends).where(eq(evidenceBackends.id, id)).limit(1)),
 };
 
 export async function loadChatReach(teamId: string): Promise<ChatReach> {

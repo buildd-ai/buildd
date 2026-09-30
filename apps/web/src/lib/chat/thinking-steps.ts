@@ -55,6 +55,8 @@ const VERBS: Record<string, Verb> = {
   'manage_experiments:list': v('Looking over', 'Looked over', 'the experiments', undefined, "Couldn't list the experiments"),
   'manage_experiments:get': v('Reading', 'Read', 'an experiment', 'experiments', "Couldn't open the experiment"),
   'manage_experiments:readout': v('Reading', 'Read', 'the results', undefined, "Couldn't read the results"),
+  'manage_evidence_backends:list': v('Checking', 'Checked', 'the evidence storage', undefined, "Couldn't check the evidence storage"),
+  'manage_evidence_backends:get': v('Reading', 'Read', 'an evidence storage backend', undefined, "Couldn't open the evidence storage backend"),
   create_task: v('Drafting', 'Drafted', 'a task', 'tasks', "Couldn't draft the task"),
   update_task: v('Drafting', 'Drafted', 'a change to a task', undefined, "Couldn't draft the change"),
   send_agent_message: v('Writing', 'Wrote', 'to the agent', undefined, "Couldn't reach the agent"),

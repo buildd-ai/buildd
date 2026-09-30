@@ -217,6 +217,23 @@ export function buildEvidenceObjectKey(
 }
 
 /**
+ * `{prefix}/.buildd-probe/{probeId}`
+ *
+ * The object a backend verification writes, reads back and deletes. The
+ * `.buildd-probe` segment starts with a dot on purpose: it cannot collide with
+ * a workspace id, and a lifecycle rule can target the prefix. It is therefore
+ * the one key `assertNormalizedObjectKey` would refuse, so it is asserted here
+ * segment by segment instead.
+ */
+export const EVIDENCE_PROBE_SEGMENT = '.buildd-probe';
+
+export function buildEvidenceProbeKey(prefix: unknown, probeId: unknown): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const id = assertSafeKeySegment(probeId, 'probeId');
+  return `${safePrefix}/${EVIDENCE_PROBE_SEGMENT}/${id}`;
+}
+
+/**
  * `roles/<slug>/<configHash>.json`
  *
  * Runners fetch and load these bundles, so the slug must be a validated

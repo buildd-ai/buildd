@@ -153,6 +153,10 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   { pattern: '/api/experiments', methods: ['GET', 'POST'], load: () => import('@/app/api/experiments/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
   { pattern: '/api/experiments/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/experiments/[id]/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },
   { pattern: '/api/experiments/:id/readout', methods: ['GET'], load: () => import('@/app/api/experiments/[id]/readout/route'), reach: { path: path(['id', 'experiment']), ...ROWS } },
+
+  // ── evidence storage (reads only: the writes stay on the Storage settings screen) ──
+  { pattern: '/api/evidence-backends', methods: ['GET'], load: () => import('@/app/api/evidence-backends/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
+  { pattern: '/api/evidence-backends/:id', methods: ['GET'], load: () => import('@/app/api/evidence-backends/[id]/route'), reach: { path: path(['id', 'evidence_backend']), ...ROWS } },
 ];
 
 /** Every GET in CHAT_ROUTES and nothing else: what previews and the docked object read through. */
