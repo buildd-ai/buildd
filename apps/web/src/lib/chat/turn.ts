@@ -54,6 +54,10 @@ import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
 import type { LimitVerdict } from './limits';
 import {
+  DEFAULT_TURN_TIMING, TURN_STOPPED_NOTE, USAGE_SETTLE_MS, settleWithin, withDeadlineWatchdog, withStoppedNote, wrapUpStep,
+  type TurnTiming,
+} from './turn-deadline';
+import {
   HISTORY_LIMIT,
   insertMessage,
   loadMessages,
@@ -64,7 +68,7 @@ import {
 } from './store';
 
 export const MAX_STEPS = 8;
-export const TURN_BUDGET_MS = 45_000;
+export { TURN_BUDGET_MS } from './turn-deadline';
 export const MAX_USER_TEXT = 8_000;
 
 export interface TurnUser {
@@ -120,6 +124,8 @@ export interface TurnDeps {
   retitle?: (conversation: ConversationRow, messages: UIMessage[], topic: { label: 'same_topic' | 'new_topic'; confidence: number }) => Promise<void>;
   /** Test seam: replace the streamText call. */
   streamTextImpl?: typeof streamText;
+  /** Test seam: the turn's wall clock (turn-deadline.ts). */
+  timing?: Partial<TurnTiming>;
   /**
    * The person's standing rules (./directives.ts): loaded into the
    * instructions, and a confirm card when the user message states a new one.
@@ -204,6 +210,11 @@ export async function runChatTurn(args: {
 }): Promise<Response> {
   const { conversation: conv, user, body, deps } = args;
   const now = deps.now?.() ?? new Date();
+  // The wall clock starts here, not at the model call: everything before it
+  // (limits, routing, docked reads) runs inside the same maxDuration.
+  const turnStartedAt = Date.now();
+  const timing: TurnTiming = { ...DEFAULT_TURN_TIMING, ...deps.timing };
+  const deadlineAt = turnStartedAt + timing.budgetMs;
 
   const message = body?.message;
   if (!message || (message.role !== 'user' && message.role !== 'assistant') || !Array.isArray(message.parts)) {
@@ -440,6 +451,8 @@ export async function runChatTurn(args: {
   })}${dockedBlock}${rulesBlock(standingRules, scopeWs?.id ?? null)}`;
 
   const startedAt = Date.now();
+  let wrappedUp = false;
+  let watchdogFired = false;
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,
     instructions,
@@ -449,8 +462,25 @@ export async function runChatTurn(args: {
     // so an approved call from an earlier turn still executes.
     activeTools,
     stopWhen: isStepCount(MAX_STEPS),
-    abortSignal: AbortSignal.timeout(TURN_BUDGET_MS),
+    abortSignal: AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
+    // Past the wrap-up mark a step gets no tools and is told to answer, so a
+    // slow turn ends with an answer instead of being cut off mid-thought.
+    prepareStep: ({ stepNumber }) => {
+      const step = wrapUpStep({ stepNumber, elapsedMs: Date.now() - turnStartedAt, wrapUpMs: timing.wrapUpMs, instructions });
+      if (step && !wrappedUp) {
+        wrappedUp = true;
+        console.warn(`[chat] turn wrap-up: conversation ${conv.id}, step ${stepNumber}, ${Date.now() - turnStartedAt}ms in, tier ${resolved.tier}, model ${resolved.modelId}`);
+      }
+      return step;
+    },
     toolApproval,
+  });
+  // The abort only stops what honours it. A tool or provider stream that
+  // doesn't would keep the turn open until the platform kills the function,
+  // with nothing saved; the watchdog ends the stream so onEnd still runs.
+  const modelStream = withDeadlineWatchdog(result.stream, deadlineAt + timing.graceMs, () => {
+    watchdogFired = true;
+    console.error(`[chat] turn watchdog fired: conversation ${conv.id} ignored its abort for ${timing.graceMs}ms past the deadline (tier ${resolved.tier}, model ${resolved.modelId})`);
   });
 
   const turnMetadata: ChatTurnMetadata = { tier: resolved.tier, scope: scopeWs };
@@ -458,8 +488,8 @@ export async function runChatTurn(args: {
   // A continuation of a message saved before steps existed gets them first.
   const backfill = continuing ? backfillSteps(continuing.parts) : [];
   const steps = createStepTracker({ known: continuing ? knownCalls(continuing.parts) : [], seed: backfill });
-  const stream = withDirectiveCard(withThinkingSteps(toUIMessageStream({
-    stream: result.stream,
+  const stream = withStoppedNote(withDirectiveCard(withThinkingSteps(toUIMessageStream({
+    stream: modelStream as typeof result.stream,
     tools,
     originalMessages: uiMessages,
     generateMessageId: () => randomUUID(),
@@ -468,13 +498,27 @@ export async function runChatTurn(args: {
     onEnd: async ({ responseMessage, isContinuation, isAborted }) => {
       try {
         let parts = [...(responseMessage.parts as ChatMessagePart[])];
-        if (isAborted) parts.push({ type: 'text', text: '_Stopped: this turn hit its time limit._' });
+        if (isAborted) {
+          parts.push({ type: 'text', text: TURN_STOPPED_NOTE });
+          // One line per stopped turn, so this failure is countable in the logs.
+          const toolCalls = parts.filter(p => typeof p.type === 'string' && p.type.startsWith('tool-')).length;
+          console.warn(`[chat] turn hit its time limit: ${JSON.stringify({
+            conversationId: conv.id, tier: resolved.tier, model: resolved.modelId,
+            elapsedMs: Date.now() - turnStartedAt, budgetMs: timing.budgetMs,
+            steps: parts.filter(p => p.type === 'step-start').length, toolCalls, wrappedUp, watchdog: watchdogFired,
+          })}`);
+        }
         const card = directiveCard ? await directiveCard : null;
         if (card) parts.push(directivePart(card));
         let usage: ChatUsage | null = null;
         try {
-          const u = await result.usage;
-          const meta = (await result.providerMetadata) as Record<string, unknown> | undefined;
+          // A stream the watchdog ended never reports usage: don't wait on it.
+          const settleMs = watchdogFired ? 0 : USAGE_SETTLE_MS;
+          const [u, metaRaw] = await Promise.all([
+            settleWithin(result.usage, settleMs),
+            settleWithin(result.providerMetadata, settleMs),
+          ]);
+          const meta = metaRaw as Record<string, unknown> | undefined;
           usage = {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
@@ -534,7 +578,7 @@ export async function runChatTurn(args: {
         console.error(`[chat] failed to persist turn for conversation ${conv.id}:`, e);
       }
     },
-  }), { tracker: steps, backfill }), directiveCard);
+  }), { tracker: steps, backfill }), directiveCard));
 
   return createUIMessageStreamResponse({
     stream,

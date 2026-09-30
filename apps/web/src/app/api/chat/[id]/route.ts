@@ -38,8 +38,10 @@ import { loadStandingRules } from '@/lib/chat/directives-store';
 import { insertDecisionReceipts, webMemoryDecisionDeps } from '@/lib/memory-decisions';
 import { createMemoryDecider } from '@buildd/core/memory-decisions';
 
-// The turn streams for up to ~45s (TURN_BUDGET_MS) plus persistence.
-export const maxDuration = 60;
+// A turn runs for up to TURN_BUDGET_MS (120s, from the request) plus the
+// watchdog's grace and persistence (lib/chat/turn-deadline.ts). Kept well
+// above that sum; turn-deadline.test.ts fails if the two drift.
+export const maxDuration = 180;
 
 type Ctx = { params: Promise<{ id: string }> };
 
