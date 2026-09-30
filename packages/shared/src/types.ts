@@ -1380,6 +1380,13 @@ export interface ClaimDiagnostics {
      * Codex, or tenant work. See `budgetPressure` for the reading behind it.
      */
     oauth_parallelism?: number;
+    /**
+     * Its role (or workspace envMapping) declares env vars no delivery channel
+     * can satisfy — no role_env_secret under the mapped label, no mcp_credential
+     * of that name, not runner-provided. Held rather than claimed to run
+     * degraded or fail at provisioning. See claim/role-env-injection.ts.
+     */
+    role_env_unsatisfied?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).

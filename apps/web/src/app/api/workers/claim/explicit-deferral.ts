@@ -86,5 +86,13 @@ export function describeExplicitDeferral(
       return { code: reason, detail: 'It runs on Codex and this workspace\'s one Codex slot is taken.' };
     case 'oauth_parallelism':
       return { code: reason, detail: 'The seat is at the session cap its learned OAuth budget allows right now.' };
+    case 'role_env_unsatisfied': {
+      const role = str(detail.roleSlug);
+      const missing = Array.isArray(detail.missing) ? (detail.missing as unknown[]).filter((m): m is string => typeof m === 'string') : [];
+      return {
+        code: reason,
+        detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
+      };
+    }
   }
 }
