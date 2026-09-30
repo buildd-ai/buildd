@@ -16,10 +16,21 @@
  */
 
 import { db } from '@buildd/core/db';
-import { githubRepos, missionNotes, missions, workspaces } from '@buildd/core/db/schema';
+import { githubRepos, missionNotes, missions, workerErrorTraces, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
+import { recordGateEvent, GATE_SLUGS } from '@buildd/core/gate-events';
+import {
+  MISSION_BRANCH_UNRESOLVED,
+  missionBranchUnresolvedDetail,
+  missionBranchUnresolvedExcerpt,
+  missionBranchUnresolvedReason,
+  type MissionBranchUnresolvedInput,
+} from '@buildd/core/mission-branch-trace';
+
+export { resolveMissionRepoWorkspaceId };
 
 /**
  * Extract the HTTP status out of the error `githubApi` throws on non-2xx.
@@ -86,6 +97,13 @@ export type EnsureIntegrationBranchResult =
  */
 export async function ensureMissionIntegrationBranch(
   missionId: string,
+  opts?: {
+    /**
+     * The workspace the caller is acting in (a task's), used only when the
+     * mission itself has none. See `resolveMissionRepoWorkspaceId`.
+     */
+    workspaceId?: string | null;
+  },
 ): Promise<EnsureIntegrationBranchResult> {
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -97,12 +115,18 @@ export async function ensureMissionIntegrationBranch(
   const branch = missionIntegrationBase(mission);
   if (!branch) return { ok: false, reason: 'no_working_branch' };
 
-  const workspace = mission.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
-        columns: { githubRepoId: true, githubInstallationId: true, gitConfig: true },
-      })
-    : null;
+  const resolved = await resolveMissionRepoWorkspaceId({
+    missionId,
+    missionWorkspaceId: mission.workspaceId,
+    hintWorkspaceId: opts?.workspaceId,
+  });
+  if (!resolved.workspaceId) {
+    return { ok: false, reason: 'no_repo', detail: resolved.detail };
+  }
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, resolved.workspaceId),
+    columns: { githubRepoId: true, githubInstallationId: true, gitConfig: true },
+  });
   if (!workspace?.githubRepoId || !workspace.githubInstallationId) {
     return { ok: false, reason: 'no_repo', detail: 'workspace not linked to a GitHub repo' };
   }
@@ -171,6 +195,52 @@ export async function ensureMissionIntegrationBranch(
 }
 
 /**
+ * Record that a mission's integration branch could not be resolved, under the
+ * one stable signature (`mission_branch_unresolved`) — as a gate-ledger row
+ * (get_failure_analytics family="gate") and, when a worker is involved, as an
+ * error trace on it (get_error_traces, grouped by pattern). Never throws.
+ */
+export async function reportMissionBranchUnresolved(
+  input: MissionBranchUnresolvedInput & {
+    surface: string;
+    workspaceId?: string | null;
+    taskId?: string | null;
+    workerId?: string | null;
+  },
+): Promise<void> {
+  try {
+    await recordGateEvent({
+      gate: GATE_SLUGS.MISSION_BRANCH_UNRESOLVED,
+      surface: input.surface,
+      outcome: input.fallback === 'recut_from_trunk' ? 'warned' : 'stranded',
+      reason: missionBranchUnresolvedReason(input),
+      workspaceId: input.workspaceId ?? null,
+      missionId: input.missionId ?? null,
+      taskId: input.taskId ?? null,
+      workerId: input.workerId ?? null,
+      callerOrigin: input.workerId ? 'worker' : 'system',
+      detail: missionBranchUnresolvedDetail(input),
+    });
+  } catch (err) {
+    console.error('[mission-integration-branch] failed to record gate event:', err);
+  }
+  if (input.workerId) {
+    try {
+      await db.insert(workerErrorTraces).values({
+        workerId: input.workerId,
+        taskId: input.taskId ?? null,
+        pattern: MISSION_BRANCH_UNRESOLVED,
+        excerpt: missionBranchUnresolvedExcerpt(input).slice(0, 500),
+        source: 'mission-branch',
+      });
+    } catch (err) {
+      console.error('[mission-integration-branch] failed to record error trace:', err);
+    }
+  }
+  console.warn(`[mission-integration-branch] ${missionBranchUnresolvedExcerpt(input)}`);
+}
+
+/**
  * What a mission task's PR can actually base on, right now.
  *
  * `usable: false` means the integration branch is neither present nor
@@ -231,42 +301,89 @@ export async function ensureIntegrationBaseForTaskPr(args: {
   taskTitle?: string | null;
   /** Where the PR would go instead, for the note. */
   fallbackBase?: string | null;
+  /**
+   * The task's workspace. Lets a mission created without a workspace still
+   * resolve the repo its branch belongs in — see `resolveMissionRepoWorkspaceId`.
+   */
+  workspaceId?: string | null;
+  /** For the `mission_branch_unresolved` trace. */
+  taskId?: string | null;
+  workerId?: string | null;
 }): Promise<IntegrationBaseForTaskPr> {
-  const ensured = await ensureMissionIntegrationBranch(args.missionId);
+  const ensured = await ensureMissionIntegrationBranch(args.missionId, { workspaceId: args.workspaceId });
 
   if (ensured.ok && !ensured.created) {
     return { usable: true, recreated: false };
   }
 
   const subject = args.taskTitle ? `\`${args.taskTitle}\`` : 'a mission task';
+  const trace = {
+    missionId: args.missionId,
+    branch: args.integrationBase,
+    where: 'create_pr' as const,
+    surface: 'POST /api/github/pr',
+    workspaceId: args.workspaceId ?? null,
+    taskId: args.taskId ?? null,
+    workerId: args.workerId ?? null,
+  };
 
   if (ensured.ok) {
+    await reportMissionBranchUnresolved({ ...trace, cause: 'missing', fallback: 'recut_from_trunk' });
     await postMissionNote(args.missionId, {
       title: `Integration branch \`${ensured.branch}\` was re-cut from trunk`,
       body:
         `${subject} needed this mission's integration branch to open its PR, and the branch was `
-        + `not on the remote. Buildd deletes it when the mission PR merges, which happens before work `
-        + `filed later has landed.\n\n`
-        + `Rather than dead-end the task, buildd re-cut \`${ensured.branch}\` from trunk and let the `
-        + `PR proceed. The mission therefore gets a SECOND mission PR for this round of work, which `
-        + `is one merge for this round of work. Nothing that already shipped is `
-        + `affected: the previous mission PR's diff is in trunk, so the new branch starts from it.`,
+        + `not on the remote — either an earlier mission PR merged and deleted it, or it was never `
+        + `created.\n\n`
+        + `Rather than dead-end the task, buildd cut \`${ensured.branch}\` from trunk and let the `
+        + `PR proceed. The work on it reaches trunk through one mission PR, as the strategy intends — `
+        + `if an earlier mission PR already merged, that makes this a SECOND mission PR, one merge `
+        + `for this round of work. Nothing that already shipped is affected: anything already in `
+        + `trunk is where the new branch starts from.`,
     });
     return { usable: true, recreated: true };
   }
 
+  await reportMissionBranchUnresolved({
+    ...trace,
+    cause: ensured.reason === 'not_opted_in' ? 'missing' : ensured.reason,
+    fallback: 'trunk_pr_base',
+    detail: ensured.detail ?? null,
+  });
   const fallback = args.fallbackBase ? `\`${args.fallbackBase}\`` : 'trunk';
   await postMissionNote(args.missionId, {
     title: `Integration branch \`${args.integrationBase}\` is unavailable · PR falls back to ${fallback}`,
     body:
-      `${subject} could not base its PR on this mission's integration branch: the branch is absent `
-      + `from the remote and could not be re-cut (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}).\n\n`
+      `${subject} could not base its PR on this mission's integration branch \`${args.integrationBase}\` `
+      + `(mission \`${args.missionId.slice(0, 8)}\`): the branch is absent from the remote and could `
+      + `not be created (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}).\n\n`
       + `The PR was opened against ${fallback} instead, so the task could deliver. This mission's `
-      + `"one merge into trunk" guarantee does NOT hold for that PR: it reaches trunk on its own. `
-      + `If more work is coming, switch the mission to the direct strategy deliberately rather than `
-      + `letting each task discover this.`,
+      + `"one merge into trunk" guarantee does NOT hold for that PR: it reaches trunk on its own.\n\n`
+      + `**To fix:** ${missionBranchRemedy(ensured.reason)}`,
   });
   return { usable: false, recreated: false, detail: ensured.detail ?? ensured.reason };
+}
+
+/**
+ * What a person must do, per failure reason. Named so every surface that
+ * reports an unresolvable branch gives the same instruction.
+ */
+export function missionBranchRemedy(reason: string): string {
+  switch (reason) {
+    case 'no_repo':
+      return 'give the mission a workspace linked to a GitHub repo (manage_missions action=update '
+        + 'workspaceId=<workspace>), or switch it to branchStrategy=direct if its tasks should PR '
+        + 'straight to trunk.';
+    case 'empty_repo':
+      return 'push a first commit to the repository, then retry — a branch cannot be cut from an '
+        + 'empty repo.';
+    case 'no_working_branch':
+      return 'run the mission organizer once (it names the branch), or switch the mission to '
+        + 'branchStrategy=direct.';
+    default:
+      return 'check the GitHub App installation can create refs in this repo (contents: write), '
+        + 'then retry; or switch the mission to branchStrategy=direct.';
+  }
 }
 
 /** Best-effort mission note. A failed note must never fail a PR. */

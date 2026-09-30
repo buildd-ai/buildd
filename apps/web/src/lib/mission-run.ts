@@ -14,7 +14,11 @@ import {
 } from '@/lib/heartbeat-circuit-breaker';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
-import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import {
+  ensureMissionIntegrationBranch,
+  missionBranchRemedy,
+  reportMissionBranchUnresolved,
+} from '@/lib/mission-integration-branch';
 import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import type { MissionWakeReason } from '@/lib/mission-wake';
@@ -442,7 +446,7 @@ export async function runMission(
       console.error(
         `[runMission] Mission ${missionId}: integration branch ${workingBranch} unavailable (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''})`,
       );
-      const noteBody = `This mission uses an integration branch (\`${workingBranch}\`), but it could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs cannot open against a base that does not exist, so this blocks the mission's deliverable work until it is resolved.`;
+      const noteBody = `This mission uses an integration branch (\`${workingBranch}\`), but it could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs cannot open against a base that does not exist, so they fall back to trunk until it is resolved.\n\n**To fix:** ${missionBranchRemedy(ensured.reason)}`;
       // Post once, not once per organizer cycle: repeating a durable failure
       // every heartbeat would bury the mission feed.
       const existingNote = await db.query.missionNotes.findFirst({
@@ -461,6 +465,17 @@ export async function runMission(
           title: INTEGRATION_BRANCH_NOTE_TITLE,
           body: noteBody,
           status: 'open',
+        });
+        // Traced once per open note, same cadence as the note itself.
+        await reportMissionBranchUnresolved({
+          missionId,
+          branch: workingBranch,
+          where: 'mission_organizer',
+          surface: 'runMission',
+          cause: ensured.reason === 'not_opted_in' ? 'missing' : ensured.reason,
+          fallback: 'none',
+          detail: ensured.detail ?? null,
+          workspaceId: mission.workspaceId ?? null,
         });
       } else {
         // Still broken, and possibly for a DIFFERENT reason than the one on the

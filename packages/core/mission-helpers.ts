@@ -5,6 +5,7 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from './derived-
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
+  looksLikeMissionIntegrationBranch,
   missionIntegrationBase,
 } from './mission-integration';
 import { isSurfaceAuditTask } from './surface-audit';
@@ -407,6 +408,31 @@ export function evaluateGoalCriteria(
             !!w.prBaseRef?.trim() &&
             !isMissionIntegrationBase({ baseRef: w.prBaseRef, mission }),
         );
+
+        // Opted in, but the integration branch was never used: every task PR
+        // has a KNOWN base that is not a mission branch (it fell back to trunk
+        // because the integration branch could not be resolved — see
+        // `ensureIntegrationBaseForTaskPr`). Nothing is on the integration
+        // branch, so there is no mission PR to wait for, and the work reached
+        // trunk through the task PRs themselves. Waiting here would pin the
+        // criterion at UNVERIFIED forever with evidence claiming the PRs merged
+        // into a branch that never existed. An unknown (null) base keeps the
+        // old answer: unknown is never read as trunk.
+        const taskPrWorkers = prWorkers.filter(w => !isMissionPrWorker(w));
+        const directBases = taskPrWorkers.map(w => w.prBaseRef?.trim() ?? '');
+        const bypassedIntegration =
+          landedOnTrunk.length === 0
+          && !prWorkers.some(isMissionPrWorker)
+          && taskPrWorkers.length > 0
+          && directBases.every(ref => !!ref && !looksLikeMissionIntegrationBranch(ref)
+            && !isMissionIntegrationBase({ baseRef: ref, mission }));
+        if (bypassedIntegration) {
+          verdict = 'pass';
+          const bases = [...new Set(directBases)].map(b => `\`${b}\``).join(', ');
+          evidence = `All ${countDistinctPrs(taskPrWorkers)} task PR(s) merged directly into ${bases}${supersededNote} — `
+            + `none went through \`${integrationBase}\`, so there is no mission PR to wait for${branchNote}`;
+          break;
+        }
 
         if (landedOnTrunk.length === 0) {
           // UNVERIFIED rather than fail, for two reasons. It matches the "no PRs
