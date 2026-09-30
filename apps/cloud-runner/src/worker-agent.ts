@@ -18,9 +18,15 @@ import {
 import {
   GithubTokenCache,
   INTERCEPTED_HOSTS,
+  ModelEndpointCache,
+  NoModelEndpointError,
   githubTokenRequest,
+  modelEndpointRequest,
   parseGithubGrant,
+  parseServerModelEndpoint,
   type GithubGrant,
+  type ServerModelEndpoint,
+  type ServerModelEndpointState,
 } from './outbound';
 import type { EgressProps } from './egress';
 import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
@@ -29,6 +35,7 @@ import { TaskSupervisor, type ContainerPort, type DispatchResult } from './super
 type EgressExports = { EgressHandler(options: { props: EgressProps }): Fetcher };
 
 const GITHUB_TOKEN_TIMEOUT_MS = 10_000;
+const MODEL_ENDPOINT_TIMEOUT_MS = 10_000;
 
 export class WorkerAgent extends Agent<Env, RunState> {
   initialState: RunState = INITIAL_STATE;
@@ -136,6 +143,39 @@ export class WorkerAgent extends Agent<Env, RunState> {
   }
 
   /**
+   * The team's agent model endpoint for this task (docs/design/agent-model-endpoint.md §3).
+   * Memory only: not in agent state or storage, and never in the container env.
+   */
+  private readonly modelEndpoints = new ModelEndpointCache({
+    fetchEndpoint: () => this.fetchModelEndpoint(),
+    now: () => Date.now(),
+    log: (m) => console.log(m),
+  });
+
+  /** RPC from EgressHandler on a model request. Only while a run is live. */
+  async getModelEndpoint(): Promise<ServerModelEndpointState> {
+    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
+    return this.modelEndpoints.get();
+  }
+
+  /** RPC from EgressHandler after the endpoint answered 401/403. */
+  async reportModelEndpointAuthFailure(): Promise<void> {
+    this.modelEndpoints.invalidate();
+  }
+
+  private async fetchModelEndpoint(): Promise<ServerModelEndpoint> {
+    const { url, init } = modelEndpointRequest(this.env, this.name, this.state.workerId);
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(MODEL_ENDPOINT_TIMEOUT_MS) });
+    if (res.status === 404) throw new NoModelEndpointError();
+    if (!res.ok) {
+      // The body of a refusal carries no key; still, keep it short.
+      const detail = (await res.text().catch(() => '')).slice(0, 200);
+      throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+    return parseServerModelEndpoint(await res.json());
+  }
+
+  /**
    * Route the container's traffic for the credentialed hosts through
    * EgressHandler (egress.ts; rules in outbound.ts). HTTPS is re-signed with
    * the per-container CA that buildd-once trusts; plain HTTP to the same hosts
@@ -144,6 +184,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
    */
   private async installEgressHandlers(): Promise<void> {
     this.githubTokens.reset();
+    this.modelEndpoints.reset();
     const container = this.ctx.container;
     if (!container) throw new Error('WorkerAgent has no container binding');
     const exports = (this.ctx as unknown as { exports: EgressExports }).exports;
