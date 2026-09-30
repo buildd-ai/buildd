@@ -25,7 +25,7 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
@@ -687,7 +687,7 @@ export async function PATCH(
         const missionTasks = await db.query.tasks.findMany({
           where: and(
             eq(tasks.missionId, id),
-            inArray(tasks.status, ['pending', 'assigned']),
+            inArray(tasks.status, UNCLAIMED_TASK_STATUSES),
           ),
           columns: {
             id: true,
