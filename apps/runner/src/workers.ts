@@ -101,7 +101,7 @@ import {
   SESSION_BUDGET_CAP_ERROR,
   sdkMaxBudgetUsd,
 } from './claim-budget-signals';
-import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
@@ -1196,8 +1196,10 @@ export class WorkerManager {
           continue;
         }
 
-        const remoteTerminal = remote.status === 'completed' || remote.status === 'failed';
-        const taskTerminal = remote.task && (remote.task.status === 'completed' || remote.task.status === 'failed');
+        // Cancelled (task or worker) is terminal too — it used to be missed, so a
+        // cancelled task's local worker and session never reconciled.
+        const remoteTerminal = SERVER_TERMINAL_STATUSES.has(remote.status);
+        const taskTerminal = !!remote.task && SERVER_TERMINAL_TASK_STATUSES.has(remote.task.status);
 
         if (remoteTerminal || taskTerminal) {
           const isSuccess = remote.status === 'completed' || remote.task?.status === 'completed';

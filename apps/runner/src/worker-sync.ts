@@ -35,7 +35,10 @@ export const TERMINAL_WORKER_RETENTION_MS = 10 * 60 * 1000;
  * of these is a real termination; anything else is coordination noise and must
  * not kill a live SDK session.
  */
-const SERVER_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled']);
+export const SERVER_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'error', 'cancelled']);
+
+/** Server-side task statuses that end the task; a cancel counts. */
+export const SERVER_TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
 /**
  * How long an injected human message suppresses re-injection of identical text.
