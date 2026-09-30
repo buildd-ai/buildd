@@ -35,6 +35,8 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['list_artifacts', {}],
   ['explain', {}],
   ['get_error_traces', {}],
+  ['read_evidence', { prNumber: 7 }],
+  ['read_evidence', { evidenceId: '00000000-0000-0000-0000-0000000000e1' }],
   ['get_budget_forecast', {}],
   ['get_usage_stats', {}],
   ['get_failure_analytics', {}],
