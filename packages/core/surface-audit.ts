@@ -253,7 +253,7 @@ export function buildSurfaceAuditDescription(opts: {
     'Checklist:',
     checklist,
     '',
-    'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
+    'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict: ok | issue | unsure }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
     '',
     'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot with update_artifact metadata { qa: { fixTaskId } } (the server merges it into the shot\'s qa). Record an unsure shot with verdict unsure and move on: the human review queue asks about it, so post no note.',
   ].join('\n');
