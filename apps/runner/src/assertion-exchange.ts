@@ -5,6 +5,8 @@
  * re-auth (§F.2) without creating a circular import.
  */
 
+import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+
 const FETCH_TIMEOUT_MS = 30_000;
 
 /**
@@ -66,7 +68,12 @@ export async function exchangeAssertionConnector(
   };
 }
 
-/** Returns true if an error string looks like an HTTP 401 Unauthorized response. */
+/**
+ * Returns true if an error string looks like an auth failure: an HTTP 401 as a
+ * standalone number (not a substring of "4015ms"), the word "unauthorized", or
+ * any phrase core's auth-error classifier knows.
+ */
 export function isAuthError(errorText: string): boolean {
-  return /401|unauthorized/i.test(errorText);
+  return /(?<!\d)401(?!\d)|\bunauthorized\b/i.test(errorText)
+    || classifyAuthErrorSeverity(errorText) !== 'none';
 }

@@ -3,7 +3,9 @@
  * results (audit items N2, N3, A.2, A.3).
  */
 import { describe, test, expect } from 'bun:test';
-import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
+// The session-cap classifier lives in core only — the runner's copy drifted
+// (it knew its own 'Session cost cap reached' wording; core did not).
+import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 import {
   PAST_RESET_MIN_BACKOFF_MS,
   PAST_RESET_MAX_BACKOFF_MS,
@@ -13,7 +15,6 @@ import {
   describeClaimErrorBody,
   withClaimHealthCheck,
   SESSION_BUDGET_CAP_ERROR,
-  isSessionBudgetCapError,
   claudeSessionIsMetered,
   sdkMaxBudgetUsd,
   heartbeatState,
@@ -127,6 +128,12 @@ describe('session budget cap (A.2) is not a provider wall', () => {
     expect(isSessionBudgetCapError('error_max_budget_usd')).toBe(true);
     expect(isSessionBudgetCapError("You've hit your session limit · resets 3am")).toBe(false);
     expect(isSessionBudgetCapError(undefined)).toBe(false);
+  });
+
+  test("the runner's own cap wording is a session cap to core, never a provider wall", () => {
+    expect(isSessionBudgetCapError(SESSION_BUDGET_CAP_ERROR)).toBe(true);
+    expect(isSessionBudgetCapError(`${SESSION_BUDGET_CAP_ERROR} ($2.10 of $2.00)`)).toBe(true);
+    expect(isBudgetExhaustionError(SESSION_BUDGET_CAP_ERROR)).toBe(false);
   });
 });
 

@@ -105,11 +105,13 @@ mock.module('../../src/worker-store', () => ({
 // Capture cleanupWorktree calls via dep injection spy (avoids mock.module pollution
 // that would cause git-operations.test.ts to receive the mocked setupWorktree).
 const mockCleanupWorktree = mock(async () => {});
+// `git rev-list --count origin/<branch>..<branch>` output — '0' = fully pushed.
+let mockUnpushedCount = '0';
 
 beforeAll(() => {
   __setGitOpsDeps({
     cleanupSpy: mockCleanupWorktree,
-    execSync: (() => '') as any,
+    execSync: ((cmd: string) => (String(cmd).includes('rev-list --count') ? mockUnpushedCount : '')) as any,
     execFile: ((_f: any, _a: any, _o: any, cb: any) => cb(null, '', '')) as any,
     existsSync: (p: string) => mockExistsSync(p),
     mkdirSync: (() => {}) as any,
@@ -192,6 +194,7 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
   afterEach(() => {
     manager?.destroy();
     mockExistsSync = () => false;
+    mockUnpushedCount = '0';
   });
 
   beforeEach(() => {
@@ -325,5 +328,43 @@ describe('eviction cleanup respects worktree ownership across workers', () => {
     const workers = (manager as any).workers as Map<string, LocalWorker>;
     expect(workers.has('w-abandoned-solo')).toBe(true);
     expect(workers.get('w-abandoned-solo')!.worktreePath).toBeUndefined();
+  });
+
+  // The unpushed-commits guard (removeWorktreeIfUnowned protectUnpushed) must
+  // cover eviction too: a worktree holding commits not on origin is the only
+  // copy of that work, and the 24h waiting reclaim used to force-remove it.
+  test('waiting-worker TTL reclaim keeps a worktree holding unpushed commits', async () => {
+    manager = new WorkerManager(makeConfig());
+    mockUnpushedCount = '3';
+
+    inject(manager, makeWorker({
+      id: 'w-waiting-unpushed',
+      status: 'waiting',
+      lastActivity: Date.now() - (WAITING_WORKTREE_TTL_MS + 60_000),
+      worktreePath: sharedPath,
+    }));
+
+    (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(mockCleanupWorktree).not.toHaveBeenCalled();
+  });
+
+  test('terminal-worker eviction keeps a worktree holding unpushed commits', async () => {
+    manager = new WorkerManager(makeConfig());
+    mockUnpushedCount = '2';
+
+    inject(manager, makeWorker({
+      id: 'w-error-unpushed',
+      status: 'error',
+      lastActivity: Date.now() - 11 * 60 * 1000,
+      worktreePath: sharedPath,
+    }));
+
+    (manager as any).workerSync.evictCompletedWorkers();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(mockCleanupWorktree).not.toHaveBeenCalled();
+    expect(((manager as any).workers as Map<string, LocalWorker>).has('w-error-unpushed')).toBe(false);
   });
 });

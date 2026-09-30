@@ -94,6 +94,15 @@ mock.module('@buildd/core/mcp-tools', () => ({
   buildMemoryDescription: () => 'memory',
 }));
 
+const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
+const mockFireGateEvent = mock((_input: any) => 'sig');
+mock.module('@/lib/gate-ledger', () => ({
+  GATE_SLUGS: REAL_GATE_SLUGS,
+  fireGateEvent: mockFireGateEvent,
+  gateCallerOrigin: (i: { apiAccount?: unknown; user?: unknown; workerId?: string | null }) =>
+    i.workerId ? 'worker' : i.apiAccount ? 'api' : i.user ? 'dashboard' : 'system',
+}));
+
 import { POST } from './route';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -149,6 +158,7 @@ describe('check_path_claim MCP handler', () => {
     mockCheckPathClaimConflict.mockReset();
     mockInsertClaims.mockReset();
     mockRegisterWaiter.mockReset();
+    mockFireGateEvent.mockReset();
 
     // Default: authenticated, worker resolves to task, no conflict, append succeeds
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
@@ -341,5 +351,41 @@ describe('check_path_claim MCP handler', () => {
     const result = JSON.parse(body.result.content[0].text);
     expect(result.deadlock).toBe(true);
     expect(mockInsert).toHaveBeenCalled();
+  });
+
+  // ── Shared implementation (lib/path-claim-check.ts) ─────────────────────────
+  // This entry point used to carry its own copy. The MCP copy never recorded a
+  // gate event and told waiters to watch a Pusher event no agent subscribes to.
+
+  it('records a deferred path_claim gate event on conflict, tagged with this surface', async () => {
+    const PATHS = ['src/shared.ts'];
+    mockCheckPathClaimConflict.mockResolvedValue({ blockingTaskId: SIBLING_ID, blockingPath: 'src/shared.ts' });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(makeActiveTask({ missionId: MISSION_ID }))
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: MISSION_ID });
+
+    const result: any = JSON.parse((await callTool({ paths: PATHS })).result.content[0].text);
+    expect(result.claimed).toBe(false);
+    expect(result.message).toContain('path_released message');
+    expect(result.message).not.toContain('Pusher');
+
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(ev.outcome).toBe('deferred');
+    expect(ev.surface).toBe('mcp:check_path_claim');
+    expect(ev.callerOrigin).toBe('worker');
+    expect(ev.taskId).toBe(TASK_ID);
+    expect(ev.detail.blockingTaskId).toBe(SIBLING_ID);
+  });
+
+  it('records a rejected path_claim gate event for a wildcard', async () => {
+    const PATHS = ['**'];
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask());
+    await callTool({ paths: PATHS });
+    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
+    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    expect(ev.outcome).toBe('rejected');
+    expect(ev.surface).toBe('mcp:check_path_claim');
   });
 });

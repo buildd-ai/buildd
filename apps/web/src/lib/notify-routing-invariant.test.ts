@@ -30,6 +30,7 @@ const OPERATOR_SENDER_CALLS: Record<string, { calls: number; why: string }> = {
 
 /** Modules whose alerts are about one tenant: they must use the team path. */
 const TENANT_ALERT_MODULES = [
+  'app/api/cron/experiment-health/route.ts',
   'app/api/cron/stall-notify/route.ts',
   'app/api/github/webhook/dark-check-detection.ts',
   'app/api/github/webhook/route.ts',

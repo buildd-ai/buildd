@@ -88,6 +88,14 @@ export const GATE_SLUGS = {
    * one foreign commit stops it rebasing. See `lib/dependency-bot-pr.ts`.
    */
   DEPENDENCY_BOT_PR: 'dependency_bot_pr',
+  /**
+   * Retry-lineage supersession (`lib/retry-pr-supersession.ts`). `stranded`: an
+   * ancestor PR that should have been closed when a retry opened a fresh PR was
+   * left open (state unreadable, close failed). `warned`: the pr-reconcile
+   * sweep found two open PRs in one retry lineage and closed the older — the
+   * create_pr door missed it.
+   */
+  RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
