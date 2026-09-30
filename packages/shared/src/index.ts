@@ -1,6 +1,7 @@
 export * from './types';
 export * from './status';
 export * from './planning';
+export * from './shipped';
 export * from './runner-liveness';
 export * from './generated-paths';
 export * from './heartbeat-protocol';

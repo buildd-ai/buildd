@@ -735,6 +735,16 @@ export async function PATCH(
       await computeAndStoreFlightStripCache(id, { missionCompletedAt: updated?.completedAt ?? new Date() }).catch(e =>
         console.error(`[missions/patch] flight-strip cache compute failed for ${id}:`, e)
       );
+      // The "What shipped" record for a human completion: mechanical facts only,
+      // no author. Awaited because a serverless response can end before a
+      // floating promise does; the PR-file reads are capped at a few seconds and
+      // the wrapper never throws.
+      const { storeMissionShippedReportSafely } = await import('@/lib/mission-shipped-report');
+      await storeMissionShippedReportSafely(id, {
+        authorTaskId: null,
+        origin: 'manual',
+        completedAt: updated?.completedAt ?? new Date(),
+      });
     }
 
     // Opting a mission in has one side effect that cannot wait for the next

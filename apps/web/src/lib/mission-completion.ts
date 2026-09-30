@@ -663,6 +663,13 @@ export async function completeMissionIfVerified(
      * note a still-working mission; that would be one warning per task.
      */
     proposed?: boolean;
+    /**
+     * The task whose output proposed this completion (the planning task, or the
+     * evaluation task). If this call wins the claim, its `shipped` output is
+     * what the "What shipped" record is built from. Absent for paths with no
+     * proposing author (dormancy, the criteria evaluator, a heartbeat).
+     */
+    authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
   const decision = opts.decision
@@ -748,6 +755,20 @@ export async function completeMissionIfVerified(
   computeAndStoreFlightStripCache(missionId, { missionCompletedAt: completedAt }).catch(e =>
     console.error(`[mission-completion] flight-strip cache compute failed for ${missionId}:`, e)
   );
+
+  // The "What shipped" record (docs/design/mission-shipped-report.md): only the
+  // claim winner writes it, from whichever proposal actually won. Fire-and-forget
+  // like the strip above — it can never un-complete the mission, and the page
+  // falls back to today's rendering when it is absent. Imported on demand so the
+  // GitHub client and screenshot queries stay out of the import graph of a gate
+  // that nearly every mission path loads.
+  import('@/lib/mission-shipped-report')
+    .then(m => m.storeMissionShippedReportSafely(missionId, {
+      authorTaskId: opts.authorTaskId ?? null,
+      origin: 'auto',
+      completedAt,
+    }))
+    .catch(e => console.error(`[mission-completion] shipped report failed for ${missionId}:`, e));
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({

@@ -113,6 +113,14 @@ let visualModel: any = null;
 const mockLoadVisualReview = mock(async (_m: any) => visualModel);
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
 
+const shippedStoreCalls: Array<{ missionId: string; opts: any }> = [];
+mock.module('@/lib/mission-shipped-report', () => ({
+  storeMissionShippedReportSafely: (missionId: string, opts: any) => {
+    shippedStoreCalls.push({ missionId, opts });
+    return Promise.resolve();
+  },
+}));
+
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
 }));
@@ -1004,6 +1012,58 @@ describe('completeMissionIfVerified — allowed', () => {
     await new Promise(r => setTimeout(r, 0));
 
     expect(updateCalls.some(c => c.data.flightStripCache !== undefined)).toBe(false);
+  });
+});
+
+describe('completeMissionIfVerified — what shipped record', () => {
+  beforeEach(() => {
+    reset();
+    shippedStoreCalls.length = 0;
+  });
+
+  it('the winner of the claim stores the record with the proposing task as author', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls).toHaveLength(1);
+    expect(shippedStoreCalls[0].missionId).toBe('m1');
+    expect(shippedStoreCalls[0].opts).toMatchObject({ authorTaskId: 'author-1', origin: 'auto' });
+    expect(shippedStoreCalls[0].opts.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('a completion with no proposing task stores the record with no author', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls[0].opts.authorTaskId).toBeNull();
+  });
+
+  it('a losing racer never stores a record', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    missionUpdateReturning = [];
+
+    await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls).toHaveLength(0);
+  });
+
+  it('a refused completion never stores a record', async () => {
+    activeMission();
+    taskRows = [work('pending')];
+
+    const result = await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(result.completed).toBe(false);
+    expect(shippedStoreCalls).toHaveLength(0);
   });
 });
 

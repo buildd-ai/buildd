@@ -767,6 +767,20 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     }
   }
 
+  // Screenshots the author may nominate in `shipped.heroShots` when it proposes
+  // completion (docs/design/mission-shipped-report.md). Read on demand and
+  // best-effort: no list just means no nomination, and the server picks.
+  if (!missionWorkspaceSensitive) {
+    try {
+      const { loadShippedHeroPool } = await import('./mission-shipped-report');
+      const pool = await loadShippedHeroPool(missionId);
+      if (pool.length > 0) {
+        descParts.push('\n## Screenshots for shipped.heroShots (id — page, viewport)');
+        for (const shot of pool) descParts.push(`- ${shot.artifactId} — ${shot.route}, ${shot.viewport}`);
+      }
+    } catch { /* optional context */ }
+  }
+
   // PR awareness for build missions
   if (isBuild && taskPRs.length > 0) {
     descParts.push('\n## Open Pull Requests');

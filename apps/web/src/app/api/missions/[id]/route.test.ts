@@ -66,6 +66,14 @@ mock.module('@/lib/criteria-escalation', () => ({
   escalateCriteriaFailure: mockEscalateCriteriaFailure,
 }));
 
+const shippedStoreCalls: Array<{ missionId: string; opts: any }> = [];
+mock.module('@/lib/mission-shipped-report', () => ({
+  storeMissionShippedReportSafely: (missionId: string, opts: any) => {
+    shippedStoreCalls.push({ missionId, opts });
+    return Promise.resolve();
+  },
+}));
+
 const mockEnsureMissionIntegrationBranch = mock(() =>
   Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true })
 );
@@ -498,6 +506,36 @@ describe('PATCH /api/missions/[id]', () => {
     // The status write is still visible — the two `db.update(missions)` calls
     // for one request merge in the mock, matching the real DB seeing both.
     expect(updatedSetData.status).toBe('completed');
+  });
+
+  it('an explicit completion stores a manual "what shipped" record with no author', async () => {
+    shippedStoreCalls.length = 0;
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
+
+    expect(shippedStoreCalls).toHaveLength(1);
+    expect(shippedStoreCalls[0].missionId).toBe('11111111-1111-4111-8111-111111111111');
+    expect(shippedStoreCalls[0].opts).toMatchObject({ authorTaskId: null, origin: 'manual' });
+  });
+
+  it('does not store a "what shipped" record when the mission was already completed', async () => {
+    shippedStoreCalls.length = 0;
+    mockMissionsFindFirst.mockImplementationOnce(() => ({
+      id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'completed',
+    }) as any);
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ priority: 5 }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
+    expect(shippedStoreCalls).toHaveLength(0);
   });
 
   it('does not compute a flight-strip cache when the mission was already completed', async () => {
