@@ -8,6 +8,7 @@ import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } fr
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
+import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import {
   checkPrIsDraft,
   fetchCIFailureLogs,
@@ -1943,6 +1944,24 @@ async function handleCheckSuiteFailure(
         }
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+        // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
+        // never throws: evidence is diagnostics, the retry is the product.
+        const captureEvidence = () => captureCiJobLogEvidence({
+          installationId,
+          repoFullName: repository.full_name,
+          failedJobId: ciLogs.failedJobId,
+          workspaceId: retryTask.workspaceId,
+          retryTaskId: newTask.id,
+          parentTaskId: retryTask.parentTaskId,
+          workerId: worker.id,
+          prNumber: pr.number,
+        });
+        try {
+          after(captureEvidence);
+        } catch {
+          // Outside a request scope (tests, direct invocation) — run inline.
+          await captureEvidence();
+        }
         await appendPrActivity({
           installationId,
           repoFullName: repository.full_name,

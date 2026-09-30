@@ -114,6 +114,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+const mockCaptureCiJobLogEvidence = mock((_input: any) => Promise.resolve({ status: 'stored' }));
+mock.module('@/lib/ci-job-log-evidence', () => ({
+  captureCiJobLogEvidence: mockCaptureCiJobLogEvidence,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -610,6 +615,7 @@ function resetAll() {
   mockWorkerOwnsPrUrl.mockClear();
   mockWorkspaceRepoMatches.mockClear();
   mockDispatchNewTask.mockReset();
+  mockCaptureCiJobLogEvidence.mockClear();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
   mockWorkspacesFindMany.mockReset();
@@ -1157,6 +1163,27 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
       expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    // byo-evidence-storage AC-3: the failed job's log is captured as evidence
+    // for the new retry task, after the retry has been dispatched.
+    it('captures ci_job_log evidence for the retry task after dispatching it', async () => {
+      withFailedWorkerPr();
+      const order: string[] = [];
+      mockDispatchNewTask.mockImplementation(() => { order.push('dispatch'); return Promise.resolve(); });
+      mockCaptureCiJobLogEvidence.mockImplementationOnce(() => { order.push('evidence'); return Promise.resolve({ status: 'stored' }); });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCaptureCiJobLogEvidence).toHaveBeenCalledTimes(1);
+      const arg = mockCaptureCiJobLogEvidence.mock.calls[0][0];
+      expect(arg.retryTaskId).toBe('task-1'); // the id the insert mock returns
+      expect(arg.parentTaskId).toBe('t1');
+      expect(arg.workerId).toBe('w1');
+      expect(arg.workspaceId).toBe('ws1');
+      expect(arg.prNumber).toBe(42);
+      expect(order).toEqual(['dispatch', 'evidence']);
     });
 
     // Regression: the CI fix attempt copied only the phase, so a Codex task's
