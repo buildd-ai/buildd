@@ -16,6 +16,9 @@ mock.module('@/lib/experiments-store', () => ({
   insertExperiment: mockInsert,
 }));
 
+const mockHealth = mock(async (..._a: any[]) => [] as any[]);
+mock.module('@buildd/core/experiment-health-source', () => ({ runExperimentHealth: mockHealth }));
+
 import { GET, POST } from './route';
 
 const T0 = new Date('2026-01-01T00:00:00.000Z');
@@ -76,6 +79,30 @@ describe('GET /api/experiments', () => {
     as('admin');
     await get();
     expect(mockList).toHaveBeenCalledWith(TEAM);
+  });
+
+  it('attaches enrolment health for running experiments only, keyed by id', async () => {
+    as('admin');
+    mockList.mockResolvedValue([
+      row({ id: 'r', key: 'live', status: 'running', visibility: 'team' }),
+      row({ id: 'd', key: 'draft', status: 'draft', visibility: 'team' }),
+    ]);
+    const finding = { code: 'no_recent_assignments', severity: 'critical', detail: 'no unit enrolled in 4d' };
+    mockHealth.mockReset();
+    mockHealth.mockResolvedValue([finding]);
+    const body = await (await get()).json();
+    expect(body.health).toEqual({ r: [finding] });
+    expect(mockHealth).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing health check leaves that experiment out, the list still answers', async () => {
+    as('admin');
+    mockList.mockResolvedValue([row({ id: 'r', status: 'running', visibility: 'team' })]);
+    mockHealth.mockReset();
+    mockHealth.mockRejectedValue(new Error('db down'));
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect((await res.json()).health).toEqual({});
   });
 
   it('never returns teamId or createdBy', async () => {

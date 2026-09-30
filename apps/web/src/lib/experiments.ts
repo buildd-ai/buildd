@@ -28,6 +28,7 @@ import type {
 } from '@buildd/shared';
 import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
 import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
+import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -130,6 +131,10 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
   if (!validFraction(fraction)) return { ok: false, status: 400, error: 'treatmentFraction must be a number strictly between 0 and 1' };
 
   if (b.config !== undefined && !isPlainObject(b.config)) return { ok: false, status: 400, error: 'config must be an object' };
+  if (b.config !== undefined) {
+    const capError = validateDurationCap(b.config as Record<string, unknown>);
+    if (capError) return { ok: false, status: 400, error: capError };
+  }
 
   const visibility = b.visibility ?? 'admins';
   if (!EXPERIMENT_VISIBILITIES.includes(visibility)) return { ok: false, status: 400, error: 'visibility must be "admins" or "team"' };
@@ -214,9 +219,15 @@ export function planExperimentPatch(current: ExperimentState, body: unknown, now
   }
   if (b.config !== undefined) {
     if (!isPlainObject(b.config)) return { ok: false, status: 400, error: 'config must be an object' };
+    const capError = validateDurationCap(b.config);
+    if (capError) return { ok: false, status: 400, error: capError };
     if (stableStringify(b.config) !== stableStringify(current.config)) {
       set.config = b.config;
-      drawChanged = true;
+      // The duration cap bounds the experiment's life, not the draw: editing
+      // it alone must not re-randomise every unit.
+      if (stableStringify(stripNonDrawConfig(b.config)) !== stableStringify(stripNonDrawConfig(current.config))) {
+        drawChanged = true;
+      }
     }
   }
 

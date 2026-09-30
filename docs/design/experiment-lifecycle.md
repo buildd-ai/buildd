@@ -444,6 +444,17 @@ Declared rule, in order of preference:
 4. **Expiry** — the hard backstop. Reaching it moves the experiment to `frozen`
    and nothing else. It is not a verdict.
 
+> **Update — expiry and enrolment health shipped (narrow form).** Every kind's
+> `config` takes an optional `maxDurationDays` and/or `endsAt`; editing only
+> those never bumps `policyVersion` (`stripNonDrawConfig`). The daily
+> `/api/cron/experiment-health` pauses a running experiment past its cap —
+> `paused` standing in for the unbuilt `frozen` — and sends one alert listing
+> every running experiment whose enrolment looks broken: nothing enrolled for
+> days, an arm never drawn, a split far off `treatmentFraction`, one unit
+> holding most of an arm (`packages/core/experiment-health.ts`). The same
+> findings appear in `manage_experiments` list and readout. Accrual, futility
+> and harm rules are still unbuilt.
+
 **"Not yet conclusive" is a normal state, not a failure.** Reuse
 `DerivedMetric` from `packages/core/derived-metric.ts` for the readout's
 primary outcome, with the existing typed reasons doing real work:
