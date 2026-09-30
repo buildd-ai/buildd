@@ -613,6 +613,71 @@ describe('resumable runs: park and resume', () => {
     expect(h.state.reportHistory?.at(-1)?.outcome).toBe('parked');
   });
 
+  test("the orphan park does not block the agent's start: the egress handler calls back into the agent", async () => {
+    // onStart runs under blockConcurrencyWhile; the park's upload reaches the
+    // snapshot route, which asks this agent for its scope. Awaiting the park
+    // inside onStart deadlocks until the runtime resets the object.
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    let returned = false;
+    const recovering = h.sup.recoverOrphan().then(() => { returned = true; });
+    await h.until(() => h.fc.execs.length === 1);
+    await recovering;
+    expect(returned).toBe(true);
+    expect(h.state.status).toBe('running'); // a duplicate dispatch meanwhile is still ignored
+    expect(h.sup.dispatch()).toMatchObject({ accepted: false, reason: 'already_live' });
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.fc.execs.length === 2);
+  });
+
+  test('after a clean orphan park the agent marks the worker parked on buildd itself', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.fc.execs.length === 2);
+    const marks = h.fetches.filter((f) => f.url.endsWith('/api/workers/w-orph/park'));
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.init.method).toBe('POST');
+    expect((marks[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
+  });
+
+  test('an orphan park buildd refuses to mark is crashed, not resumed', async () => {
+    const h = harness({
+      config: { resumableRuns: true },
+      initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 },
+      fetchImpl: async (url) => new Response('{}', { status: url.endsWith('/park') ? 409 : 200 }),
+    });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.state.status === 'exited');
+    await h.settle();
+    expect(h.state).toMatchObject({ outcome: 'crashed' });
+    expect(h.fc.execs).toHaveLength(1);
+  });
+
+  test('orphan park re-installs egress first: the restarted agent owns the snapshot route now', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    const recovering = h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.calls.slice(0, 2)).toEqual(['installEgress', 'exec']);
+    h.fc.exits[0]!.resolve(1);
+    await recovering;
+  });
+
+  test('orphan park whose egress cannot be installed is crashed as before (no exec)', async () => {
+    const h = harness({ egressFails: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.fc.execs).toHaveLength(0);
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+  });
+
   test('orphan park that fails falls back to today: crashed and reported, no resume', async () => {
     const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
     h.fc.markRunning();
@@ -620,6 +685,7 @@ describe('resumable runs: park and resume', () => {
     await h.until(() => h.fc.execs.length === 1);
     h.fc.exits[0]!.resolve(1);
     await recovering;
+    await h.settle();
     expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', crashReport: 'sent' });
     expect(h.fc.execs).toHaveLength(1);
     expect(h.fc.starts).toHaveLength(0);

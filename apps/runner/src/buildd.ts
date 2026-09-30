@@ -401,9 +401,13 @@ export class BuilddClient {
   private async parkCall<T>(workerId: string, route: string, method: string, pick: (body: any) => T | null): Promise<T | null> {
     try {
       const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/${route}`, { method });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.log(`[once] ${method} /${route} answered ${res.status}`);
+        return null;
+      }
       return pick(await res.json().catch(() => null));
-    } catch {
+    } catch (err) {
+      console.log(`[once] ${method} /${route} failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }

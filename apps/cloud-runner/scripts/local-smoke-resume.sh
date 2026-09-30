@@ -138,9 +138,15 @@ GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" FAKE_PORT="$FAKE_PORT" bun -
       log("MODEL_TURN main ask");
       return reply([{ type: "tool_use", id: "toolu_main_ask", name: "AskUserQuestion", input: { questions: [{ question: "Which colour should the widget be?", header: "Colour", multiSelect: false, options: [{ label: "Blue", description: "Blue" }, { label: "Green", description: "Green" }] }] } }], "tool_use");
     }
+    // Asked, not yet answered: end the turn and wait, as a real model would.
+    if (!orphan && !all.includes(ANSWER)) {
+      log("MODEL_TURN main wait");
+      return reply([{ type: "text", text: "Waiting for your answer on the colour." }], "end_turn");
+    }
     const checkId = `toolu_${tag}_check`;
     if (!used.includes(checkId)) {
-      log(`MODEL_RESUMED ${tag} has_edit_turn=${used.includes(`toolu_${tag}_edit`)} has_ask_turn=${used.includes("toolu_main_ask")} has_answer=${all.includes(ANSWER)}`);
+      const answers = msgs.filter((m) => m.role === "user").map(textOf).filter((t) => t.includes(ANSWER)).length;
+      log(`MODEL_RESUMED ${tag} has_edit_turn=${used.includes(`toolu_${tag}_edit`)} has_ask_turn=${used.includes("toolu_main_ask")} answers=${answers}`);
       return reply([{ type: "tool_use", id: checkId, name: "Bash", input: { command: "git status --porcelain; git diff", description: "Check" } }], "tool_use");
     }
     const result = toolResult(msgs, checkId);
@@ -277,8 +283,8 @@ check "report: restore of the park bundle timed" yes "$(bun -e 'const r=JSON.par
 check "the second container restored the repo from the warm snapshot" warm "$(jf "$s" report.repo.source)"
 check "never a second claim" 1 "$(fakelog "CLAIM $WORKER")"
 check "exactly one re-attach" "1 0" "$(fakelog "REATTACH $WORKER") $(fakelog "REATTACH_REFUSED $WORKER")"
-check "the answer reached the session and was acknowledged" 1 "$(fakelog "DELIVERED $WORKER")"
-check "the resumed conversation carried the earlier turns and the answer" 1 "$(fakelog 'MODEL_RESUMED main has_edit_turn=true has_ask_turn=true has_answer=true')"
+check "the answer was acknowledged" yes "$([ "$(fakelog "DELIVERED $WORKER")" -ge 1 ] && echo yes || echo no)"
+check "the resumed conversation carried the earlier turns and the answer, once" 1 "$(fakelog 'MODEL_RESUMED main has_edit_turn=true has_ask_turn=true answers=1')"
 diff_b64="$(sed -n 's/^MODEL_CHECK main //p' "$LOG.fake" | tail -1)"
 diff_text="$(printf '%s' "$diff_b64" | base64 -d 2>/dev/null || true)"
 echo "   git status/diff seen by the resumed agent:"; printf '%s\n' "$diff_text" | sed 's/^/     | /' | head -12

@@ -288,6 +288,15 @@ describe('parkWorkerNow', () => {
     expect(calls.marks).toEqual([]);
   });
 
+  test('an orphan park uploads but leaves the mark to the agent (the container may have lost its route to buildd)', async () => {
+    writeRunnerState(paths, worktree);
+    const { d, calls } = deps();
+    expect(await parkWorkerNow(worker(), 'orphan', d)).toBe(true);
+    expect(calls.uploads).toEqual(['/park true']);
+    expect(calls.marks).toEqual([]);
+    expect(readParkCount(paths.builddHome, WORKER)).toBe(1);
+  });
+
   test('no worktree, no park', async () => {
     const { d, calls } = deps();
     expect(await parkWorkerNow({ ...worker(), worktreePath: undefined }, 'waiting', d)).toBe(false);

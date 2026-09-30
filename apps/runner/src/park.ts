@@ -268,7 +268,8 @@ export interface ParkNowDeps {
 
 /**
  * Park one worker: enforce MAX_PARKS, build the bundle, upload it to `/park`,
- * then mark the worker parked on the server. False (never a throw) when any
+ * then mark the worker parked on the server (a `waiting` park; an `orphan`
+ * park's agent marks it). False (never a throw) when any
  * step fails or the bound is reached; the caller then holds the container as
  * before. The bundle only counts once the server has accepted the park.
  */
@@ -293,10 +294,17 @@ export async function parkWorkerNow(
     tarPath = built.tarPath;
     const up = d.uploader.upload('/park', built.tarPath);
     if (up.status !== 201) { d.log(`[once] park upload answered ${up.status || 'nothing'}`); return false; }
-    const marked = await d.client.parkWorker(worker.id);
-    if (!marked) { d.log('[once] the server did not accept the park'); return false; }
+    // An orphan park leaves the mark to the agent that exec'd it: this
+    // container outlived its agent, and its route to buildd may not have
+    // survived with it (under wrangler dev it does not).
+    let until = 'the agent marks it';
+    if (kind !== 'orphan') {
+      const marked = await d.client.parkWorker(worker.id);
+      if (!marked) { d.log('[once] the server did not accept the park'); return false; }
+      until = `until ${marked.parkedUntil}`;
+    }
     d.emitMetric('park_bytes', built.bytes);
-    d.log(`[once] worker ${worker.id} parked until ${marked.parkedUntil} (${built.bytes} bytes, park ${built.manifest.parks} of ${MAX_PARKS})`);
+    d.log(`[once] worker ${worker.id} parked, ${until} (${built.bytes} bytes, park ${built.manifest.parks} of ${MAX_PARKS})`);
     return true;
   } catch (err) {
     d.log(`[once] park failed: ${err instanceof Error ? err.message : String(err)}`);

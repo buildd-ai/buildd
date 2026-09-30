@@ -601,35 +601,54 @@ export async function runOnceFromCli(opts: {
   return runResume({ workerId: resumeWorkerId }, { ...deps, resume });
 }
 
+export interface ProcInfo { pid: number; ppid: number; uid: number; startTime: number }
+
 /**
- * --park-orphan: SIGKILL every other process of this user (the orphaned
- * runner, Claude Code and anything they spawned), so nothing writes to the
- * worktree or the transcript while they are bundled. Never this process or
- * its ancestors, never another user's (the container's init is root). Linux
- * /proc only; elsewhere it does nothing.
+ * Which processes --park-orphan stops: every process of this user (the
+ * orphaned runner, Claude Code, anything they spawned, including strays
+ * reparented to init) except init itself, init's first child (the image's
+ * main process, `sleep infinity`: killing it stops the container), this
+ * process and its ancestors. The image runs everything, init included, as the
+ * same user, so the uid alone does not protect the container.
+ */
+export function pidsToStop(procs: ProcInfo[], selfPid: number, uid: number): number[] {
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const keep = new Set<number>([1]);
+  let pid: number | undefined = selfPid;
+  for (let i = 0; i < 64 && pid !== undefined && pid > 1; i++) {
+    keep.add(pid);
+    pid = byPid.get(pid)?.ppid;
+  }
+  const initChildren = procs.filter((p) => p.ppid === 1).sort((a, b) => a.startTime - b.startTime);
+  if (initChildren[0]) keep.add(initChildren[0].pid);
+  return procs.filter((p) => p.pid > 1 && p.uid === uid && !keep.has(p.pid)).map((p) => p.pid);
+}
+
+/**
+ * --park-orphan: SIGKILL the processes pidsToStop picks, so nothing writes to
+ * the worktree or the transcript while they are bundled. Linux /proc only;
+ * elsewhere it does nothing.
  */
 export function stopOtherProcesses(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { existsSync, readdirSync, readFileSync } = require('fs') as typeof import('fs');
   if (!existsSync('/proc/self/stat')) return;
   const uid = process.getuid?.();
-  const keep = new Set<number>();
-  let pid = process.pid;
-  for (let i = 0; i < 64 && pid > 1; i++) {
-    keep.add(pid);
+  if (uid === undefined) return;
+  const procs: ProcInfo[] = [];
+  for (const entry of readdirSync('/proc')) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid < 1) continue;
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-      pid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
-    } catch { break; }
+      // Fields after the ")" of comm: state(3) ppid(4) ... starttime(22).
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const m = /^Uid:\s+(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, 'utf-8'));
+      if (!m) continue;
+      procs.push({ pid, ppid: Number(rest[1]), uid: Number(m[1]), startTime: Number(rest[19]) });
+    } catch { /* gone already */ }
   }
-  for (const entry of readdirSync('/proc')) {
-    const p = Number(entry);
-    if (!Number.isInteger(p) || p <= 1 || keep.has(p)) continue;
-    try {
-      const status = readFileSync(`/proc/${p}/status`, 'utf-8');
-      const m = /^Uid:\s+(\d+)/m.exec(status);
-      if (!m || Number(m[1]) !== uid) continue;
-      process.kill(p, 'SIGKILL');
-    } catch { /* gone already, or not ours */ }
+  for (const pid of pidsToStop(procs, process.pid, uid)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone already */ }
   }
 }

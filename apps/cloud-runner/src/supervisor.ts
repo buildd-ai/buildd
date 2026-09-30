@@ -192,16 +192,49 @@ export class TaskSupervisor {
     // Resumable runs: a container still running under a restarted agent is
     // parked (the runner is stopped, its worker bundled and marked parked),
     // then resumed in a fresh container. Anything short of a clean park falls
-    // back to the crash path below.
+    // back to the crash path. Not awaited: this runs from onStart, under the
+    // runtime's blockConcurrencyWhile, and the park's upload goes through the
+    // snapshot route, which calls back into this agent for its scope. The
+    // state stays `running` meanwhile, so a dispatch is ignored as a duplicate.
     if (this.d.config.resumableRuns && state.workerId && this.d.container.running) {
       const workerId = state.workerId;
-      const parked = await this.d.keepAliveWhile(() => this.parkOrphan(workerId));
-      if (parked) {
-        await this.finish({ code: EXIT_PARKED, outcome: 'parked' });
-        this.dispatch({ resumeWorkerId: workerId });
-        return;
-      }
+      this.d.waitUntil(this.parkOrphanThenResume(workerId, state).catch((err) =>
+        this.d.log(`[cloud-runner] task ${this.d.taskId}: orphan recovery error: ${describe(err)}`)));
+      return;
     }
+    await this.crashOrphan(state);
+  }
+
+  private async parkOrphanThenResume(workerId: string, state: RunState): Promise<void> {
+    const parked = await this.d.keepAliveWhile(() => this.parkOrphan(workerId));
+    if (!parked || !(await this.markParked(workerId))) return this.crashOrphan(state);
+    await this.finish({ code: EXIT_PARKED, outcome: 'parked' });
+    this.dispatch({ resumeWorkerId: workerId });
+  }
+
+  /**
+   * POST /api/workers/[id]/park for an orphan park. The agent does this, not
+   * the container: the container outlived its agent, and its route to buildd
+   * may not have survived with it (under wrangler dev it does not).
+   */
+  private async markParked(workerId: string): Promise<boolean> {
+    const { BUILDD_SERVER: server, BUILDD_API_KEY: apiKey } = this.d.config;
+    if (!server || !apiKey) return false;
+    try {
+      const res = await this.d.fetch(`${server.replace(/\/+$/, '')}/api/workers/${encodeURIComponent(workerId)}/park`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(CRASH_REPORT_TIMEOUT_MS),
+      });
+      if (res.ok) return true;
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: park mark for worker ${workerId} returned ${res.status}`);
+    } catch (err) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: park mark for worker ${workerId} failed: ${describe(err)}`);
+    }
+    return false;
+  }
+
+  private async crashOrphan(state: RunState): Promise<void> {
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${state.attempt} was ${state.status} when the agent restarted; marking it crashed`);
     const error = 'The agent restarted during the run and could not re-attach to the runner process.';
     await this.finish({ code: null, outcome: 'crashed', error });
@@ -211,6 +244,9 @@ export class TaskSupervisor {
   private async parkOrphan(workerId: string): Promise<boolean> {
     this.d.log(`[cloud-runner] task ${this.d.taskId}: container still running after an agent restart; parking worker ${workerId}`);
     try {
+      // The interception belonged to the agent before the restart; the park
+      // upload goes through the snapshot route, so this agent installs its own.
+      await this.d.installEgress();
       const proc = await this.d.container.exec(orphanParkCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe' });
       const pumps = Promise.all([this.pump(proc.stdout), this.pump(proc.stderr)]);
       const code = await Promise.race([

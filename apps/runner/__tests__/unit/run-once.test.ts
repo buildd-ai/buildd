@@ -11,6 +11,7 @@ import {
   runOnce,
   runResume,
   runParkOrphan,
+  pidsToStop,
   parseOnceArgs,
   EXIT_PARKED,
   PARKED_LINE_PREFIX,
@@ -370,6 +371,37 @@ describe('runParkOrphan (--park-orphan)', () => {
   test('a park that fails exits 1 (the agent falls back to the crash report)', async () => {
     expect(await runParkOrphan({ workerId: 'w-9' }, { stopOthers: () => {}, parkFromDisk: async () => false, log: () => {} })).toBe(EXIT_FAILED);
     expect(await runParkOrphan({ workerId: 'w-9' }, { stopOthers: () => {}, parkFromDisk: async () => { throw new Error('x'); }, log: () => {} })).toBe(EXIT_FAILED);
+  });
+});
+
+describe('pidsToStop (--park-orphan)', () => {
+  // The container: tini (1) runs `sleep infinity` (7) as its main process, all
+  // as the image user. The orphaned runner was exec'd (ppid 0) with Claude Code
+  // under it; this process was exec'd later by the restarted agent.
+  const UID = 1000;
+  const procs = [
+    { pid: 1, ppid: 0, uid: UID, startTime: 100 },
+    { pid: 7, ppid: 1, uid: UID, startTime: 101 },
+    { pid: 40, ppid: 0, uid: UID, startTime: 500 },
+    { pid: 41, ppid: 40, uid: UID, startTime: 510 },
+    { pid: 42, ppid: 41, uid: UID, startTime: 520 },
+    { pid: 55, ppid: 1, uid: UID, startTime: 600 }, // reparented grandchild of the old runner
+    { pid: 60, ppid: 0, uid: 0, startTime: 700 }, // someone else's
+    { pid: 90, ppid: 0, uid: UID, startTime: 900 }, // buildd-once.sh for this park
+    { pid: 91, ppid: 90, uid: UID, startTime: 901 }, // this process
+  ];
+
+  test("stops the orphaned runner's tree and strays, never the container's main process", () => {
+    expect(pidsToStop(procs, 91, UID).sort((a, b) => a - b)).toEqual([40, 41, 42, 55]);
+  });
+
+  test('keeps init, its first child, this process and its ancestors', () => {
+    const stop = pidsToStop(procs, 91, UID);
+    for (const keep of [1, 7, 90, 91]) expect(stop).not.toContain(keep);
+  });
+
+  test("never another user's process", () => {
+    expect(pidsToStop(procs, 91, UID)).not.toContain(60);
   });
 });
 
