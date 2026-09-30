@@ -316,6 +316,11 @@ export interface WorkspaceGitConfig {
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
+
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
   maxBudgetUsd?: number;
