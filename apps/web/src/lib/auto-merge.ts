@@ -20,6 +20,7 @@ import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERA
 import {
   evaluateModelApproveBound,
   BUILD_PROOF_CHECK_TOKENS,
+  latestRunPerName,
   type CheckRunState,
   type ModelApproveBound,
 } from '@/lib/auto-merge-bound';
@@ -154,7 +155,7 @@ export async function evaluateAutoMergeSafety(
       installationId,
       `/repos/${repoFullName}/commits/${headSha}/check-runs`,
     );
-    checkRuns = checkRunsData?.check_runs ?? [];
+    checkRuns = latestRunPerName(checkRunsData?.check_runs ?? []);
 
     const pendingOrFailed = checkRuns.filter(
       (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',

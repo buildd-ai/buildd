@@ -124,6 +124,16 @@ UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I
 )
 PROD_CONTEXT_RE = re.compile(PROD_CONTEXT, re.I)
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
+_LIVE = re.compile(r"\blive\b", re.I)
+
+
+def has_prod_context(line: str) -> bool:
+    """PROD_CONTEXT, except that `live` inside a backtick span is an identifier
+    (`mode: 'live'`), not a claim about production. Only `live` is excused: a
+    span naming `prod` is still a production-flavoured sentence."""
+    return bool(PROD_CONTEXT_RE.search(
+        _CODE_SPAN.sub(lambda m: _LIVE.sub(" ", m.group(0)), line)))
 
 # Must start a line and carry a reason. An unanchored version matched its own
 # documentation -- a PR body that merely named the marker, inside backticks,
@@ -230,7 +240,7 @@ def scan_prose(text: str, where: str, rep: Report, check_counts: bool) -> None:
             big = COUNT_BIG.search(line)
             tenancy = COUNT_TENANCY.search(line)
             small = (COUNT_SMALL_IN_CONTEXT.search(line)
-                     and PROD_CONTEXT_RE.search(line))
+                     and has_prod_context(line))
             if big or tenancy or small:
                 rep.hit(where, "population count", i, line,
                         "state evidence qualitatively; exact figures belong in the private knowledge-base")
