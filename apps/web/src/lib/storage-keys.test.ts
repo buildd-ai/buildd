@@ -7,6 +7,7 @@ import {
   buildAttachmentKey,
   buildRoleConfigKey,
   buildAuditScreenshotKey,
+  buildEvidenceObjectKey,
   isAuditStorageKey,
   isOwnedStorageKey,
   assertNormalizedObjectKey,
@@ -149,6 +150,61 @@ describe('key builders', () => {
   it('builds a role config key from a validated slug and content hash', () => {
     const hash = 'a'.repeat(64);
     expect(buildRoleConfigKey('builder', hash)).toBe(`roles/builder/${hash}.json`);
+  });
+
+  it('builds an evidence object key with all segments validated', () => {
+    const prefix = 'evidence';
+    const ws = 'ws-1';
+    const rootTask = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const task = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const worker = 'cccccccc-dddd-4eee-8fff-000000000000';
+    const kind = 'command_output';
+    const filename = '2024-01-01T00-00-00Z-0.jsonl.gz';
+    const key = buildEvidenceObjectKey(prefix, ws, rootTask, task, worker, kind, filename);
+    expect(key).toBe(`evidence/${ws}/${rootTask}/${task}/${worker}/${kind}/${filename}`);
+    expect(key.split('/')).toHaveLength(7);
+  });
+
+  it('rejects evidence object keys when any structural segment contains .. or /', () => {
+    const ws = 'ws-1';
+    const rootTask = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const task = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const worker = 'cccccccc-dddd-4eee-8fff-000000000000';
+    const kind = 'command_output';
+    const filename = '2024-01-01T00-00-00Z-0.jsonl.gz';
+    // Reject .. in each position
+    expect(() => buildEvidenceObjectKey('..', ws, rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', '..', rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, '..', task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, '..', worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, '..', kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, '..', filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, kind, '..')).toThrow();
+    // Reject / in each position
+    expect(() => buildEvidenceObjectKey('a/b', ws, rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', 'a/b', rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, 'a/b', task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, 'a/b', worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, 'a/b', kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, 'a/b', filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, kind, 'a/b')).toThrow();
+  });
+
+  it('rejects evidence object keys when any segment is empty', () => {
+    const ws = 'ws-1';
+    const rootTask = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const task = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    const worker = 'cccccccc-dddd-4eee-8fff-000000000000';
+    const kind = 'command_output';
+    const filename = '2024-01-01T00-00-00Z-0.jsonl.gz';
+    // Reject empty strings in each position
+    expect(() => buildEvidenceObjectKey('', ws, rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', '', rootTask, task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, '', task, worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, '', worker, kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, '', kind, filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, '', filename)).toThrow();
+    expect(() => buildEvidenceObjectKey('evidence', ws, rootTask, task, worker, kind, '')).toThrow();
   });
 });
 
