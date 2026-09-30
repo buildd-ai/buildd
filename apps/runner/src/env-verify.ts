@@ -30,6 +30,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { findLockfileRule } from '@buildd/core/ecosystem-detect';
 
 const pexec = promisify(exec);
 
@@ -92,27 +93,6 @@ export function parseManifest(raw: string): EnvManifest | null {
 // ─── Auto-detection (pure) ───────────────────────────────────────────────────
 
 /**
- * A lockfile → toolchain+install mapping. First match wins, so keep the most
- * specific / deterministic ecosystems first. This is deliberately conservative:
- * it only claims a plan when a lockfile makes the install deterministic.
- */
-const DETECTORS: Array<{
-  lockfile: string;
-  runtime: string;
-  install: string;
-}> = [
-  { lockfile: 'bun.lock', runtime: 'bun', install: 'bun install --frozen-lockfile' },
-  { lockfile: 'bun.lockb', runtime: 'bun', install: 'bun install --frozen-lockfile' },
-  { lockfile: 'pnpm-lock.yaml', runtime: 'pnpm', install: 'pnpm install --frozen-lockfile' },
-  { lockfile: 'yarn.lock', runtime: 'yarn', install: 'yarn install --frozen-lockfile' },
-  { lockfile: 'package-lock.json', runtime: 'node', install: 'npm ci' },
-  { lockfile: 'uv.lock', runtime: 'uv', install: 'uv sync --frozen' },
-  { lockfile: 'poetry.lock', runtime: 'python3', install: 'poetry install' },
-  { lockfile: 'Cargo.lock', runtime: 'cargo', install: 'cargo fetch --locked' },
-  { lockfile: 'go.sum', runtime: 'go', install: 'go mod download' },
-];
-
-/**
  * Best-effort manifest for a repo that hasn't declared one. Returns `null` when
  * nothing recognizable is found — the caller reports that honestly rather than
  * pretending an empty plan "passed".
@@ -126,11 +106,8 @@ export function autoDetectManifest(
   root: string,
   fileExists: (p: string) => boolean = (p) => existsSync(join(root, p)),
 ): EnvManifest | null {
-  for (const d of DETECTORS) {
-    if (fileExists(d.lockfile)) {
-      return { toolchain: { runtime: d.runtime }, install: { command: d.install } };
-    }
-  }
+  const d = findLockfileRule(fileExists);
+  if (d) return { toolchain: { runtime: d.runtime }, install: { command: d.install } };
   return null;
 }
 
@@ -192,7 +169,7 @@ function realInstallProbe(root: string): InstallProbe {
  *  1. A lockfile at the root → just the root. This covers bun/pnpm workspaces:
  *     the root install links every workspace package, which is the whole point
  *     of the runner's call. No per-package fan-out.
- *  2. Else, directories at depth ≤ `maxDepth` holding a `DETECTORS` lockfile,
+ *  2. Else, directories at depth ≤ `maxDepth` holding a `LOCKFILE_RULES` lockfile,
  *     skipping `node_modules` and any dot-directory, and dropping any candidate
  *     nested inside another candidate.
  *  3. Else, directories at depth ≤ 2 holding a bare `package.json`.
@@ -204,12 +181,8 @@ export function detectInstallPlans(
   maxDepth = 3,
 ): InstallPlan[] {
   const planFor = (dir: string): InstallPlan | null => {
-    for (const d of DETECTORS) {
-      const rel = dir === '.' ? d.lockfile : `${dir}/${d.lockfile}`;
-      if (probe.exists(rel)) {
-        return { dir, runtime: d.runtime, install: d.install, lockfile: d.lockfile };
-      }
-    }
+    const d = findLockfileRule((lockfile) => probe.exists(dir === '.' ? lockfile : `${dir}/${lockfile}`));
+    if (d) return { dir, runtime: d.runtime, install: d.install, lockfile: d.lockfile };
     return null;
   };
 
