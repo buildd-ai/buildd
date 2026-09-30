@@ -57,8 +57,11 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
 const mockEnsureIntegrationBaseForTaskPr = mock(
   () => Promise.resolve({ usable: true, recreated: false }) as any,
 );
+const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
+  missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
+  reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
 // Mocks for the mission-integration-branch auto-review feature

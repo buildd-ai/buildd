@@ -10,7 +10,11 @@ import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
-import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import {
+  ensureMissionIntegrationBranch,
+  missionBranchRemedy,
+  reportMissionBranchUnresolved,
+} from '@/lib/mission-integration-branch';
 import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
 import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
@@ -388,12 +392,29 @@ export async function POST(req: NextRequest) {
         .where(eq(missions.id, mission.id));
       mission.workingBranch = workingBranch;
 
-      const ensured = await ensureMissionIntegrationBranch(mission.id).catch(err => ({
-        ok: false as const,
-        reason: 'api_error' as const,
-        detail: err instanceof Error ? err.message : String(err),
-      }));
+      // A mission with no workspace has no repo to cut the branch in YET — that
+      // is not a failure, it is deferred: the first task filed into a
+      // repo-linked workspace cuts it (POST /api/tasks), and create_pr re-cuts
+      // it from the task's workspace as a last resort. Attempting it here only
+      // produced a `no_repo` note that read as a dead end.
+      const ensured = resolvedWorkspaceId
+        ? await ensureMissionIntegrationBranch(mission.id).catch(err => ({
+            ok: false as const,
+            reason: 'api_error' as const,
+            detail: err instanceof Error ? err.message : String(err),
+          }))
+        : { ok: true as const };
       if (!ensured.ok) {
+        await reportMissionBranchUnresolved({
+          missionId: mission.id,
+          branch: workingBranch,
+          where: 'mission_create',
+          surface: 'POST /api/missions',
+          cause: ensured.reason === 'not_opted_in' ? 'missing' : ensured.reason,
+          fallback: 'none',
+          detail: ensured.detail ?? null,
+          workspaceId: resolvedWorkspaceId,
+        });
         // Do not fail the create — the mission, flag, and branch name are all correct.
         // Say so where an operator will see it, exactly like the PATCH opt-in path does.
         const actor = await resolveFeedActor({ user, apiAccount });
@@ -401,7 +422,7 @@ export async function POST(req: NextRequest) {
           missionId: mission.id,
           type: 'update',
           title: 'Integration branch could not be created',
-          body: `Option A′ is enabled for this mission, but its integration branch (\`${workingBranch}\`) could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs will fail to open until this is resolved.`,
+          body: `Option A′ is enabled for this mission, but its integration branch (\`${workingBranch}\`) could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs fall back to trunk until this is resolved.\n\n**To fix:** ${missionBranchRemedy(ensured.reason)}`,
           actor,
         }).catch(e => console.error('[missions/post] Failed to emit integration-branch note:', e));
       }

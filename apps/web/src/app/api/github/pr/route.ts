@@ -719,6 +719,10 @@ export async function POST(req: NextRequest) {
           || workspace.gitConfig?.defaultBranch
           || repo.defaultBranch
           || null,
+        // The mission may have no workspace of its own; the task always does.
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
       });
       integrationBaseMissing = !ready.usable;
     }

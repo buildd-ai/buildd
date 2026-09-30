@@ -76,8 +76,11 @@ mock.module('@/lib/mission-wake', () => ({
   wakeMissionAfterResponse: mockWakeMissionAfterResponse,
 }));
 
+const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+  missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
+  reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
 mock.module('@/lib/auth-helpers', () => ({
