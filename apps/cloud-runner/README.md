@@ -169,15 +169,17 @@ Needs Docker. From this directory:
 
 ```bash
 bunx wrangler dev --var DISPATCH_TOKEN:dev --var BUILDD_API_KEY:<key> --var BUILDD_SERVER:<dev server>
-bash scripts/local-smoke.sh     # end-to-end check against an unreachable server
-SMOKE_HOST_ADDR=<host LAN address> bash scripts/local-smoke.sh   # also runs the warm-repo case
+bash scripts/local-smoke.sh     # end-to-end check against a fake buildd
 ```
 
 R2 works under `wrangler dev` (local simulation); the smoke keeps it in a
-throwaway `--persist-to` directory. The warm-repo case needs the Worker, which
-runs on the host, to reach the smoke's fake buildd for the grant, and Docker
-Desktop's `host.docker.internal` resolves only inside containers; hence
-`SMOKE_HOST_ADDR`.
+throwaway `--persist-to` directory. The Worker runs on the host and the
+containers on Docker, and both use one `BUILDD_SERVER` (the Worker for the
+model-endpoint lookup, the GitHub grant and run-report delivery). Docker
+Desktop's `host.docker.internal` resolves only inside containers, so the
+smokes reach their fake buildd at the host's primary address instead,
+detected by `scripts/smoke-host.sh`. Set `SMOKE_HOST_ADDR` to override it;
+the smoke stops if this host cannot reach the fake at that address.
 
 The first run builds the image for linux/amd64, which is slow on an arm64 host
 (emulation).
@@ -387,8 +389,7 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   at once.
 - **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
   mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
-- **Local smoke.** `bun run smoke:resume` (with `SMOKE_HOST_ADDR` set, like the
-  warm case) covers both paths: a question and a mid-run agent restart.
+- **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.
 
 ### Model routes
 
@@ -480,11 +481,7 @@ them on the cloud runner.
 
 The smoke also checks the run report: recorded for every run, egress counters
 from the egress step, clone phase lines and `claimedAt` from a fake claim, and
-the artifact POST. The Worker runs on the host with the container's
-`BUILDD_SERVER`, and Docker Desktop's `host.docker.internal` does not resolve on
-the host, so by default the POST fails and the smoke checks it was tried twice
-and recorded as `error`. With `SMOKE_HOST_ADDR=<an address both reach, e.g. the
-host's LAN IP>` it checks `sent` and the fake buildd's receipt.
+the artifact POST: `sent`, and the fake buildd's receipt.
 
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
 "egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy

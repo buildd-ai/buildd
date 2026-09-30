@@ -3,7 +3,7 @@
 # Phase 2): park a waiting worker, answer it, resume it in a NEW container on
 # the SAME worker, with its uncommitted change and transcript intact.
 #
-#   SMOKE_HOST_ADDR=<host LAN address> bash apps/cloud-runner/scripts/local-smoke-resume.sh
+#   bash apps/cloud-runner/scripts/local-smoke-resume.sh
 #
 # Runs `wrangler dev` with RESUMABLE_RUNS=1 and WARM_REPOS=1 (local R2 in a
 # throwaway --persist-to dir) and one fake on the host that plays both buildd
@@ -29,8 +29,9 @@
 # is skipped, since the orphan path needs a container that outlived its agent.
 #
 # The Worker, which runs on this host, must reach the fake for the grant, so
-# SMOKE_HOST_ADDR must be an address both this host and the containers reach
-# (Docker Desktop's host.docker.internal resolves only inside containers).
+# the fake is reached at an address both this host and the containers reach:
+# SMOKE_HOST_ADDR, or the host's primary address, detected (smoke-host.sh).
+# Docker Desktop's host.docker.internal resolves only inside containers.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,13 +48,14 @@ READY_TIMEOUT_S="${READY_TIMEOUT_S:-2400}"
 RUN_TIMEOUT_S="${RUN_TIMEOUT_S:-600}"
 LOG="${LOG:-$(mktemp -t cloud-runner-resume.XXXXXX)}"
 FAKE_PORT="${FAKE_PORT:-8796}"
-HOST_ADDR="${SMOKE_HOST_ADDR:-}"
+source "$DIR/scripts/smoke-host.sh"
+HOST_ADDR="$(smoke_host_addr)"
 STATE_DIR="$(mktemp -d -t cloud-runner-resume-state.XXXXXX)"
 GIT_DIR_ROOT="$(mktemp -d -t cloud-runner-resume-git.XXXXXX)"
 fail=0
 
 if [ -z "$HOST_ADDR" ]; then
-  echo "SMOKE_HOST_ADDR is required: an address both this host and the containers reach (the host's LAN address on Docker Desktop)"
+  echo "could not detect a host address; set SMOKE_HOST_ADDR to one both this host and the containers reach (the host's LAN address on Docker Desktop)"
   exit 2
 fi
 
@@ -223,6 +225,7 @@ cleanup() {
   rm -rf "$STATE_DIR" "$GIT_DIR_ROOT"
 }
 trap cleanup EXIT
+require_host_reachable "$HOST_ADDR" "$FAKE_PORT"
 
 auth=(-H "Authorization: Bearer $TOKEN")
 code_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
