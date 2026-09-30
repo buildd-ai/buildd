@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, workers, tasks } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 
 /**
  * Compute total USD spend for all workers across all tasks in a mission.
@@ -47,8 +47,7 @@ export async function exhaustMissionBudget(
     status: 'open',
   }).catch(e => console.error('[mission-budget] Failed to insert note:', e));
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ missionId }, 'needsAttention', {
     title: `Budget exhausted: ${missionTitle}`,
     message: `$${spendStr} spent of the $${budgetStr} budget. Spawning paused; raise the budget to resume.`,
     priority: 0,

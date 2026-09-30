@@ -54,7 +54,7 @@ mock.module('@/lib/heartbeat-helpers', () => ({
   estimateCronIntervalMs: mockEstimateCronIntervalMs,
 }));
 
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 import { runOverdueHeartbeatAlerts } from './overdue-heartbeats';
 

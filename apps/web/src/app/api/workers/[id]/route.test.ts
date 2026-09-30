@@ -376,8 +376,20 @@ mock.module('@/lib/worker-deliverables', () => ({
 
 const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+  notifyOperator: mockNotify,
 }));
+// Tenant alerts (agent questions, budget/auth pauses, team budget, reviewer
+// escalations) go to the owning team's channel. mockNotify still sees every
+// payload; mockNotifySubject records where each one was routed.
+const mockNotifySubject = mock((_subject: any, _event: any) => {});
+mock.module('@/lib/notify', () => ({
+  notifyTeam: mock(async () => {}),
+  notifyTeamOf: async (subject: any, event: any, payload: any) => {
+    mockNotifySubject(subject, event);
+    mockNotify(payload);
+  },
+}));
+
 
 mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
@@ -2202,6 +2214,7 @@ describe('PATCH /api/workers/[id]', () => {
       pendingInstructions: null,
     });
     mockNotify.mockClear();
+    mockNotifySubject.mockClear();
 
     const req = createMockRequest({
       method: 'PATCH',
@@ -2225,7 +2238,8 @@ describe('PATCH /api/workers/[id]', () => {
     // The owner is still reached through the existing notification path.
     expect(mockNotify.mock.calls.some((c: any) =>
       c[0]?.title === 'Agent needs your input' && c[0]?.url?.includes('/respond')
-    )).toBe(true);
+    )).toBe(true);    // ...on the channel of the team that owns the workspace, never the operator's.
+    expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention' && 'workspaceId' in c[0])).toBe(true);
   });
 
   it('clears waitingFor when worker resumes running', async () => {
@@ -6202,6 +6216,8 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('fires a distinct budget/rate-limit alert (backend + reset) instead of "Task failed"', async () => {
       mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+    mockNotifySubject.mockClear();
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
@@ -6517,6 +6533,8 @@ describe('PATCH /api/workers/[id]', () => {
       task: Record<string, unknown> = {},
     ) {
       mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+    mockNotifySubject.mockClear();
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
@@ -6566,7 +6584,9 @@ describe('PATCH /api/workers/[id]', () => {
       expect(set.budgetAlertsSent).toEqual([50]);
       const alerts = budgetNotifies();
       expect(alerts).toHaveLength(1);
-      expect(alerts[0]).toMatchObject({ app: 'alerts', title: 'Buildd budget 50% used' });
+      expect(alerts[0]).toMatchObject({ title: 'Buildd budget 50% used' });
+      // The team's own budget: told on that team's channel.
+      expect(mockNotifySubject).toHaveBeenCalledWith({ teamId: 'team-1' }, 'needsAttention');
     });
 
     // The monthly pool is Claude usage on a seat. Codex and tenant spend were
@@ -6860,6 +6880,8 @@ describe('PATCH /api/workers/[id]', () => {
     it('retries on optimistic-lock contention without losing the charge or double-firing alerts', async () => {
       setupCompletion({}, {}); // worker/account/task plumbing; team mocks overridden below
       mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+    mockNotifySubject.mockClear();
 
       // First read sees $45 (no alerts). The CAS write loses to a concurrent writer.
       // The re-read sees that writer's committed state ($55, 50% already alerted).
@@ -7172,6 +7194,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockEscalateReviewContractFailure.mockReset();
       mockEscalateReviewContractFailure.mockResolvedValue(undefined);
       mockNotify.mockReset();
+      mockNotifySubject.mockReset();
       mockDispatchNewTask.mockReset();
       mockDispatchNewTask.mockResolvedValue(undefined);
       mockMissionsFindFirst.mockReset();
@@ -9304,6 +9327,7 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('sends generic Pushover message for sensitive workspaces', async () => {
       mockNotify.mockReset();
+      mockNotifySubject.mockReset();
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-sensitive', taskId: 'task-1' }]) })) })),
       });
@@ -9319,7 +9343,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       await PATCH(req, { params: mockParams });
 
-      const notifyCall = mockNotify.mock.calls.find((c: any[]) => c[0]?.app === 'tasks');
+      const notifyCall = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs your input');
       expect(notifyCall).toBeDefined();
       expect(notifyCall![0].message).toBe('Agent waiting for input');
       expect(notifyCall![0].message).not.toContain('root password');

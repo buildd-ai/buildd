@@ -47,6 +47,15 @@ describe('personal Pushover key', () => {
     expect(await sendPushoverMessage(m, (async () => { throw new Error('net'); }) as unknown as typeof fetch)).toBe('failed');
   });
 
+  it('an unstated priority is silent (-1), the same default every other sender uses', async () => {
+    let body: { priority?: number } = {};
+    const capture = (async (_u: string, init: { body: string }) => { body = JSON.parse(init.body); return new Response('{}'); }) as unknown as typeof fetch;
+    await sendPushoverMessage({ token: 't', user: KEY, title: 'x', message: 'y' }, capture);
+    expect(body.priority).toBe(-1);
+    await sendPushoverMessage({ token: 't', user: KEY, title: 'x', message: 'y', priority: 1 }, capture);
+    expect(body.priority).toBe(1);
+  });
+
   it('validate: 4xx is a rejected key, with Pushover\'s own reason', async () => {
     expect(await validatePushoverUser('t', KEY, fakeFetch(200, { status: 1 }))).toEqual({ health: 'healthy', error: null });
     const bad = await validatePushoverUser('t', KEY, fakeFetch(400, { status: 0, errors: ['user key is invalid'] }));

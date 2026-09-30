@@ -11,8 +11,8 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
-import { notify } from '@/lib/pushover';
-import { notifyTeam } from '@/lib/notify';
+import { notifyOperator } from '@/lib/pushover';
+import { notifyTeam, notifyTeamOf } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
@@ -1055,8 +1055,7 @@ export async function PATCH(
   // Pushover notification when agent needs input — sensitive: generic message only
   if (waitingFor?.type === 'question') {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-    notify({
-      app: 'tasks',
+    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: 'Agent needs your input',
       message: isSensitive
         ? 'Agent waiting for input'
@@ -2282,8 +2281,7 @@ export async function PATCH(
     // block below is skipped for budget resets, so alert here with the backend +
     // reset time so the operator sees "paused until X", not a misleading failure.
     const walledLabel = backendLabel(walledBackend);
-    notify({
-      app: 'alerts',
+    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: `⏳ ${walledLabel} budget/rate-limit hit`,
       message: failoverBackend
         ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
@@ -2425,8 +2423,7 @@ export async function PATCH(
               isAuthFailover = true;
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
               console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
-              notify({
-                app: 'alerts',
+              void notifyTeamOf({ workspaceId: worker.workspaceId }, 'credentialExpired', {
                 title: `🔑 Auth failure — failing over to ${backendLabel(authFailoverBackend)}`,
                 message: `Task re-queued on ${backendLabel(authFailoverBackend)} after ${backendLabel(currentBackend)} auth failure.\n${(error || '').slice(0, 150)}`,
                 url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/tasks/${worker.taskId}`,
@@ -2562,8 +2559,7 @@ export async function PATCH(
             committed = true;
 
             for (const threshold of result.crossed) {
-              notify({
-                app: 'alerts',
+              void notifyTeamOf({ teamId: account.teamId }, 'needsAttention', {
                 priority: threshold >= 100 ? 1 : 0,
                 title: `Buildd budget ${threshold}% used`,
                 message: budgetUsd != null
@@ -3271,7 +3267,7 @@ export async function PATCH(
 
             // Alert: release failure needs immediate human attention.
             const prLink = releaseResult.releasePrUrl ? ` ${releaseResult.releasePrUrl}` : '';
-            notify({
+            notifyOperator({
               app: 'alerts',
               title: 'Release failed',
               message: `${releaseResult.error ?? releaseResult.message}${prLink}`,
@@ -4927,8 +4923,7 @@ async function handleReviewerOutcomeIfNeeded(
 
     case 'escalate': {
       // BT-9: Escalate path — notify human, no retry
-      notify({
-        app: 'alerts',
+      void notifyTeamOf({ workspaceId }, 'needsAttention', {
         title: `PR #${prNumber} escalated by reviewer`,
         message: serverOverrideReason ?? output.escalationReason ?? output.summary,
         url: prUrl,

@@ -107,7 +107,7 @@ mock.module('@/lib/repo-scope', () => ({
 
 const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+  notifyOperator: mockNotify,
 }));
 
 mock.module('@/lib/task-dispatch', () => ({

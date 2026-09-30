@@ -16,7 +16,7 @@ mock.module('@buildd/core/db', () => ({
     query: { cronRuns: { findMany: async () => [] } },
   },
 }));
-mock.module('@/lib/pushover', () => ({ notify: mock(() => undefined) }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
 const { GET } = await import('./route');
 

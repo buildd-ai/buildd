@@ -20,10 +20,10 @@ mock.module('@/lib/team-access', () => ({
   getUserAdminTeamIds: mockGetUserAdminTeamIds,
 }));
 
-// Only the API-key auth path reads the DB (to find the calling account).
+// API-key callers resolve through the shared auth helper.
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
-mock.module('@buildd/core/db', () => ({
-  db: { query: { accounts: { findFirst: mockAccountsFindFirst } } },
+mock.module('@/lib/api-auth', () => ({
+  authenticateApiKey: (key: string | null) => (key ? mockAccountsFindFirst() : Promise.resolve(null)),
 }));
 
 mock.module('@buildd/core/secrets', () => ({

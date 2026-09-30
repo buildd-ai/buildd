@@ -59,7 +59,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, like, notInArray, sql } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { loadInvariantSnapshot } from '@/lib/mission-invariant-scan';
 import {
@@ -266,7 +266,7 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
       .slice(0, DIGEST_LINES)
       .map(f => `• ${f.key} — ${f.entityId}`);
     if (created.length > DIGEST_LINES) lines.push(`• +${created.length - DIGEST_LINES} more`);
-    notify({
+    notifyOperator({
       app: 'alerts',
       title:
         created.length === 1

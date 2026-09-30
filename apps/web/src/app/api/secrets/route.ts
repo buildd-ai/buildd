@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { accounts } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey } from '@/lib/api-auth';
+import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
@@ -97,9 +94,7 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<SecretsCalle
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await db.query.accounts.findFirst({
-      where: eq(accounts.apiKey, hashApiKey(apiKey)),
-    });
+    const account = await authenticateApiKey(apiKey);
     if (account) {
       return { teamIds: [account.teamId], accountId: account.id, accountLevel: account.level };
     }

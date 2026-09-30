@@ -149,7 +149,7 @@ mock.module('@/lib/pacing-stall', () => ({
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 // The fleet-idle pass alerts through reportOps (transport-level dedupe), not
 // through notify: a fleet-level alarm has no task row to stamp a context key on.
