@@ -11,6 +11,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
+import { dispatchNewTask } from '@/lib/task-dispatch';
 import {
   ANSWER_PATH_REASONS,
   buildContinuationTaskValues,
@@ -1153,7 +1154,8 @@ export async function cleanupUnresumedAnswers(
       milestones: true, pendingInstructions: true, instructionHistory: true,
       completedAt: true,
     },
-    with: { task: true },
+    // The workspace feeds the continuation's dispatch (webhook, repo, name).
+    with: { task: true, workspace: true },
   });
 
   let degraded = 0;
@@ -1217,8 +1219,9 @@ export async function cleanupUnresumedAnswers(
       // instead of sitting `superseded` forever with the answer discarded and
       // no continuation to pick it up (the candidate query only looks at
       // `waiting_input`).
+      let continuation;
       try {
-        await db
+        [continuation] = await db
           .insert(tasks)
           .values(buildContinuationTaskValues({
             task: task as ContinuationParentTask,
@@ -1232,7 +1235,7 @@ export async function cleanupUnresumedAnswers(
             answer,
             delivery: coldDelivery,
           }))
-          .returning({ id: tasks.id });
+          .returning();
       } catch (err) {
         console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring answer:`, err);
         await db
@@ -1270,6 +1273,21 @@ export async function cleanupUnresumedAnswers(
         });
       } catch (err) {
         console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
+      }
+
+      // Wake runners for the continuation, as for any new task: a webhook-only
+      // workspace never polls, so without this it never runs. Held and
+      // local-executor missions are not filtered, matching the other
+      // dispatchNewTask callers (the claim gate refuses them). Once per
+      // continuation: a later pass skips this worker (path is no longer
+      // `resume`). Best-effort, so one failure does not stop the sweep.
+      if (continuation) {
+        try {
+          const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
+          await dispatchNewTask(continuation, workspace);
+        } catch (err) {
+          console.error(`[Worker ${worker.id}] Continuation task dispatch failed:`, err);
+        }
       }
     }
 

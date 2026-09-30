@@ -104,6 +104,13 @@ mock.module('@/lib/path-claim-release', () => ({
   releaseAndNotify: mockReleaseAndNotify,
 }));
 
+// The cold path inserts a Continue: task and must wake runners for it the way
+// every other new task does, or a webhook-only workspace never runs it.
+const mockDispatchNewTask = mock(async (_task: any, _workspace: any) => {});
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(body?: any): NextRequest {
@@ -201,6 +208,8 @@ describe('POST /api/workers/[id]/respond', () => {
     mockTriggerEvent.mockClear();
     mockReleaseAndNotify.mockClear();
     mockPreflight.mockClear();
+    mockDispatchNewTask.mockReset();
+    mockDispatchNewTask.mockImplementation(async () => {});
     mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
     tasksUpdated.length = 0;
     notesInserted.length = 0;
@@ -1074,6 +1083,84 @@ describe('POST /api/workers/[id]/respond', () => {
       // happen.
       expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
       expect(mockWorkersUpdateSet.mock.calls[0][0].continuationTaskId).toBeUndefined();
+    });
+  });
+
+  // The Continue: task the cold path inserts is a new task: nothing else wakes a
+  // runner for it, and a webhook-only workspace (no polling) never finds it.
+  describe('continuation dispatch', () => {
+    function authorize() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    const workspace = {
+      id: 'workspace-1',
+      teamId: 'team-1',
+      name: 'Example',
+      repo: 'https://github.com/example/repo',
+      webhookConfig: { enabled: true, url: 'https://hooks.example.test/buildd', token: 't', events: ['task.created'] },
+    };
+
+    it('dispatches the new continuation task once, with its workspace', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('cold_continuation');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      const [task, ws] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(task.id).toBe('new-task-1');
+      expect(ws).toBe(workspace);
+    });
+
+    it('does not dispatch anything on the warm resume path', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({
+        ...baseWorker,
+        workspace,
+        status: 'waiting_input',
+        updatedAt: new Date(),
+        turns: 42,
+        supportsInstructionAck: true,
+        pendingInstructions: null,
+        instructionHistory: [],
+        account: { teamId: 'team-1' },
+      });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('resume');
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('still records the answer when dispatch throws', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+      mockDispatchNewTask.mockImplementation(async () => { throw new Error('webhook exploded'); });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('cold_continuation');
+      expect(data.taskId).toBe('new-task-1');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dispatch when the continuation insert fails', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+      mockInsertReturning.mockImplementation(() => { throw new Error('insert failed'); });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(500);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
   });
 
