@@ -22,9 +22,17 @@
  * mid-task), so the walk climbs past a task only when that task is itself
  * `taskClass: 'attempt'`. Following provenance once closed an unrelated PR as
  * "superseded" (task 78532721, PR #2556) — see collectRetryLineage.
+ *
+ * Being in the lineage is necessary, not sufficient. A fix task's parent can
+ * own the fix's SUBJECT — e.g. an after-CI fix of a release PR (head = dev,
+ * base = main), whose parent is the adopted release task. The fix's own PR into
+ * dev is not a re-attempt of the release PR, and closing it as one shut a
+ * release (task c117c6d6). So an ancestor PR is superseded only when it is an
+ * earlier attempt of the same change — see isEarlierAttemptPr.
  */
 import { db } from '@buildd/core/db';
-import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
+import { tasks, workers, workerErrorTraces, workspaces } from '@buildd/core/db/schema';
+import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -44,6 +52,74 @@ export interface SupersededPr {
   prNumber: number;
   closed: boolean;
   reason: string;
+}
+
+/**
+ * Reason prefixes for an ancestor PR that was deliberately left open — it was
+ * never a close that failed, so it is neither stranded nor retried.
+ */
+const LEFT_OPEN_PREFIXES = ['already', 'not an earlier attempt'];
+const leftOpenByDesign = (r: SupersededPr) => LEFT_OPEN_PREFIXES.some(p => r.reason.startsWith(p));
+
+/** GitHub's view of a PR, as far as supersession needs it. */
+interface LivePr {
+  state?: string;
+  merged?: boolean;
+  head?: { ref?: string } | null;
+  base?: { ref?: string; repo?: { default_branch?: string } | null } | null;
+}
+
+/**
+ * Branches that are never a task attempt's head: trunk, the workspace's
+ * configured default/target, and its release branches. A PR whose head is one
+ * of these (a release PR, a dev→main promotion) is something a fix is FOR.
+ */
+async function protectedHeadBranches(workspaceId: string | null | undefined): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!workspaceId) return out;
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { gitConfig: true, releaseConfig: true },
+    });
+    const git = (ws?.gitConfig ?? {}) as { defaultBranch?: string | null; targetBranch?: string | null };
+    const rel = (ws?.releaseConfig ?? {}) as { releaseBranch?: string | null; prodBranch?: string | null; ref?: string | null };
+    for (const b of [git.defaultBranch, git.targetBranch, rel.releaseBranch, rel.prodBranch, rel.ref]) {
+      if (b) out.add(b);
+    }
+  } catch (err) {
+    // GitHub's default branch and the successor's base still protect trunk.
+    console.warn('[retry-pr-supersession] could not read workspace branch config:', err);
+  }
+  return out;
+}
+
+/**
+ * Whether an open ancestor PR is an earlier attempt of the successor's change,
+ * and so may be closed as superseded. Returns null when it is, else why not.
+ *
+ * Fails closed: a PR whose head or base GitHub did not report is left open.
+ */
+export function isEarlierAttemptPr(opts: {
+  live: LivePr;
+  successorBaseBranch: string | null | undefined;
+  protectedHeads: Set<string>;
+}): string | null {
+  const head = opts.live.head?.ref;
+  const baseRef = opts.live.base?.ref;
+  const successorBase = opts.successorBaseBranch;
+  if (!head || !baseRef || !successorBase) return 'head or base branch unknown';
+  const defaultBranch = opts.live.base?.repo?.default_branch;
+  if (
+    opts.protectedHeads.has(head) ||
+    head === defaultBranch ||
+    head === successorBase ||
+    head.startsWith(MISSION_BRANCH_PREFIX)
+  ) {
+    return `head ${head} is a trunk, release or mission branch`;
+  }
+  if (baseRef !== successorBase) return `it targets ${baseRef}, the new PR targets ${successorBase}`;
+  return null;
 }
 
 /** PR lifecycle states that mean the PR is no longer open. */
@@ -158,6 +234,8 @@ export async function closeAncestorRetryPrs(opts: {
   successorPrNumber: number;
   installationId: number;
   repoFullName: string;
+  /** The new PR's base branch. Required to close anything: an attempt shares its base. */
+  successorBaseBranch?: string | null;
   successorWorkerId?: string | null;
   workspaceId?: string | null;
   taskId?: string | null;
@@ -190,10 +268,12 @@ export async function closeAncestorRetryPrs(opts: {
   }
   if (byPr.size === 0) return [];
 
+  let successorBaseBranch = opts.successorBaseBranch ?? null;
   if (opts.verifySuccessorOpen) {
     try {
       const succ = await githubApi(installationId, `/repos/${repoFullName}/pulls/${successorPrNumber}`);
       if (succ?.state !== 'open' || succ?.merged) return [];
+      successorBaseBranch = succ?.base?.ref ?? successorBaseBranch;
     } catch (err) {
       console.warn(`[retry-pr-supersession] could not read successor #${successorPrNumber}; not closing its ancestors:`, err);
       return [];
@@ -201,6 +281,7 @@ export async function closeAncestorRetryPrs(opts: {
   }
 
   const cause = await resolveSupersessionCause(opts.successorWorkerId);
+  const protectedHeads = await protectedHeadBranches(opts.workspaceId);
   const results: SupersededPr[] = [];
 
   const strand = (prNumber: number, reason: string, ancestorWorkerId: string | null) => {
@@ -225,7 +306,7 @@ export async function closeAncestorRetryPrs(opts: {
     // it was "a rejected attempt" is simply false. If GitHub's answer can't be
     // read, leave the PR untouched — a missed close is recoverable (and is
     // recorded, so the sweep retries it); a false comment on a merged PR isn't.
-    let live: { state?: string; merged?: boolean } | null;
+    let live: LivePr | null;
     try {
       live = await withOneRetry(() => githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`));
     } catch (err) {
@@ -238,6 +319,12 @@ export async function closeAncestorRetryPrs(opts: {
     }
     if (live?.state !== 'open') {
       results.push({ prNumber, closed: false, reason: `already ${live?.state ?? 'unknown'}` });
+      continue;
+    }
+    const notAttempt = isEarlierAttemptPr({ live, successorBaseBranch, protectedHeads });
+    if (notAttempt) {
+      console.log(`[retry-pr-supersession] #${prNumber} left open, not an earlier attempt of #${successorPrNumber}: ${notAttempt}`);
+      results.push({ prNumber, closed: false, reason: `not an earlier attempt: ${notAttempt}` });
       continue;
     }
 
@@ -286,7 +373,7 @@ export async function closeAncestorRetryPrs(opts: {
 
   // A close that did not happen at PR-open time is also named on the successor,
   // where the reviewer and the person reading the PR will see it.
-  const unclosed = results.filter(r => !r.closed && !r.reason.startsWith('already'));
+  const unclosed = results.filter(r => !r.closed && !leftOpenByDesign(r));
   if (via === 'create_pr' && unclosed.length > 0) {
     const list = unclosed.map(r => `#${r.prNumber}`).join(', ');
     githubApi(installationId, `/repos/${repoFullName}/issues/${successorPrNumber}/comments`, {
@@ -381,7 +468,7 @@ export async function sweepDuplicateLineagePrs(now: Date = new Date()): Promise<
       if (r.closed) {
         result.closed++;
         closedThisRun.add(`${repo.toLowerCase()}#${r.prNumber}`);
-      } else if (!r.reason.startsWith('already')) {
+      } else if (!leftOpenByDesign(r)) {
         result.stranded++;
       }
     }

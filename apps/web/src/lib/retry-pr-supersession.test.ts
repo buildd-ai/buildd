@@ -53,11 +53,13 @@ mock.module('@buildd/core/db/schema', () => ({
     prLifecycleStatus: 'prLifecycleStatus', workspaceId: 'workspaceId',
   },
   workerErrorTraces: { workerId: 'workerId', pattern: 'pattern', excerpt: 'excerpt', ts: 'ts' },
+  workspaces: { id: 'id', gitConfig: 'gitConfig', releaseConfig: 'releaseConfig' },
 }));
 
 let TASKS: Row[] = [];
 let WORKERS: Row[] = [];
 let TRACES: Row[] = [];
+let WORKSPACES: Row[] = [];
 
 function select(rows: Row[], args: any): Row[] {
   let out = rows.filter(r => matches(r, args?.where));
@@ -76,12 +78,23 @@ mock.module('@buildd/core/db', () => ({
       },
       workers: { findMany: async (a: any) => select(WORKERS, a) },
       workerErrorTraces: { findFirst: async (a: any) => select(TRACES, a)[0] ?? null },
+      workspaces: { findFirst: async (a: any) => select(WORKSPACES, a)[0] ?? null },
     },
   },
 }));
 
-// GitHub's view of each PR by number. Default: open, unmerged.
-let prState: Record<number, { state: string; merged: boolean } | Error> = {};
+// GitHub's view of each PR by number. Default: open, unmerged, a buildd task
+// branch into `dev` (the repo default). An entry overrides any of those fields.
+type LivePr = { state?: string; merged?: boolean; head?: { ref: string } | null; base?: { ref: string; repo?: { default_branch: string } } | null };
+let prState: Record<number, LivePr | Error> = {};
+const livePr = (n: number, s?: LivePr) => ({
+  number: n,
+  state: 'open',
+  merged: false,
+  head: { ref: `buildd/${n}-task` },
+  base: { ref: 'dev', repo: { default_branch: 'dev' } },
+  ...(s ?? {}),
+});
 // Mutating calls fail this many times, per `${method} ${path}`, before succeeding.
 let failuresLeft: Record<string, { n: number; err: Error }> = {};
 const mockGithubApi = mock(async (_inst: number, path: string, init?: any) => {
@@ -93,7 +106,7 @@ const mockGithubApi = mock(async (_inst: number, path: string, init?: any) => {
     const n = Number(String(path).match(/\/pulls\/(\d+)$/)?.[1]);
     const s = prState[n];
     if (s instanceof Error) throw s;
-    return { number: n, ...(s ?? { state: 'open', merged: false }) };
+    return livePr(n, s);
   }
   return {};
 });
@@ -153,6 +166,7 @@ beforeEach(() => {
     { id: 'w-b', taskId: 'retry-b', prNumber: 20, prUrl: url(20), mergedAt: null, prLifecycleStatus: 'pr_open', workspaceId: 'ws' },
   ];
   TRACES = [];
+  WORKSPACES = [{ id: 'ws', gitConfig: { defaultBranch: 'dev' }, releaseConfig: { enabled: true, releaseBranch: 'dev', prodBranch: 'main' } }];
   prState = {};
   failuresLeft = {};
   mockGithubApi.mockClear();
@@ -160,7 +174,7 @@ beforeEach(() => {
   mockInstallationIdForRepo.mockClear();
 });
 
-const base = { installationId: 123, repoFullName: 'org/repo' };
+const base = { installationId: 123, repoFullName: 'org/repo', successorBaseBranch: 'dev', workspaceId: 'ws' };
 
 describe('closeAncestorRetryPrs — lineage scope', () => {
   it('does not close a PR reached only via creation-provenance parentTaskId (regression for PR #2556)', async () => {
@@ -345,5 +359,95 @@ describe('sweepDuplicateLineagePrs', () => {
     expect(patchedPrs()).toEqual([]);
     expect(res.skipped).toBe(res.candidates);
     mockInstallationIdForRepo.mockImplementation(async () => 123);
+  });
+});
+
+/**
+ * Regression: a release PR (head = dev, base = main) was closed as "superseded"
+ * by the PR its own after-CI fix task opened into dev. The fix task is a retry
+ * attempt whose parent is the adopted release task, so the release PR sat in
+ * its "retry lineage" — but it is the fix's SUBJECT, not an earlier attempt of
+ * the same fix. Only a PR from a task branch, into the same base as the new PR,
+ * is an earlier attempt.
+ */
+describe('closeAncestorRetryPrs — only an earlier attempt of the same fix is superseded', () => {
+  beforeEach(() => {
+    TASKS.push(
+      { id: 'release-task', parentTaskId: null, taskClass: 'work', createdAt: recent, workspaceId: 'ws' },
+      { id: 'ci-fix', parentTaskId: 'release-task', taskClass: 'attempt', createdAt: recent, workspaceId: 'ws', context: { prNumber: 3149, iteration: 1 } },
+    );
+    WORKERS.push(
+      { id: 'w-release', taskId: 'release-task', prNumber: 3149, prUrl: url(3149), mergedAt: null, prLifecycleStatus: 'ci_failed', workspaceId: 'ws' },
+      { id: 'w-fix', taskId: 'ci-fix', prNumber: 3185, prUrl: url(3185), mergedAt: null, prLifecycleStatus: 'pr_open', workspaceId: 'ws' },
+    );
+    prState[3149] = { head: { ref: 'dev' }, base: { ref: 'main', repo: { default_branch: 'dev' } } };
+    prState[3185] = { head: { ref: 'buildd/ci-fix-task' }, base: { ref: 'dev', repo: { default_branch: 'dev' } } };
+  });
+
+  it('create_pr: an after-CI fix PR into dev does not close the release PR it is fixing', async () => {
+    const res = await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: 'dev' });
+    expect(patchedPrs()).not.toContain(3149);
+    expect(commentsOn(3149)).toEqual([]);
+    expect(res.every(r => !r.closed)).toBe(true);
+    // Left open by design: not a stranded close, and nothing posted on the fix PR.
+    expect(gateEvents('stranded')).toEqual([]);
+    await new Promise(r => setTimeout(r, 0));
+    expect(commentsOn(3185)).toEqual([]);
+  });
+
+  it('sweep: the same shape is left alone', async () => {
+    const res = await sweepDuplicateLineagePrs(NOW);
+    expect(patchedPrs()).not.toContain(3149);
+    expect(res.stranded).toBe(0);
+    expect(gateEvents('stranded')).toEqual([]);
+  });
+
+  it('protects a trunk head even when the bases match (head = the release branch)', async () => {
+    prState[3149] = { head: { ref: 'dev' }, base: { ref: 'main', repo: { default_branch: 'dev' } } };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: 'main' });
+    expect(patchedPrs()).not.toContain(3149);
+  });
+
+  it("protects the repo's default branch and the workspace's configured branches as heads", async () => {
+    // No workspace config at all: GitHub's own default branch still protects.
+    WORKSPACES = [];
+    prState[3149] = { head: { ref: 'dev' }, base: { ref: 'release', repo: { default_branch: 'dev' } } };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: 'release', workspaceId: null });
+    expect(patchedPrs()).not.toContain(3149);
+    WORKSPACES = [{ id: 'ws', gitConfig: {}, releaseConfig: { enabled: true, prodBranch: 'main', releaseBranch: 'staging' } }];
+    for (const head of ['main', 'staging']) {
+      prState[3149] = { head: { ref: head }, base: { ref: 'release', repo: { default_branch: 'dev' } } };
+      mockGithubApi.mockClear();
+      await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: 'release' });
+      expect(patchedPrs()).not.toContain(3149);
+    }
+  });
+
+  it('protects a mission integration branch as head', async () => {
+    prState[3149] = { head: { ref: 'mission/some-goal' }, base: { ref: 'dev', repo: { default_branch: 'dev' } } };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185 });
+    expect(patchedPrs()).not.toContain(3149);
+  });
+
+  it('does not close a task-branch ancestor PR into a different base', async () => {
+    prState[3149] = { head: { ref: 'buildd/release-task' }, base: { ref: 'mission/some-goal', repo: { default_branch: 'dev' } } };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: 'dev' });
+    expect(patchedPrs()).not.toContain(3149);
+  });
+
+  it("fails closed when GitHub does not say the ancestor's head or base", async () => {
+    prState[3149] = { head: null, base: null };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185 });
+    expect(patchedPrs()).not.toContain(3149);
+    prState[3149] = { head: { ref: 'buildd/release-task' } };
+    await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185, successorBaseBranch: undefined });
+    expect(patchedPrs()).not.toContain(3149);
+  });
+
+  it('still closes a genuine earlier attempt: task branch, same base', async () => {
+    prState[3149] = { head: { ref: 'buildd/release-task' }, base: { ref: 'dev', repo: { default_branch: 'dev' } } };
+    const res = await closeAncestorRetryPrs({ ...base, parentTaskId: 'release-task', successorPrNumber: 3185 });
+    expect(patchedPrs()).toContain(3149);
+    expect(res.find(r => r.prNumber === 3149)?.closed).toBe(true);
   });
 });
