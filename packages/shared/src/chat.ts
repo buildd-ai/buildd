@@ -257,6 +257,7 @@ export const CHAT_READ_OPS: Readonly<Record<string, readonly string[]>> = {
   manage_workspaces: ['list', 'get'],
   manage_watched_projects: ['list'],
   manage_experiments: ['list', 'get', 'readout'],
+  manage_evidence_backends: ['list', 'get'],
 };
 
 /**

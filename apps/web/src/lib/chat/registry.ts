@@ -228,6 +228,16 @@ export const CHAT_TOOL_SPECS = withAreas({
    * the tap is the consent. (docs/design/visual-qa-human-review.md, Chat)
    */
   get_visual_review: one(read('GET /api/missions/:id', 'GET /api/missions/:id/visual-review', 'GET /api/missions/:id/artifacts')),
+  manage_evidence_backends: {
+    ops: {
+      list: read('GET /api/evidence-backends'),
+      get: read('GET /api/evidence-backends/:id'),
+      create: deferred('it takes a storage credential, and a credential never goes through the chat transcript; kept to the Storage settings screen'),
+      update: deferred('it can carry a storage credential, and a credential never goes through the chat transcript; kept to the Storage settings screen'),
+      delete: deferred('removing a backend orphans the evidence already written to it; kept to the Storage settings screen until the admin card names what is affected'),
+      verify: deferred('it writes and deletes a probe object in the team\'s own bucket; kept to the Storage settings screen and the MCP action'),
+    },
+  },
   manage_model_tiers: one(deferred('model-tier routing and budgets change what every agent in the team spends; kept to the Models settings screen until the admin card ships a spend preview')),
 });
 

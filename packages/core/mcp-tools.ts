@@ -316,6 +316,7 @@ export const adminActions = [
   'manage_workspaces',
   'manage_watched_projects',
   'manage_model_tiers',
+  'manage_evidence_backends',
   'trigger_release',
   'release_status',
   'send_agent_message',
@@ -520,6 +521,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
+    manage_evidence_backends: '{ action: "list" | "get" | "create" | "update" | "delete" | "verify", backendId? (required except list/create), workspaceId? (create: scope the backend to one workspace; omit for the team default), provider? (create: "s3" | "r2" | "s3_compatible" | "buildd_default"), endpoint? (https URL; required for r2 and s3_compatible; must resolve to a public address), region?, bucket? (required except buildd_default), prefix? (one path segment, default "evidence"), forcePathStyle?: boolean, sse? ("none" | "AES256" | "aws:kms"), kmsKeyId? (only with aws:kms), retentionDays? (1-3650, default 30), maxBytesPerTask? (bytes, default 8 MiB), credentials? ({ accessKeyId, secretAccessKey, sessionToken? }; required for create, replaces the stored credential on update; never returned) } — where a team\'s run evidence is written: a workspace backend beats the team backend, which beats the buildd-managed bucket. create and update verify the bucket on save (PUT, GET, DELETE of one probe object under {prefix}/.buildd-probe/, never a list) and report it; a failing probe does not reject the save or affect any task. verify re-runs the probe and warns when the probe object is readable without credentials. provider and workspaceId cannot change after create. [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
     get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
@@ -5574,6 +5576,79 @@ export async function handleBuilddAction(
         : data.policyVersionBumped ? `\npolicyVersion bumped to v${data.experiment.policyVersion}: new draws are analysed separately from earlier ones.`
         : '';
       return text(`Experiment updated:\n${line(data.experiment)}${note}`);
+    }
+
+    case 'manage_evidence_backends': {
+      const op = params.action as string;
+      const ops = ['list', 'get', 'create', 'update', 'delete', 'verify'];
+      if (!op || !ops.includes(op)) {
+        throw new Error(`action must be one of: ${ops.join(', ')}`);
+      }
+
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : null;
+      const q = wsId ? `?workspaceId=${encodeURIComponent(wsId)}` : '';
+
+      const bytes = (n: number) => (n >= 1048576 ? `${Math.round(n / 1048576)} MiB` : `${Math.round(n / 1024)} KiB`);
+      const line = (b: any) =>
+        `- ${b.workspaceId ? `workspace ${b.workspaceId}` : 'team default'}: ${b.provider}` +
+        `${b.provider === 'buildd_default' ? '' : ` bucket=${b.bucket}${b.endpoint ? ` endpoint=${b.endpoint}` : ''}`}` +
+        ` prefix=${b.prefix} sse=${b.sse} retention=${b.retentionDays}d cap=${bytes(b.maxBytesPerTask)}/task` +
+        ` [${b.status}${b.lastVerifiedAt ? `, verified ${b.lastVerifiedAt}` : ''}]${b.lastError ? ` (${b.lastError})` : ''} (id: ${b.id})`;
+      const verification = (v: any) => {
+        if (!v) return '';
+        const head = v.status === 'ok' ? 'Verified: ok.' : `Verification FAILING: ${v.error}`;
+        const warns = (v.warnings ?? []).map((w: string) => `\nWarning: ${w}`).join('');
+        return `\n${head}${warns}`;
+      };
+
+      if (op === 'list') {
+        const data = await api(`/api/evidence-backends${q}`);
+        const list = (data?.backends ?? []) as any[];
+        if (list.length === 0) {
+          return text('No evidence backends configured: run evidence goes to the buildd-managed bucket. Configure one with manage_evidence_backends action=create.');
+        }
+        return text(`Evidence backends (${list.length}):\n${list.map(line).join('\n')}`);
+      }
+
+      if (op === 'create') {
+        if (!params.provider) throw new Error('provider is required for create');
+        const body: Record<string, unknown> = { provider: params.provider };
+        if (wsId) body.workspaceId = wsId;
+        for (const f of ['endpoint', 'region', 'bucket', 'prefix', 'forcePathStyle', 'sse', 'kmsKeyId', 'retentionDays', 'maxBytesPerTask', 'credentials'] as const) {
+          if (params[f] !== undefined) body[f] = params[f];
+        }
+        const data = await api('/api/evidence-backends', { method: 'POST', body: JSON.stringify(body) });
+        return text(`Created evidence backend:\n${line(data.backend)}${verification(data.verification)}`);
+      }
+
+      const id = requireFullUuid(params.backendId, 'backendId');
+
+      if (op === 'get') {
+        const data = await api(`/api/evidence-backends/${id}${q}`);
+        return text(`${line(data.backend)}\nCredential: ${data.backend.hasCredential ? 'set' : 'none'}`);
+      }
+
+      if (op === 'verify') {
+        const data = await api(`/api/evidence-backends/${id}/verify${q}`, { method: 'POST' });
+        return text(`Probe finished at ${data.verifiedAt}.${verification(data)}`);
+      }
+
+      if (op === 'delete') {
+        await api(`/api/evidence-backends/${id}${q}`, { method: 'DELETE' });
+        return text(`Evidence backend ${id} deleted. Its credential was removed; runs fall back to the next backend in precedence.`);
+      }
+
+      const patch: Record<string, unknown> = {};
+      for (const f of ['endpoint', 'region', 'bucket', 'prefix', 'forcePathStyle', 'sse', 'kmsKeyId', 'retentionDays', 'maxBytesPerTask', 'credentials'] as const) {
+        if (params[f] !== undefined) patch[f] = params[f];
+      }
+      if (Object.keys(patch).length === 0) {
+        throw new Error('update needs at least one of: endpoint, region, bucket, prefix, forcePathStyle, sse, kmsKeyId, retentionDays, maxBytesPerTask, credentials');
+      }
+      const data = await api(`/api/evidence-backends/${id}${q}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      return text(`Evidence backend updated:\n${line(data.backend)}${verification(data.verification)}`);
     }
 
     case 'manage_model_tiers': {
