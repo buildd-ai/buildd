@@ -231,3 +231,28 @@ describe('TierPicker and Menu slots (0.8.0)', () => {
     expect(css).toMatch(/@media \(max-width: 639px\) \{\n[^]*?button\.kit-fold-toggle \{ display: flex;[^]*?\.kit-fold:not\(\[data-open\]\) \{ display: none; \}/);
   });
 });
+
+describe('approval card at a narrow column (320px)', () => {
+  // A long head row, a long fold summary and three actions: at 320px none of
+  // them may widen the card past its column; the actions wrap to a new row.
+  it('the actions are one wrapping row of buttons, and nothing in the card sets the column width', async () => {
+    await render(h(kit.ApprovalCard, {
+      part: part(), onRespond() {}, onEdit() {},
+      eyebrow: 'New mission', meta: 'billing-and-invoicing-workspace-with-a-long-name',
+      body: h('p', null, 'A goal paragraph long enough to need wrapping at a phone width.'),
+      details: h('p', null, 'details'), fold: { summary: '4 criteria · constraints · plan' },
+      confirmLabel: 'Confirm & file',
+    }));
+    const actions = $('[data-testid="kit-approval"] > .kit-actions')!;
+    expect([...actions.children].map(b => b.getAttribute('data-testid'))).toEqual(['kit-approval-confirm', 'kit-approval-edit', 'kit-approval-deny']);
+    expect(kids($('[data-testid="kit-approval"] .kit-card-head'))).toEqual(['span.kit-eyebrow', 'span.kit-card-tag', 'span.kit-card-meta']);
+
+    const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+    // A grid's implicit `auto` column grows to its widest child's min-content;
+    // pinning it to minmax(0, 1fr) keeps every row inside the card.
+    expect(css).toMatch(/^\.kit-card \{[^}]*grid-template-columns: minmax\(0, 1fr\);/m);
+    expect(css).toMatch(/^\.kit-actions \{[^}]*flex-wrap: wrap;/m);
+    expect(css).toMatch(/^\.kit-card-meta \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/m);
+    expect(css).toMatch(/\.kit-fold-summary \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/);
+  });
+});
