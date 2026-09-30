@@ -77,8 +77,10 @@ mock.module('drizzle-orm', () => ({
 }));
 
 let notifyCalls: any[] = [];
-mock.module('./pushover', () => ({
-  notify: mock((opts: any) => { notifyCalls.push(opts); }),
+let notifySubjects: any[] = [];
+// The pause is about one tenant's mission: its team is told.
+mock.module('./notify', () => ({
+  notifyTeamOf: mock(async (subject: any, _event: any, opts: any) => { notifySubjects.push(subject); notifyCalls.push(opts); }),
 }));
 
 import {
@@ -183,6 +185,7 @@ describe('tripHeartbeatCircuitBreaker', () => {
     scheduleUpdateSetData = null;
     insertedNotes = [];
     notifyCalls = [];
+    notifySubjects = [];
   });
 
   it('pauses the mission, disables the schedule, posts one note, and notifies', async () => {
@@ -204,6 +207,7 @@ describe('tripHeartbeatCircuitBreaker', () => {
     expect(insertedNotes[0].body).toContain('weekly limit');
     expect(notifyCalls.length).toBe(1);
     expect(notifyCalls[0].title).toContain('My Mission');
+    expect(notifySubjects[0]).toHaveProperty('missionId');
   });
 
   it('is idempotent — a second call on an already-paused mission is a no-op', async () => {

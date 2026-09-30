@@ -29,3 +29,17 @@ export const DEP_SATISFYING_STATUSES = ['completed', 'cancelled'] as const;
  * behind it blocks them forever.
  */
 export const DEP_UNBLOCKING_PR_LIFECYCLE = 'closed';
+
+/**
+ * PR lifecycle states nothing can move a worker out of: the PR merged, closed,
+ * or is `unresolvable` (GitHub cannot answer for it — see `lib/pr-freshness.ts`).
+ * Re-asking GitHub cannot change any of them, and a later CI event must not
+ * overwrite them. Every "is this PR done" read uses this one set: the webhook's
+ * check-event guard, the refresh and reconcile sweeps, and the create_pr dedup.
+ */
+export const TERMINAL_PR_LIFECYCLE = ['merged', 'closed', 'unresolvable'] as const;
+export type TerminalPrLifecycle = (typeof TERMINAL_PR_LIFECYCLE)[number];
+
+export function isTerminalPrLifecycle(status: string | null | undefined): status is TerminalPrLifecycle {
+  return status != null && (TERMINAL_PR_LIFECYCLE as readonly string[]).includes(status);
+}

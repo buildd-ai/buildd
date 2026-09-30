@@ -21,7 +21,8 @@ import {
   type ReviewFeedbackRow,
   type PrOwner,
 } from '@/lib/review-feedback';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import {
@@ -82,6 +83,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
+import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -255,14 +257,14 @@ async function backLinkInstallationRepos(installationId: number, source: string)
         `back-linked ${linked} workspace(s)${linked > 0 ? ` (${linkedWorkspaceIds.join(', ')})` : ''}`
     );
     if (linked > 0) {
-      notify({
+      notifyOperator({
         title: 'GitHub repos linked',
         message: `${source}: back-linked ${linked} workspace(s) to installation ${installationId}`,
       });
     }
   } catch (err) {
     console.error(`[github-repo-link] ${source} failed for installation ${installationId}:`, err);
-    notify({
+    notifyOperator({
       app: 'alerts',
       title: 'GitHub repo back-link failed',
       message: `${source} for installation ${installationId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -273,8 +275,8 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
 const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
-// PR lifecycle statuses that must not be overwritten by any later CI event.
-const TERMINAL_STATUSES = ['merged', 'closed'];
+// PR lifecycle statuses that must not be overwritten by any later CI event:
+// TERMINAL_PR_LIFECYCLE (merged, closed, unresolvable) via isTerminalPrLifecycle.
 
 /**
  * True for the bookkeeping task `resolveOrAdoptPrOwner` creates for a PR
@@ -427,7 +429,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_running', updatedAt: new Date() })
@@ -456,7 +458,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_failed', updatedAt: new Date() })
@@ -514,7 +516,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).
-        if (!TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+        if (!isTerminalPrLifecycle(worker.prLifecycleStatus)) {
           await db
             .update(workers)
             .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
@@ -2194,8 +2196,7 @@ async function maybeDispatchReviewer(
           message: `${task.title} — ${reason}`,
         });
       }
-      notify({
-        app: 'alerts',
+      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
         title: `PR #${pr.number} escalated`,
         message: reason,
         url: pr.html_url,
@@ -2663,7 +2664,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
 
-      notify({
+      notifyOperator({
         app: 'alerts',
         title: `Release merge failed — ${repoFullName}#${prNumber}`,
         message: errMsg,
@@ -2717,7 +2718,7 @@ async function handleReleasePrCiFailure(
         })
         .where(eq(tasks.id, task.id));
 
-      notify({
+      notifyOperator({
         app: 'alerts',
         title: `Release CI failed — ${repoFullName}#${pr.number}`,
         message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
@@ -2852,7 +2853,7 @@ async function handleWorkflowRunEvent(event: {
   );
 
   if (!succeeded) {
-    notify({
+    notifyOperator({
       app: 'alerts',
       title: `Release workflow failed — ${run.name}`,
       message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,

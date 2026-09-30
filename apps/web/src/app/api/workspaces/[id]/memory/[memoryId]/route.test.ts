@@ -68,7 +68,7 @@ mock.module('@buildd/core/memory-scope', () => ({
   resolveMemoryHitScope: async () => null,
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'user-1' }) }));
-mock.module('@/lib/api-auth', () => ({ hashApiKey: (k: string) => k }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (k: string | null) => (k ? apiAccount : null) }));
 const RANK = { member: 1, admin: 2, owner: 3 } as const;
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async (_u: string, _w: string, required?: keyof typeof RANK) => {

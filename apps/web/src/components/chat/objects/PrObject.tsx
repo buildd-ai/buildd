@@ -17,6 +17,7 @@ const STATE: Record<PrObjectView['state'], { text: string; cls: string }> = {
   ci_passed: { text: 'CI green', cls: 'text-status-success' },
   ci_running: { text: 'CI running', cls: 'text-accent-text' },
   ci_failed: { text: 'CI failed', cls: 'text-status-error' },
+  conflict: { text: 'conflict', cls: 'text-status-warning' },
   open: { text: 'open', cls: 'text-text-secondary' },
   closed: { text: 'closed', cls: 'text-text-muted' },
 };
@@ -26,6 +27,7 @@ export function lifecycleOf(state: PrObjectView['state']): string {
   switch (state) {
     case 'merged': return 'merged';
     case 'ci_failed': return 'ci_failed';
+    case 'conflict': return 'conflict';
     case 'ci_passed': return 'ci_green';
     case 'ci_running': return 'ci_pending';
     case 'closed': return 'closed';

@@ -17,8 +17,9 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
 }));
 
-mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+// A skipped required check is about one tenant's repo: its team is told.
+mock.module('@/lib/notify', () => ({
+  notifyTeamOf: mockNotify,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -239,8 +240,9 @@ describe('detectDarkChecks', () => {
       await detectDarkChecks(BASE_PARAMS);
 
       expect(mockNotify).toHaveBeenCalledTimes(1);
-      const call = mockNotify.mock.calls[0][0];
-      expect(call.app).toBe('alerts');
+      const [subject, event, call] = mockNotify.mock.calls[0] as unknown as [any, string, any];
+      expect(subject).toEqual({ workspaceId: BASE_PARAMS.workspaceId });
+      expect(event).toBe('needsAttention');
       expect(call.message).toContain('ci/test');
       expect(call.message).toContain('3');
     });

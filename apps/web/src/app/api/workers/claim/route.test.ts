@@ -241,7 +241,7 @@ mock.module('@/lib/storage', () => ({
   generateDownloadUrl: mock(() => ''),
 }));
 mock.module('@/lib/pushover', () => ({
-  notify: mock(() => Promise.resolve()),
+  notifyOperator: mock(() => Promise.resolve()),
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
@@ -273,6 +273,14 @@ mock.module('./explicit-task-exclusion', () => ({
   diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
   evaluateForcedGates: mockEvaluateForcedGates,
   stampLastClaimAttempt: mockStampLastClaimAttempt,
+}));
+
+// Role-env pre-filter + injection (own tests in role-env-injection.test.ts).
+// Here only the wiring: a gap the pre-filter reports defers the task.
+const mockRunRoleEnvPreFilter = mock((_tasks: any, _accountId: string) => Promise.resolve(new Map<string, any>()));
+mock.module('./role-env-injection', () => ({
+  runRoleEnvPreFilter: mockRunRoleEnvPreFilter,
+  attachRoleEnvSecrets: async () => {},
 }));
 
 // Model-routing experiment glue. The real module is exercised against rendered
@@ -6180,6 +6188,30 @@ describe('claim gate overrides', () => {
       expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
     });
 
+    it.each(['artifact_required', 'none'])('does not defer a %s candidate behind a scope-undeclared sibling', async (outputRequirement) => {
+      mockTasksFindMany.mockResolvedValueOnce([{ ...advisoryTask('task-1', 'mission-A'), outputRequirement }]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('an in-flight artifact_required sibling does not occupy the scope-undeclared slot', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: null, outputRequirement: 'artifact_required' },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
     it('claims when the in-flight sibling declared concrete scope (no undeclared-vs-undeclared collision)', async () => {
       mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
       mockDbSelect.mockReturnValue(makeSelectChain([
@@ -6837,6 +6869,30 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
   });
 
+  it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'mailer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map([['task-1', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] }]]));
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.deferrals.role_env_unsatisfied).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('role_env_unsatisfied');
+    expect(data.diagnostics.taskExclusion.detail).toContain('SERVICE_API_KEY, TENANT_ID');
+    expect(data.diagnostics.taskExclusion.detail).toContain('mailer');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'role_env_unsatisfied');
+    expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
+  });
+
+  it('a task with no role env gap is claimed as before', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'reviewer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map());
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
+  });
+
   it('a Codex task the caller cannot run names capability_mismatch', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ backend: 'codex' })]);
@@ -6983,6 +7039,15 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // A different task is its own window.
     const other = await (await POST(createMockRequest({ headers: interactiveHeaders(), body: { runner: 'mcp', taskId: 'task-2' } }))).json();
     expect(other.diagnostics?.reason).not.toBe('rate_limited');
+  });
+
+  it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    const second = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(second.diagnostics?.reason).not.toBe('rate_limited');
   });
 
   it('force: an admin explicit claim drops the overridable SQL gates, keeps the rest', async () => {

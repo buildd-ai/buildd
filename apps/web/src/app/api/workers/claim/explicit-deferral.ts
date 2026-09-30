@@ -36,7 +36,7 @@ export function describeExplicitDeferral(
       const peer = str(detail.blockingPeer);
       return {
         code: reason,
-        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Declare a pathManifest, or wait for that task.`,
+        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Wait for that task, or re-create this one with a pathManifest (or outputRequirement 'artifact_required' / 'none' if it edits no files).`,
       };
     }
     case 'mission_budget':
@@ -86,5 +86,13 @@ export function describeExplicitDeferral(
       return { code: reason, detail: 'It runs on Codex and this workspace\'s one Codex slot is taken.' };
     case 'oauth_parallelism':
       return { code: reason, detail: 'The seat is at the session cap its learned OAuth budget allows right now.' };
+    case 'role_env_unsatisfied': {
+      const role = str(detail.roleSlug);
+      const missing = Array.isArray(detail.missing) ? (detail.missing as unknown[]).filter((m): m is string => typeof m === 'string') : [];
+      return {
+        code: reason,
+        detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
+      };
+    }
   }
 }

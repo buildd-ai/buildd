@@ -49,7 +49,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 const mockNotify = mock(() => {});
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 // ─── Import after mocks ───────────────────────────────────────────────────────
 

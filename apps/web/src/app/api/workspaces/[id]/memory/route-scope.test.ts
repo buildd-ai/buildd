@@ -29,7 +29,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => null }));
-mock.module('@/lib/api-auth', () => ({ hashApiKey: (k: string) => `h:${k}` }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (k: string | null) => (k ? { id: 'acct-1' } : null) }));
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => true,
   verifyAccountWorkspaceAccess: async () => true,

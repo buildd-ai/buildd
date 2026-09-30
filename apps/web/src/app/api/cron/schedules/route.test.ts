@@ -58,7 +58,8 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       workers: { findMany: mockWorkersFindMany },
-      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany },
+      // findFirst: the offline-runner rule's "any live runner on this account" lookup.
+      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany, findFirst: async () => null },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       accounts: { findMany: mockAccountsFindMany },
     },
@@ -156,7 +157,7 @@ mock.module('@/lib/heartbeat-helpers', () => ({
 }));
 
 mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+  notifyOperator: mockNotify,
 }));
 
 // Heartbeat decision chain. Inert for non-heartbeat schedules (the prepass is

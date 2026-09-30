@@ -11,7 +11,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
 import { dispatchNewTask } from '@/lib/task-dispatch';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
 import { getSecretsProvider } from '@buildd/core/secrets';
@@ -277,7 +277,7 @@ Diagnose the failure, push a fix to \`main\`, and confirm the next deploy goes R
     );
   }
 
-  notify({
+  notifyOperator({
     app: project.pushoverApp,
     title,
     message: health.reason,
@@ -503,7 +503,7 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
     );
   }
 
-  notify({
+  notifyOperator({
     app: project.pushoverApp,
     title: `CI failing on ${project.repo} #${pr.number}`,
     message: `${failing.length} check(s) red\n${pr.title}`,

@@ -22,8 +22,13 @@ mock.module('@buildd/core/experiment-health-source', () => ({
 const mockPause = mock(async (..._a: any[]) => ({ id: EXP }) as any);
 mock.module('@/lib/experiments-store', () => ({ applyExperimentUpdate: mockPause }));
 
+// Experiments belong to a team: the alert goes to that team's own channel.
+// `notify` sees each payload; `notifiedTeams` records who received it.
 const notify = mock((_o: any) => undefined);
-mock.module('@/lib/pushover', () => ({ notify }));
+const notifiedTeams: string[] = [];
+mock.module('@/lib/notify', () => ({
+  notifyTeam: async (teamId: string, _event: string, payload: any) => { notifiedTeams.push(teamId); notify(payload); },
+}));
 
 const recorded: any[] = [];
 mock.module('@buildd/core/db', () => ({
@@ -56,6 +61,7 @@ describe('GET /api/cron/experiment-health', () => {
     mockHealth.mockClear();
     mockPause.mockClear();
     notify.mockClear();
+    notifiedTeams.length = 0;
     recorded.length = 0;
   });
 
@@ -83,12 +89,24 @@ describe('GET /api/cron/experiment-health', () => {
     const body = await res.json();
     expect(notify).toHaveBeenCalledTimes(1);
     const opts = notify.mock.calls[0][0];
-    expect(opts.app).toBe('alerts');
+    expect(notifiedTeams).toEqual([TEAM]);
     expect(opts.title).toContain('2 experiments');
     expect(opts.message).toContain('premium-vs-standard: arm_never_drawn');
     expect(opts.message).toContain('triage: no_recent_assignments');
     expect(body.unhealthy).toBe(2);
     expect(recorded.find(r => r.changed !== undefined)).toMatchObject({ processed: 2, changed: 2, errors: 0 });
+  });
+
+  it('alerts each team only about its own experiments', async () => {
+    running = [row(), row({ id: 'e2', teamId: 'team-b', key: 'triage', kind: 'heartbeat_triage' })];
+    findingsById = {
+      [EXP]: [{ code: 'arm_never_drawn', severity: 'critical', arm: 'treatment', detail: 'x' }],
+      e2: [{ code: 'no_recent_assignments', severity: 'critical', detail: 'y' }],
+    };
+    await GET(req());
+    expect(notifiedTeams).toEqual([TEAM, 'team-b']);
+    expect(notify.mock.calls[0][0].message).not.toContain('triage');
+    expect(notify.mock.calls[1][0].message).not.toContain('premium-vs-standard');
   });
 
   it('pauses an experiment past its duration cap, guarded on the state it was read in', async () => {

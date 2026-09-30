@@ -22,7 +22,7 @@ mock.module('@buildd/core/db', () => ({
     query: { cronRuns: { findMany: async () => [] } },
   },
 }));
-mock.module('@/lib/pushover', () => ({ notify: mock(() => undefined) }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
 const { GET } = await import('./route');
 const { ROLE_OUTCOMES_JOB } = await import('@buildd/core/role-outcomes-feed');

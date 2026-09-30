@@ -15,6 +15,8 @@ const executed: any[] = [];
 const writes: any[] = [];
 let writeVersion: number | null = 8;
 const refreshCalls: any[] = [];
+let evidenceRows: any[] = [];
+const execDialect = new PgDialect();
 
 function builder() {
   const b: any = {
@@ -38,7 +40,11 @@ function builder() {
 mock.module('../db/client', () => ({
   db: {
     select: () => builder(),
-    execute: async (q: unknown) => { executed.push(q); return { rows: [] }; },
+    execute: async (q: unknown) => {
+      executed.push(q);
+      const text = execDialect.sqlToQuery(q as never).sql;
+      return { rows: text.includes('FROM experiment_assignments a') ? evidenceRows : [] };
+    },
     insert: (t: unknown) => ({
       values: (v: any) => ({
         onConflictDoUpdate: async () => { if (t === schema.systemCache) cache.set(v.key, v.value); },
@@ -76,6 +82,7 @@ beforeEach(() => {
   refreshCalls.length = 0;
   writeVersion = 8;
   catalogRows = [];
+  evidenceRows = [];
 });
 
 describe('runTierPoolsDaily', () => {
@@ -144,6 +151,53 @@ describe('runTierPoolsDaily', () => {
       poolId: 'pool-1', kind: 'allocation', actorSystem: 'system:expiry',
       allocation: { inc: 1, ch: 0 }, weights: { inc: 'high', ch: 'off' },
     });
+  });
+});
+
+describe('arm stats snapshot', () => {
+  const statsWrites = () => executed
+    .map(q => dialect.sqlToQuery(q as never))
+    .filter(q => q.sql.includes('UPDATE tier_pool_arms SET stats'));
+  const snapshotFor = (armId: string) => {
+    const q = statsWrites().find(w => w.params.includes(armId))!;
+    return JSON.parse(q.params.find(p => typeof p === 'string' && p.startsWith('{')) as string);
+  };
+
+  it('every stepped pool writes each live arm its evidence, even when the allocation does not move', async () => {
+    poolRows = [{ ...poolRows[0], mode: 'split', surface: 'chat', allocation: { inc: 0.7, ch: 0.3 }, weights: { inc: 'high', ch: 'low' } }];
+    evidenceRows = [
+      { arm_id: 'inc', conversation_id: 'c1', user_id: 'u1', assigned_at: '2026-09-26T00:00:00Z', signal: 'up', reason: null },
+      { arm_id: 'inc', conversation_id: 'c2', user_id: 'u1', assigned_at: '2026-09-26T01:00:00Z', signal: null, reason: null },
+      { arm_id: 'ch', conversation_id: 'c3', user_id: 'u2', assigned_at: '2026-09-26T02:00:00Z', signal: 'down', reason: 'made_up' },
+    ];
+    const s = await src.runTierPoolsDaily({ now: AT_SIX });
+    expect(s.written).toBe(0);
+    expect(statsWrites()).toHaveLength(2);
+    expect(snapshotFor('inc')).toMatchObject({
+      graded: 1, successes: 1, failures: 0, spread: { conversations: 1, users: 1 }, updatedAt: AT_SIX.toISOString(),
+    });
+    expect(snapshotFor('ch')).toMatchObject({ graded: 1, successes: 0.3, failures: 0.7 });
+  });
+
+  it('merges into the existing stats, so a succession hold survives', async () => {
+    await src.runTierPoolsDaily({ now: AT_SIX });
+    expect(statsWrites().length).toBeGreaterThan(0);
+    for (const w of statsWrites()) expect(w.sql).toContain('SET stats = stats ||');
+  });
+
+  it('an explore step adds its posterior per arm', async () => {
+    await src.runTierPoolsDaily({ now: AT_SIX });
+    const ch = snapshotFor('ch');
+    expect(ch.stage).toBe('learning');
+    expect(typeof ch.alpha).toBe('number');
+    expect(typeof ch.beta).toBe('number');
+    expect(typeof ch.pBest).toBe('number');
+  });
+
+  it('a pool already stepped today writes no stats', async () => {
+    cache.set(src.stepMarkerKey('pool-1'), { date: '2026-09-27' });
+    await src.runTierPoolsDaily({ now: AT_SIX });
+    expect(statsWrites()).toHaveLength(0);
   });
 });
 

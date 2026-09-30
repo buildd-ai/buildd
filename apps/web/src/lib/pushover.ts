@@ -1,5 +1,12 @@
 /**
- * Pushover notification utility.
+ * Operator Pushover sender: the platform operator's own app and user key.
+ *
+ * Platform-health alerts only (cron health, cross-tenant watchdogs, release
+ * pipeline, installation sync). An alert about one team's tasks, PRs,
+ * missions, budget or credentials goes to that team's own channel through
+ * notifyTeam / notifyTeamOf in ./notify, never through here.
+ * notify-routing-invariant.test.ts pins every call site.
+ *
  * Two apps: "tasks" for operational events, "alerts" for errors/warnings.
  *
  * Env vars:
@@ -27,7 +34,7 @@ function getToken(app: PushoverApp): string | undefined {
   return process.env.PUSHOVER_TOKEN;
 }
 
-export function notify(opts: PushoverOptions): void {
+export function notifyOperator(opts: PushoverOptions): void {
   const user = process.env.PUSHOVER_USER;
   const token = getToken(opts.app ?? 'tasks');
   if (!user || !token) return;

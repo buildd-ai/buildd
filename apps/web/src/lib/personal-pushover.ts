@@ -60,7 +60,7 @@ export async function sendPushoverMessage(m: PushoverMessage, f: Fetch = fetch):
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        token: m.token, user: m.user, title: m.title, message: m.message, priority: m.priority ?? 0,
+        token: m.token, user: m.user, title: m.title, message: m.message, priority: m.priority ?? -1,
         ...(m.url ? { url: m.url, url_title: m.urlTitle } : {}),
       }),
       signal: AbortSignal.timeout(5000),

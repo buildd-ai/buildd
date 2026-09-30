@@ -8,6 +8,15 @@
 /** Toggleable per-team event types. Mirrors the boolean columns on `notification_preferences`. */
 export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired' | 'connectorBlocked';
 
+/**
+ * Every alert a team can receive on its own channel. `needsAttention` is the
+ * "a person has to act" class (an agent asked a question, a PR is waiting on
+ * a human, a mission or budget stopped): it has no preference column, so it
+ * is sent whenever the team has a channel. Nothing here ever falls back to the
+ * platform's own Pushover app.
+ */
+export type TeamAlertEvent = NotifyEvent | 'needsAttention';
+
 /** Defaults match the previous always-on behaviour, but every event is now muteable. */
 export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
   taskClaimed: true,
@@ -54,11 +63,13 @@ export interface NotifyPlan {
  * channel is configured.
  */
 export function resolveNotifyPlan(
-  event: NotifyEvent,
+  event: TeamAlertEvent,
   channel: TeamChannel | null,
   prefs: Record<NotifyEvent, boolean>,
 ): NotifyPlan {
-  const enabled = prefs[event] ?? DEFAULT_NOTIFICATION_PREFERENCES[event];
+  const enabled = event === 'needsAttention'
+    ? true
+    : (prefs[event] ?? DEFAULT_NOTIFICATION_PREFERENCES[event]);
   // A Pushover channel needs BOTH the team's app token and user key.
   const hasPushover = !!channel?.pushover?.appToken && !!channel?.pushover?.userKey;
   const hasWebhook = !!channel?.webhookUrl;

@@ -60,7 +60,7 @@ import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
 import { attachCbmExperimentArm } from './cbm-experiment';
-import { attachRoleEnvSecrets } from './role-env-injection';
+import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
   attachExternalContextProviders,
@@ -95,6 +95,16 @@ function isDispatchedReview(category: unknown, context: unknown): boolean {
   if (category !== 'review') return false;
   const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
   return typeof reviewerFor === 'string' && reviewerFor.length > 0;
+}
+
+/**
+ * True when the task's declared deliverable is not a code change
+ * ('artifact_required' / 'none'), so it cannot conflict with another task's
+ * files. Same exemption the task-create manifest gate grants these tasks.
+ * 'auto' and 'pr_required' still count as file-editing.
+ */
+function producesNoFileEdits(outputRequirement: unknown): boolean {
+  return outputRequirement === 'artifact_required' || outputRequirement === 'none';
 }
 
 /**
@@ -447,7 +457,14 @@ export async function POST(req: NextRequest) {
   // A person's explicit claims from an interactive session skip the per-runner
   // cooldown (below), so they get their own limit instead: one attempt per
   // (task, account) per EXPLICIT_CLAIM_WINDOW_SEC.
-  if (taskId && interactiveSession && !(await allowExplicitClaim(taskId, account.id))) {
+  //
+  // Skipped for a task in an executor='local' mission: there the interactive
+  // session IS the executor, and fanning subagents out over a mission's tasks
+  // is the intended use. The window is armed by the attempt, not the outcome,
+  // so it also turned a retry after a gate rejection (e.g. workspace_cap) into
+  // a second, unrelated rate_limited failure.
+  const localMissionClaim = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId!);
+  if (taskId && interactiveSession && !localMissionClaim && !(await allowExplicitClaim(taskId, account.id))) {
     return emptyClaim({
       diagnostics: {
         reason: 'rate_limited',
@@ -641,7 +658,7 @@ export async function POST(req: NextRequest) {
   // enforces it regardless of who claims. Scoped to local missions only: a
   // runner-executed mission's browser-capability requirement is untouched, and a
   // force claim still never lifts this gate (see the force-claim comment above).
-  const roleGateExempt = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId);
+  const roleGateExempt = localMissionClaim;
   const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
   if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
   claimableConditions.push(...roleConditions);
@@ -821,6 +838,15 @@ export async function POST(req: NextRequest) {
     taskRequiredConnectorFailures,
     taskDegradedConnectors,
   } = await runConnectorPreFilter(filteredTasks);
+
+  // ── Role env pre-filter ────────────────────────────────────────────────────
+  // Candidates whose role/workspace declares env vars that no delivery channel
+  // (role_env_secret, same-named mcp_credential, runner-held BUILDD_API_KEY)
+  // can satisfy. Claiming them only produced a "Role env degraded" worker or a
+  // provisioning failure, so the loop defers them instead. No runner can make
+  // up the difference (its process env never reaches the agent), so this is a
+  // server decision. Fails open. See ./role-env-injection.
+  const roleEnvGaps = await runRoleEnvPreFilter(filteredTasks, account.id);
 
   // For explicit single-task claims: 422 routing_mismatch instead of silently
   // not claiming. The caller knows which task it wanted — a clear error with
@@ -1016,6 +1042,7 @@ export async function POST(req: NextRequest) {
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
+    role_env_unsatisfied: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1277,7 +1304,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context, outputRequirement: tasks.outputRequirement })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -1289,7 +1316,8 @@ export async function POST(req: NextRequest) {
       if (!isDispatchedReview(row.category, row.context)) {
         missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
       }
-      if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
+      if (row.category !== 'review' && !producesNoFileEdits(row.outputRequirement)
+        && declaresNoScope(row.pathManifest as string[] | null)) {
         const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
         if (row.taskId) set.add(row.taskId);
         missionAdvisoryInFlight.set(row.missionId, set);
@@ -1310,6 +1338,8 @@ export async function POST(req: NextRequest) {
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
     if (connectorMismatchTaskIds.has(task.id)) { deferTask(task, 'connector_mismatch'); continue; }
+    const roleEnvGap = roleEnvGaps.get(task.id);
+    if (roleEnvGap) { deferTask(task, 'role_env_unsatisfied', { roleSlug: roleEnvGap.roleSlug, missing: roleEnvGap.missing }); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
@@ -1528,7 +1558,14 @@ export async function POST(req: NextRequest) {
         //    gating it here just adds a second review-starvation failure mode
         //    on top of the one already fixed above (an orchestration task
         //    holding the slot would otherwise block every reviewer forever).
-        if ((task as any).category !== 'review' && declaresNoScope(taskManifest)) {
+        //
+        //    `artifact_required` / `none` candidates skip it too, and never
+        //    occupy the slot: their deliverable is not a code change, so they
+        //    have no files to collide on. Without this a research task filed
+        //    without a manifest (there is no way to add one after creation)
+        //    waited behind any unrelated '**' task in the mission.
+        if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
+          && declaresNoScope(taskManifest)) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
@@ -1947,6 +1984,7 @@ export async function POST(req: NextRequest) {
     // subsequent tasks in the same batch respect the gates we just passed.
     // Review tasks consume neither the concurrency count nor the pacing slot.
     if (taskMissionId && (task as any).category !== 'review'
+      && !producesNoFileEdits((task as any).outputRequirement)
       && declaresNoScope((task as any).pathManifest as string[] | null)) {
       // Reserve the mission's single scope-undeclared slot for the rest of the
       // batch, so one poll cannot claim two '**' tasks from the same mission.

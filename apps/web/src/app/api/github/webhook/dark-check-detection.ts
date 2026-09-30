@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { darkCheckAlerts, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { workspaceRepoMatches } from '@/lib/repo-scope';
@@ -173,8 +173,7 @@ export async function detectDarkChecks({
               ),
             );
 
-          notify({
-            app: 'alerts',
+          void notifyTeamOf({ workspaceId }, 'needsAttention', {
             title: `Dark check detected — ${workspaceName}`,
             message: `Required check '${checkName}' has been Skipped on ${newCount} consecutive closed PRs — may be misconfigured.`,
             priority: 0,
