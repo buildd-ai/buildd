@@ -33,6 +33,21 @@ describe('MissionsBottomNav (v3 phone nav)', () => {
     for (const a of links) expect(a).toMatch(/min-h-11/);
   });
 
+  it('labels keep a readable gap between neighbours at 320px and 390px', () => {
+    const link = html.match(/<a\b[^>]*>/)?.[0] ?? '';
+    const cls = (prefix: string) => link.match(new RegExp(`(?:^|[\\s"])${prefix}text-\\[(\\d+)px\\]`))?.[1];
+    const tracking = (prefix: string) => link.match(new RegExp(`(?:^|[\\s"])${prefix}tracking-\\[\\.(\\d+)em\\]`))?.[1];
+    const MONO_ADVANCE = 0.6;
+    const longest = 8; // "MISSIONS" / "ACTIVITY"
+    const gap = (viewport: number, size: number, trackEm: number) =>
+      viewport / 5 - longest * size * (MONO_ADVANCE + trackEm);
+    const base = Number(cls('')), baseTrack = Number(`0.${tracking('') ?? '0'}`);
+    const wide = Number(cls('min-\\[390px\\]:') ?? base);
+    const wideTrack = Number(`0.${tracking('min-\\[390px\\]:') ?? tracking('') ?? '0'}`);
+    expect(gap(320, base, baseTrack)).toBeGreaterThanOrEqual(8);
+    expect(gap(390, wide, wideTrack)).toBeGreaterThanOrEqual(8);
+  });
+
   it('an alert count still shows on its tab', () => {
     expect(tab('/app/tasks')).toMatch(/data-testid="nav-tab-badge"[^>]*>3</);
   });
