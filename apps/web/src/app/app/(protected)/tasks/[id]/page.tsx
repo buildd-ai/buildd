@@ -1,9 +1,10 @@
 import { Suspense } from 'react';
-import { runnerDisplayResolver } from '@/lib/runner-display';
-import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
+import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
+import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { isAnswerableWaitingFor } from '@/lib/answer-resume';
@@ -132,7 +133,7 @@ export default async function TaskDetailPage({
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
       },
-      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true } },
+      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
       subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true } },
       // Provenance (U6): who created this task and by what mechanism. The
@@ -419,16 +420,23 @@ export default async function TaskDetailPage({
   const planParentId = task.parentTaskId ?? (task.subTasks?.length ? task.id : null);
   type ChainTask = {
     id: string; title: string; status: string; roleSlug: string | null;
-    worker: { prUrl: string | null; prNumber: number | null; turns: number; branch: string } | null;
+    taskClass: string | null; roleInferred: boolean;
+    worker: {
+      prUrl: string | null; prNumber: number | null; turns: number; branch: string;
+      status: string; mergedAt: Date | null; prLifecycleStatus: string | null; runner: string | null;
+    } | null;
     artifacts: Array<{ id: string; type: string; title: string | null }>;
   };
   let planChain: ChainTask[] = [];
   let roleMap = new Map<string, { name: string; color: string }>();
+  // The eyebrow names a running task's runner only when the team has more than
+  // one online (lib/task-eyebrow.ts) — with one runner it says nothing new.
+  let planOnlineRunners = 0;
 
   if (planParentId) {
     const chainBase = await db.query.tasks.findMany({
       where: eq(tasks.parentTaskId, planParentId),
-      columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true },
+      columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
       orderBy: asc(tasks.createdAt),
     });
 
@@ -437,7 +445,7 @@ export default async function TaskDetailPage({
       let chainTasksToFetch = chainBase;
       if (task.parentTaskId && task.parentTask) {
         chainTasksToFetch = [
-          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId },
+          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, context: task.parentTask.context },
           ...chainBase
         ];
       }
@@ -450,7 +458,7 @@ export default async function TaskDetailPage({
       const chainWorkers = chainIds.length > 0
         ? await db.query.workers.findMany({
             where: inArray(workers.taskId, chainIds),
-            columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true },
+            columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true, status: true, mergedAt: true, prLifecycleStatus: true, runner: true, localUiUrl: true },
             orderBy: desc(workers.createdAt),
           })
         : [];
@@ -473,11 +481,17 @@ export default async function TaskDetailPage({
         artsByWorker.get(a.workerId)!.push(a);
       }
 
-      planChain = chainTasksToFetch.map(t => {
+      planChain = chainTasksToFetch.map(({ context, ...t }) => {
         const w = latestWorker.get(t.id) ?? null;
         return {
           ...t,
-          worker: w ? { prUrl: w.prUrl, prNumber: w.prNumber, turns: w.turns, branch: w.branch } : null,
+          taskClass: t.taskClass ?? null,
+          roleInferred: (context as Record<string, unknown> | null)?.roleInferred != null,
+          worker: w ? {
+            prUrl: w.prUrl, prNumber: w.prNumber, turns: w.turns, branch: w.branch,
+            status: w.status, mergedAt: w.mergedAt, prLifecycleStatus: w.prLifecycleStatus,
+            runner: resolveRunnerDisplay(w)?.name ?? null,
+          } : null,
           artifacts: w ? (artsByWorker.get(w.id) ?? []) : [],
         };
       });
@@ -498,6 +512,13 @@ export default async function TaskDetailPage({
           columns: { slug: true, name: true, color: true },
         });
         roles.forEach(r => roleMap.set(r.slug, { name: r.name, color: r.color }));
+      }
+
+      const teamId = (task.workspace as { teamId?: string } | null)?.teamId;
+      if (teamId && planChain.some(t => isLiveWorkerStatus(t.worker?.status))) {
+        const now = Date.now();
+        const hbs = await getRunnerHeartbeats(teamId, [task.workspaceId]).catch(() => []);
+        planOnlineRunners = hbs.filter(hb => isRunnerOnline(hb.lastHeartbeatAt, now)).length;
       }
     }
   }
@@ -1082,25 +1103,35 @@ export default async function TaskDetailPage({
         {/* Triage metadata — only foregrounded in the pending family, where runner / backend
             drive the "should this run, and how?" decision. Priority is omitted here — it
             rarely drives operator decisions and is still accessible in Details below. */}
-        {isPendingFamily && (
-          <div className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
-            <span>{task.runnerPreference}</span>
-            {task.backend && (
-              <>
-                <span className="text-text-muted">&middot;</span>
-                <span className="capitalize">{task.backend}</span>
-              </>
-            )}
-            {/* Tier word only at this altitude — the concrete id belongs in Details.
-                Pre-flight is the one moment the tier is still changeable. */}
-            {modelSummary.tierLabel && (
-              <>
-                <span className="text-text-muted">&middot;</span>
-                <span>{modelSummary.tierLabel}</span>
-              </>
-            )}
-          </div>
-        )}
+        {/* Each part earns its slot: the role only when there is one (the pending
+            eyebrow rule, lib/task-eyebrow.ts), the runner preference only when it
+            narrows — the default 'any' used to lead this line and read as a role.
+            Tier word only at this altitude — the concrete id belongs in Details.
+            Pre-flight is the one moment the tier is still changeable. */}
+        {isPendingFamily && (() => {
+          const eyebrow = deriveTaskEyebrow({
+            status: 'pending',
+            role: task.roleSlug ? { slug: task.roleSlug, name: roleName } : null,
+            roleInferred: (task.context as Record<string, unknown> | null)?.roleInferred != null,
+          });
+          const parts = [
+            taskEyebrowText(eyebrow) || null,
+            task.runnerPreference && task.runnerPreference !== 'any' ? `${task.runnerPreference} runner` : null,
+            task.backend ? task.backend.charAt(0).toUpperCase() + task.backend.slice(1) : null,
+            modelSummary.tierLabel || null,
+          ].filter((p): p is string => !!p);
+          if (parts.length === 0) return null;
+          return (
+            <div data-testid="task-triage-line" className="mb-6 px-1 flex items-center gap-1.5 text-[13px] text-text-secondary font-medium flex-wrap">
+              {parts.map((p, i) => (
+                <span key={p} className="contents">
+                  {i > 0 && <span className="text-text-muted">&middot;</span>}
+                  <span>{p}</span>
+                </span>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* Blocked Banner — shown when task has unresolved dependencies */}
         {isBlocked && (() => {
@@ -1250,6 +1281,7 @@ export default async function TaskDetailPage({
             currentTaskId={id}
             tasks={planChain}
             roleMap={Object.fromEntries(roleMap)}
+            onlineRunners={planOnlineRunners}
           />
         ) : hasRelatedTasks && (
           <div className="mb-6">
