@@ -31,6 +31,7 @@ import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusa
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -1774,6 +1775,10 @@ export async function GET(req: NextRequest) {
       ? await fetchSplitPrStats(installationId, fullName, prNumber)
       : null;
 
+    // Fix attempts on this PR's chain, with why each ended as it did. A read
+    // failure costs the list, not the PR.
+    const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1808,6 +1813,7 @@ export async function GET(req: NextRequest) {
       reviews: reviewSummary,
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
+      ...(attempts.length > 0 ? { attempts } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

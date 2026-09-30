@@ -24,6 +24,8 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { lineageStamp } from '@/lib/attempt-lineage';
+import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
@@ -51,9 +53,11 @@ import {
   constructFallbackStructuredOutput,
 } from '@/lib/reviewer-prose-fallback';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { BASH_FAILURE_PATTERN, BASH_RECOVERED_PATTERN, BASH_TRACE_EXCERPT_MAX } from '@buildd/core/bash-failure-trace';
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -916,7 +920,12 @@ export async function PATCH(
         taskId: worker.taskId,
         pattern: String(t.pattern).slice(0, 100),
         // Sensitive: drop excerpt prose, keep only pattern/source/ts for structured analysis
-        excerpt: isSensitive ? '' : String(t.excerpt).slice(0, 500),
+        excerpt: isSensitive
+          ? ''
+          : String(t.excerpt).slice(
+              0,
+              t.pattern === BASH_FAILURE_PATTERN || t.pattern === BASH_RECOVERED_PATTERN ? BASH_TRACE_EXCERPT_MAX : 500,
+            ),
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
@@ -1194,7 +1203,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -3316,6 +3325,15 @@ export async function PATCH(
         }
       }
 
+      // Evidence: a compact record of why the task failed, or of the caveat on a
+      // success, so "did it fail, why" is answerable from buildd alone. Skipped
+      // when the task is going back to the queue (no terminal outcome yet).
+      // Awaited — a serverless function may freeze an un-awaited write — and
+      // contained: it never throws.
+      if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
+        await persistTaskEvidence(worker.taskId, id, { isSensitive });
+      }
+
       // Record routing outcome for analytics/calibration. Skipped on retry
       // (we only want one row per terminal outcome). Fire-and-forget.
       if (!shouldAutoRetry) {
@@ -3865,6 +3883,17 @@ export async function PATCH(
         ? 'pending_merge' as const
         : 'abandoned' as const;
     await releaseAndNotify(worker.taskId, releaseReason);
+  }
+
+  // A fix attempt (review fix, CI retry) just ended. The claim route wrote
+  // `Fixing` on the PR comment; close it here, or the comment keeps a spinner
+  // on a task that is no longer running. A later red CI result appends its own
+  // entry after this one. Only on the transition into a terminal status.
+  if (isTerminalStatus && worker.taskId && terminalTaskRow[0] && !isTerminalWorkerStatus(worker.status)) {
+    await announceFixEnded(
+      { id: worker.taskId, workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+      taskCancelledUnderSession ? 'cancelled' : status === 'completed' ? 'completed' : 'failed',
+    );
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
@@ -4894,6 +4923,7 @@ async function handleReviewerOutcomeIfNeeded(
             prNumber,
             prUrl,
             workerBranch,
+            ...lineageStamp(originalTask, [prNumber]),
           },
           pathManifest: originalTask.pathManifest,
           release: 'false',

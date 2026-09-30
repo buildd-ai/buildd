@@ -221,6 +221,45 @@ describe('PATCH /api/roles/[id]', () => {
     const data = await res.json();
     expect(data.skill.name).toBe('Builder v2');
   });
+
+  // role-routing.md §2: routing text is validated, never truncated, and lives
+  // in metadata.routing next to the row's other metadata.
+  it('rejects whenToUse outside 20–300 characters without writing', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ whenToUse: 'builder' }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('whenToUse');
+    expect(mockWorkspaceSkillsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('writes whenToUse/notFor into metadata.routing, keeping other metadata', async () => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve({ ...TEAM_ROLE, metadata: { defaultRoleVersion: 2 } }));
+    const mockReturning = mock(() => Promise.resolve([TEAM_ROLE]));
+    const mockWhere = mock(() => ({ returning: mockReturning }));
+    const mockSet = mock((_v: Record<string, unknown>) => ({ where: mockWhere }));
+    mockWorkspaceSkillsUpdate.mockReturnValue({ set: mockSet });
+
+    const req = new NextRequest('http://localhost/api/roles/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ whenToUse: 'Code changes that end in a PR.', notFor: 'Research (Researcher)' }),
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) });
+    expect(res.status).toBe(200);
+    const set = mockSet.mock.calls[0][0] as { metadata: Record<string, any> };
+    expect(set.metadata.defaultRoleVersion).toBe(2);
+    expect(set.metadata.routing).toMatchObject({ whenToUse: 'Code changes that end in a PR.', notFor: 'Research (Researcher)' });
+    expect(typeof set.metadata.routing.updatedAt).toBe('string');
+  });
 });
 
 describe('DELETE /api/roles/[id]', () => {

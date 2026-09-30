@@ -120,6 +120,7 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
   const owners = {
     'task:t-ok': { teamId: 't-1', workspaceId: 'ws-ok' },
     'task:t-sensitive': { teamId: 't-1', workspaceId: 'ws-sensitive' },
+    'task:t-elsewhere': { teamId: 't-2', workspaceId: 'ws-other-team' },
     'mission:m-team': { teamId: 't-1', workspaceId: null },
     'mission:m-other': { teamId: 't-2', workspaceId: null },
     'mission:m-sensitive': { teamId: 't-1', workspaceId: 'ws-sensitive' },
@@ -201,6 +202,12 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
     expect(await api('/api/tasks/t-ok/error-traces')).toEqual({ traces: [] });
     await expect(api('/api/tasks/t-sensitive/error-traces')).rejects.toThrow('API error: 404');
     await expect(api('/api/tasks/t-unknown/error-traces')).rejects.toThrow('API error: 404');
+  });
+
+  it('refuses a task\'s evidence when the task belongs to another team', async () => {
+    const { api } = make();
+    await expect(api('/api/tasks/t-elsewhere/error-traces')).rejects.toThrow('API error: 404');
+    await expect(api('/api/tasks/t-elsewhere')).rejects.toThrow('API error: 404');
   });
 
   it('refuses a single-object response that names a workspace outside reach', async () => {
