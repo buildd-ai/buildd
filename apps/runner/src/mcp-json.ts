@@ -57,3 +57,183 @@ export function parseMcpJsonContent(content: string): McpServerInfo[] {
     return [];
   }
 }
+
+// ─── ${VAR} expansion for mounting .mcp.json servers ─────────────────────────
+//
+// One expansion routine for both backends. Its whole point is that it REPORTS
+// what it could not resolve: the Claude path used to replace a missing ref with
+// '' and then test the result for `${`, which can never match — so a missing
+// secret mounted the server with a bare `Bearer ` header and the agent saw a
+// 401 dressed up as "OAuth required".
+//
+// An empty-string value counts as unresolved: a secret delivered as '' is still
+// a missing secret, and substituting it produces the same empty header.
+//
+// PRECEDENCE (both backends): a claim-time connector beats a .mcp.json entry of
+// the same name. The connector is the team's managed, credentialed mount; the
+// file is repo-local config that may lag it. Codex used to prefer the file,
+// with no recorded reason — the two backends now agree.
+
+export interface VarExpansion {
+  value: string;
+  /** Referenced names with no (or an empty) value, in first-seen order. */
+  unresolved: string[];
+}
+
+export function expandVarRefs(str: string, env: Record<string, string | undefined>): VarExpansion {
+  const unresolved: string[] = [];
+  const value = str.replace(/\$\{([^}]+)\}/g, (_, name: string) => {
+    const v = env[name];
+    if (v === undefined || v === '') {
+      if (!unresolved.includes(name)) unresolved.push(name);
+      return '';
+    }
+    return v;
+  });
+  return { value, unresolved };
+}
+
+export interface McpJsonHttpServer {
+  name: string;
+  url: string;
+  headers: Record<string, string>;
+}
+
+export interface McpJsonSkippedServer {
+  name: string;
+  unresolved: string[];
+}
+
+export interface ResolveMcpJsonOptions {
+  /** Names already mounted (e.g. by a connector) — skipped, connector wins. */
+  isTaken?: (name: string) => boolean;
+  /**
+   * Claude only mounts entries declared `type: "http"`. Codex's config.toml has
+   * one remote shape, so it accepts any entry with a url.
+   */
+  requireHttpType?: boolean;
+}
+
+/**
+ * Expand every remote (url-bearing) server in a parsed .mcp.json. A server with
+ * ANY unresolved ref — in its url or any header — is returned in `skipped`,
+ * never in `servers`: mounting it would connect without auth (or to a broken
+ * host) and fail in a way the agent cannot diagnose.
+ */
+export function resolveMcpJsonHttpServers(
+  mcpJson: unknown,
+  env: Record<string, string | undefined>,
+  opts: ResolveMcpJsonOptions = {},
+): { servers: McpJsonHttpServer[]; skipped: McpJsonSkippedServer[] } {
+  const servers: McpJsonHttpServer[] = [];
+  const skipped: McpJsonSkippedServer[] = [];
+  const raw = (mcpJson as { mcpServers?: unknown } | null | undefined)?.mcpServers;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { servers, skipped };
+
+  for (const [name, cfg] of Object.entries(raw as Record<string, any>)) {
+    if (name === 'buildd') continue; // reserved coordination server
+    if (!cfg || typeof cfg !== 'object' || typeof cfg.url !== 'string' || !cfg.url) continue;
+    if (opts.requireHttpType && cfg.type !== 'http') continue;
+    if (opts.isTaken?.(name)) continue;
+
+    const unresolved: string[] = [];
+    const url = expandVarRefs(cfg.url, env);
+    unresolved.push(...url.unresolved);
+    const headers: Record<string, string> = {};
+    for (const [hk, hv] of Object.entries((cfg.headers ?? {}) as Record<string, unknown>)) {
+      if (typeof hv !== 'string') continue;
+      const h = expandVarRefs(hv, env);
+      for (const u of h.unresolved) if (!unresolved.includes(u)) unresolved.push(u);
+      headers[hk] = h.value;
+    }
+    if (unresolved.length > 0) {
+      skipped.push({ name, unresolved });
+      continue;
+    }
+    servers.push({ name, url: url.value, headers });
+  }
+  return { servers, skipped };
+}
+
+/** The connector fields the Codex config.toml builder reads. */
+export interface CodexConnectorInput {
+  name?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  transport?: string;
+  assertionMode?: unknown;
+}
+
+export interface CodexMcpServer {
+  name: string;
+  url: string;
+  bearerTokenEnvVar: string;
+}
+
+function envSlug(name: string): string {
+  return name.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+function bearerToken(headers: Record<string, string> | undefined): string | null | undefined {
+  const auth = headers?.Authorization ?? headers?.authorization;
+  if (auth === undefined) return undefined;
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
+}
+
+/**
+ * Codex reads MCP servers only from config.toml, which can carry a bearer token
+ * solely by env-var NAME. Returns the server rows plus the env entries the
+ * worker must set; tokens never land in config.toml.
+ *
+ * Connectors are processed first so they win a name collision (see PRECEDENCE).
+ */
+export function buildCodexMcpServers(input: {
+  mcpJson: unknown;
+  connectors: CodexConnectorInput[] | undefined;
+  env: Record<string, string | undefined>;
+}): { servers: CodexMcpServer[]; bearerEnv: Record<string, string>; warnings: string[] } {
+  const servers: CodexMcpServer[] = [];
+  const bearerEnv: Record<string, string> = {};
+  const warnings: string[] = [];
+
+  for (const conn of input.connectors ?? []) {
+    if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
+    if (conn.assertionMode) continue; // async mint+exchange not supported here
+    if ((conn.transport ?? 'http') !== 'http') {
+      warnings.push(`skipping stdio connector "${conn.name}" (not supported in config.toml)`);
+      continue;
+    }
+    if (servers.some(s => s.name === conn.name)) continue;
+    const token = bearerToken(conn.headers);
+    if (token === undefined) {
+      warnings.push(`connector "${conn.name}" has no Authorization header — cannot inject into config.toml`);
+      continue;
+    }
+    if (token === null) {
+      warnings.push(`connector "${conn.name}" uses non-Bearer auth — cannot inject into config.toml`);
+      continue;
+    }
+    const envVar = `MCP_BEARER_CONN_${envSlug(conn.name)}`;
+    bearerEnv[envVar] = token;
+    servers.push({ name: conn.name, url: conn.url, bearerTokenEnvVar: envVar });
+  }
+
+  const { servers: fileServers, skipped } = resolveMcpJsonHttpServers(input.mcpJson, input.env, {
+    isTaken: name => servers.some(s => s.name === name),
+  });
+  for (const s of skipped) {
+    warnings.push(`.mcp.json server "${s.name}" not mounted: unresolved \${${s.unresolved.join('}, ${')}} (secret not delivered by the claim?)`);
+  }
+  for (const s of fileServers) {
+    const envVar = `MCP_BEARER_${envSlug(s.name)}`;
+    const token = bearerToken(s.headers);
+    if (token === null) {
+      warnings.push(`.mcp.json server "${s.name}" uses non-Bearer auth — cannot inject into config.toml`);
+      continue;
+    }
+    if (token) bearerEnv[envVar] = token;
+    servers.push({ name: s.name, url: s.url, bearerTokenEnvVar: envVar });
+  }
+  return { servers, bearerEnv, warnings };
+}

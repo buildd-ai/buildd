@@ -21,6 +21,8 @@ let releaseRows: any[] = [];
 let noteRows: any[] = [];
 let workspaceRows: any[] = [];
 let installationRows: any[] = [];
+/** github_repos rows joined to their installation — the FK path. */
+let githubRepoRows: any[] = [];
 let childCountRows: any[] = [];
 let attributionRows: any[] = [];
 
@@ -52,9 +54,20 @@ function selectChain(table: any) {
   const name = table?.__t;
   const rows = name === 'releaseTasks' ? attributionRows : childCountRows;
   return {
-    where: () => ({
+    // The FK lookup: github_repos ⋈ github_installations WHERE id IN (...).
+    innerJoin: () => ({
+      where: async (w: any) =>
+        name === 'githubRepos' ? githubRepoRows.filter(r => (w?.v ?? []).includes(r.id)) : [],
+    }),
+    where: (w: any) => ({
       groupBy: async () => rows,
-      limit: async () => (name === 'githubInstallations' ? installationRows : []),
+      // Filter on the owner actually asked for. A mock that ignores it answers
+      // for `'https:'` exactly as it does for `'acme'`, which is how a lookup
+      // that could never match in production stayed green here.
+      limit: async () =>
+        name === 'githubInstallations'
+          ? installationRows.filter(r => w?.type === 'eq' && r.accountLogin === w.v)
+          : [],
     }),
   };
 }
@@ -99,7 +112,10 @@ mock.module('@buildd/core/db/schema', () => ({
     createdAt: 'createdAt', prBaseRef: 'prBaseRef',
   },
   workspaces: { __t: 'workspaces', id: 'id' },
-  githubInstallations: { __t: 'githubInstallations', accountLogin: 'accountLogin', installationId: 'installationId' },
+  githubInstallations: {
+    __t: 'githubInstallations', id: 'ghi.id', accountLogin: 'accountLogin', installationId: 'installationId',
+  },
+  githubRepos: { __t: 'githubRepos', id: 'ghr.id', fullName: 'fullName', installationId: 'ghr.installationId' },
 }));
 
 const mockGithubApi = mock(async (_id: number, _path: string) => ({ ok: true }));
@@ -152,8 +168,11 @@ beforeEach(() => {
   missionWorkerRows = [];
   releaseRows = [];
   noteRows = [];
-  workspaceRows = [{ id: 'ws-1', repo: 'acme/widgets', gitConfig: { defaultBranch: 'dev' } }];
-  installationRows = [{ installationId: 4242 }];
+  // URL-shaped, because that is what `workspaces.repo` holds in production. A
+  // slug-shaped fixture here kept the ref check green while it could never run.
+  workspaceRows = [{ id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: null, gitConfig: { defaultBranch: 'dev' } }];
+  installationRows = [{ installationId: 4242, accountLogin: 'acme' }];
+  githubRepoRows = [];
   childCountRows = [];
   attributionRows = [];
   mockGithubApi.mockClear();
@@ -244,6 +263,70 @@ describe('loadInvariantSnapshot cost', () => {
 
     expect(checkRef).not.toHaveBeenCalled();
     expect(coverage.remoteRefs).toBe(0);
+    // Skipped out loud, not silently: the report must say this ref went unchecked.
+    expect(coverage.remoteRefsSkipped).toBe(1);
+  });
+});
+
+// ── Which repo the ref check asks about ─────────────────────────────────────
+//
+// Regression: the check used to split `workspaces.repo` on '/', which for the
+// URL form every production workspace carries yields owner `https:`. No
+// installation matches that, the loop `continue`d without a word, and the one
+// filing invariant never made a single GitHub call.
+
+describe('loadInvariantSnapshot repo resolution', () => {
+  it('resolves a URL-shaped workspace repo to owner/name', async () => {
+    openPrRows = [openPr()];
+    const checkRef = mock(async () => false as boolean | null);
+
+    const { snapshot, coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(checkRef).toHaveBeenCalledTimes(1);
+    expect(checkRef.mock.calls[0]).toEqual([4242, 'acme', 'widgets', 'mission/example-1234'] as any);
+    expect(coverage.remoteRefs).toBe(1);
+    expect(coverage.remoteRefsSkipped).toBe(0);
+    expect(snapshot.remoteBranchExists.get(remoteRefKey('ws-1', 'mission/example-1234'))).toBe(false);
+  });
+
+  it('prefers the github_repos FK over the free-text column, which goes stale on a rename', async () => {
+    openPrRows = [openPr()];
+    workspaceRows = [{
+      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', gitConfig: { defaultBranch: 'dev' },
+    }];
+    githubRepoRows = [{ id: 'ghr-1', fullName: 'acme/widgets-renamed', installationId: 777 }];
+    const checkRef = mock(async () => true as boolean | null);
+
+    await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(checkRef.mock.calls[0]).toEqual([777, 'acme', 'widgets-renamed', 'mission/example-1234'] as any);
+  });
+
+  it("asks the PR's own repo when its prUrl names one", async () => {
+    openPrRows = [openPr({ prUrl: 'https://github.com/acme/mobile/pull/10' })];
+    workspaceRows = [{
+      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', gitConfig: { defaultBranch: 'dev' },
+    }];
+    githubRepoRows = [{ id: 'ghr-1', fullName: 'acme/widgets', installationId: 777 }];
+    const checkRef = mock(async () => true as boolean | null);
+
+    await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    // A different repo than the FK row, so its installation comes from the owner.
+    expect(checkRef.mock.calls[0]).toEqual([4242, 'acme', 'mobile', 'mission/example-1234'] as any);
+  });
+
+  it('counts a ref it cannot check because no installation covers the owner', async () => {
+    openPrRows = [openPr()];
+    installationRows = [{ installationId: 4242, accountLogin: 'someone-else' }];
+    const checkRef = mock(async () => true as boolean | null);
+
+    const { snapshot, coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(checkRef).not.toHaveBeenCalled();
+    expect(coverage.remoteRefs).toBe(0);
+    expect(coverage.remoteRefsSkipped).toBe(1);
+    expect(snapshot.remoteBranchExists.has(remoteRefKey('ws-1', 'mission/example-1234'))).toBe(false);
   });
 });
 

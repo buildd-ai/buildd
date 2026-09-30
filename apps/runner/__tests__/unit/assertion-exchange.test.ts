@@ -163,4 +163,14 @@ describe('isAuthError', () => {
     expect(isAuthError('connection refused')).toBe(false);
     expect(isAuthError('')).toBe(false);
   });
+
+  test('a bare 401 substring inside another number is not an auth failure', () => {
+    expect(isAuthError('request timed out after 4015ms')).toBe(false);
+    expect(isAuthError('rows affected: 14012')).toBe(false);
+  });
+
+  test("core's auth phrases count (invalid_grant, revoked token)", () => {
+    expect(isAuthError('invalid_grant')).toBe(true);
+    expect(isAuthError('Token has been revoked')).toBe(true);
+  });
 });

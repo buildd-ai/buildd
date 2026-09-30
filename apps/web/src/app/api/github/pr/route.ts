@@ -43,6 +43,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { closeAncestorRetryPrs, type SupersededPr } from '@/lib/retry-pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 
 
@@ -848,16 +849,42 @@ export async function POST(req: NextRequest) {
     });
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
 
-    // Guaranteed supersede: when a fallback creates a new PR (resume branch was
-    // unavailable), close any open ancestor PRs so at most one PR is mergeable.
-    // This is platform-enforced — not left to agent initiative.
-    if (retryIteration > 0 && worker.task?.parentTaskId && repo.installation?.installationId) {
-      closeAncestorRetryPrs({
+    // Guaranteed supersede: when a retry opens a new PR instead of updating its
+    // parent's (the resume branch could not be used), close the open ancestor
+    // PRs so at most one PR for the fix is mergeable. Platform-enforced, and
+    // AWAITED: fired without awaiting, the close could be cut off once the
+    // response returned, and nothing recorded that it had not happened. Gated on
+    // the task being a retry attempt, not only on context.iteration — an
+    // attempt dispatched with iteration 0 is still a retry of its parent.
+    // Failures are recorded as gate events and retried by the pr-reconcile
+    // sweep (lib/retry-pr-supersession.ts).
+    let supersededPrs: SupersededPr[] | undefined;
+    const isRetryAttempt = worker.task?.taskClass === 'attempt' || retryIteration > 0;
+    if (isRetryAttempt && worker.task?.parentTaskId && repo.installation?.installationId) {
+      supersededPrs = await closeAncestorRetryPrs({
         parentTaskId: worker.task.parentTaskId,
         successorPrNumber: prData.number,
         installationId: repo.installation.installationId,
         repoFullName: repo.fullName,
-      }).catch(err => console.error('[create_pr] closeAncestorRetryPrs failed (non-fatal):', err));
+        successorWorkerId: worker.id,
+        workspaceId: workspace.id,
+        taskId: worker.taskId ?? null,
+        via: 'create_pr',
+      }).catch(err => {
+        console.error('[create_pr] closeAncestorRetryPrs failed:', err);
+        fireGateEvent({
+          gate: GATE_SLUGS.RETRY_PR_SUPERSESSION,
+          surface: 'POST /api/github/pr',
+          outcome: 'stranded',
+          reason: `ancestor supersession did not run: ${err instanceof Error ? err.message : String(err)}`,
+          workspaceId: workspace.id,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id,
+          detail: { successorPrNumber: prData.number },
+          callerOrigin: 'worker',
+        });
+        return [] as SupersededPr[];
+      });
     }
 
     // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
@@ -938,6 +965,7 @@ export async function POST(req: NextRequest) {
         title: prData.title,
       },
       ...(autoMergeEnabled ? { autoMergeEnabled: true } : {}),
+      ...(supersededPrs && supersededPrs.length > 0 ? { supersededPrs } : {}),
     });
   } catch (error) {
     console.error('Create PR error:', error);
@@ -1714,118 +1742,5 @@ export async function GET(req: NextRequest) {
     console.error('Get PR error:', error);
     const message = error instanceof Error ? error.message : 'Failed to get PR';
     return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
-
-
-/**
- * Close open PRs from ancestor retry tasks when a fallback opens a new PR.
- *
- * Walk the parentTaskId chain, collect all ancestor task IDs, find workers
- * with open PRs on those tasks, and close each via GitHub API with a comment
- * linking the successor. Best-effort — errors are logged but not fatal.
- *
- * Exported for direct unit testing (see closeAncestorRetryPrs.test.ts) — the
- * ancestor-walk termination rule is the entire correctness of this function,
- * and exercising it through the full POST handler would bury that behind
- * hundreds of lines of unrelated setup.
- */
-export async function closeAncestorRetryPrs(opts: {
-  parentTaskId: string;
-  successorPrNumber: number;
-  installationId: number;
-  repoFullName: string;
-}): Promise<void> {
-  const { parentTaskId, successorPrNumber, installationId, repoFullName } = opts;
-
-  // Walk task ancestry to collect all ancestor task IDs.
-  //
-  // parentTaskId is not exclusively a retry-lineage pointer: resolveCreatorContext
-  // (apps/web/src/lib/task-service.ts) auto-sets it to the calling worker's *current*
-  // task whenever a new task is created without an explicit parentTaskId — e.g. a
-  // worker filing an unrelated `[friction]` task mid-task. Following that link here
-  // would sweep up and close a completely unrelated task's open PR (see task 78532721:
-  // PR #2556 was wrongly closed as "superseded" by an unrelated PR because a friction
-  // task's auto-derived parentTaskId happened to point at #2556's task).
-  //
-  // Only continue climbing past a task if IT is itself a genuine retry attempt
-  // (taskClass === 'attempt', stamped by ci-retry.ts / conflict-retry.ts / the
-  // reviewer-retry path in workers/[id]/route.ts) — otherwise its own parentTaskId
-  // is creation provenance, not retry lineage, and the walk must stop there. The
-  // starting task itself is always included: it is the direct ancestor being retried.
-  const ancestorTaskIds: string[] = [];
-  const visited = new Set<string>();
-  let taskId: string | null = parentTaskId;
-  while (taskId && !visited.has(taskId)) {
-    visited.add(taskId);
-    ancestorTaskIds.push(taskId);
-    const currentId: string = taskId;
-    const current = await db.query.tasks.findFirst({
-      where: eq(tasks.id, currentId),
-      columns: { parentTaskId: true, taskClass: true },
-    });
-    taskId = current?.taskClass === 'attempt' ? (current.parentTaskId ?? null) : null;
-  }
-
-  if (ancestorTaskIds.length === 0) return;
-
-  // Find workers with open PRs on ancestor tasks
-  const ancestorWorkers = await db.query.workers.findMany({
-    where: and(
-      inArray(workers.taskId, ancestorTaskIds),
-      isNotNull(workers.prNumber),
-    ),
-    columns: { prNumber: true, prUrl: true },
-  });
-
-  const prNumbers = [...new Set(
-    ancestorWorkers
-      .map(w => w.prNumber)
-      .filter((n): n is number => typeof n === 'number' && n !== successorPrNumber),
-  )];
-
-  for (const prNumber of prNumbers) {
-    try {
-      // Only an OPEN ancestor is superseded. A retry chain routinely holds an
-      // ancestor whose PR already merged (an earlier attempt shipped, a later
-      // one reworked it) or was already closed, and telling a merged PR it was
-      // "a rejected attempt" is simply false. Read GitHub rather than the
-      // worker row: merge state recorded by the webhook can lag. If GitHub's
-      // answer can't be read, leave the PR untouched: a missed close is
-      // recoverable, a false comment on a merged PR isn't.
-      let live: { state?: string; merged?: boolean } | null = null;
-      try {
-        live = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-      } catch (err) {
-        console.warn(`[create_pr] Could not read ancestor PR #${prNumber} — not closing it:`, err);
-        continue;
-      }
-      if (live?.state !== 'open' || live?.merged) {
-        console.log(
-          `[create_pr] Ancestor PR #${prNumber} is ${live?.merged ? 'merged' : (live?.state ?? 'unknown')} — not superseding`,
-        );
-        continue;
-      }
-
-      // Post supersession comment
-      const comment =
-        `This pull request has been superseded by #${successorPrNumber} ` +
-        `(resume branch was unavailable; new attempt opened a fresh PR). ` +
-        `Closing to prevent accidental merge of a rejected attempt.`;
-      await githubApi(installationId, `/repos/${repoFullName}/issues/${prNumber}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: comment }),
-      });
-      // Close the PR
-      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: 'closed' }),
-      });
-      console.log(`[create_pr] Closed ancestor retry PR #${prNumber} superseded by #${successorPrNumber}`);
-    } catch (err) {
-      console.error(`[create_pr] Failed to close ancestor PR #${prNumber}:`, err);
-    }
   }
 }

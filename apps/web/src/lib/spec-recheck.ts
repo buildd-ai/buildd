@@ -30,6 +30,7 @@ import { db } from '@buildd/core/db';
 import { specDiscrepancies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { dispatchDocFix } from '@/lib/doc-fix-dispatch';
 import {
   DOC_FIX_RECHECK_IN_FLIGHT_MS,
@@ -52,13 +53,17 @@ export type LedgerDispatcher = (workspaceId: string) => Promise<{ ok: boolean; r
 export const dispatchLedgerWorkflow: LedgerDispatcher = async (workspaceId) => {
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    with: { githubInstallation: true },
+    with: { githubInstallation: true, githubRepo: true },
   });
   const installationId = workspace?.githubInstallation?.installationId;
-  const [owner, name] = (workspace?.repo ?? '').split('/');
-  if (!workspace || !installationId || !owner || !name) {
+  // Repo identity from the github_repos FK (follows renames); the free-text
+  // `workspaces.repo` is a URL, so it is only a normalized fallback — never
+  // split raw, which yields owner `https:`.
+  const fullName = workspace?.githubRepo?.fullName ?? normalizeRepoFullName(workspace?.repo);
+  if (!workspace || !installationId || !fullName) {
     return { ok: false, reason: 'workspace has no GitHub App installation or repo' };
   }
+  const [owner, name] = fullName.split('/');
   const ref = (workspace.gitConfig as { defaultBranch?: string } | null)?.defaultBranch || 'dev';
   try {
     await githubApi(installationId, `/repos/${owner}/${name}/actions/workflows/${LEDGER_WORKFLOW_FILE}/dispatches`, {
