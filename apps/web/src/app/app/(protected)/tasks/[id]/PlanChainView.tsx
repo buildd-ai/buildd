@@ -72,8 +72,8 @@ function Eyebrow({ eyebrow }: { eyebrow: TaskEyebrow }) {
       <span className="text-[11px] font-medium truncate" style={eyebrow.color ? { color: eyebrow.color } : undefined}>
         {eyebrow.label}
       </span>
-      {eyebrow.inferred && <span className="font-mono text-[10px] text-text-muted shrink-0">auto</span>}
-      {eyebrow.runner && <span className="font-mono text-[10px] text-text-muted truncate min-w-0 shrink-[10]">· {eyebrow.runner}</span>}
+      {eyebrow.inferred && <span className="font-mono text-[11px] md:text-[10px] text-text-muted shrink-0">auto</span>}
+      {eyebrow.runner && <span className="font-mono text-[11px] md:text-[10px] text-text-muted truncate min-w-0 shrink-[10]">· {eyebrow.runner}</span>}
     </span>
   );
 }
