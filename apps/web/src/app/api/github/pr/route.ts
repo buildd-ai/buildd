@@ -10,8 +10,8 @@ import { rankPrComments } from '@/lib/pr-comments';
 // the branch-name generator drifted (P8).
 import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
-import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
-import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
+import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
@@ -808,21 +808,55 @@ export async function POST(req: NextRequest) {
     });
 
     // Create the PR via GitHub API
-    const prData = await githubApi(
-      repo.installation.installationId,
-      `/repos/${repo.fullName}/pulls`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          body: effectivePrBody,
-          head,
-          base: prBase.base ?? 'main',
-          draft: draft || false,
-        }),
+    const effectiveBase = prBase.base ?? 'main';
+    let prData: any;
+    try {
+      prData = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            body: effectivePrBody,
+            head,
+            base: effectiveBase,
+            draft: draft || false,
+          }),
+        }
+      );
+    } catch (err) {
+      // GitHub's answer to a base ref that does not exist is a bare
+      // `422 {field: base, code: invalid}`, which used to surface as a 500
+      // that never said "branch does not exist". Reachable when the base came
+      // from a stale `context.baseBranch` (e.g. a mission integration branch
+      // that was never created, on a task whose own missionId is unset so the
+      // integration guard above never ran) rather than from the guard.
+      const message = err instanceof Error ? err.message : String(err);
+      if (/GitHub API error: 422/.test(message) && /"field":"base"/.test(message)) {
+        if (looksLikeMissionIntegrationBranch(effectiveBase)) {
+          await reportMissionBranchUnresolved({
+            missionId: worker.task?.missionId ?? null,
+            branch: effectiveBase,
+            where: 'create_pr',
+            surface: 'POST /api/github/pr',
+            cause: 'missing',
+            fallback: 'none',
+            detail: `base resolved from ${prBase.source}`,
+            workspaceId: worker.workspaceId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+          });
+        }
+        const trunk = workspace.gitConfig?.targetBranch || workspace.gitConfig?.defaultBranch || repo.defaultBranch || 'main';
+        return NextResponse.json({
+          error: `PR base '${effectiveBase}' does not exist on ${repo.fullName} (resolved from ${prBase.source}). GitHub refused the PR.`,
+          hint: `Pass base='${trunk}' (or another existing branch) explicitly. If '${effectiveBase}' is a mission integration branch, the mission's branch was never created or was deleted — see the mission feed.`,
+        }, { status: 400 });
       }
-    );
+      throw err;
+    }
 
     // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a
     // migration snapshot must not inflate the number shown on task/PR cards.
