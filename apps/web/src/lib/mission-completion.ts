@@ -13,7 +13,8 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/co
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
+import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 /**
@@ -258,6 +259,7 @@ export async function canCompleteMission(
       integrationBranchEnabled: true,
       // The visual review hold reads the model, which scopes by workspace.
       workspaceId: true,
+      autoSurfaceAudit: true,
     },
   });
 
@@ -318,6 +320,8 @@ export async function canCompleteMission(
       taskClass: true, creationSource: true, category: true, result: true,
       // Finds the visual audit, so a mission without one skips the hold check.
       roleSlug: true,
+      // The surface-audit gate reads the declared paths and each PR's repo.
+      workspaceId: true, pathManifest: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
@@ -558,6 +562,26 @@ export async function canCompleteMission(
     }
   }
 
+  // A mission that changed UI does not close unless something looked at it.
+  // The audit is minted from declared paths at task filing; this reads what
+  // actually merged, so an undeclared or mis-declared manifest cannot skip it.
+  // A completed audit, a recorded human waiver, or autoSurfaceAudit=false clears it.
+  const surfaceGate = await evaluateSurfaceAuditGate(
+    mission as { id: string; autoSurfaceAudit?: boolean | null },
+    allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
+  ).catch(err => {
+    console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
+    return null;
+  });
+  if (surfaceGate?.required) {
+    return {
+      ...base,
+      ok: false,
+      code: 'surface_audit_missing',
+      reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
+    };
+  }
+
   // The visual review hold (docs/design/visual-qa-human-review.md, part 5):
   // a current unsure screen nobody decided, or the open round-cap question.
   // Open fixes already hold above through pending_deliverables, and ok and
@@ -706,7 +730,7 @@ export async function completeMissionIfVerified(
     const worthANote =
       decision.code !== 'mission_not_found' &&
       decision.code !== 'mission_not_active' &&
-      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled' || decision.code === 'awaiting_merge');
+      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled' || decision.code === 'awaiting_merge' || decision.code === 'surface_audit_missing');
     if (worthANote) await postAwaitingVerificationNote(missionId, opts.path, decision);
     return { completed: false, decision };
   }
