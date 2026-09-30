@@ -195,7 +195,7 @@ interface ProviderReply {
   usage: TokenUsage;
 }
 
-type Fetcher = typeof fetch;
+type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 async function callAnthropic(opts: {
   apiKey: string; model: string; system: string; user: string;
@@ -402,7 +402,7 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
         const gatewayFetcher = params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher });
         return await callOpenRouter({
           ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
-          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher as typeof fetch,
+          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher,
         });
       }
       const args = { ...common, apiKey: apiKey!, model: entry.model, fetcher };
