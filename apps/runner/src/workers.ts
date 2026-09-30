@@ -118,6 +118,7 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
+import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -3059,75 +3060,32 @@ export class WorkerManager {
         // "mcpJsonPath is not defined" (only the Codex path reads it, so the Claude
         // path never tripped this).
         const mcpJsonPath = join(cwd, '.mcp.json');
-        const codexAdditionalServers: Array<{ name: string; url: string; bearerTokenEnvVar: string }> = [];
+        let codexMcpJson: unknown;
         if (existsSync(mcpJsonPath)) {
           try {
-            const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
-              mcpServers?: Record<string, { url?: string; headers?: Record<string, string> }>;
-            };
-            for (const [name, serverCfg] of Object.entries(mcpJson.mcpServers || {})) {
-              if (name === 'buildd' || !serverCfg?.url) continue;
-              const envVarName = `MCP_BEARER_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-              const authHeader = serverCfg.headers?.Authorization || serverCfg.headers?.authorization;
-              if (authHeader) {
-                const match = authHeader.match(/\$\{([^}]+)\}/);
-                if (match) {
-                  const sourceVar = match[1];
-                  // Resolve from headerExpansionEnv (includes mcpSecrets) — do NOT
-                  // copy the raw secret under its original name into cleanEnv.
-                  const tokenValue = headerExpansionEnv[sourceVar];
-                  // Put the resolved token under a per-server bearer name. This is
-                  // still in Codex cleanEnv (needed by the Codex CLI subprocess to
-                  // authenticate with the MCP server) but renamed away from the
-                  // original secret label so it's not trivially guessable.
-                  if (tokenValue) cleanEnv[envVarName] = tokenValue;
-                }
-              }
-              codexAdditionalServers.push({ name, url: serverCfg.url, bearerTokenEnvVar: envVarName });
-            }
-            if (codexAdditionalServers.length > 0) {
-              console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
-            }
+            codexMcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Failed to parse .mcp.json for Codex MCP injection:`, err);
           }
         }
-
-        // Inject claim-time connectors (worker.mcpConnectors) into Codex config.toml.
-        // For Claude workers, connectors reach queryOptions.mcpServers (below). Codex
-        // ignores queryOptions and reads only config.toml, so connectors were silently
-        // dropped for Codex tasks. Only http+Bearer connectors are supported by the
-        // `bearer_token_env_var` config.toml field; non-Bearer and stdio connectors
-        // cannot be modelled in config.toml and are skipped with a warning.
-        const claimConnsForCodex = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
-        if (claimConnsForCodex && claimConnsForCodex.length > 0) {
-          for (const conn of claimConnsForCodex) {
-            if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
-            if (conn.assertionMode) continue; // async mint+exchange not supported here
-            if ((conn.transport ?? 'http') !== 'http') {
-              console.warn(`[Worker ${worker.id}] Codex: skipping stdio connector "${conn.name}" (not supported in config.toml)`);
-              continue;
-            }
-            // Skip if .mcp.json already registered this server name (prefer .mcp.json entry)
-            if (codexAdditionalServers.find(s => s.name === conn.name)) continue;
-            const authHeader = conn.headers?.Authorization || conn.headers?.authorization;
-            if (!authHeader) {
-              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" has no Authorization header — cannot inject into config.toml`);
-              continue;
-            }
-            const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-            if (!bearerMatch) {
-              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" uses non-Bearer auth — cannot inject into config.toml`);
-              continue;
-            }
-            const envVarName = `MCP_BEARER_CONN_${conn.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-            cleanEnv[envVarName] = bearerMatch[1];
-            codexAdditionalServers.push({ name: conn.name, url: conn.url, bearerTokenEnvVar: envVarName });
-          }
-          const injected = codexAdditionalServers.filter(s => s.bearerTokenEnvVar.startsWith('MCP_BEARER_CONN_'));
-          if (injected.length > 0) {
-            console.log(`[Worker ${worker.id}] Injected ${injected.length} claim-time connector(s) into Codex config: ${injected.map(s => s.name).join(', ')}`);
-          }
+        // Claim-time connectors (worker.mcpConnectors) and .mcp.json servers both
+        // go into config.toml. Only http+Bearer connectors fit its
+        // `bearer_token_env_var` field. ${VAR} refs (url AND headers) resolve from
+        // headerExpansionEnv (includes mcpSecrets) through the same expandVarRefs
+        // the Claude path uses; a server with an unresolved ref is skipped, not
+        // mounted without auth. A connector beats a .mcp.json entry of the same
+        // name, as on the Claude path — see PRECEDENCE in mcp-json.ts. Tokens go
+        // into cleanEnv under per-server MCP_BEARER_* names, never config.toml.
+        const codexMcp = buildCodexMcpServers({
+          mcpJson: codexMcpJson,
+          connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
+          env: headerExpansionEnv,
+        });
+        Object.assign(cleanEnv, codexMcp.bearerEnv);
+        for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
+        const codexAdditionalServers = codexMcp.servers;
+        if (codexAdditionalServers.length > 0) {
+          console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
         }
 
         // Codebase graph. Codex reads no `mcpServers` option, so the only way the
@@ -3921,39 +3879,29 @@ export class WorkerManager {
       }
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
-      // resolving ${VAR} references using headerExpansionEnv (which includes
-      // BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not expand ${VAR} in
-      // HTTP server headers when reading .mcp.json — servers with unresolved refs
-      // connect without auth and receive 401 (which the agent sees as "OAuth required").
-      // Connectors already in queryOptions.mcpServers take precedence.
-      // Skip buildd (reserved) and already-mounted names. Codex path handles its own
-      // .mcp.json injection above.
+      // resolving ${VAR} references (url and headers) using headerExpansionEnv
+      // (which includes BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not
+      // expand ${VAR} in HTTP server headers when reading .mcp.json — servers with
+      // unresolved refs would connect without auth and receive 401 (which the
+      // agent sees as "OAuth required"), so they are skipped and warned instead.
+      // Connectors already in queryOptions.mcpServers take precedence (see
+      // PRECEDENCE in mcp-json.ts). buildd is reserved. Codex path handles its own
+      // .mcp.json injection above, through the same expansion helper.
       if (!isCodexTask) {
         const cwdMcpJsonPath = join(cwd, '.mcp.json');
         if (existsSync(cwdMcpJsonPath)) {
           try {
-            const cwdMcpData = JSON.parse(readFileSync(cwdMcpJsonPath, 'utf-8')) as {
-              mcpServers?: Record<string, { type?: string; url?: string; headers?: Record<string, string> }>;
-            };
-            for (const [name, serverCfg] of Object.entries(cwdMcpData.mcpServers || {})) {
-              if (name === 'buildd') continue; // reserved — never override coordination server
-              if (queryOptions.mcpServers[name]) continue; // connector already mounted — skip
-              if (serverCfg?.type === 'http' && serverCfg?.url) {
-                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
-                const resolvedHeaders: Record<string, string> = {};
-                let hasUnresolved = false;
-                for (const [hk, hv] of Object.entries(serverCfg.headers ?? {})) {
-                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
-                  if (/\$\{/.test(resolved)) { hasUnresolved = true; break; }
-                  resolvedHeaders[hk] = resolved;
-                }
-                if (!hasUnresolved) {
-                  queryOptions.mcpServers[name] = { type: 'http', url: resolvedUrl, headers: resolvedHeaders };
-                  console.log(`[Worker ${worker.id}] Injected .mcp.json server "${name}" into queryOptions (${Object.keys(resolvedHeaders).length} header(s))`);
-                } else {
-                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not delivered by claim route?`);
-                }
-              }
+            const cwdMcpData = JSON.parse(readFileSync(cwdMcpJsonPath, 'utf-8'));
+            const { servers, skipped } = resolveMcpJsonHttpServers(cwdMcpData, headerExpansionEnv, {
+              requireHttpType: true,
+              isTaken: name => Boolean(queryOptions.mcpServers[name]),
+            });
+            for (const srv of servers) {
+              queryOptions.mcpServers[srv.name] = { type: 'http', url: srv.url, headers: srv.headers };
+              console.log(`[Worker ${worker.id}] Injected .mcp.json server "${srv.name}" into queryOptions (${Object.keys(srv.headers).length} header(s))`);
+            }
+            for (const sk of skipped) {
+              console.warn(`[Worker ${worker.id}] MCP server "${sk.name}" not mounted: unresolved \${${sk.unresolved.join('}, ${')}} — mcpSecrets not delivered by claim route?`);
             }
           } catch {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
