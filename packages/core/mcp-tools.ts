@@ -2172,7 +2172,10 @@ export async function handleBuilddAction(
         await mirrorWorkProduct(ctx, 'pr', prChunk);
       } catch { /* non-fatal */ }
 
-      const created = `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`;
+      const headline = data.deduplicated
+        ? `No new pull request was opened — an existing one for this ${params.prUrl ? 'prUrl' : 'task/head branch'} was returned (deduplicated).`
+        : 'Pull request created!';
+      const created = `${headline}\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`;
 
       // requestReview folds "open the PR" and "ask for a review" into one call.
       // A failed review request never hides the PR — the PR exists either way,

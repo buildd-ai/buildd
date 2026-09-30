@@ -1367,6 +1367,60 @@ describe('POST /api/github/pr', () => {
     expect(extractLede(parsedBody.body)?.rest).toBe('Custom body');
   });
 
+  describe('task-sibling dedup is per head branch', () => {
+    const firstPr = {
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      taskId: 't-1',
+      branch: 'first-branch',
+      prUrl: 'https://github.com/owner/repo/pull/3193',
+      prNumber: 3193,
+      workspace: { ...WORKSPACE_OK },
+    };
+
+    it('opens a second PR when the task already has an open PR from a different head', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(firstPr);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValue({
+        number: 3195,
+        html_url: 'https://github.com/owner/repo/pull/3195',
+        state: 'open',
+        title: 'Second PR',
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Second PR', head: 'second-branch', base: 'other-base' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.deduplicated).toBeUndefined();
+      expect(data.pr.number).toBe(3195);
+      const createCall = mockGithubApi.mock.calls.find((c) => c[2]?.method === 'POST');
+      expect(JSON.parse((createCall as any[])[2].body).head).toBe('second-branch');
+    });
+
+    it('still dedups to the task PR when the head is the same branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(firstPr);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'First PR', head: 'first-branch' },
+      });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(data.deduplicated).toBe(true);
+      expect(data.pr.number).toBe(3193);
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+  });
+
   it('uses workspace gitConfig.targetBranch when base not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -1879,6 +1933,7 @@ describe('POST /api/github/pr', () => {
     // Second call: find sibling worker with PR
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-original',
+      branch: 'buildd/taskshare-fix',
       prUrl: 'https://github.com/owner/repo/pull/77',
       prNumber: 77,
     });
@@ -1913,6 +1968,7 @@ describe('POST /api/github/pr', () => {
     });
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-original',
+      branch: 'buildd/taskshare-fix',
       prUrl: 'https://github.com/owner/repo/pull/77',
       prNumber: 77,
     });
@@ -2221,6 +2277,7 @@ describe('POST /api/github/pr', () => {
     });
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-original',
+      branch: 'buildd/taskshare-fix',
       prUrl: 'https://github.com/owner/repo/pull/77',
       prNumber: 77,
       prBaseRef: 'mission/example-slug-0a1b2c3d',
@@ -2256,6 +2313,7 @@ describe('POST /api/github/pr', () => {
     });
     mockWorkersFindFirst.mockResolvedValueOnce({
       id: 'w-original',
+      branch: 'buildd/taskshare-fix',
       prUrl: 'https://github.com/owner/repo/pull/77',
       prNumber: 77,
       prBaseRef: null, // pre-migration sibling

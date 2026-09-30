@@ -397,3 +397,22 @@ describe('knowledge mirror — memory is team-scoped', () => {
     expect(store.upserts).toHaveLength(0);
   });
 });
+
+describe('create_pr — deduplicated response', () => {
+  it('says plainly that no new PR was opened', async () => {
+    const api = routedApi({
+      'POST /api/github/pr': { deduplicated: true, pr: { number: 7, title: 'feat: x', url: 'https://gh/pr/7', state: 'open' } },
+      'GET /api/workers/w-1': { taskId: 't-1' },
+    });
+    const res = await handleBuilddAction(
+      api,
+      'create_pr',
+      { title: 'feat: x', head: 'feature', lede: 'X now happens on its own.' },
+      ctxWith(makeRecordingStore()),
+    );
+    const text = res.content[0].text;
+    expect(text).not.toContain('Pull request created');
+    expect(text).toContain('No new pull request was opened');
+    expect(text).toContain('https://gh/pr/7');
+  });
+});
