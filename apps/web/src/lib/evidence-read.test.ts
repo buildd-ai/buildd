@@ -56,6 +56,25 @@ describe('compileGrepPattern', () => {
     }
   });
 
+  it('rejects adjacent unbounded quantifiers (polynomial backtracking)', () => {
+    for (const p of ['.*.*x', '\\s*\\s*x', 'a*a*b', '.+x.+y', '.*.*.*.*x', 'a{1,}b{2,}', '(?=.*a)(?=.*b)']) {
+      const r = compileGrepPattern(p);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it('rejects stacked optional and wide bounded repeats', () => {
+    expect(compileGrepPattern('a?'.repeat(30) + 'a'.repeat(30)).ok).toBe(false);
+    expect(compileGrepPattern('a{0,100}a{0,100}b').ok).toBe(false);
+    expect(compileGrepPattern('x{1,5000}').ok).toBe(false);
+  });
+
+  it('still accepts one unbounded quantifier, lazy suffixes and groups', () => {
+    for (const p of ['error.*timeout', 'FAIL\\s+\\S', '(?:ERR|WARN)\\b', 'exit code [1-9]\\d?', 'a.*?b', '(?<k>key)=\\w+', 'x{2,4}y']) {
+      expect(compileGrepPattern(p).ok).toBe(true);
+    }
+  });
+
   it('accepts ordinary patterns, case-insensitively', () => {
     const r = compileGrepPattern('fail(ed|ure)?');
     expect(r.ok).toBe(true);
@@ -123,6 +142,36 @@ describe('readEvidenceText', () => {
     expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(EVIDENCE_READ_CAP_BYTES);
     expect(r.text.split('\n')).toHaveLength(2);
     expect(r.text.endsWith('after')).toBe(true);
+  });
+
+  it('the worst accepted pattern over 4 KB lines finishes within a time bound', async () => {
+    // One unbounded quantifier that never matches: quadratic in the grep window per line.
+    const body = Buffer.from(lines(500, () => ' '.repeat(4096)));
+    for (const p of ['\\s*x', '.*x', ' +x']) {
+      const t0 = performance.now();
+      const r = await readEvidenceText(chunks(body), opts(`grep=${encodeURIComponent(p)}`));
+      expect(performance.now() - t0).toBeLessThan(3_000);
+      expect(r.text).toBe('');
+    }
+  });
+
+  it('with grep, checks the time budget on every line', async () => {
+    let t = 0;
+    const body = Buffer.from(lines(100, i => `row ${i}`));
+    // Each call to now() advances 1 s; the budget is 5 s.
+    const r = await readEvidenceText(chunks(body), opts('grep=row'), { now: () => (t += 1_000) });
+    expect(r.truncated).toBe(true);
+    expect(r.scannedLines).toBeLessThan(10);
+    expect(r.cursor).toBe(String(r.scannedLines));
+  });
+
+  it('clips after redaction, so a secret straddling the clip is not half shown', async () => {
+    const secret = 'sk-ant-api03-' + 'B'.repeat(90);
+    const pad = 'p'.repeat(4096 - 20);
+    const body = Buffer.from(`${pad} ${secret}\n`);
+    const r = await readEvidenceText(chunks(body), opts(''));
+    expect(r.text).not.toContain('sk-ant-api03-BBBB');
+    expect(r.text.length).toBeLessThanOrEqual(4096);
   });
 
   it('redacts each line before grep runs and before it is returned', async () => {

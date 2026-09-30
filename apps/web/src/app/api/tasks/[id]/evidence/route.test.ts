@@ -197,7 +197,7 @@ describe('GET /api/tasks/[id]/evidence', () => {
   });
 
   it('400s a catastrophic-backtracking pattern and an over-long one', async () => {
-    for (const p of ['(a+)+$', 'a'.repeat(201)]) {
+    for (const p of ['(a+)+$', 'a'.repeat(201), '.*.*x', '\\s*\\s*x', 'a*a*b']) {
       const res = await GET(req(TASK, `evidenceId=${EV}&grep=${encodeURIComponent(p)}`), params(TASK));
       expect(res.status).toBe(400);
     }

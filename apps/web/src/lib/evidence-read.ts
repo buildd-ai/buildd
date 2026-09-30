@@ -7,13 +7,15 @@
  * flag and a cursor, never a presigned URL.
  *
  * Bounds, so a large or hostile object cannot pin a request:
- * - each line is clipped to MAX_LINE_CHARS before anything looks at it, and a
- *   line that never ends is not buffered past that;
+ * - a raw line is read up to RAW_LINE_CHARS (a line that never ends is not
+ *   buffered past that), redacted, then clipped to MAX_LINE_CHARS;
  * - at most MAX_SCAN_BYTES of decompressed text is scanned (gzip bombs);
- * - a scan stops after SCAN_TIME_BUDGET_MS;
- * - grep patterns are capped at MAX_GREP_PATTERN_LENGTH and nested quantifiers
- *   (the catastrophic-backtracking shape) are refused, and the regex only ever
- *   runs over one clipped line.
+ * - a scan stops after SCAN_TIME_BUDGET_MS, checked before every line when
+ *   grep is set;
+ * - grep patterns are capped at MAX_GREP_PATTERN_LENGTH; nested quantifiers,
+ *   more than one unbounded quantifier and large choice products are refused
+ *   (backtrackingProblem), and the regex runs over the first GREP_WINDOW_CHARS
+ *   of one line at a time.
  *
  * Server-only: opens backend clients.
  */
@@ -33,6 +35,10 @@ export const EVIDENCE_KINDS: readonly EvidenceKind[] = ['command_output', 'test_
 export const EVIDENCE_READ_CAP_BYTES = 64 * 1024;
 export const MAX_GREP_PATTERN_LENGTH = 200;
 export const MAX_LINE_CHARS = 4096;
+/** Raw line length read before redaction; redaction runs on this, the clip to MAX_LINE_CHARS after it. */
+const RAW_LINE_CHARS = 16 * 1024;
+/** grep is evaluated over this much of each (redacted, clipped) line. */
+export const GREP_WINDOW_CHARS = 1024;
 export const MAX_TAIL_LINES = 10_000;
 export const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 const SCAN_TIME_BUDGET_MS = 5_000;
@@ -51,8 +57,95 @@ type Parsed<T> = { ok: true } & T | { ok: false; error: string };
 
 const positiveInt = (s: string): number | null => (/^\d{1,9}$/.test(s) && Number(s) > 0 ? Number(s) : null);
 
+/** At most this many unbounded quantifiers (`*`, `+`, `{n,}`) per grep pattern. */
+const MAX_UNBOUNDED_QUANTIFIERS = 1;
+/** Product of the bounded choices (`?`, `{n,m}`, alternation groups) allowed with / without an unbounded quantifier. */
+const MAX_BOUNDED_CHOICES_WITH_UNBOUNDED = 8;
+const MAX_BOUNDED_CHOICES = 256;
+const MAX_REPEAT_COUNT = 1000;
+
 /**
- * A regex the scan can run safely: bounded length, no nested quantifier.
+ * How much backtracking a pattern can do, read off its syntax. JS regexes
+ * backtrack, and RegExp#test cannot be preempted, so the bound has to hold
+ * before the pattern runs:
+ * - two unbounded quantifiers backtrack polynomially (`.*.*x` is cubic, and
+ *   each extra `.*` adds a power), so at most one is allowed;
+ * - bounded choices multiply (`a?a?a?…` is 2^k), so their product is capped,
+ *   tighter when an unbounded quantifier is also present.
+ * With one unbounded quantifier over a GREP_WINDOW_CHARS window, the worst
+ * case per line is quadratic in the window times the choice product.
+ */
+function backtrackingProblem(pattern: string): string | null {
+  let unbounded = 0;
+  let choices = 1;
+  const groups: number[] = []; // alternatives per open group
+  const p = pattern;
+  let i = 0;
+  const skipLazy = () => { if (p[i] === '?') i++; };
+  while (i < p.length) {
+    const c = p[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === '[') {
+      i++;
+      if (p[i] === '^') i++;
+      if (p[i] === ']') i++;
+      while (i < p.length && p[i] !== ']') i += p[i] === '\\' ? 2 : 1;
+      i++;
+      continue;
+    }
+    if (c === '(') {
+      groups.push(1);
+      i++;
+      if (p[i] === '?') {
+        i++;
+        if (p[i] === '<' && p[i + 1] !== '=' && p[i + 1] !== '!') {
+          while (i < p.length && p[i] !== '>') i++;
+          i++;
+        } else if (p[i] === '<') i += 2;
+        else i++; // ':', '=', '!'
+      }
+      continue;
+    }
+    if (c === '|') {
+      if (groups.length) groups[groups.length - 1]++;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      choices *= groups.pop() ?? 1;
+      i++;
+      continue;
+    }
+    if (c === '*' || c === '+') { unbounded++; i++; skipLazy(); continue; }
+    if (c === '?') { choices *= 2; i++; skipLazy(); continue; }
+    if (c === '{') {
+      const m = p.slice(i).match(/^\{(\d+)(,(\d*))?\}/);
+      if (m) {
+        const min = Number(m[1]);
+        if (m[2] && m[3] === '') unbounded++;
+        else {
+          const max = m[3] ? Number(m[3]) : min;
+          if (max > MAX_REPEAT_COUNT) return `grep repeat counts are limited to ${MAX_REPEAT_COUNT}`;
+          choices *= Math.max(1, max - min + 1);
+        }
+        i += m[0].length;
+        skipLazy();
+        continue;
+      }
+    }
+    i++;
+  }
+  if (unbounded > MAX_UNBOUNDED_QUANTIFIERS) {
+    return 'grep pattern may use only one unbounded quantifier (*, + or {n,}); e.g. "error.*timeout" is fine, ".*error.*timeout" is not';
+  }
+  const limit = unbounded ? MAX_BOUNDED_CHOICES_WITH_UNBOUNDED : MAX_BOUNDED_CHOICES;
+  if (choices > limit) return 'grep pattern has too many optional parts (?, {n,m}, alternations); simplify it';
+  return null;
+}
+
+/**
+ * A regex the scan can run safely: bounded length, no nested quantifier, at
+ * most one unbounded quantifier and a bounded number of choices.
  * Case-insensitive, since "fail" should find "FAIL" in a test log.
  */
 export function compileGrepPattern(pattern: string): Parsed<{ re: RegExp }> {
@@ -60,6 +153,8 @@ export function compileGrepPattern(pattern: string): Parsed<{ re: RegExp }> {
   if (pattern.length > MAX_GREP_PATTERN_LENGTH) {
     return { ok: false, error: `grep pattern is longer than ${MAX_GREP_PATTERN_LENGTH} characters` };
   }
+  const problem = backtrackingProblem(pattern);
+  if (problem) return { ok: false, error: problem };
   // A quantified group whose body itself holds a quantifier or an alternation:
   // (a+)+, (a*)*, (\w+\s?)+, (a|aa)+. These backtrack exponentially on a
   // near-miss; nothing a log grep needs looks like this.
@@ -151,7 +246,7 @@ export async function* decodeEvidenceBody(src: AsyncIterable<Uint8Array>): Async
 
 // ── Line scan ──────────────────────────────────────────────────────────────
 
-/** Lines, each clipped to MAX_LINE_CHARS; a line with no end is never buffered past that. */
+/** Raw lines, each clipped to RAW_LINE_CHARS; a line with no end is never buffered past that. */
 async function* splitLines(src: AsyncIterable<Uint8Array>, onBytes: (n: number) => boolean): AsyncGenerator<string> {
   const decoder = new TextDecoder('utf-8');
   let pending = '';
@@ -164,22 +259,22 @@ async function* splitLines(src: AsyncIterable<Uint8Array>, onBytes: (n: number) 
       if (nl < 0) {
         if (!skipping) {
           pending += text;
-          if (pending.length > MAX_LINE_CHARS) {
-            yield pending.slice(0, MAX_LINE_CHARS);
+          if (pending.length > RAW_LINE_CHARS) {
+            yield pending.slice(0, RAW_LINE_CHARS);
             pending = '';
             skipping = true;
           }
         }
         break;
       }
-      if (!skipping) yield (pending + text.slice(0, nl)).slice(0, MAX_LINE_CHARS);
+      if (!skipping) yield (pending + text.slice(0, nl)).slice(0, RAW_LINE_CHARS);
       pending = '';
       skipping = false;
       text = text.slice(nl + 1);
     }
   }
   const tailText = decoder.decode();
-  if (!skipping && (pending || tailText)) yield (pending + tailText).slice(0, MAX_LINE_CHARS);
+  if (!skipping && (pending || tailText)) yield (pending + tailText).slice(0, RAW_LINE_CHARS);
 }
 
 const serverRedactor = createSecretRedactor([]);
@@ -229,7 +324,9 @@ export async function readEvidenceText(
 
   for await (const raw of splitLines(source, countBytes)) {
     lineNo++;
-    if (lineNo % 512 === 0 && now() - started > SCAN_TIME_BUDGET_MS) {
+    // With grep, every line: one regex evaluation is the unit of work that
+    // can't be preempted, so the budget is checked between each of them.
+    if ((options.grep || lineNo % 512 === 0) && now() - started > SCAN_TIME_BUDGET_MS) {
       truncated = true;
       cursor = String(lineNo);
       break;
@@ -237,8 +334,10 @@ export async function readEvidenceText(
     if (lineNo < options.start) continue;
     if (options.end !== undefined && lineNo > options.end) break;
 
-    const line = redact(raw);
-    if (options.grep && !options.grep.test(line)) continue;
+    // Redact, then clip: a clip first could cut a secret below the length the
+    // patterns recognise and show its first half.
+    const line = redact(raw).slice(0, MAX_LINE_CHARS);
+    if (options.grep && !options.grep.test(line.slice(0, GREP_WINDOW_CHARS))) continue;
     const s = numbered ? `${lineNo}:${line}` : line;
     const b = Buffer.byteLength(s) + 1;
 

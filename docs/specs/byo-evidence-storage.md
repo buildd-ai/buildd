@@ -248,6 +248,13 @@ never raw URLs.
   `:id`.
 - `GET /api/evidence?workspaceId=&prNumber=&kind=` resolves a PR number to its
   tasks' objects.
+- **Read audit** is one structured `[evidence-read] {json}` log line per list or
+  read (surface, workspace, task or PR, evidence ids, actor, query, bytes,
+  truncated). There is no queryable audit store.
+- **grep** is a case-insensitive regex of at most 200 characters with at most one
+  unbounded quantifier, no nested quantifier or backreference, and a capped
+  number of optional parts; anything else is a 400. It runs over the first 1 KB
+  of each redacted line, and the 5 s scan budget is checked before every line.
 - **MCP action `read_evidence`** `{taskId | prNumber | evidenceId, kind?, tail?, grep?}`
   is a new `buildd` action: add it to `allActions` and `ACTION_AREA`
   (`packages/core/mcp-tools.ts`, `packages/core/mcp-tool-groups.ts`) at worker
