@@ -226,8 +226,8 @@ describe('multi-step cost', () => {
   it('sums the provider-reported cost of every step, not just the last', async () => {
     const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.', 0.002)) });
     await send(userMsg('what notes?'));
-    expect(ledger[0].costUsd).toBeCloseTo(0.012, 10);
-    expect(receipts[0].costUsd).toBeCloseTo(0.012, 10);
+    expect(ledger[0]?.costUsd).toBeCloseTo(0.012, 10);
+    expect(receipts[0]?.costUsd).toBeCloseTo(0.012, 10);
     expect(lastAssistant().usage.costUsd).toBeCloseTo(0.012, 10);
   });
 
@@ -235,13 +235,13 @@ describe('multi-step cost', () => {
     const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.')) });
     await send(userMsg('what notes?'));
     // Step 2 is estimated from its own 10 in / 5 out: 10 × $1 + 5 × $2 per 1M tokens.
-    expect(ledger[0].costUsd).toBeCloseTo(0.01 + 0.00002, 10);
+    expect(ledger[0]?.costUsd).toBeCloseTo(0.01 + 0.00002, 10);
   });
 
   it('keeps the whole-turn estimate when no step reports a cost', async () => {
     const { send } = harness({ model: mockModel(toolStream(['r1', 'search_notes', {}]), textStream('One note.')) });
     await send(userMsg('what notes?'));
-    expect(ledger[0].costUsd).toBe(0.00004);
+    expect(ledger[0]?.costUsd).toBe(0.00004);
     expect(receipts[0]).not.toHaveProperty('costUsd');
   });
 });
