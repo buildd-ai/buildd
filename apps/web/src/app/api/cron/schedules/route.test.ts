@@ -58,7 +58,8 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       workers: { findMany: mockWorkersFindMany },
-      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany },
+      // findFirst: the offline-runner rule's "any live runner on this account" lookup.
+      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany, findFirst: async () => null },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       accounts: { findMany: mockAccountsFindMany },
     },

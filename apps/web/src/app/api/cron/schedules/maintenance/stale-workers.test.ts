@@ -60,7 +60,15 @@ mock.module('@/lib/path-claim-release', () => ({
 
 // The visual audit stall notice has its own tests (lib/stale-visual-audits.test.ts).
 const mockNotifyStalled = mock((_now: Date) => Promise.resolve(0));
-mock.module('@/lib/stale-workers', () => ({ HEARTBEAT_STALE_MS: 150 * 60 * 1000, notifyStalledVisualAudits: mockNotifyStalled }));
+// The offline-runner rule itself (live-runner gate, runner-only scope, task
+// resolution, path-claim release) is tested where it lives:
+// lib/stale-workers-scope.test.ts and lib/stale-workers.test.ts.
+const mockFailOffline = mock((_scope: { accountIds: string[] }, _now?: Date) => Promise.resolve(0));
+mock.module('@/lib/stale-workers', () => ({
+  HEARTBEAT_STALE_MS: 150 * 60 * 1000,
+  notifyStalledVisualAudits: mockNotifyStalled,
+  failWorkersOfOfflineRunners: mockFailOffline,
+}));
 
 import { runStaleWorkerCleanup } from './stale-workers';
 
@@ -104,48 +112,31 @@ describe('runStaleWorkerCleanup', () => {
     expect(mockReportOps).not.toHaveBeenCalled();
   });
 
-  it('fails orphaned workers, requeues their tasks, and returns the count', async () => {
-    mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }] as any);
-    mockWorkersFindMany.mockResolvedValue([
-      { id: 'w-1', taskId: 't-1' },
-      { id: 'w-2', taskId: 't-2' },
+  // Regression (task 5c0ea9bc): this cron used to fail EVERY live worker of an
+  // account that had any heartbeat row older than the cutoff — including the
+  // workers of that account's other, live runner, and its interactive (MCP)
+  // workers, which no runner heartbeat vouches for. It now hands the accounts
+  // to the one shared rule, which spares an account with a live runner.
+  it('hands the accounts with a stale row to the shared offline-runner rule and fails nothing itself', async () => {
+    mockWorkerHeartbeatsFindMany.mockResolvedValue([
+      { id: 'hb-1', accountId: 'acct-1' },
+      { id: 'hb-2', accountId: 'acct-1' },
+      { id: 'hb-3', accountId: 'acct-2' },
     ] as any);
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w-1', taskId: 't-1' }] as any);
+    mockFailOffline.mockReset();
+    mockFailOffline.mockResolvedValue(2);
 
     expect(await runStaleWorkerCleanup(NOW)).toBe(2);
 
-    const workerUpdate = updateCalls.find(c => c.table === 'workers');
-    expect(workerUpdate).toBeDefined();
-    expect(workerUpdate.set.status).toBe('failed');
-    expect(workerUpdate.set.error).toContain('heartbeat expired');
-    expect(workerUpdate.set.completedAt).toBe(NOW);
-
-    // Tasks must go back to the queue, unclaimed, or they stay wedged forever.
-    const taskUpdate = updateCalls.find(c => c.table === 'tasks');
-    expect(taskUpdate).toBeDefined();
-    expect(taskUpdate.set.status).toBe('pending');
-    expect(taskUpdate.set.claimedBy).toBeNull();
-    expect(taskUpdate.set.claimedAt).toBeNull();
-    expect(taskUpdate.where.values).toEqual(['t-1', 't-2']);
-
-    expect(deleteCalls).toBe(1);
-
-    // Path-claims leak regression: these workers are terminated here, outside
-    // PATCH /api/workers/[id], so this cleanup must release their path claims
-    // itself — otherwise a stale claim can block the very retry this cleanup
-    // just requeued (or any sibling task overlapping the same files) forever.
-    expect(mockReleaseAndNotify).toHaveBeenCalledTimes(2);
-    expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-1', 'abandoned');
-    expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-2', 'abandoned');
-  });
-
-  it('skips the task requeue when the orphaned workers hold no task', async () => {
-    mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }] as any);
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w-1', taskId: null }] as any);
-
-    expect(await runStaleWorkerCleanup(NOW)).toBe(1);
-    expect(updateCalls.find(c => c.table === 'workers')).toBeDefined();
+    expect(mockFailOffline).toHaveBeenCalledTimes(1);
+    expect(mockFailOffline.mock.calls[0][0]).toEqual({ accountIds: ['acct-1', 'acct-2'] });
+    expect(mockFailOffline.mock.calls[0][1]).toBe(NOW);
+    expect(updateCalls.find(c => c.table === 'workers')).toBeUndefined();
     expect(updateCalls.find(c => c.table === 'tasks')).toBeUndefined();
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
     expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+    expect(deleteCalls).toBe(1);
   });
 
   it('alerts even when the stale runner had no live workers', async () => {
@@ -153,6 +144,8 @@ describe('runStaleWorkerCleanup', () => {
     // is the ONLY signal that the runner went dark.
     mockWorkerHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'acct-1' }] as any);
     mockWorkersFindMany.mockResolvedValue([] as any);
+    mockFailOffline.mockReset();
+    mockFailOffline.mockResolvedValue(0);
 
     expect(await runStaleWorkerCleanup(NOW)).toBe(0);
     expect(updateCalls).toHaveLength(0);

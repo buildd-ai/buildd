@@ -64,6 +64,7 @@ import {
 } from '@/lib/dep-gate-contract';
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
+import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -93,7 +94,7 @@ const FLEET_IDLE_THRESHOLD_MS = FLEET_IDLE_THRESHOLD_MINUTES * 60_000;
  * seen half an hour ago is on its way to being reported as offline, and saying
  * nothing beats saying it twice.
  */
-export const HEARTBEAT_FRESH_MINUTES = 10;
+export const HEARTBEAT_FRESH_MINUTES = RUNNER_RECENTLY_SEEN_MS / 60_000;
 const HEARTBEAT_FRESH_MS = HEARTBEAT_FRESH_MINUTES * 60_000;
 
 /** Widest pending scan; oldest-first so the longest waits are never crowded out. */
