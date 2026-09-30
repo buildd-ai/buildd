@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
@@ -1639,7 +1640,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     // Find the inArray condition that filters by status
     const statusFilter = whereClause.find((cond: any) => cond.type === 'inArray' && cond.values);
     expect(statusFilter).toBeDefined();
-    expect(statusFilter.values).toEqual(['pending', 'assigned']);
+    expect(statusFilter.values).toEqual([...UNCLAIMED_TASK_STATUSES]);
   });
 
   it('returns 200 even if dispatchUnblockedTask rejects', async () => {
@@ -1720,7 +1721,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       priority: 0,
     });
 
-    // The route uses inArray(tasks.status, ['pending', 'assigned'])
+    // The route uses inArray(tasks.status, UNCLAIMED_TASK_STATUSES)
     // so only those statuses will be returned by the mock
     missionTasksToReturn = [
       {
