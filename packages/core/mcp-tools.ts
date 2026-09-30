@@ -398,7 +398,8 @@ export const recallToolDefinition = {
         description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
       },
       scope: {
-        description: `Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: ${CORPORA.join(' | ')}`,
+        // The enum below lists the corpora; repeating them here only cost tokens.
+        description: 'Corpus to search — single string or array for multi-corpus fused results. Default: memory.',
         oneOf: [
           {
             type: "string" as const,
