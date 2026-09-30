@@ -382,9 +382,28 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     // collision: an agent that believed it had dev's latest Drizzle migration
     // index skipped checking dev before generating one, and reused an index
     // dev had since occupied (task 3075cfe5).
+    //
+    // And the ref the worktree was ACTUALLY cut from wins over the derived one
+    // when they differ: a mission integration branch that is missing on the
+    // remote sends `resolveWorktreeBase` to trunk, and a prompt that still
+    // claimed the integration branch sent the agent hunting for a ref that did
+    // not exist (mission 6341fe61).
+    const actualBase = worker.worktreeBaseRef?.replace(/^origin\//, '') || null;
+    const derivedBase = prBaseResolution.base || gitConfig.defaultBranch;
     if (worker.worktreePath) {
-      const checkedOutFrom = prBaseResolution.base || gitConfig.defaultBranch;
+      const checkedOutFrom = actualBase || derivedBase;
       gitContext.push(`- Your branch \`${worker.branch}\` is already checked out with latest code from \`origin/${checkedOutFrom}\``);
+      if (
+        prBaseResolution.source === 'mission_integration'
+        && actualBase
+        && actualBase !== prBaseResolution.base
+      ) {
+        gitContext.push(
+          `- \`${prBaseResolution.base}\` was not on the remote when this worktree was cut, so it `
+          + `was cut from \`origin/${actualBase}\` instead. Do not try to fetch or reset onto it: `
+          + `\`create_pr\` re-creates it from trunk (or falls back to trunk) and records which on the mission feed.`,
+        );
+      }
       gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
       gitContext.push(worktreeLocationLine(worker.worktreePath));
     }

@@ -233,6 +233,20 @@ describe('the owner\'s examples', () => {
     expect(writes).toEqual([`POST /api/tasks {"missionId":"${MISSION}","dependsOn":["${T_STRIPE}"],"creationSource":"dashboard"}`]);
   });
 
+  it('missionId null files a standalone task even with a mission docked: the card says "none", the write carries no missionId', async () => {
+    const { preview } = await proposeAndApprove('create_task', { title: 'Unrelated cleanup', description: 'Tidy the lint config.', missionId: null });
+    expect(approvalHeadline(preview)).toBe('New task: this workspace');
+    expect(preview.changes.map(approvalChangeLine)).toContain('Mission: + none');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).not.toContain('missionId');
+  });
+
+  it('an omitted missionId still joins the docked mission, and the headline names it', async () => {
+    const { preview } = await proposeAndApprove('create_task', { title: 'Add to this', description: 'More work.' });
+    expect(approvalHeadline(preview)).toBe('New task in: Multi-currency checkout');
+    expect(writes[0]).toContain(`"missionId":"${MISSION}"`);
+  });
+
   it('"The EUR footnote is wrong, fix it before merging" → a follow-up task on the same branch', async () => {
     const { preview } = await proposeAndApprove('create_task', {
       title: 'Fix the EUR footnote', description: 'The review screenshot shows the wrong EUR footnote.', baseBranch: 'buildd/stripe-currency',

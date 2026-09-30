@@ -3,6 +3,7 @@ status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 # Components 1-4 have shipped (run-once, the image, apps/cloud-runner, the
 # egress handler). The canary (implementation step 6) has not run.
+# Phase 2 (resumable runs, warm repos) is proposed only and asserts nothing.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -22,7 +23,7 @@ assertions:
 ---
 # Cloudflare Agents Runner
 
-**Status:** Partially implemented (Components 1-4; canary pending)
+**Status:** Partially implemented (Components 1-4; canary pending). [Phase 2](#phase-2-resumable-runs-and-warm-repos) proposed.
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
@@ -168,6 +169,10 @@ the container API, which is the Sandbox SDK pattern.
 - `api.anthropic.com` → rewritten to AI Gateway. The handler strips the
   placeholder `x-api-key` and sets `cf-aig-authorization`. The Anthropic key
   lives in AI Gateway (BYOK) or Unified Billing, never in the container.
+  As built, an Anthropic-compatible proxy (LiteLLM and similar) can take the
+  gateway's place: `MODEL_PROXY_URL` + `MODEL_PROXY_KEY` send model traffic
+  there with `Authorization: Bearer` or `x-api-key`, and win over the gateway
+  when set (README "Model routes").
 - `github.com`, `api.github.com` → adds `Authorization` with a short-lived
   GitHub App installation token scoped to the task's repo.
 - Everything else passes through (open egress in phase 1). Allowlisting is a
@@ -237,9 +242,10 @@ Load-bearing piece first:
    Compare completion rate, time to first progress (cold start plus clone), and
    cost per task against Coder.
 
-Phase 2 is an R2 snapshot or warm clone cache if clone time dominates, and
-sub-agent or long-task limits if the canary hits them. Phase 3 is a first-class
-executor setting in the dashboard.
+Phase 2 is resumable runs and warm repos; see
+[Phase 2](#phase-2-resumable-runs-and-warm-repos). Sub-agent or long-task
+limits follow if the canary hits them. Phase 3 is a first-class executor
+setting in the dashboard.
 
 ## Open questions
 
@@ -261,8 +267,9 @@ executor setting in the dashboard.
    refresh routes and the secrets list, which accept only keys a team
    owner/admin has flagged as long-lived host runners. The dispatcher's key
    does not need that flag.
-4. **Clone cost.** A fresh depth-limited clone per task may dominate short
-   tasks. *Lean: measure in the canary before building a snapshot cache.*
+4. **Clone cost.** A fresh clone per task may dominate short tasks. *Lean:
+   measure in the canary before building a snapshot cache* (Phase 2, warm
+   repos).
 5. **Pusher from inside the container.** `pusher-js` in Node over outbound
    WebSocket should work unchanged. Confirm that commands mid-run arrive within
    the canary.
@@ -292,3 +299,428 @@ executor setting in the dashboard.
   awake. Push dispatch already exists.
 - **Adopting `claude-managed-agents` wholesale.** Its lifecycle is driven by
   Claude Platform sessions, not buildd's claim → run → PR → complete lifecycle.
+
+---
+
+## Phase 2: resumable runs and warm repos
+
+**Status:** Proposed. Nothing below is built. Every new behaviour ships behind
+a Worker var that defaults off, so merging any slice changes nothing until a
+workspace opts in.
+
+### Problem
+
+Two costs that phase 1 accepts, and that an evaluation has to price:
+
+1. **Every task pays a full clone and a cold install.** `ensureIsolatedClone`
+   (`apps/runner/src/workspace.ts`) runs a plain `git clone <url>`, with no
+   depth limit, into an empty container. `setupWorktree`
+   (`apps/runner/src/git-operations.ts`) then runs `git fetch origin`,
+   `git worktree add` and a per-worktree `bun install`. The image deletes the
+   bun cache at build time (`apps/runner/Dockerfile.once`), so every install
+   downloads everything.
+2. **A parked question holds a container, or loses the session.** In `--once`,
+   `waitForOutcome` (`apps/runner/src/run-once.ts`) keeps the process, and so
+   the container, alive for up to `BUILDD_ONCE_MAX_WAIT_MS` (default 6 h) while
+   the worker sits in `waiting`, then aborts it and exits `EXIT_FAILED`. Any
+   crash, eviction or redeploy in that window loses the transcript and any
+   uncommitted work, because the container disk is gone: "When an instance
+   stops, all disk contents are lost unless explicitly saved" ([Lifetime]).
+
+### Current state
+
+**What the cloud runner does today.**
+- `WorkerAgent` (`apps/cloud-runner/src/worker-agent.ts`) uses the raw
+  `this.ctx.container` API. `TaskSupervisor.run` (`src/supervisor.ts`)
+  destroys any leftover container, installs egress interception, `start()`s a
+  fresh one, `exec`s `buildd-once --task <id>` (`runnerCommand` in
+  `src/lifecycle.ts`), and holds `keepAliveWhile` until the process exits.
+  The main process is `sleep infinity` under `tini`.
+- Outcomes come from exit codes (`outcomeForExitCode`): 0 done, 1 failed,
+  3 refused, 64 usage, anything else crashed. The worker ID comes from the
+  runner's `BUILDD_WORKER_ID=` line (`parseWorkerIdLine`).
+- `finish` always destroys the container. After a crash with a known worker
+  ID, `reportCrashIfNeeded` PATCHes the worker `failed`. `recoverOrphan` treats
+  a run that was live when the Durable Object restarted as crashed.
+- The agent is named by task ID, and `decideDispatch` ignores a dispatch
+  while a run is `starting` or `running`.
+- Egress (`src/outbound.ts`, `src/egress.ts`) intercepts named hosts only. The
+  container holds `BUILDD_API_KEY` and a placeholder model key, and nothing
+  else (`buildContainerEnv`). The clone URL carries no token, because the
+  token is added at egress.
+
+**How the runner resumes a session.**
+- The Claude session ID is captured from the SDK `init` message into
+  `worker.sessionId` and saved at once (`storeSaveWorker`, `workers.ts`).
+  `worker-store.ts` persists the worker record (`PERSISTED_FIELDS`: `sessionId`,
+  `codexThreadId`, `waitingFor`, `worktreePath`, `branch`, messages and so on)
+  to `<BUILDD_HOME>/workers/<id>.json`, with a 24 h activity TTL.
+  `history-store.ts` is an archive of *finished* sessions (SQLite plus gzip)
+  and plays no part in resume.
+- The transcript itself belongs to Claude Code, under its config directory
+  (`~/.claude` unless `CLAUDE_CONFIG_DIR` is set), keyed by the session's cwd.
+  A cloud claim carries no Claude credential, so no per-worker
+  `CLAUDE_CONFIG_DIR` is materialised (`claude-auth.ts`), and the transcript
+  lands under `HOME=/home/bun`.
+- Resume is `RecoveryManager.resumeSession` (`recovery.ts`): layer 1 passes
+  `resume: sessionId` (Claude) or `resumeThreadId` (Codex) to a new session in
+  the preserved worktree; layer 2 restarts with a text reconstruction.
+  `sendMessage` (`workers.ts`) takes this path for a `waiting` worker with no
+  live session. `startSession`'s `finally` keeps the worktree for a `waiting`
+  worker.
+- **A different process can resume, but only on the same disk and not in
+  `--once`.** A restarted host runner calls `restoreWorkersFromDisk`
+  (`worker-sync.ts`), which keeps `waiting` workers answerable. The
+  `WorkerManager` constructor skips that restore when `config.singleTask` is
+  set, so `buildd --once` cannot pick up a parked worker today, even from a
+  restored disk.
+
+**What the server does with retries and answers.**
+- The claim route (`apps/web/src/app/api/workers/claim/route.ts`) always
+  inserts a new worker row, and only when no worker of the task is in
+  `idle`, `running`, `starting` or `waiting_input`. A claim never attaches to
+  an existing worker.
+- Auto-retry (`PATCH /api/workers/[id]`, `shouldAutoRetry`) resets the same
+  task to pending and calls `dispatchRetriedTask`, which fires `task.retry` to
+  the webhook. The dispatcher routes it to the same agent (same task ID) as
+  attempt + 1, and a new claim creates a new worker.
+- "Retries continue on the same branch" means `tasks.context.resumeBranch`.
+  `setupWorktree` reuses that branch only if it exists on `origin`, and falls
+  back to a fresh cut otherwise (`describeWorktreeFallback`). Committed and
+  pushed work carries over. Uncommitted work and the transcript do not.
+- An answer to a parked question goes through `evaluateAnswerPath`
+  (`apps/web/src/lib/answer-resume.ts`). `resume` queues the answer on the
+  same worker's `pendingInstructions` for the runner to drain. Otherwise a
+  `cold_continuation` supersedes the worker and inserts a **new task**
+  (`buildContinuationTaskValues`, title `Continue: …`) with `resumeBranch`. G2
+  requires the worker's `updatedAt` within `RESUME_RUNNER_FRESH_MS` (90 s),
+  which a sleeping container can never meet.
+- **Gap found while writing this:** neither cold-continuation insert
+  (`app/api/workers/[id]/respond/route.ts`, `cleanupUnresumedAnswers` in
+  `lib/stale-workers.ts`) calls any dispatch function. Polling runners find
+  the new task. A webhook-only workspace never receives it, so on the cloud
+  runner an answer that goes cold currently strands the work. This needs
+  fixing whatever Phase 2 decides.
+- A parked worker whose container is gone is not safe for long either:
+  `failWorkersOfOfflineRunner` fails every live-status worker of an account
+  (including `waiting_input`) once the account has no fresh runner heartbeat
+  for `RUNNER_STALE_CUTOFF_MS`, and `cleanupStuckWaitingInput` retires
+  `waiting_input` after 24 h (4 h for mission tasks).
+
+**What Cloudflare offers.**
+- Container disk is ephemeral. The next instance starts from its image
+  ([Lifetime]). `setInactivityTimeout` is capped at 6 h ([Container API]).
+- **Sandbox SDK directory backups** (`createBackup` / `restoreBackup`)
+  squashfs a directory into R2 and, in production, mount it as a
+  copy-on-write overlay (FUSE overlayfs). The mount is gone when the
+  container stops. `ttl` defaults to 3 days and is "enforced at restore time
+  only"; expired objects stay in R2 until a lifecycle rule removes them. The
+  production path needs R2 S3 credentials on the Worker (presigned URLs). Under
+  `wrangler dev` with `localBucket: true` the archive is extracted with
+  `unsquashfs`, with no overlay. Renames across overlay layers can fail with
+  `EXDEV` (their example is a `node_modules` cache directory)
+  ([Backups], [Backups API]). The SDK needs its `/sandbox` control server as
+  the image entrypoint, version-matched to the npm package ([Sandbox image]).
+- **Native container snapshots, on the raw API we already use.**
+  `ctx.container.snapshotContainer()` captures "the writable root filesystem
+  of a running container" (no memory or processes), and
+  `start({ containerSnapshot })` restores it in place of `image`. Handles live
+  30 days, refreshed on restore, with a 20 GB maximum. This is "only supported"
+  under `scheduling_policy: "durable_object"` (beta), which drops
+  `max_instances` and image rollouts ([Container API], [Scheduling],
+  [Limits]). workers-types 5.20260930 also declares an experimental
+  `snapshotDirectory` plus `directorySnapshots` start option. It is not in the
+  public docs yet.
+- Disk per instance tops out at 20 GB (`standard-4`); we run `standard-1`
+  (8 GB) ([Limits]). R2 lifecycle rules expire objects by prefix and age,
+  typically within 24 h of expiry ([R2 lifecycle]). A single-part R2 upload
+  is capped at about 5 GiB ([R2 limits]).
+
+### The crux
+
+**Adopt the Sandbox SDK for backups, or build snapshots against R2
+ourselves?** *Decision: do not adopt the SDK. Build a Worker-mediated R2
+snapshot store on the raw container API, and keep native
+`snapshotContainer` as the measured alternative for resume.*
+
+Reasons:
+- **The SDK is a runtime swap, not a feature.** Its entrypoint replaces
+  `tini` + `sleep infinity`. Its control server becomes a second exec
+  transport beside `ctx.container.exec`. Its Durable Object class would
+  displace or wrap `WorkerAgent`, which today is `Agent` plus the tested
+  `ContainerPort` seam in `supervisor.ts`. Egress interception, orphan
+  recovery and crash reporting would all need re-proving against it.
+- **Credentials.** Production backups need R2 S3 keys on the Worker and hand
+  the container presigned URLs. A Worker-mediated store needs only an R2
+  binding. The Worker, not the container, chooses every object key, so a
+  compromised container can neither name another workspace's snapshot nor
+  hold a URL to one.
+- **The part we would lose is measurable.** The SDK's advantage is lazy
+  copy-on-write restore. If the evaluation shows restore time dominating, the
+  store sits behind one interface (below) and the SDK or native directory
+  snapshots can replace it without touching the runner.
+- **One mechanism for both capabilities, runnable in `wrangler dev`.** R2
+  bindings and egress interception both work locally today
+  (`scripts/local-smoke.sh` exercises the interception).
+
+What breaks if this is wrong: restore is a download plus extract rather than a
+mount. For a very large repo that could cost more than a clone. The test plan
+measures exactly this before anything is widened.
+
+**Mechanism.** A reserved pseudo-host (for example `buildd-snapshots.invalid`)
+is added to `INTERCEPTED_HOSTS`. `EgressHandler` serves `PUT` / `GET` on it and
+streams bodies to and from an R2 binding. The key is built from the agent's own
+identity, never from the request path: `ws/<workspaceId>/warm/<generation>` and
+`ws/<workspaceId>/park/<workerId>`. `workspaceId` comes from buildd (added to the
+`/api/runner/github-token` grant, which is already authenticated with the
+dispatch token), not from the container or the webhook body. The runner uses
+plain `curl`. In code this is a `SnapshotStore` port beside `ContainerPort`, so
+a Sandbox-backup or native-snapshot implementation can replace it.
+
+### Warm repos
+
+| Option | Freshness | Restore cost | Security / tenancy | Verdict |
+|---|---|---|---|---|
+| (a) Sandbox `createBackup` of clone + bun cache | Refresh job re-snapshots | Lazy CoW mount (prod), extract (local) | R2 S3 keys on the Worker; presigned URL in the container | Only if (b) restore dominates; needs the SDK (crux) |
+| (b) `git bundle` + bun-cache tarball in R2, via the Worker | `git fetch` after restore; refresh on age or fetch delta | Download + extract | Binding only; Worker-chosen keys | **Recommended** |
+| (c) Warm per-workspace container, a worktree per task | Always warm | None | Tasks share a disk and a process tree, the phase 1 weakness this design exists to remove; one container's egress token would span tasks | Rejected |
+| (d) Baked into the image | Stale per release | None | Repo contents in an image registry; one image per workspace against a 50 GB account image cap ([Limits]) | Rejected |
+
+**Recommendation: (b).**
+- **Contents.** `git bundle create --all` of the clone, plus a tar of
+  `~/.bun/install/cache`. A bundle rather than a tar of `.git` on purpose: it
+  carries objects and refs but no `config`, hooks or credential helpers, so a
+  restored snapshot cannot run code at checkout or redirect a remote. No
+  `node_modules`: worktree installs link from the warm cache, which also
+  avoids the overlay `EXDEV` problem entirely.
+- **Restore.** `ensureIsolatedClone` gains one branch before `git clone`: if
+  the store has a warm snapshot, `git clone <bundle>`, set `origin` to the real
+  URL, and extract the cache. `setupWorktree`'s existing `git fetch origin`
+  closes the gap. A missing or unreadable snapshot falls back to today's clone.
+  The snapshot is a cache and is never required.
+- **Refresh.** After a task succeeds, the runner uploads a new generation if
+  the current one is older than a set age (lean: 24 h) or its post-restore
+  fetch exceeded a byte threshold. Only one refresh per workspace is in flight
+  (a conditional R2 put on the generation key). No cron and no alarm, so an idle
+  workspace costs nothing (see [Neon wake windows](#neon-wake-windows)).
+- **Disk.** The snapshot plus extracted clone must fit the instance disk
+  alongside the worktree: 8 GB on `standard-1`, 20 GB at most. The runner
+  skips the warm path and logs why when the bundle size recorded in object
+  metadata exceeds a fraction of free disk.
+- **Retention.** Keep the latest two generations per workspace, deleted by the
+  refresher, plus an R2 lifecycle rule on `ws/*/warm/` at 14 days as a
+  backstop. Cost is R2 storage for one or two archives per active workspace.
+  Egress from R2 is free.
+- **Security.** The container holds no credential by design (Components 4),
+  so a snapshot of its repo and package cache has none to capture. Keep it
+  that way: the uploader refuses a bundle whose clone has `credential.*`
+  config or an `https://…@` remote. Private-registry tokens mapped on a role
+  reach `bun install` as env (`resolveWorkerRoleEnv`) and are never written
+  to the cache. A test asserts that.
+- **Tenancy.** Keys are per workspace under a prefix only the Worker writes.
+  They are never shared across workspaces or teams, even for the same repo:
+  two teams' clones of one repo may differ in private refs.
+
+### Resumable runs
+
+**When to snapshot ("park").**
+- **Entering `waiting_input` with no live session** (an `AskUserQuestion`
+  ending the SDK loop). This is the main case. A permission prompt keeps a
+  live session blocked in a hook, so it is not parked and keeps today's
+  behaviour.
+- **Orphan recovery.** `recoverOrphan` currently destroys a container that is
+  still running after a Durable Object restart (deploy, eviction). If
+  `container.running`, it parks first, then destroys. That covers planned
+  redeploys without a separate drain step.
+- Not on inactivity: the raw API gives the agent no callback before the
+  platform stops an idle container (`onActivityExpired` belongs to the
+  `@cloudflare/containers` class, which we do not use). The agent holds
+  `keepAliveWhile` for the whole run anyway.
+- Not periodically in phase 2. Checkpoint cadence is an open question.
+
+**What a park bundle holds** (small by design; the warm snapshot supplies the
+rest):
+- the task branch as a `git bundle`, plus uncommitted changes as a commit
+  from `git stash create` under a private ref, so the working tree is not
+  touched;
+- the Claude Code transcript for `worker.sessionId` (or the Codex home for
+  `codexThreadId`);
+- the worker record `<BUILDD_HOME>/workers/<id>.json` and the task's outbox
+  file.
+
+It excludes `node_modules`, the rest of `BUILDD_HOME`, and anything under
+`CLAUDE_CONFIG_DIR` other than the transcript. Paths are restored to the same
+absolute locations, because the transcript is keyed by cwd and the record
+stores `worktreePath`.
+
+**Park flow.**
+1. The runner, started with `BUILDD_ONCE_PARK=1`, sees its worker `waiting`
+   with `!hasLiveSession`. It flushes (`flushToServer`, outbox), uploads the
+   park bundle, and PATCHes the worker with a park marker (server change
+   below).
+2. It prints `BUILDD_PARKED=<workerId>` and exits with a new code
+   `EXIT_PARKED` (4, mirrored in `lifecycle.ts` and pinned by
+   `lifecycle.test.ts` as the others are).
+3. The supervisor records `outcome: 'parked'` and destroys the container. A
+   parked outcome is not a crash, so no failure report is sent.
+
+**Resume flow (the `waiting_input` round trip).**
+1. The user answers. `evaluateAnswerPath` sees the park marker, treats it as a
+   holder of the transcript in place of G2's 90 s freshness, and takes the
+   existing `resume` path: the answer queues on the **same worker's**
+   `pendingInstructions`.
+2. The server fires a new webhook event `task.resume` (opt-in through
+   `webhookConfig.events`, like `task.retry`) carrying `taskId` and `workerId`.
+3. `decideDispatch` gains a resume branch: same agent (task ID), and only when
+   the run is `exited` with `outcome: 'parked'` for that worker. It starts a
+   container, restores warm then park, and execs
+   `buildd-once --resume-worker <workerId>`.
+4. `--resume-worker` loads that one record (the single-worker form of
+   `restoreWorkersFromDisk`), calls a new re-attach endpoint, and lets the
+   normal 10 s sync drain `pendingInstructions` into `sendMessage` →
+   `resumeSession`. Layer 1 resumes the transcript. Layer 2 still covers a
+   corrupt one.
+5. On success the runner clears the park marker and deletes the bundle, and
+   the run continues as a normal `--once` run.
+
+**Minimal server change** (one nullable column; generated migration):
+- `workers.parkedUntil` (timestamp). It is set by the runner's park PATCH and
+  cleared by re-attach or expiry.
+- `evaluateAnswerPath`: `parkedUntil > now` satisfies G2. G3 still requires
+  `supportsInstructionAck`.
+- `POST /api/workers/[id]/reattach`: an atomic `UPDATE … SET parkedUntil =
+  NULL, updatedAt = now() WHERE id = $1 AND status = 'waiting_input' AND
+  parkedUntil > now() AND account_id = <caller> RETURNING *`. Zero rows means
+  refused (exit 3). This is the only way a second process takes over a worker,
+  and it never creates a row, so the claim route's live-worker guard keeps
+  meaning "one live run per task".
+- `failWorkersOfOfflineRunner` and the heartbeat-orphan scope skip rows with
+  `parkedUntil > now`. Without that, a cloud-only account with no live
+  container fails every parked worker once its heartbeat goes stale.
+- `dispatchResumedTask` in `task-dispatch.ts`, beside `dispatchRetriedTask`.
+- Separately, and needed with or without Phase 2: dispatch the cold
+  continuation task (`dispatchRetriedTask` or `dispatchNewTask` after both
+  inserts noted in Current state).
+
+A new worker carrying `resumeFrom` was the alternative. It was rejected
+because it splits turns, cost and the feed across two rows, which is exactly
+what `answer-resume.ts` exists to avoid, and because it needs the claim guard
+to exempt the prior worker.
+
+**Safety bounds.**
+- **Never two live runs per task.** The parked worker stays `waiting_input`,
+  so the claim route refuses any fresh claim. Re-attach is a single
+  conditional UPDATE. The agent's check-and-set in `decideDispatch` covers
+  duplicate `task.resume` webhooks.
+- **Snapshot TTL.** `parkedUntil` = park time + min(24 h, the task's
+  `waiting_input` timeout: 24 h standalone, 4 h mission). A lifecycle rule on
+  `ws/*/park/` at 2 days is the storage backstop. Once it expires, the
+  existing `cleanupStuckWaitingInput` path takes over unchanged.
+- **Max resume attempts.** At most 3 parks per worker, counted in the worker
+  record. The 4th `waiting` holds the container as today
+  (`BUILDD_ONCE_MAX_WAIT_MS`).
+- **Restore failure.** If the park bundle is missing, corrupt or fails to
+  apply, the runner does not re-attach. It clears `parkedUntil`, exits, and
+  leaves the queued answer unacknowledged. The existing
+  `cleanupUnresumedAnswers` sweep then degrades it after
+  `RESUME_ACK_DEADLINE_MS` (10 min) into the cold continuation it would have
+  been: a fresh run on `resumeBranch` from the last pushed commit, with the
+  answer text carried forward. Only an unpushed WIP commit is lost. The same
+  10-minute deadline bounds a slow cold start, so the resume must acknowledge
+  within it.
+
+### Test plan
+
+Local, under `wrangler dev` with task containers on Docker (`scripts/local-e2e.sh`):
+- **Store.** A miniflare R2 binding backs `SnapshotStore`. Unit tests (Bun,
+  runtime-free like `outbound.test.ts`) cover key derivation (the container
+  cannot choose a key), refusal of `credential.*` config, and the size guard.
+- **Warm.** Run the same task twice. The second run must log a warm restore,
+  do no full `git clone`, and add no bytes to the bun cache download.
+- **Park/resume.** Seed a task that asks one question (as
+  `seed:waiting-input` does). Assert exit 4 and a destroyed container, then
+  answer through `/respond` and assert `task.resume` arrives, the same worker
+  ID resumes, and layer 1 (not layer 2) appears in the session log.
+- **Failure paths.** Delete the park object before answering: the worker goes
+  `failed`, and a retry runs on `resumeBranch`. Send duplicate `task.resume`:
+  one run. Make the heartbeat stale: the parked worker survives.
+- **What local cannot prove.** Sandbox backups restore by extraction locally,
+  not overlay. Native `snapshotContainer` support in `wrangler dev` is not
+  documented, so treat it as unavailable locally until tried. Timings on
+  local Docker say nothing about production. Every timing number comes from a
+  real account.
+
+On a real account (the canary workspace):
+- warm restore against cold clone: wall time and bytes for clone, fetch and
+  install, per repo size;
+- resume success rate: parked resumes that reach layer 1, layer 2, or the
+  fresh-run fallback;
+- gap time: answer to first resumed progress event, against today's
+  cold-continuation start;
+- snapshot sizes and R2 storage per workspace.
+
+These become phase timings (`restore_warm`, `fetch`, `install`, `park`,
+`restore_park`) and counters (`warm_hit`, `resume_layer`) in the per-run
+report artifact that the cloud runner is gaining in parallel, so the
+comparison is read from reports, not logs.
+
+### Open questions
+
+1. **Native `snapshotContainer` for park instead of a bundle?** It captures
+   everything with no file selection, and restores without an image. But it
+   needs the beta `durable_object` scheduling policy, which drops
+   `max_instances` (our only container cap; buildd's `maxConcurrentWorkers`
+   bounds only claimed runs). It pins the runner version inside the
+   snapshot. It captures the whole disk, so any file the agent wrote is in
+   it. Retention is Cloudflare-managed. *Lean: no for phase 2. Revisit if
+   park-bundle resume rates fall short.*
+2. **Periodic checkpoints for long tasks.** They would bound crash loss, but
+   each one costs an upload and a flush. *Lean: none until the canary shows
+   crash loss mid-task.*
+3. **Refresh trigger for warm snapshots.** Age, fetch delta, or every N
+   tasks. *Lean: age or fetch delta, whichever comes first; N tasks is a
+   proxy for both.*
+4. **Is `snapshotDirectory` the better warm-repo primitive once
+   documented?** A mounted per-workspace directory snapshot would make
+   restore free. *Lean: track it; the `SnapshotStore` seam is where it would
+   go.*
+5. **Can the egress handler stream multi-GB bodies to R2?** Outbound
+   interception is not an inbound Worker request, but that is unverified.
+   *Lean: measure with the largest canary repo; fall back to R2 multipart
+   from the Worker if single-part limits bite.*
+6. **Retention for a workspace that leaves the cloud executor.** *Lean:
+   `deploy.ts --remove` deletes `ws/<id>/`; lifecycle rules catch the rest.*
+
+### Non-goals
+
+- Resuming a live process or memory. Only disk state is restored, and a
+  resumed session is a new Claude Code process on the old transcript.
+- Parking permission prompts or a worker with a live session.
+- Sharing warm snapshots across workspaces or teams, or any cross-tenant
+  deduplication.
+- Changing Coder or host runner behaviour. `--resume-worker` and the warm
+  path are inert without the new env and store.
+- Adopting the Sandbox SDK runtime, the `durable_object` scheduling policy,
+  or native container snapshots in phase 2.
+- Putting any credential in a snapshot. There is none in the container to
+  capture.
+
+### Sources
+
+[Backups]: https://developers.cloudflare.com/sandbox/concepts/backup-restore/
+[Backups API]: https://developers.cloudflare.com/sandbox/api/backups/
+[Lifetime]: https://developers.cloudflare.com/sandbox/concepts/lifetime/
+[Sandbox image]: https://developers.cloudflare.com/sandbox/configuration/dockerfile/
+[Container API]: https://developers.cloudflare.com/containers/api/durable-object-container/
+[Scheduling]: https://developers.cloudflare.com/containers/configuration/scheduling-policy/
+[Limits]: https://developers.cloudflare.com/containers/platform/limits/
+[R2 lifecycle]: https://developers.cloudflare.com/r2/buckets/object-lifecycles/
+[R2 limits]: https://developers.cloudflare.com/r2/platform/limits/
+
+- Sandbox SDK directory backups: [Backups], [Backups API]
+- Sandbox lifetime and disk: [Lifetime]
+- Sandbox image requirements: [Sandbox image]
+- Durable Object container API (`snapshotContainer`, `setInactivityTimeout`): [Container API]
+- Scheduling policies: [Scheduling]
+- Instance disk and snapshot limits: [Limits]
+- R2: [R2 lifecycle], [R2 limits]

@@ -18,7 +18,7 @@ import type { CSSProperties } from 'react';
 import type { FleetRunner, FleetSlot, FleetSnapshot } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import { SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from '@/components/fleet/slot-lanes-layout';
-import { fleetDisplayRows, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
+import { fleetDisplayRows, fleetLabel, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { shortDuration } from '@/lib/mission-list-card';
 import { FleetLanes } from './FleetLanes';
@@ -255,15 +255,9 @@ export function FleetStrip({
   /** Always start as the one-line summary (a member's Home). */
   compact?: boolean;
 }) {
-  const slotsPerRunner = new Set(fleet.runners.map(r => r.maxSlots));
   const busy = fleet.runners.some(r => r.slots.some(s => s.worker));
   const collapsed = compact || !busy;
-  const label = (
-    <span className="section-label text-text-muted">
-      Fleet · {fleet.runners.length} runner{fleet.runners.length === 1 ? '' : 's'}
-      {slotsPerRunner.size === 1 && fleet.runners.length > 0 ? ` × ${[...slotsPerRunner][0]} slots` : ''}
-    </span>
-  );
+  const label = <span className="section-label text-text-muted">{fleetLabel(fleet)}</span>;
 
   if (fleet.runners.length === 0) {
     return (

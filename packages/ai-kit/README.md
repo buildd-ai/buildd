@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.12.0
+npm i -E @builddai/ai-kit@0.14.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -29,7 +29,7 @@ to npm with provenance and is tagged `ai-kit-v<version>`. See
 | `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
-| `@builddai/ai-kit/surfaces` | Jev orders the app's own chips (`defineRankSurface`), with a code fallback and a confidence gate. Multi-slot `defineSurface` is types only | Rank slot ready |
+| `@builddai/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
 
 ## Model plans
 
@@ -188,10 +188,10 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 
 - `read`: runs.
 - a write the person set to Allow runs without a card only if `canSkipCard` holds (first skip of the turn, no tool output anywhere in the stored conversation or earlier in this turn, nothing docked, not `startsUnattendedWork`, not `spends`, only `skippableFields`) **and** your `preview` resolves. Its output gets `allowed: true`.
-- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one. The card renders that denial as "not proposed · one change per turn", never as a Discard (`isSystemDenied`).
+- anything else gets an approval card carrying your preview. **One card per turn, a row per write** (0.13.0): each write keeps its own approval id, input hash, preview and compare-and-set, and the turn's writes are the rows of one card, at most `APPROVAL_ROW_CAP` (8). A write past the cap is denied with `ROW_CAP_REASON` and the model is told to propose it after the card is answered. An admin write (`confirmText`) stands alone: any other write that turn is denied with `ONE_CARD_PER_TURN_REASON`. Both denials render as "not proposed yet", never as a Discard (`isSystemDenied`, `isHeldBack`).
 - a preview may return `input`, what actually runs; each field it rewrote is listed on the card (`key (runs as): proposed → runs`), so the card never reads narrower than the call.
 - a preview that can't resolve the target (`ok: false`) shows no card; the tool answers `Needs clarification: <question>`.
-- on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise). `execute` re-checks all of this, so nothing a tool result says can make a write run.
+- on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise, `CHANGED_SINCE_SHOWN`). Each row of a card is checked on its own, with no transaction across rows: one that fails is refused and the others still run. `approvalRowOutcome(part)` says how each went. `execute` re-checks all of this, so nothing a tool result says can make a write run.
 
 **Thinking steps.** The runner emits `data-step` parts from the tool lifecycle (active → done, "Check it with you" while a card waits, "Filed as a task" for a hand-off), labelled from the tool declaration's `steps: { active, done, failed? }` or the group label, never the tool name. Plus your own `ctx.step()` rows.
 
@@ -292,6 +292,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<TierPicker value onChange last? options? policy? auto? autoMeta? autoDetail? footer? triggerExtra? hover?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta, `options[].detail` / `autoDetail` as a second line under the name. `triggerExtra` rides on the trigger, `hover` shows on pointer hover. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
 | `<ApprovalCard part onRespond onEdit? approverName? headline? eyebrow? meta? body? details? fold? confirmLabel? busyLabel? settled? deniedNote?>` | before → after from the server preview; typed confirm for `confirmText`. `eyebrow` / `meta` join the status in a head row; `body` and `details` are yours (e.g. a draft); `fold` folds the details behind "Show details · N changes" below 640px; `settled: 'row'` folds a decided or discarded card to one line |
+| `<ApprovalRowsCard parts held? onRespond approverName? eyebrow? meta? rowLabel? confirmLabel? busyLabel?>` | (0.13.0) a turn's writes as one card: a checked row each, "Confirm N" answers every row (unchecked ones declined), "Discard all" declines them all; a row folds to two truncated lines and taps open to the full target and its changes; settled, each row says done, changed since shown, failed or discarded. `ChatThread` draws it for any message with two or more writes (`approvalRowGroup(parts)`); an app with its own `renderTool` calls `approvalRowGroup` itself and returns `null` for the other rows |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
 | `<ChatEmpty name chips onChip greeting? overline? mood? sub? chipsHeader? chipsAside? variant?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send, tone? }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface`. An overline (with a mood dot), a sub line, a header over the chips; `variant: 'rows'` for full-width rows |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |
@@ -511,7 +512,7 @@ export const CHIPS = defineRankSurface({
   levels: LEVELS,                                   // optional; lowest first
   fallback: state => codeOrder(state),              // always computed: the order when Jev is off or unsure, and the tie-break
   max: 4,
-  mode: 'gated', minConfidence: 0.6,                // or 'shadow' to log only
+  mode: 'shadow',                                   // 'gated' needs gate: gateFromEval(…), below
 });
 
 const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // never throws
@@ -519,7 +520,11 @@ const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // nev
 const chips = CHIPS.resolve(pick.ids);
 ```
 
-- Scores count only when applied (at or above `minConfidence` in `gated`). If
+- Modes are `shadow` and `gated` only (0.14.0): `live` and a hand-typed
+  `minConfidence` are refused. `gated` needs `gate`, from
+  `gateFromEval(await runSurfaceEval({ surface: CHIPS, slot: RANK_SLOT, … }))`,
+  exactly as for `defineSurface` below.
+- Scores count only when applied (at or above the gate's threshold in `gated`). If
   fewer than `minAppliedShare` (default half) of the candidates are applied,
   or the call fails or times out (default 3s), or there is no key, or the
   mode is `shadow`, the fallback order stands, and `reason` says why.
@@ -527,7 +532,71 @@ const chips = CHIPS.resolve(pick.ids);
   fallback order. `rank(state, run)` is the same combination, pure, for tests
   and for replaying logged runs.
 - `CHIPS.decision` is the `/decide` definition: pin it with
-  `expectDecisionPinned` and eval it with `runDecisionEval` before gating.
+  `expectDecisionPinned`.
+
+### Several slots, shadow first: `defineSurface` (0.14.0)
+
+`defineSurface` picks several slots in one Jev call: a `rank` slot (chips, one
+`score` question per candidate) and a `choice` slot (one optional card, a
+`choice` over your labels).
+
+```ts
+import { defineSurface, runSurfaceEval, gateFromEval } from '@builddai/ai-kit/surfaces';
+
+export const EMPTY = defineSurface({
+  id: 'cue.chat_empty',
+  promptVersion: '2026-09-30.a',
+  slots: {
+    chips: { type: 'rank', candidates: CHIPS, question: c => `Offer "${c.label}" now?`, max: 4,
+             default: ['what_needs_me', 'plan_today', 'recap_week', 'start_new'] },
+    card:  { type: 'choice', question: 'Which card belongs above the chips?',
+             labels: { none: 'Nothing is pressing', overdue_items: 'Items are overdue', unread_bills: 'Bills are unread' },
+             default: 'none' },
+  },
+});
+
+const pick = await EMPTY.pick(counts, { apiKey, onUsage, onPick: log => saveShadowRow(log) });
+// pick.slots.chips.ids, pick.slots.card.label: always registered ids and labels
+```
+
+- **Shadow is the default for every slot.** A shadow slot renders its
+  `default`, whatever Jev says. `onPick` receives a `SurfaceLog` on every
+  attempted call: per slot, what rendered, what Jev would have shown, the
+  confidences and whether they agreed. It holds no state. Save it with what
+  the person then tapped; those rows become the eval's labels.
+- No key means no call, the defaults and no log. A failed call renders the
+  defaults and logs `ok: false`. A throwing `onPick` never fails the render.
+- **Gating a slot needs an eval.** `mode: 'gated'` is refused without a
+  `gate`, and a gate comes from `gateFromEval`, which throws below
+  `MIN_GATE_EVAL_ROWS` (700) held-out labelled rows. At 700 the 95% interval
+  on a ~90% accuracy is about ±2.2 points. Rows split by id parity: the
+  threshold is tuned on the even half (the lowest confidence Jev actually
+  produced there at which the answers reach your target accuracy, so never a
+  round number someone typed), then must hold on the odd half, which it never
+  saw. A report holding one half (`split: 'even'` or `'odd'`) is refused:
+
+  ```ts
+  const report = await runSurfaceEval({
+    surface: EMPTY, slot: 'card', rows: labelled, split: 'even-odd',
+    stateOf: r => r.counts, labelOf: r => r.tapped, idOf: r => r.id, run: { apiKey },
+  });
+  const CARD_GATE = gateFromEval(report, { targetAccuracy: 0.95 });   // commit this constant
+  // then: card: { ...card, mode: 'gated', gate: CARD_GATE }
+  ```
+
+  For a rank slot, `labelOf(row, candidateId)` returns the level index the
+  candidate deserved, or `undefined` to leave it unlabelled.
+- **Review the gate constant like code.** A `SlotGate` is a plain object, so
+  one can be typed by hand; the check is the reviewed diff that adds it, with
+  the eval output it came from. Never commit the labelled rows to a public repo.
+- The gate is bound to `slotFingerprint(slot)`: the slot's questions,
+  candidates, levels, labels and the model, not its mode. Change any of them
+  and the gated surface no longer defines until you re-run the eval. Slots
+  gate independently: the card can be gated while the chips stay in shadow.
+- A gated choice applies Jev's label at or above the gate; a gated rank slot
+  sorts by the applied scores if at least `minAppliedShare` (default half) of
+  the candidates are applied, filling from `default`. Otherwise `default`, and
+  `reason` says why.
 
 ## Theming
 

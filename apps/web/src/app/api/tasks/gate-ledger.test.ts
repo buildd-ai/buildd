@@ -57,6 +57,21 @@ mock.module('@buildd/core/gate-events', () => ({
   },
 }));
 
+// The integration-branch IO module is lazily imported by the route, only for
+// a mission-branch mission with no workspace of its own.
+const ensureCalls: any[] = [];
+const branchReports: any[] = [];
+let ensureResult: any = { ok: true, branch: 'mission/x', created: true };
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureMissionIntegrationBranch: async (...args: any[]) => {
+    ensureCalls.push(args);
+    return ensureResult;
+  },
+  reportMissionBranchUnresolved: async (input: any) => {
+    branchReports.push(input);
+  },
+}));
+
 // ── Route dependencies ────────────────────────────────────────────────────────
 
 const WS = 'ws-1';
@@ -177,6 +192,9 @@ beforeEach(() => {
   recorded = [];
   ledgerShouldReject = false;
   insertedTask = null;
+  ensureCalls.length = 0;
+  branchReports.length = 0;
+  ensureResult = { ok: true, branch: 'mission/x', created: true };
   subjectObservation = { anchor: null, match: null, taskValues: {} };
   workspaceRow = { id: WS, name: 'buildd', teamId: 'team-1', repo: 'owner/buildd', gitConfig: {} };
   missionRow = { teamId: 'team-1', defaultOutputRequirement: null, defaultBackend: null, startAt: null, workingBranch: null, integrationBranchEnabled: false };
@@ -387,5 +405,40 @@ describe('POST /api/tasks — gate ledger wiring', () => {
     expect(created.status).toBe(200);
 
     expect(recorded).toHaveLength(0);
+  });
+});
+
+// Regression (mission 6341fe61): a mission created with no workspace defaulted
+// to mission-branch, but nothing could ever cut its branch — the ensurer only
+// looked at the mission's own (absent) workspace. The first task filed into a
+// repo-linked workspace now cuts it, before any runner tries to base on it.
+describe('POST /api/tasks — integration branch for a mission without a workspace', () => {
+  const BRANCH = 'mission/team-level-mission-6341fe61';
+
+  it('cuts the branch from the TASK workspace when the mission has none', async () => {
+    missionRow = { ...missionRow, integrationBranchEnabled: true, workingBranch: BRANCH, workspaceId: null };
+    const res = await POST(post({ workspaceId: WS, title: 'First slice', description: 'x', missionId: MISSION }));
+    expect(res.status).toBeLessThan(300);
+    expect(ensureCalls).toEqual([[MISSION, { workspaceId: WS }]]);
+    expect(branchReports).toEqual([]);
+    // The task still defaults its base to the integration branch.
+    expect(insertedTask.context.baseBranch).toBe(BRANCH);
+  });
+
+  it('traces a failure under mission_branch_unresolved and still files the task', async () => {
+    missionRow = { ...missionRow, integrationBranchEnabled: true, workingBranch: BRANCH, workspaceId: null };
+    ensureResult = { ok: false, reason: 'no_repo', detail: 'workspace not linked to a GitHub repo' };
+    const res = await POST(post({ workspaceId: WS, title: 'First slice', description: 'x', missionId: MISSION }));
+    expect(res.status).toBeLessThan(300);
+    expect(branchReports).toHaveLength(1);
+    expect(branchReports[0]).toMatchObject({
+      missionId: MISSION, branch: BRANCH, where: 'task_create', cause: 'no_repo', workspaceId: WS,
+    });
+  });
+
+  it('leaves a mission WITH a workspace alone — its branch was ensured at create/opt-in', async () => {
+    missionRow = { ...missionRow, integrationBranchEnabled: true, workingBranch: BRANCH, workspaceId: WS };
+    await POST(post({ workspaceId: WS, title: 'First slice', description: 'x', missionId: MISSION }));
+    expect(ensureCalls).toEqual([]);
   });
 });

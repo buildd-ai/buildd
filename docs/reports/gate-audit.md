@@ -249,3 +249,29 @@ visible without being filed. Removal: `lib/chat-retro/REMOVAL.md`.
 |---|---|---|---|---|
 | 65 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | deferred | eligible pattern over the per-team daily proposal cap |
 | 66 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | rejected | signature muted until its evidence doubles, or no workspace to file into |
+
+### Mission integration branch resolution (`lib/mission-integration-branch.ts`)
+
+A mission-branch mission whose integration branch cannot be resolved on the
+remote. Not a refusal: every site records what it did instead, under one
+reason built from closed vocabularies (`where`, `cause`, `fallback`) so repeats
+group; the branch name and mission are in `detail`. The runner reports the same
+failure as the error-trace pattern `mission_branch_unresolved` when it cuts a
+worktree from trunk instead (`describeWorktreeFallback`, `@buildd/core/mission-branch-trace`).
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 67 | `mission-integration-branch.ts:ensureIntegrationBaseForTaskPr` | `mission_branch_unresolved` | warned | create_pr found the branch absent and re-cut it from trunk (`fallback: recut_from_trunk`) |
+| 68 | `mission-integration-branch.ts:ensureIntegrationBaseForTaskPr` | `mission_branch_unresolved` | stranded | branch absent and not creatable; task PR opened against trunk (`fallback: trunk_pr_base`) |
+| 69 | `missions/route.ts` POST, `missions/[id]/route.ts` PATCH, `mission-run.ts:runMission`, `tasks/route.ts` POST | `mission_branch_unresolved` | stranded | ensure failed at mission create / opt-in / organizer pass / first task filed (`fallback: none`) |
+
+### Coordination telemetry additions
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| `apps/web/src/lib/change-intent.ts:postConflictNote` | `change_intent` | warned | One delivered conflict warning note per affected task, including both sides; task/workspace/mission attribution and overlapping surfaces are retained. |
+| `apps/web/src/lib/path-claim-check.ts:checkPathClaim` | `path_claim` | accepted | Each successful call, including an already-held-path no-op; excluded from friction rankings and bypass rates. |
+
+`get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
+Use `get_failure_analytics` with `family=gate` and
+`errorPrefix="Change intent conflict"` to count delivered change-intent warnings.

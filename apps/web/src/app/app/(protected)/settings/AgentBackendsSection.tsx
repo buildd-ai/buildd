@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ScopeSelector } from '@/components/ScopeSelector';
-import SettingsSection from './SettingsSection';
+import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
 
 /**
@@ -128,6 +128,14 @@ function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
   );
 }
 
+/** The row-level half of StrandedWorkNotice: visible while the row is folded. */
+function StrandedChip({ stat }: { stat?: BackendStrandStat | null }) {
+  if (!stat || stat.strandedPending <= 0) return null;
+  return <StatusChip tone="err">Stranding {stat.strandedPending}</StatusChip>;
+}
+
+type RowKey = 'claude' | 'codex' | 'routing';
+
 interface Workspace {
   id: string;
   name: string;
@@ -189,6 +197,8 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   const multiTeam = teamTargets.length > 1;
 
   const [scope, setScope] = useState<Scope>('team');
+  // One row open at a time: on a phone two open credential forms are a scroll.
+  const [open, setOpen] = useState<RowKey | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
   // Setup-token / API-key is the fallback for Claude — collapsed by default so the
   // one-tap OAuth connect is the single primary Claude action (less clutter).
@@ -242,32 +252,43 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
   if (teamWorkspaces.length === 0) return null;
 
+  const toggle = (k: RowKey) => setOpen((cur) => (cur === k ? null : k));
+
+  // Shared by the Claude and Codex rows (one is open at a time).
+  const scopeControl = (
+    <div className="space-y-2">
+      <p className="text-xs text-text-secondary">
+        One sign-in covers every workspace in the team{multiTeam ? <>, or copy it to all {teamTargets.length} teams you manage</> : null}.
+      </p>
+      {/* Shared scope selector (also used by connectors/roles, see ScopeSelector). */}
+      <ScopeSelector
+        scope={scope}
+        onScopeChange={setScope}
+        workspaceId={workspaceId}
+        onWorkspaceChange={setWorkspaceId}
+        workspaces={teamWorkspaces}
+        allowAllTeams={multiTeam}
+        allTeamsCount={teamTargets.length}
+      />
+    </div>
+  );
+
   return (
-    <SettingsSection title="Agent backends" id="agent-backends">
-      <div className="space-y-5">
-        <p className="text-sm text-text-secondary">
-          One sign-in covers every workspace in the team{multiTeam ? <>, or copy it to all {teamTargets.length} teams you manage</> : null}.
-        </p>
-
-        {/* Team provider routing toggle (reversible mask over the resolution chain) */}
-        <ProviderRoutingToggle teamId={teamId} workspaceId={teamWorkspaces[0]?.id ?? ''} onRoutingChange={refreshStrand} />
-        <div className="border-t border-border-default" />
-
-        {/* Shared scope selector (also used by connectors/roles — see ScopeSelector). */}
-        <ScopeSelector
-          scope={scope}
-          onScopeChange={setScope}
-          workspaceId={workspaceId}
-          onWorkspaceChange={setWorkspaceId}
-          workspaces={teamWorkspaces}
-          allowAllTeams={multiTeam}
-          allTeamsCount={teamTargets.length}
-        />
-
-        {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
-            key is a collapsed fallback so there's a single Claude section by default. */}
-        <ClaudeConnectedAccountCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} fallbackConnected={claudeFallbackConnected} strand={strandFor('claude')} />
-        <div>
+    <>
+      {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
+          key is a collapsed fallback inside the same row. */}
+      <ClaudeConnectedAccountCard
+        accessWorkspaceId={accessWorkspaceId}
+        scope={scope}
+        teamTargets={teamTargets}
+        fallbackConnected={claudeFallbackConnected}
+        strand={strandFor('claude')}
+        open={open === 'claude'}
+        onToggle={() => toggle('claude')}
+        onOpen={() => setOpen('claude')}
+        scopeControl={scopeControl}
+      >
+        <div className="border-t border-border-default pt-3">
           <button
             onClick={() => setShowClaudeAlt((v) => !v)}
             // .btn is nowrap + fixed 32px; this label is too long for a phone,
@@ -282,10 +303,27 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
             </div>
           )}
         </div>
-        <div className="border-t border-border-default" />
-        <CodexCard accessWorkspaceId={accessWorkspaceId} scope={scope} teamTargets={teamTargets} strand={strandFor('codex')} onCredentialChange={refreshStrand} />
-      </div>
-    </SettingsSection>
+      </ClaudeConnectedAccountCard>
+      <CodexCard
+        accessWorkspaceId={accessWorkspaceId}
+        scope={scope}
+        teamTargets={teamTargets}
+        strand={strandFor('codex')}
+        onCredentialChange={refreshStrand}
+        open={open === 'codex'}
+        onToggle={() => toggle('codex')}
+        onOpen={() => setOpen('codex')}
+        scopeControl={scopeControl}
+      />
+      {/* Team provider routing toggle (reversible mask over the resolution chain) */}
+      <ProviderRoutingToggle
+        teamId={teamId}
+        workspaceId={teamWorkspaces[0]?.id ?? ''}
+        onRoutingChange={refreshStrand}
+        open={open === 'routing'}
+        onToggle={() => toggle('routing')}
+      />
+    </>
   );
 }
 
@@ -306,10 +344,14 @@ function ProviderRoutingToggle({
   teamId,
   workspaceId,
   onRoutingChange,
+  open,
+  onToggle,
 }: {
   teamId: string;
   workspaceId: string;
   onRoutingChange?: () => void;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
   // Track which backends have credentials configured so we can block stranding toggles.
@@ -399,14 +441,19 @@ function ProviderRoutingToggle({
     }
   }
 
+  const off = ALL_BACKENDS.filter((b) => !isOn(b));
+
   return (
-    <div className="space-y-2">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Provider routing</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          Turn one off to send its jobs to the other.
-        </p>
-      </div>
+    <ConnectionRow
+      testId="routing-row"
+      title="Provider routing"
+      chip={!loaded ? undefined : off.length === 0
+        ? <StatusChip tone="ok">Both on</StatusChip>
+        : <StatusChip tone="warn">{off.map(backendLabel).join(' & ')} off</StatusChip>}
+      meta="Turn one off to send its jobs to the other."
+      open={open}
+      onToggle={onToggle}
+    >
       <div className="space-y-2">
         {ALL_BACKENDS.map((b) => (
           <div key={b} className="flex items-center justify-between inset-panel">
@@ -428,7 +475,7 @@ function ProviderRoutingToggle({
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
-    </div>
+    </ConnectionRow>
   );
 }
 
@@ -727,7 +774,16 @@ interface ClaudeCredentialStatus {
 // on the caller's own auth), so its count is structurally 0 and the notice stays
 // invisible — which is the point. No onCredentialChange: adding or revoking a
 // Claude credential cannot change whether Claude can run work.
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null }) {
+interface RowProps {
+  open: boolean;
+  onToggle: () => void;
+  /** Open the row: its primary action needs the panel underneath. */
+  onOpen: () => void;
+  /** The shared "applies to" control, drawn at the top of the open row. */
+  scopeControl: ReactNode;
+}
+
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; children?: ReactNode } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -899,11 +955,32 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     }
   }
 
+  const chip = loading || allTeams ? undefined : status?.connected
+    ? (status.expired ? <StatusChip tone="warn">Expired</StatusChip> : <StatusChip tone="ok">Connected</StatusChip>)
+    : fallbackConnected ? <StatusChip tone="ok">Setup token</StatusChip> : <StatusChip tone="idle">Not connected</StatusChip>;
+  const where = status?.scope === 'workspace' ? 'this workspace' : 'all workspaces';
+  const meta = loading ? 'Checking…'
+    : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
+    : status?.connected ? `One-tap login · ${where}${status.lastVerifiedAt ? ` · verified ${new Date(status.lastVerifiedAt).toLocaleDateString()}` : ''}`
+    : fallbackConnected ? 'Setup token or API key'
+    : 'Seat or API key';
+  const needsConnect = !loading && !allTeams && !oauth && (status?.connected ? status.expired : !fallbackConnected);
+
   return (
-    <div className="space-y-3">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Claude</h3>
-      </div>
+    <ConnectionRow
+      testId="claude-row"
+      title="Claude"
+      chip={<>{chip}<StrandedChip stat={strand} /></>}
+      meta={meta}
+      open={open}
+      onToggle={onToggle}
+      action={needsConnect ? (
+        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
+          {status?.connected ? 'Reconnect' : 'Connect'}
+        </button>
+      ) : undefined}
+    >
+      {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
 
@@ -998,8 +1075,9 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+      {children}
       {confirmDialog}
-    </div>
+    </ConnectionRow>
   );
 }
 
@@ -1068,7 +1146,7 @@ interface CodexStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void }) {
+function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange, open, onToggle, onOpen, scopeControl }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1279,11 +1357,31 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     }
   }
 
+  const chip = loading || allTeams ? undefined : status?.connected
+    ? (status.expired ? <StatusChip tone="warn">Expired</StatusChip> : <StatusChip tone="ok">Connected</StatusChip>)
+    : <StatusChip tone="idle">Not connected</StatusChip>;
+  const where = status?.scope === 'workspace' ? 'this workspace' : 'all workspaces';
+  const meta = loading ? 'Checking…'
+    : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
+    : status?.connected ? `${status.accountId ? `${status.accountId} · ` : ''}${where}`
+    : 'ChatGPT sign-in';
+  const needsSignIn = !loading && !allTeams && !device && (!status?.connected || status.expired);
+
   return (
-    <div className="space-y-3">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Codex</h3>
-      </div>
+    <ConnectionRow
+      testId="codex-row"
+      title="Codex"
+      chip={<>{chip}<StrandedChip stat={strand} /></>}
+      meta={meta}
+      open={open}
+      onToggle={onToggle}
+      action={needsSignIn ? (
+        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className={`btn ${status?.expired ? 'btn-accent' : ''}`}>
+          Sign in
+        </button>
+      ) : undefined}
+    >
+      {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
 
@@ -1363,7 +1461,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
       {confirmDialog}
-    </div>
+    </ConnectionRow>
   );
 }
 

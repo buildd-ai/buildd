@@ -5042,6 +5042,59 @@ describe('PATCH /api/workers/[id]', () => {
       const anyFailed = capturedTaskSets.some((s: any) => s?.status === 'failed');
       expect(anyFailed).toBe(false);
     });
+
+    it('a failed release alerts the owning team, never the operator', async () => {
+      // releaseConfig is set by a team admin, so its failure text is tenant data.
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/c21dfeb7-feature-branch',
+        commitCount: 1,
+        filesChanged: 1,
+        linesAdded: 10,
+        linesRemoved: 0,
+        prUrl: 'https://github.com/org/repo/pull/990',
+        prNumber: 990,
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required', missionId: null, release: 'true' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' } });
+      mockExecuteRelease.mockResolvedValueOnce({ status: 'failed', message: 'merge conflict', error: 'merge conflict in repo' } as any);
+      mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+
+      const res = await PATCH(
+        createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'done' },
+        }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockNotifySubject).toHaveBeenCalledWith({ workspaceId: 'ws-1' }, 'needsAttention');
+      const alert = mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed');
+      expect(alert).toBeDefined();
+      expect((alert![0] as any).message).toContain('merge conflict');
+    });
   });
 
   it('omits phases from task.result when there are no phase milestones', async () => {

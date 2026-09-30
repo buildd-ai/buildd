@@ -59,7 +59,7 @@ function fakeContainer() {
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean } = {}) {
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const fc = fakeContainer();
   const fetches: Array<{ url: string; init: RequestInit }> = [];
@@ -91,6 +91,7 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
     },
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, init });
+      if (opts.fetchImpl) return opts.fetchImpl(url, init);
       if (opts.fetchThrows) throw new Error('network down');
       return new Response('{}', { status: opts.fetchStatus ?? 200 });
     }) as unknown as typeof fetch,
@@ -239,8 +240,9 @@ describe('crash handling', () => {
     h.fc.exits[0]!.resolve(137);
     await h.settle();
     expect(h.state).toMatchObject({ outcome: 'crashed', exitCode: 137, workerId: 'worker-42', crashReport: 'sent' });
-    expect(h.fetches).toHaveLength(1);
-    const { url, init } = h.fetches[0]!;
+    const patches = h.fetches.filter(f => f.init.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    const { url, init } = patches[0]!;
     expect(url).toBe('http://127.0.0.1:9/api/workers/worker-42');
     expect(init.method).toBe('PATCH');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
@@ -280,7 +282,7 @@ describe('crash handling', () => {
       h.fc.exits[0]!.resolve(137);
       await h.settle();
       expect(h.state.crashReport).toBe(want);
-      expect(h.fetches).toHaveLength(1);
+      expect(h.fetches.filter(f => f.init.method === 'PATCH')).toHaveLength(1);
     }
   });
 
@@ -344,5 +346,147 @@ describe('never re-dispatches on its own', () => {
         .replace(/\/\/.*$/gm, '');
       expect(src).not.toMatch(/setInterval|setAlarm|\.schedule\(|scheduleEvery|cron/);
     }
+  });
+});
+
+describe('run report', () => {
+  const posts = (h: { fetches: Array<{ url: string; init: RequestInit }> }) =>
+    h.fetches.filter(f => f.init.method === 'POST' && f.url.endsWith('/artifacts'));
+
+  test('a claimed run records timings, runner phases, egress counters and delivers one artifact', async () => {
+    const h = harness({ config: { instanceType: 'standard-1', containerInstanceId: 'do0123abcd' } });
+    h.fc.setStdout([
+      'BUILDD_WORKER_ID=worker-42',
+      'BUILDD_PHASE=clone_start 1000',
+      'BUILDD_PHASE=clone_end 3000',
+      'BUILDD_PHASE=install_start 4000',
+      'BUILDD_PHASE=install_end 9000',
+    ]);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.runnerPhases?.install_end !== undefined);
+    expect(h.fc.starts[0]!.labels).toEqual({ bd_run: `${TASK_ID}.1` });
+    h.sup.recordEgress({ type: 'request', cls: 'model', at: 123_456 });
+    h.sup.recordEgress({ type: 'request', cls: 'model', at: 999_999 });
+    h.sup.recordEgress({ type: 'bytes', cls: 'model', bytes: 2048 });
+    h.sup.recordEgress({ type: 'request', cls: 'github', at: 1, rejected: true });
+    h.sup.recordEgress({ type: 'request', cls: 'github', url: 'https://x' } as unknown); // not an event
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+
+    const r = h.state.report!;
+    expect(r).toMatchObject({
+      taskId: TASK_ID, attempt: 1, workerId: 'worker-42', outcome: 'done', exitCode: 0,
+      instanceType: 'standard-1', containerInstanceId: 'do0123abcd', runLabel: `${TASK_ID}.1`,
+      runnerPhases: { clone_start: 1000, clone_end: 3000, install_start: 4000, install_end: 9000 },
+      durationsMs: { clone: 2000, install: 5000 },
+      delivery: 'sent',
+    });
+    expect(r.timestamps.dispatchReceivedAt).toBe(h.state.startedAt!);
+    expect(r.timestamps.containerRunningAt).toBeGreaterThanOrEqual(r.timestamps.dispatchReceivedAt!);
+    expect(r.timestamps.claimedAt).toBeGreaterThanOrEqual(r.timestamps.containerRunningAt!);
+    expect(r.timestamps.firstModelRequestAt).toBe(123_456);
+    expect(r.timestamps.exitedAt).toBeGreaterThanOrEqual(r.timestamps.claimedAt!);
+    expect(r.egress.model).toEqual({ requests: 2, rejected: 0, responseBytes: 2048 });
+    expect(r.egress.github).toEqual({ requests: 1, rejected: 1, responseBytes: 0 });
+
+    const p = posts(h);
+    expect(p).toHaveLength(1);
+    expect(p[0]!.url).toBe('http://127.0.0.1:9/api/workers/worker-42/artifacts');
+    expect((p[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
+    const body = JSON.parse(p[0]!.init.body as string);
+    expect(body.key).toBe('cloud-run-report:worker-42');
+    expect(body.metadata.report.workerId).toBe('worker-42');
+    // The stored copy carries the delivery; the delivered one does not.
+    expect(body.metadata.report.delivery).toBeUndefined();
+  });
+
+  test('a run that never claimed stores its report and posts nothing', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ workerId: null, outcome: 'failed', delivery: 'no_worker_id' });
+    expect(h.fetches).toHaveLength(0);
+  });
+
+  test('delivery never holds up the outcome, and a failed one is recorded, not retried beyond once', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const h = harness({
+      fetchImpl: async (url) => {
+        if (url.endsWith('/artifacts')) { await gate; throw new Error('network down'); }
+        return new Response('{}');
+      },
+    });
+    h.fc.setStdout(['BUILDD_WORKER_ID=w-1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'w-1');
+    h.fc.exits[0]!.resolve(0);
+    await h.until(() => h.state.status === 'exited');
+    expect(h.state.outcome).toBe('done');
+    expect(h.state.report!.delivery).toBe('pending');
+    release();
+    await h.settle();
+    expect(h.state.report!.delivery).toBe('error');
+    expect(posts(h)).toHaveLength(2);
+  });
+
+  test('a dispatch during delivery starts attempt 2; the result lands on attempt 1 in the history', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const h = harness({
+      fetchImpl: async (url) => {
+        if (url.endsWith('/artifacts')) await gate;
+        return new Response('{}');
+      },
+    });
+    h.fc.setStdout(['BUILDD_WORKER_ID=w-1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'w-1');
+    h.fc.exits[0]!.resolve(0);
+    await h.until(() => h.state.status === 'exited');
+    expect(h.sup.dispatch()).toEqual({ accepted: true, attempt: 2 });
+    expect(h.state.report).toBeUndefined();
+    expect(h.state.reportHistory!.map(r => [r.attempt, r.delivery])).toEqual([[1, 'pending']]);
+    release();
+    await h.until(() => h.state.reportHistory![0]!.delivery === 'sent');
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[1]!.resolve(1);
+    await h.settle();
+    expect(h.state.report).toMatchObject({ attempt: 2, outcome: 'failed' });
+    expect(h.state.reportHistory!.map(r => r.attempt)).toEqual([1]);
+  });
+
+  test('egress events outside a live run are ignored', async () => {
+    const h = harness();
+    h.sup.recordEgress({ type: 'request', cls: 'model', at: 5 });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    h.sup.recordEgress({ type: 'request', cls: 'model', at: 6 });
+    expect(h.state.report!.egress.model.requests).toBe(0);
+    expect(h.state.report!.timestamps.firstModelRequestAt).toBeNull();
+  });
+
+  test('history is capped', async () => {
+    const h = harness();
+    for (let i = 0; i < 13; i++) {
+      h.sup.dispatch();
+      await h.until(() => h.state.status === 'running');
+      h.fc.exits[i]!.resolve(1);
+      await h.settle();
+    }
+    expect(h.state.report!.attempt).toBe(13);
+    expect(h.state.reportHistory!.map(r => r.attempt)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  test('an orphaned run still gets a report, and it is delivered when the worker is known', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1_000, timings: { containerRunningAt: 2_000 } } });
+    await h.sup.recoverOrphan();
+    expect(h.state.report).toMatchObject({ attempt: 3, outcome: 'crashed', crashReport: 'sent', workerId: 'w-orphan', delivery: 'sent' });
+    expect(h.state.report!.durationsMs.containerStart).toBe(1_000);
+    expect(posts(h)).toHaveLength(1);
   });
 });

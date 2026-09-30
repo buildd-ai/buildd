@@ -159,6 +159,10 @@ export class BuilddClient {
       // This build honours cbmExperiment.withheld (workers.ts); without the flag
       // the server does not enrol this runner's tasks in the CBM experiment.
       runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE],
+      // A per-machine model provider beats the team's agent model endpoint
+      // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
+      // the server can skip sending an endpoint key this machine won't use.
+      llmProviderOverride: !!this.config.llmProvider,
     };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;

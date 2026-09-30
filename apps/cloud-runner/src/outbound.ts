@@ -9,7 +9,9 @@
  * `authorization` and friends are deleted first and only then is the real
  * credential (held by the Worker, never by the container) added.
  *
- *   api.anthropic.com        -> AI Gateway, `cf-aig-authorization: Bearer <gateway token>`
+ *   api.anthropic.com        -> per resolveModelRoute: an Anthropic-compatible proxy such as
+ *                               LiteLLM (`Authorization: Bearer <proxy key>` or `x-api-key`),
+ *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`)
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
  *   api.github.com, uploads  -> `Authorization: Bearer <installation token>`
  *   codeload.github.com      -> container auth stripped, nothing added
@@ -51,25 +53,137 @@ export interface EgressEnv {
   ANTHROPIC_DIRECT_API_KEY?: string;
   /** Var, local development only. `1` sends model traffic straight to Anthropic. Default off. */
   ALLOW_DIRECT_ANTHROPIC?: string;
+  /**
+   * Base URL of an Anthropic-compatible proxy (LiteLLM and similar). The
+   * container's path and query are appended, so `https://litellm.example.com`
+   * receives `/v1/messages`. Setting it selects the proxy route over AI Gateway.
+   */
+  MODEL_PROXY_URL?: string;
+  /** Secret. The proxy's key (for LiteLLM, a virtual key or the master key). */
+  MODEL_PROXY_KEY?: string;
+  /** `authorization` (default, `Authorization: Bearer <key>`) or `x-api-key` (the raw key). */
+  MODEL_PROXY_AUTH_HEADER?: string;
 }
+
+export type ModelProxyAuthHeader = 'authorization' | 'x-api-key';
 
 export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
+  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader }
   | { kind: 'direct'; apiKey: string }
   | { kind: 'unconfigured'; reason: string };
 
 const GATEWAY_SEGMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
- * Where model traffic goes. The direct escape hatch needs both the opt-in var
- * and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing.
- * With neither route configured the request is refused rather than forwarded
- * with the container's placeholder key.
+ * Plain http is accepted only for a proxy on the same machine or the docker
+ * host (local testing). Same rule, duplicated on purpose so the Worker pulls
+ * in no web code, as the webhookConfig PATCH in
+ * apps/web/src/app/api/workspaces/[id]/route.ts (LOCAL_HTTP_HOSTS).
  */
-export function resolveModelRoute(env: EgressEnv): ModelRoute {
-  if (env.ALLOW_DIRECT_ANTHROPIC === '1' && env.ANTHROPIC_DIRECT_API_KEY) {
-    return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY };
+export const LOCAL_HTTP_HOSTS: readonly string[] = ['localhost', '127.0.0.1', 'host.docker.internal'];
+
+/**
+ * Validate MODEL_PROXY_URL and normalise it to a base the request path is
+ * appended to: https only (http only for LOCAL_HTTP_HOSTS), no userinfo, no
+ * query or fragment, trailing slashes dropped.
+ */
+export function parseModelProxyUrl(raw: string): { ok: true; baseUrl: string } | { ok: false; error: string } {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, error: 'MODEL_PROXY_URL is not a valid URL' };
   }
+  if (url.protocol === 'http:') {
+    if (!LOCAL_HTTP_HOSTS.includes(url.hostname)) {
+      return { ok: false, error: `MODEL_PROXY_URL must be https (plain http only for ${LOCAL_HTTP_HOSTS.join(', ')})` };
+    }
+  } else if (url.protocol !== 'https:') {
+    return { ok: false, error: 'MODEL_PROXY_URL must be https' };
+  }
+  if (url.username || url.password || raw.includes('@')) {
+    return { ok: false, error: 'MODEL_PROXY_URL must not carry credentials; set MODEL_PROXY_KEY instead' };
+  }
+  // `new URL` drops a bare `?` or `#`, so check the raw string too.
+  if (url.search || url.hash || raw.includes('?') || raw.includes('#')) {
+    return { ok: false, error: 'MODEL_PROXY_URL must not have a query or fragment' };
+  }
+  return { ok: true, baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, '')}` };
+}
+
+/** `authorization` (the default) or `x-api-key`; null for anything else. */
+export function parseModelProxyAuthHeader(raw: string | undefined): ModelProxyAuthHeader | null {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '' || v === 'authorization') return 'authorization';
+  if (v === 'x-api-key') return 'x-api-key';
+  return null;
+}
+
+/**
+ * The team's agent model endpoint as `POST /api/runner/model-endpoint`
+ * returns it (docs/design/agent-model-endpoint.md §3). Held only in the
+ * WorkerAgent's memory for one run.
+ */
+export interface ServerModelEndpoint {
+  baseUrl: string;
+  key: string;
+  authHeader: ModelProxyAuthHeader;
+}
+
+/**
+ * What the egress handler knows about the server endpoint for this run:
+ * an endpoint, `null` (the server said there is none: fall through), or
+ * `'unavailable'` (the lookup failed or the endpoint just rejected its key:
+ * refuse rather than silently spend on a different route).
+ */
+export type ServerModelEndpointState = ServerModelEndpoint | null | 'unavailable';
+
+function directAllowed(env: EgressEnv): boolean {
+  return env.ALLOW_DIRECT_ANTHROPIC === '1' && !!env.ANTHROPIC_DIRECT_API_KEY;
+}
+
+/**
+ * Whether the server endpoint can affect the route at all: false when the
+ * local direct route or the Worker's MODEL_PROXY_URL override wins, so the
+ * handler does not ask the agent (or buildd) for it.
+ */
+export function needsServerModelEndpoint(env: EgressEnv): boolean {
+  return !directAllowed(env) && !env.MODEL_PROXY_URL;
+}
+
+/**
+ * Where model traffic goes. Precedence: direct (local only) > proxy (when
+ * MODEL_PROXY_URL is set, the operator override) > the server-provided team
+ * endpoint > gateway. The direct escape hatch needs both the opt-in var and
+ * the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing. A set
+ * MODEL_PROXY_URL commits to the proxy: if it is invalid or has no key the
+ * request is refused, never quietly sent to the gateway instead. The server
+ * endpoint produces the same `proxy` shape, so rewriteOutbound is unchanged;
+ * `'unavailable'` refuses. With no route configured the request is refused
+ * rather than forwarded with the container's placeholder key. With `server`
+ * omitted or null the result is exactly the pre-endpoint one.
+ */
+export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointState): ModelRoute {
+  if (directAllowed(env)) {
+    return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY! };
+  }
+  if (env.MODEL_PROXY_URL) {
+    const parsed = parseModelProxyUrl(env.MODEL_PROXY_URL);
+    if (!parsed.ok) return { kind: 'unconfigured', reason: parsed.error };
+    if (!env.MODEL_PROXY_KEY) {
+      return { kind: 'unconfigured', reason: 'MODEL_PROXY_URL is set but MODEL_PROXY_KEY is not' };
+    }
+    const authHeader = parseModelProxyAuthHeader(env.MODEL_PROXY_AUTH_HEADER);
+    if (!authHeader) {
+      return { kind: 'unconfigured', reason: 'MODEL_PROXY_AUTH_HEADER must be authorization or x-api-key' };
+    }
+    return { kind: 'proxy', baseUrl: parsed.baseUrl, key: env.MODEL_PROXY_KEY, authHeader };
+  }
+  if (server === 'unavailable') {
+    return { kind: 'unconfigured', reason: 'the team agent model endpoint is temporarily unavailable' };
+  }
+  if (server) return { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
   const account = env.AI_GATEWAY_ACCOUNT_ID;
   const gateway = env.AI_GATEWAY_ID;
   const token = env.AI_GATEWAY_TOKEN;
@@ -113,7 +227,7 @@ export interface OutboundRequestLike {
 
 export type EgressDecision =
   | { action: 'passthrough' }
-  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
+  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
   | { action: 'reject'; status: number; message: string };
 
 export interface RewriteContext {
@@ -221,6 +335,11 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
       headers.set('x-api-key', route.apiKey);
       return { action: 'forward', url: url.toString(), headers, injected: 'direct' };
     }
+    if (route.kind === 'proxy') {
+      // Container credentials are already stripped; this is the only one added.
+      headers.set(route.authHeader, route.authHeader === 'authorization' ? `Bearer ${route.key}` : route.key);
+      return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'proxy' };
+    }
     headers.set('cf-aig-authorization', `Bearer ${route.token}`);
     return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'gateway' };
   }
@@ -318,6 +437,102 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   return { token, expiresAt, owner, repo };
 }
 
+// ── Server model endpoint cache (lives in the WorkerAgent) ────────────────────
+
+/** After a failed fetch or a 401 from the endpoint, don't ask again for this long. */
+export const MODEL_ENDPOINT_FAILURE_BACKOFF_MS = 10 * 1000;
+
+/** Thrown by a fetcher when buildd answers 404: this task has no endpoint. */
+export class NoModelEndpointError extends Error {
+  constructor() { super('no agent model endpoint for this task'); }
+}
+
+export interface ModelEndpointCacheDeps {
+  /** Resolves the endpoint, or throws NoModelEndpointError on a 404. */
+  fetchEndpoint(): Promise<ServerModelEndpoint>;
+  now(): number;
+  log?(message: string): void;
+}
+
+/**
+ * The agent's copy of the team's model endpoint for one run. In memory only:
+ * never in Durable Object storage and never in the container env. Fetched on
+ * the first model request; concurrent callers share one in-flight fetch. A
+ * 404 is an answer ("none", cached for the run: egress falls through to the
+ * Worker's own route). Any other failure, and a 401/403 from the endpoint
+ * (`invalidate`), yields `'unavailable'` for MODEL_ENDPOINT_FAILURE_BACKOFF_MS
+ * and then refetches.
+ */
+export class ModelEndpointCache {
+  private value: ServerModelEndpoint | null | undefined = undefined;
+  private inflight: Promise<ServerModelEndpointState> | null = null;
+  private failedAt: number | null = null;
+  private generation = 0;
+
+  constructor(private readonly d: ModelEndpointCacheDeps) {}
+
+  /** Forget everything; called at the start of each run. */
+  reset(): void {
+    this.value = undefined;
+    this.inflight = null;
+    this.failedAt = null;
+    this.generation++;
+  }
+
+  /** The endpoint rejected its key: drop it and refetch after the backoff. */
+  invalidate(): void {
+    if (this.value) this.d.log?.('[cloud-runner] agent model endpoint rejected its key; refetching after backoff');
+    this.value = undefined;
+    this.inflight = null;
+    this.failedAt = this.d.now();
+    this.generation++;
+  }
+
+  async get(): Promise<ServerModelEndpointState> {
+    if (this.value !== undefined) return this.value;
+    if (this.inflight) return this.inflight;
+    if (this.failedAt !== null && this.d.now() - this.failedAt < MODEL_ENDPOINT_FAILURE_BACKOFF_MS) return 'unavailable';
+    const gen = this.generation;
+    const p: Promise<ServerModelEndpointState> = this.d.fetchEndpoint().then(
+      (endpoint) => {
+        if (gen !== this.generation) return 'unavailable' as const;
+        this.value = endpoint;
+        this.failedAt = null;
+        return endpoint;
+      },
+      (err) => {
+        if (gen !== this.generation) return 'unavailable' as const;
+        if (err instanceof NoModelEndpointError) {
+          this.value = null;
+          this.failedAt = null;
+          return null;
+        }
+        this.failedAt = this.d.now();
+        this.d.log?.(`[cloud-runner] agent model endpoint fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        return 'unavailable' as const;
+      },
+    ).finally(() => {
+      if (this.inflight === p) this.inflight = null;
+    });
+    this.inflight = p;
+    return p;
+  }
+}
+
+/** Parse and validate the buildd endpoint's JSON. Throws on anything unexpected. */
+export function parseServerModelEndpoint(body: unknown): ServerModelEndpoint {
+  const b = body as { baseUrl?: unknown; key?: unknown; authHeader?: unknown } | null;
+  if (typeof b?.baseUrl !== 'string') throw new Error('model-endpoint response has no baseUrl');
+  const parsed = parseModelProxyUrl(b.baseUrl);
+  if (!parsed.ok) throw new Error(`model-endpoint response: ${parsed.error.replace(/MODEL_PROXY_URL/g, 'baseUrl')}`);
+  if (typeof b.key !== 'string' || !b.key) throw new Error('model-endpoint response has no key');
+  const authHeader = parseModelProxyAuthHeader(typeof b.authHeader === 'string' ? b.authHeader : undefined);
+  if (!authHeader || (b.authHeader !== undefined && typeof b.authHeader !== 'string')) {
+    throw new Error('model-endpoint response authHeader must be authorization or x-api-key');
+  }
+  return { baseUrl: parsed.baseUrl, key: b.key, authHeader };
+}
+
 // ── buildd request ────────────────────────────────────────────────────────────
 
 /** Header carrying DISPATCH_TOKEN on the token request. Mirrors the buildd route. */
@@ -340,6 +555,31 @@ export function githubTokenRequest(cfg: {
   }
   return {
     url: `${cfg.BUILDD_SERVER.replace(/\/+$/, '')}${GITHUB_TOKEN_PATH}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.BUILDD_API_KEY}`,
+        [DISPATCH_TOKEN_HEADER]: cfg.DISPATCH_TOKEN,
+      },
+      body: JSON.stringify(workerId ? { taskId, workerId } : { taskId }),
+    },
+  };
+}
+
+export const MODEL_ENDPOINT_PATH = '/api/runner/model-endpoint';
+
+/** The agent's request for the team's model endpoint. Same two credentials as githubTokenRequest. */
+export function modelEndpointRequest(cfg: {
+  BUILDD_SERVER?: string;
+  BUILDD_API_KEY?: string;
+  DISPATCH_TOKEN?: string;
+}, taskId: string, workerId?: string): { url: string; init: RequestInit } {
+  if (!cfg.BUILDD_SERVER || !cfg.BUILDD_API_KEY || !cfg.DISPATCH_TOKEN) {
+    throw new Error('BUILDD_SERVER, BUILDD_API_KEY and DISPATCH_TOKEN are needed to fetch the model endpoint');
+  }
+  return {
+    url: `${cfg.BUILDD_SERVER.replace(/\/+$/, '')}${MODEL_ENDPOINT_PATH}`,
     init: {
       method: 'POST',
       headers: {

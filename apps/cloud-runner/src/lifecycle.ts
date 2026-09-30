@@ -21,6 +21,8 @@ export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
+import type { RunTimings, StoredRunReport } from './run-report';
+
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
 /**
@@ -50,6 +52,12 @@ export interface RunState {
   crashReport?: CrashReport;
   /** Last few lines of runner output, for `GET /tasks/:id`. */
   outputTail?: string[];
+  /** Phase timestamps gathered while the run is live (run-report.ts). */
+  timings?: RunTimings;
+  /** This attempt's run report, once it exited, with what happened to its delivery. */
+  report?: StoredRunReport;
+  /** Earlier attempts' reports, oldest first, at most REPORT_HISTORY_MAX. */
+  reportHistory?: StoredRunReport[];
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -184,9 +192,11 @@ export const TASK_TOKEN_PREFIX = 'bldt_';
  * from the Worker's env is copied.
  *
  * ANTHROPIC_BASE_URL is deliberately not passed: model traffic must go to
- * api.anthropic.com, where the egress handler rewrites it to AI Gateway and
- * adds the gateway credential. A base URL pointing anywhere else would bypass
- * the handler and arrive with only the placeholder key.
+ * api.anthropic.com, where the egress handler rewrites it to the configured
+ * model route (AI Gateway or an Anthropic-compatible proxy) and adds that
+ * route's credential. A base URL pointing anywhere else would bypass the
+ * handler and arrive with only the placeholder key. For the same reason the
+ * proxy settings (MODEL_PROXY_*) stay in the Worker.
  */
 export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');

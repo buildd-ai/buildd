@@ -161,9 +161,14 @@ export async function GET(req: NextRequest) {
       }
       const row = await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        columns: { id: true, workspaceId: true },
+        columns: { id: true, teamId: true, workspaceId: true },
       });
-      if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId)) {
+      if (!row) {
+        return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
+      }
+      // Authorize by teamId (team-level missions) or workspaceId (workspace-scoped missions)
+      const hasAccess = teamIds.includes(row.teamId) || (row.workspaceId && teamWsIds.includes(row.workspaceId));
+      if (!hasAccess) {
         return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
       }
       const result = await explainMission(missionId);

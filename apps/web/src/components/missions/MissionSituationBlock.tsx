@@ -93,6 +93,11 @@ export function affordanceFor(
         : focus.count === 1 ? 'Review and merge the open PR' : `Review ${focus.count} open PRs`;
       return { kind: 'external', label, href };
     }
+    case 'ci_red': {
+      const href = focus.prUrls[0];
+      if (!href) return null;
+      return { kind: 'external', label: focus.count === 1 ? 'Open the PR with red CI' : `Open ${focus.count} PRs with red CI`, href };
+    }
     case 'pr_closed_unmerged': {
       // GitHub will not reopen a closed PR, so there is nothing to "merge" —
       // the affordance is to go look at it, not a merge button.

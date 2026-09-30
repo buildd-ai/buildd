@@ -13,6 +13,7 @@
  * declares, so a read op can't reach a write route even if its handler tried.
  */
 
+import { CHANGED_SINCE_SHOWN } from '@builddai/ai-kit/chat/contract';
 import { isLiveWorkerStatus } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
@@ -155,7 +156,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       return z.object({
         title: z.string().max(200),
         description: z.string().max(8000),
-        missionId: z.string().optional().describe('The mission it belongs to (the docked one, usually).'),
+        missionId: z.string().nullable().optional().describe('The mission it belongs to. Omit it to join the docked mission (or the one this conversation filed). Pass null to file a standalone task in no mission, whenever the user says "not part of a mission" or the work is unrelated to that mission.'),
         dependsOn: z.array(z.string()).optional().describe('Tasks it must wait for: ids, short ids or the words the user used.'),
         baseBranch: z.string().optional().describe('Branch to build on, e.g. the branch of the PR being fixed.'),
         pathManifest: z.array(z.string()).optional().describe('Files it will change. Mission tasks that open a PR need at least one.'),
@@ -210,6 +211,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         prNumber: z.union([z.number().int().positive(), z.string()]),
         workspaceId: ws,
         includeComments: z.boolean().optional().describe('buildd\'s decision trail on the PR.'),
+        includeCiFailures: z.boolean().optional().describe('When CI is red: per failing check, the job, failing step and the last lines of its log. Use it to answer "why is CI red?" instead of sending the user to GitHub.'),
         fullBody: z.boolean().optional(),
       });
     case 'recall': {
@@ -312,12 +314,12 @@ const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
   manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners), or turns its automatic visual audit off or on (autoSurfaceAudit). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
-  create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
+  create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch. Mission: omitted joins the docked or conversation-filed mission, shown on the card; missionId null files it standalone. Join a mission only when the request is about it; for an unrelated task pass null, and if unsure ask the user.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
   list_prs: 'PRs buildd opened or adopted, one line each, flagged when one needs the user, is red, or an agent is already on it. Default: open ones, what needs the user first. state attention: only conflicts, failing CI and PRs waiting on the user. merged: recent merges. Closed PRs are never listed.',
-  get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos.',
+  get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos. When CI is red and the user asks why, pass includeCiFailures:true and answer from the failing job\'s log.',
   list_runners: 'The runners serving your workspaces: busy of total slots, whether each has a browser (needed for the visual audit) and is online now, branch and build, last heartbeat. With workspaceId it starts with the answer to "can a visual audit run there now?".',
   list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };
@@ -507,7 +509,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
             const now = await deps.preview(action, input).catch(e => ({ ok: false as const, question: String(e) }));
             if (!now.ok) return errorResult(`nothing changed: ${now.question}`);
             if (!approved || !previewMatches(approved, now.preview)) {
-              return errorResult(`nothing changed: ${now.preview.target.label} changed since the card was shown. Show the user the current state and ask again.`);
+              return errorResult(`nothing changed: ${now.preview.target.label} ${CHANGED_SINCE_SHOWN}. Show the user the current state and ask again.`);
             }
             callInput = now.input;
             target = now.preview.target;

@@ -57,8 +57,11 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
 const mockEnsureIntegrationBaseForTaskPr = mock(
   () => Promise.resolve({ usable: true, recreated: false }) as any,
 );
+const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
+  missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
+  reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
 // Mocks for the mission-integration-branch auto-review feature
@@ -72,6 +75,13 @@ const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', i
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+// CI failure excerpts (opt-in `includeCiFailures`) — the lib has its own tests.
+const mockFetchCiFailureExcerpts = mock(async (_i: number, _repo: string, failed: any[]) =>
+  failed.map(f => ({ ...f, step: 'Type check', excerpt: 'error TS2322' })) as any);
+mock.module('@/lib/ci-failure-excerpts', () => ({
+  fetchCiFailureExcerpts: mockFetchCiFailureExcerpts,
 }));
 
 // Mock github
@@ -747,6 +757,39 @@ describe('POST /api/github/pr', () => {
       expect(createCall).toBeDefined();
       const body = JSON.parse((createCall as any[])[2].body);
       expect(body.base).toBe(INTEGRATION_BRANCH);
+    });
+
+    // Regression (mission 6341fe61): a task with NO missionId whose context
+    // still carries the mission branch as baseBranch. The integration guard
+    // never runs, the base resolves from task context to a ref that was never
+    // created, and GitHub's bare 422 used to come back as a 500.
+    it('turns a non-existent base into an actionable 400 and traces a missing mission branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        workspaceId: 'ws-1',
+        task: { id: 't-1', missionId: null, title: 'Do thing', taskClass: 'work', context: { baseBranch: INTEGRATION_BRANCH } },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMissionsFindFirst.mockResolvedValue(null);
+      mockReportMissionBranchUnresolved.mockClear();
+      noExistingPr();
+      mockGithubApi.mockImplementationOnce((() => Promise.reject(new Error(
+        'GitHub API error: 422 {"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}',
+      ))) as any);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      }));
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(`'${INTEGRATION_BRANCH}' does not exist`);
+      expect(data.hint).toContain("base='dev'");
+      expect(mockReportMissionBranchUnresolved).toHaveBeenCalledTimes(1);
+      expect((mockReportMissionBranchUnresolved.mock.calls[0] as any[])[0]).toMatchObject({
+        branch: INTEGRATION_BRANCH, where: 'create_pr', cause: 'missing', workerId: 'w-1',
+      });
     });
 
     it('refuses a caller-supplied head that disagrees with the worker’s own branch', async () => {
@@ -4763,6 +4806,78 @@ describe('GET /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(data.comments).toEqual({ items: [], total: 0, omitted: 0 });
+    });
+  });
+
+  describe('includeCiFailures opt-in', () => {
+    const RED_RUNS = { check_runs: [
+      { name: 'build', status: 'completed', conclusion: 'failure', html_url: 'https://github.com/owner/repo/actions/runs/1/job/9' },
+      { name: 'lint', status: 'completed', conclusion: 'success', html_url: 'https://github.com/owner/repo/actions/runs/1/job/10' },
+    ] };
+    const arrange = (checks: unknown) => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce(checks);
+      mockGithubApi.mockResolvedValueOnce([]);
+    };
+    const get = (flag?: string) => {
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      if (flag) url.searchParams.set('includeCiFailures', flag);
+      return GET(new NextRequest(url.toString(), { method: 'GET', headers: new Headers({ Authorization: 'Bearer bld_test' }) }));
+    };
+
+    it('reads no job logs unless asked', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange(RED_RUNS);
+      const data = await (await get()).json();
+      expect(data.ciFailures).toBeUndefined();
+      expect(mockFetchCiFailureExcerpts).not.toHaveBeenCalled();
+    });
+
+    it('returns an excerpt for each failing check when includeCiFailures=true', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange(RED_RUNS);
+      const res = await get('true');
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(mockFetchCiFailureExcerpts).toHaveBeenCalledTimes(1);
+      const [, repo, failed] = mockFetchCiFailureExcerpts.mock.calls[0] as any[];
+      expect(repo).toBe('owner/repo');
+      expect(failed.map((f: any) => f.name)).toEqual(['build']);
+      expect(data.ciFailures).toEqual([expect.objectContaining({ name: 'build', step: 'Type check', excerpt: 'error TS2322' })]);
+    });
+
+    it('is an empty list, with no fetch, when nothing is failing', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+      const data = await (await get('true')).json();
+      expect(data.ciFailures).toEqual([]);
+      expect(mockFetchCiFailureExcerpts).not.toHaveBeenCalled();
+    });
+
+    it('a failure reading logs degrades to the failing checks by name and URL, not a failed GET', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      mockFetchCiFailureExcerpts.mockImplementationOnce(async () => { throw new Error('boom'); });
+      arrange(RED_RUNS);
+      const res = await get('true');
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.ciFailures).toEqual([{
+        name: 'build', conclusion: 'failure', url: 'https://github.com/owner/repo/actions/runs/1/job/9', step: null, excerpt: null,
+      }]);
     });
   });
 });

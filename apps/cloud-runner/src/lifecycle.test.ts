@@ -142,16 +142,17 @@ describe('container env', () => {
       DISPATCH_TOKEN: 'dispatch-secret', AI_GATEWAY_TOKEN: 'gw-secret',
       AI_GATEWAY_ACCOUNT_ID: 'acct', AI_GATEWAY_ID: 'gw',
       ANTHROPIC_DIRECT_API_KEY: 'sk-ant-direct-secret', ALLOW_DIRECT_ANTHROPIC: '1',
+      MODEL_PROXY_URL: 'https://litellm.example.com', MODEL_PROXY_KEY: 'proxy-secret-key', MODEL_PROXY_AUTH_HEADER: 'x-api-key',
       ANTHROPIC_API_KEY: 'sk-ant-real', ANTHROPIC_AUTH_TOKEN: 'oauth-real', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-real',
       GH_TOKEN: 'ghs_real', GITHUB_TOKEN: 'ghs_real', ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic',
       MODEL: 'm', PUSHER_KEY: 'pk',
     };
     const env = buildContainerEnv(workerEnv as never, 'bldt_task');
     const values = Object.values(env).join('\n');
-    for (const secret of ['bld_runner_key', 'dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
+    for (const secret of ['bld_runner_key', 'dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'proxy-secret-key', 'litellm.example.com', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
       expect(values).not.toContain(secret);
     }
-    for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AI_GATEWAY_TOKEN', 'DISPATCH_TOKEN', 'ANTHROPIC_BASE_URL']) {
+    for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AI_GATEWAY_TOKEN', 'DISPATCH_TOKEN', 'ANTHROPIC_BASE_URL', 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY', 'MODEL_PROXY_AUTH_HEADER']) {
       expect(key in env).toBe(false);
     }
     expect(env.ANTHROPIC_API_KEY).toBe(ANTHROPIC_API_KEY_PLACEHOLDER);

@@ -102,14 +102,24 @@ export async function verifyGateway(
  * first, then the team's. Null when there is none, it can't be decrypted or
  * parsed, or the key policy is `own`. Never throws.
  */
-export async function resolveLiteLLMGateway(opts: { teamId: string; workspaceId?: string | null }): Promise<LiteLLMGateway | null> {
+export async function resolveLiteLLMGateway(
+  opts: { teamId: string; workspaceId?: string | null },
+  /**
+   * `ignoreKeyPolicy`: only for the agent model endpoint's `{ kind: 'gateway' }`
+   * reference (agent-endpoint.ts). The key policy governs server-side inference
+   * spend; agent runs are not bound by it (docs/design/agent-model-endpoint.md §1).
+   */
+  flags: { ignoreKeyPolicy?: boolean } = {},
+): Promise<LiteLLMGateway | null> {
   try {
     const { db } = await import('./db');
     const { secrets } = await import('./db/schema');
     const { and, eq, isNull, or, sql } = await import('drizzle-orm');
     const { decrypt } = await import('./secrets');
-    const { loadInferenceKeyPolicy } = await import('./inference-keys');
-    if ((await loadInferenceKeyPolicy(opts.teamId)) === 'own') return null;
+    if (!flags.ignoreKeyPolicy) {
+      const { loadInferenceKeyPolicy } = await import('./inference-keys');
+      if ((await loadInferenceKeyPolicy(opts.teamId)) === 'own') return null;
+    }
     const rows = await db.query.secrets.findMany({
       where: and(
         eq(secrets.teamId, opts.teamId),

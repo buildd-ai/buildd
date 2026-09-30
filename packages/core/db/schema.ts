@@ -2667,7 +2667,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4365,7 +4365,7 @@ export const gateEvents = pgTable('gate_events', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
-  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded'>(),
+  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded' | 'accepted'>(),
   // normalizeErrorSignature() of the caller-facing message — the SAME
   // normalizer get_failure_analytics clusters worker errors with, so a family
   // whose message embeds a branch name or an id collapses to one row here too.

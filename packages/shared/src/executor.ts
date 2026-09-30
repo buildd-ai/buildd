@@ -31,6 +31,7 @@ export function isRunnerExecutor(value: unknown): value is RunnerExecutor {
  * - mcpConnectors: resolved connectors, whose headers/env hold credentials
  * - roleEnvSecrets: decrypted role env secrets
  * - pendingCredentialRefreshes: secret ids for the credential broker
+ * - modelEndpoint: the team's agent model endpoint (URL + key)
  */
 export const CLAIM_CREDENTIAL_FIELDS = [
   'serverApiKey',
@@ -42,6 +43,7 @@ export const CLAIM_CREDENTIAL_FIELDS = [
   'mcpConnectors',
   'roleEnvSecrets',
   'pendingCredentialRefreshes',
+  'modelEndpoint',
 ] as const;
 
 /** Delete every credential field in place. Returns the ones that were present. */

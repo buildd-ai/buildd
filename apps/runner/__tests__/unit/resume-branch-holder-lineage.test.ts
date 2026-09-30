@@ -85,13 +85,14 @@ describe('classifyResumeBranchHolder', () => {
 });
 
 describe('resolveReleaseHeldBranchMode', () => {
-  test('defaults to shadow', () => {
-    expect(resolveReleaseHeldBranchMode({})).toBe('shadow');
-    expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: '' })).toBe('shadow');
-    expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: '0' })).toBe('shadow');
-    expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: 'off' })).toBe('shadow');
+  test('0/false/off is the kill switch to shadow', () => {
+    for (const v of ['0', 'false', 'off', 'OFF']) {
+      expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: v })).toBe('shadow');
+    }
   });
-  test('1/true/on enables release', () => {
+  test('defaults to release; 1/true/on also release', () => {
+    expect(resolveReleaseHeldBranchMode({})).toBe('release');
+    expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: '' })).toBe('release');
     for (const v of ['1', 'true', 'on', 'TRUE']) {
       expect(resolveReleaseHeldBranchMode({ BUILDD_RELEASE_LINEAGE_HELD_BRANCH: v })).toBe('release');
     }

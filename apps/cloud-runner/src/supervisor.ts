@@ -29,11 +29,27 @@ import {
   type RunOutcome,
   type RunState,
 } from './lifecycle';
+import {
+  REPORT_HISTORY_MAX,
+  RUN_LABEL_NAME,
+  applyEgressEvent,
+  assembleRunReport,
+  deliverRunReport,
+  emptyEgressCounters,
+  isEgressEvent,
+  parsePhaseLine,
+  recordPhase,
+  runLabel,
+  type EgressCounters,
+  type ReportDelivery,
+  type RunTimings,
+  type StoredRunReport,
+} from './run-report';
 
 /** The slice of `ctx.container` (workers-types `Container`) the supervisor uses. */
 export interface ContainerPort {
   readonly running: boolean;
-  start(options: { env: Record<string, string>; enableInternet: boolean }): void;
+  start(options: { env: Record<string, string>; enableInternet: boolean; labels?: Record<string, string> }): void;
   exec(cmd: string[], options?: { stdout?: 'pipe'; stderr?: 'pipe' }): Promise<ProcessPort>;
   monitor(): Promise<void>;
   destroy(reason?: string): Promise<void>;
@@ -50,6 +66,10 @@ export interface ProcessPort {
 export interface SupervisorConfig extends ContainerEnvSource {
   inactivityTimeoutMs: number;
   startTimeoutMs: number;
+  /** For the run report: the configured container instance type (CONTAINER_INSTANCE_TYPE). */
+  instanceType?: string;
+  /** For the run report: the Durable Object ID the container is bound to. */
+  containerInstanceId?: string;
 }
 
 export interface SupervisorDeps {
@@ -96,6 +116,8 @@ function describe(err: unknown): string {
 export class TaskSupervisor {
   private live: Promise<void> | null = null;
   private tail: string[] = [];
+  /** Egress counters for the live run. Memory only: one write at the end, not one per request. */
+  private egress: EgressCounters = emptyEgressCounters();
 
   constructor(private readonly d: SupervisorDeps) {}
 
@@ -122,14 +144,18 @@ export class TaskSupervisor {
     }
     // Check-and-set with no await in between: a second dispatch arriving
     // while this one is still starting sees `starting` and is ignored.
+    const history = [...(state.reportHistory ?? []), ...(state.report ? [state.report] : [])].slice(-REPORT_HISTORY_MAX);
     this.d.setState({
       taskId: this.d.taskId,
       attempt: decision.attempt,
       status: 'starting',
       startedAt: this.d.now(),
       outputTail: [],
+      timings: {},
+      ...(history.length ? { reportHistory: history } : {}),
     });
     this.tail = [];
+    this.egress = emptyEgressCounters();
     this.d.log(`[cloud-runner] task ${this.d.taskId}: starting attempt ${decision.attempt}`);
     const run = this.d.keepAliveWhile(() => this.run(decision.attempt))
       .catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: supervisor error: ${describe(err)}`))
@@ -152,6 +178,19 @@ export class TaskSupervisor {
     await this.finish({ code: null, outcome: 'crashed', error });
   }
 
+  /**
+   * From the egress handler (via the agent RPC): one request seen, or one
+   * response body's size. Ignored unless a run is live, and anything that is
+   * not exactly an EgressEvent is dropped.
+   */
+  recordEgress(event: unknown): void {
+    if (!this.hasLiveRun || !isEgressEvent(event)) return;
+    applyEgressEvent(this.egress, event);
+    if (event.type === 'request' && event.cls === 'model' && this.d.getState().timings?.firstModelRequestAt === undefined) {
+      this.patchTimings({ firstModelRequestAt: event.at });
+    }
+  }
+
   private async run(attempt: number): Promise<void> {
     const c = this.d.container;
     let code: number | null = null;
@@ -167,9 +206,10 @@ export class TaskSupervisor {
       if (c.running) await c.destroy('leftover container from a previous attempt');
       const env = buildContainerEnv(this.d.config, await this.d.mintTaskToken());
       await this.d.installEgress();
-      c.start({ env, enableInternet: true });
+      c.start({ env, enableInternet: true, labels: { [RUN_LABEL_NAME]: runLabel(this.d.taskId, attempt) } });
       await c.setInactivityTimeout(this.d.config.inactivityTimeoutMs);
       await this.waitUntilRunning();
+      this.patchTimings({ containerRunningAt: this.d.now() });
 
       const proc = await c.exec(runnerCommand(this.d.taskId), { stdout: 'pipe', stderr: 'pipe' });
       this.patch({ status: 'running' });
@@ -187,6 +227,7 @@ export class TaskSupervisor {
         (err): Settled => ({ kind: 'container_error', error: err }),
       );
       const settled = await Promise.race([exited, died]);
+      this.patchTimings({ exitedAt: this.d.now() });
       await Promise.race([pumps, this.d.sleep(OUTPUT_DRAIN_MS)]);
 
       if (settled.kind === 'exit') code = settled.code;
@@ -209,8 +250,23 @@ export class TaskSupervisor {
    * attempt whose state this cleanup would then overwrite.
    */
   private async finish(r: { code: number | null; outcome: RunOutcome; error?: string }): Promise<void> {
+    if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
+    const state = this.d.getState();
+    const report = assembleRunReport({
+      taskId: this.d.taskId,
+      attempt: state.attempt,
+      workerId: state.workerId,
+      containerInstanceId: this.d.config.containerInstanceId,
+      instanceType: this.d.config.instanceType,
+      dispatchReceivedAt: state.startedAt,
+      timings: state.timings,
+      egress: this.egress,
+      exitCode: r.code,
+      outcome: r.outcome,
+      crashReport,
+    });
     this.patch({
       status: 'exited',
       exitCode: r.code,
@@ -219,7 +275,32 @@ export class TaskSupervisor {
       ...(r.error ? { error: r.error } : {}),
       ...(crashReport ? { crashReport } : {}),
       outputTail: [...this.tail],
+      report: { ...report, delivery: report.workerId ? 'pending' : 'no_worker_id' },
     });
+    // After `exited`: the report never holds up the outcome, and a dispatch
+    // that arrives meanwhile starts the next attempt as usual.
+    if (!report.workerId) return;
+    const delivery = await deliverRunReport(
+      { fetch: this.d.fetch, sleep: this.d.sleep, log: (m) => this.d.log(`${m} (task ${this.d.taskId})`) },
+      { server: this.d.config.BUILDD_SERVER, apiKey: this.d.config.BUILDD_API_KEY },
+      report,
+    );
+    this.setDelivery(report.attempt, delivery);
+  }
+
+  /** Record the delivery on the attempt's report, wherever it is by now. */
+  private setDelivery(attempt: number, delivery: ReportDelivery): void {
+    const state = this.d.getState();
+    const mark = (rep: StoredRunReport): StoredRunReport => (rep.attempt === attempt ? { ...rep, delivery } : rep);
+    if (state.report?.attempt === attempt) {
+      this.patch({ report: mark(state.report) });
+    } else if (state.reportHistory?.some(rep => rep.attempt === attempt)) {
+      this.patch({ reportHistory: state.reportHistory.map(mark) });
+    }
+  }
+
+  private patchTimings(update: Partial<RunTimings>): void {
+    this.patch({ timings: { ...(this.d.getState().timings ?? {}), ...update } });
   }
 
   private async waitUntilRunning(): Promise<void> {
@@ -245,9 +326,18 @@ export class TaskSupervisor {
       // does not write storage per line. The worker ID is persisted at once:
       // a crash report after an eviction needs it.
       this.tail = appendTail(this.tail, line);
-      if (!this.d.getState().workerId) {
+      const state = this.d.getState();
+      if (!state.workerId) {
         const workerId = parseWorkerIdLine(line);
-        if (workerId) this.patch({ workerId });
+        if (workerId) {
+          this.patch({ workerId, timings: { ...(state.timings ?? {}), claimedAt: this.d.now() } });
+          return;
+        }
+      }
+      const phase = parsePhaseLine(line);
+      if (phase) {
+        const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
+        if (runnerPhases !== state.timings?.runnerPhases) this.patchTimings({ runnerPhases });
       }
     };
     try {
