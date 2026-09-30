@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-const mockGithubApi = mock(() => Promise.resolve([]) as Promise<unknown>);
+const mockGithubApi = mock((_installationId: number, _path: string): Promise<unknown> => Promise.resolve([]));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
 import { inspectPullRequestMigrations } from './migration-inspector';
@@ -120,6 +120,49 @@ describe('inspectPullRequestMigrations', () => {
         baseRef: 'dev',
       }),
     ).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it.each([
+    ['identical stacked file', 'dev', 'CREATE TABLE "safe" ("id" uuid);', true, '0094_safe.sql'],
+    ['identical SQL under a different name', 'dev', 'CREATE TABLE "safe" ("id" uuid);', false, '0094_other.sql'],
+    ['same path with different SQL', 'dev', 'CREATE TABLE "other" ("id" uuid);', false],
+    ['different base', 'mission/evidence', 'CREATE TABLE "other" ("id" uuid);', true],
+    ['unreadable peer content', 'dev', undefined, false],
+  ])('%s', async (_label, otherBase, otherSql, safe, otherName = '0094_safe.sql') => {
+    const path = 'packages/core/drizzle/0094_safe.sql';
+    const sql = 'CREATE TABLE "safe" ("id" uuid);';
+    mockGithubApi.mockImplementation(async (_installation, url) => {
+      if (url.includes('/pulls/42/files')) return [{ filename: path, status: 'added' }];
+      if (url.includes('/pulls?')) return [{ number: 40, base: { ref: otherBase }, head: { sha: 'peer-head' } }];
+      if (url.includes('/pulls/40/files')) return [{ filename: `packages/core/drizzle/${otherName}`, status: 'added' }];
+      if (url.includes('ref=dev')) throw new Error('not on base');
+      const content = url.includes('ref=peer-head') ? otherSql : sql;
+      return content === undefined ? {} : { encoding: 'base64', content: Buffer.from(content).toString('base64') };
+    });
+    const result = await inspectPullRequestMigrations({
+      installationId: 1, repoFullName: 'acme/app', prNumber: 42,
+      headSha: 'abc123', files: [], baseRef: 'dev',
+    });
+    expect(result.safe).toBe(safe);
+    if (otherBase !== 'dev') {
+      expect(mockGithubApi.mock.calls.some((call) => call[1].includes('/pulls/40/files'))).toBe(false);
+    }
+  });
+
+  it.each([true, false])('requires matching content to exclude a same-path migration on the base (identical=%s)', async (identical) => {
+    const path = 'packages/core/drizzle/0094_safe.sql';
+    const sql = 'CREATE TABLE "safe" ("id" uuid);';
+    mockGithubApi
+      .mockResolvedValueOnce([{ filename: path, status: 'added' }])
+      .mockResolvedValueOnce({ encoding: 'base64', content: Buffer.from(sql).toString('base64') })
+      .mockResolvedValueOnce([{ number: 40, base: { ref: 'dev' } }])
+      .mockResolvedValueOnce([{ filename: path, status: 'added' }])
+      .mockResolvedValueOnce({ encoding: 'base64', content: Buffer.from(identical ? sql : sql + '\n').toString('base64') });
+    const result = await inspectPullRequestMigrations({
+      installationId: 1, repoFullName: 'acme/app', prNumber: 42,
+      headSha: 'abc123', files: [], baseRef: 'dev',
+    });
+    expect(result.safe).toBe(identical);
   });
 
   it('escalates deleting a generated migration', async () => {
