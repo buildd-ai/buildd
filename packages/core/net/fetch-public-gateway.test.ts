@@ -191,4 +191,24 @@ describe('createPublicGatewayFetcher', () => {
       }
     });
   });
+  describe('request input shapes', () => {
+    // AI SDK providers call fetch with a string, a URL or a Request.
+    it('checks the host of a URL object and a Request', async () => {
+      const seen: string[] = [];
+      const fetcher = createPublicGatewayFetcher({
+        lookup: async (host: string) => { seen.push(host); return [{ address: '93.184.216.34', family: 4 }]; },
+        cacheTtlMs: 0,
+        fetcher: mock(async () => new Response('{}', { status: 200 })),
+      });
+      expect((await fetcher(new URL('https://gw-a.example.com/v1/chat/completions'))).status).toBe(200);
+      expect((await fetcher(new Request('https://gw-b.example.com/v1/chat/completions', { method: 'POST' }))).status).toBe(200);
+      expect(seen).toEqual(['gw-a.example.com', 'gw-b.example.com']);
+    });
+
+    it('refuses a private host given as a URL object', async () => {
+      const fetcher = createPublicGatewayFetcher({ lookup: privateV4Lookup });
+      await expect(fetcher(new URL('https://internal.example.com/v1/chat/completions'))).rejects.toBeInstanceOf(NonPublicAddressError);
+    });
+  });
 });
+

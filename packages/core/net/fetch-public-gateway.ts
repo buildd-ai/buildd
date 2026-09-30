@@ -18,7 +18,7 @@ import {
   type LookupAll,
 } from './public-address';
 
-type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 interface CacheEntry {
   checkedAt: number;
@@ -45,7 +45,10 @@ export function createPublicGatewayFetcher(opts: {
   const hostCache = new Map<string, CacheEntry>();
   const doFetch = opts.fetcher ?? fetch;
 
-  return async (url: string, init?: RequestInit): Promise<Response> => {
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    // AI SDK providers pass a string, a URL or a Request; check the same host
+    // whichever it is.
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const { hostname } = new URL(url);
     const now = Date.now();
     const cached = hostCache.get(hostname);
@@ -61,7 +64,7 @@ export function createPublicGatewayFetcher(opts: {
     }
 
     // Make the actual call with no-redirect policy and no following redirects
-    const res = await doFetch(url, { ...init, redirect: 'manual' });
+    const res = await doFetch(input, { ...init, redirect: 'manual' });
     if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
       await res.body?.cancel().catch(() => {});
       throw new RedirectRefusedError(res.status);
