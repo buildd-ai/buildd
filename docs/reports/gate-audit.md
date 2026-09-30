@@ -208,3 +208,14 @@ reviews one, but nothing buildd runs may push to its branch.
 | 57 | `github/pr/route.ts` (merge) | `dependency_bot_pr` | rejected | behind-base merge refusal does not update a bot branch |
 | 58 | `workers/[id]/route.ts` (reviewer request-changes) | `dependency_bot_pr` | rejected | no `[builder · after review]` follow-up on a bot branch |
 | 59 | `pr/review/route.ts` | `dependency_bot_pr` | bypassed | explicit `request_pr_review` adopted a bot PR — reviewed, never pushed to |
+
+### Retry-lineage PR supersession (`lib/retry-pr-supersession.ts`)
+
+When a retry attempt opens a fresh PR instead of updating its parent's, the
+parent's PR is closed so only one PR per fix can merge. A close that did not
+happen is recorded rather than logged, and the hourly pr-reconcile sweep retries it.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
+| 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
