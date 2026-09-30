@@ -13,7 +13,7 @@
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
   - Worker runner: `apps/runner/src/workers.ts` (`WorkerManager`)
-- **Codebase graph**: `codebase-memory` MCP is indexed for this repo — load via `ToolSearch` for structural questions (who calls/depends on X, architecture orientation) over grep.
+- **Codebase graph**: the `codebase-memory` MCP is indexed for this repo, but it is mounted per task — only when the session's system prompt carries a `## Codebase graph (codebase-memory)` block (Codex: a `# Codebase graph` section in its generated instructions). When it does, use it for structural questions (who calls/depends on X, architecture orientation) over grep; if its tools are deferred, load them via `ToolSearch`. No such block, or no `mcp__codebase-memory__*` tools and no `ToolSearch`, means the graph is withheld for this task (experiment arm, role opt-out, Codex, or the mount was unavailable) — that is expected, not a fault: navigate with Read/Grep/Glob and do not file a `[friction]` task for it.
 
 ## Architecture
 

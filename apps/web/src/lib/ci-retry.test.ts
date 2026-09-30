@@ -272,3 +272,30 @@ describe('final-attempt handoff request', () => {
     expect(task!.description).toContain('nextSuggestion');
   });
 });
+
+describe('green means the PR\'s checks, not the local run', () => {
+  // A local single-file type check passed while the PR's gating checks stayed
+  // red, and the attempt reported SUCCESS anyway.
+  const make = (iteration: number) => buildCIRetryTask({
+    originalTask: {
+      id: 'task-1', title: 'Some work', description: 'd', workspaceId: 'ws-1',
+      context: { iteration, maxIterations: 3 }, missionId: 'mis-1',
+    },
+    worker: { id: 'w-1', branch: 'feat/x', prNumber: 3206 },
+    failureContext: 'tsc failed',
+    repoFullName: 'org/repo',
+  } as Parameters<typeof buildCIRetryTask>[0])!;
+
+  for (const iteration of [0, 1, 2]) {
+    it(`attempt ${iteration + 1}: says to confirm gh pr checks is green on the PR before reporting success`, () => {
+      const d = make(iteration).description;
+      expect(d).toContain('gh pr checks 3206');
+      expect(d).toMatch(/SUCCESS/);
+      expect(d).toMatch(/still (red|failing)/i);
+    });
+  }
+
+  it('does not let a passing local check stand in for the PR\'s checks', () => {
+    expect(make(0).description).toMatch(/local run[\s\S]*is not enough/i);
+  });
+});

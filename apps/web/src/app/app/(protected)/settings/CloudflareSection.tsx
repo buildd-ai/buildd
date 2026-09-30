@@ -1,43 +1,42 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import SettingsSection from './SettingsSection';
+import CopyBlock from '@/components/CopyBlock';
 import { useConfirm } from '@/components/useConfirm';
 import { Select } from '@/components/ui/Select';
+import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
+import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
+import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
 
 interface Team {
   id: string;
   name: string;
 }
 
-/** Masked metadata from GET /api/cloudflare/credential. Never the token. */
-interface CloudflareCredentialView {
-  id: string;
-  accountId: string | null;
-  aiGatewayId: string | null;
-  tokenHint: string | null;
-  readable: boolean;
-  healthStatus: 'healthy' | 'degraded' | 'revoked' | 'unknown';
-  lastVerifiedAt: string | null;
-  lastVerificationError: string | null;
-  createdAt: string;
-}
-
 interface Props {
   teams: Team[];
+  /** The team shown first; the active team on the page. Defaults to the first team. */
+  defaultTeamId?: string | null;
 }
 
 /**
- * Settings → Runners → Cloudflare. The team's Cloudflare API token for the
- * cloud runner (apps/cloud-runner): set, verify, delete. Stored as one
- * team-wide `cloudflare_token` secret (encrypted JSON). The browser sends the
- * token once and only ever gets masked metadata back.
+ * Settings → Runners → Connections → Cloudflare. The team's Cloudflare API
+ * token for the cloud runner (apps/cloud-runner): set, verify, delete. Stored
+ * as one team-wide `cloudflare_token` secret (encrypted JSON). The browser
+ * sends the token once and only ever gets masked metadata back.
+ *
+ * One row, one next step per state (`cloudflareState`): empty → Add token,
+ * stored but unchecked → Verify, rejected or unreadable → Replace, verified →
+ * Deploy, which shows the deploy.ts command. The controls fold underneath and
+ * open from `#cloudflare` (the fleet's cloud-runner row links there).
  */
-export default function CloudflareSection({ teams }: Props) {
+export default function CloudflareSection({ teams, defaultTeamId }: Props) {
   const { confirm, confirmDialog } = useConfirm();
-  const [selectedTeamId, setSelectedTeamId] = useState<string>(teams[0]?.id || '');
-  const [cred, setCred] = useState<CloudflareCredentialView | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(
+    (defaultTeamId && teams.some((t) => t.id === defaultTeamId) ? defaultTeamId : teams[0]?.id) || '',
+  );
+  const { cred, loading, error: loadError, reload } = useCloudflareCredential(selectedTeamId);
+  const [open, setOpen] = useState(false);
   const [apiToken, setApiToken] = useState('');
   const [accountId, setAccountId] = useState('');
   const [aiGatewayId, setAiGatewayId] = useState('');
@@ -45,26 +44,17 @@ export default function CloudflareSection({ teams }: Props) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  useEffect(() => {
-    if (!selectedTeamId) return;
-    setReplacing(false);
-    void load(selectedTeamId);
-  }, [selectedTeamId]);
+  useEffect(() => { setReplacing(false); }, [selectedTeamId]);
 
-  async function load(teamId: string) {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/cloudflare/credential?teamId=${teamId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setCred(data.credential ?? null);
-      }
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to load the Cloudflare token' });
-    } finally {
-      setLoading(false);
-    }
-  }
+  // Open from the fleet's cloud-runner row (and a pasted #cloudflare link).
+  useEffect(() => {
+    const sync = () => { if (window.location.hash === '#cloudflare') setOpen(true); };
+    sync();
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  useEffect(() => { if (loadError) setMessage({ type: 'error', text: loadError }); }, [loadError]);
 
   function resetForm() {
     setApiToken('');
@@ -86,7 +76,7 @@ export default function CloudflareSection({ teams }: Props) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed' });
     } finally {
       setBusy(false);
-      await load(selectedTeamId);
+      await reload();
     }
   }
 
@@ -133,7 +123,7 @@ export default function CloudflareSection({ teams }: Props) {
     try {
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
-      await load(selectedTeamId);
+      await reload();
       setMessage({ type: 'success', text: 'Deleted.' });
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
@@ -144,14 +134,45 @@ export default function CloudflareSection({ teams }: Props) {
 
   if (teams.length === 0) return null;
 
+  const state = cloudflareState(cred);
   const showForm = !cred || replacing;
+  const teamName = teams.length > 1 ? teams.find((t) => t.id === selectedTeamId)?.name : null;
+
+  function nextStep() {
+    setOpen(true);
+    setMessage(null);
+    if (state.next === 'Verify' && cred) void verify(cred.id);
+    if (state.next === 'Replace') setReplacing(true);
+  }
+
+  const meta = cred ? (
+    <span data-testid="cloudflare-credential">
+      {teamName ? `${teamName} · ` : ''}Account {cred.accountId ?? '?'} · token {cred.tokenHint ?? '?'}
+    </span>
+  ) : (
+    <>{teamName ? `${teamName} · ` : ''}Cloud runner account</>
+  );
 
   return (
-    <SettingsSection title="Cloudflare">
-      <p className="text-sm text-text-secondary">
-        Run tasks in Cloudflare containers, one per task, instead of on your own machines.
-      </p>
-
+    <ConnectionRow
+      id="cloudflare"
+      testId="cloudflare-row"
+      title="Cloudflare"
+      chip={loading && !cred ? undefined : <StatusChip tone={state.tone}>{state.chip}</StatusChip>}
+      meta={meta}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+      action={loading && !cred ? undefined : (
+        <button
+          onClick={nextStep}
+          disabled={busy}
+          data-testid="cloudflare-next"
+          className={`btn ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}
+        >
+          {busy ? 'Working…' : state.next}
+        </button>
+      )}
+    >
       {teams.length > 1 && (
         <label className="block">
           <span className="field-label">Team</span>
@@ -167,19 +188,7 @@ export default function CloudflareSection({ teams }: Props) {
       {loading && !cred ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : cred ? (
-        <div className="inset-panel space-y-2" data-testid="cloudflare-credential">
-          <div className="flex flex-wrap items-center gap-2">
-            {cred.healthStatus === 'healthy' ? (
-              <span className="status-pill status-pill-ok">Verified</span>
-            ) : cred.healthStatus === 'revoked' ? (
-              <span className="status-pill status-pill-err">Rejected by Cloudflare</span>
-            ) : cred.healthStatus === 'degraded' ? (
-              <span className="status-pill status-pill-warn">Degraded</span>
-            ) : (
-              <span className="status-pill status-pill-idle">Not verified yet</span>
-            )}
-            {!cred.readable && <span className="status-pill status-pill-err">Unreadable, replace it</span>}
-          </div>
+        <div className="space-y-3">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs font-mono">
             <dt className="text-text-tertiary">Account</dt>
             <dd className="text-text-primary truncate">{cred.accountId ?? '?'}</dd>
@@ -195,8 +204,16 @@ export default function CloudflareSection({ teams }: Props) {
           {cred.lastVerificationError && cred.healthStatus !== 'healthy' && (
             <p className="text-xs text-status-error break-words">{cred.lastVerificationError}</p>
           )}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button onClick={() => verify(cred.id)} disabled={busy} className="btn btn-primary">
+          {state.kind === 'verified' && (
+            <div data-testid="cloudflare-deploy" className="space-y-2">
+              <p className="text-xs text-text-secondary">
+                Next: deploy the cloud runner from the repo root. It reads this token with your admin key.
+              </p>
+              <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => verify(cred.id)} disabled={busy} className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}>
               {busy ? 'Working…' : 'Verify'}
             </button>
             {!replacing && (
@@ -211,8 +228,8 @@ export default function CloudflareSection({ teams }: Props) {
         </div>
       ) : null}
 
-      {showForm && (
-        <div className="space-y-2 border-t border-border-default pt-4">
+      {showForm && !(loading && !cred) && (
+        <div className={`space-y-2 ${cred ? 'border-t border-border-default pt-4' : ''}`}>
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium text-text-primary">{cred ? 'Replace the token' : 'Add a token'}</div>
             {cred && (
@@ -268,6 +285,6 @@ export default function CloudflareSection({ teams }: Props) {
         </div>
       )}
       {confirmDialog}
-    </SettingsSection>
+    </ConnectionRow>
   );
 }

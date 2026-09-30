@@ -71,6 +71,14 @@ its own stdout line. A supervisor that only knows the task ID reads it so it
 can mark the worker failed if the container dies before the runner reports
 (`apps/cloud-runner` does this). No line means no worker was created.
 
+With `BUILDD_EXECUTOR=cloud` the runner also prints
+`BUILDD_PHASE=<phase> <epoch ms>` lines, `<phase>` one of `clone_start`,
+`clone_end`, `install_start`, `install_end` (`apps/runner/src/phase-lines.ts`).
+The clone pair brackets the runner's own `git clone`; the install pair
+brackets its own `bun install` in the worktree (not an install a repo declares
+in `.buildd/env.yaml`, which runs in the provision gate). No path or URL is
+printed. `apps/cloud-runner` reads them into its run report.
+
 A bad API key or an unreachable server exits **1**, not 64 or 3. The key is
 present, so it is not a usage error. The task fetch fails before any claim is
 made, so nothing was refused.
@@ -97,7 +105,10 @@ Everything else stays in the runner process.
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never
 put in the container env. The only real secret in the env is
-`BUILDD_API_KEY`.
+`BUILDD_API_KEY`. Model traffic can go to AI Gateway or to an
+Anthropic-compatible proxy such as LiteLLM (`MODEL_PROXY_URL`, Worker-side
+only; see `apps/cloud-runner/README.md`, "Model routes"); either way the
+container sees only `api.anthropic.com` and the placeholder key.
 
 ### Baked into the image
 

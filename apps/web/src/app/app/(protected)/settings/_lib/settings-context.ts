@@ -1,7 +1,7 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
-import { accounts, workspaces } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import { accounts, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { desc, inArray, sql } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -82,4 +82,22 @@ export async function loadRunnerAccounts(teamIds: string[]) {
     },
   }).catch(() => [] as any[]);
   return rows.map((a: any) => ({ ...a, hasOauthToken: !!a.oauthToken }));
+}
+
+/**
+ * When each runner token last had a runner heartbeat, ISO. Heartbeat rows are
+ * swept once they go stale, so a token missing here has not been seen
+ * recently, which is not the same as never. Degrades to empty on failure.
+ */
+export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<string, string>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({ accountId: workerHeartbeats.accountId, at: sql<Date | string>`max(${workerHeartbeats.lastHeartbeatAt})` })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .groupBy(workerHeartbeats.accountId)
+    .catch(() => [] as Array<{ accountId: string; at: Date | string }>);
+  const out: Record<string, string> = {};
+  for (const r of rows) if (r.at) out[r.accountId] = new Date(r.at).toISOString();
+  return out;
 }

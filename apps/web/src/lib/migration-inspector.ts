@@ -45,8 +45,8 @@ async function readFileAtRef(
 }
 
 /**
- * Load the executable SQL for this PR and migration filenames from every other
- * open PR, then run the conservative pure classifier.
+ * Load executable SQL and compare migration slots in PRs targeting the same
+ * base. Identical files inherited by stacked PRs do not claim a second slot.
  */
 export async function inspectPullRequestMigrations(params: {
   installationId: number;
@@ -56,7 +56,7 @@ export async function inspectPullRequestMigrations(params: {
   files: GitHubPullRequestFile[];
   /**
    * This PR's base branch (e.g. `dev`) — when given, a path that already
-   * exists on the base with that exact name is dropped from the collision
+   * exists on the base with that exact name and content is dropped from the collision
    * candidate list before number-matching. Both open PRs inheriting the same
    * already-merged migration byte-for-byte from the base (because their diff
    * is computed against a stale fork point) is not a collision — see the
@@ -130,6 +130,10 @@ export async function inspectPullRequestMigrations(params: {
         return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
       }
       if (pull.number === params.prNumber) continue;
+      const peer = pull as { number: number; base?: { ref?: string }; head?: { sha?: string } };
+      // Separate integration branches acquire a shared namespace only when
+      // their integration PRs target the same branch.
+      if (params.baseRef && peer.base?.ref && peer.base.ref !== params.baseRef) continue;
       const files = (await listAll(
         params.installationId,
         `/repos/${params.repoFullName}/pulls/${pull.number}/files`,
@@ -139,13 +143,22 @@ export async function inspectPullRequestMigrations(params: {
         .map((file: GitHubPullRequestFile) => file.filename)
         .filter(isGeneratedMigrationPath);
       for (const path of migrationPaths) {
-        // Exact same path already on the base branch means this is history
-        // both PRs inherited, not a slot the other PR is newly claiming.
+        const own = filesWithContent.find((file) => file.filename === path);
+        // Stacked PRs may carry the same migration before it reaches the base.
+        // Require the exact path AND bytes, read at the peer's immutable head.
+        if (own?.content !== undefined && peer.head?.sha) {
+          const peerContent = await readFileAtRef(
+            params.installationId, params.repoFullName, path, peer.head.sha,
+          ).catch(() => undefined);
+          if (peerContent === own.content) continue;
+        }
+        // A path alone cannot prove inheritance: changed SQL in the same file
+        // still occupies the same slot.
         if (params.baseRef) {
           const onBase = await readFileAtRef(params.installationId, params.repoFullName, path, params.baseRef).catch(
             () => undefined,
           );
-          if (onBase !== undefined) continue;
+          if (own?.content !== undefined && onBase === own.content) continue;
         }
         openPullRequestMigrations.push({ path, prNumber: pull.number as number });
       }
