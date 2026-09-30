@@ -48,19 +48,22 @@ const { hashToolInput } = await import('./approvals');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const finish = (unified: string) => ({ type: 'finish', finishReason: { unified, raw: unified }, usage });
-const textStream = (text: string) => ({
+const finish = (unified: string, cost?: number) => ({
+  type: 'finish', finishReason: { unified, raw: unified }, usage,
+  ...(cost !== undefined ? { providerMetadata: { openrouter: { usage: { cost } } } } : {}),
+});
+const textStream = (text: string, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: text }, { type: 'text-end', id: 't' },
-    finish('stop'),
+    finish('stop', cost),
   ]),
 });
-const toolStream = (toolCallId: string, toolName: string, input: unknown) => ({
+const toolStream = (toolCallId: string, toolName: string, input: unknown, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) },
-    finish('tool-calls'),
+    finish('tool-calls', cost),
   ]),
 });
 
@@ -164,6 +167,26 @@ describe('a read-only question', () => {
     expect(toolPart.output.objects[0]).toMatchObject({ kind: 'task', id: 'task-1' });
     expect(saved.parts.some(p => p.type === 'text' && p.text.includes('One task'))).toBe(true);
     expect(saved.usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
+  });
+
+  it('records the cost of every step, not just the last one', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}, 0.01), textStream('One task is in flight.', 0.002)] as any,
+    });
+    const { turn } = harness({ model });
+    await turn(userMsg("what's in flight on billing-web?"));
+    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.012, 10);
+  });
+
+  it('prices a step that reported no cost from its own usage', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}, 0.01), textStream('One task is in flight.')] as any,
+    });
+    const { turn } = harness({ model });
+    await turn(userMsg("what's in flight on billing-web?"));
+    const { turnCostUsd } = await import('./models');
+    const own = turnCostUsd('test-model', { inputTokens: 10, outputTokens: 5 })!;
+    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.01 + own, 10);
   });
 
   it('the context block carries the user\'s local date and zone', async () => {

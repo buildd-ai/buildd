@@ -1,6 +1,8 @@
 import { hasTeamInferenceKey } from '@buildd/core/inference-keys';
 import SettingsPage from '../_components/SettingsPage';
 import ModelFeatures from './ModelFeatures';
+// Experiment: remove with apps/web/src/lib/chat-retro/ (see its REMOVAL.md).
+import ChatRetroSection from '@/lib/chat-retro/ChatRetroSection';
 import { loadSettingsContext } from '../_lib/settings-context';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +15,10 @@ export default async function AiSettingsPage() {
   return (
     <SettingsPage title="AI features">
       {currentTeam ? (
-        <ModelFeatures teamId={currentTeam.id} canManage={isTeamAdmin} hasTeamKey={hasTeamKey} />
+        <>
+          <ModelFeatures teamId={currentTeam.id} canManage={isTeamAdmin} hasTeamKey={hasTeamKey} />
+          <ChatRetroSection teamId={currentTeam.id} isAdmin={isTeamAdmin} />
+        </>
       ) : (
         <p className="text-sm text-text-secondary">Join or create a team first.</p>
       )}

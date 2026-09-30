@@ -103,6 +103,13 @@ export const GATE_SLUGS = {
    * create_pr door missed it.
    */
   RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
+  /**
+   * The chat retro proposal pass (apps/web/src/lib/chat-retro/, experiment).
+   * `deferred`: a pattern over the daily per-team cap. `rejected`: a signature
+   * muted until its evidence doubles, or a pattern with no workspace to file
+   * into.
+   */
+  CHAT_RETRO_PROPOSAL: 'chat_retro_proposal',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
