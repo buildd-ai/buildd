@@ -97,7 +97,15 @@ mock.module('@/lib/task-dispatch', () => ({
 }));
 
 let missionTasksToReturn: any[] = [];
-const mockTasksFindManyForExecutorChange = mock(async () => {
+let shouldFindManyReject = false;
+let tasksFindManyWhereCalls: any[] = [];
+const mockTasksFindManyForExecutorChange = mock(async (options?: any) => {
+  if (options && options.where) {
+    tasksFindManyWhereCalls.push(options.where);
+  }
+  if (shouldFindManyReject) {
+    throw new Error('tasks.findMany failed');
+  }
   return missionTasksToReturn;
 });
 
@@ -1464,7 +1472,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
     mockMissionsFindFirst.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    mockWorkspacesFindFirst.mockReturnValue({ id: WS_ID, name: 'test-ws', repo: 'owner/repo' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: WS_ID, name: 'test-ws', repo: 'owner/repo' });
     mockMissionsUpdate.mockReset();
     mockMissionsUpdate.mockImplementation(() => ({
       set: mock((data: any) => {
@@ -1479,6 +1487,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     updatedSetData = null;
     dispatchUnblockedTaskCalls = [];
     shouldDispatchReject = false;
+    shouldFindManyReject = false;
+    tasksFindManyWhereCalls = [];
     missionTasksToReturn = [];
   });
 
@@ -1620,6 +1630,16 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
 
     // The route filters tasks by status, so running/completed tasks never reach dispatchUnblockedTask
     expect(dispatchUnblockedTaskCalls.length).toBe(1);
+
+    // Assert that the where clause filters to pending and assigned statuses
+    expect(tasksFindManyWhereCalls.length).toBeGreaterThan(0);
+    const whereClause = tasksFindManyWhereCalls[0];
+    // The where clause should be an array with two conditions: missionId and status filter
+    expect(Array.isArray(whereClause)).toBe(true);
+    // Find the inArray condition that filters by status
+    const statusFilter = whereClause.find((cond: any) => cond.type === 'inArray' && cond.values);
+    expect(statusFilter).toBeDefined();
+    expect(statusFilter.values).toEqual(['pending', 'assigned']);
   });
 
   it('returns 200 even if dispatchUnblockedTask rejects', async () => {
@@ -1672,8 +1692,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       priority: 0,
     });
 
-    // Create a temporary mock that rejects
-    missionTasksToReturn = null as any;
+    // Make the findMany mock reject
+    shouldFindManyReject = true;
 
     const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
       method: 'PATCH',
