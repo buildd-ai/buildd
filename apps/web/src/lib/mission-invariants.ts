@@ -1184,6 +1184,13 @@ export interface ScanCoverage {
   notes: number;
   remoteRefs: number;
   /**
+   * Mission base refs the sweep wanted to check but could not — no resolvable
+   * repo, or no App installation covering its owner. Non-zero means
+   * `orphaned_integration_base` is partly unmeasured, not clean. Optional so
+   * older callers and fixtures that predate it still type-check.
+   */
+  remoteRefsSkipped?: number;
+  /**
    * Merge rows loaded for base drift. Its own number because it is the only
    * input `open_pr_outpaced_by_base` can be starved of: workers can be present
    * and healthy-looking while this is zero, and the invariant is then clean by
@@ -1223,6 +1230,11 @@ export function formatInvariantReport(
       `${scanned.releases} releases, ${scanned.notes} notes, ${scanned.remoteRefs} remote refs, ` +
       `${scanned.baseMerges} base merges`,
   );
+  if ((scanned.remoteRefsSkipped ?? 0) > 0) {
+    lines.push(
+      `REMOTE REFS UNCHECKED: ${scanned.remoteRefsSkipped} — orphaned_integration_base could not look at them; treat its count as partial.`,
+    );
+  }
   if (empty) {
     lines.push(
       'EMPTY SCAN — every query ran against no rows, so a clean result proves nothing about the fleet.',

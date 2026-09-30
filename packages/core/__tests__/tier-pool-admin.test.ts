@@ -151,11 +151,14 @@ describe('loadArmStats', () => {
     executeRows = [];
     await admin.loadArmStats('team-1', new Date('2026-09-26T00:00:00Z'));
     const [agent, chat] = executed.map(render);
-    expect(agent.sql).toContain("p.team_id = $1 AND p.surface = 'agent'");
+    // surface is a bound parameter, never spliced into the SQL text.
+    expect(agent.sql).toContain('p.team_id = $1 AND p.surface = $2');
     expect(agent.sql).toContain('ORDER BY created_at DESC LIMIT 1');
-    expect(chat.sql).toContain("p.team_id = $1 AND p.surface = 'chat'");
+    expect(chat.sql).toContain('p.team_id = $1 AND p.surface = $2');
+    expect(chat.sql).not.toContain("'chat'");
+    expect(chat.params).toEqual(['team-1', 'chat', '2026-08-27T00:00:00.000Z']);
     expect(chat.sql).toContain("f.entity_type = 'conversation_message'");
-    expect(agent.params).toEqual(['team-1', '2026-08-27T00:00:00.000Z']);
+    expect(agent.params).toEqual(['team-1', 'agent', '2026-08-27T00:00:00.000Z']);
   });
 
   it('summarises per arm: failures from infra are not graded, thumbs set chat severity', async () => {

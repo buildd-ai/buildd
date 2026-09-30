@@ -264,6 +264,91 @@ export function isWorktreePathOwnedByOtherLiveWorker(
   return false;
 }
 
+/**
+ * Env flag for M1 of docs/design/pr-merge-reliability.md. Off (the default) is
+ * SHADOW: setupWorktree diverts exactly as before and only logs what it would
+ * have done. `1`/`true`/`on` lets it release a lineage-held resume branch.
+ */
+export const RELEASE_LINEAGE_HELD_BRANCH_FLAG = 'BUILDD_RELEASE_LINEAGE_HELD_BRANCH';
+
+export type ReleaseHeldBranchMode = 'shadow' | 'release';
+
+export function resolveReleaseHeldBranchMode(
+  env: Record<string, string | undefined> = process.env,
+): ReleaseHeldBranchMode {
+  const v = (env[RELEASE_LINEAGE_HELD_BRANCH_FLAG] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'on' ? 'release' : 'shadow';
+}
+
+/** Registry shape the lineage check needs: the ownership record plus task identity. */
+export interface LineageHolderRecord extends WorktreeOwnershipRecord {
+  taskId?: string;
+  parentTaskId?: string | null;
+}
+
+/** The retry's own task identity, from the claimed task. */
+export interface ResumeLineage {
+  taskId: string;
+  parentTaskId?: string | null;
+}
+
+export type ResumeBranchHolderDecision =
+  | { eligible: true; holderWorkerId: string }
+  | {
+      eligible: false;
+      reason: 'no_lineage' | 'no_registry_owner' | 'holder_live' | 'outside_lineage';
+      holderWorkerId?: string;
+    };
+
+/**
+ * May a retry take its resume branch away from the worktree at `holderPath`?
+ *
+ * Decided from the runner's OWN worker registry, never from the path's shape:
+ * the holder must be a worker record whose `worktreePath` is exactly
+ * `holderPath`, and every such record must be terminal (`done`/`error`).
+ * `waiting` and `stale` can still resume into that tree, so they count as live
+ * — same rule as isWorktreePathOwnedByOtherLiveWorker.
+ *
+ * Lineage: the holder's task is the retry's own task, its parent, or a further
+ * ancestor reachable through `parentTaskId` links of records still in the
+ * registry. A holder from any other task keeps today's diversion.
+ */
+export function classifyResumeBranchHolder(
+  workers: Iterable<[string, LineageHolderRecord]>,
+  holderPath: string,
+  lineage: ResumeLineage | undefined,
+  selfWorkerId: string,
+  /** Path canonicaliser: git reports real paths, the registry stores joined
+   *  ones (they differ under a symlinked tmp/home). Identity by default. */
+  canonical: (p: string) => string = (p) => p,
+): ResumeBranchHolderDecision {
+  const all = [...workers].filter(([id]) => id !== selfWorkerId);
+  const target = canonical(holderPath);
+  const owners = all.filter(([, w]) => !!w.worktreePath && canonical(w.worktreePath) === target);
+  if (owners.length === 0) return { eligible: false, reason: 'no_registry_owner' };
+  const live = owners.find(([, w]) => w.status !== 'done' && w.status !== 'error');
+  if (live) return { eligible: false, reason: 'holder_live', holderWorkerId: live[0] };
+  const [holderWorkerId, holder] = owners[0];
+  if (!lineage) return { eligible: false, reason: 'no_lineage', holderWorkerId };
+
+  // Ancestor task ids: own task, parent, then parent links known to the registry.
+  const ancestors = new Set<string>([lineage.taskId]);
+  let next = lineage.parentTaskId ?? undefined;
+  const parentOf = new Map<string, string>();
+  for (const [, w] of all) {
+    if (w.taskId && w.parentTaskId && !parentOf.has(w.taskId)) parentOf.set(w.taskId, w.parentTaskId);
+  }
+  while (next && !ancestors.has(next)) {
+    ancestors.add(next);
+    next = parentOf.get(next);
+  }
+
+  const inLineage = owners.every(([, w]) => !!w.taskId && ancestors.has(w.taskId));
+  return inLineage
+    ? { eligible: true, holderWorkerId }
+    : { eligible: false, reason: 'outside_lineage', holderWorkerId };
+}
+
 /** The directory every runner-created worktree lives under, inside its repo. */
 export const WORKTREE_DIR_MARKER = '.buildd-worktrees';
 

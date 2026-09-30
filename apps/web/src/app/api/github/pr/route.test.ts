@@ -170,7 +170,10 @@ mock.module('@/lib/pr-review-status', () => ({
 }));
 
 // Import handler AFTER mocks
-import { POST, PATCH, PUT, GET, closeAncestorRetryPrs } from './route';
+const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
+mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
+
+import { POST, PATCH, PUT, GET } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 import { extractLede } from '@buildd/core/pr-lede';
 
@@ -5096,138 +5099,78 @@ describe('POST /api/github/pr — lede', () => {
   });
 });
 
-describe('closeAncestorRetryPrs', () => {
-  // parentTaskId is not exclusively a retry-lineage pointer — resolveCreatorContext
-  // (apps/web/src/lib/task-service.ts) auto-sets it to the calling worker's *current*
-  // task whenever a caller creates a task (e.g. filing a [friction] report) without
-  // an explicit parentTaskId. 'friction-task' below models exactly that: it was
-  // auto-parented to 'mission-task' purely as creation provenance, not as a retry of
-  // it. Only a task stamped taskClass: 'attempt' (the marker ci-retry.ts /
-  // conflict-retry.ts / the reviewer-retry path all use) represents genuine retry
-  // lineage worth climbing past.
-  const TASKS: Record<string, { parentTaskId: string | null; taskClass: string }> = {
-    'friction-task': { parentTaskId: 'mission-task', taskClass: 'work' },
-    'mission-task': { parentTaskId: null, taskClass: 'work' },
-    'retry-b': { parentTaskId: 'root-a', taskClass: 'attempt' },
-    'root-a': { parentTaskId: null, taskClass: 'work' },
-  };
+describe('create_pr — retry supersession', () => {
+  // The supersession logic itself (lineage scope, live-state guards, failure
+  // recording, the sweep) is tested in lib/retry-pr-supersession.test.ts. This
+  // block pins how create_pr calls it: gated on retry lineage, awaited, and
+  // reported in the response.
+  const WORKER_BRANCH = 'buildd/t-9-retry';
 
-  const WORKERS_BY_TASK: Record<string, Array<{ prNumber: number; prUrl: string }>> = {
-    'friction-task': [{ prNumber: 2557, prUrl: 'https://github.com/org/repo/pull/2557' }],
-    'mission-task': [{ prNumber: 2556, prUrl: 'https://github.com/org/repo/pull/2556' }],
-    'retry-b': [{ prNumber: 20, prUrl: 'https://github.com/org/repo/pull/20' }],
-    'root-a': [{ prNumber: 10, prUrl: 'https://github.com/org/repo/pull/10' }],
-  };
-
-  function closedPrNumbers(): number[] {
-    return mockGithubApi.mock.calls
-      .filter((c: any[]) => c[2]?.method === 'PATCH')
-      .map((c: any[]) => Number(String(c[1]).match(/\/pulls\/(\d+)/)?.[1]));
+  function retryWorker(task: Record<string, any>) {
+    return {
+      id: 'w-9',
+      accountId: 'account-1',
+      name: 'test-worker',
+      branch: WORKER_BRANCH,
+      taskId: 't-9',
+      workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { defaultBranch: 'dev' } },
+      task: { id: 't-9', missionId: null, title: 'Fix it', parentTaskId: 't-8', ...task },
+    };
   }
 
-  // GitHub's view of each ancestor PR, read before anything is posted to it.
-  // Default: open and unmerged, the only state a supersession close applies to.
-  let prState: Record<number, { state: string; merged: boolean } | Error> = {};
-
-  function postedCommentPrNumbers(): number[] {
-    return mockGithubApi.mock.calls
-      .filter((c: any[]) => c[2]?.method === 'POST' && /\/comments$/.test(String(c[1])))
-      .map((c: any[]) => Number(String(c[1]).match(/\/issues\/(\d+)\//)?.[1]));
+  async function openPr(task: Record<string, any>) {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(retryWorker(task));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce([]); // dedup-by-head: no existing PR
+    mockGithubApi.mockResolvedValueOnce({ number: 77, html_url: 'https://github.com/owner/repo/pull/77', state: 'open', title: 'Fix it' });
+    mockGithubApi.mockResolvedValue({});
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-9', title: 'Fix it', head: WORKER_BRANCH },
+    }));
+    expect(res.status).toBe(200);
+    return res.json();
   }
 
   beforeEach(() => {
-    prState = {};
-    mockGithubApi.mockReset();
-    mockGithubApi.mockImplementation(async (_inst: number, path: string, init?: any) => {
-      if (!init?.method || init.method === 'GET') {
-        const n = Number(String(path).match(/\/pulls\/(\d+)$/)?.[1]);
-        const s = prState[n];
-        if (s instanceof Error) throw s;
-        return { number: n, ...(s ?? { state: 'open', merged: false }) };
-      }
-      return {};
-    });
-    mockTasksFindFirst.mockReset();
-    mockTasksFindFirst.mockImplementation(async (args: any) => {
-      const id = args?.where?.value;
-      return TASKS[id] ? { ...TASKS[id] } : null;
-    });
-    mockWorkersFindMany.mockReset();
-    mockWorkersFindMany.mockImplementation(async (args: any) => {
-      const ids: string[] = args?.where?.conditions?.[0]?.values ?? [];
-      return ids.flatMap((id) => (WORKERS_BY_TASK[id] ?? []).map((w) => ({ ...w })));
-    });
+    mockCloseAncestorRetryPrs.mockReset();
+    mockCloseAncestorRetryPrs.mockResolvedValue([{ prNumber: 70, closed: true, reason: 'superseded (checked_out)' }]);
   });
 
-  it('does not close a sibling task PR reached only via creation-provenance parentTaskId (regression for PR #2556)', async () => {
-    await closeAncestorRetryPrs({
-      parentTaskId: 'friction-task',
-      successorPrNumber: 2558,
-      installationId: 123,
-      repoFullName: 'org/repo',
+  it('closes ancestors for an attempt task even when context.iteration is 0, and returns what it did', async () => {
+    const data = await openPr({ taskClass: 'attempt', context: { iteration: 0 } });
+    expect(mockCloseAncestorRetryPrs).toHaveBeenCalledTimes(1);
+    const [args] = mockCloseAncestorRetryPrs.mock.calls[0] as any[];
+    expect(args).toMatchObject({
+      parentTaskId: 't-8', successorPrNumber: 77, installationId: 12345, repoFullName: 'owner/repo',
+      successorWorkerId: 'w-9', via: 'create_pr',
     });
-
-    const closed = closedPrNumbers();
-    // #2557 (the friction task's own PR — the direct ancestor being retried) is closed.
-    expect(closed).toContain(2557);
-    // #2556 belongs to 'mission-task', reached only because the friction task was
-    // auto-parented to it at creation time — must NOT be closed as "superseded".
-    expect(closed).not.toContain(2556);
+    expect(data.supersededPrs).toEqual([{ prNumber: 70, closed: true, reason: 'superseded (checked_out)' }]);
   });
 
-  it('still closes every PR in a genuine multi-level retry chain', async () => {
-    await closeAncestorRetryPrs({
-      parentTaskId: 'retry-b',
-      successorPrNumber: 30,
-      installationId: 123,
-      repoFullName: 'org/repo',
+  it('awaits the close before responding', async () => {
+    let settled = false;
+    mockCloseAncestorRetryPrs.mockImplementation(async () => {
+      await new Promise(r => setTimeout(r, 5));
+      settled = true;
+      return [];
     });
-
-    expect(closedPrNumbers().sort()).toEqual([10, 20]);
+    await openPr({ taskClass: 'attempt', context: { iteration: 1 } });
+    expect(settled).toBe(true);
   });
 
-  it('leaves an ancestor PR that already merged alone — no "rejected, closing" comment, no close', async () => {
-    prState[10] = { state: 'closed', merged: true };
-
-    await closeAncestorRetryPrs({
-      parentTaskId: 'retry-b',
-      successorPrNumber: 30,
-      installationId: 123,
-      repoFullName: 'org/repo',
-    });
-
-    expect(postedCommentPrNumbers()).not.toContain(10);
-    expect(closedPrNumbers()).not.toContain(10);
-    // The open ancestor in the same chain is still superseded.
-    expect(closedPrNumbers()).toEqual([20]);
-    expect(postedCommentPrNumbers()).toEqual([20]);
+  it('does not close anything for a non-attempt child (parentTaskId as creation provenance)', async () => {
+    await openPr({ taskClass: 'work', context: null });
+    expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
   });
 
-  it('skips an ancestor PR that is already closed', async () => {
-    prState[20] = { state: 'closed', merged: false };
-
-    await closeAncestorRetryPrs({
-      parentTaskId: 'retry-b',
-      successorPrNumber: 30,
-      installationId: 123,
-      repoFullName: 'org/repo',
-    });
-
-    expect(postedCommentPrNumbers()).toEqual([10]);
-    expect(closedPrNumbers()).toEqual([10]);
-  });
-
-  it('does not comment on or close an ancestor PR whose state cannot be read', async () => {
-    prState[10] = new Error('GitHub 502');
-
-    await closeAncestorRetryPrs({
-      parentTaskId: 'retry-b',
-      successorPrNumber: 30,
-      installationId: 123,
-      repoFullName: 'org/repo',
-    });
-
-    expect(postedCommentPrNumbers()).not.toContain(10);
-    expect(closedPrNumbers()).toEqual([20]);
+  it('still opens the PR when the supersession path throws', async () => {
+    mockCloseAncestorRetryPrs.mockRejectedValue(new Error('db down'));
+    const data = await openPr({ taskClass: 'attempt', context: { iteration: 1 } });
+    expect(data.ok).toBe(true);
+    expect(data.supersededPrs).toBeUndefined();
   });
 });

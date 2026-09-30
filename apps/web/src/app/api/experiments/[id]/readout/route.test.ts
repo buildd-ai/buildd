@@ -20,6 +20,8 @@ mock.module('@buildd/core/heartbeat-triage-readout-source', () => ({ runHeartbea
 
 const mockPoolRun = mock(async (..._a: any[]) => ({ kind: 'tier_pool', verdict: 'insufficient_n', arms: [] }) as any);
 mock.module('@buildd/core/tier-pool-admin', () => ({ runTierPoolReadout: mockPoolRun }));
+const mockHealth = mock(async (..._a: any[]) => [] as any[]);
+mock.module('@buildd/core/experiment-health-source', () => ({ runExperimentHealth: mockHealth }));
 
 import { GET } from './route';
 
@@ -36,6 +38,8 @@ const as = (role: Role) => { viewer = { ok: true, viewer: { teamId: TEAM, role, 
 const get = (qs = '') => GET(new NextRequest(`http://localhost/api/experiments/${ID}/readout${qs}`), { params: Promise.resolve({ id: ID }) });
 
 beforeEach(() => {
+  mockHealth.mockReset();
+  mockHealth.mockResolvedValue([]);
   mockRun.mockClear();
   mockPoolRun.mockClear();
   mockGet.mockClear();
@@ -112,5 +116,22 @@ describe('GET /api/experiments/[id]/readout', () => {
     expect((await get('?policyVersion=4')).status).toBe(400);
     expect((await get('?policyVersion=0')).status).toBe(400);
     expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('carries the enrolment health findings of the running experiment', async () => {
+    as('admin');
+    const finding = { code: 'arm_never_drawn', severity: 'critical', arm: 'treatment', detail: 'arm treatment has 0 units' };
+    mockHealth.mockResolvedValue([finding]);
+    const body = await (await get()).json();
+    expect(body.health).toEqual([finding]);
+    expect(mockHealth.mock.calls[0][0]).toMatchObject({ id: ID, kind: 'model_routing', policyVersion: 3 });
+  });
+
+  it('a failing health check does not fail the readout', async () => {
+    as('admin');
+    mockHealth.mockRejectedValue(new Error('db down'));
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect((await res.json()).health).toBeNull();
   });
 });

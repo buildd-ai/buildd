@@ -22,6 +22,7 @@ import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@b
 import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
 import { getTeamExperimentForReadout } from '@/lib/experiments-store';
+import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
@@ -45,20 +46,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     policyVersion = n;
   }
 
+  // Enrolment health (starved, unbalanced, past its cap) of the running
+  // experiment — lib in packages/core/experiment-health.ts. Never fails the readout.
+  const health = await runExperimentHealth(row).catch(() => null);
+
   // Heartbeat triage is measured per mission, over its own look rows, not per task.
   if (row.kind === HEARTBEAT_TRIAGE_EXPERIMENT_KIND) {
     const readout = await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config));
-    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
   // Tier pools are measured per arm over their own assignment rows (chat turns or tasks).
   if (row.kind === TIER_POOL_EXPERIMENT_KIND) {
     const readout = await runTierPoolReadout({ id: row.id, policyVersion });
-    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
   if (row.kind !== MODEL_ROUTING_EXPERIMENT_KIND && row.kind !== CBM_ACCESS_EXPERIMENT_KIND) {
     return NextResponse.json({ error: `No readout for experiment kind '${row.kind}'` }, { status: 422 });
   }
   const { minSamplePerArm } = parseModelRoutingConfig(row.config);
   const readout = await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm });
-  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
 }

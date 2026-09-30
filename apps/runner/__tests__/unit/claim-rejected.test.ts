@@ -351,3 +351,57 @@ describe('claim_empty deferral breakdown', () => {
     expect(entry).not.toHaveProperty('deferrals');
   });
 });
+
+
+// ─── Idle polls ───────────────────────────────────────────────────────────────
+//
+// no_pending_tasks polls wrote nothing, so an idle runner and one that had
+// silently stopped polling were indistinguishable from claims.log.
+describe('idle claim polls', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(() => {
+    claimLogSpy.mockClear();
+    mockClaimTask.mockReset();
+  });
+
+  afterEach(() => {
+    manager?.destroy();
+  });
+
+  test('a no_pending_tasks poll writes one claim_idle summary, then stays quiet', async () => {
+    mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+    manager = new WorkerManager(makeConfig());
+    await manager.claimPendingTasks();
+    await manager.claimPendingTasks();
+    await manager.claimPendingTasks();
+
+    const idle = claimLogSpy.mock.calls.filter((a: any[]) => a[0]?.event === 'claim_idle');
+    expect(idle).toHaveLength(1);
+    expect(idle[0][0].idlePolls).toBe(1);
+    expect(typeof idle[0][0].idleSince).toBe('number');
+    // Still no per-poll claim_empty spam for the normal idle state.
+    expect(claimLogSpy.mock.calls.filter((a: any[]) => a[0]?.event === 'claim_empty')).toHaveLength(0);
+  });
+
+  test('debug internals expose the last poll and the idle streak', async () => {
+    mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+    manager = new WorkerManager(makeConfig());
+    expect(manager.getInternalState().claimPolls.lastPollAt).toBeNull();
+    const before = Date.now();
+    await manager.claimPendingTasks();
+    await manager.claimPendingTasks();
+    const polls = manager.getInternalState().claimPolls;
+    expect(polls.lastPollAt).toBeGreaterThanOrEqual(before);
+    expect(polls.lastPollOutcome).toBe('no_pending_tasks');
+    expect(polls.idlePolls).toBe(2);
+  });
+
+  test('a lost Pusher claim race carries the server reason on the error', async () => {
+    mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+    manager = new WorkerManager(makeConfig());
+    const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
+    expect(err.claimError).toBe('server_rejected');
+    expect(err.claimReason).toBe('no_pending_tasks');
+  });
+});

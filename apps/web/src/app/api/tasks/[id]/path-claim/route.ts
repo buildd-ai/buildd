@@ -1,18 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { tasks, missionNotes } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import {
-  appendPathManifest,
-  checkPathClaimConflict,
-  insertClaims,
-  registerWaiter,
-} from '@buildd/core/path-claim';
-import { isAdvisoryManifest } from '@buildd/core/path-overlap';
-import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
+import { gateCallerOrigin } from '@/lib/gate-ledger';
+import { checkPathClaim } from '@/lib/path-claim-check';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -65,167 +56,32 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const rawPaths = (body as any)?.paths;
-  if (
-    !Array.isArray(rawPaths) ||
-    rawPaths.length === 0 ||
-    rawPaths.some((p: unknown) => typeof p !== 'string' || p.trim() === '')
-  ) {
-    return NextResponse.json(
-      { error: 'paths must be a non-empty array of non-empty strings' },
-      { status: 400 }
-    );
-  }
-  const paths = rawPaths as string[];
-
-  // Wildcard claims are not supported — '**' is advisory-only and must not
-  // become a held lock that blocks the entire workspace. isAdvisoryManifest is
-  // the single definition of "scope not declared" (packages/core/path-overlap.ts);
-  // a local includes('**') here would be a fourth copy of that rule.
-  const wildcardRejection = isAdvisoryManifest(paths);
-
-  const currentTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
-    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, title: true },
+  const outcome = await checkPathClaim({
+    taskId: id,
+    paths: (body as any)?.paths,
+    surface: 'POST /api/tasks/[id]/path-claim',
+    callerOrigin: gateCallerOrigin({ apiAccount, user }),
+    authorize: async (task) => {
+      if (user && !apiAccount) {
+        return Boolean(await verifyWorkspaceAccess(user.id, task.workspaceId));
+      }
+      if (apiAccount) {
+        return Boolean(await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId));
+      }
+      return false;
+    },
   });
 
-  const callerOrigin = gateCallerOrigin({ apiAccount, user });
-
-  if (wildcardRejection) {
-    const error = 'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
-    fireGateEvent({
-      gate: GATE_SLUGS.PATH_CLAIM,
-      surface: 'POST /api/tasks/[id]/path-claim',
-      outcome: 'rejected',
-      reason: error,
-      workspaceId: currentTask?.workspaceId ?? null,
-      missionId: currentTask?.missionId ?? null,
-      taskId: currentTask?.id ?? null,
-      callerOrigin,
-      detail: { pathCount: paths.length },
-    });
-    return NextResponse.json({ error }, { status: 400 });
+  switch (outcome.kind) {
+    case 'invalid_paths':
+    case 'wildcard':
+    case 'bad_status':
+      return NextResponse.json({ error: outcome.error }, { status: 400 });
+    case 'not_found':
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    case 'conflict':
+      return NextResponse.json(outcome.body, { status: 409 });
+    case 'claimed':
+      return NextResponse.json({ claimed: true, pathManifest: outcome.pathManifest });
   }
-
-  if (!currentTask) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-  }
-
-  if (user && !apiAccount) {
-    const access = await verifyWorkspaceAccess(user.id, currentTask.workspaceId);
-    if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-  } else if (apiAccount) {
-    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, currentTask.workspaceId);
-    if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-  }
-
-  if (!['pending', 'assigned', 'in_progress'].includes(currentTask.status)) {
-    return NextResponse.json(
-      { error: `Cannot claim paths for a task with status "${currentTask.status}"` },
-      { status: 400 }
-    );
-  }
-
-  // Check active path_claims rows for conflicts (workspace-scoped). Held locks
-  // live in path_claims, not inferred from manifest + status combinations.
-  const conflict = await checkPathClaimConflict(
-    currentTask.workspaceId,
-    id,
-    paths,
-  );
-
-  if (conflict) {
-    // Fetch blocker details for the response
-    const blocker = await db.query.tasks.findFirst({
-      where: eq(tasks.id, conflict.blockingTaskId),
-      columns: { id: true, title: true, missionId: true },
-    });
-
-    // Auto-register as waiter (deadlock check included)
-    const waiterResult = await registerWaiter(
-      conflict.blockingTaskId,
-      id,
-      conflict.blockingPath,
-      currentTask.workspaceId,
-    );
-
-    const isCrossMission =
-      blocker?.missionId !== null &&
-      blocker?.missionId !== undefined &&
-      currentTask.missionId !== null &&
-      currentTask.missionId !== undefined &&
-      blocker?.missionId !== currentTask.missionId;
-
-    const hasDeadlock = 'deadlock' in waiterResult && waiterResult.deadlock;
-
-    let message = isCrossMission
-      ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`
-      : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`;
-
-    if (hasDeadlock) {
-      message += ` DEADLOCK DETECTED: A circular wait cycle exists (${waiterResult.cycle.length} tasks involved). A waiter will never be notified. You must either: (1) cancel this task and retry later, (2) have the blocking task cancel, or (3) use mission-level maxConcurrentTasks=1 to serialize conflicting tasks.`;
-    }
-
-    const response: Record<string, unknown> = {
-      claimed: false,
-      blockingTaskId: conflict.blockingTaskId,
-      blockingTaskTitle: blocker?.title ?? null,
-      blockingMissionId: blocker?.missionId ?? null,
-      message,
-    };
-
-    if (hasDeadlock) {
-      response.deadlock = true;
-      response.cycle = waiterResult.cycle;
-      // Post a warning for human resolution (best-effort)
-      if (currentTask.missionId) {
-        try {
-          await db.insert(missionNotes).values({
-            missionId: currentTask.missionId,
-            taskId: id,
-            authorType: 'system',
-            type: 'warning',
-            title: 'Deadlock detected in path claims',
-            body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
-            status: 'open',
-          });
-        } catch { /* non-fatal */ }
-      }
-    }
-
-    // The 409 this route returns could not tell a real blocker apart from a
-    // circular wait, which is what made it unreadable in the first place. The
-    // ledger row carries both, so the distinction survives past the response.
-    fireGateEvent({
-      gate: GATE_SLUGS.PATH_CLAIM,
-      surface: 'POST /api/tasks/[id]/path-claim',
-      outcome: 'deferred',
-      reason: 'paths overlap an active claim held by another task',
-      workspaceId: currentTask.workspaceId,
-      missionId: currentTask.missionId,
-      taskId: currentTask.id,
-      callerOrigin,
-      detail: {
-        blockingTaskId: conflict.blockingTaskId,
-        blockingPath: conflict.blockingPath,
-        crossMission: isCrossMission,
-        deadlock: response.deadlock === true,
-      },
-    });
-
-    return NextResponse.json(response, { status: 409 });
-  }
-
-  const existingManifest = (currentTask.pathManifest as string[] | null) ?? [];
-  const existingSet = new Set(existingManifest);
-  const newPaths = paths.filter((p) => !existingSet.has(p));
-
-  if (newPaths.length === 0) {
-    return NextResponse.json({ claimed: true, pathManifest: existingManifest });
-  }
-
-  // Atomic append — see appendPathManifest for why this needs no CAS/retry.
-  const updatedManifest = await appendPathManifest(id, newPaths);
-  await insertClaims(currentTask.workspaceId, id, newPaths);
-  return NextResponse.json({ claimed: true, pathManifest: updatedManifest });
 }

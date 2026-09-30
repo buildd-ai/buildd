@@ -419,7 +419,7 @@ export async function loadArmStats(teamId: string, now = new Date()): Promise<Ma
   const since = new Date(now.getTime() - STATS_WINDOW_DAYS * 86_400_000).toISOString();
   const window = sql`a.assigned_at >= ${since}::timestamptz`;
   const poolJoin = (surface: PoolSurface) =>
-    sql`JOIN tier_pools p ON p.experiment_id = a.experiment_id AND p.team_id = ${teamId} AND p.surface = ${sql.raw(`'${surface}'`)}`;
+    sql`JOIN tier_pools p ON p.experiment_id = a.experiment_id AND p.team_id = ${teamId} AND p.surface = ${surface}`;
   const [agent, chat] = await Promise.all([
     db.execute(surfaceUnitsQuery('agent', poolJoin('agent'), window)),
     db.execute(surfaceUnitsQuery('chat', poolJoin('chat'), window)),
