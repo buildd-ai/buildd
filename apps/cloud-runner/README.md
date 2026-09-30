@@ -131,6 +131,10 @@ run with it unless `BUILDD_SERVER` is `localhost`, `127.0.0.1` or
 `host.docker.internal`, so a deployed Worker can never hand a real model key to
 a container. Without a key the model step is skipped and the script says so.
 
+Behind a TLS-inspecting proxy the model call fails inside the container with
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`: the image does not trust the proxy's CA.
+Everything up to the session start still runs and is checked.
+
 Knobs: `CLOUD_E2E_REUSE_BUILD=1` reuses an existing `next build`;
 `CLOUD_E2E_*_PORT` moves the ports; `RUN_TIMEOUT_S`, `READY_TIMEOUT_S`,
 `DISPATCH_TIMEOUT_S` bound the waits. The first run builds the runner image for

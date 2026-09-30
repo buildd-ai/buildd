@@ -242,7 +242,7 @@ export default function CloudflareSection({ teams }: Props) {
             onChange={(e) => setAccountId(e.target.value)}
             autoComplete="off"
             aria-label="Cloudflare account ID"
-            placeholder="Account ID (32 hex characters)"
+            placeholder="Account ID"
             className="w-full h-10 px-3 bg-surface text-sm font-mono"
           />
           <input
