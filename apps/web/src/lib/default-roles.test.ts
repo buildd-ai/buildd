@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'crypto';
+import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
 import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
@@ -240,6 +241,48 @@ describe('DEFAULT_ROLES', () => {
     expect(bySlug.researcher.model).toBe('sonnet');
     expect(bySlug.writer.model).toBe('sonnet');
     expect(bySlug.analyst.model).toBe('sonnet');
+  });
+
+  describe('Analyst analytics consumer tools', () => {
+    const role = () => bySlug.analyst;
+
+    it('uses grouped analytics and lifecycle tools with knowledge tools', () => {
+      for (const tool of ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn']) {
+        expect(role().allowedTools).toContain(tool);
+      }
+      expect(role().allowedTools).not.toContain('mcp__buildd__buildd');
+      expect(bySlug.builder.allowedTools).not.toContain('mcp__buildd__buildd_analytics');
+    });
+
+    it('advertises its declared tools from its configured URL with worker context', () => {
+      const config = role().mcpServers.buildd as { url: string };
+      const url = new URL(config.url);
+      url.searchParams.set('worker', 'test-worker');
+      const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
+      const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
+      for (const name of ['buildd_analytics', 'buildd_work']) expect(names).toContain(name);
+      for (const other of DEFAULT_ROLES.filter(r => r.slug !== 'analyst')) {
+        expect((other.mcpServers.buildd as { url: string }).url).toBe('https://buildd.dev/api/mcp');
+      }
+    });
+
+    it('documents aggregate metrics and narrower detail access', () => {
+      expect(role().content).toContain('get_manifest_coverage');
+      expect(role().content).toContain('get_path_claim_stats');
+      expect(role().content).toContain('family: "gate"');
+      expect(role().content).toContain('analytics:read');
+      expect(role().content).toMatch(/per-user/i);
+      expect(role().content).toContain('cost detail');
+    });
+
+    it('resyncs the previous unedited analyst prompt', () => {
+      expect(role().version).toBeGreaterThanOrEqual(2);
+      expect(role().supersededContentHashes).toHaveLength(1);
+      expect(planDefaultRoleResync([{
+        id: 'analyst-row', slug: 'analyst', source: 'system',
+        contentHash: role().supersededContentHashes[0], metadata: { defaultRoleVersion: 1 },
+      }])).toHaveLength(1);
+    });
   });
 
   it('no role defaults to `inherit` — model must be explicit for routing', () => {
