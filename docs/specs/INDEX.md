@@ -112,8 +112,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (1)
+## Draft (2)
 
+- [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-09-30
+  Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 
