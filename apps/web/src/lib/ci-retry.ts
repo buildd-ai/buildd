@@ -97,7 +97,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, { reason: 'after CI', iteration: displayIteration }),
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null, worker.prNumber ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -153,6 +153,7 @@ function buildRetryDescription(
   foreignCommitAuthor?: string,
   isFinalAttempt?: boolean,
   ciFailedJobId?: number | null,
+  prNumber?: number | null,
 ): string {
   // `gh run view <id> --log-failed` returns EMPTY output and exit 0 — it is not
   // a retention problem, the command simply does not produce the failed-step
@@ -177,6 +178,8 @@ gh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/${ciFailedJo
 \`\`\`${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
 `
     : '';
+
+  const prChecksCommand = prNumber ? `gh pr checks ${prNumber}` : 'gh pr checks';
 
   const foreignNote = foreignHeadSha
     ? `> **Note:** This CI failure was triggered by a commit from ${foreignCommitAuthor ? `@${foreignCommitAuthor}` : 'an external contributor'}, not the buildd agent. Your retry budget is **not consumed** by this attempt.\n\n`
@@ -217,6 +220,11 @@ ${logSection}## Instructions
 3. Fix the failing tests/build/lint issues
 4. Run the verification command locally before completing
 5. Push your fixes to the existing branch (the PR will auto-update)
+6. Confirm the PR's own checks are green: \`${prChecksCommand}\`. A local run, or a
+   type check of one file, is not enough: it does not run the checks that gate
+   the merge. Wait for the checks to finish. Report SUCCESS only when every
+   gating check passes. If any check is still red or failing, do not report
+   SUCCESS: say which check and why through \`error\`, or fix it.
 
 ${handoffSection}${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }

@@ -289,6 +289,31 @@ describe('PR reads', () => {
   });
 });
 
+describe('get_pr includeCiFailures in chat', () => {
+  it('is advertised, and reaches the real handler as a query flag on the PR route', async () => {
+    const calls: string[] = [];
+    const tools = buildChatTools({
+      ctx: { getWorkspaceId: async () => null, getLevel: async () => 'admin', surface: 'chat', authType: 'oauth' } as any,
+      allowWrites: false, authorizedToolCallIds: new Set(),
+      handle: handleBuilddAction,
+      makeApi: () => async (endpoint: string) => {
+        calls.push(endpoint);
+        return {
+          pr: { number: 5, title: 't', state: 'open', url: 'u' },
+          checks: { total: 1, passed: 0, failed: 1, pending: 0, state: 'failure', failedChecks: [{ name: 'build', url: 'j' }] },
+          reviews: { approved: 0, changesRequested: 0, pending: 0 },
+          ciFailures: [{ name: 'build', conclusion: 'failure', url: 'j', step: 'Test', excerpt: 'expected 3 received 4' }],
+        };
+      },
+    });
+    const t = tools.get_pr as any;
+    expect(t.inputSchema.safeParse({ prNumber: 5, includeCiFailures: true }).success).toBe(true);
+    const out = await t.execute({ prNumber: 5, includeCiFailures: true }, { toolCallId: 'c', messages: [] });
+    expect(calls[0]).toContain('includeCiFailures=true');
+    expect(JSON.stringify(out)).toContain('expected 3 received 4');
+  });
+});
+
 describe('get_pr in a pinned conversation', () => {
   it('uses the conversation workspace when the model names none', async () => {
     const seen: any[] = [];

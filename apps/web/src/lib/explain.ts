@@ -37,6 +37,7 @@ import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { deriveCiRedChains } from './ci-red-chain';
 import {
   buildStateBecause,
   buildConflictBecause,
@@ -412,6 +413,10 @@ async function viewForMission(missionId: string): Promise<{
     missionPr: integrationPr && integrationPr.state !== 'merged'
       ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
       : null,
+    ciRed: deriveCiRedChains(
+      (completion?.awaitingMergeDetails ?? []).filter(d => !d.closedUnsuperseded),
+      loaded,
+    ),
   };
 
   return {
@@ -616,6 +621,7 @@ async function viewForTask(taskId: string): Promise<{
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
+    ciRed: deriveCiRedChains(unmergedPr.filter(p => !p.closedUnsuperseded), family),
     completion: unmergedPr.length > 0 && !openAttempt
       ? {
           ok: false,

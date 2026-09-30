@@ -211,6 +211,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         prNumber: z.union([z.number().int().positive(), z.string()]),
         workspaceId: ws,
         includeComments: z.boolean().optional().describe('buildd\'s decision trail on the PR.'),
+        includeCiFailures: z.boolean().optional().describe('When CI is red: per failing check, the job, failing step and the last lines of its log. Use it to answer "why is CI red?" instead of sending the user to GitHub.'),
         fullBody: z.boolean().optional(),
       });
     case 'recall': {
@@ -318,7 +319,7 @@ const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
   list_prs: 'PRs buildd opened or adopted, one line each, flagged when one needs the user, is red, or an agent is already on it. Default: open ones, what needs the user first. state attention: only conflicts, failing CI and PRs waiting on the user. merged: recent merges. Closed PRs are never listed.',
-  get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos.',
+  get_pr: 'One PR: state, mergeability, CI, reviews, diff size and the agent\'s summary. Pass workspaceId (a list_prs row names it): one number can exist in several repos. When CI is red and the user asks why, pass includeCiFailures:true and answer from the failing job\'s log.',
   list_runners: 'The runners serving your workspaces: busy of total slots, whether each has a browser (needed for the visual audit) and is online now, branch and build, last heartbeat. With workspaceId it starts with the answer to "can a visual audit run there now?".',
   list_artifacts: 'Reports, analyses and other artifacts. review: true keeps the ones made for a person to read and drops captures (screenshots, diffs, uploads). initiativeId includes every child mission\'s artifacts.',
 };
