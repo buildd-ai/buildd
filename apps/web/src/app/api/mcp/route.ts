@@ -347,7 +347,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: mcpServerInstructions(accountLevel, toolSurface),
+      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes),
     }
   );
 
@@ -379,6 +379,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const required = requiredScopeForMcpTool(name, args as Record<string, unknown>);
         if (!required || !hasTokenScope(tokenScopes, required)) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
         if (tokenWorkspaceIds != null) {
+          const corpus = name === 'recall' ? args?.scope : p.corpus;
+          if ((name === 'recall' || (name === 'buildd_memory' && action === 'query_knowledge')) && (Array.isArray(corpus) ? corpus.includes('initiative') : corpus === 'initiative')) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Initiative knowledge is team-wide'})}],isError:true};
           const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
           if (!tokenWorkspaceAllowed(tokenWorkspaceIds, target)) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Workspace outside token restriction'})}],isError:true};
         }

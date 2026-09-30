@@ -413,3 +413,9 @@ test('standalone knowledge scopes cannot be bypassed with a help action', () => 
   expect(requiredScopeForMcpTool('buildd_missions', { action: 'manage_missions', params: { action: 'list' } })).toBe('tasks:read');
   expect(requiredScopeForMcpTool('buildd', { action: 'manage_secrets', params: { action: 'list' } })).toBe('secrets');
 });
+
+it('scoped sessions describe capabilities instead of legacy levels', () => {
+  const instructions = mcpServerInstructions('worker','groups',['analytics:read']);
+  expect(instructions).toContain('**Token scopes:** analytics:read');
+  expect(instructions).not.toContain('**Token level:**');
+});

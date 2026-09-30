@@ -189,14 +189,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 }
 
 /** The server `instructions` block sent on initialize. */
-export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy'): string {
+export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy', scopes?: readonly string[] | null): string {
   const tools = surface === 'groups'
-    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
+    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
     : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
   const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
   return `Buildd is a task coordination system for AI coding agents. ${tools}
 
-**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
+${scopes != null ? `**Token scopes:** ${scopes.join(', ') || 'none'} — explicit capabilities replace legacy level permissions.` : `**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin).`} A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
 
 **Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`;
 }
