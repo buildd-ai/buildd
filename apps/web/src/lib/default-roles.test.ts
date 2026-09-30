@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'crypto';
+import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
 import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
@@ -251,6 +252,18 @@ describe('DEFAULT_ROLES', () => {
       }
       expect(role().allowedTools).not.toContain('mcp__buildd__buildd');
       expect(bySlug.builder.allowedTools).not.toContain('mcp__buildd__buildd_analytics');
+    });
+
+    it('advertises its declared tools from its configured URL with worker context', () => {
+      const config = role().mcpServers.buildd as { url: string };
+      const url = new URL(config.url);
+      url.searchParams.set('worker', 'test-worker');
+      const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
+      const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
+      for (const name of ['buildd_analytics', 'buildd_work']) expect(names).toContain(name);
+      for (const other of DEFAULT_ROLES.filter(r => r.slug !== 'analyst')) {
+        expect((other.mcpServers.buildd as { url: string }).url).toBe('https://buildd.dev/api/mcp');
+      }
     });
 
     it('documents aggregate metrics and narrower detail access', () => {

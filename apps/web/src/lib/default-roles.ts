@@ -454,7 +454,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     isRole: true,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn'],
     canDelegateTo: ['researcher', 'writer'],
-    mcpServers: { buildd: BUILDD_MCP },
+    mcpServers: { buildd: { ...BUILDD_MCP, url: 'https://buildd.dev/api/mcp?tools=groups' } },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
     routing: {
       whenToUse: 'Pulls data, metrics or usage numbers by query or API and reports what they show, with the query, sample size and time range.',
