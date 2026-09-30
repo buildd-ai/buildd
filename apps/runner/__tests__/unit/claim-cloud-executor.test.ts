@@ -1,0 +1,79 @@
+/**
+ * BuilddClient.claimTask and the cloud executor marker (task bb423c8a):
+ * BUILDD_EXECUTOR is sent on the claim verbatim, and for `cloud` any
+ * credential field that arrives anyway is dropped before the worker manager
+ * can write it into a session config dir.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/claim-cloud-executor.test.ts
+ */
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { BuilddClient } from '../../src/buildd';
+import type { LocalUIConfig } from '../../src/types';
+
+const realFetch = globalThis.fetch;
+const realError = console.error;
+const realExecutor = process.env.BUILDD_EXECUTOR;
+
+function makeClient() {
+  return new BuilddClient({
+    projectsRoot: '/tmp',
+    builddServer: 'http://server.invalid',
+    apiKey: 'test-key',
+    maxConcurrent: 1,
+  } as LocalUIConfig);
+}
+
+/** A worker as an old or misbehaving server might return it: every credential field set. */
+function workerWithEveryCredential(): Record<string, unknown> {
+  const w: Record<string, unknown> = { id: 'w-1', taskId: 't-1', branch: 'b', task: { id: 't-1' } };
+  for (const f of CLAIM_CREDENTIAL_FIELDS) w[f] = `leaked-${f}`;
+  return w;
+}
+
+let sentBodies: any[];
+function respond(workers: unknown[]) {
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    sentBodies.push(JSON.parse(String(init.body)));
+    const body = JSON.stringify({ workers });
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  }) as any;
+}
+
+describe('claimTask executor marker', () => {
+  beforeEach(() => {
+    sentBodies = [];
+    console.error = () => {};
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+    if (realExecutor === undefined) delete process.env.BUILDD_EXECUTOR;
+    else process.env.BUILDD_EXECUTOR = realExecutor;
+  });
+
+  test('BUILDD_EXECUTOR=cloud is sent and every credential field is dropped', async () => {
+    process.env.BUILDD_EXECUTOR = 'cloud';
+    respond([workerWithEveryCredential()]);
+    const { workers } = await makeClient().claimTask(1, 'ws-1', 'r', 't-1');
+    expect(sentBodies[0].executor).toBe('cloud');
+    for (const f of CLAIM_CREDENTIAL_FIELDS) expect(workers[0][f]).toBeUndefined();
+    expect(JSON.stringify(workers)).not.toContain('leaked-');
+    expect(workers[0].id).toBe('w-1');
+  });
+
+  test('an unknown value is sent verbatim (the server refuses it), not dropped', async () => {
+    process.env.BUILDD_EXECUTOR = 'Cloud';
+    respond([]);
+    await makeClient().claimTask(1);
+    expect(sentBodies[0].executor).toBe('Cloud');
+  });
+
+  test('unset: no marker and the claim is untouched', async () => {
+    delete process.env.BUILDD_EXECUTOR;
+    respond([workerWithEveryCredential()]);
+    const { workers } = await makeClient().claimTask(1);
+    expect('executor' in sentBodies[0]).toBe(false);
+    expect(workers[0].serverApiKey).toBe('leaked-serverApiKey');
+  });
+});

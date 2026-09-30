@@ -332,6 +332,7 @@ mock.module('@buildd/core/model-tier-registry', () => ({
 }));
 
 import { POST } from './route';
+import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -2509,6 +2510,122 @@ describe('POST /api/workers/claim', () => {
     } else {
       delete process.env.ENCRYPTION_KEY;
     }
+  });
+
+  // Cloud executor (task bb423c8a): a runner in a cloud container declares
+  // `executor: 'cloud'` and must receive NO credential material. Same fixture
+  // as the serverApiKey/serverOauthToken tests above, which prove a host claim
+  // with this setup DOES get them.
+  describe('cloud executor claims carry no credentials', () => {
+    const setupTeamWithEveryCredential = () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        teamId: 'team-1',
+        maxConcurrentWorkers: 5,
+        type: 'user',
+        authType: 'api',
+        dailyCostLimitCents: 10000,
+        currentDailyCostCents: 0,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Test task',
+          dependsOn: [],
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+        },
+      ]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      // Every server-managed credential purpose the claim can deliver, plus a
+      // near-expiry claude_credential so the refresh lists would be non-empty.
+      mockSecretsFindMany.mockResolvedValue([
+        { id: 'oauth-secret-1', purpose: 'oauth_token', label: null },
+        { id: 'apikey-secret-1', purpose: 'anthropic_api_key', label: null },
+        { id: 'mcp-secret-1', purpose: 'mcp_credential', label: 'SOME_MCP_KEY' },
+        { id: 'claude-cred-1', purpose: 'claude_credential', tokenExpiresAt: new Date(Date.now() + 60_000) },
+      ]);
+      mockSecretsProviderGet.mockResolvedValue('decrypted-secret-value');
+    };
+
+    const withEncryptionKey = async (fn: () => Promise<void>) => {
+      const origKey = process.env.ENCRYPTION_KEY;
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      try { await fn(); } finally {
+        if (origKey !== undefined) process.env.ENCRYPTION_KEY = origKey;
+        else delete process.env.ENCRYPTION_KEY;
+      }
+    };
+
+    it('control: the same host claim does deliver credentials', async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner' },
+        }));
+        const data = await res.json();
+        expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+        expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
+      });
+    });
+
+    it("executor 'cloud': no credential field, nothing decrypted, no refresh list", async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', executor: 'cloud' },
+        }));
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.workers.length).toBe(1);
+        for (const field of CLAIM_CREDENTIAL_FIELDS) {
+          expect(data.workers[0][field]).toBeUndefined();
+        }
+        expect(data.pendingCredentialRefreshes).toBeUndefined();
+        // The decrypted value appears nowhere in the response body.
+        expect(JSON.stringify(data)).not.toContain('decrypted-secret-value');
+        // And nothing was decrypted in the first place.
+        expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+      });
+    });
+
+    it("executor 'host' is an ordinary claim", async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', executor: 'host' },
+        }));
+        const data = await res.json();
+        expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+      });
+    });
+
+    it.each([['Cloud'], ['cloud '], [''], [true], [{ kind: 'cloud' }]])(
+      'an unrecognised executor %p is refused (400), never treated as a host claim',
+      async (executor) => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          const res = await POST(createMockRequest({
+            headers: { Authorization: 'Bearer bld_test' },
+            body: { runner: 'test-runner', executor },
+          }));
+          expect(res.status).toBe(400);
+          expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+        });
+      },
+    );
   });
 
   it('attaches serverApiKey when an anthropic_api_key secret exists for the team', async () => {

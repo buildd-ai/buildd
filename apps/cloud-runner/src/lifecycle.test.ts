@@ -119,23 +119,47 @@ describe('isValidTaskId', () => {
 });
 
 describe('container env', () => {
-  test('minimal env with a placeholder model key and no GitHub token', () => {
+  test('minimal env with a placeholder model key, the cloud marker and no GitHub token', () => {
     const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' });
     expect(env).toEqual({
       BUILDD_SERVER: 'http://127.0.0.1:9',
       BUILDD_API_KEY: 'bld_test',
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
       BUILDD_DISABLE_AUTO_UPDATE: '1',
+      BUILDD_EXECUTOR: 'cloud',
     });
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
   });
 
+  test('security: no model or GitHub secret reaches the container, whatever the Worker holds', () => {
+    // Every secret the Worker could hold is in the source; only the runner's
+    // own API key may come out the other side.
+    const workerEnv = {
+      BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_runner_key',
+      DISPATCH_TOKEN: 'dispatch-secret', AI_GATEWAY_TOKEN: 'gw-secret',
+      AI_GATEWAY_ACCOUNT_ID: 'acct', AI_GATEWAY_ID: 'gw',
+      ANTHROPIC_DIRECT_API_KEY: 'sk-ant-direct-secret', ALLOW_DIRECT_ANTHROPIC: '1',
+      ANTHROPIC_API_KEY: 'sk-ant-real', ANTHROPIC_AUTH_TOKEN: 'oauth-real', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-real',
+      GH_TOKEN: 'ghs_real', GITHUB_TOKEN: 'ghs_real', ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic',
+      MODEL: 'm', PUSHER_KEY: 'pk',
+    };
+    const env = buildContainerEnv(workerEnv as never);
+    const values = Object.values(env).join('\n');
+    for (const secret of ['dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
+      expect(values).not.toContain(secret);
+    }
+    for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AI_GATEWAY_TOKEN', 'DISPATCH_TOKEN', 'ANTHROPIC_BASE_URL']) {
+      expect(key in env).toBe(false);
+    }
+    expect(env.ANTHROPIC_API_KEY).toBe(ANTHROPIC_API_KEY_PLACEHOLDER);
+    expect(env.BUILDD_EXECUTOR).toBe('cloud');
+  });
+
   test('passes optional settings through only when set', () => {
     const env = buildContainerEnv({
-      BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic', MODEL: '', PUSHER_KEY: 'pk',
+      BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', MODEL: '', PUSHER_KEY: 'pk',
     });
-    expect(env.ANTHROPIC_BASE_URL).toBe('https://gateway.example/anthropic');
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
   });
@@ -143,28 +167,6 @@ describe('container env', () => {
   test('refuses to build without a server or key (the runner would default to production)', () => {
     expect(() => buildContainerEnv({ BUILDD_API_KEY: 'k' })).toThrow(/BUILDD_SERVER/);
     expect(() => buildContainerEnv({ BUILDD_SERVER: 's' })).toThrow(/BUILDD_API_KEY/);
-  });
-
-  // Local end-to-end only (scripts/local-e2e.sh): a real model key for a
-  // container talking to a buildd on this machine. On Cloudflare the key is
-  // added at egress, so a real key in the env anywhere else is a mistake.
-  test('DEV_ANTHROPIC_API_KEY replaces the placeholder for a local buildd', () => {
-    for (const server of ['http://host.docker.internal:3217', 'http://localhost:3000', 'http://127.0.0.1:9']) {
-      const env = buildContainerEnv({ BUILDD_SERVER: server, BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: 'sk-ant-dev' });
-      expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-dev');
-    }
-  });
-
-  test('DEV_ANTHROPIC_API_KEY is refused for any other buildd', () => {
-    for (const server of ['https://buildd.dev', 'https://localhost.example.com', 'http://host.docker.internal.evil.example']) {
-      expect(() => buildContainerEnv({ BUILDD_SERVER: server, BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: 'sk-ant-dev' }))
-        .toThrow(/local testing only/);
-    }
-  });
-
-  test('an empty DEV_ANTHROPIC_API_KEY keeps the placeholder', () => {
-    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.dev', BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: '' });
-    expect(env.ANTHROPIC_API_KEY).toBe(ANTHROPIC_API_KEY_PLACEHOLDER);
   });
 
   test('command runs the image helper for exactly this task', () => {

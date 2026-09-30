@@ -26,7 +26,11 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkerAgent"] }],
 
-  // Plain vars. Secrets (wrangler secret put): DISPATCH_TOKEN, BUILDD_API_KEY.
+  // Plain vars. Secrets (wrangler secret put): DISPATCH_TOKEN, BUILDD_API_KEY,
+  // AI_GATEWAY_TOKEN, and for local development only ANTHROPIC_DIRECT_API_KEY
+  // (used only with the var ALLOW_DIRECT_ANTHROPIC=1; never on a deployed
+  // Worker). Egress vars: AI_GATEWAY_ACCOUNT_ID, AI_GATEWAY_ID. See README
+  // "Egress credentials".
   // BUILDD_SERVER has no default on purpose: set it per deployment
   // (dashboard, `--var`, or an env block). The Worker refuses to dispatch
   // without it, because the runner would otherwise fall back to production.

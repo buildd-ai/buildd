@@ -20,8 +20,10 @@
 #      task's final state in buildd.
 #
 # ANTHROPIC_API_KEY is optional and only passed through (a temp env file, mode
-# 600, deleted at exit) to the local Worker as DEV_ANTHROPIC_API_KEY, which the
-# Worker refuses unless BUILDD_SERVER is local. Without it the model call cannot
+# 600, deleted at exit) to the local Worker as ANTHROPIC_DIRECT_API_KEY with
+# ALLOW_DIRECT_ANTHROPIC=1, so the egress handler forwards model calls straight
+# to Anthropic instead of AI Gateway. The container itself never holds the key.
+# Without it the model call cannot
 # succeed, so the script asserts up to "claimed + worker started" and says the
 # model step was skipped.
 #
@@ -114,7 +116,7 @@ DISPATCH_TOKEN="e2e-$(openssl rand -hex 16)"
   echo "BUILDD_API_KEY=$E2E_RUNNER_KEY"
   echo "BUILDD_SERVER=http://host.docker.internal:$DEMO_APP_PORT"
   echo "CONTAINER_START_TIMEOUT_MS=600000"
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo "DEV_ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"; fi
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo "ALLOW_DIRECT_ANTHROPIC=1"; echo "ANTHROPIC_DIRECT_API_KEY=$ANTHROPIC_API_KEY"; fi
 } >"$DEV_ENV_FILE"
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then MODEL_STEP=1; echo "   ANTHROPIC_API_KEY set: the model step runs"; else MODEL_STEP=0; echo "   ANTHROPIC_API_KEY unset: model step will be skipped"; fi
 (cd "$CR_DIR" && exec bunx wrangler dev --port "$WORKER_PORT" --ip 127.0.0.1 --env-file "$DEV_ENV_FILE") >"$WRANGLER_LOG" 2>&1 &
