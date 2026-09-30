@@ -30,9 +30,11 @@ import {
   workers,
   workspaces,
   githubInstallations,
+  githubRepos,
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import {
   RELEASE_INVARIANT_CUTOFF,
   emptySnapshot,
@@ -132,8 +134,14 @@ export async function checkRemoteRef(
   }
 }
 
-async function resolveInstallationId(repo: string): Promise<number | null> {
-  const owner = repo.split('/')[0];
+/**
+ * The App installation that covers `owner`, by account login.
+ *
+ * Takes the OWNER, never a raw `workspaces.repo`: that column is a free-text
+ * URL, and splitting it on '/' yields `https:` — which matches no installation,
+ * so every caller silently skipped its check. Normalize first.
+ */
+async function resolveInstallationIdForOwner(owner: string): Promise<number | null> {
   if (!owner) return null;
   const rows = await db
     .select({ installationId: githubInstallations.installationId })
@@ -142,6 +150,9 @@ async function resolveInstallationId(repo: string): Promise<number | null> {
     .limit(1);
   return rows[0]?.installationId ?? null;
 }
+
+/** Why a wanted ref went unchecked — surfaced in the report, never swallowed. */
+export type RefSkipReason = 'no_repo' | 'no_installation';
 
 export interface ScanResult {
   snapshot: InvariantSnapshot;
@@ -503,10 +514,11 @@ export async function loadInvariantSnapshot(
     ...snapshot.tasks.map(t => t.workspaceId),
   ].filter(Boolean))];
   const workspaceRepo = new Map<string, string | null>();
+  const workspaceRepoFk = new Map<string, string>();
   if (workspaceIds.length > 0) {
     const rows = (await db.query.workspaces.findMany({
       where: inArray(workspaces.id, workspaceIds),
-      columns: { id: true, repo: true, gitConfig: true },
+      columns: { id: true, repo: true, githubRepoId: true, gitConfig: true },
     })) as Array<Record<string, any>>;
     for (const ws of rows) {
       const cfg = asRecord(ws.gitConfig);
@@ -518,13 +530,19 @@ export async function loadInvariantSnapshot(
         new Set(declared.length > 0 ? declared : FALLBACK_TRUNK),
       );
       workspaceRepo.set(ws.id, ws.repo ?? null);
+      if (ws.githubRepoId) workspaceRepoFk.set(ws.id, ws.githubRepoId);
     }
   }
 
   // ── Bounded remote-ref checks ─────────────────────────────────────────────
   // Only mission branches that a currently-open task PR is based on. A fleet
   // with no integration branches makes zero GitHub calls.
-  const wanted: Array<{ workspaceId: string; ref: string }> = [];
+  //
+  // The repo each ref lives in, in order of authority: the PR's own prUrl (a
+  // worker may open its PR in a repo other than its workspace's), then the
+  // workspace's github_repos FK (follows renames), then the free-text
+  // `workspaces.repo` normalized — a fallback only, never split raw.
+  const wanted: Array<{ workspaceId: string; ref: string; prRepo: string | null }> = [];
   const seenRef = new Set<string>();
   for (const w of snapshot.workers) {
     if (w.prNumber === null || w.mergedAt) continue;
@@ -533,25 +551,62 @@ export async function loadInvariantSnapshot(
     const key = remoteRefKey(w.workspaceId, base);
     if (seenRef.has(key)) continue;
     seenRef.add(key);
-    wanted.push({ workspaceId: w.workspaceId, ref: base });
+    wanted.push({ workspaceId: w.workspaceId, ref: base, prRepo: repoFullNameFromPrUrl(w.prUrl) });
+  }
+
+  const checked = wanted.slice(0, MAX_REMOTE_REF_CHECKS);
+  const fkById = new Map<string, { fullName: string; installationId: number }>();
+  const fkIds = [...new Set(checked.map(c => workspaceRepoFk.get(c.workspaceId)).filter((id): id is string => !!id))];
+  if (fkIds.length > 0) {
+    const rows = (await db
+      .select({
+        id: githubRepos.id,
+        fullName: githubRepos.fullName,
+        installationId: githubInstallations.installationId,
+      })
+      .from(githubRepos)
+      .innerJoin(githubInstallations, eq(githubRepos.installationId, githubInstallations.id))
+      .where(inArray(githubRepos.id, fkIds))) as Array<{ id: string; fullName: string; installationId: number }>;
+    for (const r of rows) fkById.set(r.id, { fullName: r.fullName, installationId: r.installationId });
   }
 
   const checkRef = deps?.checkRef ?? checkRemoteRef;
-  const installationCache = new Map<string, number | null>();
+  const ownerInstallation = new Map<string, number | null>();
+  const skipped: Array<{ workspaceId: string; ref: string; reason: RefSkipReason }> = [];
   let refsChecked = 0;
-  for (const { workspaceId, ref } of wanted.slice(0, MAX_REMOTE_REF_CHECKS)) {
-    const repo = workspaceRepo.get(workspaceId);
-    if (!repo || !repo.includes('/')) continue;
-    let installationId = installationCache.get(repo);
-    if (installationId === undefined) {
-      installationId = await resolveInstallationId(repo).catch(() => null);
-      installationCache.set(repo, installationId);
+  for (const { workspaceId, ref, prRepo } of checked) {
+    const fkId = workspaceRepoFk.get(workspaceId);
+    const fk = fkId ? fkById.get(fkId) : undefined;
+    const repo = prRepo ?? fk?.fullName ?? normalizeRepoFullName(workspaceRepo.get(workspaceId));
+    if (!repo) {
+      skipped.push({ workspaceId, ref, reason: 'no_repo' });
+      continue;
     }
-    if (!installationId) continue;
     const [owner, name] = repo.split('/');
+    let installationId: number | null =
+      fk && fk.fullName.toLowerCase() === repo.toLowerCase() ? fk.installationId : null;
+    if (!installationId) {
+      const cacheKey = owner.toLowerCase();
+      let cached = ownerInstallation.get(cacheKey);
+      if (cached === undefined) {
+        cached = await resolveInstallationIdForOwner(owner).catch(() => null);
+        ownerInstallation.set(cacheKey, cached);
+      }
+      installationId = cached;
+    }
+    if (!installationId) {
+      skipped.push({ workspaceId, ref, reason: 'no_installation' });
+      continue;
+    }
     const exists = await checkRef(installationId, owner, name, ref);
     snapshot.remoteBranchExists.set(remoteRefKey(workspaceId, ref), exists);
     refsChecked++;
+  }
+  if (skipped.length > 0) {
+    console.warn(
+      `[mission-invariants] ${skipped.length} mission base ref(s) could not be checked: ` +
+        skipped.map(s => `${s.workspaceId}#${s.ref} (${s.reason})`).join(', '),
+    );
   }
   if (wanted.length > MAX_REMOTE_REF_CHECKS) {
     console.warn(
@@ -568,6 +623,7 @@ export async function loadInvariantSnapshot(
       releases: snapshot.releases.length,
       notes: snapshot.notes.length,
       remoteRefs: refsChecked,
+      remoteRefsSkipped: skipped.length,
       baseMerges: snapshot.baseMerges.length,
     },
   };

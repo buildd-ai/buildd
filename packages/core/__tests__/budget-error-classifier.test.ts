@@ -116,3 +116,10 @@ describe('detector sync across runner call sites', () => {
     expect(CLAUDE_SESSION_LIMIT_PATTERN).toBe('hit your session');
   });
 });
+
+describe("runner's session cost cap wording", () => {
+  it("'Session cost cap reached' is a session cap, not a provider wall", () => {
+    expect(isSessionBudgetCapError('Session cost cap reached')).toBe(true);
+    expect(isBudgetExhaustionError('Session cost cap reached')).toBe(false);
+  });
+});

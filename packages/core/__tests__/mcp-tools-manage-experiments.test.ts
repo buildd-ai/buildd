@@ -140,6 +140,31 @@ describe('manage_experiments — admin dispatch', () => {
     expect(r.content[0].text).toContain('insufficient data');
   });
 
+  it('list shows enrolment health findings under the experiment they belong to', async () => {
+    const { api } = recordingApi({
+      experiments: [experiment({ status: 'running' }), experiment({ id: 'other', key: 'quiet' })],
+      health: { [EXP_ID]: [{ code: 'arm_never_drawn', severity: 'critical', arm: 'treatment', detail: 'arm treatment has a 50% share and 0 of 40 units' }] },
+    });
+    const r = await handleBuilddAction(api, 'manage_experiments', { action: 'list' }, ctx('worker'));
+    const out = r.content[0].text;
+    expect(out).toContain('CRITICAL arm_never_drawn: arm treatment has a 50% share and 0 of 40 units');
+    expect(out.indexOf('arm_never_drawn')).toBeLessThan(out.indexOf('quiet'));
+  });
+
+  it('readout appends enrolment health', async () => {
+    const { api } = recordingApi({
+      experiment: experiment(), policyVersion: 1,
+      health: [{ code: 'unit_concentration', severity: 'warning', arm: 'treatment', detail: 'one unit holds 80% of the treatment arm' }],
+      readout: {
+        minSamplePerArm: 30, verdict: 'insufficient_n', difference: null, inheritedExcluded: 0,
+        control: { n: 0, assigned: 0, pending: 0, cleanRate: null, cleanInterval: { lower: 0, upper: 1 }, servedRate: null },
+        treatment: { n: 0, assigned: 0, pending: 0, cleanRate: null, cleanInterval: { lower: 0, upper: 1 }, servedRate: null },
+      },
+    });
+    const r = await handleBuilddAction(api, 'manage_experiments', { action: 'readout', experimentId: EXP_ID }, ctx('admin'));
+    expect(r.content[0].text).toContain('Enrolment health:\n    ⚠ unit_concentration: one unit holds 80% of the treatment arm');
+  });
+
   it('get/update require a full experimentId', async () => {
     const { api } = recordingApi();
     await expect(handleBuilddAction(api, 'manage_experiments', { action: 'get', experimentId: '1111' }, ctx('admin'))).rejects.toThrow('experimentId');

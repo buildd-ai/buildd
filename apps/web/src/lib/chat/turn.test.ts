@@ -1126,3 +1126,85 @@ describe('routing receives the previous assistant text', () => {
   });
 });
 
+
+// ── the turn's wall clock (turn-deadline.ts) ─────────────────────────────────
+// A slow reasoning model used to spend the whole budget and end mid-thought:
+// the stream carried only an `abort` chunk, so the person saw the reply stop
+// with no words, and the "Stopped" note existed only in the database.
+describe('the turn\'s wall clock', () => {
+  /** A step that reasons and then stalls; it ends only when the turn's signal aborts (a real provider's fetch). */
+  const stalling = (signal?: AbortSignal) => ({
+    stream: new ReadableStream({
+      start(c) {
+        c.enqueue({ type: 'stream-start', warnings: [] });
+        c.enqueue({ type: 'reasoning-start', id: 'r' });
+        c.enqueue({ type: 'reasoning-delta', id: 'r', delta: 'Let me look at every workspace…' });
+        signal?.addEventListener('abort', () => c.error(signal.reason));
+      },
+    }),
+  });
+  const timing = (t: Partial<{ budgetMs: number; wrapUpMs: number; graceMs: number }>) => ({ timing: { budgetMs: 150, wrapUpMs: 10_000, graceMs: 100, ...t } });
+
+  it('a turn cut off by its time limit tells the person so in the stream, and saves the same note once', async () => {
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => stalling(o.abortSignal)) as any });
+    const { turn } = harness({ model, extraDeps: timing({}) });
+    const { res, text } = await turn(userMsg('what shipped this week?'));
+    expect(res.status).toBe(200);
+    expect(text).toContain('"type":"abort"');
+    expect(text).toContain('Stopped: this turn hit its time limit');
+    // The note comes before the abort, so the client renders it as text.
+    expect(text.indexOf('Stopped: this turn hit its time limit')).toBeLessThan(text.indexOf('"type":"abort"'));
+    const saved = lastAssistant();
+    expect(saved.parts.filter(p => p.type === 'text' && String(p.text).includes('time limit'))).toHaveLength(1);
+  });
+
+  it('the next question after a stopped turn still gets an answer', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => (calls++ === 0 ? stalling(o.abortSignal) : textStream('Here is what shipped.'))) as any });
+    const { turn } = harness({ model, extraDeps: timing({}) });
+    await turn(userMsg('what shipped this week?'));
+    const { text } = await turn(userMsg('just buildd, please'));
+    expect(text).toContain('Here is what shipped.');
+    expect(messages.filter(m => m.role === 'assistant')).toHaveLength(2);
+  });
+
+  it('a tool that ignores the abort cannot hold the turn open: the watchdog ends it and the turn is saved', async () => {
+    const model = new MockLanguageModelV4({ doStream: toolStream('call-h', 'list_tasks', {}) as any });
+    const { turn } = harness({ model, api: (_m, path) => (path === '/api/tasks' ? new Promise(() => {}) : {}), extraDeps: timing({ budgetMs: 100, graceMs: 100 }) });
+    const started = Date.now();
+    const { text } = await Promise.race([
+      turn(userMsg('what is in flight?')),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('turn hung past its deadline')), 3_000)),
+    ]);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(text).toContain('Stopped: this turn hit its time limit');
+    expect(lastAssistant().parts.some(p => p.type === 'text' && String(p.text).includes('time limit'))).toBe(true);
+  });
+
+  it('the deadline counts from the request: slow routing leaves the model less time, not more', async () => {
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => stalling(o.abortSignal)) as any });
+    const { turn } = harness({
+      model,
+      route: async () => { await new Promise(r => setTimeout(r, 200)); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: timing({ budgetMs: 300, graceMs: 2_000 }),
+    });
+    const started = Date.now();
+    await turn(userMsg('what shipped this week?'));
+    // Timed from the stream start it would end near 500ms.
+    expect(Date.now() - started).toBeLessThan(450);
+  });
+
+  it('past the wrap-up mark, the next step may not call a tool and is told to answer', async () => {
+    const seen: any[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: (async (o: any) => { seen.push(o); return seen.length === 1 ? toolStream('call-r', 'list_tasks', {}) : textStream('One task is in flight.'); }) as any,
+    });
+    const { turn } = harness({ model, extraDeps: timing({ budgetMs: 10_000, wrapUpMs: 0 }) });
+    const { text } = await turn(userMsg('what is in flight?'));
+    expect(text).toContain('One task is in flight.');
+    expect(seen).toHaveLength(2);
+    expect(seen[0].toolChoice?.type).not.toBe('none');
+    expect(seen[1].toolChoice).toEqual({ type: 'none' });
+    expect(JSON.stringify(seen[1].prompt)).toContain('Do not call any more tools');
+  });
+});

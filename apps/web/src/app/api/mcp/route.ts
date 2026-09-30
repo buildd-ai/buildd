@@ -27,16 +27,12 @@ import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
-import { workspaces, workers as workersTable, tasks, missionNotes } from "@buildd/core/db/schema";
+import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
-import {
-  appendPathManifest,
-  checkPathClaimConflict,
-  insertClaims,
-  registerWaiter,
-} from "@buildd/core/path-claim";
-import { WORKER_MESSAGE_CAP } from "@buildd/core/worker-message-format";
-import { isAdvisoryManifest } from "@buildd/core/path-overlap";
+import { checkPathClaim } from "@/lib/path-claim-check";
+import { gateCallerOrigin } from "@/lib/gate-ledger";
+import { enqueueWorkerMessage, type WorkerMessage } from "@buildd/core/worker-messages";
+import { WORKER_MSG_MAX_PER_WINDOW, consumeWorkerMsgRateLimit, workerMsgRetryAfterSeconds } from "@/lib/worker-message-rate-limit";
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -482,25 +478,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
 
-        const rawPaths = args?.paths;
-        if (!Array.isArray(rawPaths) || rawPaths.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "paths must be a non-empty array of strings." }],
-            isError: true,
-          };
-        }
-        const paths = rawPaths as string[];
-
-        // Wildcard claims are not supported — '**' is advisory-only.
-        // Shares isAdvisoryManifest with the path-claim route and the authoring gate.
-        if (isAdvisoryManifest(paths)) {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ error: "Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks." }) }],
-            isError: true,
-          };
-        }
-
-        // Resolve taskId from the worker row
+        // Resolve taskId from the worker row; everything after that is the
+        // shared implementation (lib/path-claim-check.ts), same as REST.
         const workerRow = await db.query.workers.findFirst({
           where: eq(workersTable.id, workerId),
           columns: { taskId: true },
@@ -511,108 +490,27 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             isError: true,
           };
         }
-        const taskId = workerRow.taskId;
 
-        const mcpTask = await db.query.tasks.findFirst({
-          where: eq(tasks.id, taskId),
-          columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
+        const outcome = await checkPathClaim({
+          taskId: workerRow.taskId,
+          paths: args?.paths,
+          surface: 'mcp:check_path_claim',
+          callerOrigin: gateCallerOrigin({ workerId }),
         });
-        if (!mcpTask) {
-          return {
-            content: [{ type: "text" as const, text: "Task not found." }],
-            isError: true,
-          };
+
+        switch (outcome.kind) {
+          case 'invalid_paths':
+          case 'bad_status':
+            return { content: [{ type: "text" as const, text: outcome.error }], isError: true };
+          case 'wildcard':
+            return { content: [{ type: "text" as const, text: JSON.stringify({ error: outcome.error }) }], isError: true };
+          case 'not_found':
+            return { content: [{ type: "text" as const, text: "Task not found." }], isError: true };
+          case 'conflict':
+            return { content: [{ type: "text" as const, text: JSON.stringify(outcome.body) }] };
+          case 'claimed':
+            return { content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: outcome.pathManifest }) }] };
         }
-        if (!['pending', 'assigned', 'in_progress'].includes(mcpTask.status)) {
-          return {
-            content: [{ type: "text" as const, text: `Cannot claim paths for a task with status "${mcpTask.status}".` }],
-            isError: true,
-          };
-        }
-
-        // Check active path_claims rows for conflicts (workspace-scoped).
-        // Held locks live in path_claims, not inferred from tasks.pathManifest.
-        const conflict = await checkPathClaimConflict(
-          mcpTask.workspaceId,
-          taskId,
-          paths,
-        );
-
-        if (conflict) {
-          const blocker = await db.query.tasks.findFirst({
-            where: eq(tasks.id, conflict.blockingTaskId),
-            columns: { id: true, title: true, missionId: true },
-          });
-
-          // Auto-register as waiter (deadlock check included)
-          const waiterResult = await registerWaiter(
-            conflict.blockingTaskId,
-            taskId,
-            conflict.blockingPath,
-            mcpTask.workspaceId,
-          );
-
-          const isCrossMission =
-            blocker?.missionId !== null && blocker?.missionId !== undefined &&
-            mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
-            blocker?.missionId !== mcpTask.missionId;
-
-          const hasDeadlock = 'deadlock' in waiterResult && waiterResult.deadlock;
-
-          let message = isCrossMission
-            ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
-            : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
-
-          if (hasDeadlock) {
-            message += ` DEADLOCK DETECTED: A circular wait cycle exists (${waiterResult.cycle.length} tasks involved). A waiter will never be notified. You must either: (1) cancel this task and retry later, (2) have the blocking task cancel, or (3) use mission-level maxConcurrentTasks=1 to serialize conflicting tasks.`;
-          }
-
-          const result: Record<string, unknown> = {
-            claimed: false,
-            blockingTaskId: conflict.blockingTaskId,
-            blockingTaskTitle: blocker?.title ?? null,
-            blockingMissionId: blocker?.missionId ?? null,
-            message,
-          };
-
-          if (hasDeadlock) {
-            result.deadlock = true;
-            result.cycle = waiterResult.cycle;
-            // Post a warning for human resolution (best-effort)
-            if (mcpTask.missionId) {
-              try {
-                await db.insert(missionNotes).values({
-                  missionId: mcpTask.missionId,
-                  taskId: taskId,
-                  authorType: 'system',
-                  type: 'warning',
-                  title: 'Deadlock detected in path claims',
-                  body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
-                  status: 'open',
-                });
-              } catch { /* non-fatal */ }
-            }
-          }
-
-          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-        }
-
-        const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
-        const existingSet = new Set(existingManifest);
-        const newPaths = paths.filter((p) => !existingSet.has(p));
-
-        if (newPaths.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: existingManifest }) }],
-          };
-        }
-
-        // Atomic append — see appendPathManifest for why this needs no CAS/retry.
-        const updatedManifest = await appendPathManifest(taskId, newPaths);
-        await insertClaims(mcpTask.workspaceId, taskId, newPaths);
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
-        };
       } else if (name === "send_worker_message") {
         // Requires worker or admin token — trigger tokens don't run agent work
         if (accountLevel === 'trigger') {
@@ -708,7 +606,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Resolve recipient task
         const recipientTask = await db.query.tasks.findFirst({
           where: eq(tasks.id, recipientTaskId),
-          columns: { id: true, workspaceId: true, status: true, context: true },
+          columns: { id: true, workspaceId: true, status: true },
         });
         if (!recipientTask) {
           return {
@@ -736,54 +634,29 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
 
-        // Rate limit: max 5 messages per sender per minute per recipient task.
-        // Counter stored in sender's task context to avoid a new table.
+        // Rate limit: max 5 messages per sender per minute per recipient task,
+        // counted in the sender's task context. Check + increment is one
+        // atomic UPDATE — never a whole-context write-back.
         const nowMs = Date.now();
-        const RATE_WINDOW_MS = 60_000;
-        const MAX_PER_WINDOW = 5;
-
-        const senderCtx = (senderTask.context ?? {}) as Record<string, unknown>;
-        const rateData = (senderCtx.workerMsgRateLimit ?? {}) as {
-          windowStart?: number;
-          counts?: Record<string, number>;
-        };
-
-        let windowStart = rateData.windowStart ?? 0;
-        let counts = (rateData.counts ?? {}) as Record<string, number>;
-
-        if (nowMs - windowStart > RATE_WINDOW_MS) {
-          windowStart = nowMs;
-          counts = {};
-        }
-
-        const currentCount = counts[recipientTaskId] ?? 0;
-        if (currentCount >= MAX_PER_WINDOW) {
-          const retryAfter = Math.ceil((windowStart + RATE_WINDOW_MS - nowMs) / 1000);
+        const allowed = await consumeWorkerMsgRateLimit(senderTaskId, recipientTaskId, nowMs);
+        if (!allowed) {
           return {
             content: [{
               type: "text" as const,
               text: JSON.stringify({
                 error: 'rate_limited',
-                message: `Max ${MAX_PER_WINDOW} messages per minute to this recipient.`,
-                retryAfter,
+                message: `Max ${WORKER_MSG_MAX_PER_WINDOW} messages per minute to this recipient.`,
+                retryAfter: workerMsgRetryAfterSeconds(senderTask.context, nowMs),
               }),
             }],
             isError: true,
           };
         }
 
-        // Increment rate limit counter on sender task context
-        counts[recipientTaskId] = currentCount + 1;
-        await db
-          .update(tasks)
-          .set({ context: { ...senderCtx, workerMsgRateLimit: { windowStart, counts } } })
-          .where(eq(tasks.id, senderTaskId));
-
-        // Build structured message envelope
         const messageId = crypto.randomUUID();
-        const workerMessage = {
+        const workerMessage: WorkerMessage = {
           id: messageId,
-          type: msgType,
+          type: msgType as WorkerMessage['type'],
           fromTaskId: senderTaskId,
           fromWorkerId: workerId,
           sentAt: new Date().toISOString(),
@@ -791,23 +664,16 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           body: msgBody,
         };
 
-        // Deliver: append to recipient task's pendingWorkerMessages in context.
-        // Served by the recipient worker's next PATCH update_progress call, which
-        // returns them as pendingMessages[]; the MCP update_progress handler
-        // renders them and acks by id. Capped like every other producer —
-        // messages now survive until acked, so an unbounded queue would grow.
-        const recipientCtx = (recipientTask.context ?? {}) as Record<string, unknown>;
-        const queuedMsgs = Array.isArray(recipientCtx.pendingWorkerMessages)
-          ? [...(recipientCtx.pendingWorkerMessages as unknown[]), workerMessage]
-          : [workerMessage];
-        const pendingMsgs = queuedMsgs.length > WORKER_MESSAGE_CAP
-          ? queuedMsgs.slice(-WORKER_MESSAGE_CAP)
-          : queuedMsgs;
-
-        await db
-          .update(tasks)
-          .set({ context: { ...recipientCtx, pendingWorkerMessages: pendingMsgs } })
-          .where(eq(tasks.id, recipientTaskId));
+        // Deliver via the shared atomic jsonb append (capped), the same path
+        // REST and releaseAndNotify use. Served by the recipient's next
+        // update_progress check-in and removed only when acked by id.
+        const delivered = await enqueueWorkerMessage(recipientTaskId, workerMessage);
+        if (!delivered) {
+          return {
+            content: [{ type: "text" as const, text: `Recipient task ${recipientTaskId} not found.` }],
+            isError: true,
+          };
+        }
 
         return {
           content: [{

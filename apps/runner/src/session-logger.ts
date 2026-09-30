@@ -58,7 +58,7 @@ import type { ClaimDiagnosticReason, ClaimDiagnostics } from '@buildd/shared';
 
 export interface ClaimLogEntry {
   ts: number;
-  event: 'claim_attempt' | 'claim_success' | 'claim_empty' | 'claim_rejected';
+  event: 'claim_attempt' | 'claim_success' | 'claim_empty' | 'claim_rejected' | 'claim_idle';
   slotsRequested: number;
   workersClaimed: number;
   diagnosticReason?: ClaimDiagnosticReason;
@@ -79,6 +79,11 @@ export interface ClaimLogEntry {
   /** Candidate-window sizes: a deferral count is unreadable without them. */
   pendingTasks?: number;
   matchedTasks?: number;
+  /** claim_idle: idle polls in the current streak, and when it began (ms). */
+  idlePolls?: number;
+  idleSince?: number;
+  /** claim_idle: idle polls since the previous claim_idle line. */
+  pollsSinceLastSummary?: number;
 }
 
 

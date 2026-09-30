@@ -1176,8 +1176,8 @@
           ${entries.length === 0 ? '<div style="color: var(--text-muted); font-size: 12px;">No claim activity</div>' : `
           <div class="claim-timeline">
             ${entries.map(e => {
-              const color = e.event === 'claim_success' ? 'var(--success)' : e.event === 'claim_empty' ? 'var(--text-muted)' : 'var(--error)';
-              const label = e.event === 'claim_success' ? `claimed ${e.workersClaimed}/${e.slotsRequested}${e.taskId ? ' (' + e.taskId.slice(0, 8) + ')' : ''}` : e.diagnosticReason || e.event;
+              const color = e.event === 'claim_success' ? 'var(--success)' : (e.event === 'claim_empty' || e.event === 'claim_idle') ? 'var(--text-muted)' : 'var(--error)';
+              const label = e.event === 'claim_success' ? `claimed ${e.workersClaimed}/${e.slotsRequested}${e.taskId ? ' (' + e.taskId.slice(0, 8) + ')' : ''}` : e.event === 'claim_idle' ? `idle: ${e.idlePolls} poll${e.idlePolls === 1 ? '' : 's'} since ${new Date(e.idleSince).toLocaleTimeString()}` : e.diagnosticReason || e.event;
               return `<div class="claim-entry"><div class="c-dot" style="background:${color}"></div><div class="c-time">${formatTime(e.ts)}</div><span>${esc(label)}</span></div>`;
             }).join('')}
           </div>`}
