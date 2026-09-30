@@ -228,7 +228,7 @@ describe('multi-step cost', () => {
     await send(userMsg('what notes?'));
     expect(ledger[0]?.costUsd).toBeCloseTo(0.012, 10);
     expect(receipts[0]?.costUsd).toBeCloseTo(0.012, 10);
-    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.012, 10);
+    expect(lastAssistant().usage?.costUsd).toBeCloseTo(0.012, 10);
   });
 
   it('estimates a step that reported no cost from that step\'s own usage', async () => {
