@@ -414,8 +414,10 @@ The prompt-injection tests run with *Allow* on and still get a card.
 The limits on each turn:
 
 - **Steps:** at most 8 model steps (`stopWhen: isStepCount(8)`).
-- **Writes:** at most one approval card open per turn. A second write waits for
-  the first to be answered.
+- **Writes:** one approval card per turn, one row per write, at most 8 rows
+  (`APPROVAL_ROW_CAP`). A write past the cap is "not proposed yet" and the model
+  proposes it after the card is answered. An admin write's card and a new
+  mission's draft stand alone: any other write that turn waits.
 - **Wall clock:** a 120s budget per turn, counted from the request, inside the
   route's `maxDuration` (`lib/chat/turn-deadline.ts`). Past 85s a step may not
   call a tool and is told to answer with what it has. When the budget runs out

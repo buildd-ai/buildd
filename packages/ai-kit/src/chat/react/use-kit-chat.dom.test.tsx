@@ -168,6 +168,45 @@ describe('useKitChat end to end', () => {
     expect($('[data-testid="kit-approval"]')!.getAttribute('data-state')).toBe('done');
   });
 
+  it('three writes are one card with three rows; one Confirm sends one answer, and an unchecked row does not run', async () => {
+    const three = {
+      stream: convertArrayToReadableStream([
+        { type: 'stream-start', warnings: [] },
+        ...['A', 'B', 'C'].map((t, i) => ({ type: 'tool-call', toolCallId: `w${i + 1}`, toolName: 'create_note', input: JSON.stringify({ title: t }) })),
+        finish('tool-calls'),
+      ]),
+    };
+    const turn = makeTurn([three, textStream('Added two.')]);
+    const bodies: unknown[] = [];
+    function RowsApp() {
+      const chat = kit.useKitChat({
+        api: '/api/chat/c-1', id: 'c-1',
+        fetch: (async (_url: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return turn.run({ body: JSON.parse(String(init.body)), userId: 'u-1', conversationId: 'c-1' }); }) as never,
+      });
+      return h('div', null,
+        h(kit.ChatThread, { messages: chat.messages, status: chat.status, onApprovalResponse: chat.respond }),
+        h('span', { 'data-testid': 'status' }, chat.status),
+        h(kit.ChatComposer, { busy: chat.busy, onSend: (t: string) => { void chat.send(t); } }));
+    }
+    await act(async () => { root.render(h(RowsApp)); });
+    await sendText('add A, B and C');
+    await waitFor(() => !!$('[data-testid="kit-approval-rows"][data-state="awaiting"]') && $('[data-testid="status"]')!.textContent === 'ready');
+    expect(container.querySelectorAll('[data-testid="kit-approval-rows"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="kit-approval"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="kit-approval-row"]')).toHaveLength(3);
+    await act(async () => { container.querySelectorAll<HTMLInputElement>('[data-testid="kit-approval-row-check"]')[1].click(); });
+    expect($('[data-testid="kit-approval-confirm"]')!.textContent).toBe('Confirm 2');
+    await act(async () => { $('[data-testid="kit-approval-confirm"]')!.click(); });
+    await waitFor(() => !!container.textContent?.includes('Added two.') && $('[data-testid="status"]')!.textContent === 'ready');
+    expect(created).toEqual(['A', 'C']);
+    // One message, then exactly one continuation carrying every row's answer.
+    expect(bodies).toHaveLength(2);
+    const answered = ((bodies[1] as { message: { parts: Array<{ state?: string; approval?: { approved?: boolean } }> } }).message.parts)
+      .filter(p => p.state === 'approval-responded').map(p => p.approval?.approved);
+    expect(answered).toEqual([true, false, true]);
+    expect([...container.querySelectorAll<HTMLElement>('[data-testid="kit-approval-row"]')].map(r => r.dataset.outcome)).toEqual(['ran', 'discarded', 'ran']);
+  });
+
   it('a refusal (409 no_key) lands in unavailable for the setup card', async () => {
     await act(async () => { root.render(h(App, { turn: makeTurn([], { key: null }) })); });
     await sendText('hi');

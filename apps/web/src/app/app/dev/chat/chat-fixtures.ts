@@ -12,7 +12,7 @@ import { encodeApprovalPreview, type ChatApprovalPreview, type ChatToolPermissio
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 import { backfillSteps, mergeStepParts } from '@/lib/chat/thinking-steps';
-import { ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
+import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
 
 /** The card `watch` gets without an allow (lib/chat/previews.ts builds the real one). */
 const WATCH_PREVIEW: ChatApprovalPreview = {
@@ -238,8 +238,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
 
 /** A visual review moment as mission-events.ts posts it: the same words and data. */
 const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
@@ -250,6 +250,30 @@ const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model:
 export function isChatFixtureState(v: string | null | undefined): v is ChatFixtureState {
   return !!v && (CHAT_FIXTURE_STATES as string[]).includes(v);
 }
+
+/** Follow-up tasks the organizer proposed in one turn: one card, a row each. */
+const FOLLOW_UPS = [
+  'Add currency to invoice PDFs',
+  'Show the charged currency on receipts and refund emails, including the FX rate snapshotted at issue',
+  'Backfill currency on historical invoices',
+  'Round per line in the ledger export',
+  'Add JPY and KRW to the e2e currency suite',
+  'Document the rounding policy for support',
+  'Alert when the rates service is stale for more than an hour',
+  'Remove the USD-only guard from checkout',
+  'Let finance pick the reporting currency',
+];
+const taskPreview = (title: string, i: number): ChatApprovalPreview => ({
+  v: 1, verb: 'New task in',
+  target: { kind: 'mission', id: MISSION_ID, label: 'Multi-currency invoices', workspaceId: WS.id },
+  changes: [{ label: 'Title', before: null, after: title }, { label: 'Brief', before: null, after: 'A follow-up from the currency review.' }],
+  fingerprint: `fixture-${i}`,
+});
+const followUp = (title: string, i: number, over: Partial<ChatToolPart> = {}) => call('create_task', { title, description: 'A follow-up from the currency review.', missionId: MISSION_ID }, undefined, {
+  state: 'approval-requested',
+  ...over,
+  approval: { id: `approval-row-${i}`, requestReason: encodeApprovalPreview(taskPreview(title, i)), ...over.approval } as ChatToolPart['approval'],
+});
 
 export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[]; title: string | null; status: 'ready' | 'streaming' | 'submitted' } {
   pseq = 0;
@@ -294,6 +318,38 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
             approval: { id: 'approval-2', approved: false, isAutomatic: true, reason: ONE_CARD_PER_TURN_REASON },
           }),
           { type: 'text', text: 'Filed the mission. Want the PDF task too, once you’ve seen it?' },
+        ], 2400)],
+      };
+    case 'rows':
+    case 'rows-full': {
+      // Several writes in one turn: one card, a row each. Past the cap the
+      // rest are "not proposed yet", for after this card.
+      const n = state === 'rows' ? 3 : APPROVAL_ROW_CAP;
+      return {
+        title: 'Multi-currency invoices', status: 'ready',
+        messages: [...explore(), agent('m4', 4, [
+          { type: 'text', text: state === 'rows' ? 'Three follow-ups, one card.' : 'Here are eight; the ninth after you answer.' },
+          ...FOLLOW_UPS.slice(0, n).map((t, i) => followUp(t, i)),
+          ...(state === 'rows-full'
+            ? [call('create_task', { title: FOLLOW_UPS[n], missionId: MISSION_ID }, undefined, {
+              state: 'output-denied',
+              approval: { id: `approval-row-${n}`, approved: false, isAutomatic: true, reason: ROW_CAP_REASON },
+            })]
+            : []),
+        ], 2400)],
+      };
+    }
+    case 'rows-done':
+      // Answered: two ran, one changed since the card was shown, one unchecked.
+      return {
+        title: 'Multi-currency invoices', status: 'ready',
+        messages: [...explore(), agent('m4', 4, [
+          { type: 'text', text: 'Four follow-ups, one card.' },
+          followUp(FOLLOW_UPS[0], 0, { state: 'output-available', approval: { id: 'approval-row-0', approved: true }, output: { data: 'Filed', summary: 'filed', objects: [taskRef] } }),
+          followUp(FOLLOW_UPS[1], 1, { state: 'output-available', approval: { id: 'approval-row-1', approved: true }, output: { data: 'Error: nothing changed: Multi-currency invoices changed since the card was shown. Show the user the current state and ask again.', summary: 'changed', objects: [] } }),
+          followUp(FOLLOW_UPS[2], 2, { state: 'output-denied', approval: { id: 'approval-row-2', approved: false, reason: 'Unchecked by the user' } }),
+          followUp(FOLLOW_UPS[3], 3, { state: 'output-available', approval: { id: 'approval-row-3', approved: true }, output: { data: 'Filed', summary: 'filed', objects: [] } }),
+          { type: 'text', text: 'Filed two. The receipts task changed under us; want it again as it stands now?' },
         ], 2400)],
       };
     case 'confirmed':
