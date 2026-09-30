@@ -34,6 +34,8 @@ type ClaimedTask = { id: string; workspaceId: string };
 export async function attachServerManagedSecrets(
   claimedWorkers: ClaimTasksResponse['workers'],
   accountId: string,
+  /** Workers whose agent model endpoint won (./agent-endpoint-injection): no Anthropic key or seat for them. */
+  endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (claimedWorkers.length === 0 || !process.env.ENCRYPTION_KEY) return;
   try {
@@ -78,8 +80,11 @@ export async function attachServerManagedSecrets(
             (a.healthStatus === 'revoked' ? 1 : 0) - (b.healthStatus === 'revoked' ? 1 : 0) ||
             (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0];
 
-      const apiKeySecret = pickBest('anthropic_api_key');
-      const oauthSecret = pickBest('oauth_token');
+      // The endpoint is the only model credential for its workers; MCP secrets
+      // below are not model credentials and are still delivered.
+      const endpointWon = endpointWorkers.has(cw.id);
+      const apiKeySecret = endpointWon ? undefined : pickBest('anthropic_api_key');
+      const oauthSecret = endpointWon ? undefined : pickBest('oauth_token');
 
       const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
         apiKeySecret ? provider.get(apiKeySecret.id) : null,
@@ -182,9 +187,12 @@ export async function attachCodexCredentials(
 export async function attachClaudeCredentials(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  /** Workers whose agent model endpoint won: no Claude token for them. */
+  endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (!process.env.ENCRYPTION_KEY) return;
   for (const cw of claimedWorkers) {
+    if (endpointWorkers.has(cw.id)) continue;
     const task = claimedTasks.find(t => t.id === cw.taskId);
     // Only inject for Claude-backend tasks; Codex tasks already handled above.
     if ((task as any)?.backend === 'codex') continue;
@@ -228,9 +236,16 @@ export async function attachClaudeCredentials(
 export async function attachPendingCredentialRefreshes(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  /**
+   * Workers whose agent model endpoint won: no per-worker list, so the runner
+   * never wires them to a Claude credential. The top-level account list still
+   * announces the team's credentials for the broker to keep fresh.
+   */
+  endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (!process.env.ENCRYPTION_KEY) return;
   for (const cw of claimedWorkers) {
+    if (endpointWorkers.has(cw.id)) continue;
     const task = claimedTasks.find(t => t.id === cw.taskId);
     const wsId = task?.workspaceId;
     const teamId = (task as any)?.workspace?.teamId;
