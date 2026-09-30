@@ -275,6 +275,14 @@ mock.module('./explicit-task-exclusion', () => ({
   stampLastClaimAttempt: mockStampLastClaimAttempt,
 }));
 
+// Role-env pre-filter + injection (own tests in role-env-injection.test.ts).
+// Here only the wiring: a gap the pre-filter reports defers the task.
+const mockRunRoleEnvPreFilter = mock((_tasks: any, _accountId: string) => Promise.resolve(new Map<string, any>()));
+mock.module('./role-env-injection', () => ({
+  runRoleEnvPreFilter: mockRunRoleEnvPreFilter,
+  attachRoleEnvSecrets: async () => {},
+}));
+
 // Model-routing experiment glue. The real module is exercised against rendered
 // SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
 // only the call-site wiring is under test. Default: no running experiment.
@@ -6835,6 +6843,30 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.taskExclusion.code).toBe('mission_concurrent');
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
+  });
+
+  it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'mailer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map([['task-1', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] }]]));
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.deferrals.role_env_unsatisfied).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('role_env_unsatisfied');
+    expect(data.diagnostics.taskExclusion.detail).toContain('SERVICE_API_KEY, TENANT_ID');
+    expect(data.diagnostics.taskExclusion.detail).toContain('mailer');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'role_env_unsatisfied');
+    expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
+  });
+
+  it('a task with no role env gap is claimed as before', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'reviewer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map());
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
   });
 
   it('a Codex task the caller cannot run names capability_mismatch', async () => {

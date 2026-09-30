@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
-import { resolveRoleEnv, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
+import { resolveRoleEnv, unmetRoleEnv, RoleEnvGapLog, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -681,6 +681,9 @@ export class WorkerManager {
   // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
   // the affected account or tenant so other contexts keep claiming.
   private contextBreaker = new ContextBreaker();
+  // Distinct role-env gaps this runner has started workers with — one warning
+  // per gap, and listed in getInternalState (/api/debug/internals).
+  private roleEnvGapLog = new RoleEnvGapLog();
   // workerId → auth context the worker was started under, for breaker routing on error.
   private workerAuthContexts = new Map<string, string>();
   // workerId → team cache key, so an auth failure can invalidate the right
@@ -928,6 +931,10 @@ export class WorkerManager {
       // that only shows the global flag answers "healthy" with false authority.
       // snapshot() prunes expired keys, so anything listed here is live.
       contextBreaker: this.contextBreaker.snapshot(),
+      // Role env vars declared but unmet on workers this runner started. The
+      // server now defers tasks whose gap it can see (claim role_env_unsatisfied),
+      // so an entry here means a gap only the runner could see.
+      roleEnvGaps: this.roleEnvGapLog.snapshot(),
       adaptiveTimeout: {
         currentMs: this.adaptiveStaleTimeout,
         recentCycleTimes: cycleTimes,
@@ -3271,17 +3278,26 @@ export class WorkerManager {
       // independently of the packaged R2 bundle (see resolveWorkerRoleEnv).
       if (worker.roleConfig || worker.roleEnvSecrets || worker.roleEnvMissing) {
         try {
-          const { resolved: roleEnv, missing } = await this.resolveWorkerRoleEnv(worker);
+          const { resolved: roleEnv, missing: declaredMissing } = await this.resolveWorkerRoleEnv(worker);
           Object.assign(cleanEnv, roleEnv);
           const roleLabel = worker.roleConfig?.slug ?? worker.roleInstructions?.slug ?? 'role';
           console.log(`[Worker ${worker.id}] Resolved ${Object.keys(roleEnv).length} role env var(s) for ${roleLabel}`);
+          // Count what this runner supplies itself before calling it missing:
+          // the runner's BUILDD_API_KEY and the mcpSecrets (both reach the MCP
+          // header expansion below). Every default role declares BUILDD_API_KEY,
+          // which the server's list cannot see as satisfied.
+          const missing = unmetRoleEnv(declaredMissing, {
+            ...cleanEnv,
+            ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
+            ...(worker.mcpSecrets ?? {}),
+          });
           if (missing.length > 0) {
             // A role that declares a requirement and loses it is worse than one
             // that declares nothing — record it as a visible degraded milestone
             // instead of letting the session start looking identical to a role
-            // with no requirements at all.
+            // with no requirements at all. The log line is once per distinct gap.
             const label = `Role env degraded: ${roleLabel} missing ${missing.join(', ')}`;
-            console.warn(`[Worker ${worker.id}] ${label}`);
+            if (this.roleEnvGapLog.record(roleLabel, missing)) console.warn(`[Worker ${worker.id}] ${label}`);
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
           }
         } catch (err) {

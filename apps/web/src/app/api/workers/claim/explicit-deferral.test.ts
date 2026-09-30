@@ -8,7 +8,7 @@ const ALL: DeferralReason[] = [
   'connector_mismatch', 'subject_dead', 'path_overlap', 'advisory_manifest',
   'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
-  'runner_capability', 'codex_single_flight', 'oauth_parallelism',
+  'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -29,6 +29,10 @@ describe('describeExplicitDeferral', () => {
     expect(describeExplicitDeferral('advisory_manifest', { blockingPeer: 'peer-task' }).detail).toContain('peer-task');
     expect(describeExplicitDeferral('path_overlap', { blockingTaskId: 'blocker-1', prNumber: null }).detail).toContain('blocker-1');
     expect(describeExplicitDeferral('path_overlap', { prNumber: 12 }).detail).toContain('PR #12');
+    const env = describeExplicitDeferral('role_env_unsatisfied', { roleSlug: 'mailer', missing: ['A_KEY', 'B_ID'] }).detail;
+    expect(env).toContain('mailer');
+    expect(env).toContain('A_KEY, B_ID');
+    expect(env).toContain('role_env_secret');
   });
 
   it('points at force: true only where the override actually applies', () => {
@@ -36,7 +40,7 @@ describe('describeExplicitDeferral', () => {
       expect(describeExplicitDeferral(reason).detail).toContain('force: true');
     }
     // Cost, scope serialization, capacity walls and routing are not overridable.
-    for (const reason of ['mission_budget', 'advisory_manifest', 'budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable'] as const) {
+    for (const reason of ['mission_budget', 'advisory_manifest', 'budget_paused', 'codex_single_flight', 'runner_capability', 'provider_unavailable', 'role_env_unsatisfied'] as const) {
       expect(describeExplicitDeferral(reason).detail).not.toContain('force: true');
     }
   });
