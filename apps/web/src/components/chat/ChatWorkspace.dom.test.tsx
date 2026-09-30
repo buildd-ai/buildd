@@ -586,6 +586,18 @@ describe('thread scroll', () => {
     expect(scroller().scrollTop).toBe(1500 - ANCHOR_GAP);
   });
 
+  it('a card of rows anchors the same way: the reply after it lands at the top of the view', async () => {
+    await mount({ messages: fixtures.chatFixture('rows').messages, status: 'ready' });
+    await act(async () => { (q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement).click(); });
+    // Each row carries its approval id, so the reply after the card is found as for one card.
+    const done = fixtures.chatFixture('rows-done').messages.map((m: Msg) => (m.id === 'm4'
+      ? { ...m, parts: m.parts.map(p => (p.type === 'text' && p.text.startsWith('Filed two') ? { ...p, state: 'streaming' as const } : p)) }
+      : m));
+    place = el => (textOf(el, 'Filed two') ? { top: 1600, height: 80 } : null);
+    await render({ messages: done, status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1600 - ANCHOR_GAP);
+  });
+
   it('the reader scrolling after Confirm wins, and scrolling back to the bottom resumes following', async () => {
     await mount({ messages: fixtures.chatFixture('propose').messages, status: 'ready' });
     await act(async () => { (q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement).click(); });

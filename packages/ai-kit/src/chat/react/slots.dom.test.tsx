@@ -145,24 +145,25 @@ describe('ApprovalCard slots (0.8.0)', () => {
     expect($('[data-testid="kit-approval-confirm"]')).not.toBeNull();
   });
 
-  // 0.12.0: a write the server refused before any card was shown (the one-card
-  // cap) is never "discarded": the person didn't see it, let alone discard it.
+  // 0.12.0: a write the server refused before any card was shown is never
+  // "discarded": the person didn't see it, let alone discard it. 0.13.0: one
+  // it held back for after this card reads "not proposed yet".
   const capped = (over: Record<string, unknown> = {}) => part({
     state: 'output-denied',
     approval: { id: 'a2', isAutomatic: true, approved: false, reason: ONE_CARD_PER_TURN_REASON },
     ...over,
   });
 
-  it('a capped write reads "not proposed · one change per turn", as a row and as a card', async () => {
+  it('a write held back by the one-card rule reads "not proposed yet · another card is up", as a row and as a card', async () => {
     await render(h(kit.ApprovalCard, { part: capped(), onRespond() {}, settled: 'row', headline: 'Mute sender', deniedNote: 'nothing changed' }));
     const row = $('[data-testid="kit-approval"]')!;
     expect(row.dataset.state).toBe('skipped');
-    expect(row.textContent).toBe('Mute sendernot proposed · one change per turn');
+    expect(row.textContent).toBe('Mute sendernot proposed yet · another card is up');
     expect(row.textContent).not.toContain('discarded');
     await render(h(kit.ApprovalCard, { part: capped(), onRespond() {}, headline: 'Mute sender' }));
     expect($('[data-testid="kit-approval"]')!.dataset.state).toBe('skipped');
-    expect($('.kit-eyebrow')!.textContent).toBe('Not proposed');
-    expect($('.kit-note')!.textContent).toBe('One change per turn. Nothing changed.');
+    expect($('.kit-eyebrow')!.textContent).toBe('Not proposed yet');
+    expect($('.kit-note')!.textContent).toBe('Another card is up. Nothing changed.');
     expect($('[data-testid="kit-approval"]')!.textContent).not.toMatch(/discarded/i);
   });
 

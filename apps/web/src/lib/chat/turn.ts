@@ -46,7 +46,7 @@ import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, 
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
-import { ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
+import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
@@ -200,6 +200,11 @@ function userText(message: ChatTurnRequest['message']): string | null {
   const texts = message.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? ''));
   const text = texts.join('\n').trim();
   return text && text.length <= MAX_USER_TEXT ? text : null;
+}
+
+/** A new mission's draft: its own full card, never a row beside other writes. */
+function isMissionDraft(tool: string, input: unknown): boolean {
+  return tool === 'manage_missions' && (input as { action?: unknown } | null)?.action === 'create';
 }
 
 export async function runChatTurn(args: {
@@ -417,7 +422,10 @@ export async function runChatTurn(args: {
     route, continuing, canAdmin, dockGroups: docked ? ['missions', 'tasks', 'workers'] : [],
   }));
 
-  let approvalsThisTurn = 0;
+  // The turn's one card: up to APPROVAL_ROW_CAP rows, or one write that must
+  // stand alone (an admin write's typed confirmation, a new mission's draft).
+  let rowsThisTurn = 0;
+  let aloneThisTurn = false;
   let allowedThisTurn = 0;
   const allowedGroups = deps.allowedToolGroups ?? new Set<ToolGroup>();
   const toolApproval = Object.fromEntries(Object.keys(tools).map(name => [
@@ -442,16 +450,19 @@ export async function runChatTurn(args: {
           return 'not-applicable' as const;
         }
       }
-      // At most one approval card per turn; a second write waits. The kit's
-      // reason, so the card reads "not proposed", never "discarded".
-      if (approvalsThisTurn >= 1) {
-        return { type: 'denied' as const, reason: ONE_CARD_PER_TURN_REASON };
-      }
       // The card says exactly what changes, from current state. A target that
       // isn't exactly one thing gets no card: the tool answers with a question.
       const p = await preview(name, (input ?? {}) as Record<string, unknown>).catch(() => null);
       if (p && !p.ok) return 'not-applicable' as const;
-      approvalsThisTurn += 1;
+      // One card per turn, each write its own row (own approval id, input hash
+      // and compare-and-set). A write that can't join it is the kit's reason,
+      // so its row reads "not proposed yet", never "discarded". Checked and
+      // counted with no await in between.
+      const alone = !!(p?.ok && p.preview.confirmText) || isMissionDraft(name, input);
+      if (aloneThisTurn || (alone && rowsThisTurn > 0)) return { type: 'denied' as const, reason: ONE_CARD_PER_TURN_REASON };
+      if (rowsThisTurn >= APPROVAL_ROW_CAP) return { type: 'denied' as const, reason: ROW_CAP_REASON };
+      rowsThisTurn += 1;
+      if (alone) aloneThisTurn = true;
       return p?.ok
         ? { type: 'user-approval' as const, reason: encodeApprovalPreview(p.preview) }
         : 'user-approval' as const;

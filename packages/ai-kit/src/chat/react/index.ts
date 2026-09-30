@@ -22,8 +22,8 @@ export {
   type ToolsMenuProps, type ScopePickerProps, type ScopeOption, type TierPickerProps, type TierOption,
 } from './pickers';
 export {
-  ThinkingPanel, ApprovalCard, HandoffCard, ChatEmpty, ChatSetupCard,
-  type ThinkingPanelProps, type ApprovalCardProps, type HandoffCardProps, type ChatEmptyProps, type ChatEmptyChip, type ChatSetupCardProps,
+  ThinkingPanel, ApprovalCard, ApprovalRowsCard, HandoffCard, ChatEmpty, ChatSetupCard,
+  type ThinkingPanelProps, type ApprovalCardProps, type ApprovalRowsCardProps, type HandoffCardProps, type ChatEmptyProps, type ChatEmptyChip, type ChatSetupCardProps,
 } from './cards';
 export { Menu, MenuOption, KIT_SHEET_QUERY, MENU_EDGE, fitMenuPanel, menuDropSide, menuShift, type MenuProps } from './Menu';
 export { useKitChat, type UseKitChatOptions, type KitChat } from './use-kit-chat';
@@ -32,9 +32,9 @@ export {
   type ComposerStore, type ComposerStoreOptions, type ComposerPrefsAdapter, type TierPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
 } from './composer-store';
 export {
-  thinkingSteps, isApprovalPart, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
+  thinkingSteps, isApprovalPart, approvalRowGroup, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
   formatCost, formatPer1k,
-  type ToolRowState,
+  type ToolRowState, type ApprovalRowGroup,
 } from './model';
 
 // 0.5.0: lifted from buildd's chat.

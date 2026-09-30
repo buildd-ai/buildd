@@ -28,8 +28,8 @@ import {
   type ObjectRef,
   type StepData,
 } from '@builddai/ai-kit/chat/contract';
-import { ApprovalCard, HandoffCard, ThinkingPanel } from './cards';
-import { isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary } from './model';
+import { ApprovalCard, ApprovalRowsCard, HandoffCard, ThinkingPanel } from './cards';
+import { approvalRowGroup, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary } from './model';
 import { ToolCallGroup } from './ToolCalls';
 import type { ToolCallOptions } from './tool-calls';
 
@@ -58,7 +58,11 @@ export interface ChatThreadProps {
   renderText?(text: string, message: ChatMessage, part: ChatTextPart): ReactNode;
   /** Render one object a tool returned (`ToolResult.objects`). Default: nothing. */
   renderObject?(ref: ObjectRef, part: ChatToolPart): ReactNode;
-  /** Replace a tool's row entirely; return undefined to keep the default. */
+  /**
+   * Replace a tool's row entirely; return undefined to keep the default.
+   * Since 0.13.0 `null` draws nothing (no empty frame), e.g. for the other
+   * rows of an approval card the app drew at its first row.
+   */
   renderTool?(part: ChatToolPart, message: ChatMessage): ReactNode | undefined;
   /**
    * Draw a run of consecutive tool calls (not approvals, not ones `renderTool`
@@ -183,6 +187,11 @@ export function ChatThread({
   // `folded`: the turn's calls sit under its folded line, so none of them draw.
   const partsOf = (m: ChatMessage, ctx: ThreadMessageContext, folded = false): ReactNode[] => {
     const out: ReactNode[] = [];
+    // Two or more writes in one message are the rows of one card (0.13.0),
+    // drawn where the first of them is.
+    const rows = approvalRowGroup(m.parts);
+    const inRows = new Set([...(rows?.rows ?? []), ...(rows?.held ?? [])].map(p => p.toolCallId));
+    let rowsDrawn = false;
     let group: ChatToolPart[] = [];
     let groupAt = 0;
     const flush = () => {
@@ -202,7 +211,17 @@ export function ChatThread({
       }
       if (isToolPart(p)) {
         const custom = renderTool?.(p, m);
+        if (custom === null) return;
         if (custom !== undefined) { flush(); out.push(<div key={key}>{custom}</div>); return; }
+        if (rows && inRows.has(p.toolCallId)) {
+          if (rowsDrawn) return;
+          rowsDrawn = true;
+          flush();
+          out.push(
+            <ApprovalRowsCard key={key} parts={rows.rows} held={rows.held} onRespond={onApprovalResponse ?? (() => {})} approverName={viewerName} />,
+          );
+          return;
+        }
         if (isApprovalPart(p)) {
           flush();
           out.push(onApprovalResponse

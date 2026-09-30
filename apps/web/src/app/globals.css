@@ -1031,6 +1031,25 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
   .buildd-approval.kit-approval-row > .kit-card-title { margin: 0; font-family: var(--kit-font-mono); font-size: 12.5px; font-weight: 600; color: var(--chat-text); }
   .buildd-approval.kit-approval-row > .kit-note { font-family: var(--kit-font-mono); font-size: 12.5px; font-style: normal; }
+  /* A turn's writes as one card: a row each (the kit's ApprovalRowsCard).
+     The target in Newsreader like a change, the note in mono like a tool row;
+     a settled card drops the copper edge. */
+  .buildd-approval .kit-apr-rows { border-top-color: var(--chat-rule); }
+  .buildd-approval .kit-apr-row { border-bottom-color: var(--chat-rule); }
+  .buildd-approval .kit-apr-title {
+    font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 16.5px; font-weight: 400; color: var(--chat-text);
+  }
+  .buildd-approval .kit-apr-full { font-family: var(--font-newsreader), ui-serif, Georgia, serif; font-size: 16.5px; color: var(--chat-text); }
+  .buildd-approval .kit-apr-note, .buildd-approval .kit-apr-mark { color: var(--chat-muted); }
+  .buildd-approval .kit-apr-row[data-outcome="ran"] .kit-apr-mark { color: var(--status-success); }
+  .buildd-approval .kit-apr-row[data-outcome="changed"] .kit-apr-note,
+  .buildd-approval .kit-apr-row[data-outcome="failed"] .kit-apr-note { color: var(--text-primary); }
+  .buildd-approval .kit-apr-row[data-checked="false"] .kit-apr-title,
+  .buildd-approval .kit-apr-row[data-outcome="discarded"] .kit-apr-title,
+  .buildd-approval .kit-apr-row[data-outcome="held"] .kit-apr-title { color: var(--chat-muted); }
+  .kit-card.buildd-approval.kit-approval-rows[data-state="done"] { border-top: 1px solid var(--chat-rule-strong); }
+  .buildd-approval.kit-approval-rows[data-state="done"] .kit-card-head > .kit-eyebrow { color: var(--chat-muted); }
+  .buildd-approval.kit-approval-rows[data-state="done"] .kit-card-head > .kit-eyebrow::before { background: var(--chat-muted); }
   @media (min-width: 768px) {
     .kit-card.buildd-approval:not(.kit-approval-row) { padding: 0 20px 16px; }
     .buildd-approval > .kit-card-head { margin: 0 -20px; padding: 12px 20px; }

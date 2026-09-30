@@ -305,3 +305,27 @@ button.kit-toolcalls-head { display: flex; align-items: center; gap: 8px; width:
   .kit-toolcall[data-state] .kit-toolcall-mark { animation: none; }
   .kit-toolcall-chevron { transition: none; }
 }
+
+/* ── 0.13.0 approval rows ───────────────────────────────────────────────── */
+/* One card, a row per write. Rows stack at every width. A folded row is
+   always two lines (the target, then its first change or its outcome), both
+   truncated, so the card keeps its height from awaiting to settled; the check
+   box and the settled mark share one 24px slot. A tap unfolds the full target
+   and what changes. */
+.kit-apr-rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--kit-rule); min-width: 0; }
+.kit-apr-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 8px; align-items: start; padding: 4px 0; border-bottom: 1px solid var(--kit-rule); min-width: 0; }
+.kit-apr-check, .kit-apr-mark { width: 24px; height: 44px; margin: 0; display: grid; place-items: center; font-family: var(--kit-font-mono); font-size: 13px; color: var(--kit-muted); }
+.kit-apr-check { width: 18px; justify-self: center; accent-color: var(--kit-accent); cursor: pointer; }
+/* `button.` so it wins over `.kit-chat button { font: inherit }` inside a thread. */
+button.kit-apr-main, .kit-apr-main { display: grid; align-content: center; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+span.kit-apr-main { cursor: default; }
+.kit-apr-title, .kit-apr-note { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4; }
+.kit-apr-title { font-size: 14.5px; font-weight: 600; color: var(--kit-ink); }
+.kit-apr-note { font-family: var(--kit-font-mono); font-size: 12px; color: var(--kit-muted); }
+.kit-apr-detail { grid-column: 2; display: grid; gap: 6px; padding: 2px 0 8px; min-width: 0; }
+.kit-apr-detail[hidden] { display: none; }
+.kit-apr-full { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.kit-apr-row[data-checked="false"] .kit-apr-title { color: var(--kit-muted); text-decoration: line-through; }
+.kit-apr-row[data-outcome="discarded"] .kit-apr-title, .kit-apr-row[data-outcome="held"] .kit-apr-title { color: var(--kit-muted); }
+.kit-apr-row[data-outcome="changed"] .kit-apr-note, .kit-apr-row[data-outcome="failed"] .kit-apr-note { color: var(--kit-ink); }
+.kit-apr-row[data-outcome="ran"] .kit-apr-mark { color: var(--kit-accent); }

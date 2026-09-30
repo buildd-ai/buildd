@@ -8,9 +8,14 @@ import { useId, useState, type ReactNode } from 'react';
 import {
   approvalChanges,
   approvalHeadline,
+  approvalRowOutcome,
+  isHeldBack,
   isSystemDenied,
   parseApprovalPreview,
+  systemDeniedLine,
   systemDeniedNote,
+  type ApprovalPreview,
+  type ApprovalRowOutcome,
   type ChatToolPart,
   type ChatUnavailableReason,
   type HandoffData,
@@ -160,20 +165,20 @@ export function ApprovalCard({
     ));
 
   const done = part.state === 'output-available' || part.state === 'output-error';
-  // The server refused it before any card was shown (the one-card cap): the
-  // person never saw it, so it is never "discarded".
+  // The server refused it before any card was shown (a full card, a card
+  // that stands alone): the person never saw it, so it is never "discarded".
   if (isSystemDenied(part)) {
     const why = systemDeniedNote(part);
     return settled === 'row'
       ? (
         <div className={`${cls} kit-approval-row`} data-state="skipped" data-testid="kit-approval">
           <span className="kit-card-title">{headline}</span>
-          <span className="kit-note">{`not proposed · ${why}`}</span>
+          <span className="kit-note">{systemDeniedLine(part)}</span>
         </div>
       )
       : (
         <div className={cls} data-state="skipped" data-testid="kit-approval">
-          {head('Not proposed')}
+          {head(isHeldBack(part) ? 'Not proposed yet' : 'Not proposed')}
           <p className="kit-card-title">{headline}</p>
           <p className="kit-note">{`${why.charAt(0).toUpperCase()}${why.slice(1)}. Nothing changed.`}</p>
         </div>
@@ -293,6 +298,238 @@ export function ApprovalCard({
           Discard
         </button>
       </div>
+    </section>
+  );
+}
+
+// ── Approval rows (0.13.0) ────────────────────────────────────────────────────
+
+export interface ApprovalRowsCardProps {
+  /** The writes shown on the card, one row each (`approvalRowGroup(parts).rows`). */
+  parts: readonly ChatToolPart[];
+  /** Writes the server held back (the card was full): "not proposed yet", never a toggle. */
+  held?: readonly ChatToolPart[];
+  /**
+   * Answer one row: echoes its approval id back. Confirm calls it once per
+   * row, approved or not per the row's toggle; Discard calls it with `false`
+   * for every row. The continuation goes when the last row is answered.
+   */
+  onRespond(approvalId: string, approved: boolean, reason?: string): void;
+  /** Who is approving, for the settled rows ("done · Sam"). */
+  approverName?: string | null;
+  className?: string;
+  /** After the status in the card's head. */
+  eyebrow?: ReactNode;
+  /** At the end of the card's head, e.g. the workspace it writes to. */
+  meta?: ReactNode;
+  /** A row's line. Default: from the preview (its target, its verb, or both), else the tool's name. */
+  rowLabel?(part: ChatToolPart): ReactNode;
+  /** The confirm button for `n` checked rows. Default "Confirm n". */
+  confirmLabel?(n: number): string;
+  /** The confirm button once pressed. Default "Applying…". */
+  busyLabel?: string;
+}
+
+/**
+ * The card's headline and how each row reads, from the rows' previews. `used`
+ * is how many of a row's changes its label already says, so its second line
+ * starts after them.
+ */
+function rowsShape(previews: readonly (ApprovalPreview | null)[]): { headline: string; row: (p: ApprovalPreview) => string; used: number } {
+  const n = previews.length;
+  const all = previews.every((p): p is ApprovalPreview => !!p);
+  const target = (p: ApprovalPreview) => `${p.target.label}${p.target.detail ? ` (${p.target.detail})` : ''}`;
+  const sameVerb = all && previews.every(p => p.verb === previews[0]!.verb);
+  const sameTarget = all && previews.every(p => p.target.kind === previews[0]!.target.kind && p.target.id === previews[0]!.target.id);
+  const first = (p: ApprovalPreview) => approvalChanges(p)[0];
+  if (sameVerb && sameTarget && previews.every(p => first(p)?.after)) {
+    // The same thing made several times in one place (three tasks in one
+    // mission): headed by both, each row by what it makes.
+    return { headline: `${previews[0]!.verb} ${target(previews[0]!)} · ${n}`, row: p => first(p)!.after!, used: 1 };
+  }
+  if (sameVerb) {
+    // One intent across many targets: "Auto-dismiss · 3", a row per target.
+    return { headline: `${previews[0]!.verb} · ${n}`, row: target, used: 0 };
+  }
+  if (sameTarget) {
+    // Many intents on one subject: headed by the subject, each row its verb.
+    return { headline: target(previews[0]!), row: p => p.verb, used: 0 };
+  }
+  return { headline: `${n} changes`, row: approvalHeadline, used: 0 };
+}
+
+const ROW_NOTE: Record<Exclude<ApprovalRowOutcome, 'awaiting' | 'held'>, string> = {
+  deciding: 'applying…',
+  ran: 'done',
+  changed: 'changed since shown · nothing ran',
+  failed: 'failed',
+  discarded: 'discarded · nothing changed',
+};
+
+function failureText(part: ChatToolPart): string | null {
+  if (part.errorText) return part.errorText;
+  const data = (part.output as { data?: unknown } | undefined)?.data;
+  return typeof data === 'string' ? data.replace(/^Error:\s*/, '') : null;
+}
+
+/**
+ * One card for a turn's writes (0.13.0): a row each, all checked. One
+ * Confirm answers every row (checked ones approved, the rest declined), one
+ * Discard declines them all. Each row is still its own approval: the server
+ * checks its approval id, input hash and preview on its own and runs it, or
+ * refuses it, without touching the others, and the settled card says how
+ * each went. Rows fold to one line; a tap shows the full target and what
+ * changes.
+ */
+export function ApprovalRowsCard({
+  parts, held = [], onRespond, approverName, className, eyebrow, meta, rowLabel,
+  confirmLabel = n => `Confirm ${n}`, busyLabel = 'Applying…',
+}: ApprovalRowsCardProps) {
+  const [unchecked, setUnchecked] = useState<ReadonlySet<string>>(() => new Set());
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const [sent, setSent] = useState<'confirm' | 'deny' | null>(null);
+  const baseId = useId();
+  const previews = parts.map(p => parseApprovalPreview(p.approval?.requestReason));
+  const shape = rowsShape(previews);
+  const outcomes = parts.map(p => approvalRowOutcome(p));
+  const awaiting = outcomes.includes('awaiting') && sent === null;
+  const settled = !outcomes.some(o => o === 'awaiting' || o === 'deciding');
+  const checkedCount = parts.filter(p => !unchecked.has(p.toolCallId)).length;
+  const counts = (o: ApprovalRowOutcome) => outcomes.filter(x => x === o).length;
+  const status = awaiting
+    ? 'Needs your OK'
+    : !settled
+      ? (sent === 'deny' ? 'Discarding…' : 'Confirmed')
+      : [counts('ran') && `${counts('ran')} done`, counts('changed') && `${counts('changed')} changed`, counts('failed') && `${counts('failed')} failed`, counts('discarded') && `${counts('discarded')} discarded`]
+        .filter(Boolean).join(' · ') || 'Done';
+  const flip = (set: ReadonlySet<string>, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  };
+
+  const answerAll = (confirm: boolean) => {
+    setSent(confirm ? 'confirm' : 'deny');
+    for (const p of parts) {
+      const id = p.approval?.id;
+      if (!id || p.state !== 'approval-requested') continue;
+      const approved = confirm && !unchecked.has(p.toolCallId);
+      onRespond(id, approved, approved ? undefined : confirm ? 'Unchecked by the user' : 'Discarded by the user');
+    }
+  };
+
+  const label = (p: ChatToolPart, i: number): ReactNode => rowLabel?.(p)
+    ?? (previews[i] ? shape.row(previews[i]!) : humanizeToolName(toolNameOf(p)));
+
+  return (
+    <section
+      className={`kit-card kit-approval-rows${className ? ` ${className}` : ''}`}
+      data-state={awaiting ? 'awaiting' : settled ? 'done' : 'deciding'}
+      aria-label={`Needs your OK: ${shape.headline}`}
+      data-testid="kit-approval-rows"
+    >
+      <div className="kit-card-head">
+        <span className="kit-eyebrow">{status}</span>
+        {eyebrow != null && <span className="kit-card-tag">{eyebrow}</span>}
+        {meta != null && <span className="kit-card-meta">{meta}</span>}
+      </div>
+      <h3 className="kit-card-title">{shape.headline}</h3>
+      <ul className="kit-apr-rows">
+        {parts.map((p, i) => {
+          const outcome = outcomes[i];
+          const on = !unchecked.has(p.toolCallId);
+          const titleId = `${baseId}-t${i}`;
+          const detailId = `${baseId}-d${i}`;
+          const expanded = open.has(p.toolCallId);
+          const preview = previews[i];
+          const changes = preview ? approvalChanges(preview) : [];
+          const fields = !preview && p.input && typeof p.input === 'object' ? Object.entries(p.input as Record<string, unknown>) : [];
+          const failure = outcome === 'failed' || outcome === 'changed' ? failureText(p) : null;
+          // Folded, the second line is the first change the label doesn't already say.
+          const next = changes[shape.used] ?? null;
+          const note = outcome === 'awaiting'
+            ? (on ? (next ? `${next.label}: ${next.after ?? next.before ?? ''}` : fields.length ? `${fields.length} field${fields.length === 1 ? '' : 's'}` : 'as shown') : 'won’t run')
+            : outcome === 'ran' && approverName ? `done · ${approverName}` : ROW_NOTE[outcome as keyof typeof ROW_NOTE];
+          return (
+            <li key={p.toolCallId} className="kit-apr-row" data-outcome={outcome} data-checked={outcome === 'awaiting' ? on : undefined} data-approval-id={p.approval?.id} data-testid="kit-approval-row">
+              {outcome === 'awaiting'
+                ? (
+                  <input
+                    type="checkbox"
+                    className="kit-apr-check"
+                    checked={on}
+                    disabled={!awaiting}
+                    aria-labelledby={titleId}
+                    onChange={() => setUnchecked(u => flip(u, p.toolCallId))}
+                    data-testid="kit-approval-row-check"
+                  />
+                )
+                : <span className="kit-apr-mark" aria-hidden="true">{outcome === 'ran' ? '✓' : outcome === 'deciding' ? '·' : outcome === 'discarded' ? '–' : '!'}</span>}
+              <button type="button" className="kit-apr-main" aria-expanded={expanded} aria-controls={detailId} onClick={() => setOpen(o => flip(o, p.toolCallId))} data-testid="kit-approval-row-expand">
+                <span id={titleId} className="kit-apr-title">{label(p, i)}</span>
+                <span className="kit-apr-note">{note}</span>
+              </button>
+              <div id={detailId} className="kit-apr-detail" hidden={!expanded} data-testid="kit-approval-row-detail">
+                <p className="kit-apr-full">{label(p, i)}</p>
+                {changes.length > 0 && (
+                  <ul className="kit-changes">
+                    {changes.map((c, j) => (
+                      <li key={j} className="kit-change">
+                        <span className="kit-change-label">{c.label}</span>
+                        <ChangeValue before={c.before} after={c.after} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {fields.length > 0 && (
+                  <ul className="kit-changes">
+                    {fields.map(([k, v]) => (
+                      <li key={k} className="kit-change">
+                        <span className="kit-change-label">{humanizeToolName(k)}</span>
+                        <span>{typeof v === 'string' ? v : JSON.stringify(v)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {failure && <p className="kit-note">{failure}</p>}
+              </div>
+            </li>
+          );
+        })}
+        {held.map(p => (
+          <li key={p.toolCallId} className="kit-apr-row" data-outcome="held" data-testid="kit-approval-row">
+            <span className="kit-apr-mark" aria-hidden="true">·</span>
+            <span className="kit-apr-main">
+              <span className="kit-apr-title">{rowLabel?.(p) ?? humanizeToolName(toolNameOf(p))}</span>
+              <span className="kit-apr-note">{systemDeniedLine(p)}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {!settled && (
+        <div className="kit-actions">
+          <button
+            type="button"
+            className="kit-btn"
+            data-variant="primary"
+            disabled={!awaiting || checkedCount === 0}
+            onClick={() => answerAll(true)}
+            data-testid="kit-approval-confirm"
+          >
+            {awaiting || sent === 'deny' ? confirmLabel(checkedCount) : busyLabel}
+          </button>
+          <button
+            type="button"
+            className="kit-btn"
+            data-variant="quiet"
+            disabled={!awaiting}
+            onClick={() => answerAll(false)}
+            data-testid="kit-approval-deny"
+          >
+            Discard all
+          </button>
+        </div>
+      )}
     </section>
   );
 }

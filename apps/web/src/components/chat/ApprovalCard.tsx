@@ -20,8 +20,8 @@
  * Newsreader. Plain buttons. No keycaps: nothing here has a key.
  */
 import { useState, type ReactNode } from 'react';
-import { ApprovalCard as KitApprovalCard, ToolCallRow } from '@builddai/ai-kit/chat/react';
-import { isSystemDenied } from '@builddai/ai-kit/chat/contract';
+import { ApprovalCard as KitApprovalCard, ApprovalRowsCard, approvalRowGroup, ToolCallRow, type ApprovalRowGroup } from '@builddai/ai-kit/chat/react';
+import { isSystemDenied, parseApprovalPreview } from '@builddai/ai-kit/chat/contract';
 import type { ChatToolPart } from './chat-contract';
 import { useChatActions } from './ChatActions';
 import { approvalDraft, approvalLabel, type ApprovalDraft, type MissionDraft } from './approval-draft';
@@ -118,8 +118,8 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
     settled: 'row' as const,
   };
 
-  // Refused before any card was shown (one card per turn): the kit's "not
-  // proposed" row. Never "discarded": nobody saw it.
+  // Refused before any card was shown (the card was full, or another card
+  // stood alone): the kit's "not proposed yet" row. Never "discarded".
   if (isSystemDenied(part)) {
     return wrap('skipped', undefined, <KitApprovalCard {...shared} part={part} headline={verb} />);
   }
@@ -155,4 +155,43 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
       onEdit={() => actions.prefillComposer('Change it: ')}
     />
   ));
+}
+
+/**
+ * A message's writes as one card (the kit's `ApprovalRowsCard`): two or more
+ * writes are its rows, and a write held back because the card was full is a
+ * "not proposed yet" row. A new mission's draft and an admin write's typed
+ * confirmation are never rows: they keep their own full card. Null when the
+ * message has fewer than two rows.
+ */
+export function approvalRows(parts: readonly ChatToolPart[]): ApprovalRowGroup | null {
+  return approvalRowGroup(parts, {
+    alone: p => approvalDraft(p).kind === 'mission' || !!parseApprovalPreview(p.approval?.requestReason)?.confirmText,
+  });
+}
+
+export function ApprovalRows({ group }: { group: ApprovalRowGroup }) {
+  const actions = useChatActions();
+  const wsIds = [...new Set(group.rows.map(p => approvalDraft(p).workspaceId).filter((id): id is string => !!id))];
+  const wsName = wsIds.length === 1 ? actions.workspaceName(wsIds[0]) : null;
+  const rowLabel = (p: ChatToolPart) => {
+    const draft = approvalDraft(p);
+    // A preview's own words; any other write by what it is and its title.
+    if (draft.kind === 'preview') return undefined;
+    const title = draft.kind === 'generic' ? draft.fields.find(f => f.key.toLowerCase() === 'title')?.value : null;
+    return title ? `${approvalLabel(p)}: ${title}` : approvalLabel(p);
+  };
+  return (
+    <div data-testid="approval-rows" data-rows={group.rows.length}>
+      <ApprovalRowsCard
+        className="buildd-approval"
+        parts={group.rows.map(p => { const d = approvalDraft(p); return d.kind === 'mission' ? p : kitApprovalPart(p, d); })}
+        held={group.held}
+        onRespond={actions.respondToApproval}
+        approverName={actions.viewerName}
+        meta={wsName ? <span data-testid="approval-workspace">{wsName}</span> : undefined}
+        rowLabel={rowLabel}
+      />
+    </div>
+  );
 }

@@ -9,8 +9,9 @@
  *     is reconciled against storage: a replay, an edit or a lost race decides
  *     nothing and runs nothing;
  *  3. stream (AI SDK v7 `streamText`), with every write gated server-side:
- *     an approval card, or the person's "Allow" under `canSkipCard`, and at
- *     most one card per turn;
+ *     an approval card, or the person's "Allow" under `canSkipCard`; a
+ *     turn's writes are the rows of one card (at most `APPROVAL_ROW_CAP`),
+ *     and an admin write's card stands alone;
  *  4. on end, persist the assistant message and its approval requests, send
  *     the content-free receipt (`/models` `recordUsage`) and the app's own
  *     usage record (`onUsage`, awaited).
@@ -27,7 +28,10 @@ import {
   isToolPart,
   STEER_PART_TYPE,
   STEP_PART_TYPE,
+  APPROVAL_ROW_CAP,
+  CHANGED_SINCE_SHOWN,
   ONE_CARD_PER_TURN_REASON,
+  ROW_CAP_REASON,
   TURN_ERROR_PART_TYPE,
   toolNameOf,
   withResolvedFields,
@@ -76,8 +80,12 @@ export const DEFAULT_TURN_LIMITS = {
 
 export type TurnLimits = { [K in keyof typeof DEFAULT_TURN_LIMITS]: number };
 
-/** What `denied` tells the model when a second card would be shown in one turn (defined in the contract, so a card can tell it from a Discard). */
-export { ONE_CARD_PER_TURN_REASON };
+/**
+ * What `denied` tells the model when a write can't join the turn's card: one
+ * that must stand alone, or a full card (defined in the contract, so a card
+ * can tell them from a Discard).
+ */
+export { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON };
 /** Appended to a turn the deadline or a Stop cut short. */
 export const STOPPED_NOTE = '_Stopped before the answer was finished._';
 
@@ -479,7 +487,10 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     const allowedGroups = new Set<string>(opts.permissions ? await opts.permissions(ctx) : []);
     const docked = opts.docked ? await opts.docked(ctx) : false;
     const allowedSkips = new Map<string, Extract<PreviewOutcome, { ok: true }>>();
-    let cardsThisTurn = 0;
+    // The turn's one card: up to APPROVAL_ROW_CAP rows, or one write that
+    // must stand alone (an admin write's typed confirmation).
+    let rowsThisTurn = 0;
+    let aloneThisTurn = false;
     let skippedThisTurn = 0;
 
     const safePreview = async (tool: string, input: unknown): Promise<PreviewOutcome | null> => {
@@ -514,7 +525,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
               const now = await safePreview(name, input);
               if (!now || !now.ok) return refusal(`nothing changed: ${now && !now.ok ? now.question : 'the change could not be checked'}`);
               if (!previewMatches(was, now.preview)) {
-                return refusal(`nothing changed: ${now.preview.target.label} changed since the card was shown. Show the person the current state and ask again.`);
+                return refusal(`nothing changed: ${now.preview.target.label} ${CHANGED_SINCE_SHOWN}. Show the person the current state and ask again.`);
               }
               callInput = now.input ?? input;
             }
@@ -564,12 +575,17 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
           return 'not-applicable' as const;
         }
       }
-      // At most one approval card per turn; a second write waits.
-      if (cardsThisTurn >= 1) return { type: 'denied' as const, reason: ONE_CARD_PER_TURN_REASON };
       const p = await safePreview(name, input);
       // A target that isn't exactly one thing gets no card: execute answers with the question.
       if (p && !p.ok) return 'not-applicable' as const;
-      cardsThisTurn += 1;
+      // One card per turn, each write its own row with its own approval id,
+      // input hash and compare-and-set. Checked and counted with no await in
+      // between, so parallel calls can't both take the last row.
+      const alone = !!(p?.ok && p.preview.confirmText);
+      if (aloneThisTurn || (alone && rowsThisTurn > 0)) return { type: 'denied' as const, reason: ONE_CARD_PER_TURN_REASON };
+      if (rowsThisTurn >= APPROVAL_ROW_CAP) return { type: 'denied' as const, reason: ROW_CAP_REASON };
+      rowsThisTurn += 1;
+      if (alone) aloneThisTurn = true;
       return p?.ok ? { type: 'user-approval' as const, reason: encodeApprovalPreview(p.preview) } : 'user-approval' as const;
     };
 
