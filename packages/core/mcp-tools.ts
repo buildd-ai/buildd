@@ -341,7 +341,15 @@ export const MEMORY_TYPES = ['gotcha', 'pattern', 'decision', 'discovery', 'arch
  * Corpus value (knowledge-store/types.ts) but write-only/internal — never
  * advertised to callers here.
  */
-export const CORPORA = ['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative'] as const;
+export const CORPORA = ['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative', 'evidence'] as const;
+
+/**
+ * Corpora a sensitive workspace never reads. memory/initiative are team-wide
+ * namespaces a sensitive context must not see; evidence is never indexed for a
+ * sensitive workspace (docs/specs/byo-evidence-storage.md, "Private and
+ * sensitive rules"), and MUST return nothing for one even if a chunk exists.
+ */
+const SENSITIVE_WITHHELD_CORPORA: ReadonlySet<string> = new Set(['memory', 'initiative', 'evidence']);
 
 /**
  * Validate a `recall`/`query_knowledge` scope-or-corpus param (string or
@@ -576,7 +584,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (string or string[] — memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Pass corpus as an array to query multiple corpora in one call and get a single rank-fused result set — e.g. corpus=["memory","task"] covers prior lessons AND recent outcomes without two round trips. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (string or string[] — memory|task|pr|plan|artifact|code|docs|spec|initiative|evidence, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Pass corpus as an array to query multiple corpora in one call and get a single rank-fused result set — e.g. corpus=["memory","task"] covers prior lessons AND recent outcomes without two round trips. Use corpus=evidence to search the error-bearing lines of stored run evidence (failing tests, error blocks, CI failure digests; read the full object with read_evidence). Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -6320,7 +6328,7 @@ async function fanOutCorpora(
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
-      if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      if (ctx.isSensitive && SENSITIVE_WITHHELD_CORPORA.has(c)) return [];
       if (c === 'memory' && !normalizeProject(ctx.project)) {
         failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
         return [];
@@ -6485,6 +6493,9 @@ export async function handleRecallAction(
 
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
+  }
+  if (ctx.isSensitive && scope === 'evidence') {
+    return text('(No results — evidence is not indexed for sensitive workspaces.)');
   }
   if (scope === 'memory' && !normalizeProject(ctx.project)) {
     return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
@@ -7129,6 +7140,9 @@ export async function handleMemoryAction(
 
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
+      }
+      if (ctx.isSensitive && corpus === 'evidence') {
+        return text('(No results — evidence is not indexed for sensitive workspaces.)');
       }
       if (corpus === 'memory' && !normalizeProject(ctx.project)) {
         throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);

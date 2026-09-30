@@ -424,6 +424,11 @@ export class EvidenceReadError extends Error {
 export interface OpenDeps {
   client?: Pick<S3Client, 'send'>;
   bucket?: string;
+  /**
+   * Also open a row still marked `pending`. Nothing confirms a runner's PUT, so
+   * the evidence indexer probes the bucket itself; read routes keep the default.
+   */
+  acceptPending?: boolean;
 }
 
 /**
@@ -432,7 +437,7 @@ export interface OpenDeps {
  * a later backend change must not send a read to the wrong bucket.
  */
 export async function openEvidenceObject(row: EvidenceObjectRow, deps: OpenDeps = {}): Promise<AsyncGenerator<Uint8Array>> {
-  if (row.uploadState !== 'stored') {
+  if (row.uploadState !== 'stored' && !(deps.acceptPending && row.uploadState === 'pending')) {
     throw new EvidenceReadError(`this evidence object is not readable (upload state: ${row.uploadState})`, 409);
   }
 

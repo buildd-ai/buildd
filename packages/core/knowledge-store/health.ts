@@ -34,6 +34,7 @@ export const ALL_CORPORA: Corpus[] = [
   'pr',
   'plan',
   'session',
+  'evidence',
 ];
 
 /** A `done` code ingest older than this (days) flips freshness to 'stale'. */

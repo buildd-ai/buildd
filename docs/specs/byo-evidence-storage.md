@@ -484,7 +484,7 @@ corpus").
   `packages/core/knowledge-store/health.ts`, `packages/core/mcp-tools.ts`,
   `packages/core/evidence-chunker.ts` (new),
   `apps/web/src/lib/evidence-indexer.ts` (new), the cron route that hosts the
-  sweep, `apps/web/src/lib/chat/registry.ts` if `recall` scopes are enumerated
+  sweep (`apps/web/src/app/api/cron/evidence-index/route.ts`, hourly), `apps/web/src/lib/chat/registry.ts` if `recall` scopes are enumerated
   there.
 - **Depends on:** 2 (3 for CI-log chunks).
 - **Acceptance:** AC-6; AC-7 for the indexing half; a chunker test on a

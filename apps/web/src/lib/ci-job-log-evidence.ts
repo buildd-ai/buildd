@@ -49,7 +49,7 @@ export interface EvidenceObjectInsert {
   bytes: number;
   sha256: string | null;
   uploadState: 'stored' | 'failed';
-  indexState: 'skipped';
+  indexState: 'skipped' | 'queued';
   expiresAt: Date | null;
 }
 
@@ -120,6 +120,7 @@ async function capture(input: CiJobLogEvidenceInput, deps: CiJobLogEvidenceDeps)
   const expiresAt = new Date(now.getTime() + backend.retentionDays * 24 * 60 * 60 * 1000);
   const taskIds = [...new Set([input.retryTaskId, rootTaskId])];
 
+  const sensitive = workspace?.dataClass === 'sensitive';
   const record = async (fields: Pick<EvidenceObjectInsert, 'bytes' | 'sha256' | 'uploadState'>) => {
     await deps.insertRows(taskIds.map(taskId => ({
       workspaceId: input.workspaceId,
@@ -130,8 +131,13 @@ async function capture(input: CiJobLogEvidenceInput, deps: CiJobLogEvidenceDeps)
       kind: 'ci_job_log' as const,
       backendId: backend.backendId,
       objectKey,
-      // Not indexed here: indexing is P3, and a sensitive workspace is always skipped.
-      indexState: 'skipped' as const,
+      // The evidence indexer picks up `queued` rows. One object gets one index
+      // entry: only the retry task's row is queued (its chunks carry rootTaskId),
+      // a failed upload has nothing to index, and a sensitive workspace is never
+      // sent to the embedder (invariant 7).
+      indexState: (taskId === input.retryTaskId && fields.uploadState === 'stored' && !sensitive)
+        ? 'queued' as const
+        : 'skipped' as const,
       expiresAt,
       ...fields,
     })));

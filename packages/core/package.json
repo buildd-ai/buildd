@@ -144,6 +144,7 @@
     "./reset-time": "./reset-time.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
+    "./evidence-chunker": "./evidence-chunker.ts",
     "./timezone": "./timezone.ts",
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
