@@ -167,6 +167,23 @@ export function getTestConcurrency(configured: string | undefined): number {
   return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(Number(configured))));
 }
 
+/**
+ * Bun's own per-test deadline is 5s, which is tuned for an idle machine. The
+ * suite runs several files at once and is routinely run alongside `tsc` and a
+ * production build, so a test that takes milliseconds alone can cross 5s purely
+ * from CPU contention -- and then passes when rerun alone. A hung test still
+ * fails, just later.
+ */
+const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+
+export function getTestTimeoutMs(configured: string | undefined): number {
+  const n = Number(configured);
+  if (configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1) {
+    return DEFAULT_TEST_TIMEOUT_MS;
+  }
+  return Math.floor(n);
+}
+
 export async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
@@ -249,7 +266,8 @@ export async function runTestFile(
   // where they were counted as fleet data.
   const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
   try {
-    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), file], {
+    const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
       stdout: 'pipe',
       stderr: 'pipe',
       env: { ...process.env, BUILDD_HOME: testHome },

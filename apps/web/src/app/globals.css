@@ -1144,7 +1144,14 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     border: 1px solid var(--chat-rule); border-left: 2px solid var(--mood-thinking-rule); background: var(--chat-panel);
   }
   .buildd-thread .kit-thinking { border: 0; background: transparent; padding: 0; }
-  .buildd-thread .kit-thinking > summary { min-height: 0; pointer-events: none; cursor: default; }
+  .buildd-thread .kit-thinking[data-streaming] > summary { min-height: 0; pointer-events: none; cursor: default; }
+  /* A finished turn: its steps and tool rows fold to one ruled line over the
+     answer ("Did 6 steps · filed 2 tasks"). Tap unfolds it in place. */
+  .buildd-thread .kit-thinking[data-settled] { border: 1px solid var(--chat-rule); background: var(--chat-surface); padding: 0 12px; }
+  .buildd-thread .kit-thinking[data-settled] > summary { font-family: var(--kit-font-mono); color: var(--chat-muted); }
+  .buildd-thread .kit-thinking[data-settled] > summary:hover { color: var(--chat-text); }
+  .buildd-thread .kit-thinking[data-settled][open] { padding-bottom: 12px; }
+  .buildd-thread .kit-thinking[data-settled] .kit-steps { margin-top: 4px; }
   .buildd-thinking-title {
     display: flex; align-items: center; gap: 12px;
     font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;

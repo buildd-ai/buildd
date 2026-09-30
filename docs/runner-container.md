@@ -71,6 +71,39 @@ its own stdout line. A supervisor that only knows the task ID reads it so it
 can mark the worker failed if the container dies before the runner reports
 (`apps/cloud-runner` does this). No line means no worker was created.
 
+With `BUILDD_EXECUTOR=cloud` the runner also prints
+`BUILDD_PHASE=<phase> <epoch ms>` lines, `<phase>` one of `clone_start`,
+`clone_end`, `install_start`, `install_end`, `restore_warm_start`,
+`restore_warm_end`, `fetch_start`, `fetch_end`, `warm_upload_start`,
+`warm_upload_end` (`apps/runner/src/phase-lines.ts`).
+The clone pair brackets the runner's own `git clone`; the install pair
+brackets its own `bun install` in the worktree (not an install a repo declares
+in `.buildd/env.yaml`, which runs in the provision gate). The warm pairs
+bracket the warm-repo restore, the `git fetch` after it, and the upload of a
+new snapshot generation (see Warm repos below). Alongside them:
+`BUILDD_METRIC=<name> <integer>` (`clone_bytes`, `restore_bytes`,
+`fetch_bytes`, `cache_bytes`, `snapshot_age_ms`, `warm_upload_bytes`) and one
+`BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` line
+(`disabled`, `no_snapshot`, `unavailable`, `disk`, `restore_failed`). No path
+or URL is printed. `apps/cloud-runner` reads them into its run report.
+
+### Warm repos
+
+With `BUILDD_WARM_REPO=1` and `BUILDD_SNAPSHOT_URL` (both set by the
+`WorkerAgent` when its `WARM_REPOS` var is on), `apps/runner/src/warm-repo.ts`
+restores the workspace's snapshot into the isolated clone path before any
+`git clone`: a `git bundle` of origin's refs, then `origin` set to the real
+URL, the default branch checked out, and a `git fetch origin` to close the
+gap; plus the bun install cache. Any failure (no snapshot, store unreachable,
+snapshot larger than a quarter of free disk, corrupt bundle) falls back to the
+normal clone. After the run it uploads a new generation when the workspace had
+none (whatever the outcome), or, after a task that completed, when the one it
+restored was over 24 h old or its fetch brought in over 64 MiB. The bundle
+carries remote refs only (no config, hooks, local branches or working tree),
+the cache tarball leaves out `.npmrc`, `.netrc`, `.yarnrc*`, `bunfig.toml`
+and `.env*` files, and the upload is refused when the clone has any
+`credential.*` or `http.*.extraheader` config or a remote URL with userinfo.
+
 A bad API key or an unreachable server exits **1**, not 64 or 3. The key is
 present, so it is not a usage error. The task fetch fails before any claim is
 made, so nothing was refused.
@@ -93,6 +126,7 @@ Everything else stays in the runner process.
 | `GH_TOKEN` | **yes** | local only | yes | Used by `gh` and, through `gh auth setup-git` in `buildd-once`, by `git` for https clones and pushes. **Do not set it on Cloudflare**: the egress handler adds a short-lived installation token to `github.com` / `api.github.com` requests. |
 | `BUILDD_ONCE_MAX_WAIT_MS` | no | no | no | Maximum continuous wait for user input before the worker is aborted (exit 1). Default 6h. |
 | `BUILDD_WORKSPACE_ISOLATION_ROOT` | no | no | no | Where the task repo is cloned. Default `<BUILDD_HOME>/once-workspaces`. |
+| `BUILDD_WARM_REPO`, `BUILDD_SNAPSHOT_URL` | no | no | no | Warm repos (above). Set together by the `WorkerAgent` only when its `WARM_REPOS` var is `1`; the URL is the egress-intercepted pseudo-host `https://buildd-snapshots.invalid`. With them the isolated clone is tried before any local checkout. Unset: the runner clones as before. |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER` | no | no | no | Same meaning as on a long-lived runner. Pusher only carries mid-run instructions and answers. The 10s sync covers them without it. |
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never

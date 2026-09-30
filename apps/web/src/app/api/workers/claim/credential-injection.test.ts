@@ -671,3 +671,39 @@ describe('resolveAccountCredentialRefreshes', () => {
     expect(mockSecretsFindMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Agent model endpoint (docs/design/agent-model-endpoint.md §2): for a worker
+ * whose endpoint won the ranking, no Anthropic credential of any kind.
+ */
+describe('endpointWorkers: the endpoint is the only model credential', () => {
+  it('attachServerManagedSecrets: no key or seat, MCP secrets still delivered', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'k', purpose: 'anthropic_api_key', label: null },
+      { id: 'o', purpose: 'oauth_token', label: null },
+      { id: 'm', purpose: 'mcp_credential', label: 'SOME_KEY' },
+    ]);
+    mockProviderGet.mockResolvedValue('decrypted');
+    const workers = [{ ...worker('t1'), task: task('t1', 'claude') }];
+    await attachServerManagedSecrets(workers, 'acc-1', new Set(['w-t1']));
+    expect(workers[0].serverApiKey).toBeUndefined();
+    expect(workers[0].serverOauthToken).toBeUndefined();
+    expect(workers[0].mcpSecrets).toEqual({ SOME_KEY: 'decrypted' });
+  });
+
+  it('attachClaudeCredentials: no Claude token', async () => {
+    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
+    const workers = [worker('t1'), worker('t2')];
+    await attachClaudeCredentials(workers, [task('t1', 'claude'), task('t2', 'claude')], new Set(['w-t1']));
+    expect(workers[0].claudeAccessToken).toBeUndefined();
+    expect(workers[1].claudeAccessToken).toBe('claude-access');
+  });
+
+  it('attachPendingCredentialRefreshes: no per-worker list', async () => {
+    mockSecretsFindMany.mockResolvedValue([{ id: 'sec-1', purpose: 'claude_credential', tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z') }]);
+    const workers = [worker('t1'), worker('t2')];
+    await attachPendingCredentialRefreshes(workers, [task('t1', 'claude'), task('t2', 'claude')], new Set(['w-t1']));
+    expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
+    expect(workers[1].pendingCredentialRefreshes).toHaveLength(1);
+  });
+});

@@ -9,6 +9,7 @@ import { secrets } from '@buildd/core/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4 } from '@buildd/core/inference-keys';
+import type { LookupAll } from '@buildd/core/net/public-address';
 import {
   LITELLM_LABEL, gatewayUrlProblem, normalizeGatewayUrl, parseGateway, serializeGateway, verifyGateway,
 } from '@buildd/core/litellm-gateway';
@@ -50,11 +51,13 @@ export async function getTeamGateway(teamId: string): Promise<MaskedGateway | nu
 }
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+/** Test seam: DNS for the verification call's public-address check. */
+type VerifyDeps = { fetcher?: Fetcher; lookup?: LookupAll };
 
 /** Check, then store. A gateway that rejects the key is never saved. */
 export async function setTeamGateway(
   input: { teamId: string; baseUrl: unknown; apiKey: unknown },
-  deps: { fetcher?: Fetcher } = {},
+  deps: VerifyDeps = {},
 ): Promise<{ ok: true; gateway: MaskedGateway } | { ok: false; status: number; error: string }> {
   if (typeof input.baseUrl !== 'string' || typeof input.apiKey !== 'string') {
     return { ok: false, status: 400, error: 'baseUrl and apiKey are required.' };
@@ -65,8 +68,9 @@ export async function setTeamGateway(
   if (!apiKey || /\s/.test(apiKey)) return { ok: false, status: 400, error: 'That doesn\'t look like a key.' };
 
   const gateway = { baseURL: normalizeGatewayUrl(input.baseUrl), apiKey };
-  const check = await verifyGateway(gateway, { fetcher: deps.fetcher });
+  const check = await verifyGateway(gateway, { fetcher: deps.fetcher, lookup: deps.lookup });
   if (check.health === 'revoked') return { ok: false, status: 400, error: `The gateway rejected this key. ${check.error ?? ''}`.trim() };
+  if (check.blocked) return { ok: false, status: 400, error: `This gateway URL can't be used: ${check.error}.` };
 
   const id = await getSecretsProvider().replaceScoped(serializeGateway(gateway), {
     teamId: input.teamId, purpose: 'inference_key', label: LITELLM_LABEL, userId: null,

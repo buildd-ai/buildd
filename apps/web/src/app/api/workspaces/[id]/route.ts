@@ -14,7 +14,7 @@ import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
-const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry']);
+const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume']);
 
 /**
  * The `webhook_config` keys PATCH manages. The column also carries the issue

@@ -34,7 +34,7 @@ import {
   type DecisionQuestion,
 } from './index';
 import { answerFromProbabilities, chatMessages, chatOptions, probabilitiesFromLogprobs } from './chat-transport';
-import { defineRankSurface } from '../surfaces/index';
+import { defineRankSurface, MIN_GATE_EVAL_ROWS, RANK_SLOT } from '../surfaces/index';
 
 /** One digest per engine version. Append; never edit. */
 const ENGINE_DIGESTS: Record<number, string> = {
@@ -158,9 +158,15 @@ function chatMapping() {
 }
 
 async function ranking() {
-  const s = defineRankSurface({
+  const base = {
     id: 'engine.rank', promptVersion: 'v1', candidates: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
-    question: c => `Offer ${c.id}?`, fallback: () => ['c', 'zz', 'a'], max: 3, mode: 'gated', minConfidence: 0.6,
+    question: (c: { id: string }) => `Offer ${c.id}?`, fallback: () => ['c', 'zz', 'a'], max: 3,
+  } as const;
+  // A gated rank surface needs an eval gate (0.14.0); this one stands in for gateFromEval's output.
+  const fingerprint = defineRankSurface({ ...base, mode: 'shadow' }).slotFingerprint(RANK_SLOT);
+  const s = defineRankSurface({
+    ...base, mode: 'gated',
+    gate: { slot: RANK_SLOT, fingerprint, minConfidence: 0.6, evalRows: MIN_GATE_EVAL_ROWS, heldOutAccuracy: 1, coverage: 1 },
   });
   const ans = (score: number, confidence: number) => ({ type: 'score', score, legend: {}, probabilities: {}, confidence });
   const run = await s.decision.run({

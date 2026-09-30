@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.257.0",
+  "version": "0.258.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -39,6 +39,10 @@
     "./decision-client": "./decision-client.ts",
     "./decision-model": "./decision-model.ts",
     "./litellm-gateway": "./litellm-gateway.ts",
+    "./net/public-address": "./net/public-address.ts",
+    "./net/fetch-public-gateway": "./net/fetch-public-gateway.ts",
+    "./agent-endpoint": "./agent-endpoint.ts",
+    "./openrouter-id": "./openrouter-id.ts",
     "./inference-keys": "./inference-keys.ts",
     "./inference-key-policy": "./inference-key-policy.ts",
     "./conversation-title": "./conversation-title.ts",

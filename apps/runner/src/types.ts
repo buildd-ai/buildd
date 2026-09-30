@@ -340,6 +340,11 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // The team's agent model endpoint (docs/design/agent-model-endpoint.md), when it
+  // won the claim's ranking. The only model credential this worker's agent gets.
+  modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
+  // The claim withheld a winning endpoint because this runner has a per-machine provider.
+  modelEndpointIgnored?: boolean;
   // Managed Claude access token (from claude_credential purpose). When set, the runner
   // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
   // access_token — no refresh_token — preventing in-session token rotation.

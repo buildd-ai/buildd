@@ -1,5 +1,5 @@
 {
-  "id": "23e95180-51e9-4220-bcae-88331ef04304",
+  "id": "57ed4def-72d8-49fa-a5d4-221f3dee56ef",
   "prevId": "fe7bc7ce-0240-43ac-9ca1-46e1012d9400",
   "version": "7",
   "dialect": "postgresql",
@@ -117,30 +117,6 @@
         "api_key_prefix": {
           "name": "api_key_prefix",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "scopes": {
-          "name": "scopes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "workspace_ids": {
-          "name": "workspace_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_used_at": {
-          "name": "last_used_at",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -15347,6 +15323,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "parked_until": {
+          "name": "parked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "result_meta": {
           "name": "result_meta",

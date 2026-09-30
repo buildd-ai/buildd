@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
+import { SNAPSHOT_BUCKET, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
 
 const URL_ = 'https://buildd-cloud-runner.example.workers.dev';
 const DISPATCH = `${URL_}/dispatch`;
@@ -21,18 +21,32 @@ function inputs(over: Partial<DeployInputs> = {}): DeployInputs {
 
 const kinds = (steps: DeployStep[]) => steps.map((s) => (s.kind === 'put_secret' ? `put:${s.name}` : s.kind));
 
+describe('snapshot bucket', () => {
+  it('the bucket step names the bucket bound in wrangler.jsonc and the warm/ lifecycle backstop', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const text = readFileSync(join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+    const cfg = JSON.parse(text) as { r2_buckets: Array<{ binding: string; bucket_name: string }> };
+    expect(cfg.r2_buckets).toEqual([{ binding: 'SNAPSHOTS', bucket_name: SNAPSHOT_BUCKET.name }]);
+    expect(SNAPSHOT_BUCKET.lifecycle).toEqual([
+      { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
+      { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
+    ]);
+  });
+});
+
 describe('planDeploy: first deploy', () => {
   it('deploys, puts all three secrets and points the workspace at /dispatch', () => {
     const p = planDeploy(inputs());
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:BUILDD_API_KEY', 'put:DISPATCH_TOKEN', 'set_webhook']);
+    expect(kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:BUILDD_API_KEY', 'put:DISPATCH_TOKEN', 'set_webhook']);
     const hook = p.steps.find((s) => s.kind === 'set_webhook');
     expect(hook).toMatchObject({ config: { url: DISPATCH, token: GEN, enabled: true } });
     // Opts into every dispatch event: without `events`, buildd sends a webhook
     // only new and unblocked tasks, and a push-only runner never sees a retry.
-    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry'] } });
-    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry']);
+    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] } });
+    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry', 'task.resume']);
     const tok = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
     expect(tok).toMatchObject({ value: GEN });
   });
@@ -61,7 +75,7 @@ describe('planDeploy: idempotent re-run', () => {
     const p = planDeploy(inputs(deployed));
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
     expect(p.notes.join(' ')).toContain('token unchanged');
   });
 
@@ -70,7 +84,7 @@ describe('planDeploy: idempotent re-run', () => {
       ...deployed,
       workspace: { ...deployed.workspace, webhookConfig: { ...deployed.workspace.webhookConfig, events: [...DISPATCH_EVENTS] } },
     }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
   });
 
   it('a webhook set before the events opt-in (no events) is opted in', () => {
@@ -78,7 +92,7 @@ describe('planDeploy: idempotent re-run', () => {
       ...deployed,
       workspace: { ...deployed.workspace, webhookConfig: { ...deployed.workspace.webhookConfig, events: undefined } },
     }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
   });
 
   it('a webhook missing an event is opted in without touching the token', () => {
@@ -88,7 +102,7 @@ describe('planDeploy: idempotent re-run', () => {
     }));
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
+    expect(kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
     const hook = p.steps.find((s) => s.kind === 'set_webhook');
     // No token: PATCH merges, so the stored one stays.
     expect(hook).toMatchObject({ config: { url: DISPATCH, enabled: true, events: [...DISPATCH_EVENTS] } });
@@ -105,7 +119,7 @@ describe('planDeploy: idempotent re-run', () => {
     const p = planDeploy(inputs({ ...deployed, rotate: true }));
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:DISPATCH_TOKEN', 'set_webhook']);
+    expect(kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:DISPATCH_TOKEN', 'set_webhook']);
     expect(p.steps.find((s) => s.kind === 'set_webhook')).toMatchObject({ config: { token: GEN } });
     expect(p.notes.join(' ')).toContain('other workspace');
   });
@@ -198,7 +212,7 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
     const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com/anthropic/', key: PROXY_KEY } }));
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY']);
+    expect(kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY']);
     expect(p.steps.find((s) => s.kind === 'put_secret' && s.name === 'MODEL_PROXY_URL')).toMatchObject({ value: 'https://litellm.example.com/anthropic' });
     const text = describePlan(p).join('\n');
     expect(text).toContain('MODEL_PROXY_URL = https://litellm.example.com/anthropic');
@@ -209,7 +223,7 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
 
   it('puts MODEL_PROXY_AUTH_HEADER when given, lowercased', () => {
     const p = planDeploy(inputs({ ...deployed, modelProxy: { url: 'https://litellm.example.com', key: PROXY_KEY, authHeader: 'X-Api-Key' } }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY', 'put:MODEL_PROXY_AUTH_HEADER']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL', 'put:MODEL_PROXY_KEY', 'put:MODEL_PROXY_AUTH_HEADER']);
     if (!p.ok) return;
     expect(p.steps.find((s) => s.kind === 'put_secret' && s.name === 'MODEL_PROXY_AUTH_HEADER')).toMatchObject({ value: 'x-api-key' });
     expect(describePlan(p).join('\n')).toContain('MODEL_PROXY_AUTH_HEADER = x-api-key');
@@ -243,7 +257,7 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
       ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_KEY'],
       modelProxy: { url: 'https://litellm.example.com' },
     }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_URL']);
   });
 
   it('a key or header alone needs a proxy URL, supplied or already on the Worker', () => {
@@ -253,18 +267,18 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
       ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY'],
       modelProxy: { key: PROXY_KEY },
     }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_KEY']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER', 'put:MODEL_PROXY_KEY']);
   });
 
   it('without proxy flags nothing proxy-related is written, and an existing proxy is noted', () => {
-    expect(kinds((planDeploy(inputs(deployed)) as { steps: DeployStep[] }).steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(kinds((planDeploy(inputs(deployed)) as { steps: DeployStep[] }).steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
     const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY'] }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
     expect(p.ok && p.notes.join(' ')).toContain('MODEL_PROXY_URL');
   });
 
   it('empty strings count as not supplied', () => {
     const p = planDeploy(inputs({ ...deployed, modelProxy: { url: '', key: '', authHeader: '' } }));
-    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+    expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
   });
 });

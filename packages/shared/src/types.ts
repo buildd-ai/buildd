@@ -1287,6 +1287,24 @@ export interface ClaimTasksInput {
    * means a host runner. Any other value is rejected with 400.
    */
   executor?: 'host' | 'cloud';
+  /**
+   * True when this runner has a per-machine model provider (LLM_PROVIDER other
+   * than `anthropic`), which beats the team's agent model endpoint. A boolean
+   * only, never the provider's values.
+   */
+  llmProviderOverride?: boolean;
+}
+
+/** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
+export interface ClaimModelEndpoint {
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
+  baseUrl: string;
+  authToken: string;
+  /** `authorization` ⇒ ANTHROPIC_AUTH_TOKEN (Bearer); `x-api-key` ⇒ ANTHROPIC_API_KEY. */
+  authHeader: 'authorization' | 'x-api-key';
+  /** Native model id → proxy alias (gateway / anthropic-compatible only). */
+  models: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -1487,6 +1505,20 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /**
+     * The team's agent model endpoint, when it won the §2 ranking for this task
+     * (docs/design/agent-model-endpoint.md). When set, serverApiKey,
+     * serverOauthToken, claudeAccessToken and pendingCredentialRefreshes are
+     * absent for this worker: it is the only model credential the agent sees.
+     */
+    modelEndpoint?: ClaimModelEndpoint;
+    /**
+     * True when an endpoint won but the runner reported `llmProviderOverride`:
+     * the machine routes to its own provider, so the key is not sent. Carries
+     * no credential; it only lets the runner log that the team setting was
+     * bypassed.
+     */
+    modelEndpointIgnored?: boolean;
     /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
      *  Kept per-worker because the runner also reads the claude_credential secretId
      *  off it to wire the worker to the broker at spawn time, and because a claim

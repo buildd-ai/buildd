@@ -18,6 +18,9 @@
  * when workerId is given, it is that worker). Repo identity comes from the
  * workspace's github_repos link, never from the free-text workspaces.repo.
  *
+ * The response also carries the task's workspaceId, which the dispatcher uses
+ * to key its per-workspace snapshot store (Phase 2, warm repos).
+ *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4 and open question 1.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -135,6 +138,10 @@ export async function POST(req: NextRequest) {
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
       repository: { owner: repo.owner, name: repo.name, fullName: repo.fullName },
+      // Keys the cloud runner's per-workspace snapshot store (warm repos). It
+      // comes from here, authenticated by the dispatch token, so neither the
+      // container nor the webhook body chooses it.
+      workspaceId: ws.id,
     }, { headers: NO_STORE });
   } catch (err) {
     console.error(`[github-token] mint failed for task ${taskId}:`, err instanceof Error ? err.message : String(err));

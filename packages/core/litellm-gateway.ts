@@ -27,6 +27,11 @@
  * resolver, so the parse/validate helpers load in a plain bun process.
  */
 
+import {
+  LOCAL_DEV_HOSTS, isIpLiteral, isPublicAddress, localDevHostsAllowed, verifyByFetch,
+  type LookupAll, type VerifyOutcome,
+} from './net/public-address';
+
 export const LITELLM_LABEL = 'litellm' as const;
 
 export interface LiteLLMGateway {
@@ -35,17 +40,38 @@ export interface LiteLLMGateway {
   apiKey: string;
 }
 
-/** Why a base URL can't be a gateway, or null. https only, except localhost. */
-export function gatewayUrlProblem(raw: string): string | null {
+/**
+ * Why a base URL can't be a gateway (or an agent endpoint), or null: https
+ * to a host that is not an IP literal outside public space; no userinfo, query
+ * or fragment. http, and the loopback hosts, only outside production
+ * (LOCAL_DEV_HOSTS). Where the host resolves is checked at verification time
+ * (net/public-address).
+ */
+export function gatewayUrlProblem(raw: string, opts: { allowLocal?: boolean } = {}): string | null {
+  const allowLocal = opts.allowLocal ?? localDevHostsAllowed();
+  const trimmed = raw.trim();
   let url: URL;
   try {
-    url = new URL(raw.trim());
+    url = new URL(trimmed);
   } catch {
     return 'That is not a URL.';
   }
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) return 'The gateway URL must use https.';
-  if (url.username || url.password) return 'Put the key in the key field, not in the URL.';
+  if (url.username || url.password || /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(trimmed)) {
+    return 'Put the key in the key field, not in the URL.';
+  }
+  // `new URL` drops a bare `?` or `#`, so check the raw string too.
+  if (url.search || url.hash || trimmed.includes('?') || trimmed.includes('#')) {
+    return 'The URL must not have a query or fragment.';
+  }
+  const host = url.hostname.toLowerCase();
+  if (LOCAL_DEV_HOSTS.includes(host)) {
+    if (!allowLocal) return 'The URL must be a public https address.';
+    return url.protocol === 'https:' || url.protocol === 'http:' ? null : 'The gateway URL must use https.';
+  }
+  if (url.protocol !== 'https:') return 'The gateway URL must use https.';
+  if (host === 'localhost' || host.endsWith('.localhost') || (isIpLiteral(host) && !isPublicAddress(host))) {
+    return 'The URL must be a public https address.';
+  }
   return null;
 }
 
@@ -74,27 +100,20 @@ export function parseGateway(value: string | null | undefined): LiteLLMGateway |
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
- * Check a gateway with its free `GET /models`. 401/403 ⇒ `revoked`; anything
- * else that isn't a 200 is `unknown`, so an outage never marks it dead.
+ * Check a gateway with its free `GET /models` (net/public-address
+ * verifyByFetch: public hosts only, no redirects, no reply text). 401/403 ⇒
+ * `revoked`; anything else that isn't a 2xx is `unknown`, so an outage never
+ * marks it dead. `blocked`: the URL itself may not be used.
  */
 export async function verifyGateway(
   g: LiteLLMGateway,
-  opts: { fetcher?: Fetcher; timeoutMs?: number } = {},
-): Promise<{ health: 'healthy' | 'revoked' | 'unknown'; error: string | null }> {
-  const fetcher = opts.fetcher ?? ((u, i) => fetch(u, i));
-  const scrub = (s: string) => s.split(g.apiKey).join('[key]').slice(0, 200);
-  try {
-    const res = await fetcher(`${g.baseURL}/models`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${g.apiKey}` },
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
-    });
-    if (res.ok) return { health: 'healthy', error: null };
-    if (res.status === 401 || res.status === 403) return { health: 'revoked', error: `gateway rejected the key (HTTP ${res.status})` };
-    return { health: 'unknown', error: `gateway returned HTTP ${res.status}` };
-  } catch (e) {
-    return { health: 'unknown', error: scrub(`could not reach the gateway: ${e instanceof Error ? e.message : String(e)}`) };
-  }
+  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll } = {},
+): Promise<VerifyOutcome> {
+  return verifyByFetch('gateway', `${g.baseURL}/models`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${g.apiKey}` },
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+  }, { fetcher: opts.fetcher, lookup: opts.lookup });
 }
 
 /**
@@ -102,14 +121,24 @@ export async function verifyGateway(
  * first, then the team's. Null when there is none, it can't be decrypted or
  * parsed, or the key policy is `own`. Never throws.
  */
-export async function resolveLiteLLMGateway(opts: { teamId: string; workspaceId?: string | null }): Promise<LiteLLMGateway | null> {
+export async function resolveLiteLLMGateway(
+  opts: { teamId: string; workspaceId?: string | null },
+  /**
+   * `ignoreKeyPolicy`: only for the agent model endpoint's `{ kind: 'gateway' }`
+   * reference (agent-endpoint.ts). The key policy governs server-side inference
+   * spend; agent runs are not bound by it (docs/design/agent-model-endpoint.md §1).
+   */
+  flags: { ignoreKeyPolicy?: boolean } = {},
+): Promise<LiteLLMGateway | null> {
   try {
     const { db } = await import('./db');
     const { secrets } = await import('./db/schema');
     const { and, eq, isNull, or, sql } = await import('drizzle-orm');
     const { decrypt } = await import('./secrets');
-    const { loadInferenceKeyPolicy } = await import('./inference-keys');
-    if ((await loadInferenceKeyPolicy(opts.teamId)) === 'own') return null;
+    if (!flags.ignoreKeyPolicy) {
+      const { loadInferenceKeyPolicy } = await import('./inference-keys');
+      if ((await loadInferenceKeyPolicy(opts.teamId)) === 'own') return null;
+    }
     const rows = await db.query.secrets.findMany({
       where: and(
         eq(secrets.teamId, opts.teamId),
