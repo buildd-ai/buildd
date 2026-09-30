@@ -847,7 +847,10 @@ export async function explainPr(worker: {
     ]);
   }
 
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because)] };
+  // A PR ships through its task, so its gate ledger (merge_base_freshness
+  // rejections, review_verdict deferrals) is the task's.
+  const gateHistory = await loadGateHistory(worker.taskId);
+  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────
