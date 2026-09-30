@@ -1,5 +1,5 @@
 {
-  "id": "1d7615c3-3b30-422d-8d6d-0795d29f6867",
+  "id": "94b9dcb1-e798-4abe-addb-387d859c15ee",
   "prevId": "57ed4def-72d8-49fa-a5d4-221f3dee56ef",
   "version": "7",
   "dialect": "postgresql",
@@ -117,30 +117,6 @@
         "api_key_prefix": {
           "name": "api_key_prefix",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "scopes": {
-          "name": "scopes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "workspace_ids": {
-          "name": "workspace_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_used_at": {
-          "name": "last_used_at",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -12529,6 +12505,12 @@
         "inference_feature_modes": {
           "name": "inference_feature_modes",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled_decision_shadows": {
+          "name": "enabled_decision_shadows",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": false
         },

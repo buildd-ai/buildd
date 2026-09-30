@@ -1,5 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
+import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
@@ -149,6 +150,10 @@ export async function POST(
             );
         }
 
+        // Routing text (role-routing.md §2): validated, never truncated.
+        const routing = parseRoutingPatch(body);
+        if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
+
         const slug = body.slug || generateSlug(name);
 
         if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
@@ -192,7 +197,11 @@ export async function POST(
                     content,
                     contentHash,
                     source: source || null,
-                    metadata: metadata || {},
+                    // A re-register without metadata keeps the row's own (routing
+                    // text, seeded version stamp) instead of wiping it.
+                    metadata: routing.patch
+                        ? applyRoutingPatch(metadata ?? existing.metadata, routing.patch)
+                        : (metadata ?? existing.metadata ?? {}),
                     enabled: enabled !== undefined ? enabled : existing.enabled,
                     ...(model !== undefined ? { model } : {}),
                     ...(allowedTools !== undefined ? { allowedTools } : {}),
@@ -246,7 +255,7 @@ export async function POST(
                 source: source || null,
                 enabled: enabled !== undefined ? enabled : true,
                 origin: 'manual',
-                metadata: metadata || {},
+                metadata: routing.patch ? applyRoutingPatch(metadata, routing.patch) : (metadata || {}),
                 ...(model ? { model } : {}),
                 ...(allowedTools ? { allowedTools } : {}),
                 ...(canDelegateTo ? { canDelegateTo } : {}),

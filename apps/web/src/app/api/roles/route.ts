@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
@@ -91,6 +92,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'name and content are required' }, { status: 400 });
     }
 
+    // Routing text (role-routing.md §2): validated, never truncated.
+    const routing = parseRoutingPatch(body);
+    if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
+
     const teamIds = await getUserTeamIds(user.id);
     if (teamIds.length === 0) {
       return NextResponse.json({ error: 'No team found for user' }, { status: 400 });
@@ -145,6 +150,7 @@ export async function POST(req: NextRequest) {
         source: 'manual',
         origin: 'manual',
         enabled: true,
+        ...(routing.patch ? { metadata: applyRoutingPatch({}, routing.patch) } : {}),
         isRole: isRole !== undefined ? isRole : true,
         ...(model ? { model } : {}),
         ...(allowedTools ? { allowedTools } : {}),
