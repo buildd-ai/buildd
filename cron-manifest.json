@@ -38,6 +38,13 @@
       "method": "GET"
     },
     {
+      "$comment": "Evidence index sweep (docs/specs/byo-evidence-storage.md, 'The evidence corpus'). Indexes evidence_objects rows in index_state queued, and re-drives failed rows past a 1h backoff, into the {workspaceId}:evidence knowledge corpus; this is what makes the best-effort index durable. Hourly at :00, inside the wake window the schedules tick already opens: evidence is searched after a failure, not within minutes of it, so sub-hourly buys nothing. At most 25 rows per run. Sensitive workspaces are marked skipped and never reach the embedder. Empty queue -> one cheap query.",
+      "title": "Buildd: Evidence Index Sweep",
+      "path": "/api/cron/evidence-index",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Experiment enrolment health (packages/core/experiment-health.ts): nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit holding most of an arm, past its duration cap. Pauses an experiment past its cap and sends one Pushover alert listing every unhealthy one. Daily: every finding is measured in days, and a daily cadence is the alert's dedupe. On the hour, inside the wake window the schedules tick already opens. No running experiments -> one cheap query.",
       "title": "Buildd: Experiment Health",
       "path": "/api/cron/experiment-health",

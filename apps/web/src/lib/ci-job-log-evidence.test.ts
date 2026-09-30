@@ -128,7 +128,6 @@ describe('captureCiJobLogEvidence', () => {
       expect(r.backendId).toBe('backend-1');
       expect(r.objectKey).toBe(puts[0].Key);
       expect(r.uploadState).toBe('stored');
-      expect(r.indexState).toBe('skipped');
       expect(r.bytes).toBe(puts[0].Body.length);
       expect(r.sha256).toBe(createHash('sha256').update(stored).digest('hex'));
       expect(r.expiresAt?.toISOString()).toBe('2026-10-14T12:00:00.000Z');
@@ -216,5 +215,25 @@ describe('captureCiJobLogEvidence', () => {
   it('writes a single row when the retry task is its own root', async () => {
     await captureCiJobLogEvidence(input, deps({ findRootTaskId: async () => 'retry-task' }));
     expect(rows).toHaveLength(1);
+  });
+
+  // One object, one index entry: the retry task's row is queued for the
+  // evidence indexer; the root row points at the same object and is not
+  // indexed a second time (its chunks carry rootTaskId anyway).
+  it('queues the retry task\'s row for indexing and skips the root row', async () => {
+    await captureCiJobLogEvidence(input, deps());
+    const byTask = Object.fromEntries(rows.map(r => [r.taskId, r.indexState]));
+    expect(byTask).toEqual({ 'retry-task': 'queued', 'root-task': 'skipped' });
+  });
+
+  it('queues the single row when the retry task is its own root', async () => {
+    await captureCiJobLogEvidence(input, deps({ findRootTaskId: async () => 'retry-task' }));
+    expect(rows.map(r => r.indexState)).toEqual(['queued']);
+  });
+
+  it('never queues a row whose upload failed', async () => {
+    await captureCiJobLogEvidence(input, deps({ getClient: async () => { throw new Error('down'); } }));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(r => r.uploadState === 'failed' && r.indexState === 'skipped')).toBe(true);
   });
 });

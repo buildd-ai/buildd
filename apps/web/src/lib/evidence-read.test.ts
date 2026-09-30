@@ -5,6 +5,8 @@ import {
   MAX_GREP_PATTERN_LENGTH,
   compileGrepPattern,
   decodeEvidenceBody,
+  EvidenceReadError,
+  openEvidenceObject,
   parseEvidenceReadParams,
   readEvidenceText,
 } from './evidence-read';
@@ -238,5 +240,30 @@ describe('decodeEvidenceBody', () => {
     const bad = Buffer.concat([Buffer.from([0x1f, 0x8b]), Buffer.from('not really gzip at all')]);
     const drain = async () => { for await (const _ of decodeEvidenceBody(chunks(bad))) { /* drain */ } };
     await expect(drain()).rejects.toThrow();
+  });
+});
+
+describe('openEvidenceObject', () => {
+  const row = (uploadState: string) => ({
+    id: 'ev-1', workspaceId: 'ws-1', taskId: 't-1', rootTaskId: 't-1', workerId: 'w-1', prNumber: null,
+    kind: 'command_output', backendId: null, objectKey: 'evidence/k.log.gz', bytes: 10, sha256: null,
+    uploadState, indexState: 'queued', expiresAt: null, createdAt: new Date(), updatedAt: new Date(),
+  }) as any;
+  const client = { send: async () => ({ Body: chunks(gzipSync(Buffer.from('hello\n'))) }) };
+
+  it('refuses a pending object by default', async () => {
+    await expect(openEvidenceObject(row('pending'), { client, bucket: 'b' })).rejects.toBeInstanceOf(EvidenceReadError);
+  });
+
+  // Nothing confirms a runner PUT, so the indexer probes a pending row itself.
+  it('opens a pending object when the caller accepts pending', async () => {
+    const body = await openEvidenceObject(row('pending'), { client, bucket: 'b', acceptPending: true });
+    let out = '';
+    for await (const c of body) out += Buffer.from(c).toString();
+    expect(out).toBe('hello\n');
+  });
+
+  it('still refuses a failed object when accepting pending', async () => {
+    await expect(openEvidenceObject(row('failed'), { client, bucket: 'b', acceptPending: true })).rejects.toBeInstanceOf(EvidenceReadError);
   });
 });
