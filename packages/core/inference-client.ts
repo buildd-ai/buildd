@@ -402,7 +402,7 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
         const gatewayFetcher = params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher });
         return await callOpenRouter({
           ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
-          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher,
+          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher as typeof fetch,
         });
       }
       const args = { ...common, apiKey: apiKey!, model: entry.model, fetcher };
