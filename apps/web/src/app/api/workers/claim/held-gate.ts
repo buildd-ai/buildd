@@ -115,6 +115,21 @@ export function taskNotHeld(): SQL {
 }
 
 /**
+ * All three "a person has this" gates at once: TRUE when the task is neither
+ * held itself, nor in a held mission, nor in a local-executor mission (each
+ * honouring its bypass exactly as the claim route does).
+ *
+ * For the sweeps and alerts that ask "why is this pending task not moving?"
+ * (stranded-task sweep, visual audit stall notice, backend-strand probe,
+ * connector-block reminder). Work that fails one of these gates is waiting on a
+ * person by design, so reporting it as stuck is a false alarm. Renders against
+ * the unaliased "tasks" table, like the gates it composes.
+ */
+export function notHeldOrLocal(): SQL {
+  return sql`(${missionNotHeld()} AND ${missionNotLocal()} AND ${taskNotHeld()})`;
+}
+
+/**
  * Per-task check for /api/tasks/[id]/start: returns true when the task's mission
  * is held (and should be blocked), false otherwise. Mirrors the missionNotHeld()
  * SQL gate semantics — both live in this file to keep the implementations together.

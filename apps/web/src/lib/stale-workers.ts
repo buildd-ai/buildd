@@ -10,6 +10,7 @@ import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-w
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
+import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import {
   ANSWER_PATH_REASONS,
   buildContinuationTaskValues,
@@ -1306,6 +1307,9 @@ export function stalledVisualAuditCandidatesWhere(now: Date, missionsTable: type
     lt(tasks.createdAt, new Date(now.getTime() - STALLED_VISUAL_AUDIT_AFTER_MS)),
     isNotNull(missionsTable.conversationId),
     sql`(${tasks.context} -> 'visualQa' ->> 'stallNotifiedAt') is null`,
+    // No runner may take a held audit, or one in a held or local-executor
+    // mission, so "no browser runner" is the wrong thing to tell the chat.
+    notHeldOrLocal(),
     // Dependencies all done (claimableSince's DEP_DONE; a missing row counts
     // as done there too): an audit still waiting on its build is not a
     // candidate, so a long build phase does not hold a slot in the window.

@@ -58,6 +58,12 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The held/local gate renders real SQL against the schema this file stubs;
+// its SQL is asserted in a PgDialect test, so a marker suffices here.
+mock.module('@/app/api/workers/claim/held-gate', () => ({
+  notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
+}));
+
 mock.module('./gate-ledger', () => ({
   fireDeferralEvent: (input: Record<string, unknown>) => {
     firedEvents.push(input);

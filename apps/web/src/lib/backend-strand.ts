@@ -34,7 +34,8 @@
 
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import {
   BACKEND_REGISTRY,
   DISPATCHABLE_BACKENDS,
@@ -77,6 +78,21 @@ export interface BackendStrandSummary {
 }
 
 const DEFAULT_SAMPLE_LIMIT = 5;
+
+/**
+ * Pending tasks in `workspaceIds` (optionally narrowed to stored `backends`)
+ * that a runner could take if it had the credential. Held work, and work in a
+ * held or local-executor mission, is waiting on a person, not a credential, so
+ * the claim route's own gates exclude it here.
+ */
+export function strandedPendingWhere(workspaceIds: string[], backends?: AgentBackend[]): SQL {
+  return and(
+    eq(tasks.status, 'pending'),
+    inArray(tasks.workspaceId, workspaceIds),
+    ...(backends ? [inArray(tasks.backend, backends)] : []),
+    notHeldOrLocal(),
+  )!;
+}
 
 /**
  * Per-backend stranding for one team.
@@ -124,7 +140,7 @@ export async function getBackendStrandSummary(opts: {
       count: sql<number>`count(*)::int`,
     })
     .from(tasks)
-    .where(and(eq(tasks.status, 'pending'), inArray(tasks.workspaceId, opts.workspaceIds)))
+    .where(strandedPendingWhere(opts.workspaceIds))
     .groupBy(tasks.workspaceId, tasks.backend)) as unknown as Array<{
     workspaceId: string;
     backend: string | null;
@@ -157,13 +173,7 @@ export async function getBackendStrandSummary(opts: {
         .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name })
         .from(tasks)
         .leftJoin(workspaces, eq(tasks.workspaceId, workspaces.id))
-        .where(
-          and(
-            eq(tasks.status, 'pending'),
-            inArray(tasks.workspaceId, wsIds),
-            inArray(tasks.backend, [...stored]),
-          ),
-        )
+        .where(strandedPendingWhere(wsIds, [...stored]))
         .orderBy(asc(tasks.createdAt))
         .limit(sampleLimit)) as unknown as StrandedTaskSample[];
       const stat = byBackend.get(effective);

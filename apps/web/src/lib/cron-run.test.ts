@@ -1,4 +1,8 @@
 process.env.NODE_ENV = 'test';
+// This file tests the recorder itself against a mocked db, so it opts back in
+// to recording under NODE_ENV=test. Every other test file gets the default:
+// withCronRun records nothing, so an unmocked db can never receive fixtures.
+process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '1';
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest, NextResponse } from 'next/server';
@@ -83,6 +87,26 @@ describe('withCronRun', () => {
     mockFindMany.mockResolvedValue([]);
     mockNotify.mockClear();
     process.env.CRON_SECRET = SECRET;
+  });
+
+  // ── Test-env safety ────────────────────────────────────────────────────────
+
+  it('records nothing under NODE_ENV=test without the explicit opt-in', async () => {
+    // A route test that forgot to mock the db (pr-reconcile's did) used to
+    // write its fake "DB unavailable" failures into whatever DATABASE_URL the
+    // checkout had loaded, and they read as a real cron error rate.
+    delete process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS;
+    try {
+      const res = await withCronRun('example', reqWith(SECRET), async report => {
+        report({ processed: 1, changed: 1 });
+        return NextResponse.json({ ok: true });
+      });
+      expect(res.status).toBe(200);
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockFindMany).not.toHaveBeenCalled();
+    } finally {
+      process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '1';
+    }
   });
 
   // ── Auth is unchanged ──────────────────────────────────────────────────────
