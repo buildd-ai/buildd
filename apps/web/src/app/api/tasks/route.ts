@@ -983,6 +983,7 @@ export async function POST(req: NextRequest) {
           startAt: true,
           workingBranch: true,
           integrationBranchEnabled: true,
+          workspaceId: true,
         },
       });
       if (!outputRequirement) outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
@@ -990,6 +991,36 @@ export async function POST(req: NextRequest) {
       if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
       missionStartAt = mission?.startAt ?? null;
       missionIntegrationBaseBranch = missionIntegrationBase(mission);
+
+      // A mission with no workspace of its own cannot have its integration
+      // branch cut at mission-create time (there is no repo to cut it in), so
+      // the first task filed into a repo-linked workspace does it — before the
+      // runner claims the task and tries to cut a worktree from a ref that
+      // does not exist. Missions WITH a workspace had the branch ensured at
+      // create/opt-in and by the organizer, so this costs them nothing.
+      if (missionIntegrationBaseBranch && !mission?.workspaceId && workspaceId) {
+        // Lazy: pulls in the GitHub client, which only this rare path needs.
+        const { ensureMissionIntegrationBranch, reportMissionBranchUnresolved } =
+          await import('@/lib/mission-integration-branch');
+        const ensured = await ensureMissionIntegrationBranch(missionId, { workspaceId }).catch(err => ({
+          ok: false as const,
+          reason: 'api_error' as const,
+          detail: err instanceof Error ? err.message : String(err),
+        }));
+        if (!ensured.ok) {
+          await reportMissionBranchUnresolved({
+            missionId,
+            branch: missionIntegrationBaseBranch,
+            where: 'task_create',
+            surface: 'POST /api/tasks',
+            cause: ensured.reason === 'not_opted_in' ? 'missing' : ensured.reason,
+            // The task is still filed; its worktree and PR fall back to trunk.
+            fallback: 'none',
+            detail: ensured.detail ?? null,
+            workspaceId,
+          });
+        }
+      }
     }
 
     // Manifest gate: a mission task whose deliverable is EXPLICITLY declared

@@ -79,7 +79,7 @@ function makeSchedule(overrides: Partial<any> = {}): any {
  * Behavioural contract (prose):
  *   - Only heartbeat schedules (taskTemplate.context.heartbeat === true) alert.
  *   - Only when isOverdue() says so, and only once per cron interval.
- *   - The alert names the linked mission, falling back to the schedule name.
+ *   - The alert names the linked mission by id (schedule id if none), never a title.
  *   - Each alert stamps lastOverdueAlertAt so it self-rate-limits.
  *   - Any throw is swallowed: the cron tick must still return 200.
  */
@@ -108,7 +108,8 @@ describe('runOverdueHeartbeatAlerts', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const arg = (mockNotify.mock.calls[0] as any[])[0];
     expect(arg.app).toBe('alerts');
-    expect(arg.title).toContain('Example Mission');
+    expect(arg.title).toContain('mission-1');
+    expect(`${arg.title} ${arg.message}`).not.toContain('Example Mission');
     expect(arg.message).toContain('90m overdue');
 
     // Without the stamp the alert would re-fire on every cron tick.
@@ -116,13 +117,15 @@ describe('runOverdueHeartbeatAlerts', () => {
     expect(updateCalls[0].set.lastOverdueAlertAt).toBe(NOW);
   });
 
-  it('falls back to the schedule name when no mission is linked', async () => {
+  it('falls back to the schedule id, never its name, when no mission is linked', async () => {
     mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()] as any);
     mockIsOverdue.mockReturnValue(true);
     mockMissionsFindFirst.mockResolvedValue(null as any);
 
     expect(await runOverdueHeartbeatAlerts(NOW)).toBe(1);
-    expect((mockNotify.mock.calls[0] as any[])[0].title).toContain('Fallback Schedule Name');
+    const arg = (mockNotify.mock.calls[0] as any[])[0];
+    expect(arg.title).toContain(`schedule ${makeSchedule().id}`);
+    expect(arg.title).not.toContain('Fallback Schedule Name');
   });
 
   it('ignores non-heartbeat schedules even when they are overdue', async () => {

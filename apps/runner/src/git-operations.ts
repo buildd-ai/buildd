@@ -479,8 +479,8 @@ export async function setupWorktree(
    * The retry's task identity (M1, docs/design/pr-merge-reliability.md). With
    * it, a resume branch still checked out in a TERMINAL prior attempt's
    * retained worktree of the same lineage can be released instead of diverting
-   * to a fresh branch (+ new PR). Gated by BUILDD_RELEASE_LINEAGE_HELD_BRANCH;
-   * off = shadow (log only). `onHolderReleased` must make the holder worker
+   * to a fresh branch (+ new PR). On by default; BUILDD_RELEASE_LINEAGE_HELD_BRANCH=0
+   * is the kill switch to shadow (log only). `onHolderReleased` must make the holder worker
    * non-resumable — its tree is detached under it.
    */
   resumeLineage?: ResumeLineage & { onHolderReleased?: (holderWorkerId: string) => void },

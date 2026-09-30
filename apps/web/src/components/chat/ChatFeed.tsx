@@ -32,7 +32,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
 import { BUILDD_TOOL_CALLS, eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
-import ApprovalCard from './ApprovalCard';
+import ApprovalCard, { ApprovalRows, approvalRows } from './ApprovalCard';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
 import WatchNotice from './WatchNotice';
 import DirectiveCards from './DirectiveCard';
@@ -194,6 +194,12 @@ export default function ChatFeed({
     if (!p) { p = feedSegments(m.parts, { hideEventRefs: hidden.get(m.id) }); plans.set(m.id, p); }
     return p;
   };
+  // A message's writes as one card's rows (two or more), drawn at the first.
+  const rowGroups = new Map<string, ReturnType<typeof approvalRows>>();
+  const rowsOf = (m: ChatMessage) => {
+    if (!rowGroups.has(m.id)) rowGroups.set(m.id, approvalRows(m.parts.filter(isToolPart)));
+    return rowGroups.get(m.id)!;
+  };
   const objectsAfter = (m: ChatMessage, callIds: readonly string[]) => planOf(m)
     .filter((s): s is Extract<FeedSegment, { kind: 'objects' }> => s.kind === 'objects' && callIds.some(id => s.key === `obj-${id}`))
     .map(s => <ObjectsSegment key={s.key} refs={s.refs} />);
@@ -258,6 +264,19 @@ export default function ChatFeed({
         renderTool={(part: ChatToolPart, km: KitMessage) => {
           // Approvals (asked, answered, or decided) are buildd's card, then what the write filed.
           if (!isApprovalPart(part) && !part.approval && part.state !== 'output-denied') return undefined;
+          const group = rowsOf(km as ChatMessage);
+          const members = new Set(group ? [...group.rows, ...group.held].map(p => p.toolCallId) : []);
+          if (group && members.has(part.toolCallId)) {
+            // Drawn at the first of them; the others are already on the card.
+            const first = km.parts.find(p => isToolPart(p as ChatToolPart) && members.has((p as ChatToolPart).toolCallId)) as ChatToolPart;
+            if (first.toolCallId !== part.toolCallId) return null;
+            return (
+              <>
+                <ApprovalRows group={group} />
+                {objectsAfter(km as ChatMessage, group.rows.map(p => p.toolCallId))}
+              </>
+            );
+          }
           return (
             <>
               <ApprovalCard part={part} />

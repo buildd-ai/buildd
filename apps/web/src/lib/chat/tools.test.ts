@@ -245,6 +245,12 @@ describe('descriptions of tools with a typed chat schema', () => {
     for (const f of ['parentTaskId', 'callbackUrl', 'context?']) expect(d).not.toContain(f);
   });
 
+  it('create_task accepts missionId null (standalone) and says how in its description', () => {
+    const t = setup().tools.create_task as any;
+    expect(t.inputSchema.safeParse({ title: 't', description: 'd', missionId: null }).success).toBe(true);
+    expect(t.description).toContain('missionId null');
+  });
+
   it('manage_missions types the fields its ops take', () => {
     const schema = (setup().tools.manage_missions as any).inputSchema;
     expect(schema.safeParse({ action: 'list', query: 'wix' }).success).toBe(true);
@@ -280,6 +286,31 @@ describe('PR reads', () => {
     expect(d).toContain('workspaceId');
     expect((tools.get_pr as any).inputSchema.safeParse({ prNumber: 12, workspaceId: 'ws' }).success).toBe(true);
     expect((tools.get_pr as any).inputSchema.safeParse({ prNumber: '#12' }).success).toBe(true);
+  });
+});
+
+describe('get_pr includeCiFailures in chat', () => {
+  it('is advertised, and reaches the real handler as a query flag on the PR route', async () => {
+    const calls: string[] = [];
+    const tools = buildChatTools({
+      ctx: { getWorkspaceId: async () => null, getLevel: async () => 'admin', surface: 'chat', authType: 'oauth' } as any,
+      allowWrites: false, authorizedToolCallIds: new Set(),
+      handle: handleBuilddAction,
+      makeApi: () => async (endpoint: string) => {
+        calls.push(endpoint);
+        return {
+          pr: { number: 5, title: 't', state: 'open', url: 'u' },
+          checks: { total: 1, passed: 0, failed: 1, pending: 0, state: 'failure', failedChecks: [{ name: 'build', url: 'j' }] },
+          reviews: { approved: 0, changesRequested: 0, pending: 0 },
+          ciFailures: [{ name: 'build', conclusion: 'failure', url: 'j', step: 'Test', excerpt: 'expected 3 received 4' }],
+        };
+      },
+    });
+    const t = tools.get_pr as any;
+    expect(t.inputSchema.safeParse({ prNumber: 5, includeCiFailures: true }).success).toBe(true);
+    const out = await t.execute({ prNumber: 5, includeCiFailures: true }, { toolCallId: 'c', messages: [] });
+    expect(calls[0]).toContain('includeCiFailures=true');
+    expect(JSON.stringify(out)).toContain('expected 3 received 4');
   });
 });
 

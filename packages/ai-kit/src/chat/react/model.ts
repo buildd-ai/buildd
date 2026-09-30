@@ -5,8 +5,10 @@
 
 import {
   isStepPart,
+  isSystemDenied,
   isTextPart,
   isToolPart,
+  parseApprovalPreview,
   toolNameOf,
   type ChatPart,
   type ChatToolPart,
@@ -52,6 +54,29 @@ export function thinkingSteps(parts: readonly ChatPart[], streaming: boolean): S
 /** A tool part that is, or was, an approval card. */
 export function isApprovalPart(part: ChatToolPart): boolean {
   return !!part.approval || part.state === 'approval-requested' || part.state === 'approval-responded' || part.state === 'output-denied';
+}
+
+/**
+ * One assistant message's writes as the rows of one card (0.13.0): `rows` are
+ * the writes that were shown, `held` the ones the server held back (the card
+ * was full). Null when fewer than two rows were shown: a single write keeps
+ * its own card. A write that must stand alone (an admin write's typed
+ * confirmation by default, or whatever `alone` says) is never a row.
+ */
+export interface ApprovalRowGroup {
+  rows: ChatToolPart[];
+  held: ChatToolPart[];
+}
+
+export function approvalRowGroup(
+  parts: readonly ChatPart[],
+  opts: { alone?(part: ChatToolPart): boolean } = {},
+): ApprovalRowGroup | null {
+  const alone = opts.alone ?? (p => !!parseApprovalPreview(p.approval?.requestReason)?.confirmText);
+  const approvals = parts.filter(isToolPart).filter(isApprovalPart);
+  const rows = approvals.filter(p => !isSystemDenied(p) && !alone(p));
+  if (rows.length < 2) return null;
+  return { rows, held: approvals.filter(isSystemDenied) };
 }
 
 export type ToolRowState = 'running' | 'done' | 'failed' | 'awaiting' | 'denied';

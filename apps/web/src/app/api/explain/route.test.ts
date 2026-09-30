@@ -130,7 +130,23 @@ describe('GET /api/explain — scoping', () => {
   });
 
   it('404s a mission in another team', async () => {
-    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: 'other-ws' }));
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: 'other-ws', teamId: 'other-team' }));
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainMission).not.toHaveBeenCalled();
+  });
+
+  it('explains a team-level mission (workspaceId NULL, teamId matches)', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'team-1' }));
+    mockExplainMission.mockImplementation(async () => ({ scope: 'mission', subjects: [{ state: 'active' }] }));
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).scope).toBe('mission');
+    expect(mockExplainMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('404s a team-level mission in another team', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'other-team' }));
     const res = await GET(req(`missionId=${MISSION}`));
     expect(res.status).toBe(404);
     expect(mockExplainMission).not.toHaveBeenCalled();
@@ -226,6 +242,22 @@ describe('GET /api/explain — dashboard session', () => {
     const res = await GET(sessionReq(`taskId=${TASK}`));
     expect(res.status).toBe(404);
     expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('explains a team-level mission via session', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'team-1' }));
+    mockExplainMission.mockImplementation(async () => ({ scope: 'mission', subjects: [{ state: 'active' }] }));
+    const res = await GET(sessionReq(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).scope).toBe('mission');
+    expect(mockExplainMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('404s a team-level mission in another team via session', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'other-team' }));
+    const res = await GET(sessionReq(`missionId=${MISSION}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainMission).not.toHaveBeenCalled();
   });
 
   it('404s a workspace outside the user teams', async () => {

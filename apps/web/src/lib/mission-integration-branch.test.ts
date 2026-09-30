@@ -19,6 +19,8 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockGithubApi = mock(() => Promise.resolve(null as any));
+const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
+const gateEvents: any[] = [];
 
 const noteInserts: any[] = [];
 let noteInsertThrows = false;
@@ -29,6 +31,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
+      tasks: { findMany: mockTasksFindMany },
     },
     insert: (table: any) => ({
       values: (v: any) => {
@@ -49,6 +52,16 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: { __name: 'missionNotes' },
   workspaces: { id: 'id' },
   githubRepos: { id: 'id' },
+  tasks: { missionId: 'missionId' },
+  workerErrorTraces: { __name: 'workerErrorTraces' },
+}));
+
+mock.module('@buildd/core/gate-events', () => ({
+  GATE_SLUGS: { MISSION_BRANCH_UNRESOLVED: 'mission_branch_unresolved' },
+  recordGateEvent: (input: any) => {
+    gateEvents.push(input);
+    return Promise.resolve();
+  },
 }));
 
 mock.module('@/lib/github', () => ({
@@ -58,7 +71,13 @@ mock.module('@/lib/github', () => ({
 import {
   ensureIntegrationBaseForTaskPr,
   ensureMissionIntegrationBranch,
+  resolveMissionRepoWorkspaceId,
 } from './mission-integration-branch';
+import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
+
+/** Mission notes only — error-trace rows go to their own table. */
+const notesOnly = () => noteInserts.filter(n => n.table?.__name === 'missionNotes');
+const tracesOnly = () => noteInserts.filter(n => n.table?.__name === 'workerErrorTraces');
 
 const BRANCH = 'mission/example-slug-0a1b2c3d';
 const REPO_FULL_NAME = 'example-org/example-repo';
@@ -298,7 +317,10 @@ describe('ensureIntegrationBaseForTaskPr', () => {
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
     noteInserts.length = 0;
+    gateEvents.length = 0;
     noteInsertThrows = false;
   });
 
@@ -313,6 +335,7 @@ describe('ensureIntegrationBaseForTaskPr', () => {
     })).toEqual({ usable: true, recreated: false });
     // No note: nothing happened worth announcing on the common path.
     expect(noteInserts).toEqual([]);
+    expect(gateEvents).toEqual([]);
   });
 
   it('re-cuts the deleted branch from trunk and records the decision', async () => {
@@ -333,11 +356,11 @@ describe('ensureIntegrationBaseForTaskPr', () => {
       expect.objectContaining({ method: 'POST' }),
     );
     // And the choice is on the mission feed, naming the branch and the task.
-    expect(noteInserts).toHaveLength(1);
-    expect(noteInserts[0].values.missionId).toBe('m-1');
-    expect(noteInserts[0].values.title).toContain(BRANCH);
-    expect(noteInserts[0].values.body).toContain('Late slice');
-    expect(noteInserts[0].values.body).toContain('SECOND mission PR');
+    expect(notesOnly()).toHaveLength(1);
+    expect(notesOnly()[0].values.missionId).toBe('m-1');
+    expect(notesOnly()[0].values.title).toContain(BRANCH);
+    expect(notesOnly()[0].values.body).toContain('Late slice');
+    expect(notesOnly()[0].values.body).toContain('SECOND mission PR');
   });
 
   it('falls back to trunk — loudly — when the branch cannot be re-cut either', async () => {
@@ -354,9 +377,9 @@ describe('ensureIntegrationBaseForTaskPr', () => {
     });
 
     expect(got.usable).toBe(false);
-    expect(noteInserts).toHaveLength(1);
-    expect(noteInserts[0].values.title).toContain('trunk-branch');
-    expect(noteInserts[0].values.body).toContain('does NOT hold');
+    expect(notesOnly()).toHaveLength(1);
+    expect(notesOnly()[0].values.title).toContain('trunk-branch');
+    expect(notesOnly()[0].values.body).toContain('does NOT hold');
   });
 
   it('does not fail the PR when the note cannot be written', async () => {
@@ -369,5 +392,148 @@ describe('ensureIntegrationBaseForTaskPr', () => {
       missionId: 'm-1',
       integrationBase: BRANCH,
     })).toEqual({ usable: true, recreated: true });
+  });
+});
+
+// ── Regression: a mission created WITHOUT a workspace ────────────────────────
+//
+// Mission 6341fe61: created with no workspace, so `resolveBranchStrategy(null)`
+// defaulted it to mission-branch and a branch name was generated — but
+// `ensureMissionIntegrationBranch` looked only at `missions.workspaceId`, found
+// nothing, and answered `no_repo` on every call. The branch was never created,
+// every task worktree was cut from trunk, and every task PR (merged via its own
+// `buildd/*` branch) silently fell back to trunk.
+
+function withWorkspacelessMission() {
+  mockMissionsFindFirst.mockResolvedValue({
+    workingBranch: BRANCH,
+    integrationBranchEnabled: true,
+    workspaceId: null,
+  });
+  mockWorkspacesFindFirst.mockResolvedValue({
+    githubRepoId: 'repo-1',
+    githubInstallationId: 'inst-row-1',
+    gitConfig: { targetBranch: 'trunk-branch' },
+  });
+  mockGithubReposFindFirst.mockResolvedValue({
+    fullName: REPO_FULL_NAME,
+    defaultBranch: 'trunk-branch',
+    installation: { installationId: 4242 },
+  });
+}
+
+describe('a mission with no workspace whose tasks live in a repo-linked one', () => {
+  beforeEach(() => {
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    noteInserts.length = 0;
+    gateEvents.length = 0;
+    noteInsertThrows = false;
+  });
+
+  it('recovers: create_pr cuts the absent branch from trunk in the TASK workspace repo', async () => {
+    withWorkspacelessMission();
+    createPathWith({ resolves: { ref: `refs/heads/${BRANCH}` } });
+
+    const got = await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+      taskTitle: 'docs slice',
+      fallbackBase: 'trunk-branch',
+      workspaceId: 'ws-task',
+      taskId: 't-1',
+      workerId: 'w-1',
+    });
+
+    expect(got).toEqual({ usable: true, recreated: true });
+    // The repo was looked up through the task's workspace, not the mission's (null).
+    expect((mockWorkspacesFindFirst.mock.calls[0] as any[])[0].where.value).toBe('ws-task');
+    expect(mockGithubApi).toHaveBeenCalledWith(
+      4242,
+      `/repos/${REPO_FULL_NAME}/git/refs`,
+      expect.objectContaining({ method: 'POST' }),
+    );
+    // Traced, even though it recovered: `recut_from_trunk` is the fallback taken.
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({
+      gate: 'mission_branch_unresolved',
+      outcome: 'warned',
+      missionId: 'm-1',
+      workerId: 'w-1',
+      detail: expect.objectContaining({ branch: BRANCH, where: 'create_pr', cause: 'missing', fallback: 'recut_from_trunk' }),
+    });
+    expect(tracesOnly()).toHaveLength(1);
+    expect(tracesOnly()[0].values).toMatchObject({ workerId: 'w-1', taskId: 't-1', pattern: 'mission_branch_unresolved' });
+    expect(tracesOnly()[0].values.excerpt).toContain(BRANCH);
+  });
+
+  it('falls back to the one workspace the mission tasks share when no caller workspace is given', async () => {
+    mockTasksFindMany.mockResolvedValue([{ workspaceId: 'ws-task' }, { workspaceId: 'ws-task' }]);
+    expect(await resolveMissionRepoWorkspaceId({ missionId: 'm-1', missionWorkspaceId: null }))
+      .toEqual({ workspaceId: 'ws-task' });
+  });
+
+  it('refuses to guess when the tasks span several workspaces', async () => {
+    mockTasksFindMany.mockResolvedValue([{ workspaceId: 'ws-a' }, { workspaceId: 'ws-b' }]);
+    const got = await resolveMissionRepoWorkspaceId({ missionId: 'm-1', missionWorkspaceId: null });
+    expect(got.workspaceId).toBeNull();
+    expect(got.detail).toContain('2 workspaces');
+  });
+
+  it('when recovery is impossible: PR falls back to trunk with an actionable note naming the mission and branch, and a stranded trace', async () => {
+    withWorkspacelessMission();
+    // Nothing anywhere names a workspace: no caller hint, no task workspace.
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const got = await ensureIntegrationBaseForTaskPr({
+      missionId: '6341fe61-mission-a',
+      integrationBase: BRANCH,
+      taskTitle: 'docs slice',
+      fallbackBase: 'trunk-branch',
+      workerId: 'w-1',
+      taskId: 't-1',
+    });
+
+    expect(got.usable).toBe(false);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    const note = notesOnly()[0].values;
+    expect(note.title).toContain(BRANCH);
+    expect(note.body).toContain('6341fe61');
+    expect(note.body).toContain('no_repo');
+    expect(note.body).toContain('**To fix:**');
+    expect(note.body).toContain('workspaceId');
+    expect(gateEvents[0]).toMatchObject({
+      gate: 'mission_branch_unresolved',
+      outcome: 'stranded',
+      detail: expect.objectContaining({ cause: 'no_repo', fallback: 'trunk_pr_base', where: 'create_pr' }),
+    });
+  });
+
+  it('groups repeats: two missions/branches hitting the same failure share one signature', async () => {
+    withWorkspacelessMission();
+    mockTasksFindMany.mockResolvedValue([]);
+    await ensureIntegrationBaseForTaskPr({ missionId: 'm-1', integrationBase: BRANCH, workerId: 'w-1' });
+    mockMissionsFindFirst.mockResolvedValue({
+      workingBranch: 'mission/another-mission-9f8e7d6c',
+      integrationBranchEnabled: true,
+      workspaceId: null,
+    });
+    await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-2', integrationBase: 'mission/another-mission-9f8e7d6c', workerId: 'w-2',
+    });
+
+    expect(gateEvents).toHaveLength(2);
+    // Same gate reason → same friction signature, i.e. one rollup row, not two singletons.
+    expect(gateEvents[0].reason).toBe(gateEvents[1].reason);
+    expect(gateFrictionSignature(gateEvents[0].gate, gateEvents[0].reason))
+      .toBe(gateFrictionSignature(gateEvents[1].gate, gateEvents[1].reason));
+    // And the error-trace pattern (what get_error_traces GROUPs BY) is the same.
+    expect(tracesOnly().map(t => t.values.pattern)).toEqual(['mission_branch_unresolved', 'mission_branch_unresolved']);
+    // The variable parts live in detail, not in the identity.
+    expect(gateEvents[0].detail.branch).not.toBe(gateEvents[1].detail.branch);
   });
 });

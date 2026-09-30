@@ -110,6 +110,13 @@ export const GATE_SLUGS = {
    * into.
    */
   CHAT_RETRO_PROPOSAL: 'chat_retro_proposal',
+  /**
+   * A mission's integration branch could not be resolved on the remote —
+   * `detail.where` says which path hit it, `detail.fallback` what it did
+   * instead (re-cut from trunk, PR to trunk, nothing). The same string is the
+   * runner's error-trace pattern; see `@buildd/core/mission-branch-trace`.
+   */
+  MISSION_BRANCH_UNRESOLVED: 'mission_branch_unresolved',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

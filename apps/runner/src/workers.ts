@@ -96,6 +96,8 @@ import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBr
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
 import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
+import { describeWorktreeFallback } from '@buildd/core/mission-branch-trace';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import {
   resumeAtForReset,
   claimHealth,
@@ -2064,17 +2066,26 @@ export class WorkerManager {
         // (see startWithPersistedBranch below), since create_pr derives its head
         // from workers.branch rather than the claim-time prediction.
         worker.branch = setupResult.branch;
-        // Fallback warning: resume branch was missing/diverged — make it visible
-        // rather than silently starting fresh.
+        // Fallback warning: the resume branch or the declared base was
+        // missing/diverged — make it visible rather than silently starting
+        // fresh. A missing MISSION INTEGRATION branch gets its own signature
+        // (`mission_branch_unresolved`): it is not retry noise, it means every
+        // task of that mission is landing on trunk.
         if (setupResult.fallback) {
           const { candidate, reason } = setupResult.fallback;
-          const label = `Resume branch ${reason}: ${candidate} — starting fresh from ${defaultBranch}`;
-          console.warn(`[Worker ${worker.id}] ${label}`);
-          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          const described = describeWorktreeFallback({
+            candidate,
+            reason,
+            defaultBranch,
+            integrationBase: missionIntegrationBase(fullTask.mission),
+            missionId: fullTask.missionId ?? null,
+          });
+          console.warn(`[Worker ${worker.id}] ${described.label}`);
+          this.addMilestone(worker, { type: 'status', label: described.label, ts: Date.now() });
           this.buildd.updateWorker(worker.id, {
             appendErrorTraces: [{
-              pattern: 'resume_branch_fallback',
-              excerpt: `Branch "${candidate}" was ${reason} on remote — starting fresh from "${defaultBranch}". A new PR will be opened instead of updating the existing one.`,
+              pattern: described.pattern,
+              excerpt: described.excerpt,
               source: 'git-operations',
             }],
           }).catch(() => {});

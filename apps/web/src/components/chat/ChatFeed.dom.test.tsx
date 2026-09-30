@@ -65,6 +65,68 @@ const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[
 /** A Thinking panel row's visible label (the kit adds a screen-reader state after it). */
 const stepText = (li: HTMLElement) => li.querySelector('.kit-step-mark + span')?.textContent?.trim();
 
+// One card per turn, a row per write (docs/design/chat-write-approval-v2.md).
+describe('approval rows', () => {
+  const rows = () => qa('[data-testid="kit-approval-row"]');
+
+  it('three writes in one turn are one card with three rows, all checked', async () => {
+    await render(fixtures.chatFixture('rows').messages as Msgs);
+    expect(qa('[data-testid="approval-rows"]')).toHaveLength(1);
+    expect(qa('[data-testid="approval-card"]')).toHaveLength(0);
+    expect(q('[data-testid="approval-rows"]')!.dataset.rows).toBe('3');
+    // Three tasks in one mission: the headline says where, each row what it files.
+    expect(q('[data-testid="approval-rows"] .kit-card-title')!.textContent).toBe('New task in Multi-currency invoices · 3');
+    expect(rows().map(r => r.querySelector('.kit-apr-title')!.textContent)).toEqual(fixtures.chatFixture('rows').messages.at(-1)!.parts.filter(p => p.type === 'tool-create_task').map(p => (p as { input: { title: string } }).input.title));
+    expect(rows()[0].querySelector('.kit-apr-note')!.textContent).toBe('Brief: A follow-up from the currency review.');
+    expect(qa('[data-testid="kit-approval-row-check"]').every(c => (c as HTMLInputElement).checked)).toBe(true);
+    expect(q('[data-testid="kit-approval-confirm"]')!.textContent).toBe('Confirm 3');
+  });
+
+  it('one Confirm answers every row; an unchecked row is declined, not run', async () => {
+    await render(fixtures.chatFixture('rows').messages as Msgs);
+    await act(async () => { (qa('[data-testid="kit-approval-row-check"]')[1] as HTMLInputElement).click(); });
+    await act(async () => { q('[data-testid="kit-approval-confirm"]')!.click(); });
+    expect(calls).toEqual([['approval-row-0', true], ['approval-row-1', false], ['approval-row-2', true]]);
+  });
+
+  it('Discard all declines every row', async () => {
+    await render(fixtures.chatFixture('rows').messages as Msgs);
+    await act(async () => { q('[data-testid="kit-approval-deny"]')!.click(); });
+    expect(calls).toEqual([['approval-row-0', false], ['approval-row-1', false], ['approval-row-2', false]]);
+  });
+
+  it('a full card: eight rows, and the ninth is "not proposed yet", never "discarded"', async () => {
+    await render(fixtures.chatFixture('rows-full').messages as Msgs);
+    expect(rows()).toHaveLength(9);
+    expect(qa('[data-testid="kit-approval-row-check"]')).toHaveLength(8);
+    expect(rows()[8].dataset.outcome).toBe('held');
+    expect(rows()[8].textContent).toContain('not proposed yet · the card is full');
+    expect(container.textContent).not.toMatch(/discarded/i);
+    expect(q('[data-testid="kit-approval-confirm"]')!.textContent).toBe('Confirm 8');
+  });
+
+  it('answered: each row says how it went, and what ran renders after the card', async () => {
+    await render(fixtures.chatFixture('rows-done').messages as Msgs);
+    expect(rows().map(r => r.dataset.outcome)).toEqual(['ran', 'changed', 'discarded', 'ran']);
+    expect(rows()[1].textContent).toContain('changed since shown');
+    expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
+    const card = q('[data-testid="approval-rows"]')!;
+    const task = q('[data-testid="object-card"][data-kind="task"]');
+    expect(task).not.toBeNull();
+    expect(card.compareDocumentPosition(task!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a mission draft never joins the rows: it keeps its own full card', async () => {
+    const msgs = fixtures.chatFixture('propose').messages as Msgs;
+    const rowsMsg = (fixtures.chatFixture('rows').messages as Msgs).at(-1)!;
+    const last = msgs.at(-1)!;
+    const mixed = [...msgs.slice(0, -1), { ...last, parts: [...last.parts, ...rowsMsg.parts.filter(p => p.type !== 'text').map((p, i) => ({ ...p, toolCallId: `row-${i}` }))] }] as Msgs;
+    await render(mixed);
+    expect(qa('[data-kind="mission"]')).toHaveLength(1);
+    expect(qa('[data-testid="approval-rows"] [data-testid="kit-approval-row"]')).toHaveLength(3);
+  });
+});
+
 describe('approval card', () => {
   it('once filed, the row names it in words and nothing around it says it is unfiled', async () => {
     await render(fixtures.chatFixture('confirmed').messages as Msgs);
@@ -152,15 +214,15 @@ describe('approval card', () => {
     expect(q('[data-kind="mission"]')).toBeNull();
   });
 
-  // Two writes in one turn: the cap refused the second before any card was
-  // shown. It used to read "discarded · nothing filed", as if the person had
+  // A new mission's draft stands alone, so a second write that turn waited.
+  // It used to read "discarded · nothing filed", as if the person had
   // discarded something they never saw.
-  it('a write the one-card cap refused is "not proposed", never "discarded"', async () => {
+  it('a write held back by a mission draft\'s card is "not proposed yet", never "discarded"', async () => {
     await render(fixtures.chatFixture('capped').messages as Msgs, 'confirmed');
     const capped = q('[data-testid="approval-card"]')!;
     expect(capped.dataset.state).toBe('skipped');
     expect(capped.querySelector('.kit-card-title')?.textContent).toBe('New task');
-    expect(capped.textContent).toContain('not proposed · one change per turn');
+    expect(capped.textContent).toContain('not proposed yet · another card is up');
     expect(container.textContent).not.toMatch(/discarded/i);
     // The first write still reads approved.
     expect(qa('[data-testid="tool-call-row"]').some(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'))).toBe(true);

@@ -1626,7 +1626,7 @@ describe('GET /api/cron/schedules', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
       app: 'alerts',
-      title: expect.stringContaining('My Mission'),
+      title: expect.stringContaining('mission-1'),
       message: expect.stringContaining('overdue'),
     }));
 
@@ -1648,7 +1648,7 @@ describe('GET /api/cron/schedules', () => {
 
     expect(body.overdueHeartbeatAlerts).toBe(1);
     expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
-      title: expect.stringContaining('Finance Heartbeat'),
+      title: expect.stringContaining('schedule sched-overdue'),
     }));
   });
 

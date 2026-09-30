@@ -42,6 +42,7 @@ import {
 import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -494,14 +495,25 @@ export async function openMissionIntegrationPr(
     return { ok: false, reason: 'work_incomplete', detail: work.reason };
   }
 
-  const workspace = mission.workspaceId
+  // Same rule the branch ensurer uses: a mission created without a workspace
+  // resolves to the one workspace its tasks share, instead of answering
+  // `no_repo` on every sweep for a branch that lives in a perfectly good repo.
+  const repoWorkspace = await resolveMissionRepoWorkspaceId({
+    missionId,
+    missionWorkspaceId: mission.workspaceId,
+  });
+  const workspace = repoWorkspace.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: eq(workspaces.id, repoWorkspace.workspaceId),
         columns: { id: true, githubRepoId: true, githubInstallationId: true, gitConfig: true },
       })
     : null;
   if (!workspace?.githubRepoId || !workspace.githubInstallationId) {
-    return { ok: false, reason: 'no_repo', detail: 'workspace not linked to a GitHub repo' };
+    return {
+      ok: false,
+      reason: 'no_repo',
+      detail: repoWorkspace.detail ?? 'workspace not linked to a GitHub repo',
+    };
   }
 
   const repo = await db.query.githubRepos.findFirst({
@@ -578,7 +590,20 @@ export async function openMissionIntegrationPr(
   // caller reporting `api_error` and leaving a PR nobody can merge from the
   // dashboard — which is what the insert-before-POST ordering below was
   // supposed to make recoverable and did not.
-  const adoptable = await findOpenPrForBranch(installationId, repo.fullName, branch, base);
+  let adoptable = await findOpenPrForBranch(installationId, repo.fullName, branch, base);
+
+  // If no open PR and buildd has no record of creating one, check whether a
+  // manually-merged PR exists. This handles the case where a squash-merge was done
+  // outside buildd, the branch still exists (ahead_by > 0), but the PR is merged.
+  // Without this check, we would try to create a duplicate PR via POST /pulls.
+  if (!adoptable && !owner) {
+    const merged = await findMergedPrForBranch(installationId, repo.fullName, branch, base);
+    if (merged) {
+      return adoptMergedMissionPr({
+        missionId, mission, workspaceId: workspace.id, branch, base, trunk, pr: merged,
+      });
+    }
+  }
 
   const ownerWorker = await ensureMissionPrOwnerRows({
     missionId, missionTitle: mission.title, workspaceId: workspace.id, branch, base,

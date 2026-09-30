@@ -461,6 +461,64 @@ describe("evaluateGoalCriteria — all_prs_merged under Option A'", () => {
     expect(state.criteria[0].verdict).toBe('pass');
     expect(state.criteria[0].evidence).toContain('All 1 task PR(s) merged');
   });
+
+  // Regression (mission 6341fe61): the integration branch was never created,
+  // so every task PR fell back to trunk and merged there via its own
+  // `buildd/*` branch. There is nothing on the integration branch and there
+  // will never be a mission PR; the criterion read UNVERIFIED forever with
+  // evidence claiming the PRs merged into a branch that did not exist.
+  it('passes when every task PR merged straight into trunk because the integration branch was never used', () => {
+    const TASK_B = { id: 'task-b', status: 'completed', taskClass: 'work', title: 'Review follow-up' };
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, TASK_B],
+        workers: [
+          taskPrWorker({ prBaseRef: TRUNK, branchName: 'buildd/aaaa-docs' }),
+          taskPrWorker({ taskId: 'task-b', prUrl: 'https://github.example/pr/2', prBaseRef: TRUNK, branchName: 'buildd/bbbb-docs' }),
+        ],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.criteria[0].evidence).toContain(`merged directly into \`${TRUNK}\``);
+    expect(state.criteria[0].evidence).toContain('no mission PR to wait for');
+    expect(state.criteria[0].evidence).not.toContain('no PR into trunk');
+  });
+
+  it('still waits for the mission PR when even one task PR landed on the integration branch', () => {
+    const TASK_B = { id: 'task-b', status: 'completed', taskClass: 'work', title: 'Second slice' };
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, TASK_B],
+        workers: [
+          taskPrWorker({ prBaseRef: TRUNK }),
+          taskPrWorker({ taskId: 'task-b', prUrl: 'https://github.example/pr/2' }),
+        ],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+  });
+
+  it('does not read a task PR with an unknown base as having landed on trunk', () => {
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({ tasks: [TASK_PR_TASK], workers: [taskPrWorker({ prBaseRef: null })] }),
+    );
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+  });
+
+  it('still fails a trunk-based task PR that has not merged', () => {
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({ tasks: [TASK_PR_TASK], workers: [taskPrWorker({ prBaseRef: TRUNK, mergedAt: null })] }),
+    );
+    expect(state.criteria[0].verdict).toBe('fail');
+  });
 });
 
 describe('evaluateGoalCriteria — all_prs_merged counts PRs, not worker rows', () => {

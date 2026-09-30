@@ -495,7 +495,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
@@ -2266,12 +2266,14 @@ export async function handleBuilddAction(
       if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
 
       const includeComments = params.includeComments === true;
+      const includeCiFailures = params.includeCiFailures === true;
 
       const parts: string[] = [];
       if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
       if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
       if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
       if (includeComments) parts.push('includeComments=true');
+      if (includeCiFailures) parts.push('includeCiFailures=true');
 
       const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
 
@@ -2330,6 +2332,24 @@ export async function handleBuilddAction(
           })()
         : '';
 
+      // Log excerpts are already cleaned and redacted by the route; the fence
+      // is the only thing to defend here.
+      const ciFailuresSection = includeCiFailures
+        ? (() => {
+            const f = Array.isArray(data.ciFailures)
+              ? data.ciFailures as Array<{ name: string; url: string | null; step: string | null; excerpt: string | null }>
+              : [];
+            if (f.length === 0) return '\n\nNo failing checks to read logs for.';
+            const blocks = f.map((c) => {
+              const head = `**CI failure: ${c.name}**${c.step ? ` — failing step: ${c.step}` : ''}${c.url ? `\n${c.url}` : ''}`;
+              return c.excerpt
+                ? `${head}\n\`\`\`\n${c.excerpt.replace(/\`\`\`/g, "'''")}\n\`\`\``
+                : `${head}\n(no log available)`;
+            });
+            return `\n\n${blocks.join('\n\n')}`;
+          })()
+        : '';
+
       return text([
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
@@ -2341,6 +2361,7 @@ export async function handleBuilddAction(
         `URL: ${pr.url}`,
         bodyPreview,
         commentsSection,
+        ciFailuresSection,
       ].filter(Boolean).join('\n'));
     }
 

@@ -2668,8 +2668,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
 
-      notifyOperator({
-        app: 'alerts',
+      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release merge failed — ${repoFullName}#${prNumber}`,
         message: errMsg,
         priority: 1,
@@ -2722,8 +2721,7 @@ async function handleReleasePrCiFailure(
         })
         .where(eq(tasks.id, task.id));
 
-      notifyOperator({
-        app: 'alerts',
+      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release CI failed — ${repoFullName}#${pr.number}`,
         message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
         priority: 1,
@@ -2857,8 +2855,7 @@ async function handleWorkflowRunEvent(event: {
   );
 
   if (!succeeded) {
-    notifyOperator({
-      app: 'alerts',
+    void notifyTeamOf({ taskId: matchingTask.id }, 'needsAttention', {
       title: `Release workflow failed — ${run.name}`,
       message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,
       url: run.html_url,

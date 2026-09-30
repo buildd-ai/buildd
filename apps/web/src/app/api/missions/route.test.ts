@@ -65,8 +65,11 @@ const mockEnsureMissionIntegrationBranch = mock(() =>
 const mockResolveFeedActor = mock(() => Promise.resolve({ kind: 'system', id: null, label: 'system' } as any));
 const mockPostMissionFeedEvent = mock(() => Promise.resolve());
 
+const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+  missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
+  reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
 mock.module('@/lib/mission-feed', () => ({
@@ -804,6 +807,29 @@ describe('POST /api/missions', () => {
     const feedCall = mockPostMissionFeedEvent.mock.calls[0][0] as any;
     expect(feedCall.missionId).toBe('obj-1');
     expect(feedCall.body).toContain('api_error');
+    // Actionable, and traced under the one stable signature.
+    expect(feedCall.body).toContain('**To fix:**');
+    expect(mockReportMissionBranchUnresolved).toHaveBeenCalledTimes(1);
+    const trace = mockReportMissionBranchUnresolved.mock.calls[0][0] as any;
+    expect(trace).toMatchObject({ missionId: 'obj-1', where: 'mission_create', cause: 'api_error', fallback: 'none' });
+    expect(trace.branch).toBe(updatedMissionValues.workingBranch);
+  });
+
+  it('a workspace-less mission-branch mission defers the branch instead of reporting a no_repo dead end', async () => {
+    // Regression (mission 6341fe61): no workspace → resolveBranchStrategy(null)
+    // defaults to mission-branch, and the create-time ensure could only ever
+    // answer no_repo. The branch is cut later, from the first task's workspace.
+    mockReportMissionBranchUnresolved.mockClear();
+    const res = await POST(new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Team level mission', branchStrategy: 'mission-branch' }),
+    }));
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+    expect(updatedMissionValues.workingBranch).toMatch(/^mission\//);
+    expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+    expect(mockReportMissionBranchUnresolved).not.toHaveBeenCalled();
   });
 
   it('still succeeds when auto-start organizer fails', async () => {
