@@ -2840,3 +2840,37 @@ export interface ListPrsResponse {
   sinceDays?: number;
   prs: PrListItem[];
 }
+
+/** Aggregate coordination telemetry; no worker, user or cost details. */
+export interface CoordinationMetricFilters {
+  window: '24h' | '7d' | '30d';
+  windowStart: string;
+  workspaceIds: string[];
+  missionId: string | null;
+}
+export interface ManifestCoverageCounts {
+  total: number;
+  concrete: number;
+  advisory: number;
+  none: number;
+  /** Fraction in [0, 1]; null for an empty population. */
+  concreteShare: number | null;
+}
+export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
+}
+export interface PathClaimCallCounts {
+  claimed: number;
+  blocked: number;
+  deadlock: number;
+  rejected: number;
+}
+export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  calls: number;
+  bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
+  coverage: { completeHistoricalCalls: boolean; note: string };
+}
+export interface CoordinationStats {
+  manifestCoverage: ManifestCoverageStats;
+  pathClaims: PathClaimStats;
+}

@@ -38,9 +38,9 @@ describe('no action is lost', () => {
     }
   });
 
-  it('fleet-health reads are in the runners group', () => {
-    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats']) {
-      expect(mcpGroupOf(a)).toBe('runners');
+  it('observability reads are in the analytics group', () => {
+    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats', 'get_budget_forecast', 'get_manifest_coverage', 'get_path_claim_stats']) {
+      expect(mcpGroupOf(a)).toBe('analytics');
     }
   });
 
@@ -170,7 +170,7 @@ describe('typed params', () => {
   });
 
   it('runners, tasks: the common fields', () => {
-    const r = props('runners', actionsOfGroup('runners'));
+    const r = props('analytics', actionsOfGroup('analytics'));
     expect(r.workspaceId.description!.toLowerCase()).toContain('browser');
     const t = props('tasks', actionsOfGroup('tasks'));
     for (const n of ['taskId', 'workspaceId', 'status', 'limit', 'include', 'title', 'priority']) expect(t[n], n).toBeDefined();

@@ -192,3 +192,13 @@ describe('buildGateReasonFamily', () => {
     expect(buildGateReasonFamily(events, 'Completion refused:').known).toBe(true);
   });
 });
+
+it('excludes accepted path claims from gate friction totals and reason families', () => {
+  const accepted = ev({ outcome: 'accepted', gate: 'path_claim', reason: 'paths successfully claimed' });
+  const rejected = ev({ outcome: 'rejected', gate: 'path_claim', reason: 'overlap' });
+  const report = computeGateAnalytics({ window: '7d', now: NOW, events: [accepted, rejected] });
+  expect(report.totals.events).toBe(1);
+  expect(report.gates[0].count).toBe(1);
+  expect(report.gates[0].outcomes.bypassed).toBe(0);
+  expect(buildGateReasonFamily([accepted], 'paths')).toMatchObject({ count: 0 });
+});

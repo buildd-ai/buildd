@@ -242,6 +242,36 @@ describe('DEFAULT_ROLES', () => {
     expect(bySlug.analyst.model).toBe('sonnet');
   });
 
+  describe('Analyst analytics consumer tools', () => {
+    const role = () => bySlug.analyst;
+
+    it('uses grouped analytics and lifecycle tools with knowledge tools', () => {
+      for (const tool of ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn']) {
+        expect(role().allowedTools).toContain(tool);
+      }
+      expect(role().allowedTools).not.toContain('mcp__buildd__buildd');
+      expect(bySlug.builder.allowedTools).not.toContain('mcp__buildd__buildd_analytics');
+    });
+
+    it('documents aggregate metrics and narrower detail access', () => {
+      expect(role().content).toContain('get_manifest_coverage');
+      expect(role().content).toContain('get_path_claim_stats');
+      expect(role().content).toContain('family: "gate"');
+      expect(role().content).toContain('analytics:read');
+      expect(role().content).toMatch(/per-user/i);
+      expect(role().content).toContain('cost detail');
+    });
+
+    it('resyncs the previous unedited analyst prompt', () => {
+      expect(role().version).toBeGreaterThanOrEqual(2);
+      expect(role().supersededContentHashes).toHaveLength(1);
+      expect(planDefaultRoleResync([{
+        id: 'analyst-row', slug: 'analyst', source: 'system',
+        contentHash: role().supersededContentHashes[0], metadata: { defaultRoleVersion: 1 },
+      }])).toHaveLength(1);
+    });
+  });
+
   it('no role defaults to `inherit` — model must be explicit for routing', () => {
     for (const role of DEFAULT_ROLES) {
       expect(role.model).not.toBe('inherit');

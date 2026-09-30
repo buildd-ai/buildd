@@ -68,6 +68,8 @@ export const GATE_SLUGS = {
   REVIEW_VERDICT: 'review_verdict',
   /** check_path_claim — wildcard refusal and real-overlap deferral. */
   PATH_CLAIM: 'path_claim',
+  /** create_pr — a delivered warning note about overlapping open change intents. */
+  CHANGE_INTENT: 'change_intent',
   /** request_pr_review — one reviewer per PR at a time. */
   REVIEWER_SINGLE_FLIGHT: 'reviewer_single_flight',
   /** POST /api/workers/claim — a candidate task examined and deferred in the dispatch loop, or a claim attempt itself refused. Also carries the stranded-task sweep's `outcome: 'stranded'` rows. */
