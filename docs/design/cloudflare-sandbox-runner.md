@@ -1,6 +1,8 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# Components 1-4 have shipped (run-once, the image, apps/cloud-runner, the
+# egress handler). The canary (implementation step 6) has not run.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -10,10 +12,17 @@ assertions:
     type: "symbol"
     name: "WorkerAgent"
     path: "apps/cloud-runner/src/worker-agent.ts"
+  - id: "cloud-egress-handler"
+    type: "symbol"
+    name: "EgressHandler"
+    path: "apps/cloud-runner/src/egress.ts"
+  - id: "cloud-canary-script"
+    type: "test_file"
+    path: "apps/cloud-runner/scripts/canary.sh"
 ---
 # Cloudflare Agents Runner
 
-**Status:** Proposed
+**Status:** Partially implemented (Components 1-4; canary pending)
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
@@ -163,6 +172,12 @@ the container API, which is the Sandbox SDK pattern.
   GitHub App installation token scoped to the task's repo.
 - Everything else passes through (open egress in phase 1). Allowlisting is a
   per-workspace follow-up.
+- As built: rules in `apps/cloud-runner/src/outbound.ts`, handler
+  `EgressHandler` in `src/egress.ts`. The token comes from
+  `POST /api/runner/github-token` (open question 1, server-minted), which
+  also requires the workspace's dispatch token so the container cannot fetch
+  it with its own API key. Cloud claims (`executor: 'cloud'`) carry no
+  credential material at all (`packages/shared/src/executor.ts`).
 
 **5. Server changes (small, additive).**
 - The webhook payload gains structured fields (`taskId`, `workspaceId`,
@@ -170,6 +185,15 @@ the container API, which is the Sandbox SDK pattern.
   consumers are unaffected.
 - Retries and unblocked tasks must reach the webhook too. `dispatchUnblockedTask`
   already runs the same chain; the retry and budget-reset paths need an audit.
+- As built: `webhookConfig.events` is an explicit opt-in (`task.created`,
+  `task.unblocked`, `task.retry`). A webhook without it sees exactly what it
+  saw before: new and unblocked tasks. Retries (`dispatchRetriedTask`, also
+  used by the deferred-start sweep) need `task.retry`; approved-plan children
+  (`dispatchPlanChildTask`) need `task.created` listed explicitly. Otherwise
+  those paths send the Pusher `TASK_ASSIGNED` wake. `deploy.ts` lists all
+  three. The retry and plan-child webhook legs skip held tasks and held or
+  local-executor missions, and every webhook POST times out after 10 s and
+  then falls back to Pusher.
 - A way to get a per-task GitHub installation token to the dispatcher (see
   Open questions).
 - Per-task runner tokens (`POST /api/runner/task-token`, resolved open
@@ -177,8 +201,10 @@ the container API, which is the Sandbox SDK pattern.
 
 ### Opt-in and defaults
 
-A workspace opts in by setting `webhookConfig` to the dispatcher URL. That
-field and its exclusive-dispatch behaviour already exist. With no
+A workspace opts in by setting `webhookConfig` to the dispatcher URL, with
+`events` listing the dispatches it wants. That field and its
+exclusive-dispatch behaviour already exist. Only owner/admin (or an admin API
+key) can set it, through `PATCH /api/workspaces/[id]`. With no
 `webhookConfig`, nothing changes. Coder runners that still list the workspace
 can race-claim by polling; the claim is atomic, so this is safe, but a canary
 workspace should not be listed on any Coder runner.

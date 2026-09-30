@@ -116,6 +116,12 @@ mock.module('./mission-criteria-worker-eval', () => ({
   resolveCriteriaWorkerEval: mockResolveCriteriaWorkerEval,
 }));
 
+// Mission PR opening is tested separately; mock it to avoid side effects in criteria eval tests.
+const mockOpenMissionIntegrationPr = mock((_missionId: string) => Promise.resolve({ ok: true, created: false }) as any);
+mock.module('./mission-pr', () => ({
+  openMissionIntegrationPr: mockOpenMissionIntegrationPr,
+}));
+
 // Real @buildd/core/mission-helpers: the mechanical evaluator and the folding
 // rule are the thing under test, not a stub of them.
 import { ensureCriteriaVerdict, evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from './mission-criteria-eval';
@@ -197,6 +203,8 @@ function reset() {
   mockInferenceCall.mockImplementation(() => Promise.resolve({
     ok: false, error: { kind: 'missing_key', provider: 'anthropic' },
   }) as any);
+  mockOpenMissionIntegrationPr.mockReset();
+  mockOpenMissionIntegrationPr.mockImplementation(() => Promise.resolve({ ok: true, created: false }) as any);
   globalThis.fetch = realFetch;
   delete process.env.ANTHROPIC_API_KEY;
 }
@@ -1284,5 +1292,86 @@ describe('evaluateCriteriaNow — prose grader selection', () => {
     expect((mockResolveProseCriteria.mock.calls[0]![0] as any).criterionIndex).toBe(1);
     expect(state!.criteria[0].verdict).toBe('pass');
     expect(state!.criteria[1].verdict).toBe('PENDING');
+  });
+});
+
+// ── Mission PR opening (for manually-opened PRs and auto-creation) ──────────────
+//
+// When integrationBranchEnabled is true, evaluation calls openMissionIntegrationPr
+// to ensure manually-opened mission PRs are adopted into the workers table so the
+// all_prs_merged criterion can detect them.
+
+describe('evaluateCriteriaNow — mission PR opening', () => {
+  beforeEach(reset);
+
+  it('calls openMissionIntegrationPr when integrationBranchEnabled=true', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }], integrationBranchEnabled: true });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockOpenMissionIntegrationPr).toHaveBeenCalledTimes(1);
+    expect(mockOpenMissionIntegrationPr).toHaveBeenCalledWith('m1');
+  });
+
+  it('does not call openMissionIntegrationPr when integrationBranchEnabled=false', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }], integrationBranchEnabled: false });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('does not call openMissionIntegrationPr when undefined (defaults to false)', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }] });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    expect(mockOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('catches rejected promise from openMissionIntegrationPr and continues evaluation', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }], integrationBranchEnabled: true });
+    const error = new Error('GitHub API unreachable');
+    mockOpenMissionIntegrationPr.mockImplementation(() => Promise.reject(error));
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Evaluation should succeed despite the error
+    expect(state).not.toBeNull();
+    expect(state!.criteria[0].verdict).toBe('pass');
+  });
+
+  it('catches ok=false result from openMissionIntegrationPr and continues evaluation', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }], integrationBranchEnabled: true });
+    mockOpenMissionIntegrationPr.mockImplementation(() =>
+      Promise.resolve({ ok: false, reason: 'work_incomplete', detail: 'still pending' })
+    );
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Evaluation should still succeed
+    expect(state).not.toBeNull();
+    expect(state!.criteria[0].verdict).toBe('pass');
+  });
+
+  it('does not block criterion evaluation if openMissionIntegrationPr fails', async () => {
+    mission({
+      goalCriteria: [
+        { type: 'all_prs_merged' },
+        { type: 'no_open_tasks' },
+      ],
+      integrationBranchEnabled: true,
+    });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
+    mockOpenMissionIntegrationPr.mockImplementation(() =>
+      Promise.reject(new Error('network error'))
+    );
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+
+    // Both criteria should evaluate despite the PR opening failure
+    expect(state).not.toBeNull();
+    expect(state!.criteria[0].verdict).toBeDefined();
+    expect(state!.criteria[1].verdict).toBeDefined();
   });
 });

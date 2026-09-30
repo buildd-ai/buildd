@@ -469,8 +469,10 @@ mock.module('@/lib/merge-policy', () => ({
 }));
 
 const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockDispatchRetriedTask = mock((..._args: unknown[]) => Promise.resolve());
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
+  dispatchRetriedTask: mockDispatchRetriedTask,
   dispatchUnblockedTask: mock(() => Promise.resolve()),
   buildTaskPayload: mock((task: any) => task),
 }));
@@ -9260,6 +9262,74 @@ describe('PATCH /api/workers/[id]', () => {
       expect(pendingUpdate.context.resumeBranch).toBe('buildd/abc-mission-task');
       expect(pendingUpdate.context.lastCommitSha).toBe('def456sha');
       expect(pendingUpdate.context.failureContext.errorType).toBe('runtime_error');
+    });
+
+    // The requeue used to broadcast a bare TASK_ASSIGNED, which a push-dispatched
+    // workspace (webhookConfig, no Pusher subscriber) never hears. It now goes
+    // through dispatchRetriedTask, which tries the webhook first.
+    it('auto-retry wakes runners via dispatchRetriedTask with the task and its workspace webhook', async () => {
+      mockDispatchRetriedTask.mockClear();
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/abc-mission-task',
+        lastCommitSha: null,
+        pendingInstructions: null,
+      });
+
+      const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        title: 'Mission task',
+        description: 'desc',
+        workspaceId: 'ws-1',
+        missionId: 'mission-1',
+        backend: 'claude',
+        roleSlug: 'builder',
+        runnerPreference: 'any',
+        startAt: null,
+        context: {},
+        outputRequirement: 'none',
+        workspace: { id: 'ws-1', name: 'ws', teamId: 'team-1', webhookConfig },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Runtime error in tests' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+
+      expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(1);
+      const [task, workspace] = mockDispatchRetriedTask.mock.calls[0] as any[];
+      expect(task).toMatchObject({
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        missionId: 'mission-1',
+        backend: 'claude',
+        roleSlug: 'builder',
+        runnerPreference: 'any',
+      });
+      expect(workspace.webhookConfig).toEqual(webhookConfig);
+      // The bare broadcast is gone: dispatchRetriedTask owns the fallback. (This
+      // file's pusher mock has no TASK_ASSIGNED key, so match the assignment
+      // payload's shape rather than the event name.)
+      const assignments = (mockTriggerEvent.mock.calls as any[][]).filter(
+        (c) => c[2] && typeof c[2] === 'object' && 'targetLocalUiUrl' in c[2],
+      );
+      expect(assignments).toHaveLength(0);
     });
 
     it('omits lastCommitSha from context when worker has none', async () => {

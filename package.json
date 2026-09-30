@@ -21,6 +21,7 @@
     "release:finalize": "bash scripts/release.sh --finalize",
     "cleanup-branches": "bash scripts/release.sh --cleanup",
     "sync-dev": "bash scripts/sync-dev.sh",
+    "cloud-runner:local": "bash apps/cloud-runner/scripts/local-e2e.sh",
     "seed:waiting-input": "bun run scripts/seed/waiting-input.ts",
     "seed:error-worker": "bun run scripts/seed/error-worker.ts",
     "seed:completed-tasks": "bun run scripts/seed/completed-tasks.ts",

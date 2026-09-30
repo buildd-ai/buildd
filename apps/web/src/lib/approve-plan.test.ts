@@ -127,6 +127,14 @@ mock.module('./effective-roles', () => ({
   },
 }));
 
+const dispatchCalls: any[][] = [];
+mock.module('./task-dispatch', () => ({
+  dispatchPlanChildTask: (...args: any[]) => {
+    dispatchCalls.push(args);
+    return Promise.resolve();
+  },
+}));
+
 import { approvePlan } from './approve-plan';
 
 const PLANNING_TASK_ID = 'eeeeeeee-0000-4000-8000-00000000000f';
@@ -143,6 +151,7 @@ function reset() {
   updateCalls.length = 0;
   effectiveRoles = new Set();
   resolveEffectiveRoleSlugsCalls.length = 0;
+  dispatchCalls.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
   workspaceRow = { gitConfig: null };
   missionRow = null;
@@ -665,3 +674,46 @@ describe('approvePlan — a plan step\'s role reaches the row only if the worksp
   });
 });
 
+// Plan children used to reach a runner only by polling — no Pusher nudge and
+// no webhook — so a push-dispatched workspace never heard about them.
+describe('approvePlan — waking runners for ready children', () => {
+  beforeEach(reset);
+
+  const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+
+  it('dispatches only the children with no dependency through dispatchPlanChildTask, with the workspace', async () => {
+    workspaceRow = { id: 'ws-1', gitConfig: null, webhookConfig };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+
+    expect(dispatchCalls).toHaveLength(1);
+    // dispatchPlanChildTask, not dispatchUnblockedTask: the webhook leg is
+    // opt-in via webhookConfig.events and it never starts an Actions run.
+    const [task, workspace, options] = dispatchCalls[0];
+    expect(task.id).toBe(NEXT_IDS[0]);
+    expect(task.title).toBe('Add schema migration');
+    expect(task.workspaceId).toBe('ws-1');
+    expect(workspace.webhookConfig).toEqual(webhookConfig);
+    expect(options).toBeUndefined();
+  });
+
+  it('carries the child roleSlug so the webhook consumer can route it', async () => {
+    effectiveRoles = new Set(['builder']);
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Solo step', roleSlug: 'builder' }] as any);
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0][0].roleSlug).toBe('builder');
+  });
+
+  it('does not wake anything for a held mission', async () => {
+    planningTaskRow.missionId = 'mission-1';
+    missionRow = { isHeld: true, executor: 'runner' };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it('does not wake runners for a local-executor mission', async () => {
+    planningTaskRow.missionId = 'mission-1';
+    missionRow = { isHeld: false, executor: 'local' };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(dispatchCalls).toHaveLength(0);
+  });
+});

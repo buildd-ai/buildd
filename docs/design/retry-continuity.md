@@ -642,6 +642,15 @@ report filed mid-task). Without the `taskClass` gate, that creation-provenance l
 looks identical to a retry link, and the walk would climb straight through it into
 an unrelated task and close its unrelated open PR, mislabeling it "superseded."
 
+Being in the lineage is necessary, not sufficient (`isEarlierAttemptPr`). A fix task's
+parent can own the fix's *subject*: an after-CI fix of a release PR (head `dev`, base
+`main`) has the adopted release task as its parent, and its own PR into `dev` is not a
+re-attempt of the release. An ancestor PR is closed only when GitHub reports its head is a
+task branch (not the repo default branch, the successor's base, a workspace
+`gitConfig.defaultBranch`/`targetBranch`, a `releaseConfig` branch, or a `mission/*`
+integration branch) and its base equals the new PR's base. Unknown head or base fails
+closed. A PR left open this way is not `stranded`, so the sweep does not retry it.
+
 ### 8.4 Attempt Number Stamping
 
 Both paths stamp the same line shape today —

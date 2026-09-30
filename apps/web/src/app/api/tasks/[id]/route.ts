@@ -51,7 +51,8 @@ async function dispatchIfDependenciesSatisfied(
     });
     if (!satisfied) return;
   }
-  await dispatchUnblockedTask(task, workspace ?? {});
+  // A PATCH back to pending is a manual retry, not a dependency resolving.
+  await dispatchUnblockedTask(task, workspace ?? {}, { event: 'task.retry' });
 }
 
 // GET /api/tasks/[id] - Get a single task.

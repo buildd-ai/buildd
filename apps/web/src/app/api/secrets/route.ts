@@ -6,6 +6,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
 import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
 import { isTaskToken } from '@/lib/task-token';
+import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-credential-shared';
 
 /** Backend-auth purposes whose (re)store should recover auth-failed tasks. */
 const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential']);
@@ -95,6 +96,13 @@ async function mayManageTeamModelKeys(auth: SecretsCaller, teamId: string): Prom
 const TEAM_MODEL_KEY_ADMIN_ONLY = 'Only a team owner or admin can manage the team model key.';
 
 /**
+ * The Cloudflare API token deploys code to the team's Cloudflare account
+ * (apps/cloud-runner), so storing or removing it takes the same bar as a team
+ * model key. It is always team-wide: one Worker serves the team.
+ */
+const CLOUDFLARE_ADMIN_ONLY = 'Only a team owner or admin can manage the Cloudflare token.';
+
+/**
  * Dual auth: API key (Bearer token) or session cookie.
  * Returns the list of team IDs the caller belongs to.
  */
@@ -155,7 +163,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret'];
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
@@ -165,9 +173,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `label is required for ${purpose} secrets` }, { status: 400 });
   }
 
+  // Cloudflare: a JSON blob, validated and normalized before anything is
+  // encrypted (unknown keys dropped), team-wide only, admin only.
+  let cloudflareValue: string | null = null;
+  if (purpose === CLOUDFLARE_PURPOSE) {
+    if (workspaceId || accountId) {
+      return NextResponse.json({ error: 'The Cloudflare token is team-wide; omit workspaceId and accountId' }, { status: 400 });
+    }
+    const parsed = parseCloudflareCredential(typeof value === 'string' ? value : JSON.stringify(value));
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    cloudflareValue = JSON.stringify(parsed.value);
+  }
+
   // Sanitize the raw value: trim, and strip wrapping quotes for raw-string purposes.
   // This is the fix for pasted Claude tokens arriving as `"sk-ant-oat01-…"`.
-  const sanitizedValue = sanitizeSecretValue(String(value), purpose);
+  const sanitizedValue = cloudflareValue ?? sanitizeSecretValue(String(value), purpose);
   if (!sanitizedValue) {
     return NextResponse.json({ error: 'value is required' }, { status: 400 });
   }
@@ -190,6 +210,9 @@ export async function POST(req: NextRequest) {
   if (TEAM_MODEL_KEY_PURPOSES.has(purpose) && !(await mayManageTeamModelKeys(auth, targetTeamId))) {
     return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
   }
+  if (purpose === CLOUDFLARE_PURPOSE && !(await mayManageTeamModelKeys(auth, targetTeamId))) {
+    return NextResponse.json({ error: CLOUDFLARE_ADMIN_ONLY }, { status: 403 });
+  }
 
   try {
     const provider = getSecretsProvider();
@@ -203,7 +226,7 @@ export async function POST(req: NextRequest) {
       // MCP credentials, decision/inference keys, and role-env secrets are team-wide
       // (shared by everyone in the team), so don't scope them to the caller's account
       // by default.
-      accountId: (TEAM_WIDE_BY_DEFAULT.has(purpose) ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
+      accountId: purpose === CLOUDFLARE_PURPOSE ? undefined : (TEAM_WIDE_BY_DEFAULT.has(purpose) ? (accountId ?? null) : (accountId || auth.accountId)) ?? undefined,
       workspaceId,
       purpose,
       label,
@@ -280,6 +303,9 @@ export async function DELETE(req: NextRequest) {
       if (target) {
         if (TEAM_MODEL_KEY_PURPOSES.has(target.purpose) && !(await mayManageTeamModelKeys(auth, teamId))) {
           return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
+        }
+        if (target.purpose === CLOUDFLARE_PURPOSE && !(await mayManageTeamModelKeys(auth, teamId))) {
+          return NextResponse.json({ error: CLOUDFLARE_ADMIN_ONLY }, { status: 403 });
         }
         await provider.delete(id);
         return NextResponse.json({ success: true });

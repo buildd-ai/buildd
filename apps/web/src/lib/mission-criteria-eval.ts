@@ -16,6 +16,7 @@ import { pickCriteriaGrader, type CriteriaGrader } from './mission-criteria-grad
 import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
 import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { openMissionIntegrationPr } from './mission-pr';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -272,6 +273,23 @@ export async function evaluateCriteriaNow(
 
   const priorState = (mission.goalCriteriaState ?? null) as GoalCriteriaState | null;
   const priorAgeMs = priorState?.evaluatedAt ? Date.now() - Date.parse(priorState.evaluatedAt) : Infinity;
+
+  // Ensure the mission PR is recognized in the workers table. This handles three cases:
+  // 1. A previously-recorded open PR (return immediately)
+  // 2. A mission PR merged outside buildd (adopt it)
+  // 3. Completed work with no existing PR (create one)
+  // This ensures the all_prs_merged criterion can detect manually-opened mission PRs.
+  if (mission.integrationBranchEnabled) {
+    try {
+      await openMissionIntegrationPr(missionId);
+    } catch (err) {
+      // Log but do not throw — a failure to open/adopt should not block criterion evaluation.
+      // The criterion will report what it can find in the current state.
+      console.debug(
+        `[criteria-eval] could not ensure mission PR for ${missionId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // ── Evidence assembly ──────────────────────────────────────────────────────
   const missionTasks = await db.query.tasks.findMany({

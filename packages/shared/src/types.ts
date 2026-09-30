@@ -1277,6 +1277,12 @@ export interface ClaimTasksInput {
    * account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
+  /**
+   * Where this runner executes (see ./executor). `cloud`: the claim response
+   * carries no credential material at all (CLAIM_CREDENTIAL_FIELDS). Omitted
+   * means a host runner. Any other value is rejected with 400.
+   */
+  executor?: 'host' | 'cloud';
 }
 
 export type ClaimDiagnosticReason =

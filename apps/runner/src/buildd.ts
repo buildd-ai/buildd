@@ -3,6 +3,7 @@ import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment'
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
@@ -170,6 +171,14 @@ export class BuilddClient {
     if (claimAcrossAccessible && !workspaceId) {
       body.claimAcrossAccessible = true;
     }
+    // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
+    // is sent verbatim so the server can refuse a value it does not know
+    // rather than this build guessing; `cloud` makes the server omit every
+    // credential from the response (packages/shared/src/executor.ts).
+    const executor = process.env.BUILDD_EXECUTOR;
+    if (executor !== undefined && executor !== '') {
+      body.executor = executor;
+    }
     let data: any;
     try {
       data = await this.fetch('/api/workers/claim', {
@@ -194,7 +203,19 @@ export class BuilddClient {
     if (claimHealth.recordSuccess()) {
       console.log('[claim] claim endpoint recovered — health no longer degraded');
     }
-    return { workers: data.workers || [], diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt };
+    const workers: any[] = data.workers || [];
+    if (executor === CLOUD_EXECUTOR) {
+      // Defence in depth: the server already omits these for a cloud claim.
+      // A server that did not (an older build) must not get a credential onto
+      // this container's disk through the session setup.
+      for (const w of workers) {
+        const removed = stripClaimCredentials(w);
+        if (removed.length > 0) {
+          console.error(`[claim] cloud executor: dropped server-delivered credential field(s) for worker ${w.id}: ${removed.join(', ')}`);
+        }
+      }
+    }
+    return { workers, diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt };
   }
 
   async updateWorker(workerId: string, update: {
