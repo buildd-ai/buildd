@@ -113,18 +113,22 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s02-thread', group, 1.2), 0), at(f('s02-thread', group, 1.25), 1)],
   };
 
-  // The spec: the draft's "Done when" list, opened. Edit writes a prefix into
-  // the composer and you type the change; Confirm files it, and only then does
-  // the Organizer start.
-  const card = s.box('s03-spec', 'approval-card');
-  const crit = s.box('s03-spec', 'approval-draft-criteria');
-  const edit = s.box('s03-spec', 'kit-approval-edit');
-  const confirm = s.box('s03-spec', 'kit-approval-confirm');
+  // The spec: the draft's "Done when" list, on the same thread still. Edit
+  // writes a prefix into the composer and you type the change; Confirm files
+  // it, and only then does the Organizer start.
+  const crit = s.box('s02-thread', 'approval-draft-criteria');
+  const edit = s.box('s02-thread', 'kit-approval-edit');
+  const confirm = s.box('s02-thread', 'kit-approval-confirm');
+  // The whole card is taller than a film crop, so the light starts on its
+  // "Done when" list, and the crop frames that list with the buttons under it
+  // from the first frame: framing the list alone puts Edit and Confirm under
+  // the caption band.
+  const specCrop = union([crit, edit, confirm]);
   const criteria: Shot = {
-    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img('s03-spec')],
+    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img('s02-thread')],
     caption: 'It drafts the mission, and what done means.',
-    spot: [key(0.2, [card]), key(1.2, [crit]), { ...key(3.2, [edit]), cross: true }],
-    camera: [at(f('s03-spec', card, 1.1), 0), at(f('s03-spec', crit, 1.15), 1.2 / 4.5), at(f('s03-spec', crit, 1.15), 1)],
+    spot: [key(0.2, [crit]), { ...key(3.0, [edit]), cross: true }],
+    camera: [at(f('s02-thread', specCrop, 1.1), 0), at(f('s02-thread', specCrop, 1.06), 1)],
     taps: [{ at: 3.9, ...center(edit) }],
     controls: [edit, confirm],
   };
@@ -140,10 +144,10 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   };
 
   const confirming: Shot = {
-    id: 'confirm', layout: 'screen', dur: 4, images: [s.img('s03-spec')],
+    id: 'confirm', layout: 'screen', dur: 4, images: [s.img('s02-thread')],
     caption: 'When it reads right, you confirm.',
-    spot: [key(0.2, [card]), { ...key(1.4, [confirm]), cross: true }],
-    camera: [at(f('s03-spec', card, 1.12), 0), at(f('s03-spec', card, 1.12), 1)],
+    spot: [key(0.2, [crit]), { ...key(1.4, [confirm]), cross: true }],
+    camera: [at(f('s02-thread', specCrop, 1.12), 0), at(f('s02-thread', specCrop, 1.12), 1)],
     taps: [{ at: 2.6, ...center(confirm) }],
     controls: [confirm, edit],
   };

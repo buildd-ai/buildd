@@ -16,7 +16,6 @@ highlight:
   - tool-call-row
   - approval-card
   - approval-draft-criteria
-  - kit-approval-fold
   - kit-approval-edit
   - kit-approval-confirm
   - canvas-ask
@@ -54,22 +53,15 @@ steps:
     highlightText: ["Nothing in flight touches currency."]
     hold: 900
 
-  # 2b. The spec: the draft's "Done when" list, opened. You confirm this before
-  # any agent starts (a mission's plan then self-approves; see
-  # shouldAutoApprovePlan), so this card is the human gate the film shows.
-  - id: s03-spec
-    goto: /app/chat/{C1}
-    waitFor: [approval-card, kit-approval-fold]
-    click: kit-approval-fold
-    fullPage: true
-    hold: 900
-
-  # 2c. Edit pre-fills the composer with 'Change the draft "…": '; the change
-  # is typed after it (append), never sent.
+  # 2b. The spec is the draft card above (Done when, Constraints, Plan), and
+  # you confirm it before any agent starts: a mission's plan then self-approves
+  # (shouldAutoApprovePlan), so this card is the human gate the film shows.
+  # Edit pre-fills the composer with 'Change the draft "…": '; the change is
+  # typed after it (append), never sent.
   - id: s03b-spec-edit
     goto: /app/chat/{C1}
-    waitFor: [approval-card, kit-approval-fold]
-    click: [kit-approval-fold, kit-approval-edit]
+    waitFor: [approval-card, kit-approval-edit]
+    click: kit-approval-edit
     type: { into: '[data-testid="chat-composer"] textarea', text: "also done when a EUR invoice pays end to end.", frames: 14, append: true }
     hold: 600
 
