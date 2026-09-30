@@ -138,6 +138,7 @@
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
+    "./visual-qa-page-source": "./visual-qa-page-source.ts",
     "./visual-review-text": "./visual-review-text.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",

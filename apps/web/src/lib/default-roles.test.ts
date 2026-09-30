@@ -179,6 +179,17 @@ describe('DEFAULT_ROLES', () => {
       expect(role().supersededContentHashes).not.toContain(roleContentHash(role().content));
     });
 
+    // docs/design/visual-qa-auditor.md, "Page source".
+    it('prompt asks for the page source first, records it on each shot, and parks the auth walls', () => {
+      const c = role().content;
+      expect(c).toContain('action=get_page_source');
+      expect(c).toContain('QA_PAGE_SOURCE=vercel-preview');
+      expect(c).toMatch(/source: "sandbox" \| "vercel-preview"/);
+      const boot = c.slice(c.indexOf('## Boot failure'), c.indexOf('## Pull Gates'));
+      for (const e of ['preview_unavailable', 'protection_bypass_missing', 'app_auth_not_configured']) expect(boot).toContain(e);
+      expect(boot).toMatch(/never a visual finding/);
+    });
+
     // post_note is non-blocking: the session would end, the runner's fallback
     // completion would hit the visual_evidence 400, and the worker would be
     // recorded failed (output_unmet). AskUserQuestion is what the runner parks
