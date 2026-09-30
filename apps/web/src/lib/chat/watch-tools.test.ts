@@ -38,10 +38,10 @@ describe('watch tools', () => {
 
   it('an allowed watch is delivered to the turn\'s conversation, whatever the model passed', async () => {
     const { tools, run, calls } = watchSetup({ allowed: ['call-1'] });
-    // The schema has no conversationId: a model-supplied one never reaches the route.
-    const parsed = (tools.watch as any).inputSchema.parse({ taskId: T, conversationId: 'someone-elses' });
-    expect(parsed.conversationId).toBeUndefined();
-    const out = await run('watch', parsed);
+    // The schema has no conversationId: a model-supplied one is refused as a
+    // tool error, and even one that got past it never reaches the route.
+    expect((tools.watch as any).inputSchema.safeParse({ taskId: T, conversationId: 'someone-elses' }).success).toBe(false);
+    const out = await run('watch', { taskId: T, conversationId: 'someone-elses' });
     expect(out.allowed).toBe(true);
     expect(calls).toEqual([{ method: 'POST', path: '/api/subscriptions', body: { taskId: T, eventTypes: ['task.completed', 'task.failed'], conversationId: 'conv-1' } }]);
     expect(out.objects).toEqual([expect.objectContaining({ kind: 'task', id: T })]);
