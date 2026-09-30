@@ -12,6 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import { formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
 import { saveMemory, updateMemory } from './memory-write';
@@ -498,7 +499,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
@@ -540,7 +541,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
-    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
+    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns errors caught from agent tool output: every non-zero Bash exit (redacted command, exit code, output tail) plus known patterns (cd: No such file, git fatal, OOM, etc.). taskId also returns the evidence record written when the task ended (error class, key lines, last failing command, CI checks) and any mismatch flags — the answer to "why did it fail". workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
@@ -1688,6 +1689,16 @@ export async function handleBuilddAction(
         }
       }
 
+      // Why it ended as it did: written when the task failed or completed with a
+      // caveat, so "did it fail, why" needs no second call.
+      const mismatchLines = formatTaskMismatch(result?.mismatch);
+      if (mismatchLines.length > 0) lines.push('', ...mismatchLines);
+      const evidenceLines = formatTaskEvidence(result?.evidence);
+      if (evidenceLines.length > 0) lines.push('', ...evidenceLines);
+      if (result?.error && typeof result.error === 'string' && !result.evidence) {
+        lines.push('', `**Error:** ${String(result.error).slice(0, 400)}`);
+      }
+
       const workers = Array.isArray(task.workers) ? task.workers : [];
       if (workers.length > 0) {
         lines.push('', `## Workers (${workers.length})`);
@@ -2363,6 +2374,25 @@ export async function handleBuilddAction(
           })()
         : '';
 
+      // Fix attempts on this PR's chain (after CI #N / after review #N), each with
+      // why it ended as it did. A PR opened on a new branch by a resumed attempt
+      // shows its own number.
+      const attemptRows = Array.isArray(data.attempts)
+        ? data.attempts as Array<{
+            taskId: string; title: string; status: string; prNumber: number | null;
+            evidence: { errorClass: string; keyLines: string[] } | null;
+            mismatch: Array<{ kind: string; detail: string }>;
+          }>
+        : [];
+      const attemptsSection = attemptRows.length > 0
+        ? `\n\n**Fix attempts (${attemptRows.length}):**\n${attemptRows.map((a) => {
+            const pr2 = a.prNumber ? ` PR #${a.prNumber}` : '';
+            const why = a.evidence ? ` — ${a.evidence.errorClass}${a.evidence.keyLines[0] ? `: ${truncate(a.evidence.keyLines[0], 160)}` : ''}` : '';
+            const flags = a.mismatch.length > 0 ? ` ⚠️ ${a.mismatch.map((m) => m.kind).join(', ')}` : '';
+            return `- ${a.taskId.slice(0, 8)} ${a.status}${pr2} ${truncate(a.title, 80)}${why}${flags}`;
+          }).join('\n')}\nRead one: action=get_task { taskId }, action=get_error_traces { taskId }.`
+        : '';
+
       return text([
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
@@ -2375,6 +2405,7 @@ export async function handleBuilddAction(
         bodyPreview,
         commentsSection,
         ciFailuresSection,
+        attemptsSection,
       ].filter(Boolean).join('\n'));
     }
 
@@ -4009,9 +4040,16 @@ export async function handleBuilddAction(
 
       const data = await api(endpoint);
       const traces = (data.traces || []) as Array<{ pattern: string; excerpt: string; source: string | null; ts: string }>;
+      // A task-scoped answer also carries the record written when it ended.
+      const evidenceBlock = [
+        ...formatTaskMismatch(data.mismatch),
+        ...formatTaskEvidence(data.evidence),
+      ];
 
       if (traces.length === 0) {
-        return text(`No error traces for ${scope}.`);
+        return text(evidenceBlock.length > 0
+          ? `No error traces for ${scope}.\n\n${evidenceBlock.join('\n')}`
+          : `No error traces for ${scope}.`);
       }
 
       const summary = traces.map((t) => {
@@ -4019,7 +4057,7 @@ export async function handleBuilddAction(
         return `- **${t.pattern}**${src} at ${t.ts}\n  ${t.excerpt}`;
       }).join('\n');
 
-      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
+      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}${evidenceBlock.length > 0 ? `\n\n${evidenceBlock.join('\n')}` : ''}`);
     }
 
     case 'get_budget_forecast': {

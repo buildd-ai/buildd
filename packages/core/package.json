@@ -148,6 +148,8 @@
     "./reset-time": "./reset-time.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
+    "./bash-failure-trace": "./bash-failure-trace.ts",
+    "./task-evidence-format": "./task-evidence-format.ts",
     "./timezone": "./timezone.ts",
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
