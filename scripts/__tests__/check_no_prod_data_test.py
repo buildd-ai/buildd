@@ -23,7 +23,7 @@ def flags(line: str) -> bool:
     big = chk.COUNT_BIG.search(line)
     tenancy = chk.COUNT_TENANCY.search(line)
     small = (chk.COUNT_SMALL_IN_CONTEXT.search(line)
-             and chk.PROD_CONTEXT_RE.search(line))
+             and chk.has_prod_context(line))
     return bool(big or tenancy or small or chk.UUID_RE.search(line))
 
 
@@ -57,6 +57,9 @@ MUST_PASS = [
     "test: scenario seeds 12 tasks and asserts ordering",
     "perf: keep just the last 100 calls per worker",
     "fix: rows use */30 in the cron expression",
+    # `live` as a mode/identifier name in a code span is not prod context.
+    "feat: seed 75 rows when `mode: 'live'` is selected",
+    "fix: the `live` flag now covers 120 rows of fixtures",
 ]
 
 MUST_FAIL = [
@@ -70,6 +73,11 @@ MUST_FAIL = [
     "note: rows=4231 in the memories table",              # noun before number
     "prod currently has 900 seats across all customers",        # noun then number
     "seeded 1500 users in the load fixture",
+    # Outside backticks 'live' still marks a production sentence, and a code
+    # span does not excuse any other production word.
+    "the live table has 75 rows",
+    "the `prod` table has 75 rows",
+    "`live` and the live table has 75 rows",
     # Row identifiers.
     "fix: scope to team d2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5",
     "fix: worker D2CB1C29-3F92-4EA1-BA0C-FE8B41CCF3B5 stalled",  # uppercase
