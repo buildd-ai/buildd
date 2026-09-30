@@ -25,6 +25,7 @@ import { and, asc, eq, inArray, lt, or, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, tasks, workspaces } from '@buildd/core/db/schema';
 import { chunkEvidenceLog, type EvidenceChunk } from '@buildd/core/evidence-chunker';
+import { createSecretRedactor } from '@buildd/core/redaction';
 import type { KnowledgeStore, UpsertChunk } from '@buildd/core/knowledge-store';
 import { openEvidenceObject, type EvidenceObjectRow } from './evidence-read';
 import { extractFailureDigest } from './ci-failure-digest';
@@ -125,11 +126,13 @@ async function readText(src: AsyncIterable<Uint8Array>): Promise<string> {
 
 function toUpsertChunks(c: EvidenceIndexCandidate, chunks: EvidenceChunk[]): UpsertChunk[] {
   const { row } = c;
+  const redact = createSecretRedactor([]);
+  const redactedTitle = c.taskTitle ? redact(c.taskTitle).slice(0, 160) : null;
   const lineage = [
     `task ${short(row.taskId)}`,
     row.rootTaskId !== row.taskId ? `root ${short(row.rootTaskId)}` : null,
     row.prNumber ? `PR #${row.prNumber}` : null,
-    c.taskTitle ? `"${c.taskTitle.slice(0, 160)}"` : null,
+    redactedTitle ? `"${redactedTitle}"` : null,
   ].filter(Boolean).join(' · ');
 
   return chunks.map((chunk, i) => {

@@ -251,6 +251,20 @@ describe('sweep durability', () => {
     const chunks = [...store.chunks.get(`${WS}:evidence`)!.values()];
     expect(chunks.some(c => c.metadata!.errorClass === 'ci_digest' && c.content.includes('2 of 90 unit test files failed'))).toBe(true);
   });
+
+  it('redacts secrets from task title before upsert', async () => {
+    const secretToken = 'sk-proj-abcdefghijklmnopqrst1234567890ab';
+    const titleWithSecret = `fix(ci): deploy sk-proj-abcdefghijklmnopqrst1234567890ab to prod`;
+    const { d, store } = deps({ rows: [candidate({}, { taskTitle: titleWithSecret })] });
+    await runEvidenceIndexSweep(d);
+    const chunks = [...store.chunks.get(`${WS}:evidence`)!.values()];
+    expect(chunks.length).toBeGreaterThan(0);
+    // Verify the secret is not in any chunk content
+    for (const c of chunks) {
+      expect(c.content).not.toContain(secretToken);
+      expect(c.content).toContain('[REDACTED:token]');
+    }
+  });
 });
 
 describe('evidenceIndexCandidateWhere (rendered SQL)', () => {
