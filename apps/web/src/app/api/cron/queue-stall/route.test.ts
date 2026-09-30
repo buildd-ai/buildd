@@ -120,9 +120,17 @@ const mockCheckMissionBudgetExhausted = mock(() => Promise.resolve(false));
 mock.module('@/app/api/workers/claim/connector-gate', () => ({
   checkConnectorRouting: mockCheckConnectorRouting,
 }));
+// The SQL gate builders are stubbed to named markers so a test can observe
+// that the fleet-idle scan reuses the claim route's own predicates (the real
+// SQL they render is pinned in ./fleet-idle.test.ts via PgDialect).
+const heldGateMarker = (name: string) => () => ({ type: 'claimGate', name });
 mock.module('@/app/api/workers/claim/held-gate', () => ({
   checkMissionHeld: mockCheckMissionHeld,
   checkMissionLocal: mockCheckMissionLocal,
+  missionNotHeld: heldGateMarker('missionNotHeld'),
+  missionNotLocal: heldGateMarker('missionNotLocal'),
+  taskNotHeld: heldGateMarker('taskNotHeld'),
+  TASK_HOLD_KEY: 'heldBy',
 }));
 mock.module('@/app/api/workers/claim/mission-budget-gate', () => ({
   checkMissionBudgetExhausted: mockCheckMissionBudgetExhausted,
@@ -149,7 +157,7 @@ mock.module('@/lib/pacing-stall', () => ({
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 // The fleet-idle pass alerts through reportOps (transport-level dedupe), not
 // through notify: a fleet-level alarm has no task row to stamp a context key on.
@@ -372,6 +380,16 @@ describe('queue-stall cron — names the blocking gate', () => {
   it('does not report a local-executor mission\'s pending task as stalled', async () => {
     candidateTasks = [task({ missionId: 'mission-1' })];
     mockCheckMissionLocal.mockResolvedValue(true);
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled).toHaveLength(0);
+  });
+
+  it('does not report a task a person held on its own as stalled', async () => {
+    // PATCH { held: true } pauses one task until resume; the claim query
+    // excludes it (taskNotHeld), so a runner leaving it queued is correct.
+    candidateTasks = [task({ context: { heldBy: { at: hoursAgo(30).toISOString(), userId: 'user-1' } } })];
 
     const body = await (await POST(makeRequest())).json();
 
@@ -1024,6 +1042,25 @@ describe('fleet-idle pass — alive but claiming nothing', () => {
 });
 
 describe('fleet-idle pass — what is not claimable work', () => {
+  it('scans with the claim route\'s held-mission, local-executor and held-task gates', async () => {
+    // A task in a held mission, a local-executor mission, or held on its own is
+    // never claimable by a runner, so a fleet that leaves it queued is working
+    // as designed. The scan must exclude it with the SAME predicates the claim
+    // query pushes, not a re-derived copy that can drift.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [];
+    fleetWorkspaces = [workspaceRow()];
+
+    await POST(fleetRequest());
+
+    const scan = mockTasksFindMany.mock.calls
+      .map((c: any) => c[0]?.where)
+      .find((w: any) => w?.type === 'and' && (w.c ?? []).some((c: any) => c?.type === 'or'));
+    expect(scan).toBeDefined();
+    const gates = (scan.c as any[]).filter(c => c?.type === 'claimGate').map(c => c.name).sort();
+    expect(gates).toEqual(['missionNotHeld', 'missionNotLocal', 'taskNotHeld']);
+  });
+
   it('does not count a task deferred to a future startAt', async () => {
     fleetHeartbeats = [heartbeat()];
     fleetPendingTasks = [pendingTask({ startAt: minutesFromNow(90) })];

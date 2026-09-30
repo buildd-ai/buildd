@@ -40,12 +40,9 @@ const DEGRADED_PATTERNS: string[] = [
   'no codex auth',
   'agent authentication failed',
   // The Claude CLI's own terminal-session message ("Not logged in · Please
-  // run /login") when a worker's OAuth token goes stale mid-session. Matched
-  // separately from the runner's claim-time `isAuthError` in claim-breaker.ts
-  // — that one decides whether to retry a claim; this one decides whether a
-  // TERMINAL failure should move the credential's health state. Both need the
-  // same phrase, independently, because they run at different points in the
-  // worker lifecycle and neither imports the other.
+  // run /login") when a worker's OAuth token goes stale mid-session. The
+  // runner's `isAuthError` (claim-breaker.ts, assertion-exchange.ts) is built
+  // on this list, so a phrase added here reaches the claim path too.
   'not logged in',
   'please run /login',
 ];

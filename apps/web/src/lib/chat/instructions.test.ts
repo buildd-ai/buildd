@@ -17,3 +17,13 @@ describe('CHAT_INSTRUCTIONS: visual review', () => {
     expect(CHAT_INSTRUCTIONS).toMatch(/never claim to have looked at one/);
   });
 });
+
+describe('CHAT_INSTRUCTIONS: one write per intent', () => {
+  // A turn fired "auto-dismiss sender" and "mute sender" for one request; the
+  // cap refused the twin, and the model then treated it like a discard.
+  it('forbids a twin write for the same intent and separates a cap refusal from a discard', () => {
+    expect(CHAT_INSTRUCTIONS).toMatch(/one intent gets one call/);
+    expect(CHAT_INSTRUCTIONS).toMatch(/not shown to the person/);
+    expect(CHAT_INSTRUCTIONS).toMatch(/don't call it discarded or done/);
+  });
+});

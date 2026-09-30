@@ -102,12 +102,14 @@ regression without a human noticing nine dead runs.
 | 27 | `pr/route.ts:1214` | `merge_policy` | rejected | `evaluateAutoMergeSafety` refused |
 | 28 | `pr/route.ts:1236` | `mission_pr_lifecycle` | deferred | sibling task PRs still open against the integration branch |
 
-### check_path_claim — `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`
+### check_path_claim — `apps/web/src/lib/path-claim-check.ts` (shared by the MCP tool and `POST /api/tasks/[id]/path-claim`)
+
+Both entry points call `checkPathClaim`; `surface` is `mcp:check_path_claim` or `POST /api/tasks/[id]/path-claim`. Before the extraction the MCP copy fired neither row.
 
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
-| 29 | `path-claim/route.ts:96` | `path_claim` | rejected | wildcard claim |
-| 30 | `path-claim/route.ts:193` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
+| 29 | `path-claim-check.ts:98` | `path_claim` | rejected | wildcard claim |
+| 30 | `path-claim-check.ts:176` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
 
 ### request_pr_review — `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`
 
@@ -130,7 +132,7 @@ analytics family='gate'` and the health page's Gates block.
 |---|---|---|---|---|
 | 33 | `claim/route.ts` (invalid API key) | `claim_loop_deferral` | rejected | mirrors the runner's local `claim_rejected` log |
 | 34 | `claim/route.ts` (trigger-level token) | `claim_loop_deferral` | rejected | trigger tokens cannot claim |
-| 35 | `claim/route.ts` (`runner` field missing) | `claim_loop_deferral` | rejected | malformed claim request |
+| 35 | `claim/route.ts` (`runner` field missing) | `claim_loop_deferral` | rejected | malformed claim request. A client that omits `runner` does so on every poll, so this site is collapsed via `recordOrCoalesceRepeat` to one row per account per hour: `detail.accountId`, `detail.count`, `detail.lastSeenAt`, plus `detail.userAgent` and `detail.bodyKeys` to identify the client |
 | 36 | `claim/route.ts` `deferTask()` — 13 dispatch-loop sites (`connector_mismatch`, `subject_dead`, `path_overlap` ×2, `mission_budget`, `mission_concurrent`, `mission_paced`, `advisory_manifest`, `workspace_cap`, `provider_unavailable`, `budget_paused` ×2, `routing_paused`, `duplicate_worker`, `codex_single_flight`) | `claim_loop_deferral` | deferred | one row per (taskId, reason) per tick, coalesced across polls via `recordOrCoalesceDeferral` into a `detail.consecutiveDeferrals` counter with a `detail.firstDeferredAt` floor. `codex_single_flight` replaces what used to be discovered post-claim, in the runner, by killing a started worker (`apps/runner/src/workers.ts` still keeps that check as a race backstop for two concurrent claim requests this in-batch guard can't see) |
 | 37 | `stranded-tasks-sweep.ts:sweepStrandedTasks` | `claim_loop_deferral` | stranded | pending past `startAt` by 2h, or the same deferral reason for `STRAND_CONSECUTIVE_THRESHOLD` consecutive polls; posts one open `mission_notes` warning per task, cleared when the task re-arms |
 
@@ -208,3 +210,42 @@ reviews one, but nothing buildd runs may push to its branch.
 | 57 | `github/pr/route.ts` (merge) | `dependency_bot_pr` | rejected | behind-base merge refusal does not update a bot branch |
 | 58 | `workers/[id]/route.ts` (reviewer request-changes) | `dependency_bot_pr` | rejected | no `[builder · after review]` follow-up on a bot branch |
 | 59 | `pr/review/route.ts` | `dependency_bot_pr` | bypassed | explicit `request_pr_review` adopted a bot PR — reviewed, never pushed to |
+
+### Retry-lineage PR supersession (`lib/retry-pr-supersession.ts`)
+
+When a retry attempt opens a fresh PR instead of updating its parent's, the
+parent's PR is closed so only one PR per fix can merge. A close that did not
+happen is recorded rather than logged, and the hourly pr-reconcile sweep retries it.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
+| 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
+
+### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
+
+Every reason the unattended path did not merge a PR, so "why didn't this green
+PR merge" has an answer after the fact. `detail.reasonClass` names the rail
+(`ci`, `deny_path`, `migration`, `size`, `conflict`, `blocked`, `model_bound`,
+`stale_head`, `github_read`, `other`, or `merge_api` for a failed merge call).
+Refusals a later webhook re-evaluates on its own (`ci`, `stale_head`,
+`github_read`) are `deferred`; the rest are `rejected`. Base freshness and
+review verdicts keep their own slugs (sites 48 and 52) and are not recorded
+twice. A merge that lands writes no row; `workers.mergedAt` already records it.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 62 | `auto-merge.ts:tryAutoMergeWorkerPr` (safety rails) | `auto_merge` | rejected / deferred | `evaluateAutoMergeSafety` refused; `detail.reasonClass` + `detail.tier` |
+| 63 | `auto-merge.ts:tryAutoMergeWorkerPr` (mission-PR gate) | `mission_pr_lifecycle` | deferred | mission PR waits on sibling task work, same rule as `merge_pr` |
+| 64 | `auto-merge.ts:tryAutoMergeWorkerPr` (merge call) | `auto_merge` | rejected | GitHub merge API refused; `detail.mergeFailureClass` from `classifyMergeFailure` |
+
+### Chat retro proposals (`lib/chat-retro/run.ts`, experiment)
+
+The daily chat retro pass files suggested improvements for teams that opted
+in to proposals. A pattern it declined to file is recorded, so the backlog is
+visible without being filed. Removal: `lib/chat-retro/REMOVAL.md`.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 65 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | deferred | eligible pattern over the per-team daily proposal cap |
+| 66 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | rejected | signature muted until its evidence doubles, or no workspace to file into |

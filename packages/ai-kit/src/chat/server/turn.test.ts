@@ -23,23 +23,28 @@ import {
   type TurnUsageRecord,
 } from './index';
 import type { UsageReceipt } from '@builddai/ai-kit/models';
+import { isSystemDenied, parseApprovalPreview, systemDeniedNote } from '@builddai/ai-kit/chat/contract';
 import { PlanDeniedError } from '@builddai/ai-kit/models';
 
 // ── Mock model streams ────────────────────────────────────────────────────────
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const finish = (unified: string) => ({ type: 'finish', finishReason: { unified, raw: unified }, usage });
-const textStream = (text: string) => ({
+const finish = (unified: string, cost?: number) => ({
+  type: 'finish', finishReason: { unified, raw: unified }, usage,
+  ...(cost !== undefined ? { providerMetadata: { openrouter: { usage: { cost } } } } : {}),
+});
+const textStream = (text: string, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: text }, { type: 'text-end', id: 't' },
-    finish('stop'),
+    finish('stop', cost),
   ]),
 });
-const toolStream = (...calls: Array<[id: string, name: string, input: unknown]>) => ({
+const toolStream = (...calls: Array<[id: string, name: string, input: unknown]>) => costedToolStream(undefined, ...calls);
+const costedToolStream = (cost: number | undefined, ...calls: Array<[id: string, name: string, input: unknown]>) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     ...calls.map(([toolCallId, toolName, input]) => ({ type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) })),
-    finish('tool-calls'),
+    finish('tool-calls', cost),
   ]),
 });
 const mockModel = (...responses: unknown[]) => new MockLanguageModelV4({ doStream: responses as any });
@@ -90,6 +95,15 @@ const tools = {
 
 const preview = (tool: string, input: Record<string, unknown>): PreviewOutcome => {
   if (input.title === '??') return { ok: false, question: 'Which note do you mean?' };
+  // An app that normalizes what runs: a sender address widened to its domain.
+  if (typeof input.title === 'string' && input.title.startsWith('survey_at_')) {
+    const runs = input.title.slice('survey_at_'.length);
+    return {
+      ok: true,
+      input: { ...input, title: runs },
+      preview: { v: 1, verb: 'Create note', target: { kind: 'note', id: 'new', label: String(input.title) }, changes: [], fingerprint: `fp-${notes.length}` },
+    };
+  }
   return {
     ok: true,
     preview: {
@@ -218,6 +232,30 @@ describe('usage', () => {
   });
 });
 
+describe('multi-step cost', () => {
+  it('sums the provider-reported cost of every step, not just the last', async () => {
+    const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.', 0.002)) });
+    await send(userMsg('what notes?'));
+    expect(ledger[0]?.costUsd).toBeCloseTo(0.012, 10);
+    expect(receipts[0]?.costUsd).toBeCloseTo(0.012, 10);
+    expect(lastAssistant().usage?.costUsd).toBeCloseTo(0.012, 10);
+  });
+
+  it('estimates a step that reported no cost from that step\'s own usage', async () => {
+    const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.')) });
+    await send(userMsg('what notes?'));
+    // Step 2 is estimated from its own 10 in / 5 out: 10 × $1 + 5 × $2 per 1M tokens.
+    expect(ledger[0]?.costUsd).toBeCloseTo(0.01 + 0.00002, 10);
+  });
+
+  it('keeps the whole-turn estimate when no step reports a cost', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['r1', 'search_notes', {}]), textStream('One note.')) });
+    await send(userMsg('what notes?'));
+    expect(ledger[0]?.costUsd).toBe(0.00004);
+    expect(receipts[0]).not.toHaveProperty('costUsd');
+  });
+});
+
 describe('reads and thinking steps', () => {
   it('a read runs straight away and the checklist shows it active then done, in plain words', async () => {
     const { send } = harness({ model: mockModel(toolStream(['r1', 'search_notes', {}]), textStream('One note.')) });
@@ -272,6 +310,39 @@ describe('approval cards', () => {
     expect(denied.state).toBe('output-denied');
     expect(JSON.stringify(denied)).toContain(ONE_CARD_PER_TURN_REASON);
     expect(notes).toHaveLength(1);
+    // Nobody saw it: the part says the server decided, so no card reads it as a Discard.
+    expect(denied.approval.isAutomatic).toBe(true);
+    expect(isSystemDenied(denied)).toBe(true);
+    expect(systemDeniedNote(denied)).toBe('one change per turn');
+  });
+
+  it('the cap tells the model not to report the refused call as discarded, and not to fire a twin', () => {
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/not shown to the person/i);
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/nothing was discarded/i);
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/another way of doing what that card does, drop it/i);
+  });
+
+  it('a field the preview rewrites is on the card, and the card is what runs', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['w1', 'create_note', { title: 'survey_at_resellerratings_com' }]), textStream('Card.'), textStream('Done.')) });
+    await send(userMsg('auto-dismiss that sender'));
+    const card = partsOf('tool-create_note')[0];
+    const shown = parseApprovalPreview(card.approval.requestReason)!;
+    expect(shown.resolved).toEqual([{ key: 'title', proposed: 'survey_at_resellerratings_com', runs: 'resellerratings_com' }]);
+    await send(answer(true));
+    expect(notes.at(-1)!.title).toBe(shown.resolved![0].runs);
+  });
+
+  it('a rewrite that moved after the card was shown runs nothing', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['w1', 'create_note', { title: 'survey_at_a.com' }]), textStream('Card.'), textStream('It changed.')) });
+    await send(userMsg('add a note'));
+    const a = answer(true) as any;
+    // Tamper with the stored card so it shows a different rewrite than execution would run.
+    const p = a.parts.find((x: any) => x.state === 'approval-responded');
+    const stored = lastAssistant().parts.find((x: any) => x.toolCallId === p.toolCallId) as any;
+    const tampered = { ...parseApprovalPreview(stored.approval.requestReason)!, resolved: [{ key: 'title', proposed: 'survey_at_a.com', runs: 'survey_at_a.com' }] };
+    stored.approval.requestReason = `buildd-preview:${JSON.stringify(tampered)}`;
+    await send(a);
+    expect(notes.map(n => n.title)).not.toContain('a.com');
   });
 
   it('confirming runs the write exactly once; replaying the approval runs nothing', async () => {
@@ -302,6 +373,8 @@ describe('approval cards', () => {
     expect(notes).toHaveLength(1);
     expect(store.approvals[0].status).toBe('denied');
     expect(partsOf('tool-create_note')[0].state).toBe('output-denied');
+    // The person's Discard, not the server's: it still reads as discarded.
+    expect(isSystemDenied(partsOf('tool-create_note')[0])).toBe(false);
   });
 
   it('an edited approval (different input) decides and runs nothing', async () => {

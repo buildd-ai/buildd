@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
@@ -36,6 +37,7 @@ import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
+import { isUuid } from '@/lib/uuid';
 import {
   GATE_SLUGS,
   fireGateEvent,
@@ -131,10 +133,10 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
-    const terminalStatuses = ['completed', 'failed', 'cancelled'];
+    const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
-    const isTerminalAudit = statusFilter !== null && terminalStatuses.includes(statusFilter);
+    const isTerminalAudit = isTerminalTaskStatus(statusFilter);
 
     // ── Paginated lean path (OPT-IN when ?limit=N is present) ──────────────
     // Returns only the columns list consumers need, sorted pending-first /
@@ -155,7 +157,7 @@ export async function GET(req: NextRequest) {
           : isTerminalAudit
             // Audit mode: exact status, no 24h cutoff — the whole terminal history,
             // paginated by the caller instead of silently windowed.
-            ? eq(tasks.status, statusFilter as string)
+            ? eq(tasks.status, statusFilter as TaskStatusValue)
             : or(
                 notInArray(tasks.status, terminalStatuses),
                 and(
@@ -674,8 +676,16 @@ export async function POST(req: NextRequest) {
       pathManifest = ['**'];
     }
 
-    // Validate dependsOn references exist in the same workspace
+    // Validate dependsOn references are valid UUIDs
     if (Array.isArray(dependsOn) && dependsOn.length > 0) {
+      const invalidIds = dependsOn.filter((id: unknown) => !isUuid(id));
+      if (invalidIds.length > 0) {
+        return NextResponse.json(
+          { error: `dependsOn contains invalid task IDs (must be valid UUIDs): ${invalidIds.join(', ')}` },
+          { status: 400 }
+        );
+      }
+
       const depTasks = await db.query.tasks.findMany({
         where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)),
         columns: { id: true },
@@ -1501,7 +1511,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: message }, { status: 409 });
     }
     console.error('Create task error:', error);
-    const detail = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ error: 'Failed to create task', detail }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });
   }
 }

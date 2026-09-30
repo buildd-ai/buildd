@@ -11,7 +11,7 @@ import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -42,6 +42,32 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 export function isBehindBaseRefusal(reason: string): boolean {
   return /^PR is \d+ commits? behind .* — the green CI result was measured against a base that no longer exists/.test(reason);
 }
+
+export type AutoMergeRefusalClass =
+  | 'ci' | 'deny_path' | 'migration' | 'size' | 'conflict' | 'blocked'
+  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'other';
+
+/**
+ * Which safety rail an `evaluateAutoMergeSafety` refusal came from, for the
+ * gate ledger's `detail.reasonClass`. Keyed off the reason strings that
+ * function returns; an unrecognised one is `other`, never dropped.
+ */
+export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass {
+  if (isBehindBaseRefusal(reason)) return 'base_freshness';
+  if (/^CI checks |could not verify CI status/.test(reason)) return 'ci';
+  if (/^touches protected path/.test(reason)) return 'deny_path';
+  if (/migration/i.test(reason)) return 'migration';
+  if (/diff size \d+/.test(reason)) return 'size';
+  if (/mergeable_state: dirty/.test(reason)) return 'conflict';
+  if (/mergeable_state: blocked/.test(reason)) return 'blocked';
+  if (/^model approve:/.test(reason)) return 'model_bound';
+  if (/PR head changed|live PR head/.test(reason)) return 'stale_head';
+  if (/^could not (fetch|verify)|^malformed PR files/.test(reason)) return 'github_read';
+  return 'other';
+}
+
+/** Refusal classes a later webhook re-evaluates on its own: a wait, not a no. */
+const TRANSIENT_REFUSALS: ReadonlySet<AutoMergeRefusalClass> = new Set(['ci', 'stale_head', 'github_read']);
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -464,6 +490,21 @@ export async function tryAutoMergeWorkerPr(params: {
   );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
+    const reasonClass = classifyAutoMergeRefusal(safetyCheck.reason);
+    // Base freshness already wrote its own row inside the safety check.
+    if (reasonClass !== 'base_freshness') {
+      fireGateEvent({
+        gate: GATE_SLUGS.AUTO_MERGE,
+        surface: 'auto-merge',
+        outcome: TRANSIENT_REFUSALS.has(reasonClass) ? 'deferred' : 'rejected',
+        reason: safetyCheck.reason,
+        workspaceId: worker.workspaceId ?? null,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: 'system',
+        detail: { prNumber, headSha, repoFullName, reasonClass, tier: policy.tier },
+      });
+    }
 
     // Conflict path: dispatch a same-branch retry rather than asking the human.
     if (classifyMergeFailure(safetyCheck.reason) === 'conflict' && worker.taskId) {
@@ -577,6 +618,18 @@ export async function tryAutoMergeWorkerPr(params: {
   const mergeGate = await guardMissionPrMerge(mergingTask);
   if (mergeGate.blocks) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${mergeGate.reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.MISSION_PR_LIFECYCLE,
+      surface: 'auto-merge',
+      outcome: 'deferred',
+      reason: mergeGate.reason ?? 'mission PR waits on sibling task work',
+      workspaceId: worker.workspaceId ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      missionId: mergingTask?.missionId ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName },
+    });
     return { merged: false, reason: mergeGate.reason };
   }
 
@@ -588,6 +641,21 @@ export async function tryAutoMergeWorkerPr(params: {
   }
 
   console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
+  fireGateEvent({
+    gate: GATE_SLUGS.AUTO_MERGE,
+    surface: 'auto-merge',
+    outcome: 'rejected',
+    reason: result.message || 'merge call failed',
+    workspaceId: worker.workspaceId ?? null,
+    taskId: worker.taskId ?? null,
+    workerId: worker.id ?? null,
+    callerOrigin: 'system',
+    detail: {
+      prNumber, headSha, repoFullName, tier: policy.tier,
+      reasonClass: 'merge_api',
+      mergeFailureClass: classifyMergeFailure(result.message ?? ''),
+    },
+  });
   // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
   if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
     const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
@@ -716,8 +784,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -790,8 +857,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -875,8 +941,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

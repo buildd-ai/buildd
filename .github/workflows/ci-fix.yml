@@ -65,6 +65,8 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a git remote.
+          GH_REPO: ${{ github.repository }}
 
   infra-auto-retry:
     runs-on: ubuntu-latest
@@ -111,6 +113,8 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a git remote.
+          GH_REPO: ${{ github.repository }}
 
   infra-retry-exhausted:
     runs-on: ubuntu-latest
@@ -136,6 +140,8 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a git remote.
+          GH_REPO: ${{ github.repository }}
 
   auto-fix:
     runs-on: ubuntu-latest

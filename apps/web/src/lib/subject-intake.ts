@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { SubjectIntakeOutcome, TaskSubjectAnchor } from '@buildd/shared';
 import type {
   SubjectFilingOrigin,
@@ -85,7 +86,7 @@ export interface SubjectIntakeInput<TTask extends SubjectTask> {
   repository: SubjectIntakeRepository<TTask>;
 }
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
 const TRUSTED_RETRY_ORIGINS = new Set<SubjectFilingOrigin>(['webhook', 'watcher']);
 // 'friction' filings are just as deliberate as 'api'/'mcp' ones — the origin is
 // forced to 'friction' for tracking (see subjectOrigin in tasks/route.ts), not

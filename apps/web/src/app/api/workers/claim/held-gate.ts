@@ -83,6 +83,22 @@ export async function checkMissionLocal(missionId: string): Promise<boolean> {
 }
 
 /**
+ * Per-task variant of `checkMissionLocal`, for the claim route's role gate:
+ * true when `taskId` belongs to a mission with executor='local'. Two queries
+ * (task → missionId, then the already-tested mission check) rather than a
+ * join, so a task with no mission short-circuits to false without a new SQL
+ * shape to test.
+ */
+export async function checkTaskMissionLocal(taskId: string): Promise<boolean> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { missionId: true },
+  });
+  if (!task?.missionId) return false;
+  return checkMissionLocal(task.missionId);
+}
+
+/**
  * Context key a single-task hold writes (PATCH /api/tasks/[id] `{ held: true }`,
  * e.g. "pause checkout until the rounding decision is in" from chat). Its value
  * is `{ at, userId, reason? }`; resuming removes the key.
@@ -96,6 +112,21 @@ export const TASK_HOLD_KEY = 'heldBy' as const;
  */
 export function taskNotHeld(): SQL {
   return sql`(${tasks.context}->'heldBy') IS NULL`;
+}
+
+/**
+ * All three "a person has this" gates at once: TRUE when the task is neither
+ * held itself, nor in a held mission, nor in a local-executor mission (each
+ * honouring its bypass exactly as the claim route does).
+ *
+ * For the sweeps and alerts that ask "why is this pending task not moving?"
+ * (stranded-task sweep, visual audit stall notice, backend-strand probe,
+ * connector-block reminder). Work that fails one of these gates is waiting on a
+ * person by design, so reporting it as stuck is a false alarm. Renders against
+ * the unaliased "tasks" table, like the gates it composes.
+ */
+export function notHeldOrLocal(): SQL {
+  return sql`(${missionNotHeld()} AND ${missionNotLocal()} AND ${taskNotHeld()})`;
 }
 
 /**

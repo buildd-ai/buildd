@@ -57,3 +57,19 @@ describe('ci-fix.yml: claude-code-action can actually run on this repo\'s only r
     expect(Number(match![1])).toBeGreaterThanOrEqual(50);
   });
 });
+
+describe('ci-fix.yml: gh calls in jobs with no checkout can resolve the repo', () => {
+  const parsed = parsedWorkflow('.github/workflows/ci-fix.yml');
+
+  // Without a checkout there is no git remote, so `gh` fails with "failed to
+  // determine base repo" unless GH_REPO is set — which killed the classify step.
+  it('sets GH_REPO on every step that shells out to gh and has no checkout in its job', () => {
+    for (const [name, job] of Object.entries<any>(parsed.jobs)) {
+      const steps: any[] = job?.steps ?? [];
+      if (steps.some(s => String(s?.uses ?? '').startsWith('actions/checkout'))) continue;
+      for (const step of steps.filter(s => /\bgh\s/.test(String(s?.run ?? '')))) {
+        expect(step.env?.GH_REPO, `${name} / ${step.name}`).toBeTruthy();
+      }
+    }
+  });
+});

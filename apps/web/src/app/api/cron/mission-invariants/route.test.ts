@@ -29,7 +29,11 @@ mock.module('@/lib/mission-invariant-scan', () => ({ loadInvariantSnapshot: mock
 // `updated` arrays the friction-task assertions check, and a passing test
 // starts failing on an unrelated write it never asked about.
 
-const cronRunsTable = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+const cronRunsTable = { id: 'id', job: 'job', ok: 'ok', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+
+/** The previous recorded run of this job, as `cron_runs.findFirst` returns it. */
+let previousRun: { result: Record<string, unknown> | null } | null = null;
+const previousRunCalls: any[] = [];
 const tasksTable = {
   id: 'id',
   title: 'title',
@@ -53,7 +57,13 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockFindFirst },
-      cronRuns: { findMany: mock(async () => []) },
+      cronRuns: {
+        findMany: mock(async () => []),
+        findFirst: mock(async (args: any) => {
+          previousRunCalls.push(args);
+          return previousRun;
+        }),
+      },
     },
     insert: mock((table: any) => {
       if (table === cronRunsTable) {
@@ -103,7 +113,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 // stale_criteria_escalation resolves through this single writer rather than
 // filing — stubbed here so the route test can assert the call shape without
@@ -214,6 +224,8 @@ beforeEach(() => {
   scanSnapshot = emptySnapshot();
   scanCoverage = { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
   existingFrictionTask = null;
+  previousRun = null;
+  previousRunCalls.length = 0;
   findFirstCalls.length = 0;
   inserted.length = 0;
   updated.length = 0;
@@ -277,6 +289,61 @@ describe('healthy fleet', () => {
     const body = await (await POST(makeRequest())).json();
     expect(body.report).toContain('NO BASE MERGES LOADED');
     expect(body.report).not.toContain('EMPTY SCAN');
+  });
+});
+
+// ── Counting: entities, and movement since the last run ─────────────────────
+//
+// A raw violation total over report-only invariants reads as an alarm every
+// hour whether or not anything changed. Distinct entities plus a delta against
+// the previous recorded run say whether the fleet is getting better or worse.
+
+describe('counting', () => {
+  it('reports distinct entities per invariant and overall', async () => {
+    scanSnapshot = reportOnlySnapshot();
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
+
+    const body = await (await POST(makeRequest())).json();
+    const stranded = body.invariants.find((i: any) => i.key === 'stranded_commits');
+
+    expect(body.entities).toBe(1);
+    expect(stranded.entities).toBe(1);
+  });
+
+  it('says there is no baseline on the first run rather than inventing a delta', async () => {
+    scanSnapshot = reportOnlySnapshot();
+    const body = await (await POST(makeRequest())).json();
+    const stranded = body.invariants.find((i: any) => i.key === 'stranded_commits');
+
+    expect(body.entitiesDelta).toBeNull();
+    expect(stranded.entitiesDelta).toBeNull();
+  });
+
+  it('reports the change in entities against the previous recorded run', async () => {
+    scanSnapshot = reportOnlySnapshot();
+    previousRun = { result: { entities: 4, entitiesByInvariant: { stranded_commits: 3, mission_unverifiable: 1 } } };
+
+    const body = await (await POST(makeRequest())).json();
+    const stranded = body.invariants.find((i: any) => i.key === 'stranded_commits');
+    const unverifiable = body.invariants.find((i: any) => i.key === 'mission_unverifiable');
+
+    expect(body.entitiesDelta).toBe(-3);
+    expect(stranded.entitiesDelta).toBe(-2);
+    expect(unverifiable.entitiesDelta).toBe(-1);
+    expect(body.report).toContain('-3 since last run');
+  });
+
+  it('reads the baseline from its own job only', async () => {
+    await POST(makeRequest());
+    expect(JSON.stringify(previousRunCalls[0]?.where)).toContain('mission-invariants');
+  });
+
+  it('runs without a baseline when the run history cannot be read', async () => {
+    scanSnapshot = reportOnlySnapshot();
+    previousRun = { result: null };
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).entitiesDelta).toBeNull();
   });
 });
 

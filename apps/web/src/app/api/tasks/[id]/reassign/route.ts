@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { REASSIGNED_WORKER_ERROR } from '@/lib/worker-termination';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -229,8 +230,10 @@ export async function POST(
       { task: taskPayload, targetLocalUiUrl: null }
     );
 
-    // Check for online workers to give feedback on pickup likelihood
-    const heartbeatCutoff = new Date(Date.now() - 10 * 60 * 1000);
+    // Check for online workers to give feedback on pickup likelihood.
+    // "Demonstrably up" window: a runner silent longer than this is not one to
+    // promise the user a pickup from.
+    const heartbeatCutoff = new Date(Date.now() - RUNNER_RECENTLY_SEEN_MS);
     const onlineHeartbeats = await db
       .select({
         count: sql<number>`count(*)::int`,

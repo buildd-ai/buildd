@@ -15,6 +15,8 @@
  *    invisible to both the task UI and `get_task_messages`.
  */
 
+import { TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
+
 /** Entry shape stored in `workers.instructionHistory`. */
 export type InstructionHistoryEntry = {
   type: 'instruction' | 'response';
@@ -39,13 +41,12 @@ export const INSTRUCTION_HISTORY_CAP = 30;
  * never be handed to a worker in one of these states, because the check-in that
  * would collect it is rejected ~1700 lines before the delivery code runs.
  *
- * Kept in sync with `TERMINAL_WORKER_STATUSES` in the check-in route.
+ * It IS the check-in route's terminal set (`TERMINAL_WORKER_STATUSES` from
+ * @buildd/shared) — `superseded` included, which this copy used to miss.
  */
-export const UNREACHABLE_WORKER_STATUSES = ['completed', 'failed', 'error'] as const;
+export const UNREACHABLE_WORKER_STATUSES = TERMINAL_WORKER_STATUSES;
 
-export function isUnreachableWorkerStatus(status: string | null | undefined): boolean {
-  return !!status && (UNREACHABLE_WORKER_STATUSES as readonly string[]).includes(status);
-}
+export const isUnreachableWorkerStatus = isTerminalWorkerStatus;
 
 /**
  * Append a human instruction to `workers.instructionHistory`, capped and with

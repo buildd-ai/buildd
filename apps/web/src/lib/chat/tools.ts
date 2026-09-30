@@ -13,6 +13,7 @@
  * declares, so a read op can't reach a write route even if its handler tried.
  */
 
+import { isLiveWorkerStatus } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import {
@@ -266,6 +267,23 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
   }
 }
 
+/**
+ * A typed schema refuses keys it doesn't declare. A zod object strips them by
+ * default, so list_tasks { missionId } ran as the unfiltered list and the model
+ * read the answer as filtered. Refused, the model gets a tool error naming the
+ * key and the fields it can use, and can correct the call. The two write
+ * schemas with an open catchall keep it: their handlers validate the rest.
+ */
+function closed(schema: z.ZodType | null): z.ZodType | null {
+  if (!(schema instanceof z.ZodObject) || schema._zod.def.catchall !== undefined) return schema;
+  const fields = Object.keys(schema.shape);
+  return z.strictObject(schema.shape, {
+    error: iss => iss.code === 'unrecognized_keys'
+      ? `Unknown parameter(s): ${iss.keys.join(', ')}. This tool takes only: ${fields.join(', ') || 'no parameters'}.`
+      : undefined,
+  });
+}
+
 function genericSchema(ops: [string, ...string[]] | null): z.ZodType {
   const base = ops ? z.object({ action: z.enum(ops) }) : z.object({});
   return base.catchall(z.unknown());
@@ -423,7 +441,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
     if (offered.length === 0) continue;
     const multi = !('' in spec.ops);
     const ops = multi ? (offered as [string, ...string[]]) : null;
-    const schema = explicitSchema(action, ops) ?? genericSchema(ops);
+    const schema = closed(explicitSchema(action, ops)) ?? genericSchema(ops);
 
     tools[action] = tool({
       description: description(action, ops),
@@ -605,7 +623,7 @@ async function holdTask(api: ApiFn, input: Record<string, unknown>) {
   const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 280) : '';
   const task = await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ held: hold, ...(hold && reason ? { heldReason: reason } : {}) }) });
   const fresh = await api(`/api/tasks/${taskId}?include=workers`);
-  const live = (Array.isArray(fresh?.workers) ? fresh.workers : []).find((w: { status: string }) => !['completed', 'failed', 'error'].includes(w.status));
+  const live = (Array.isArray(fresh?.workers) ? fresh.workers : []).find((w: { status: string }) => isLiveWorkerStatus(w.status));
   let told = '';
   if (live) {
     const message = hold

@@ -16,7 +16,7 @@ import { HEARTBEAT_FRESH_MINUTES, scanStart, type HeartbeatVersionRow, type Role
  */
 export const MAX_WORKER_ROWS = 10_000;
 
-const COUNTED_STATUSES = ['completed', ...FAILED_WORKER_STATUSES];
+const COUNTED_STATUSES = ['completed', ...FAILED_WORKER_STATUSES] as const;
 
 export interface RoleOutcomesScan {
   workers: RoleOutcomeRow[];

@@ -17,6 +17,8 @@ import {
   describeAnswerPath,
   buildAnswerDeliveryRecord,
   buildContinuationTaskValues,
+  explainNotWaiting,
+  isAnswerableWaitingFor,
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
@@ -77,10 +79,25 @@ export async function POST(
     }
   }
 
-  // Worker must have waitingFor set (status failed with needs_input or waiting_input)
-  if (!worker.waitingFor) {
+  // Something must still be answerable. A question stays answerable on an
+  // errored worker (inputAsRetry leaves it open); a permission prompt only while
+  // its session is parked on it — the same rule every needs-input card renders
+  // by, so a card that is shown can be answered. Reaching here otherwise means
+  // the caller's card is stale: say what happened and where to go, not which
+  // gate fired, and write nothing.
+  if (!isAnswerableWaitingFor(worker.status, worker.waitingFor as { type?: string } | null)) {
+    const explained = explainNotWaiting({
+      workerStatus: worker.status,
+      continuationTaskId: (worker as { continuationTaskId?: string | null }).continuationTaskId ?? null,
+    });
     return NextResponse.json(
-      { error: 'Worker is not waiting for input' },
+      {
+        error: explained.message,
+        reasonCode: explained.reasonCode,
+        nextAction: explained.nextAction,
+        workerStatus: worker.status,
+        taskId: worker.taskId ?? null,
+      },
       { status: 400 }
     );
   }
@@ -99,7 +116,8 @@ export async function POST(
   const isSensitive = (worker as any).workspace?.dataClass === 'sensitive';
   // Sensitive-dataClass workspaces strip milestone labels, leaving { type, ts }.
   const milestones = (worker.milestones as unknown as Array<{ type?: string; label?: string; timestamp: number }>) || [];
-  const question = (worker.waitingFor as { prompt: string }).prompt;
+  const waitingFor = worker.waitingFor as { type?: string; prompt: string };
+  const question = waitingFor.prompt;
 
   // ── The decision ──────────────────────────────────────────────────────────
   //
@@ -142,6 +160,7 @@ export async function POST(
     workerTurns: worker.turns,
     supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
     credentialPreflight: preflight.state,
+    waitingForType: waitingFor.type ?? null,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({
@@ -386,6 +405,22 @@ async function respondByContinuation(args: {
     // indefinitely.
     await releaseAndNotify(task.id, 'abandoned');
   }
+
+  // Every other open view of this worker — a phone left on the task page, the
+  // home and mission cards — is still showing the question, and nothing else
+  // tells it the worker is gone: supersession happens here, outside the PATCH
+  // route that normally emits status changes. A status change on
+  // `worker:progress` is exactly what those views refresh on immediately.
+  const supersededEvent = {
+    workerId,
+    taskId: task?.id ?? null,
+    status: 'superseded',
+    updatedAt: claimed.updatedAt ?? new Date().toISOString(),
+  };
+  await Promise.all([
+    triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, supersededEvent),
+    task?.id ? triggerEvent(channels.task(task.id), events.WORKER_PROGRESS, supersededEvent) : null,
+  ]).catch(() => { /* a missed push only leaves a stale card, which /respond now explains */ });
 
   // Best-effort back-reference from the answered worker to its continuation, so
   // a later reader of THIS worker's row (a task-detail page opened from a stale

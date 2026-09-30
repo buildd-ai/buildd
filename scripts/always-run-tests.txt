@@ -68,3 +68,6 @@ packages/core/__tests__/team-credential-guard.test.ts
 # never scripts/no-em-dash-copy.test.ts itself, so the colocated mapping never
 # selects it.
 scripts/no-em-dash-copy.test.ts
+# Counts inline task/worker status-literal arrays across every tracked source
+# file (ratchet); the file that adds a copy is never the test itself.
+scripts/status-literal-ratchet.test.ts

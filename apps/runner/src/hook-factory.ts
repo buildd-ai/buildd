@@ -9,6 +9,23 @@ import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
+import { runnerDenial } from './runner-denial.js';
+
+/**
+ * The one shape of a PreToolUse denial. Every deny in this file goes through
+ * here with a `runnerDenial(...)` reason: an empty or bare reason reaches the
+ * agent as a refusal it attributes to the user, and it stops the task
+ * (runner-denials.test.ts enforces both).
+ */
+export function denyPreToolUse(reason: string) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse' as const,
+      permissionDecision: 'deny' as const,
+      permissionDecisionReason: reason,
+    },
+  };
+}
 
 /**
  * Dependencies that the hook factory needs from WorkerManager.
@@ -167,15 +184,10 @@ export class HookFactory {
       const absPath = resolveToolPath(rawPath, worktreePath);
       if (isPathDeniedByReadJail(absPath, worktreePath, deniedPrefixes)) {
         console.log(`[Worker ${worker.id}] Read-jail: denied ${toolName} → ${absPath}`);
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'deny' as const,
-            permissionDecisionReason:
-              'Read access denied: path is outside this worker\'s worktree. ' +
-              'Agent reads are confined to the worker\'s own checkout.',
-          },
-        };
+        return denyPreToolUse(runnerDenial(
+          `reads are confined to this worker's own worktree, and ${absPath} is outside it`,
+          `read the equivalent file under ${worktreePath}, or skip it if the task does not need it`,
+        ));
       }
       return {};
     };
@@ -214,13 +226,7 @@ export class HookFactory {
       if (!reason) return {};
 
       console.log(`[Worker ${worker.id}] Worktree confinement: denied ${toolName} outside own worktree`);
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse' as const,
-          permissionDecision: 'deny' as const,
-          permissionDecisionReason: reason,
-        },
-      };
+      return denyPreToolUse(runnerDenial(reason));
     };
   }
 
@@ -248,13 +254,7 @@ export class HookFactory {
       // park/abort for the same input, so the denial is what the agent sees.
       if (toolName === 'AskUserQuestion' && !asksAQuestion(toolInput)) {
         console.log(`[Worker ${worker.id}] Denied AskUserQuestion with no question text`);
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'deny' as const,
-            permissionDecisionReason: EMPTY_QUESTION_DENY_REASON,
-          },
-        };
+        return denyPreToolUse(runnerDenial(EMPTY_QUESTION_DENY_REASON));
       }
 
       // Block AskUserQuestion when inputPolicy is 'autonomous' (default).
@@ -263,13 +263,10 @@ export class HookFactory {
           && (opts?.inputPolicy || 'autonomous') === 'autonomous'
           && this.ctx.config.inputAsRetry === false) {
         console.log(`[Worker ${worker.id}] Blocked AskUserQuestion (inputPolicy=autonomous)`);
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'deny' as const,
-            permissionDecisionReason: 'AskUserQuestion is not allowed in autonomous mode. Complete the task independently without asking the user questions. Make reasonable decisions and proceed.',
-          },
-        };
+        return denyPreToolUse(runnerDenial(
+          'AskUserQuestion is disabled for this autonomous task, so the question was not sent to anyone',
+          'make a reasonable decision yourself and proceed; to put a choice on record without waiting, post a note (buildd action=post_note, type=question, with defaultChoice)',
+        ));
       }
 
       // AskUserQuestion is the agent's direct channel to the user — the question
@@ -294,26 +291,20 @@ export class HookFactory {
         for (const pattern of DANGEROUS_PATTERNS) {
           if (pattern.test(command)) {
             console.log(`[Worker ${worker.id}] Blocked dangerous command: ${command.slice(0, 80)}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: 'Dangerous command blocked by safety policy',
-              },
-            };
+            return denyPreToolUse(runnerDenial(
+              `this Bash command matches the destructive-command rule ${pattern}`,
+              'use a narrower command that does the same job (for example delete a specific path inside your worktree, or reset one file), or skip the step if the task does not need it',
+            ));
           }
         }
         // Block bash reads of runner credential files (second layer after env scoping)
         for (const pattern of DANGEROUS_CREDENTIAL_READ_PATTERNS) {
           if (pattern.test(command)) {
             console.log(`[Worker ${worker.id}] Blocked credential read via bash: ${command.slice(0, 80)}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: 'Reading runner credential files is not permitted',
-              },
-            };
+            return denyPreToolUse(runnerDenial(
+              'reading the runner\'s own credential files is blocked',
+              'use the credentials already provided to you through your environment and MCP tools',
+            ));
           }
         }
 
@@ -333,13 +324,10 @@ export class HookFactory {
         for (const pattern of SENSITIVE_READ_PATHS) {
           if (pattern.test(filePath)) {
             console.log(`[Worker ${worker.id}] Blocked read of runner credential file: ${filePath}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: `Reading runner credential files is not permitted: ${filePath}`,
-              },
-            };
+            return denyPreToolUse(runnerDenial(
+              `reading the runner's own credential files is blocked (${filePath})`,
+              'use the credentials already provided to you through your environment and MCP tools',
+            ));
           }
         }
       }
@@ -350,13 +338,10 @@ export class HookFactory {
         for (const pattern of SENSITIVE_PATHS) {
           if (pattern.test(filePath)) {
             console.log(`[Worker ${worker.id}] Blocked sensitive path write: ${filePath}`);
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse' as const,
-                permissionDecision: 'deny' as const,
-                permissionDecisionReason: `Cannot write to sensitive path: ${filePath}`,
-              },
-            };
+            return denyPreToolUse(runnerDenial(
+              `writes to ${filePath} are blocked because it is a sensitive path`,
+              'leave that file unchanged; if the task genuinely needs it changed, say so in your complete_task summary',
+            ));
           }
         }
       }
@@ -669,7 +654,13 @@ export class HookFactory {
       // If another permission request is already pending, deny to avoid deadlock
       if (this.ctx.pendingPermissionRequests.has(worker.id)) {
         console.log(`[Worker ${worker.id}] canUseTool: denied ${toolName} from agent ${agentID} (request ${requestId}) — another request already pending`);
-        return { behavior: 'deny' as const, message: 'Permission denied: another request is already pending' };
+        return {
+          behavior: 'deny' as const,
+          message: runnerDenial(
+            'a permission request from this session is already waiting on a person, and only one can wait at a time',
+            'retry this call after that request is answered, or make it from the main agent',
+          ),
+        };
       }
 
       const prompt = title || `Permission required for ${toolName} (subagent: ${agentID})`;

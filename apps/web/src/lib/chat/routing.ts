@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionError, type DecisionResult, type DecisionUsage, type GateOutcome, type UsageSink, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
 
@@ -59,9 +59,8 @@ export const CHAT_ROUTING_QUESTIONS = {
 };
 
 /**
- * Asked only when the turn passes the conversation's auto title (see
- * `retitle.ts`): has the conversation moved on from what its title names?
- * Rides the routing call, so it costs a question, never a request.
+ * Asked post-response to check whether the conversation has moved on from its auto title (see
+ * `retitle.ts`). Made as a separate decision call after the response is saved, not during routing.
  */
 export const TITLE_TOPIC_QUESTION = {
   type: 'choice',
@@ -106,12 +105,69 @@ export const AREA_MIN_CONFIDENCE = 0.8;
 export const WORKSPACE_MIN_CONFIDENCE = 0.85;
 /** A choice takes at most 255 labels (decision-client MAX_CHOICE_OPTIONS). */
 const MAX_WORKSPACE_LABELS = 255;
+/**
+ * The workspace question lists at most this many (recently active) workspaces.
+ * Every label carries its hint, so an uncapped list grows with the team and
+ * becomes the call's largest question; a workspace past the cap is still
+ * reached by naming it (`namedWorkspace`) or from a docked object.
+ */
+export const MAX_ASKED_WORKSPACES = 15;
+/** Shorter names and terms match too much prose to decide a workspace alone. */
+const MIN_TERM_LENGTH = 3;
 
 /** A workspace the turn may be routed to, with what it's about (repo, projects). */
 export interface RoutableWorkspace {
   id: string; name: string; hint?: string | null;
+  /** Names that mean this workspace in a message: its name, repo name, project names. Absent ⇒ the name. */
+  terms?: readonly string[];
   /** Latest task activity (ISO), null = none in the lookback; spanning reads skip idle ones. */
   lastActiveAt?: string | null;
+}
+
+function repoName(repo?: string | null): string | undefined {
+  return repo?.trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).pop() || undefined;
+}
+
+/** The names a message may use for a workspace: its name, repo name and project names. Pure. */
+export function workspaceTerms(ws: { name: string; repo?: string | null; projects?: ReadonlyArray<{ name: string }> | null }): string[] {
+  const terms = [ws.name, repoName(ws.repo), ...(ws.projects ?? []).map(p => p.name)]
+    .map(t => t?.trim()).filter((t): t is string => !!t);
+  return [...new Set(terms)];
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The one workspace the message names by name, repo or project, else null.
+ * Whole-word, case-insensitive. A match inside a longer match of another
+ * workspace doesn't count ("buildd" inside "buildd-docs"); two workspaces
+ * named is no match. Pure.
+ */
+export function namedWorkspace(message: string, workspaces: readonly RoutableWorkspace[]): string | null {
+  const hits: { id: string; start: number; end: number }[] = [];
+  for (const w of workspaces) {
+    for (const term of w.terms ?? [w.name]) {
+      if (term.length < MIN_TERM_LENGTH) continue;
+      const re = new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(term)}(?![\\p{L}\\p{N}_-])`, 'giu');
+      for (const m of message.matchAll(re)) hits.push({ id: w.id, start: m.index!, end: m.index! + m[0].length });
+    }
+  }
+  const kept = hits.filter(h => !hits.some(o => o.id !== h.id && o.start <= h.start && o.end >= h.end && o.end - o.start > h.end - h.start));
+  const ids = new Set(kept.map(h => h.id));
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+/**
+ * The workspaces the workspace question lists: recently active ones, most
+ * recent first, at most MAX_ASKED_WORKSPACES. Unknown activity (the lookup
+ * failed) keeps the list's order. Pure.
+ */
+export function workspacesToAsk(workspaces: readonly RoutableWorkspace[]): RoutableWorkspace[] {
+  if (workspaces.every(w => w.lastActiveAt === undefined)) return workspaces.slice(0, MAX_ASKED_WORKSPACES);
+  return workspaces
+    .filter(w => !!w.lastActiveAt)
+    .sort((a, b) => b.lastActiveAt!.localeCompare(a.lastActiveAt!))
+    .slice(0, MAX_ASKED_WORKSPACES);
 }
 
 /**
@@ -121,8 +177,8 @@ export interface RoutableWorkspace {
  */
 export function workspaceHint(ws: { repo?: string | null; projects?: ReadonlyArray<{ name: string; description?: string | null }> | null }): string | null {
   const parts: string[] = [];
-  const repoName = ws.repo?.trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).pop();
-  if (repoName) parts.push(`repo ${repoName}`);
+  const repo = repoName(ws.repo);
+  if (repo) parts.push(`repo ${repo}`);
   const projects = (ws.projects ?? []).map(p => (p.description ? `${p.name} (${p.description})` : p.name)).filter(Boolean);
   if (projects.length) parts.push(`projects: ${projects.join('; ')}`);
   const hint = parts.join(' · ').slice(0, 240);
@@ -172,32 +228,182 @@ export interface TurnRoute {
   usage?: DecisionUsage;
   /** The workspace routing picked for an unpinned conversation, when confident. */
   workspaceId?: string;
-  /** The title-topic answer, ungated, when `title` was passed and the call answered it. */
-  topic?: { label: 'same_topic' | 'new_topic'; confidence: number };
+  /**
+   * How `workspaceId` was settled: the docked object's workspace, one the
+   * message names, the previous turn's (sticky), or the workspace question.
+   */
+  workspaceSource?: 'docked' | 'named' | 'sticky' | 'decision';
+  /** What routing did, for the record (`RoutingRecord`). Absent on turns routing didn't run for. */
+  routing?: RoutingRecord;
 }
 
-type RoutingQuestions = typeof CHAT_ROUTING_QUESTIONS & { workspace?: ChoiceQuestion<string>; topic?: typeof TITLE_TOPIC_QUESTION };
+/** `ai_usage.kind` of the routing call's receipt (surface `decision`). */
+export const ROUTING_DECISION_ID = 'chat_routing';
+
+/**
+ * How the routing call ended: some gate applied (`decision`, same rule as
+ * `source`), it answered and nothing cleared a gate (`low_confidence`), or it
+ * failed (`error:<DecisionError kind>`; `error:threw` for a throw, which
+ * `decisionCall` never does).
+ */
+export type RoutingOutcome = 'decision' | 'low_confidence' | `error:${DecisionError['kind'] | 'threw'}`;
+
+/**
+ * One question's answer: the label (a workspace pick is recorded as its id),
+ * its confidence, and whether routing acted on it. Null label/confidence: not
+ * answered.
+ */
+export interface RoutingAnswerRecord { label: string | null; confidence: number | null; applied: boolean }
+
+/**
+ * A content-free record of one routing call: labels, numbers and ids only,
+ * never message text, titles or workspace names. Persisted with the user
+ * message (`usage.routing`) and logged as `[chat-routing] {json}`.
+ */
+export interface RoutingRecord {
+  outcome: RoutingOutcome;
+  latencyMs: number;
+  attempts: number;
+  /** Questions asked (3 base, or 2 with a pinned tier, + workspace). */
+  questionCount: number;
+  /** Workspaces offered to the workspace question (0 when not asked). */
+  workspaceCount: number;
+  /** Per question; empty when the call failed. */
+  answers: Partial<Record<'complexity' | 'intent' | 'area' | 'workspace', RoutingAnswerRecord>>;
+}
+
+/** The one log line per routed turn. Never throws. */
+export function logRoutingRecord(record: RoutingRecord, log: (line: string) => void = console.info): void {
+  try { log(`[chat-routing] ${JSON.stringify(record)}`); } catch { /* a log line never fails a turn */ }
+}
+
+function answerRecord(gate: GateOutcome<string>, label: string | null | undefined = gate.label): RoutingAnswerRecord {
+  return { label: label ?? null, confidence: gate.confidence ?? null, applied: gate.apply };
+}
+
+
+/** Longest message the acknowledgement fast path considers. */
+const ACK_MAX_LENGTH = 40;
+const ACK_WORD = String.raw`(?:thanks?(?: you)?(?: so much| a lot)?|thx|ty|cheers|ok(?:ay)?|k|kk|cool|great|nice|perfect|awesome|got it|sounds good|sure|yes|yep|yeah|yup|no|nope|hi|hello|hey|yo|morning|good (?:morning|afternoon|evening)|go (?:ahead|for it)|do it|please do|lgtm)`;
+const ACK_RE = new RegExp(String.raw`^(?:${ACK_WORD}|\p{Extended_Pictographic}+)(?:[\s,.!]+(?:${ACK_WORD}|\p{Extended_Pictographic}+))*[\s.!]*$`, 'iu');
+
+/**
+ * A whole message that is only an acknowledgement or a greeting ("thanks",
+ * "ok 👍", "hi"). Such a turn skips the routing call (`routeTurn`). Short and
+ * anchored: "thanks, now pause checkout" is not one.
+ */
+export function isAcknowledgement(message: string): boolean {
+  const m = message.trim();
+  return m.length > 0 && m.length <= ACK_MAX_LENGTH && ACK_RE.test(m);
+}
+
+/**
+ * Did the previous assistant turn offer to do something, so that "ok" / "yes"
+ * may mean "go ahead"? Conservative on the side of keeping writes: a question
+ * at the end, or an offer phrase anywhere.
+ */
+export function offeredAction(previous: string | null | undefined): boolean {
+  const p = (previous ?? '').trim();
+  if (!p) return false;
+  return /\?\s*$/.test(p) || /\b(?:want me to|should I|shall I|would you like|I can|I could|do you want|let me know if)\b/i.test(p);
+}
+
+type RoutingQuestions = Omit<typeof CHAT_ROUTING_QUESTIONS, 'complexity'> & {
+  complexity?: typeof CHAT_ROUTING_QUESTIONS.complexity; workspace?: ChoiceQuestion<string>;
+};
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
+type TopicDecide = (p: Parameters<typeof decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }>>[0])
+  => Promise<DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>>;
+
+/**
+ * Ask the topic question in a post-response call (made after the turn is saved,
+ * in the `later` callback). Returns the answer ungated.
+ */
+export async function askTopicQuestion(
+  input: {
+    teamId: string; workspaceId: string | null; userId: string; message: string; title: string;
+    /**
+     * The decision policy and key, resolved ahead, so the whole `ROUTING_TIMEOUT_MS`
+     * goes to the provider. Absent ⇒ resolved inside the call.
+     */
+    access?: Promise<DecisionAccess>;
+  },
+  deps: { decide?: TopicDecide } = {},
+): Promise<{ label: 'same_topic' | 'new_topic'; confidence: number } | undefined> {
+  const decide = deps.decide ?? decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }> as TopicDecide;
+  let res: DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>;
+  try {
+    res = await decide({
+      capability: 'chat',
+      teamId: input.teamId,
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      state: { turn: { message: input.message.slice(0, 2000), title: input.title } },
+      questions: { topic: TITLE_TOPIC_QUESTION },
+      timeoutMs: ROUTING_TIMEOUT_MS,
+      ...(input.access ? { access: input.access } : {}),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!res.ok) return undefined;
+
+  const topicAnswer = (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic;
+  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
+    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
+    : undefined;
+  return topic;
+}
 
 export async function routeTurn(
   input: {
     teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string;
     /** Unpinned conversations: the in-reach workspaces to pick the turn's scope from. */
     workspaces?: readonly RoutableWorkspace[];
-    /** The conversation's auto title, to ask whether the conversation has moved on (`TITLE_TOPIC_QUESTION`). */
-    title?: string;
+    /** The docked object's (entry.about / linked mission) workspace: it decides, no question. */
+    impliedWorkspaceId?: string | null;
+    /** The previous turn's routed workspace: the default unless the message names another. */
+    previousWorkspaceId?: string | null;
+    /** The conversation pins its tier: the complexity answer would be overwritten, so it isn't asked. */
+    tierPinned?: boolean;
+    /**
+     * The decision policy and key, resolved ahead (`resolveDecisionAccess`), so
+     * the whole `ROUTING_TIMEOUT_MS` goes to the provider. Absent ⇒ resolved
+     * inside the call, inside the deadline.
+     */
+    access?: Promise<DecisionAccess>;
   },
-  deps: { decide?: Decide } = {},
+  deps: {
+    decide?: Decide;
+    /** Receipt sink for the routing call (`ai_usage`, kind `ROUTING_DECISION_ID`). */
+    onUsage?: UsageSink;
+    now?: () => number;
+  } = {},
 ): Promise<TurnRoute> {
-  const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback' };
+  const settled = input.workspaces ? settleWorkspace(input, input.workspaces) : null;
+  // An acknowledgement or greeting needs no reasoning and no tools beyond the
+  // fallback set: the cheap tier, without a routing call. Writes stay offered
+  // only when the previous turn offered something ("Shall I file it?" → "ok").
+  if (isAcknowledgement(input.message)) {
+    return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback', ...settled };
+  }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
-  const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
+  const now = deps.now ?? (() => Date.now());
+  // Asked only when nothing above settled it, and only over a bounded list.
+  const ws = input.workspaces && !settled ? workspaceQuestion(workspacesToAsk(input.workspaces)) : null;
+  const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
   const questions: RoutingQuestions = {
-    ...CHAT_ROUTING_QUESTIONS,
+    ...(input.tierPinned ? {} : { complexity }),
+    ...base,
     ...(ws ? { workspace: ws.question } : {}),
-    ...(input.title ? { topic: TITLE_TOPIC_QUESTION } : {}),
   };
+  const shape = {
+    questionCount: Object.keys(questions).length,
+    workspaceCount: ws ? ws.idFor.size : 0,
+  };
+  const fallback = (routing: RoutingRecord): TurnRoute => ({ tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', ...settled, routing });
+  const started = now();
   let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
@@ -205,15 +411,23 @@ export async function routeTurn(
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000), ...(input.title ? { title: input.title } : {}) } },
+      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
+      decisionId: ROUTING_DECISION_ID,
+      ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
+      ...(input.access ? { access: input.access } : {}),
     });
   } catch {
-    return fallback;
+    return fallback({ outcome: 'error:threw', latencyMs: now() - started, attempts: 0, ...shape, answers: {} });
   }
-  if (!res.ok) return fallback;
+  const timing = {
+    latencyMs: typeof res.latencyMs === 'number' ? res.latencyMs : now() - started,
+    attempts: typeof res.attempts === 'number' ? res.attempts : 0,
+  };
+  if (!res.ok) return fallback({ outcome: `error:${res.error.kind}`, ...timing, ...shape, answers: {} });
 
+  // Unanswered when not asked (a pinned tier): no answer, fallback tier.
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
   const intentGate = gateChoice(res.answers.intent, INTENT_MIN_CONFIDENCE);
   const areaGate = gateChoice(res.answers.area, AREA_MIN_CONFIDENCE);
@@ -221,19 +435,40 @@ export async function routeTurn(
   const wsAnswer = (res.answers as { workspace?: Parameters<typeof gateChoice>[0] }).workspace;
   const wsGate = ws && wsAnswer ? gateChoice(wsAnswer, WORKSPACE_MIN_CONFIDENCE) : null;
   const workspaceId = wsGate?.apply ? ws!.idFor.get(wsGate.label) : undefined;
-  const topicAnswer = input.title ? (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic : undefined;
-  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
-    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
-    : undefined;
+  const source = tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback';
+  const answers: RoutingRecord['answers'] = {
+    complexity: answerRecord(tierGate),
+    intent: answerRecord(intentGate),
+    area: answerRecord(areaGate),
+    // The label is a workspace name: record the id it maps to instead.
+    ...(ws ? { workspace: answerRecord(wsGate ?? { apply: false, reason: 'no_answer' }, wsGate?.label !== undefined ? ws.idFor.get(wsGate.label) ?? null : null) } : {}),
+  };
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
     // Withhold the write tools only on a confident "not acting"; low
     // confidence keeps them (the approval card is the backstop either way).
     allowWrites: !(intentGate.apply && intentGate.label !== 'act'),
     ...(area ? { area } : {}),
-    source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
+    source,
     ...(res.usage ? { usage: res.usage } : {}),
-    ...(workspaceId ? { workspaceId } : {}),
-    ...(topic ? { topic } : {}),
+    ...(settled ?? (workspaceId ? { workspaceId, workspaceSource: 'decision' as const } : {})),
+    routing: { outcome: source === 'decision' ? 'decision' : 'low_confidence', ...timing, ...shape, answers },
   };
+}
+
+/**
+ * The turn's workspace without the decision call, in order: the docked
+ * object's, the one the message names, the previous turn's. Each must be one
+ * of the offered (in-reach) workspaces. Null ⇒ ask.
+ */
+function settleWorkspace(
+  input: { message: string; impliedWorkspaceId?: string | null; previousWorkspaceId?: string | null },
+  workspaces: readonly RoutableWorkspace[],
+): Pick<TurnRoute, 'workspaceId' | 'workspaceSource'> | null {
+  const offered = (id?: string | null) => !!id && workspaces.some(w => w.id === id);
+  if (offered(input.impliedWorkspaceId)) return { workspaceId: input.impliedWorkspaceId!, workspaceSource: 'docked' };
+  const named = namedWorkspace(input.message, workspaces);
+  if (named) return { workspaceId: named, workspaceSource: 'named' };
+  if (offered(input.previousWorkspaceId)) return { workspaceId: input.previousWorkspaceId!, workspaceSource: 'sticky' };
+  return null;
 }

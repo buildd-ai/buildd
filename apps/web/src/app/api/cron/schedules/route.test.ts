@@ -5,6 +5,9 @@ import { NextRequest } from 'next/server';
 
 // Set CRON_SECRET before importing the route
 process.env.CRON_SECRET = 'test-secret';
+// Some tests below read the cron_runs row withCronRun records, against the
+// mocked db — opt in (withCronRun records nothing under NODE_ENV=test by default).
+process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '1';
 
 const mockTaskSchedulesFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
@@ -49,6 +52,10 @@ const makeUpdateChain = (calls: any[]) => ({
  * `db.insert`, and an untargeted capture counts it as the route's own write.
  */
 const CRON_RUNS_TABLE = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+/** Every cron_runs row withCronRun wrote, in order. */
+let cronRunRows: any[] = [];
+const mockRunHealthWatcher = mock(() => Promise.resolve({ checked: 0, fired: 0, errors: 0, skipped: 0 }) as Promise<any>);
+mock.module('@/lib/health-watcher', () => ({ runHealthWatcher: mockRunHealthWatcher }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -58,13 +65,14 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       workers: { findMany: mockWorkersFindMany },
-      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany },
+      // findFirst: the offline-runner rule's "any live runner on this account" lookup.
+      workerHeartbeats: { findMany: mockWorkerHeartbeatsFindMany, findFirst: async () => null },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       accounts: { findMany: mockAccountsFindMany },
     },
     insert: mock((table: any) => ({
       values: mock((vals: any) => {
-        if (table === CRON_RUNS_TABLE) return { returning: mock(() => [{ id: 'run-1' }]) };
+        if (table === CRON_RUNS_TABLE) { cronRunRows.push(vals); return { returning: mock(() => [{ id: 'run-1' }]) }; }
         tasksInsertValues = vals;
         if (insertError) throw insertError;
         // `insertConflict` models the partial unique index
@@ -156,7 +164,7 @@ mock.module('@/lib/heartbeat-helpers', () => ({
 }));
 
 mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+  notifyOperator: mockNotify,
 }));
 
 // Heartbeat decision chain. Inert for non-heartbeat schedules (the prepass is
@@ -1717,5 +1725,43 @@ describe('GET /api/cron/schedules', () => {
 
     expect(body.overdueHeartbeatAlerts).toBe(1);
     expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /api/cron/schedules — run history carries the maintenance sub-results', () => {
+  beforeEach(() => {
+    cronRunRows = [];
+    mockTaskSchedulesFindMany.mockReset();
+    mockTaskSchedulesFindMany.mockResolvedValue([]);
+    mockRunHealthWatcher.mockReset();
+    mockRunHealthWatcher.mockResolvedValue({ checked: 0, fired: 0, errors: 0, skipped: 0 });
+  });
+
+  it('records the health watcher result and overdue-heartbeat alerts in the run row', async () => {
+    // Computed every tick and dropped before the report, so a watcher that
+    // threw every hour looked exactly like a quiet one.
+    mockRunHealthWatcher.mockResolvedValue({ checked: 3, fired: 1, errors: 0, skipped: 2 });
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const row = cronRunRows.at(-1);
+    expect(row.job).toBe('schedules');
+    expect(row.result.healthWatcher).toEqual({ checked: 3, fired: 1, errors: 0, skipped: 2 });
+    expect(row.result.overdueHeartbeatAlerts).toBe(0);
+  });
+
+  it('counts a watcher failure in errors, and never folds findings into changed', async () => {
+    mockRunHealthWatcher.mockResolvedValue({ checked: 2, fired: 2, errors: 1, skipped: 0 });
+    await GET(makeRequest());
+    let row = cronRunRows.at(-1);
+    expect(row.errors).toBe(1);
+    // `schedules` is a work-polarity job: changed = tasks created. Watcher
+    // fires are findings; adding them would invert the health reading.
+    expect(row.changed).toBe(0);
+
+    mockRunHealthWatcher.mockRejectedValue(new Error('watcher down'));
+    await GET(makeRequest());
+    row = cronRunRows.at(-1);
+    expect(row.errors).toBe(1);
+    expect(row.result.healthWatcher).toEqual({ error: 'watcher down' });
   });
 });

@@ -90,8 +90,8 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
-  channels: { worker: (id: string) => `worker-${id}` },
-  events: { WORKER_COMMAND: 'worker:command' },
+  channels: { worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
+  events: { WORKER_COMMAND: 'worker:command', WORKER_PROGRESS: 'worker:progress' },
 }));
 
 mock.module('@/lib/answer-credential-preflight', () => ({
@@ -256,7 +256,8 @@ describe('POST /api/workers/[id]/respond', () => {
 
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toContain('not waiting for input');
+    expect(data.reasonCode).toBe('no_longer_waiting');
+    expect(data.nextAction).toEqual({ kind: 'refresh' });
   });
 
   it('returns 400 when worker is already completed', async () => {
@@ -274,7 +275,8 @@ describe('POST /api/workers/[id]/respond', () => {
 
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toContain('not waiting for input');
+    expect(data.reasonCode).toBe('worker_ended');
+    expect(data.error).toContain('already stopped');
   });
 
   // Regression: the /respond endpoint MUST be status-agnostic — it gates on
@@ -1073,5 +1075,116 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
       expect(mockWorkersUpdateSet.mock.calls[0][0].continuationTaskId).toBeUndefined();
     });
+  });
+
+  // A stale needs-input card — rendered while the worker was waiting, tapped
+  // after it stopped — used to get the raw gate text "Worker is not waiting for
+  // input". The reply now says what happened and where to go next.
+  describe('stale card (nothing is waiting any more)', () => {
+    function authorize() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    it('points an already-answered question at its continuation task', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({
+        ...baseWorker,
+        status: 'superseded',
+        waitingFor: null,
+        continuationTaskId: 'task-2',
+      });
+
+      const res = await POST(createMockRequest({ message: 'Allow once' }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.reasonCode).toBe('already_answered');
+      expect(data.nextAction).toEqual({ kind: 'open_task', taskId: 'task-2' });
+      expect(data.error).not.toContain('not waiting for input');
+      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
+    });
+
+    // The real incident: the permission hook was resolved as deny when the
+    // session aborted, but the prompt stayed on the ended worker's row. An
+    // "Allow once" there used to become a Continue: task whose whole brief
+    // was "Allow once" — granting nothing to a session that no longer exists.
+    it.each([['failed'], ['error'], ['completed']])(
+      'refuses a permission prompt left on a %s worker instead of starting a continuation',
+      async (status) => {
+        authorize();
+        mockWorkersFindFirst.mockResolvedValue({
+          ...baseWorker,
+          status,
+          waitingFor: { type: 'permission', prompt: 'Permission required for Bash: rm -rf *', options: ['Allow once', 'Deny'] },
+        });
+
+        const res = await POST(createMockRequest({ message: 'Allow once' }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.reasonCode).toBe('worker_ended');
+        expect(data.nextAction).toEqual({ kind: 'follow_up' });
+        expect(mockInsertValues).not.toHaveBeenCalled();
+        expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
+      },
+    );
+
+    // A question on an errored worker is still answerable (inputAsRetry).
+    it('still accepts a question left on an errored worker', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, status: 'error' });
+
+      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('cold_continuation');
+    });
+  });
+
+  describe('permission prompt on a live session', () => {
+    it('answers into the live session even far past the resume turn ceiling', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst.mockResolvedValue({
+        ...baseWorker,
+        status: 'waiting_input',
+        updatedAt: new Date(),
+        turns: 4000,
+        supportsInstructionAck: true,
+        pendingInstructions: null,
+        instructionHistory: [],
+        waitingFor: { type: 'permission', prompt: 'Permission required for Bash: gh run download', options: ['Allow once', 'Deny'] },
+      });
+
+      const res = await POST(createMockRequest({ message: 'Allow once' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('resume');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect((mockWorkersUpdateSet.mock.calls[0][0] as any).status).toBeUndefined();
+    });
+  });
+
+  // Every other open view of this worker (a phone left on the task page, the
+  // home cards) had no signal that the question was gone and kept offering it.
+  it('tells open views the worker was superseded when an answer goes cold', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+    expect(res.status).toBe(200);
+
+    const calls = mockTriggerEvent.mock.calls as any[];
+    const toWorker = calls.find(([ch]) => ch === `worker-${WORKER_ID}`);
+    const toTask = calls.find(([ch]) => ch === 'task-task-1');
+    expect(toWorker?.[1]).toBe('worker:progress');
+    expect(toWorker?.[2]).toMatchObject({ workerId: WORKER_ID, status: 'superseded' });
+    expect(toTask?.[1]).toBe('worker:progress');
   });
 });

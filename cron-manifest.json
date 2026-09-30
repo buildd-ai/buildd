@@ -38,6 +38,20 @@
       "method": "GET"
     },
     {
+      "$comment": "Experiment enrolment health (packages/core/experiment-health.ts): nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit holding most of an arm, past its duration cap. Pauses an experiment past its cap and sends one Pushover alert listing every unhealthy one. Daily: every finding is measured in days, and a daily cadence is the alert's dedupe. On the hour, inside the wake window the schedules tick already opens. No running experiments -> one cheap query.",
+      "title": "Buildd: Experiment Health",
+      "path": "/api/cron/experiment-health",
+      "schedule": "0 9 * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Chat session retros (experiment, apps/web/src/lib/chat-retro/; remove per its REMOVAL.md). Daily, on the hour, inside the wake window the schedules tick already opens. Off for every team unless the team opts in; CHAT_RETRO_ENABLED=0 turns it off everywhere. No opted-in team -> one cheap query.",
+      "title": "Buildd: Chat Retro",
+      "path": "/api/cron/chat-retro",
+      "schedule": "0 10 * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Routing Calibration",
       "path": "/api/cron/routing-calibration",

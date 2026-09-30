@@ -159,6 +159,9 @@ export interface LocalWorker {
   taskId: string;
   taskTitle: string;
   taskDescription?: string;
+  /** The task's parentTaskId at claim — lets a later retry recognise this
+   *  worker as part of its lineage (see classifyResumeBranchHolder). */
+  parentTaskId?: string | null;
   taskMode?: string;  // 'execution' or 'planning'
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   workspaceId: string;
@@ -190,6 +193,9 @@ export interface LocalWorker {
   prCreated?: boolean;
   // PR URL captured from a successful create_pr result, when parseable.
   prUrl?: string;
+  // Set once the runner has spent its single "nothing delivered" nudge turn on
+  // this worker, so a later resumed session can never earn a second one.
+  noDeliverableNudged?: boolean;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
@@ -522,6 +528,8 @@ export interface LoopConfig {
 // Task from buildd
 export interface BuilddTask {
   id: string;
+  /** Set on retry/attempt tasks (the task they retry). Full claim rows carry it. */
+  parentTaskId?: string | null;
   title: string;
   description: string;
   workspaceId: string;

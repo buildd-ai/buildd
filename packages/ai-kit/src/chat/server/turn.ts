@@ -27,8 +27,10 @@ import {
   isToolPart,
   STEER_PART_TYPE,
   STEP_PART_TYPE,
+  ONE_CARD_PER_TURN_REASON,
   TURN_ERROR_PART_TYPE,
   toolNameOf,
+  withResolvedFields,
   type ApprovalPreview,
   type ChatMessage,
   type ChatPart,
@@ -74,8 +76,8 @@ export const DEFAULT_TURN_LIMITS = {
 
 export type TurnLimits = { [K in keyof typeof DEFAULT_TURN_LIMITS]: number };
 
-/** What `denied` tells the model when a second card would be shown in one turn. */
-export const ONE_CARD_PER_TURN_REASON = 'Only one approval card per turn. Ask the person after this one is answered.';
+/** What `denied` tells the model when a second card would be shown in one turn (defined in the contract, so a card can tell it from a Discard). */
+export { ONE_CARD_PER_TURN_REASON };
 /** Appended to a turn the deadline or a Stop cut short. */
 export const STOPPED_NOTE = '_Stopped before the answer was finished._';
 
@@ -295,6 +297,21 @@ function reportedCost(meta: unknown): number | null {
   return typeof c === 'number' && Number.isFinite(c) ? c : null;
 }
 
+/**
+ * A turn's cost from its steps. `result.providerMetadata` is the last step's
+ * alone, so a tool round-trip would otherwise be dropped. A step with no
+ * reported cost is priced from its own usage. Null when no step reports one, so
+ * the caller falls back to the whole-turn estimate.
+ */
+function reportedStepsCost(
+  steps: ReadonlyArray<{ usage?: { inputTokens?: number; outputTokens?: number }; providerMetadata?: unknown }>,
+  price: Price,
+): number | null {
+  const reported = steps.map(s => reportedCost(s.providerMetadata));
+  if (!reported.some(c => c !== null)) return null;
+  return steps.reduce((sum, s, i) => sum + (reported[i] ?? estimatedCost(price, s.usage?.inputTokens ?? 0, s.usage?.outputTokens ?? 0) ?? 0), 0);
+}
+
 type Price = { inputPerMTok: number; outputPerMTok: number } | null | undefined;
 
 function estimatedCost(price: Price, input: number, output: number): number | null {
@@ -468,7 +485,10 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     const safePreview = async (tool: string, input: unknown): Promise<PreviewOutcome | null> => {
       if (!opts.preview) return null;
       try {
-        return await opts.preview(tool, (input ?? {}) as Record<string, unknown>, ctx);
+        const proposed = (input ?? {}) as Record<string, unknown>;
+        const p = await opts.preview(tool, proposed, ctx);
+        // The card must show what runs: a field the app rewrote is listed on it.
+        return p.ok ? { ...p, preview: withResolvedFields(p.preview, proposed, p.input) } : p;
       } catch (e) {
         return { ok: false, question: e instanceof Error ? e.message : String(e) };
       }
@@ -624,7 +644,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       try {
         const u = await result.totalUsage;
         tokens = { input: u?.inputTokens ?? 0, output: u?.outputTokens ?? 0 };
-        providerCost = reportedCost(await result.providerMetadata);
+        providerCost = reportedStepsCost(await result.steps, resolved.plan.price);
       } catch { /* an aborted stream may have no usage */ }
       const latencyMs = clock() - startedAt;
       const costUsd = providerCost ?? estimatedCost(resolved.plan.price, tokens.input, tokens.output);

@@ -168,6 +168,47 @@ export async function resolveRoleEnv(
 }
 
 /**
+ * The declared role env vars still unmet once everything THIS runner supplies
+ * is counted: the agent env, the runner's own BUILDD_API_KEY and the
+ * claim-delivered mcpSecrets (header expansion). The server's `roleEnvMissing`
+ * only knows the secrets table, so it cannot see the runner-held key; without
+ * this, every default role (they all declare BUILDD_API_KEY) read as degraded.
+ */
+export function unmetRoleEnv(
+  missing: readonly string[],
+  available: Record<string, string | undefined>,
+): string[] {
+  return [...new Set(missing)].filter(name => !available[name]);
+}
+
+/**
+ * One entry per distinct (role, missing vars) gap this runner has seen, so the
+ * warning is logged once per gap rather than once per worker, and the gap stays
+ * visible in /api/debug/internals after the log line scrolls away.
+ */
+export class RoleEnvGapLog {
+  private gaps = new Map<string, { role: string; missing: string[]; workers: number; firstSeen: number; lastSeen: number }>();
+
+  /** Records a sighting; true when this exact gap is new (i.e. worth a warning). */
+  record(role: string, missing: readonly string[], now = Date.now()): boolean {
+    const sorted = [...new Set(missing)].sort();
+    const key = `${role}|${sorted.join(',')}`;
+    const cur = this.gaps.get(key);
+    if (cur) {
+      cur.workers++;
+      cur.lastSeen = now;
+      return false;
+    }
+    this.gaps.set(key, { role, missing: sorted, workers: 1, firstSeen: now, lastSeen: now });
+    return true;
+  }
+
+  snapshot() {
+    return [...this.gaps.values()].map(g => ({ ...g, missing: [...g.missing] }));
+  }
+}
+
+/**
  * Render the role persona as a system-prompt section.
  *
  * Pure — no disk, no network — and returns `''` when there is nothing to say,

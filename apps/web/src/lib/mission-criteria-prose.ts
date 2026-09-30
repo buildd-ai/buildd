@@ -1,3 +1,4 @@
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, desc, sql } from 'drizzle-orm';
@@ -118,7 +119,6 @@ export type ProseCriterionResolution =
   | { kind: 'verdict'; verdict: 'pass' | 'fail' | 'NOT_EVALUATED'; taskId: string; evidence: string; evaluatedAt: string }
   | { kind: 'unavailable'; evidence: string };
 
-const TERMINAL = ['completed', 'failed', 'cancelled'];
 
 function readMarker(context: unknown): ProseEvalContext | null {
   const m = (context as Record<string, unknown> | null)?.criteriaProseEval as ProseEvalContext | undefined;
@@ -255,7 +255,7 @@ export async function resolveProseCriterion(opts: ProseCriterionInput): Promise<
 
   const existing = await findProseEvalTask(missionId, criterionIndex);
   if (existing && readMarker(existing.context)!.fingerprint === fingerprint) {
-    if (!TERMINAL.includes(existing.status)) {
+    if (!isTerminalTaskStatus(existing.status)) {
       const queuedMs = now - new Date(existing.createdAt ?? existing.updatedAt).getTime();
       const awaitingRunner = existing.status === 'pending' && queuedMs > RUNNER_WAIT_BOUND_MS;
       return {
@@ -429,7 +429,7 @@ export async function handleProseEvalOutcome(
 
   const marker = readMarker(task.context);
   if (!marker || !task.missionId) return { applied: false };
-  if (!TERMINAL.includes(task.status)) return { applied: false };
+  if (!isTerminalTaskStatus(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, task.missionId),

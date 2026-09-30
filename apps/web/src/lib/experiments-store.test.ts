@@ -41,6 +41,12 @@ describe('experiments-store predicates', () => {
     expect(params).toEqual([ID, TEAM, 'tier_pool']);
   });
 
+  it('readout-by-id is scoped by id AND team and, unlike get, admits tier pools', () => {
+    const { sql, params } = render(store.teamExperimentReadoutScope(TEAM, ID));
+    expect(sql).toBe('("experiments"."id" = $1 and "experiments"."team_id" = $2)');
+    expect(params).toEqual([ID, TEAM]);
+  });
+
   it('other-running: same team, same kind, running, excluding self', () => {
     const { sql, params } = render(store.otherRunningScope(TEAM, 'model_routing', ID));
     expect(sql).toContain('"experiments"."team_id" = $1');

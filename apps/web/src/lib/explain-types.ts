@@ -99,7 +99,8 @@ export interface HistoryNode {
   status: string;
   taskClass: string;
   prNumber: number | null;
-  prState: 'merged' | 'open' | 'closed' | 'conflict' | 'none';
+  /** `derivePrDisplayState` (lib/pr-presentation.ts), projected; `none` = no PR. */
+  prState: 'merged' | 'open' | 'closed' | 'conflict' | 'ci_failed' | 'none';
   createdAt: string | null;
   attempts: HistoryNode[];
 }

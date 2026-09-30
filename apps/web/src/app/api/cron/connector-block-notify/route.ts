@@ -20,6 +20,7 @@ import { db } from '@buildd/core/db';
 import { tasks, secrets, connectors } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { notifyConnectorBlockReminder, notifyConnectorExpiry } from '../../workers/claim/connector-block-notify';
+import { connectorBlockReminderWhere } from './reminder-candidates';
 import { shouldNotifyExpiry } from '@/lib/connector-status';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
@@ -34,11 +35,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // Find pending tasks that have a connector block notification but no reminder yet.
   const blockedTasks = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.status, 'pending'),
-      sql`${tasks.context}->>'connectorBlockNotifiedAt' IS NOT NULL`,
-      sql`${tasks.context}->>'connectorBlockReminderSentAt' IS NULL`,
-    ),
+    where: connectorBlockReminderWhere(),
     columns: {
       id: true,
       title: true,

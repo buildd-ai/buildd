@@ -20,7 +20,7 @@
  *    row instead of one row per occurrence — the exact failure mode that made
  *    four identical create_pr rejections look like four unrelated events.
  */
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc, gt, sql } from 'drizzle-orm';
 import { db } from './db/client';
 import { gateEvents } from './db/schema';
 import { normalizeErrorSignature } from './error-signature';
@@ -175,6 +175,61 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
     return recordGateEvent({
       ...input,
       detail: { ...(input.detail ?? {}), firstDeferredAt: new Date().toISOString(), consecutiveDeferrals: 1 },
+    });
+  } catch (err) {
+    console.error(`[gate-ledger] failed to coalesce ${input.gate}/${input.outcome}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Write a gate event, collapsing repeats of the same (gate, outcome, reason,
+ * key) within `windowMs` into ONE row whose `detail.count` climbs.
+ *
+ * For refusals that have no task to key on and can fire on every poll — a
+ * misconfigured client hitting the claim route once a minute would otherwise
+ * be most of the ledger, and skew every bypass-rate readout. `key` is a flat
+ * object matched against `detail` with jsonb containment (`@>`), so it must also
+ * be present in `input.detail`; it is merged in here to make that true.
+ *
+ * `occurredAt` is left at the window's first occurrence, so the table holds at
+ * most one row per key per window; `detail.lastSeenAt` carries the latest one.
+ */
+export async function recordOrCoalesceRepeat(
+  input: RecordGateEventInput,
+  opts: { key: Record<string, string>; windowMs: number },
+): Promise<string | null> {
+  const normalizedReason = normalizeErrorSignature(input.reason);
+  const now = new Date();
+  try {
+    const [latest] = await db
+      .select({ id: gateEvents.id, reason: gateEvents.reason, outcome: gateEvents.outcome, detail: gateEvents.detail })
+      .from(gateEvents)
+      .where(and(
+        eq(gateEvents.gate, input.gate),
+        eq(gateEvents.outcome, input.outcome),
+        eq(gateEvents.reason, normalizedReason),
+        gt(gateEvents.occurredAt, new Date(now.getTime() - opts.windowMs)),
+        sql`${gateEvents.detail} @> ${JSON.stringify(opts.key)}::jsonb`,
+      ))
+      .orderBy(desc(gateEvents.occurredAt))
+      .limit(1);
+
+    if (latest) {
+      const priorDetail = (latest.detail as Record<string, unknown> | null) ?? {};
+      const priorCount = typeof priorDetail.count === 'number' ? priorDetail.count : 1;
+      await db
+        .update(gateEvents)
+        .set({
+          detail: boundDetail({ ...priorDetail, ...(input.detail ?? {}), ...opts.key, count: priorCount + 1, lastSeenAt: now.toISOString() }),
+        })
+        .where(eq(gateEvents.id, latest.id));
+      return latest.id;
+    }
+
+    return await recordGateEvent({
+      ...input,
+      detail: { ...(input.detail ?? {}), ...opts.key, count: 1, lastSeenAt: now.toISOString() },
     });
   } catch (err) {
     console.error(`[gate-ledger] failed to coalesce ${input.gate}/${input.outcome}:`, err);

@@ -6,13 +6,13 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
+import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -309,9 +309,16 @@ export async function POST(req: NextRequest) {
   //     docs/specs/answered-question-resume.md.
   let unresumedAnswersDegraded = 0;
 
+  // 5. The offline-runner rule (fail workers whose runner went offline) runs
+  //    inside cleanupStaleWorkers via failWorkersOfOfflineRunners — the one
+  //    shared copy. This route used to carry its own, keyed on ANY heartbeat
+  //    row on the account older than 10 minutes: one dead row failed every
+  //    in-flight worker under the account's live runner (task 5c0ea9bc).
+  let heartbeatOrphans = 0;
+
   for (const accountId of uniqueAccountIds) {
     try {
-      await cleanupStaleWorkers(accountId);
+      heartbeatOrphans += (await cleanupStaleWorkers(accountId)).heartbeatOrphans;
     } catch {
       // Non-fatal — continue with other accounts
     }
@@ -329,108 +336,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 5. Mark workers as failed when their local-UI heartbeat is stale
-  // This catches workers that appear active but their runner machine is offline
-  const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
-  let heartbeatOrphans = 0;
-
-  const staleHeartbeats = !hasAccounts ? [] : await db.query.workerHeartbeats.findMany({
-    where: and(
-      inArray(workerHeartbeats.accountId, scope.accountIds),
-      lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
-    ),
-    columns: { id: true, accountId: true },
-  });
-
-  if (staleHeartbeats.length > 0) {
-    const staleAccountIds = staleHeartbeats.map(hb => hb.accountId);
-
-    // Find active workers belonging to accounts with stale heartbeats. A
-    // runner heartbeat only vouches for that runner's workers; an interactive
-    // (MCP-claimed) worker on the same account has no runner and must not die
-    // because the account's runner went offline.
-    const orphanedWorkers = await db.query.workers.findMany({
-      where: and(
-        inArray(workers.accountId, staleAccountIds),
-        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        runnerWorkerOnly(),
-      ),
-      columns: { id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true },
-    });
-
-    if (orphanedWorkers.length > 0) {
-      const orphanWorkerIds = orphanedWorkers.map(w => w.id);
-      const orphanTaskIds = orphanedWorkers.map(w => w.taskId).filter(Boolean) as string[];
-
-      await db
-        .update(workers)
-        .set({
-          status: 'failed',
-          exitCause: 'infra_failure',
-          error: 'Worker runner went offline (heartbeat expired)',
-          completedAt: now,
-          updatedAt: now,
-        })
-        .where(inArray(workers.id, orphanWorkerIds));
-
-      // Same rule as phase 1: only tasks in the caller's workspaces are changed.
-      const inScopeTaskIds = orphanTaskIds.length > 0 && hasWorkspaces
-        ? (await db.query.tasks.findMany({
-            where: and(
-              inArray(tasks.id, orphanTaskIds),
-              inArray(tasks.workspaceId, scope.workspaceIds),
-            ),
-            columns: { id: true },
-          })).map(t => t.id)
-        : [];
-
-      // Check each task — promote to completed if worker had deliverables, else reset to pending
-      if (inScopeTaskIds.length > 0) {
-        for (const taskId of inScopeTaskIds) {
-          const orphanWorker = orphanedWorkers.find(w => w.taskId === taskId);
-          let hasDeliverables = false;
-          if (orphanWorker) {
-            try {
-              const artifactCount = await getWorkerArtifactCount(orphanWorker.id);
-              const deliverables = checkWorkerDeliverables(orphanWorker, { artifactCount });
-              hasDeliverables = deliverables.hasAny;
-            } catch { /* non-fatal */ }
-          }
-
-          if (hasDeliverables) {
-            await db
-              .update(tasks)
-              .set({
-                status: 'completed',
-                updatedAt: now,
-              })
-              .where(eq(tasks.id, taskId));
-          } else {
-            await resetOrFailTask(taskId, now, 'worker runner heartbeat expired');
-          }
-
-          // The worker was just terminated outside PATCH /api/workers/[id], so
-          // this sweep must release its path claims itself. An open PR on a
-          // task just promoted to completed means the work landed but hasn't
-          // merged yet — tell the waiter to keep waiting, not to rebase on
-          // nothing.
-          await releaseAndNotify(
-            taskId,
-            hasDeliverables && orphanWorker?.prNumber ? 'pending_merge' : 'abandoned',
-          );
-        }
-      }
-
-      heartbeatOrphans = orphanedWorkers.length;
-    }
-  }
-
-  // 7. Delete stale heartbeats (no ping for > 10 minutes)
+  // 7. Delete heartbeat rows of runners presumed dead. Same "not dead" window
+  //    the offline-runner rule uses, so "no fresh row" and "row deleted" mean
+  //    the same thing and a runner that is merely slow keeps its row.
+  const deadRunnerCutoff = new Date(now.getTime() - RUNNER_STALE_CUTOFF_MS);
   const deletedHeartbeats = !hasAccounts ? [] : await db
     .delete(workerHeartbeats)
     .where(and(
       inArray(workerHeartbeats.accountId, scope.accountIds),
-      lt(workerHeartbeats.lastHeartbeatAt, tenMinutesAgo),
+      lt(workerHeartbeats.lastHeartbeatAt, deadRunnerCutoff),
     ))
     .returning({ id: workerHeartbeats.id });
 

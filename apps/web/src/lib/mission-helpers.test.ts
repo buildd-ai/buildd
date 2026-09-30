@@ -6,12 +6,13 @@ import {
   deriveDriveState,
   deriveTaskHealthSignal,
   unmetDependencyIds,
+  foreignDependencyIds,
+  missingDependencyRow,
   STALL_GRACE_MS,
   getDrivePresentation,
   selectInFlightTasks,
   computeGateChipMaxWaitMins,
   formatWaitDuration,
-  deriveMissionDisplayState,
   getMissionStateChip,
   FILTER_TO_GROUPS,
   GROUP_ORDER,
@@ -689,9 +690,64 @@ describe('deriveTaskHealthSignal', () => {
       ];
       const byId = new Map(rows.map(r => [r.id, r]));
       expect(unmetDependencyIds(
-        { dependsOn: ['open', 'unmerged', 'merged', 'noPr', 'cancelled', 'not-loaded'] },
+        { dependsOn: ['open', 'unmerged', 'merged', 'noPr', 'cancelled'] },
         byId,
       )).toEqual(['open', 'unmerged']);
+    });
+
+    // The claim gate (deps-gate.ts / isGateSatisfied) is the contract; these
+    // three cases are where the old local predicate disagreed with it.
+    it('a closed PR releases a completed dependency, as the claim gate does', () => {
+      const byId = new Map([[
+        'closed', { id: 'closed', status: 'completed', workers: [{ status: 'completed', prUrl: 'x', mergedAt: null, prLifecycleStatus: 'closed' }] },
+      ]]);
+      expect(unmetDependencyIds({ dependsOn: ['closed'] }, byId)).toEqual([]);
+    });
+
+    it("an older worker's open PR still blocks when the newest worker has none", () => {
+      const byId = new Map([[
+        'retried', { id: 'retried', status: 'completed', workers: [
+          { status: 'completed', prUrl: null, mergedAt: null },
+          { status: 'completed', prUrl: 'x', mergedAt: null },
+        ] },
+      ]]);
+      expect(unmetDependencyIds({ dependsOn: ['retried'] }, byId)).toEqual(['retried']);
+    });
+
+    // Not loaded (e.g. in another mission) is unknown, not unmet: the caller
+    // did not look, so a met out-of-mission dependency must not read as a wait.
+    it('a dependency that was not loaded is unknown, not unmet', () => {
+      expect(unmetDependencyIds({ dependsOn: ['not-loaded'] }, new Map())).toEqual([]);
+    });
+
+    it('a dependency looked up and found to have no row is unmet — the claim SQL requires the row', () => {
+      const byId = new Map([['gone', missingDependencyRow('gone')]]);
+      expect(unmetDependencyIds({ dependsOn: ['gone'] }, byId)).toEqual(['gone']);
+    });
+
+    it('foreignDependencyIds lists dependsOn entries outside the loaded rows, once each', () => {
+      expect(foreignDependencyIds([
+        { id: 'a', dependsOn: ['x', 'b'] },
+        { id: 'b', dependsOn: ['x', 'y'] },
+        { id: 'c', dependsOn: null },
+      ])).toEqual(['x', 'y']);
+    });
+
+    it('health reads loaded out-of-mission dependencies: an unmet one is a DAG wait, not STALLED', () => {
+      const tasks = [
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['foreign'], createdAt: ago(3_600_000) },
+      ];
+      // Unknown (not loaded): the row counts as claimable, so it can stall.
+      expect(deriveTaskHealthSignal(noDepMission, tasks, { now })).toBe<Health>('STALLED');
+      const dependencies = new Map([['foreign', { id: 'foreign', status: 'in_progress', workers: [] }]]);
+      expect(deriveTaskHealthSignal(noDepMission, tasks, { now, dependencies })).toBe<Health>('NOMINAL');
+    });
+
+    it('a mission whose only open row waits on a closed-PR dependency reads STALLED past grace', () => {
+      expect(deriveTaskHealthSignal(noDepMission, [
+        { id: 'a', status: 'completed', taskClass: 'work', title: 'First', updatedAt: ago(3_600_000), workers: [{ status: 'completed', prUrl: 'x', mergedAt: null, prLifecycleStatus: 'closed' }], createdAt: ago(3_600_000) },
+        { id: 'b', status: 'pending', taskClass: 'work', title: 'Second', workers: [], dependsOn: ['a'], createdAt: ago(3_600_000) },
+      ], { now })).toBe<Health>('STALLED');
     });
   });
 
@@ -800,134 +856,6 @@ describe('computeGateChipMaxWaitMins — gate chip waiting time', () => {
   it('accepts Date objects as completedAt', () => {
     const completedAt = new Date(NOW - 90 * 60 * 1000);
     expect(computeGateChipMaxWaitMins([{ completedAt }], NOW)).toBe(90);
-  });
-});
-
-describe('deriveMissionDisplayState', () => {
-  const base = {
-    status: 'active',
-    isHeld: false,
-    orchestrationMode: 'auto' as string,
-    activeAgents: 0,
-    health: 'NOMINAL' as Health,
-  };
-
-  it('complete when status is completed', () => {
-    expect(deriveMissionDisplayState({ ...base, status: 'completed' })).toBe<MissionDisplayState>('complete');
-  });
-
-  it('complete when status is archived', () => {
-    expect(deriveMissionDisplayState({ ...base, status: 'archived' })).toBe<MissionDisplayState>('complete');
-  });
-
-  it('held when isHeld (even with active agents)', () => {
-    expect(deriveMissionDisplayState({ ...base, isHeld: true, activeAgents: 2 })).toBe<MissionDisplayState>('held');
-  });
-
-  it('running when activeAgents > 0 and not held', () => {
-    expect(deriveMissionDisplayState({ ...base, activeAgents: 3 })).toBe<MissionDisplayState>('running');
-  });
-
-  it('failed when health is FAILING and no active agents', () => {
-    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health })).toBe<MissionDisplayState>('failed');
-  });
-
-  it('review when progress is 100 and no higher-priority condition applies', () => {
-    expect(deriveMissionDisplayState({ ...base, progress: 100 })).toBe<MissionDisplayState>('review');
-  });
-
-  it('review beats manual mode — 100% complete manual mission is review-ready', () => {
-    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual', progress: 100 })).toBe<MissionDisplayState>('review');
-  });
-
-  it('NOT review when progress is 99', () => {
-    expect(deriveMissionDisplayState({ ...base, progress: 99 })).not.toBe<MissionDisplayState>('review');
-  });
-
-  it('NOT review when progress is omitted (backward compat)', () => {
-    expect(deriveMissionDisplayState(base)).not.toBe<MissionDisplayState>('review');
-  });
-
-  it('failed beats review — FAILING mission at 100% is not review-ready', () => {
-    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health, progress: 100 })).toBe<MissionDisplayState>('failed');
-  });
-
-  it('manual when orchestrationMode is manual with no other conditions', () => {
-    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual' })).toBe<MissionDisplayState>('manual');
-  });
-
-  it('active as fallback', () => {
-    expect(deriveMissionDisplayState(base)).toBe<MissionDisplayState>('active');
-  });
-
-  it('awaiting_verification when work is done but the criteria verdict is missing', () => {
-    // "READY FOR REVIEW" would invite a human to close a mission the platform is
-    // refusing to close. Same vocabulary as the initiative rail's awaiting_verification.
-    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true }))
-      .toBe<MissionDisplayState>('awaiting_verification');
-  });
-
-  it('review (not awaiting_verification) when the criteria pass', () => {
-    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: false }))
-      .toBe<MissionDisplayState>('review');
-  });
-
-  it('NOT awaiting_verification below 100% — unverified criteria on unfinished work is just work', () => {
-    expect(deriveMissionDisplayState({ ...base, progress: 60, criteriaUnverified: true }))
-      .toBe<MissionDisplayState>('active');
-  });
-
-  it('running and failed still outrank awaiting_verification', () => {
-    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true, activeAgents: 1 })).toBe('running');
-    expect(deriveMissionDisplayState({ ...base, progress: 100, criteriaUnverified: true, health: 'FAILING' as Health })).toBe('failed');
-  });
-
-  it('priority: complete > held > running > failed > awaiting_verification > review > manual > active', () => {
-    expect(deriveMissionDisplayState({ ...base, status: 'completed', isHeld: true })).toBe('complete');
-    expect(deriveMissionDisplayState({ ...base, isHeld: true, activeAgents: 5 })).toBe('held');
-    expect(deriveMissionDisplayState({ ...base, activeAgents: 1, health: 'FAILING' as Health })).toBe('running');
-    expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health, progress: 100 })).toBe('failed');
-    expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual', progress: 100 })).toBe('review');
-  });
-
-  // Regression: an escalated mission whose failing criterion is not tied to
-  // 100% task completion (progress < 100) used to fall through every branch
-  // to 'active' — the header chip read AUTO while the heartbeat was disabled
-  // and nothing could move without an owner decision.
-  it('waiting_decision when criteria escalated and no pending deliverable work, even below 100% progress', () => {
-    expect(deriveMissionDisplayState({
-      ...base,
-      progress: 40,
-      criteriaEscalatedAt: new Date(),
-      hasPendingDeliverableWork: false,
-    })).toBe<MissionDisplayState>('waiting_decision');
-  });
-
-  it('NOT active/AUTO when escalated below 100% progress', () => {
-    expect(deriveMissionDisplayState({
-      ...base,
-      progress: 40,
-      criteriaEscalatedAt: new Date(),
-      hasPendingDeliverableWork: false,
-    })).not.toBe<MissionDisplayState>('active');
-  });
-
-  it('NOT waiting_decision when deliverable work is still pending — work still moving is not stuck', () => {
-    expect(deriveMissionDisplayState({
-      ...base,
-      progress: 40,
-      criteriaEscalatedAt: new Date(),
-      hasPendingDeliverableWork: true,
-    })).toBe<MissionDisplayState>('active');
-  });
-
-  it('running still outranks waiting_decision — active agents mean the mission is not stuck yet', () => {
-    expect(deriveMissionDisplayState({
-      ...base,
-      activeAgents: 1,
-      criteriaEscalatedAt: new Date(),
-      hasPendingDeliverableWork: false,
-    })).toBe<MissionDisplayState>('running');
   });
 });
 

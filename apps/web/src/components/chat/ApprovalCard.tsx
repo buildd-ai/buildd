@@ -20,12 +20,12 @@
  * Newsreader. Plain buttons. No keycaps: nothing here has a key.
  */
 import { useState, type ReactNode } from 'react';
-import { ApprovalCard as KitApprovalCard } from '@builddai/ai-kit/chat/react';
+import { ApprovalCard as KitApprovalCard, ToolCallRow } from '@builddai/ai-kit/chat/react';
+import { isSystemDenied } from '@builddai/ai-kit/chat/contract';
 import type { ChatToolPart } from './chat-contract';
 import { useChatActions } from './ChatActions';
 import { approvalDraft, approvalLabel, type ApprovalDraft, type MissionDraft } from './approval-draft';
 import { toolRowView } from './feed-model';
-import { ToolCallRow } from './ToolCallRows';
 
 /** "4 criteria · constraints · plan": what the folded details hold. */
 export function detailsSummary(draft: MissionDraft): string {
@@ -115,6 +115,11 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
     <div data-testid="approval-card" data-state={state} data-approval-id={part.approval?.id ?? undefined} data-kind={kind}>{children}</div>
   );
 
+  // Refused before any card was shown (one card per turn): the kit's "not
+  // proposed" row. Never "discarded": nobody saw it.
+  if (isSystemDenied(part)) {
+    return wrap('skipped', undefined, <KitApprovalCard {...shared} part={part} headline={verb} />);
+  }
   // Discarded: one row, headed by what the write was.
   if (denied) {
     return wrap('denied', undefined, <KitApprovalCard {...shared} part={part} headline={verb} deniedNote={draft.kind === 'preview' ? 'nothing changed' : 'nothing filed'} />);

@@ -25,7 +25,7 @@ import {
 } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull, gte, like } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -167,8 +167,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     // Send Pushover reminder
     const waitingMinutes = Math.round(waitingMs / 60000);
-    notify({
-      app: 'alerts',
+    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: `PR #${worker.prNumber} waiting ${waitingMinutes}m`,
       message: `PR #${worker.prNumber} on ${ws.repo ?? worker.workspaceId} has been waiting ${waitingMinutes} minutes for your review`,
       url: worker.prUrl ?? undefined,

@@ -2,7 +2,7 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-28
+last_verified: 2026-09-29
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
@@ -294,9 +294,24 @@ branch in GitHub (`latestAvailable`).
 - If no `worker_heartbeats` row for the account has `lastHeartbeatAt` within the
   last **150 minutes** (`HEARTBEAT_STALE_MS`), the runner machine is considered
   offline.
-- When the runner is offline, all active workers (`running`, `starting`, `idle`,
-  `waiting_input`) for that account whose `updatedAt` is older than the cutoff
-  are marked `failed` with `error: "Worker runner went offline (heartbeat expired)"`.
+- When the runner is offline, all active runner workers (`running`, `starting`,
+  `idle`, `waiting_input`; never interactive `runner = 'mcp'` ones) for that
+  account whose `updatedAt` is older than the cutoff are marked `failed` with
+  `error: "Worker runner went offline (heartbeat expired)"`.
+- **There is exactly one copy of this rule**, `failWorkersOfOfflineRunners`.
+  The claim-path reaper, `POST /api/tasks/cleanup` and the per-minute
+  maintenance cron all call it. A single stale heartbeat row on an account
+  MUST NOT fail anything by itself while another row on the account is fresh —
+  a second runner's dead row, or a restarted runner's old URL, used to fail
+  every in-flight worker under the account's live runner.
+- Heartbeat rows are deleted only once past the same cutoff, so "no fresh row"
+  and "row deleted" mean the same thing.
+- Every "is this runner up" window is a named constant derived from the
+  heartbeat cadence in `packages/shared/src/runner-liveness.ts`:
+  `RUNNER_LIVE_WINDOW_MS` (online now, presence UI), `RUNNER_RECENTLY_SEEN_MS`
+  (demonstrably up, alarms), `RUNNER_ONLINE_THRESHOLD_MS` (online at poll
+  cadence, runner lists), `RUNNER_STALE_CUTOFF_MS` (not dead). Only the last
+  may gate failing workers or deleting rows.
 - The 150-minute window is 2.5× the typical 60-minute poll cycle so one dropped
   heartbeat doesn't kill in-flight workers.
 - **This rule MUST stay account-scoped — both halves of it.** Unlike the
@@ -317,10 +332,14 @@ branch in GitHub (`latestAvailable`).
   workers failed by this check).
 - AC-9: `heartbeatOrphanScope` and `heartbeatFreshnessScope` MUST each render a
   single-account predicate and MUST NOT reference `team_id`.
+- AC-9a: GIVEN an account with one stale and one fresh heartbeat row WHEN
+  `POST /api/tasks/cleanup` or the maintenance cron runs THEN no worker on the
+  account is failed by the offline-runner rule.
 
 **Code surface**:
-- Constant: `HEARTBEAT_STALE_MS = 150 * 60 * 1000` in
-  `apps/web/src/lib/stale-workers.ts`
+- Constant: `HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS` (150 min at the
+  default cadence) in `apps/web/src/lib/stale-workers.ts`
+- Rule: `failWorkersOfOfflineRunners()` in `apps/web/src/lib/stale-workers.ts`
 - Scopes: `heartbeatOrphanScope()`, `heartbeatFreshnessScope()` in
   `apps/web/src/lib/stale-workers.ts`
 - Query: uses `workerHeartbeats.lastHeartbeatAt` to find fresh beats

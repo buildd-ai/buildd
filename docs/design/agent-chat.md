@@ -411,8 +411,12 @@ The limits on each turn:
 - **Steps:** at most 8 model steps (`stopWhen: isStepCount(8)`).
 - **Writes:** at most one approval card open per turn. A second write waits for
   the first to be answered.
-- **Wall clock:** a 45s budget per turn, inside the route's `maxDuration`. When it
-  runs out, the turn ends with what it has and says it stopped.
+- **Wall clock:** a 120s budget per turn, counted from the request, inside the
+  route's `maxDuration` (`lib/chat/turn-deadline.ts`). Past 85s a step may not
+  call a tool and is told to answer with what it has. When the budget runs out
+  the turn ends and the stream says it stopped, in the same words saved on the
+  message. A watchdog ends a stream that ignores the abort (a hung tool or
+  provider) shortly after the deadline, so the turn is still saved.
 
 ### Memory in three tiers
 
@@ -518,6 +522,16 @@ takes the safe default: `standard` for the tier, and the full read-plus-approval
 tool set for intent. If decision calls are unavailable, every turn uses
 `standard` with all tools. The router can pick a cheaper tier than `standard` for
 a turn. It never changes which model backs a tier.
+
+Routing has a tight deadline (`ROUTING_TIMEOUT_MS`), so everything it can do
+before the request happens outside that deadline. The decision policy check
+and key lookup (`resolveDecisionAccess`) run alongside the limits check. They
+spend nothing, and they read the team row the route already loaded. The
+routing request itself still waits for the limits verdict. A whole-message
+acknowledgement or greeting ("thanks", "ok 👍", "hi") makes no routing call:
+it gets `budget` and the fallback groups, and keeps the write tools only if the
+previous reply offered to do something. A pinned tier drops the complexity
+question.
 
 **buildd can suggest a new mapping, but it can't make one on its own.** A change
 to a tier's mapping comes from an experiment (`docs/design/model-routing-experiment.md`,

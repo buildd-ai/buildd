@@ -1,3 +1,7 @@
+// Asserts on the cron_runs row against a mocked db, so opt in to recording
+// (withCronRun records nothing under NODE_ENV=test by default).
+process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '1';
+
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
@@ -16,7 +20,7 @@ mock.module('@buildd/core/db', () => ({
     query: { cronRuns: { findMany: async () => [] } },
   },
 }));
-mock.module('@/lib/pushover', () => ({ notify: mock(() => undefined) }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
 const { GET } = await import('./route');
 

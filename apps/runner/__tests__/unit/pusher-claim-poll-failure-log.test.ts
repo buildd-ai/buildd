@@ -31,7 +31,7 @@ function captureConsole() {
   };
 }
 
-function makeManager(claimPendingTasks: () => Promise<any[]>) {
+function makeManager(claimPendingTasks: () => Promise<any[]>, claimAndStart: (task: any) => Promise<any> = async () => null) {
   const callbacks: any = {
     getWorkers: () => new Map(),
     emit: () => {},
@@ -42,7 +42,7 @@ function makeManager(claimPendingTasks: () => Promise<any[]>) {
     recover: async () => {},
     sendHeartbeat: () => {},
     claimPendingTasks,
-    claimAndStart: async () => null,
+    claimAndStart,
     getProbedWorkers: () => new Set<string>(),
     resolveRepoPath: () => null,
   };
@@ -102,5 +102,62 @@ describe('claim-poll failure logging', () => {
       cap.restore();
     }
     expect(cap.lines.length).toBe(0);
+  });
+});
+
+// A Pusher assignment that loses the claim race (another runner, or the poll,
+// got there first) is the normal outcome of a broadcast, not a failure. It was
+// logged via console.error with the raw Error — a full stack per lost race.
+describe('task-assignment claim failure logging', () => {
+  const task = { id: 'task-1', title: 'T', workspaceId: 'ws-1' };
+
+  function lostRace() {
+    return Object.assign(
+      new Error('Server rejected claim for task "T" — task is no longer available (may already be claimed or completed)'),
+      { claimError: 'server_rejected', claimReason: 'no_pending_tasks' },
+    );
+  }
+
+  test('a lost claim race logs one info line, no Error object, no stack', async () => {
+    const manager = makeManager(async () => [], async () => { throw lostRace(); });
+    const cap = captureConsole();
+    try {
+      await manager.handleTaskAssignment({ task: task as any });
+    } finally {
+      cap.restore();
+    }
+    expect(cap.lines.filter(l => l.method === 'error')).toHaveLength(0);
+    const race = cap.lines.filter(l => String(l.args[0]).includes('task-1') && /claim race/i.test(String(l.args[0])));
+    expect(race).toHaveLength(1);
+    expect(race[0].method).toBe('log');
+    expect(race[0].args.every(a => typeof a === 'string')).toBe(true);
+    expect(String(race[0].args[0]).split('\n')).toHaveLength(1);
+  });
+
+  test('a server rejection for any other reason is still an error', async () => {
+    const err = Object.assign(new Error('Server rejected claim for task "T" — reason: no_slots'), {
+      claimError: 'server_rejected', claimReason: 'no_slots',
+    });
+    const manager = makeManager(async () => [], async () => { throw err; });
+    const cap = captureConsole();
+    try {
+      await manager.handleTaskAssignment({ task: task as any });
+    } finally {
+      cap.restore();
+    }
+    expect(cap.lines.filter(l => l.method === 'error')).toHaveLength(1);
+  });
+
+  test('a genuine claim error stays at error level', async () => {
+    const manager = makeManager(async () => [], async () => { throw new Error('API error: 500 - boom'); });
+    const cap = captureConsole();
+    try {
+      await manager.handleTaskAssignment({ task: task as any });
+    } finally {
+      cap.restore();
+    }
+    const errors = cap.lines.filter(l => l.method === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].args.some(a => String(a).includes('API error: 500'))).toBe(true);
   });
 });

@@ -14,6 +14,7 @@
  *   - Workers claim route (path_claims backstop)
  */
 
+import { LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes, workers, tasks } from './db/schema';
 import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
@@ -71,8 +72,6 @@ export function isNonEmptyPath(path: string): boolean {
 
 // ── Parked-holder TTL ────────────────────────────────────────────────────────
 
-const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'];
-
 /**
  * Drop, in place, the holders in `byTask` whose every live worker has been
  * parked on a question past PARKED_HOLDER_TTL_MS (see path-claim-ttl.ts).
@@ -97,8 +96,6 @@ async function dropExpiredParkedHolders(byTask: Map<string, string[]>): Promise<
 }
 
 // ── Terminal-holder backstop ─────────────────────────────────────────────────
-
-const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /**
  * Classify each of `taskIds` as a stale claim holder: the task itself is
@@ -134,10 +131,10 @@ async function findTerminalHolders(taskIds: string[]): Promise<Set<string>> {
   const terminal = new Set<string>();
   for (const taskId of taskIds) {
     const status = statusByTask.get(taskId);
-    const terminalTask = status ? TERMINAL_TASK_STATUSES.includes(status) : false;
+    const terminalTask = isTerminalTaskStatus(status);
     const workerStatuses = workerStatusesByTask.get(taskId);
     const allWorkersTerminal = Boolean(workerStatuses?.length)
-      && workerStatuses!.every(s => !LIVE_WORKER_STATUSES.includes(s));
+      && workerStatuses!.every(s => !isLiveWorkerStatus(s));
     if (terminalTask || allWorkersTerminal) terminal.add(taskId);
   }
   return terminal;

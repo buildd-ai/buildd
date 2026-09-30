@@ -13,7 +13,7 @@ import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
-import { workspaceHint, type RoutableWorkspace } from './routing';
+import { workspaceHint, workspaceTerms, type RoutableWorkspace } from './routing';
 
 export type ChatCaller = { user: CurrentUser; teamIds: string[] };
 
@@ -33,7 +33,10 @@ export async function resolveChatTeam(req: NextRequest, caller: ChatCaller, requ
 export async function loadTeamChatSettings(teamId: string) {
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, teamId),
-    columns: { timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true },
+    columns: {
+      timezone: true, chatDailyBudgetUsd: true, chatUserDailyBudgetUsd: true, inferenceKeyPolicy: true,
+      inferenceFeatureModes: true, decisionModel: true,
+    },
   });
   return {
     timezone: team?.timezone ?? null,
@@ -41,6 +44,8 @@ export async function loadTeamChatSettings(teamId: string) {
     dailyBudgetUsd: team?.chatDailyBudgetUsd != null ? Number(team.chatDailyBudgetUsd) : null,
     userDailyBudgetUsd: team?.chatUserDailyBudgetUsd != null ? Number(team.chatUserDailyBudgetUsd) : null,
     keyPolicy: isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? team.inferenceKeyPolicy : null,
+    // For the routing call's policy check (resolveDecisionAccess), so it needn't re-read the team.
+    decisionTeam: team ? { inferenceFeatureModes: team.inferenceFeatureModes, decisionModel: team.decisionModel, inferenceKeyPolicy: team.inferenceKeyPolicy } : null,
   };
 }
 
@@ -119,7 +124,7 @@ export async function loadRoutableWorkspaces(teamId: string, inReach: ReadonlySe
     .then(r => new Map(r.map(a => [a.workspaceId, a.at])))
     .catch(() => null);
   return rows.map(w => ({
-    id: w.id, name: w.name, hint: workspaceHint(w),
+    id: w.id, name: w.name, hint: workspaceHint(w), terms: workspaceTerms(w),
     ...(activity ? { lastActiveAt: activity.get(w.id)?.toISOString() ?? null } : {}),
   }));
 }

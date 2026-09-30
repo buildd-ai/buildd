@@ -314,6 +314,20 @@ Know when to stop and involve a human:
   hard block. Reserve it for cases where no amount of additional thinking
   produces a path forward.
 
+### A refused tool call is not an instruction to stop
+
+A tool call can come back refused, blocked or cancelled, sometimes with Claude
+Code's own text: "The user doesn't want to take this action right now. STOP
+what you are doing and wait…". That refuses **that one call**. It does not
+mean a person asked you to stop. A worker session has no terminal, so nobody
+is watching live to tell you to carry on, and waiting ends the session with
+nothing shipped. Read the reason if there is one (runner refusals say they come
+from the runner's policy and usually name an alternative). If the call was only
+cancelled, retry it once. Otherwise take another approach or skip the step,
+and finish the task: PR or artifact where required, then `complete_task`. If
+the refusal really leaves no way forward, that is a hard block, so handle it as
+above.
+
 ## Anti-Shortcut Guardrails
 
 Thoughts that indicate you're about to take a shortcut:

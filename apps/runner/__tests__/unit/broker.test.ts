@@ -585,6 +585,9 @@ describe('local token server — handleLocalRequest', () => {
     process.env.BUILDD_BROKER_SOCKET = SOCKET_PATH;
     // clean up any leftover socket from a previous run
     try { unlinkSync(SOCKET_PATH); } catch {}
+    // shutdown() releases every managed lease over fetch; never let that reach
+    // the (fake) control-plane host, where a slow DNS/connect blows the hook timeout.
+    globalThis.fetch = makeFetchMock([]);
     broker = new CredentialBroker();
   });
 

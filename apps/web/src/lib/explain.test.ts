@@ -90,7 +90,7 @@ const mockEvaluateMissionWorkState = mock(async () => workStateResult);
 mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateMissionWorkState }));
 
 // Imported AFTER the mocks.
-import { explainMission, explainTask, explainPr, explainWorkspace } from './explain';
+import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -154,6 +154,27 @@ beforeEach(() => {
 
 // ─── Mission scope ────────────────────────────────────────────────────────────
 
+// History nodes read the shared derivePrDisplayState (lib/pr-presentation.ts).
+describe('historyPrStateOf', () => {
+  const w = (prLifecycleStatus: string | null, mergedAt: Date | null = null) =>
+    ({ prNumber: 7, prLifecycleStatus, mergedAt }) as Parameters<typeof historyPrStateOf>[0];
+  it('no PR reads none', () => {
+    expect(historyPrStateOf(undefined)).toBe('none');
+  });
+  it('a merged lifecycle reads merged even before mergedAt is stamped', () => {
+    expect(historyPrStateOf(w('merged'))).toBe('merged');
+  });
+  it('red CI is reported, not folded into open', () => {
+    expect(historyPrStateOf(w('ci_failed'))).toBe('ci_failed');
+  });
+  it('conflict, closed and unresolvable keep their meaning', () => {
+    expect(historyPrStateOf(w('conflict'))).toBe('conflict');
+    expect(historyPrStateOf(w('closed'))).toBe('closed');
+    expect(historyPrStateOf(w('unresolvable'))).toBe('closed');
+    expect(historyPrStateOf(w('ci_green'))).toBe('open');
+  });
+});
+
 describe('explainMission', () => {
   it('never spends a token: the completion gate is asked read-only', async () => {
     missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
@@ -166,6 +187,51 @@ describe('explainMission', () => {
     // verification tasks. A read must not.
     const [, opts] = mockCanCompleteMission.mock.calls[0] as unknown as [string, Row];
     expect(opts.evaluateCriteria).toBe(false);
+  });
+
+  // A dependency in another mission is not in the mission's own task rows. It
+  // is loaded by id, so a met one is never cited as the thing being waited on.
+  describe('out-of-mission dependencies', () => {
+    const pendingDependent = () =>
+      task({ id: 'task-b', status: 'pending', title: 'Second', dependsOn: ['foreign'] });
+    beforeEach(() => {
+      completionDecision = {
+        ok: false, code: 'pending_deliverables', reason: '1 task(s) still open (1 pending)',
+        pendingDeliverables: 1, pendingByStatus: { pending: 1 }, awaitingMergeDetails: [],
+      };
+    });
+
+    it('a met out-of-mission dependency is not cited as waitingOn', async () => {
+      missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [
+        pendingDependent(),
+        task({ id: 'foreign', missionId: 'mission-other', status: 'completed', workers: [] }),
+      ];
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      const cited = (answer.waitingOn as { taskIds?: string[] } | null)?.taskIds ?? [];
+      expect(cited).not.toContain('foreign');
+      expect(cited).toContain('task-b');
+    });
+
+    it('an unmet out-of-mission dependency is cited', async () => {
+      missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [
+        pendingDependent(),
+        task({ id: 'foreign', missionId: 'mission-other', status: 'in_progress', workers: [] }),
+      ];
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect((answer.waitingOn as { taskIds?: string[] } | null)?.taskIds).toEqual(['foreign']);
+    });
+
+    it('a dependency id with no row anywhere is cited: the claim gate blocks on it', async () => {
+      missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [pendingDependent()];
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect((answer.waitingOn as { taskIds?: string[] } | null)?.taskIds).toEqual(['foreign']);
+    });
   });
 
   it('answers with state, waitingOn, because, history, nextAction and derivedFrom', async () => {

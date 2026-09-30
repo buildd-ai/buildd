@@ -15,6 +15,7 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
 import { groupTasksByPhase } from './flight-strip-nav';
 import {
@@ -313,7 +314,7 @@ export interface MissionBoardModel {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
