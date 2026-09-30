@@ -22,8 +22,11 @@
  * the hourly schedules tick for every other creation path. The backfill script
  * runs the sweep over a wider window.
  *
- * Runs only when an OpenRouter key resolves for the team (a `built_in`
- * capability). Sensitive workspaces never send task content out.
+ * A `built_in` capability: there is no per-team switch, it runs for every
+ * team whenever a decision key resolves (packages/core/inference-policy.ts).
+ * An off-by-default shadow is an `opt_in` capability instead, listed in
+ * `teams.enabledDecisionShadows` (the role shadow, ./task-role-decision.ts).
+ * Sensitive workspaces never send task content out.
  */
 import { createHash } from 'node:crypto';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
