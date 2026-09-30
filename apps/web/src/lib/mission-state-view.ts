@@ -97,6 +97,7 @@ import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-comp
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import type { CiRedChain } from './ci-red-chain';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ export type MissionStateSource =
   | 'evaluateMissionWorkState'
   | 'gateEvents.claimLoopDeferral'
   | 'workers.prUrl + workers.mergedAt'
+  | 'workers.prLifecycleStatus + tasks.parentTaskId'
   | 'tasks.parentTaskId + tasks.taskClass';
 
 export interface MissionStateProvenance {
@@ -219,6 +221,27 @@ export type WaitingOnDescriptor =
       count: number;
       prNumbers: number[];
       /** Hrefs to the closed PRs, for "view" rather than "merge". */
+      prUrls: string[];
+      taskIds: string[];
+    }
+  /**
+   * Every unmerged PR has CI red and its fix chain has ended: the last
+   * `[builder · after CI #N]` attempt finished and the gating checks are still
+   * failing. Deliberately a distinct kind from `merge`, not a flag on it: the
+   * PR is not ready for review, and "waiting on you to merge" over a red PR
+   * sends the owner to merge something GitHub will refuse or CI will block.
+   * The remedy is to read the failing check, not to click merge.
+   */
+  | {
+      kind: 'ci_red';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      /** Highest CI-fix attempt ordinal that ran across the red PRs. */
+      attempts: number;
+      /** Failing checks, when the fix attempts' failure summary named them. */
+      failing: string[];
+      prNumbers: number[];
       prUrls: string[];
       taskIds: string[];
     }
@@ -473,6 +496,12 @@ export interface MissionStateInput {
    */
   unmergedPrs?: Array<{ taskId: string; title?: string | null; prNumber: number | null; prUrl: string | null }>;
   /**
+   * PRs (by owning `taskId`) whose CI is red with the fix chain ended. When
+   * every unmerged PR has one, the merge fact is `ci_red`/blocked, not
+   * ready-for-review. See `deriveCiRedChain`.
+   */
+  ciRed?: CiRedChain[];
+  /**
    * An open fix attempt (taskClass `attempt`) on this subject — the builder a
    * request-changes review or a red CI run queued. While one exists the PR is
    * not ready to merge: the platform owes the next push, not the owner.
@@ -524,6 +553,7 @@ export const OUTSTANDING_RANK: Record<WaitingOnDescriptor['kind'], number> = {
   task_failed: 0,
   human_decision: 1,
   dependency: 2,
+  ci_red: 3,
   merge: 3,
   // Ranked below a genuinely open, mergeable PR: both need the owner, but a PR
   // GitHub closed months ago is not a live merge tap the way an open one is,
@@ -883,6 +913,50 @@ function fixLabel(a: { iteration: number | null; maxIterations: number | null })
   return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
 }
 
+function ciRedPhrase(d: { attempts: number; failing: string[]; prNumbers: number[] }): string {
+  const after = `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}`;
+  if (d.failing.length > 0) return `${after}: ${d.failing.join(', ')}`;
+  return d.prNumbers.length === 1 ? `${after} on PR #${d.prNumbers[0]}` : after;
+}
+
+/**
+ * Blocked, not ready: every named unmerged PR has a red CI chain that has
+ * ended. A mixed set keeps the ordinary `merge` reading, since one of those PRs
+ * really is mergeable.
+ */
+function ciRedFact(
+  chains: readonly CiRedChain[] | undefined,
+  prs: ReadonlyArray<{ taskId: string; prNumber: number | null; prUrl: string | null }>,
+): Resolution | null {
+  if (!chains || chains.length === 0 || prs.length === 0) return null;
+  const matched: CiRedChain[] = [];
+  for (const pr of prs) {
+    const chain = chains.find(c => c.taskId === pr.taskId);
+    if (!chain) return null;
+    matched.push(chain);
+  }
+  const failing = [...new Set(matched.flatMap(c => c.failing))];
+  const descriptor = {
+    attempts: Math.max(...matched.map(c => c.attempts)),
+    failing,
+    prNumbers: prs.map(p => p.prNumber).filter((n): n is number => typeof n === 'number'),
+  };
+  return {
+    kind: 'blocked',
+    waitingOn: {
+      kind: 'ci_red',
+      tone: 'error',
+      label: ciRedPhrase(descriptor),
+      count: prs.length,
+      ...descriptor,
+      prUrls: prs.map(p => p.prUrl).filter((u): u is string => typeof u === 'string'),
+      taskIds: prs.map(p => p.taskId),
+    },
+    displayState: 'blocked',
+    source: 'workers.prLifecycleStatus + tasks.parentTaskId',
+  };
+}
+
 /** Rule 7 — the work is done and has not reached trunk. */
 function mergeFact(input: MissionStateInput): Resolution | null {
   // An open fix attempt means the PR is about to change; asking the owner to
@@ -967,6 +1041,11 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       };
     }
 
+    if (!missionPr) {
+      const red = ciRedFact(input.ciRed, details);
+      if (red) return red;
+    }
+
     return {
       kind: 'awaiting_merge',
       waitingOn: {
@@ -1018,6 +1097,10 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   const rowPrs = input.unmergedPrs ?? [];
   if (openMissionPr || rowPrs.length > 0) {
     const missionPr = openMissionPr !== null;
+    if (!missionPr) {
+      const red = ciRedFact(input.ciRed, rowPrs);
+      if (red) return red;
+    }
     return {
       kind: 'awaiting_merge',
       waitingOn: {
@@ -1418,6 +1501,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
           ? `waiting on you to merge 1 open PR${ref}`
           : `waiting on you to merge ${d.count} open PRs`;
     }
+    case 'ci_red':
+      return ciRedPhrase(d);
     case 'pr_closed_unmerged': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
       return d.count === 1
@@ -1595,6 +1680,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
         : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
+    case 'ci_red':
+      return 'The automatic fix attempts are used up and CI is still red, so this is not ready to review. Open the failing check, fix it or take the branch over, then push.';
     case 'pr_closed_unmerged':
       return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or investigate why it closed unmerged.';
     case 'criterion_failing':
@@ -1645,6 +1732,7 @@ const NEEDS_YOU_KINDS: ReadonlySet<MissionStateKind> = new Set([
  */
 const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
   'merge',
+  'ci_red',
   'pr_closed_unmerged',
   'task_failed',
   'human_decision',

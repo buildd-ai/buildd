@@ -139,7 +139,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   send_agent_message: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct')),
   query_events: one(read('GET /api/workers/:id')),
   explain: one(read('GET /api/explain')),
-  get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/workers/:id')),
+  get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
   get_failure_analytics: one(read('GET /api/health/failures')),
   get_budget_forecast: one(read('GET /api/health/budget')),
   list_connectors: one(read('GET /api/connectors/mounted')),
