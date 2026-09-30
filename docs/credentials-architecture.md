@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -144,6 +144,21 @@ network refresh; concurrent callers get `locked`. This is the same pattern the r
 
 > Per CLAUDE.md, do **not** use `db.transaction()` with the neon-http driver. The atomic
 > `UPDATE ... WHERE ... RETURNING` above is the locking mechanism.
+
+## Cloudflare API token (cloud runner)
+
+`purpose = 'cloudflare_token'`, one team-wide row (`accountId`, `workspaceId`,
+`userId` all NULL). `encryptedValue` is JSON `{ apiToken, accountId, aiGatewayId? }`,
+validated and normalized by `parseCloudflareCredential`
+(`apps/web/src/lib/cloudflare-credential-shared.ts`) before it is encrypted.
+Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
+`POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
+endpoints and records `lastVerifiedAt` / health (a rejection marks it
+`revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`
+returns masked metadata only. `POST /api/cloudflare/credential/reveal` is the
+one route that returns a stored value: `bld_` admin API keys only, own team
+only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
+sent to a runner.
 
 ## Adding a new backend (checklist)
 

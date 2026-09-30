@@ -145,6 +145,28 @@ describe('container env', () => {
     expect(() => buildContainerEnv({ BUILDD_SERVER: 's' })).toThrow(/BUILDD_API_KEY/);
   });
 
+  // Local end-to-end only (scripts/local-e2e.sh): a real model key for a
+  // container talking to a buildd on this machine. On Cloudflare the key is
+  // added at egress, so a real key in the env anywhere else is a mistake.
+  test('DEV_ANTHROPIC_API_KEY replaces the placeholder for a local buildd', () => {
+    for (const server of ['http://host.docker.internal:3217', 'http://localhost:3000', 'http://127.0.0.1:9']) {
+      const env = buildContainerEnv({ BUILDD_SERVER: server, BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: 'sk-ant-dev' });
+      expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-dev');
+    }
+  });
+
+  test('DEV_ANTHROPIC_API_KEY is refused for any other buildd', () => {
+    for (const server of ['https://buildd.dev', 'https://localhost.example.com', 'http://host.docker.internal.evil.example']) {
+      expect(() => buildContainerEnv({ BUILDD_SERVER: server, BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: 'sk-ant-dev' }))
+        .toThrow(/local testing only/);
+    }
+  });
+
+  test('an empty DEV_ANTHROPIC_API_KEY keeps the placeholder', () => {
+    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.dev', BUILDD_API_KEY: 'k', DEV_ANTHROPIC_API_KEY: '' });
+    expect(env.ANTHROPIC_API_KEY).toBe(ANTHROPIC_API_KEY_PLACEHOLDER);
+  });
+
   test('command runs the image helper for exactly this task', () => {
     expect(runnerCommand('t-1')).toEqual(['buildd-once', '--task', 't-1']);
   });

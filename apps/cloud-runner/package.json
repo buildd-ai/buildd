@@ -8,7 +8,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "type-check": "bunx tsc --noEmit",
-    "smoke": "bash scripts/local-smoke.sh"
+    "smoke": "bash scripts/local-smoke.sh",
+    "e2e:local": "bash scripts/local-e2e.sh",
+    "deploy:buildd": "bun scripts/deploy.ts"
   },
   "dependencies": {
     "agents": "0.24.0"

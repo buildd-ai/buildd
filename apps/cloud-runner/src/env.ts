@@ -17,6 +17,8 @@ export interface Env {
   PUSHER_KEY?: string;
   PUSHER_CLUSTER?: string;
   BUILDD_ONCE_MAX_WAIT_MS?: string;
+  /** Local testing only (scripts/local-e2e.sh); refused unless BUILDD_SERVER is local. */
+  DEV_ANTHROPIC_API_KEY?: string;
   CONTAINER_INACTIVITY_TIMEOUT_MS?: string;
   CONTAINER_START_TIMEOUT_MS?: string;
 }

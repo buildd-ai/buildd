@@ -7,12 +7,14 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { verifyClaudeCredential } from '@/lib/claude-credential';
 import { getCodexSecretId, verifyCodexCredential } from '@/lib/codex-credential';
 import { isUuid } from '@/lib/uuid';
+import { verifyCloudflareCredential } from '@/lib/cloudflare-credential';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 // POST /api/secrets/[id]/verify
 // Smoke-tests a stored credential against its provider API.
-// Supports: oauth_token, anthropic_api_key (Claude) and codex_credential (Codex).
+// Supports: oauth_token, anthropic_api_key (Claude), codex_credential (Codex)
+// and cloudflare_token (the cloud runner's Cloudflare API token).
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   if (!isUuid(id)) {
@@ -40,6 +42,12 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   if (row.purpose === 'codex_credential') {
     const result = await verifyCodexCredential(id);
+    return NextResponse.json(result);
+  }
+
+  if (row.purpose === 'cloudflare_token') {
+    // Result carries status and error only, never the token.
+    const result = await verifyCloudflareCredential(id);
     return NextResponse.json(result);
   }
 

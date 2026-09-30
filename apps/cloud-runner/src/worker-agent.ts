@@ -43,6 +43,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         PUSHER_KEY: env.PUSHER_KEY,
         PUSHER_CLUSTER: env.PUSHER_CLUSTER,
         BUILDD_ONCE_MAX_WAIT_MS: env.BUILDD_ONCE_MAX_WAIT_MS,
+        DEV_ANTHROPIC_API_KEY: env.DEV_ANTHROPIC_API_KEY,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
       },
