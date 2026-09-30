@@ -469,6 +469,27 @@ export interface ResolvedMcpConnector {
   tokenEndpoint?: string;
 }
 
+/**
+ * Explicitly opt grouped consumers in even with worker context. Legacy roles
+ * retain their surface; legacy calls remain callable in mixed skill sessions.
+ */
+export function buildWorkerMcpUrl(
+  server: string,
+  workspaceId: string,
+  workerId: string,
+  roleSlug?: string | null,
+  agents?: Record<string, { tools: string[] }>,
+): string {
+  const url = new URL(`${server}/api/mcp`);
+  url.searchParams.set('workspace', workspaceId);
+  url.searchParams.set('worker', workerId);
+  const needsGroups = roleSlug === 'analyst' || Object.values(agents ?? {}).some(
+    agent => agent.tools.some(tool => tool.startsWith('mcp__buildd__buildd_')),
+  );
+  if (needsGroups) url.searchParams.set('tools', 'groups');
+  return url.toString();
+}
+
 type SdkMcpServerEntry =
   | { type: 'http'; url: string; headers?: Record<string, string> }
   | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> };
@@ -3897,7 +3918,7 @@ export class WorkerManager {
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}&worker=${encodeURIComponent(worker.id)}`,
+          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id, task.roleSlug, agents),
           headers: {
             Authorization: `Bearer ${this.config.apiKey}`,
           },

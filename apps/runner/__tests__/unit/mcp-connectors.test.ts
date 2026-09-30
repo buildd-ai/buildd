@@ -18,7 +18,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   }),
 }));
 
-import { buildMcpServerEntries } from '../../src/workers';
+import { buildMcpServerEntries, buildWorkerMcpUrl } from '../../src/workers';
 
 describe('buildMcpServerEntries', () => {
   test('maps an http connector to { type: http, url, headers }', () => {
@@ -107,5 +107,33 @@ describe('buildMcpServerEntries', () => {
     // Assertion connector must be excluded; static connector must be included.
     expect(Object.keys(entries)).toEqual(['linear']);
     expect(entries.linear).toEqual({ type: 'http', url: 'https://mcp.linear.app', headers: { Authorization: 'Bearer tok' } });
+  });
+});
+
+describe('reserved worker MCP surface', () => {
+  test('Analyst mount advertises the analytics and lifecycle tools', async () => {
+    const { mcpToolSurfaceFor, listMcpTools } = await import('../../../web/src/app/api/mcp/tools');
+    const { DEFAULT_ROLES } = await import('../../../web/src/lib/default-roles');
+    const analyst = DEFAULT_ROLES.find(role => role.slug === 'analyst')!;
+    const configuredUrl = new URL((analyst.mcpServers.buildd as { url: string }).url);
+    const url = new URL(buildWorkerMcpUrl(configuredUrl.origin, 'test-workspace', 'test-worker', analyst.slug));
+    const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
+    expect(url.searchParams.get('workspace')).toBe('test-workspace');
+    expect(url.searchParams.get('worker')).toBe('test-worker');
+    const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
+    expect(names).toContain('buildd_analytics');
+    expect(names).toContain('buildd_work');
+    for (const tool of analyst.allowedTools.filter(tool => tool.startsWith('mcp__buildd__'))) {
+      expect(names).toContain(tool.replace('mcp__buildd__', ''));
+    }
+  });
+
+  test('other role sessions retain legacy and grouped skill agents opt in', () => {
+    for (const role of ['builder', 'organizer', undefined]) {
+      expect(new URL(buildWorkerMcpUrl('https://buildd.dev', 'workspace', 'worker', role)).searchParams.has('tools')).toBe(false);
+    }
+    expect(new URL(buildWorkerMcpUrl('https://buildd.dev', 'workspace', 'worker', 'organizer', {
+      analyst: { tools: ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work'] },
+    })).searchParams.get('tools')).toBe('groups');
   });
 });
