@@ -856,6 +856,58 @@ export async function resyncDefaultRolesForTeam(teamId: string): Promise<number>
 }
 
 
+export interface DefaultRoleRoutingBackfill {
+  id: string;
+  slug: string;
+  routing: Record<string, unknown>;
+}
+
+/**
+ * Which seeded role rows get the default routing text (role-routing.md §2):
+ * system rows of a default slug whose metadata has no `routing` key at all.
+ * Seeding is onConflictDoNothing, so teams seeded before the text existed never
+ * got it. A row with any routing block — text a team wrote, or an opt-out — is
+ * never touched. Pure; `backfillDefaultRoleRouting` applies it.
+ */
+export function planDefaultRoleRoutingBackfill(rows: readonly SeededRoleRow[], now: Date): DefaultRoleRoutingBackfill[] {
+  const bySlug = new Map(DEFAULT_ROLES.map(r => [r.slug, r]));
+  const out: DefaultRoleRoutingBackfill[] = [];
+  for (const row of rows) {
+    const role = bySlug.get(row.slug);
+    if (!role || row.source !== 'system') continue;
+    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (meta.routing !== undefined && meta.routing !== null) continue;
+    out.push({ id: row.id, slug: row.slug, routing: { ...role.routing, updatedAt: now.toISOString() } });
+  }
+  return out;
+}
+
+/**
+ * Write the default routing text onto every team's seeded role rows that lack
+ * it. Run deliberately (scripts/backfill-role-routing.ts), never on deploy.
+ * Each write re-checks `metadata->'routing' IS NULL`, so an edit landing in
+ * between is never overwritten and a re-run changes nothing.
+ */
+export async function backfillDefaultRoleRouting(opts: { dryRun?: boolean } = {}): Promise<DefaultRoleRoutingBackfill[]> {
+  const { sql } = await import('drizzle-orm');
+  const rows = await db.query.workspaceSkills.findMany({
+    where: eq(workspaceSkills.source, 'system'),
+    columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
+  }) as SeededRoleRow[];
+  const plan = planDefaultRoleRoutingBackfill(rows, new Date());
+  if (opts.dryRun) return plan;
+  const done: DefaultRoleRoutingBackfill[] = [];
+  for (const p of plan) {
+    const updated = await db.update(workspaceSkills)
+      .set({ metadata: sql`jsonb_set(coalesce(${workspaceSkills.metadata}, '{}'::jsonb), '{routing}', ${JSON.stringify(p.routing)}::jsonb)` })
+      .where(and(eq(workspaceSkills.id, p.id), sql`(${workspaceSkills.metadata} -> 'routing') IS NULL`))
+      .returning({ id: workspaceSkills.id });
+    if (updated.length > 0) done.push(p);
+  }
+  return done;
+}
+
+
 /**
  * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).
  * Safe to call multiple times — uses onConflictDoNothing on (teamId, slug) WHERE workspaceId IS NULL.

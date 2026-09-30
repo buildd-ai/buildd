@@ -11,6 +11,7 @@ import { useConfirm } from '@/components/useConfirm';
 import { MobileSaveBar, HeaderSaveButton } from '@/components/MobileSaveBar';
 import { ColorSwatches } from '@/components/ColorSwatches';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
+import { NOT_FOR_MAX, WHEN_TO_USE_MAX, WHEN_TO_USE_MIN, readRoleRouting } from '@/lib/role-routing';
 
 type Scope = 'team' | 'workspace';
 
@@ -41,6 +42,7 @@ interface Role {
   requiredEnvVars: Record<string, string>;
   isRole: boolean;
   repoUrl: string | null;
+  metadata?: unknown;
 }
 
 interface WorkspaceOption {
@@ -68,9 +70,12 @@ interface Props {
  * baseline from the server's echo.
  */
 function payloadFromRole(r: Role) {
+  const routing = readRoleRouting(r.metadata);
   return {
     name: r.name,
     description: r.description || null,
+    whenToUse: routing?.whenToUse ?? null,
+    notFor: routing?.notFor ?? null,
     content: r.content,
     model: normalizeAlias(r.model),
     defaultBackend: r.defaultBackend ?? null,
@@ -357,6 +362,10 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   // Core role state
   const [name, setName] = useState(role.name);
   const [description, setDescription] = useState(role.description || '');
+  const initialRouting = readRoleRouting(role.metadata);
+  const routingDisabled = initialRouting?.disabled === true;
+  const [whenToUse, setWhenToUse] = useState(initialRouting?.whenToUse ?? '');
+  const [notFor, setNotFor] = useState(initialRouting?.notFor ?? '');
   const [content, setContent] = useState(role.content);
   const [model, setModel] = useState(role.model);
   const [defaultBackend, setDefaultBackend] = useState<BackendValue>(role.defaultBackend ?? null);
@@ -392,6 +401,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   const payload = {
     name,
     description: description || null,
+    whenToUse: whenToUse.trim() || null,
+    notFor: notFor.trim() || null,
     content,
     // ModelPicker rewrites legacy aliases (sonnet → standard) on mount; the
     // two save the same tier, so compare canonically or the form loads dirty.
@@ -632,6 +643,38 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
                 placeholder="Describe this role's core purpose"
               />
+            </div>
+
+            <div>
+              <label htmlFor="role-when-to-use" className="block text-sm font-medium text-text-primary mb-1.5">When to use</label>
+              <textarea
+                id="role-when-to-use"
+                value={whenToUse}
+                onChange={(e) => setWhenToUse(e.target.value)}
+                rows={2}
+                maxLength={WHEN_TO_USE_MAX}
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
+                placeholder="Code changes that end in a PR: features, bug fixes, refactors, migrations"
+              />
+              <p className="text-xs text-text-muted mt-1">
+                {routingDisabled
+                  ? 'Routing is turned off for this role: tasks reach it only when they name it.'
+                  : `The work this role should pick up, ${WHEN_TO_USE_MIN}–${WHEN_TO_USE_MAX} characters. Tasks filed without a role are matched against it; a role left blank is never picked.`}
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="role-not-for" className="block text-sm font-medium text-text-primary mb-1.5">Not for</label>
+              <input
+                id="role-not-for"
+                type="text"
+                value={notFor}
+                onChange={(e) => setNotFor(e.target.value)}
+                maxLength={NOT_FOR_MAX}
+                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-text-primary text-base md:text-sm"
+                placeholder="Investigating without changing code (Researcher)"
+              />
+              <p className="text-xs text-text-muted mt-1">Optional. The nearest work that belongs to another role, and which one.</p>
             </div>
 
             <div>
