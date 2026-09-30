@@ -252,9 +252,11 @@ mock.module('@buildd/core/path-claim', () => ({
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
 const mockFireDeferralEvent = mock((_input: any) => {});
 const mockFireGateEvent = mock((_input: any) => 'sig');
+const mockFireRepeatGateEvent = mock((_input: any, _opts: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireDeferralEvent: mockFireDeferralEvent,
   fireGateEvent: mockFireGateEvent,
+  fireRepeatGateEvent: mockFireRepeatGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
@@ -425,10 +427,13 @@ describe('POST /api/workers/claim', () => {
   });
 
   describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
-    const gateReasons = () => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason);
+    const gateReasons = () => [
+      ...mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),
+      ...mockFireRepeatGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),
+    ];
     const userAccount = { id: 'account-1', maxConcurrentWorkers: 3, type: 'user' };
 
-    beforeEach(() => mockFireGateEvent.mockClear());
+    beforeEach(() => { mockFireGateEvent.mockClear(); mockFireRepeatGateEvent.mockClear(); });
 
     it('probe with invalid API key: 401, no gate event', async () => {
       mockAuthenticateApiKey.mockResolvedValue(null);
@@ -472,6 +477,23 @@ describe('POST /api/workers/claim', () => {
       }));
       expect(res.status).toBe(400);
       expect(gateReasons()).toContain('runner_field_missing');
+    });
+
+    it('missing runner is attributed to the account and collapsed per account per hour', async () => {
+      // One client polling without `runner` once a minute used to be most of the
+      // gate ledger, with nothing on the row saying whose client it was.
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'User-Agent': 'poller/1.0' },
+        body: { workspaceId: 'ws-1', maxTasks: 1 },
+      }));
+      expect(mockFireRepeatGateEvent).toHaveBeenCalledTimes(1);
+      const [input, opts] = mockFireRepeatGateEvent.mock.calls[0] as any[];
+      expect(input.reason).toBe('runner_field_missing');
+      expect(input.detail).toMatchObject({ accountId: 'account-1', userAgent: 'poller/1.0' });
+      expect(input.detail.bodyKeys).toEqual(['maxTasks', 'workspaceId']);
+      expect(opts).toEqual({ key: { accountId: 'account-1' }, windowMs: 60 * 60 * 1000 });
+      expect(gateReasons().filter(r => r === 'runner_field_missing')).toHaveLength(1);
     });
 
     it('X-Probe with a value other than "true" is not treated as a probe', async () => {

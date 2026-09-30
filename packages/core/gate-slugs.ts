@@ -88,6 +88,13 @@ export const GATE_SLUGS = {
    * one foreign commit stops it rebasing. See `lib/dependency-bot-pr.ts`.
    */
   DEPENDENCY_BOT_PR: 'dependency_bot_pr',
+  /**
+   * The unattended merge path (`tryAutoMergeWorkerPr`) — a safety-rail refusal
+   * (red CI, protected path, size cap, migration, conflict, ...) or a failed
+   * merge call. `detail.reasonClass` says which. Base freshness and review
+   * verdicts keep their own slugs and are not double-recorded here.
+   */
+  AUTO_MERGE: 'auto_merge',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

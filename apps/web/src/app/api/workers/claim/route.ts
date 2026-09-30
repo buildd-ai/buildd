@@ -75,7 +75,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
+import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -193,15 +193,24 @@ export async function POST(req: NextRequest) {
   // appended as the loop passes them. Audited on the task and the gate ledger.
   const forceBypassed: string[] = [];
 
+  // A client that omits `runner` usually does so on every poll, so this is
+  // collapsed to one row per account per hour (detail.count climbs), and the
+  // row carries what identifies the client: the account, its user-agent and
+  // the body fields it did send.
   if (!runner) {
-    if (!isProbe) fireGateEvent({
+    if (!isProbe) fireRepeatGateEvent({
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'rejected',
       reason: 'runner_field_missing',
       taskId: taskId ?? null,
       callerOrigin: gateCallerOrigin({ apiAccount: account }),
-    });
+      detail: {
+        accountId: account.id,
+        userAgent: (req.headers.get('user-agent') ?? '').slice(0, 200) || null,
+        bodyKeys: Object.keys(body ?? {}).sort(),
+      },
+    }, { key: { accountId: account.id }, windowMs: 60 * 60 * 1000 });
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
   runner = resolveClaimRunner(runner, interactiveSession);

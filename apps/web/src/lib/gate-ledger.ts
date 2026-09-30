@@ -15,6 +15,7 @@ import { eq, or } from 'drizzle-orm';
 import {
   recordGateEvent,
   recordOrCoalesceDeferral,
+  recordOrCoalesceRepeat,
   GATE_SLUGS,
   gateFrictionSignature,
   type GateCallerOrigin,
@@ -69,6 +70,20 @@ export function fireGateEvent(input: RecordGateEventInput): string {
  */
 export function fireDeferralEvent(input: RecordGateEventInput): void {
   void recordOrCoalesceDeferral(input).catch(() => {});
+}
+
+/**
+ * Record a gate event without awaiting it, collapsing repeats of the same
+ * (gate, outcome, reason, key) inside `windowMs` into one row's `detail.count`.
+ * For refusals with no task to key on that a misconfigured client can trigger
+ * on every poll. See `recordOrCoalesceRepeat`.
+ */
+export function fireRepeatGateEvent(
+  input: RecordGateEventInput,
+  opts: { key: Record<string, string>; windowMs: number },
+): string {
+  void recordOrCoalesceRepeat(input, opts).catch(() => {});
+  return gateFrictionSignature(input.gate, input.reason);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
