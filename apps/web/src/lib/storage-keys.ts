@@ -186,6 +186,37 @@ export function isAuditStorageKey(key: unknown): boolean {
 }
 
 /**
+ * `{prefix}/{workspaceId}/{rootTaskId}/{taskId}/{workerId}/{kind}/{filename}`
+ *
+ * Evidence object key for task run diagnostics (transcripts, logs, test reports).
+ * All segments are validated: the filename must be a safe key segment, not a
+ * caller-supplied path. The prefix comes from the backend config.
+ *
+ * All evidence objects are server-derived and never accepted from a caller, so
+ * every segment is validated rather than sanitised.
+ */
+export function buildEvidenceObjectKey(
+  prefix: unknown,
+  workspaceId: unknown,
+  rootTaskId: unknown,
+  taskId: unknown,
+  workerId: unknown,
+  kind: unknown,
+  filename: unknown,
+): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const ws = assertSafeKeySegment(workspaceId, 'workspaceId');
+  const rootTask = assertSafeKeySegment(rootTaskId, 'rootTaskId');
+  const task = assertSafeKeySegment(taskId, 'taskId');
+  const worker = assertSafeKeySegment(workerId, 'workerId');
+  const safeKind = assertSafeKeySegment(kind, 'kind');
+  const safeFilename = assertSafeKeySegment(filename, 'filename');
+  return assertNormalizedObjectKey(
+    `${safePrefix}/${ws}/${rootTask}/${task}/${worker}/${safeKind}/${safeFilename}`,
+  );
+}
+
+/**
  * `roles/<slug>/<configHash>.json`
  *
  * Runners fetch and load these bundles, so the slug must be a validated
