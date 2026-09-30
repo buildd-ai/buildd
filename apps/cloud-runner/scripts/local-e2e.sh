@@ -134,7 +134,7 @@ admin=(-H "Authorization: Bearer $E2E_ADMIN_KEY" -H 'Content-Type: application/j
 
 step "point the workspace at the Worker (PATCH webhookConfig, as deploy.ts does)"
 code="$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "${admin[@]}" "$APP/api/workspaces/$E2E_WORKSPACE_ID" \
-  -d "{\"webhookConfig\":{\"url\":\"$WORKER/dispatch\",\"token\":\"$DISPATCH_TOKEN\",\"enabled\":true}}")"
+  -d "{\"webhookConfig\":{\"url\":\"$WORKER/dispatch\",\"token\":\"$DISPATCH_TOKEN\",\"enabled\":true,\"events\":[\"task.created\",\"task.unblocked\",\"task.retry\"]}}")"
 check "PATCH webhookConfig" 200 "$code"
 hook="$(curl -s "${admin[@]}" "$APP/api/workspaces" | bun --no-env-file -e "const w=JSON.parse(await Bun.stdin.text()).workspaces.find(w=>w.id===process.argv[1]); console.log(JSON.stringify(w?.webhookConfig??null))" "$E2E_WORKSPACE_ID")"
 echo "   listed webhookConfig: $hook"

@@ -14,7 +14,18 @@ export interface ObservedWebhook {
   url: string | null;
   enabled: boolean;
   hasToken: boolean;
+  /** The dispatch events the webhook opted into; absent = buildd's legacy set. */
+  events?: string[];
 }
+
+/**
+ * Every dispatch event this Worker handles. buildd sends a webhook without an
+ * `events` list only new and unblocked tasks (the behaviour webhooks had
+ * before the list existed), so the Worker must opt in to hear about retries,
+ * approved-plan children and deferred-start re-dispatches.
+ */
+export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry'] as const;
+export type DispatchEvent = (typeof DISPATCH_EVENTS)[number];
 
 export interface DeployInputs {
   mode: 'deploy' | 'remove';
@@ -41,7 +52,13 @@ export interface DeployInputs {
 export type DeployStep =
   | { kind: 'wrangler_deploy' }
   | { kind: 'put_secret'; name: 'DISPATCH_TOKEN' | 'BUILDD_SERVER' | 'BUILDD_API_KEY'; value: string; reason: string }
-  | { kind: 'set_webhook'; workspaceId: string; config: { url: string; token: string; enabled: true }; reason: string }
+  | {
+      kind: 'set_webhook';
+      workspaceId: string;
+      /** `token` omitted = keep the stored one (PATCH merges webhookConfig). */
+      config: { url: string; token?: string; enabled: true; events: DispatchEvent[] };
+      reason: string;
+    }
   | { kind: 'clear_webhook'; workspaceId: string; reason: string };
 
 export type DeployPlan =
@@ -54,6 +71,10 @@ export function dispatchUrl(workerUrl: string): string {
 
 function webhookPointsAt(w: ObservedWebhook | null, url: string): boolean {
   return !!w && w.url === url && w.enabled && w.hasToken;
+}
+
+function listsEveryEvent(w: ObservedWebhook | null): boolean {
+  return !!w?.events && DISPATCH_EVENTS.every((e) => w.events!.includes(e));
 }
 
 export function planDeploy(i: DeployInputs): DeployPlan {
@@ -119,10 +140,16 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   if (token) {
     steps.push({ kind: 'put_secret', name: 'DISPATCH_TOKEN', value: token, reason: tokenReason });
     steps.push({
-      kind: 'set_webhook', workspaceId: i.workspace.id, config: { url, token, enabled: true },
+      kind: 'set_webhook', workspaceId: i.workspace.id, config: { url, token, enabled: true, events: [...DISPATCH_EVENTS] },
       reason: webhookPointsAt(current, url) ? 'refresh token' : 'point workspace at the Worker',
     });
   } else if (webhookPointsAt(current, url)) {
+    if (!listsEveryEvent(current)) {
+      steps.push({
+        kind: 'set_webhook', workspaceId: i.workspace.id, config: { url, enabled: true, events: [...DISPATCH_EVENTS] },
+        reason: 'opt into every dispatch event',
+      });
+    }
     notes.push(`${i.workspace.name} already dispatches to ${url}; token unchanged.`);
   } else {
     return {
@@ -150,7 +177,7 @@ export function describePlan(plan: DeployPlan): string[] {
       case 'put_secret':
         return `wrangler secret put ${s.name} = ${s.name === 'BUILDD_SERVER' ? s.value : redact(s.value)} (${s.reason})`;
       case 'set_webhook':
-        return `PATCH workspace ${s.workspaceId} webhookConfig = { url: ${s.config.url}, token: ${redact(s.config.token)}, enabled: true } (${s.reason})`;
+        return `PATCH workspace ${s.workspaceId} webhookConfig = { url: ${s.config.url}, token: ${s.config.token === undefined ? '(unchanged)' : redact(s.config.token)}, enabled: true, events: ${s.config.events.join(',')} } (${s.reason})`;
       case 'clear_webhook':
         return `PATCH workspace ${s.workspaceId} webhookConfig = null (${s.reason})`;
     }

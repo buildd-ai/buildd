@@ -744,7 +744,7 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
 
 // The cloud runner's deploy script (apps/cloud-runner/scripts/deploy.ts) points
 // a workspace at its dispatcher Worker with an admin API key, and --remove sets
-// it back to null. The session-only POST /webhook form route stays as it is.
+// it back to null. This is the only writer of webhookConfig.
 describe('PATCH /api/workspaces/[id] — webhookConfig', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
@@ -793,7 +793,55 @@ describe('PATCH /api/workspaces/[id] — webhookConfig', () => {
     expect(JSON.stringify(await res.json())).not.toContain('secret-token');
   });
 
+  // The column also holds the issue-ingest keys (POST /api/webhooks/ingest).
+  const INGEST_KEYS = { webhookSecret: 'whsec', labelFilter: ['buildd'], callbackToken: 'cb' };
+
+  it('merges onto the stored config, keeping keys it does not manage', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', webhookConfig: { ...INGEST_KEYS } });
+    const res = await patch({ webhookConfig: { url: 'https://r.example/dispatch', token: 't', enabled: true } });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.webhookConfig).toEqual({ ...INGEST_KEYS, url: 'https://r.example/dispatch', token: 't', enabled: true });
+  });
+
+  it('only sets the keys the caller sent: an omitted token or runnerPreference keeps the stored one', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
+      webhookConfig: { url: 'https://old.example/d', token: 'kept', enabled: true, runnerPreference: 'service' },
+    });
+    const res = await patch({ webhookConfig: { url: 'https://new.example/d', enabled: false } });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.webhookConfig).toEqual({ url: 'https://new.example/d', token: 'kept', enabled: false, runnerPreference: 'service' });
+  });
+
+  it('null clears the dispatch keys and keeps the ingest keys', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
+      webhookConfig: { ...INGEST_KEYS, url: 'https://r.example/d', token: 't', enabled: true, runnerPreference: 'any', events: ['task.retry'] },
+    });
+    const res = await patch({ webhookConfig: null });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.webhookConfig).toEqual(INGEST_KEYS);
+  });
+
+  it('accepts an events opt-in', async () => {
+    const events = ['task.created', 'task.unblocked', 'task.retry'];
+    const res = await patch({ webhookConfig: { url: 'https://r.example/d', token: 't', enabled: true, events } });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.webhookConfig).toMatchObject({ events });
+  });
+
+  for (const url of ['http://localhost:8787/dispatch', 'http://127.0.0.1:8787/dispatch', 'http://host.docker.internal:8787/dispatch']) {
+    it(`accepts local plain-http ${new URL(url).hostname}`, async () => {
+      const res = await patch({ webhookConfig: { url, token: 't', enabled: true } });
+      expect(res.status).toBe(200);
+    });
+  }
+
   const BAD: Array<[string, unknown]> = [
+    ['a plain-http public url', { url: 'http://r.example/dispatch', token: 't', enabled: true }],
+    ['a plain-http look-alike of a local host', { url: 'http://localhost.r.example/dispatch', token: 't', enabled: true }],
+    ['an unknown event', { url: 'https://r.example/d', token: 't', enabled: true, events: ['task.deleted'] }],
+    ['a non-array events', { url: 'https://r.example/d', token: 't', enabled: true, events: 'task.retry' }],
     ['a string', 'https://r.example'],
     ['no url', { token: 't', enabled: true }],
     ['a non-http url', { url: 'ftp://r.example/x', token: 't', enabled: true }],

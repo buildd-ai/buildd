@@ -119,6 +119,11 @@ mock.module('@buildd/core/db/schema', () => ({
   workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt', maxConcurrentWorkers: 'maxConcurrentWorkers', activeWorkerCount: 'activeWorkerCount' },
 }));
 
+// The retry wake-up's held / local-executor gate (a real DB query).
+mock.module('@/app/api/workers/claim/held-gate', () => ({
+  isTaskNotHeldOrLocal: async () => true,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -761,7 +766,11 @@ describe('POST /api/tasks/[id]/reassign', () => {
   // before this, a retry from the dashboard broadcast TASK_ASSIGNED only, so the
   // webhook consumer never heard the task was claimable again.
   describe('workspace webhook', () => {
-    const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+    // Retries reach only a webhook that opted into them (webhookConfig.events).
+    const webhookConfig = {
+      url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true,
+      events: ['task.created', 'task.unblocked', 'task.retry'],
+    };
     let fetchCalls: Array<{ url: string; body: any }>;
     const originalFetch = globalThis.fetch;
 
@@ -773,6 +782,24 @@ describe('POST /api/tasks/[id]/reassign', () => {
       }) as unknown as typeof fetch;
     });
     const restore = () => { globalThis.fetch = originalFetch; };
+
+    it('a webhook that did not opt into task.retry is not called; the retry broadcasts as before', async () => {
+      try {
+        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+        const { events: _e, ...legacy } = webhookConfig;
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-123', title: 'Test Task', description: 'desc', status: 'failed', workspaceId: 'ws-1',
+          runnerPreference: 'any', startAt: null, expiresAt: null,
+          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig: legacy },
+        });
+        const response = await callHandler(createMockRequest(), 'task-123');
+        expect(response.status).toBe(200);
+        expect(fetchCalls).toHaveLength(0);
+        expect(mockTriggerEvent).toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
 
     it('a failed-task retry reaches the webhook with event task.retry and skips the broadcast', async () => {
       try {

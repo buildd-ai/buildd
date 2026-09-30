@@ -130,6 +130,21 @@ export function notHeldOrLocal(): SQL {
 }
 
 /**
+ * Per-task form of notHeldOrLocal(): true when the task is neither held nor in
+ * a held or local-executor mission. For the retry wake-up (task-dispatch.ts),
+ * which must not push such a task to a workspace webhook. A missing task is
+ * false.
+ */
+export async function isTaskNotHeldOrLocal(taskId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), notHeldOrLocal()))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * Per-task check for /api/tasks/[id]/start: returns true when the task's mission
  * is held (and should be blocked), false otherwise. Mirrors the missionNotHeld()
  * SQL gate semantics — both live in this file to keep the implementations together.

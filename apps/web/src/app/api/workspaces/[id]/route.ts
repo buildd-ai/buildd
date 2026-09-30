@@ -13,14 +13,42 @@ import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
+const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry']);
 
 /**
- * Validate a `webhookConfig` PATCH value: `null` clears it (the workspace goes
- * back to Pusher-notified runners), an object sets it whole. Only the known
- * keys are kept.
+ * The `webhook_config` keys PATCH manages. The column also carries the issue
+ * ingest keys (`webhookSecret`, `labelFilter`, ... read by
+ * POST /api/webhooks/ingest); PATCH never writes or drops those.
  */
-function parseWebhookConfigInput(raw: unknown): { ok: true; value: WorkspaceWebhookConfig | null } | { ok: false; error: string } {
-  if (raw === null) return { ok: true, value: null };
+const DISPATCH_WEBHOOK_KEYS = ['url', 'token', 'enabled', 'runnerPreference', 'events'] as const;
+
+/**
+ * Plain http is accepted only for a dispatcher on the same machine or the
+ * docker host (local development and apps/cloud-runner/scripts/local-e2e.sh).
+ */
+const LOCAL_HTTP_HOSTS = new Set(['localhost', '127.0.0.1', 'host.docker.internal']);
+
+/**
+ * Validate a `webhookConfig` PATCH value and merge it onto what is stored.
+ *
+ *  - `null` removes the dispatch keys (the workspace goes back to
+ *    Pusher-notified runners) and keeps every other key; the column becomes
+ *    null only when nothing else is left.
+ *  - An object must carry `url` and `enabled`; `token`, `runnerPreference`
+ *    and `events` are optional, and a key the caller leaves out keeps its
+ *    stored value. Unknown keys in the body are ignored.
+ */
+function parseWebhookConfigInput(
+  raw: unknown,
+  stored: unknown,
+): { ok: true; value: WorkspaceWebhookConfig | null } | { ok: false; error: string } {
+  const base: Record<string, unknown> =
+    stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...(stored as Record<string, unknown>) } : {};
+
+  if (raw === null) {
+    for (const key of DISPATCH_WEBHOOK_KEYS) delete base[key];
+    return { ok: true, value: Object.keys(base).length > 0 ? (base as unknown as WorkspaceWebhookConfig) : null };
+  }
   if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'webhookConfig must be an object or null' };
   const c = raw as Record<string, unknown>;
   if (typeof c.url !== 'string') return { ok: false, error: 'webhookConfig.url is required' };
@@ -30,21 +58,33 @@ function parseWebhookConfigInput(raw: unknown): { ok: true; value: WorkspaceWebh
   } catch {
     return { ok: false, error: 'webhookConfig.url must be a valid URL' };
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+  if (url.protocol === 'http:') {
+    if (!LOCAL_HTTP_HOSTS.has(url.hostname)) {
+      return { ok: false, error: `webhookConfig.url must be https (plain http only for ${[...LOCAL_HTTP_HOSTS].join(', ')})` };
+    }
+  } else if (url.protocol !== 'https:') {
     return { ok: false, error: 'webhookConfig.url must be http(s)' };
   }
   if (typeof c.enabled !== 'boolean') return { ok: false, error: 'webhookConfig.enabled must be a boolean' };
   if (c.token !== undefined && typeof c.token !== 'string') return { ok: false, error: 'webhookConfig.token must be a string' };
-  const token = (c.token as string | undefined) ?? '';
-  if (c.enabled && !token) return { ok: false, error: 'webhookConfig.token is required when enabled' };
-  const value: WorkspaceWebhookConfig = { url: c.url, token, enabled: c.enabled };
   if (c.runnerPreference !== undefined) {
     if (typeof c.runnerPreference !== 'string' || !RUNNER_PREFERENCES.has(c.runnerPreference)) {
       return { ok: false, error: `webhookConfig.runnerPreference must be one of: ${[...RUNNER_PREFERENCES].join(', ')}` };
     }
-    value.runnerPreference = c.runnerPreference as WorkspaceWebhookConfig['runnerPreference'];
   }
-  return { ok: true, value };
+  if (c.events !== undefined) {
+    if (!Array.isArray(c.events) || !c.events.every((e) => typeof e === 'string' && WEBHOOK_EVENTS.has(e))) {
+      return { ok: false, error: `webhookConfig.events must be an array of: ${[...WEBHOOK_EVENTS].join(', ')}` };
+    }
+  }
+
+  const value: Record<string, unknown> = { ...base, url: c.url, enabled: c.enabled };
+  if (c.token !== undefined) value.token = c.token;
+  if (typeof value.token !== 'string') value.token = '';
+  if (c.runnerPreference !== undefined) value.runnerPreference = c.runnerPreference;
+  if (c.events !== undefined) value.events = [...new Set(c.events as string[])];
+  if (value.enabled && !value.token) return { ok: false, error: 'webhookConfig.token is required when enabled' };
+  return { ok: true, value: value as unknown as WorkspaceWebhookConfig };
 }
 
 /** Where a team change goes instead of PATCH: the checked move's dry run. */
@@ -184,7 +224,11 @@ export async function PATCH(
     };
 
     if (webhookConfig !== undefined) {
-      const parsed = parseWebhookConfigInput(webhookConfig);
+      const stored = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, id),
+        columns: { webhookConfig: true },
+      });
+      const parsed = parseWebhookConfigInput(webhookConfig, stored?.webhookConfig ?? null);
       if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
       updates.webhookConfig = parsed.value;
     }

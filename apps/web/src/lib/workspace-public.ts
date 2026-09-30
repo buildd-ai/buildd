@@ -16,6 +16,8 @@ export interface PublicWebhookConfig {
   url: string | null;
   enabled: boolean;
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  /** The dispatch events the webhook opted into; absent = the legacy set. */
+  events?: string[];
   /** Whether a bearer token is configured — never the token itself. */
   hasToken: boolean;
 }
@@ -30,6 +32,9 @@ export function toPublicWebhookConfig(raw: unknown): PublicWebhookConfig | null 
   };
   if (typeof c.runnerPreference === 'string') {
     out.runnerPreference = c.runnerPreference as PublicWebhookConfig['runnerPreference'];
+  }
+  if (Array.isArray(c.events)) {
+    out.events = c.events.filter((e): e is string => typeof e === 'string');
   }
   return out;
 }

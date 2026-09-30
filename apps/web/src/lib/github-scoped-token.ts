@@ -14,14 +14,14 @@ export type PermissionLevel = 'read' | 'write' | 'admin';
 
 /**
  * What a task run needs: clone and push (contents), open and update PRs,
- * comment on issues, read CI state, and push workflow-file changes when the
- * App was granted that. Anything else the installation has is left out.
+ * comment on issues, read CI state. Anything else the installation has is
+ * left out, `workflows` included: a push that touches `.github/workflows/` is
+ * refused by GitHub, so workflow changes go to a person instead.
  */
 export const TASK_TOKEN_PERMISSIONS: Readonly<Record<string, PermissionLevel>> = {
   contents: 'write',
   pull_requests: 'write',
   issues: 'write',
-  workflows: 'write',
   checks: 'read',
   actions: 'read',
   statuses: 'read',

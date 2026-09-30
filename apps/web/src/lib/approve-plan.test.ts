@@ -129,7 +129,7 @@ mock.module('./effective-roles', () => ({
 
 const dispatchCalls: any[][] = [];
 mock.module('./task-dispatch', () => ({
-  dispatchUnblockedTask: (...args: any[]) => {
+  dispatchPlanChildTask: (...args: any[]) => {
     dispatchCalls.push(args);
     return Promise.resolve();
   },
@@ -681,17 +681,19 @@ describe('approvePlan — waking runners for ready children', () => {
 
   const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
 
-  it('dispatches only the children with no dependency, as task.created, with the workspace webhook', async () => {
+  it('dispatches only the children with no dependency through dispatchPlanChildTask, with the workspace', async () => {
     workspaceRow = { id: 'ws-1', gitConfig: null, webhookConfig };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
 
     expect(dispatchCalls).toHaveLength(1);
+    // dispatchPlanChildTask, not dispatchUnblockedTask: the webhook leg is
+    // opt-in via webhookConfig.events and it never starts an Actions run.
     const [task, workspace, options] = dispatchCalls[0];
     expect(task.id).toBe(NEXT_IDS[0]);
     expect(task.title).toBe('Add schema migration');
     expect(task.workspaceId).toBe('ws-1');
     expect(workspace.webhookConfig).toEqual(webhookConfig);
-    expect(options).toEqual({ event: 'task.created' });
+    expect(options).toBeUndefined();
   });
 
   it('carries the child roleSlug so the webhook consumer can route it', async () => {
