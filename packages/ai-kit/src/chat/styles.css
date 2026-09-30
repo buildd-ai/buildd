@@ -47,7 +47,7 @@
 @media (prefers-reduced-motion: reduce) { .kit-step[data-state="active"] .kit-step-mark { animation: none; border-top-color: var(--kit-accent); } }
 
 /* ── Cards (approval, hand-off, setup) ──────────────────────────────────── */
-.kit-card { border: 1px solid var(--kit-rule); border-top: 2px solid var(--kit-accent); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 12px 14px; display: grid; gap: 8px; }
+.kit-card { border: 1px solid var(--kit-rule); border-top: 2px solid var(--kit-accent); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
 .kit-card[data-state="denied"], .kit-card[data-state="done"] { border-top-color: var(--kit-rule); }
 .kit-eyebrow { font-family: var(--kit-font-mono); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kit-accent); }
 .kit-card[data-state="denied"] .kit-eyebrow, .kit-card[data-state="done"] .kit-eyebrow { color: var(--kit-muted); }

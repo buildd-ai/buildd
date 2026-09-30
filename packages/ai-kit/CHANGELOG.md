@@ -12,6 +12,15 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.11.1 — 2026-09-29
+
+Patch: the approval card fits a 320px column.
+
+- `.kit-card` pins its grid to one `minmax(0, 1fr)` column. The implicit
+  `auto` column grew to its widest child's min-content, so a long head-row
+  meta, fold summary or unwrapped action row pushed the card (and the page)
+  past a narrow viewport instead of truncating or wrapping inside it.
+
 ## 0.11.0 — 2026-09-29
 
 Rich tool rows, lifted from buildd's chat. Minor: opt-in; without it the
