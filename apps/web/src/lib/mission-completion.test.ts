@@ -113,6 +113,13 @@ let visualModel: any = null;
 const mockLoadVisualReview = mock(async (_m: any) => visualModel);
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
 
+// The surface-audit gate has its own suite; here it is a controllable verdict.
+let surfaceGate: any = { required: false, why: 'no_ui_change' };
+const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGate);
+mock.module('@/lib/mission-surface-audit-gate', () => ({
+  evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
+}));
+
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
 }));
@@ -177,6 +184,8 @@ function reset() {
   mockFireMissionRelease.mockImplementation(() => Promise.resolve());
   visualModel = null;
   mockLoadVisualReview.mockClear();
+  surfaceGate = { required: false, why: 'no_ui_change' };
+  mockEvaluateSurfaceAuditGate.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
 }
 
@@ -1331,5 +1340,71 @@ describe('canCompleteMission — visual review hold', () => {
     mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(true);
+  });
+});
+
+describe('canCompleteMission — the surface-audit gate', () => {
+  beforeEach(reset);
+
+  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'] };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('surface_audit_missing');
+    expect(d.reason).toContain('apps/web/src/components/Card.tsx');
+    expect(d.reason).toContain('[surface audit]');
+    expect(d.reason).toContain('surfaceAuditWaiver');
+  });
+
+  it('completes a backend-only mission (gate not required)', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: false, why: 'no_ui_change' };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+  });
+
+  it('completes a mission the gate clears because it has an audit or a waiver', async () => {
+    for (const why of ['has_audit', 'waived', 'opted_out'] as const) {
+      reset();
+      activeMission();
+      taskRows = [work('completed')];
+      surfaceGate = { required: false, why };
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+    }
+  });
+
+  it('passes the mission and its task rows to the gate', async () => {
+    activeMission({ autoSurfaceAudit: false });
+    taskRows = [work('completed')];
+    await canCompleteMission('m1');
+    const [m, t] = mockEvaluateSurfaceAuditGate.mock.calls[0];
+    expect(m.autoSurfaceAudit).toBe(false);
+    expect(t).toHaveLength(1);
+  });
+
+  it('a gate that throws never blocks completion', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    mockEvaluateSurfaceAuditGate.mockImplementationOnce(async () => { throw new Error('github down'); });
+    const spy = mock(() => {});
+    const orig = console.error;
+    console.error = spy as any;
+    try {
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it('the automated path is refused identically and leaves a note for the owner', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'manifest', uiPaths: ['apps/web/src/app/app/page.tsx'] };
+    const r = await completeMissionIfVerified('m1', { path: 'heartbeat' } as any);
+    expect(r.completed).toBe(false);
+    expect(r.decision.code).toBe('surface_audit_missing');
   });
 });

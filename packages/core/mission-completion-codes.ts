@@ -31,7 +31,13 @@ export type CompletionDecisionCode =
    * under `VISUAL_REVIEW_GATE=enforce`; by default the hold is shadow and
    * rides along on the decision as `visualReviewHold`.
    */
-  | 'visual_review_open';
+  | 'visual_review_open'
+  /**
+   * The mission's shipped work changed UI (by its merged PRs' diffs or its
+   * tasks' declared paths) and no surface audit completed. Cleared by a
+   * completed audit, or by a human waiver with a recorded reason.
+   */
+  | 'surface_audit_missing';
 
 /**
  * Refusals that mean "the goal criteria did not clear". Exported so callers can

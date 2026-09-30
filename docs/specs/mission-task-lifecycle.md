@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-28
+last_verified: 2026-09-30
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -1653,6 +1653,31 @@ within the mission, so a repeat pass only extends `dependsOn`. Best-effort under
 concurrent task creation (check-then-act, matching this codebase's other
 neon-http non-transactional patterns) — not a hard concurrency guarantee.
 
+**Completion gate** (the audit above is minted from what a task *declares* at
+filing; a task filed with no manifest, or by a path that never calls the hook,
+mints nothing, and the mission used to close as shipped with no one having
+looked at the screen). `canCompleteMission` therefore also reads what the
+mission's merged work *actually changed*, via `evaluateSurfaceAuditGate`:
+- Not required when `autoSurfaceAudit = false`, when a `[surface audit]` /
+  visual-auditor task has completed, when the mission has no finished builder
+  task, or when a human waiver is recorded.
+- Otherwise required when a finished builder task's declared manifest, or any
+  file in its PR diff (including the old name of a renamed file), is a rendered
+  UI file: under a UI surface directory and not a test, story, snapshot, mock
+  or doc. A backend-only mission is never touched.
+- Refusal code `surface_audit_missing`; the reason names the UI files and both
+  ways out (run the audit, or waive it). The state view shows it as an owner
+  decision.
+- Fails open when the diff cannot be read (no linked repo, GitHub error), so an
+  outage never strands a mission.
+- **Waiver**: `PATCH /api/missions/[id]` with `surfaceAuditWaiver` (a reason of
+  at least 10 characters; MCP `manage_missions update`) records a
+  `Surface audit waived` mission note carrying the reason. Only a person or an
+  admin key acting for one may waive; an in-task agent (`actorWorkerId`) gets 403
+  and the engine never waives. The same PATCH carrying `status: completed`
+  is refused with 409 `surface_audit_missing` unless a waiver is supplied or
+  already recorded. Archiving is not gated.
+
 **Non-goals**: The recurring workspace-wide `Weekly mobile UI audit` mission is
 unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
 
@@ -1668,8 +1693,18 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   sentinel) THEN no audit task is ever created.
 - AC-32: GIVEN a mission with `autoSurfaceAudit = false` THEN no audit task is
   created or extended regardless of what paths its tasks declare.
+- AC-33: GIVEN a mission whose merged PRs changed a rendered UI file and that has
+  no completed audit and no waiver WHEN completion is attempted (automated or by
+  a person) THEN it is refused with `surface_audit_missing` and a reason naming
+  the files and how to clear it.
+- AC-34: GIVEN that mission WHEN a person supplies `surfaceAuditWaiver` THEN the
+  reason is recorded on the mission and completion proceeds; an in-task agent's
+  waiver is refused.
+- AC-35: GIVEN a backend-only mission, or one with a completed audit, THEN the
+  completion gate does not apply.
 
 **Code surface**:
+- `apps/web/src/lib/mission-surface-audit-gate.ts` — `evaluateSurfaceAuditGate()`
 - `packages/core/surface-audit.ts` — pure predicates and checklist content
 - `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`
 - `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
