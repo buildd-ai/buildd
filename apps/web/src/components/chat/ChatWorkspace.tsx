@@ -17,7 +17,7 @@
  * both drive it with messages and callbacks.
  */
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
@@ -124,6 +124,35 @@ export interface ChatWorkspaceProps {
   strip?: ReactNode;
   /** The pinned object's desktop button; null hides it. Default "Open beside ▸". */
   pinOpenLabel?: string | null;
+}
+
+/**
+ * Where the thread follows. `bottom`: new content scrolls into view (a turn
+ * streaming, the reader at the end). `free`: the reader scrolled away and
+ * nothing moves under them. `anchor`: an element is held at the top (the reply
+ * after an approval, the head of a long finished reply) until the reader
+ * scrolls; before it exists, nothing moves.
+ */
+type Follow = { mode: 'bottom' } | { mode: 'free' } | { mode: 'anchor'; find: () => Element | null };
+
+/** Room left above an anchored line: the scroller's top edge fades over 28px. */
+export const ANCHOR_GAP = 28;
+
+/** An agent's text block in the feed (ChatFeed `AgentText`). */
+const REPLY_TEXT = '[data-testid="feed-text"]';
+
+/** The last text block of the last assistant turn: the reply a finished turn reads as. */
+function lastReplyText(root: Element): Element | null {
+  const turns = root.querySelectorAll('.kit-msg[data-role="assistant"]');
+  const texts = turns[turns.length - 1]?.querySelectorAll(REPLY_TEXT);
+  return texts && texts.length > 0 ? texts[texts.length - 1] : null;
+}
+
+/** The first new text block after an approval's card or row: the reply to Confirm or Discard. */
+function replyAfterApproval(root: Element, approvalId: string, before: ReadonlySet<Element>): Element | null {
+  const card = [...root.querySelectorAll<HTMLElement>('[data-approval-id]')].find(c => c.dataset.approvalId === approvalId);
+  if (!card) return null;
+  return [...root.querySelectorAll(REPLY_TEXT)].find(t => !before.has(t) && !!(card.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? null;
 }
 
 /** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
@@ -235,9 +264,92 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     }
   };
 
+  // Where the thread follows (see `Follow`). Bottom while a turn streams and
+  // the reader hasn't scrolled away; after Confirm/Discard, the reply that
+  // follows the card; when a turn lands, the head of a reply taller than the
+  // screen. The reader's own scroll always wins.
+  const follow = useRef<Follow>({ mode: 'bottom' });
+  // The scrollTop we last set, to tell our scrolls from the reader's.
+  const ourTop = useRef<number | null>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const lastLen = useRef(0);
+  const wasBusy = useRef(false);
+  const busy = status === 'submitted' || status === 'streaming';
+  // The scrollTop that puts the anchored line at the top, once it exists.
+  const anchorTop = (el: HTMLElement): number | null => {
+    const f = follow.current;
+    const target = f.mode === 'anchor' ? f.find() : null;
+    return target ? Math.max(0, el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - ANCHOR_GAP) : null;
+  };
+  const settle = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const top = follow.current.mode === 'bottom' ? el.scrollHeight : anchorTop(el);
+    if (top === null) return;
+    el.scrollTop = top;
+    ourTop.current = el.scrollTop;
+  }, []);
+  const contentKey = messages.length + ':' + messages.reduce((n, m) => n + m.parts.length, 0) + ':' + status;
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const inner = content.current;
+    if (!el || !inner) return;
+    // A conversation arriving (nothing shown before): start at its end.
+    if (lastLen.current === 0 && messages.length > 0) follow.current = { mode: 'bottom' };
+    lastLen.current = messages.length;
+    // A turn just landed while we were following it down: if its reply is
+    // taller than the screen, show the reply's head, not its tail.
+    const landed = wasBusy.current && !busy;
+    wasBusy.current = busy;
+    if (landed && follow.current.mode === 'bottom') {
+      const reply = lastReplyText(inner);
+      if (reply && reply.getBoundingClientRect().height > el.clientHeight - ANCHOR_GAP) {
+        follow.current = { mode: 'anchor', find: () => (reply.isConnected ? reply : lastReplyText(inner)) };
+      }
+    }
+    settle();
+  }, [contentKey, messages.length, busy, settle]);
+  // Cards grow after their object loads and decided cards fold: hold the place through that too.
+  useEffect(() => {
+    const inner = content.current;
+    if (!inner || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => settle());
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [settle]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    // Our own scroll (or its echo): not the reader.
+    if (ourTop.current !== null && Math.abs(el.scrollTop - ourTop.current) <= 1) return;
+    // The browser keeping the anchored line in place as a card above it folds: not the reader either.
+    const held = anchorTop(el);
+    if (held !== null && Math.abs(el.scrollTop - held) <= 1) return;
+    ourTop.current = null;
+    // The reader scrolled: back at the bottom it follows again; anywhere else it stays put.
+    follow.current = { mode: el.scrollHeight - el.scrollTop - el.clientHeight < 80 ? 'bottom' : 'free' };
+  };
+
+  // Confirm or Discard: what to read next is the reply that follows the card,
+  // not the bottom. Hold its first line at the top once it arrives.
+  const respondToApproval = useCallback((approvalId: string, approved: boolean, reason?: string) => {
+    const inner = content.current;
+    if (inner) {
+      const before = new Set(inner.querySelectorAll(REPLY_TEXT));
+      follow.current = { mode: 'anchor', find: () => replyAfterApproval(inner, approvalId, before) };
+    }
+    onApproval(approvalId, approved, reason);
+  }, [onApproval]);
+
+  const send = (text: string) => {
+    onSend(text);
+    setDraft('');
+    follow.current = { mode: 'bottom' };
+  };
+
   const actions: ChatActions = useMemo(() => ({
     ...DEFAULT_CHAT_ACTIONS,
-    respondToApproval: onApproval,
+    respondToApproval,
     prefillComposer: (text: string) => { setDraft(text); requestAnimationFrame(() => composer.current?.focus()); },
     openObject,
     workspaceName: (id: string) => workspaces.find(w => w.id === id)?.name ?? null,
@@ -249,43 +361,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     openVisualReview,
     visualReview,
     closeVisualReview,
-  }), [onApproval, openObject, workspaces, viewerName, focus, answerQuestion, reviewShots, undoReview, openVisualReview, visualReview, closeVisualReview]);
-
-  // Stick to the bottom while new content streams in, unless the reader scrolled up.
-  const pinnedToBottom = useRef(true);
-  const lastLen = useRef(0);
-  const contentKey = messages.length + ':' + messages.reduce((n, m) => n + m.parts.length, 0) + ':' + status;
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    if (pinnedToBottom.current || messages.length !== lastLen.current) el.scrollTop = el.scrollHeight;
-    lastLen.current = messages.length;
-  }, [contentKey, messages.length]);
-  // Cards grow after their object loads; stay at the bottom through that too.
-  const content = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = scroller.current;
-    const inner = content.current;
-    if (!el || !inner || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => { if (pinnedToBottom.current) el.scrollTop = el.scrollHeight; });
-    ro.observe(inner);
-    return () => ro.disconnect();
-  }, []);
-  const onScroll = () => {
-    const el = scroller.current;
-    if (!el) return;
-    pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-
-  const send = (text: string) => {
-    onSend(text);
-    setDraft('');
-    pinnedToBottom.current = true;
-  };
+  }), [respondToApproval, openObject, workspaces, viewerName, focus, answerQuestion, reviewShots, undoReview, openVisualReview, visualReview, closeVisualReview]);
 
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
-  const busy = status === 'submitted' || status === 'streaming';
   // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
   // "Mission sheet"). An opaque sheet with a context card; the title shows once.
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;

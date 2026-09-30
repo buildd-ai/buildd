@@ -28,7 +28,7 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: ChatWorkspace } = await import('./ChatWorkspace');
+const { default: ChatWorkspace, ANCHOR_GAP } = await import('./ChatWorkspace');
 const { ObjectStoreProvider } = await import('./objects/ObjectStoreProvider');
 const { KeyHintsProvider } = await import('@/components/KeyHints');
 const fixtures = await import('../../app/app/dev/chat/chat-fixtures');
@@ -51,9 +51,13 @@ afterEach(() => {
 
 type Props = Parameters<typeof ChatWorkspace>[0];
 
-async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?: Parameters<typeof fixtures.fixtureViews>[0]; views?: Record<string, unknown> } = {}) {
+async function render(over: Partial<Props> = {}, opts: { hints?: boolean; state?: Parameters<typeof fixtures.fixtureViews>[0]; views?: Record<string, unknown>; pending?: boolean } = {}) {
   const views: Record<string, unknown> = { ...fixtures.fixtureViews(opts.state ?? 'split'), ...opts.views };
-  const source = { load: async (r: { kind: string; id: string }) => { const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v; } };
+  const source = { load: async (r: { kind: string; id: string }) => {
+    // `pending`: objects that never arrive, so cards stay in their loading slot.
+    if (opts.pending) return new Promise<never>(() => {});
+    const v = views[`${r.kind}:${r.id}`]; if (!v) throw new Error('Not found'); return v;
+  } };
   const props: Props = {
     messages: [], status: 'ready', onSend: (t: string) => { sent.push(t); }, onApproval() {},
     title: null, agent: fixtures.ORGANIZER, tier: 'standard', workspaces: fixtures.WORKSPACES,
@@ -124,9 +128,15 @@ describe('thinking', () => {
     expect(q('[data-testid="composer-sweep"]')).not.toBeNull();
   });
 
-  it('once the turn lands it reads as the normal feed again', async () => {
+  it('once the turn lands its steps and tool rows fold to one line, and the answer stays open', async () => {
     await render({ messages: msgs(), status: 'ready' });
-    expect(q('[data-testid="kit-thinking"]')).toBeNull();
+    const fold = q('[data-testid="kit-thinking"]') as HTMLDetailsElement;
+    expect(fold.dataset.settled).toBe('true');
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 2 steps');
+    expect(q('[data-testid="tool-call-row"]')).toBeNull();
+    expect(q('[data-testid="feed-text"]')).not.toBeNull();
+    await act(async () => { fold.open = true; });
     expect(q('[data-testid="tool-call-row"]')).not.toBeNull();
   });
 
@@ -502,6 +512,140 @@ describe('thread scroll', () => {
   it('the top edge of the thread fades out', async () => {
     await render({ messages: fixtures.chatFixture('confirmed').messages });
     expect(q('[data-testid="chat-scroller"]')!.className).toContain('mask-image');
+  });
+
+  // happy-dom has no layout: the scroller is a 600px window at y=100 over
+  // 3000px of content, and `place` says where a block sits in that content.
+  const SCROLLER_TOP = 100;
+  const VIEW = 600;
+  const HEIGHT = 3000;
+  let place: (el: Element) => { top: number; height: number } | null = () => null;
+  const realRect = HTMLElement.prototype.getBoundingClientRect;
+  const rect = (top: number, height: number) => ({ top, height, bottom: top + height, left: 0, right: 0, width: 0, x: 0, y: top, toJSON() {} }) as DOMRect;
+  const scroller = () => q('[data-testid="chat-scroller"]')!;
+  beforeEach(() => {
+    place = () => null;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const sc = container.querySelector('[data-testid="chat-scroller"]') as HTMLElement | null;
+      if (this === sc) return rect(SCROLLER_TOP, VIEW);
+      const p = sc && place(this);
+      return p ? rect(SCROLLER_TOP + p.top - sc.scrollTop, p.height) : rect(0, 0);
+    };
+  });
+  afterEach(() => { HTMLElement.prototype.getBoundingClientRect = realRect; });
+  /** Mount, then give the scroller its window and content height (happy-dom lays nothing out). */
+  async function mount(over: Partial<Props>) {
+    await render(over);
+    const sc = scroller();
+    Object.defineProperty(sc, 'scrollHeight', { configurable: true, get: () => HEIGHT });
+    Object.defineProperty(sc, 'clientHeight', { configurable: true, get: () => VIEW });
+  }
+  const readerScrolls = async (top: number) => {
+    await act(async () => { scroller().scrollTop = top; scroller().dispatchEvent(new Event('scroll')); });
+  };
+  const textOf = (el: Element, s: string) => el.matches('[data-testid="feed-text"]') && (el.textContent ?? '').includes(s);
+  type Msg = Props['messages'][number];
+  /**
+   * The confirmed fixture's turn, still streaming its reply after the approval.
+   * Each call adds a (non-visual) part too, as a real stream's chunks do, so
+   * the thread sees new content.
+   */
+  let chunks = 0;
+  const confirmedWith = (extra: string) => {
+    chunks += 1;
+    return fixtures.chatFixture('confirmed').messages.map((m: Msg) => (m.id === 'm4'
+      ? { ...m, parts: [...m.parts.map(p => (p.type === 'text' && p.text.startsWith('Filed.') ? { ...p, text: p.text + extra, state: 'streaming' as const } : p)), ...Array.from({ length: chunks }, () => ({ type: 'step-start' as const }))] }
+      : m));
+  };
+
+  it('Confirm: the reply after the card lands at the top of the view, and streaming does not yank it to the bottom', async () => {
+    const approvals: Array<[string, boolean]> = [];
+    await mount({ messages: fixtures.chatFixture('propose').messages, status: 'ready', onApproval: (id, ok) => { approvals.push([id, ok]); } });
+    await act(async () => { (q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement).click(); });
+    expect(approvals).toEqual([['approval-1', true]]);
+    // The reply sits 1800px into the thread.
+    place = el => (textOf(el, 'Filed. buildd is planning') ? { top: 1800, height: 120 } : null);
+    await render({ messages: confirmedWith(''), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1800 - ANCHOR_GAP);
+    // The card folded to its row in place, same wrapper.
+    expect(q('[data-approval-id="approval-1"]')?.dataset.state).toBe('done');
+    // More of the reply streams in: the view holds its head.
+    await render({ messages: confirmedWith(' More words arrive.'), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1800 - ANCHOR_GAP);
+    await render({ messages: confirmedWith(' More words arrive. And more.'), status: 'ready' });
+    expect(scroller().scrollTop).toBe(1800 - ANCHOR_GAP);
+  });
+
+  it('Discard anchors the same way: the reply to a discard is what to read next', async () => {
+    await mount({ messages: fixtures.chatFixture('propose').messages, status: 'ready' });
+    await act(async () => { (q('[data-testid="kit-approval-deny"]') as HTMLButtonElement).click(); });
+    const denied = fixtures.chatFixture('denied').messages;
+    const reply = denied.map((m: Msg) => (m.id === 'm4' ? { ...m, parts: [...m.parts, { type: 'text' as const, text: 'Dropped it. Nothing filed.', state: 'streaming' as const }] } : m));
+    place = el => (textOf(el, 'Dropped it') ? { top: 1500, height: 40 } : null);
+    await render({ messages: reply, status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1500 - ANCHOR_GAP);
+  });
+
+  it('the reader scrolling after Confirm wins, and scrolling back to the bottom resumes following', async () => {
+    await mount({ messages: fixtures.chatFixture('propose').messages, status: 'ready' });
+    await act(async () => { (q('[data-testid="kit-approval-confirm"]') as HTMLButtonElement).click(); });
+    place = el => (textOf(el, 'Filed. buildd is planning') ? { top: 1800, height: 120 } : null);
+    await render({ messages: confirmedWith(''), status: 'streaming' });
+    await readerScrolls(1000);
+    await render({ messages: confirmedWith(' More.'), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1000);
+    // Back at the bottom: it follows the stream again.
+    await readerScrolls(HEIGHT - VIEW);
+    await render({ messages: confirmedWith(' More. Again.'), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(HEIGHT);
+  });
+
+  it('while a turn streams it follows the bottom; the reader scrolling up stops that', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    const grow = (n: number) => streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: [...m.parts, ...Array.from({ length: n }, () => ({ type: 'step-start' as const }))] } : m));
+    await render({ messages: grow(1), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(HEIGHT);
+    await readerScrolls(900);
+    await render({ messages: grow(2), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(900);
+  });
+
+  it('a finished reply taller than the view shows its head, not its tail', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    await render({ messages: [...streaming], status: 'submitted' });
+    expect(scroller().scrollTop).toBe(HEIGHT);
+    const done = streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: m.parts.map(p => (p.type === 'text' ? { ...p, state: 'done' as const } : p)) } : m));
+    place = el => (textOf(el, 'Nothing in flight') ? { top: 2000, height: 900 } : null);
+    await render({ messages: done, status: 'ready' });
+    expect(scroller().scrollTop).toBe(2000 - ANCHOR_GAP);
+  });
+
+  it('a finished reply that fits stays at the bottom', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    const done = streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: m.parts.map(p => (p.type === 'text' ? { ...p, state: 'done' as const } : p)) } : m));
+    place = el => (textOf(el, 'Nothing in flight') ? { top: 2800, height: 120 } : null);
+    await render({ messages: done, status: 'ready' });
+    expect(scroller().scrollTop).toBe(HEIGHT);
+  });
+});
+
+describe('objects reserve their height while they load', () => {
+  it('a loading card holds a slot at the card\'s height, so the reply under it does not move when it arrives', async () => {
+    await render({ messages: fixtures.chatFixture('confirmed').messages }, { pending: true });
+    const loading = q('[data-testid="object-card"][data-state="loading"][data-kind="mission"]');
+    expect(loading).not.toBeNull();
+    expect(loading!.hasAttribute('data-reserve')).toBe(true);
+    expect(loading!.className).toMatch(/min-h-\[\d+px\]/);
+  });
+
+  it('a card whose object is gone keeps its one line: nothing is coming to fill a slot', async () => {
+    await render({ messages: fixtures.chatFixture('confirmed').messages }, { views: { [`mission:${fixtures.MISSION_ID}`]: undefined } });
+    const gone = q('[data-testid="object-card"][data-state="gone"]');
+    expect(gone).not.toBeNull();
+    expect(gone!.hasAttribute('data-reserve')).toBe(false);
   });
 });
 

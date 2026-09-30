@@ -40,14 +40,29 @@ export function Eyebrow({ children, className = '' }: { children: ReactNode; cla
   return <span className={`font-mono text-[11px] font-bold uppercase tracking-[2px] ${className}`}>{children}</span>;
 }
 
-/** The card while its first load is in flight: the ref's own fallback text, so nothing jumps. */
+/**
+ * What a loading card reserves: about the height the loaded card settles at
+ * (a phone's, then md and up), never more, so the card fills its slot when
+ * its object arrives instead of pushing the reply below it down. A kind
+ * without a card of its own keeps its one-line fallback.
+ */
+export const OBJECT_RESERVE: Record<string, string> = {
+  task: 'min-h-[112px] md:min-h-[92px]',
+  mission: 'min-h-[76px] md:min-h-[240px]',
+  question: 'min-h-[120px]',
+  pr: 'min-h-[56px]',
+};
+
+/** The card while its first load is in flight: the ref's own fallback text in a slot at the card's height, so nothing jumps. */
 export function ObjectPlaceholder({ objRef, error }: { objRef: BuilddObjectRef; error?: string | null }) {
+  const reserve = error ? undefined : OBJECT_RESERVE[objRef.kind];
   return (
     <div
       data-testid="object-card"
       data-kind={objRef.kind}
       data-state={error ? 'gone' : 'loading'}
-      className="border-2 border-border-default bg-card px-4 py-3 font-mono text-[12.5px] text-text-secondary"
+      data-reserve={reserve ? '' : undefined}
+      className={`border-2 border-border-default bg-card px-4 py-3 font-mono text-[12.5px] text-text-secondary ${reserve ?? ''}`}
     >
       <Eyebrow className="text-text-muted">{objRef.kind}</Eyebrow>
       <p className="mt-1 [overflow-wrap:anywhere]">{objRef.fallbackText}</p>

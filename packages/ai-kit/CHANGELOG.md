@@ -12,6 +12,20 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.13.0 — 2026-09-30
+
+Minor: a finished turn folds to one line.
+
+- `ChatThread turnFold` (new, optional): once a turn is done its steps and its
+  tool-call runs collapse under one line (the app's `summary`, e.g. "Did 6
+  steps · filed 2 tasks") that unfolds on tap. Approvals, text, hand-offs and
+  events stay out. The app holds which turns are open (`isOpen` /
+  `onToggle`); a null summary leaves a turn unfolded. Without the prop the
+  thread is unchanged. New type `TurnFold`.
+- `ThinkingPanel`: `summary` (the settled line; given, the panel shows even
+  with no steps), `open` and `onToggle`. A settled panel carries
+  `data-settled` and a chevron; its summary is `data-testid="kit-thinking-summary"`.
+
 ## 0.12.0 — 2026-09-30
 
 Minor: a write the server refused never reads as the person's Discard, and a

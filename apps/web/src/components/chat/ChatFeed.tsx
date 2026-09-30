@@ -20,18 +20,21 @@
  * - `steps` / `thinkingTitle`: the turn in flight is the Thinking panel, drawn
  *   from the `data-step` parts the server streams (lib/chat/thinking-steps.ts):
  *   steps in plain words, never a tool's name.
+ * - `turnFold`: once the turn is done its steps and tool rows fold to one line
+ *   ("Did 6 steps · filed 2 tasks", feed-model.ts `turnFoldSummary`) that
+ *   unfolds on tap, so the answer is what a finished turn shows.
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
  * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
-import { memo, useMemo } from 'react';
-import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext } from '@builddai/ai-kit/chat/react';
+import { memo, useMemo, useState } from 'react';
+import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold } from '@builddai/ai-kit/chat/react';
 import type { ChatMessage as KitMessage, ChatTextPart, StepData } from '@builddai/ai-kit/chat/contract';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { CHAT_EVENT_PART_TYPE, isToolPart, messageMeta, type ChatMessage, type ChatToolPart } from './chat-contract';
-import { BUILDD_TOOL_CALLS, eventRefsShownLater, feedSegments, intentTag, isApprovalPart, type FeedSegment } from './feed-model';
+import { BUILDD_TOOL_CALLS, eventRefsShownLater, feedSegments, intentTag, isApprovalPart, turnFoldSummary, type FeedSegment } from './feed-model';
 import ApprovalCard from './ApprovalCard';
 import { MoreObjects, ObjectsSegment } from './objects/registry';
 import WatchNotice from './WatchNotice';
@@ -161,12 +164,13 @@ const THINKING_TITLE = (
 );
 
 /**
- * The steps of the turn in flight: its `data-step` parts, which the server
- * streams (a continuation of an older message gets them backfilled there), so
- * every message that can be streaming carries them. A settled turn shows no panel.
+ * The turn's steps: its `data-step` parts, which the server streams (a
+ * continuation of an older message gets them backfilled there), so every
+ * message that can be streaming carries them. Live while it streams; once it
+ * is done they sit under the folded line.
  */
-function liveSteps(m: KitMessage, streaming: boolean): StepData[] {
-  return streaming ? thinkingSteps(m.parts, true) : [];
+function turnSteps(m: KitMessage, streaming: boolean): StepData[] {
+  return thinkingSteps(m.parts, streaming);
 }
 
 export default function ChatFeed({
@@ -186,6 +190,17 @@ export default function ChatFeed({
   error?: string | null;
 }) {
   const hidden = useMemo(() => eventRefsShownLater(messages), [messages]);
+  // Finished turns the person unfolded. Held here, so a re-render never folds one back.
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
+  const turnFold: TurnFold = {
+    summary: (m, steps) => turnFoldSummary((m as ChatMessage).parts, steps.length),
+    isOpen: m => unfolded.has(m.id),
+    onToggle: (m, open) => setUnfolded(prev => {
+      const next = new Set(prev);
+      if (open) next.add(m.id); else next.delete(m.id);
+      return next;
+    }),
+  };
   // One segment plan per message and render (feed-model.ts): which objects
   // follow which calls, which wait for the end of the answer.
   const plans = new Map<string, FeedSegment[]>();
@@ -278,8 +293,9 @@ export default function ChatFeed({
         renderEvent={(_data, km: KitMessage) => <EventSegments segs={planOf(km as ChatMessage)} />}
         renderMessageHeader={header}
         renderMessageFooter={footer}
-        steps={liveSteps}
+        steps={turnSteps}
         thinkingTitle={THINKING_TITLE}
+        turnFold={turnFold}
       />
     </div>
   );
