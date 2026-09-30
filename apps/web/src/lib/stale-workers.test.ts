@@ -106,6 +106,12 @@ mock.module('@/lib/worker-deliverables', () => ({
   getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
+// cleanupUnresumedAnswers inserts a Continue: task and must wake runners for it.
+const mockDispatchNewTask = mock(async (_task: any, _workspace: any) => {});
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 
@@ -2741,5 +2747,96 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
     // One OAuth seat released per degraded worker, same as the happy path.
     expect(capturedAccountsSet).not.toBeNull();
+  });
+  // The continuation is a new task. Without a wake-up, polling runners find it
+  // eventually and a webhook-only workspace never does.
+  describe('continuation dispatch', () => {
+    const workspace = {
+      id: 'workspace-1',
+      name: 'Example',
+      repo: 'https://github.com/example/repo',
+      webhookConfig: { enabled: true, url: 'https://hooks.example.test/buildd', token: 't', events: ['task.created'] },
+    };
+
+    function withWorkspace(w: any) {
+      return { ...w, workspace };
+    }
+
+    function secondCandidate() {
+      const second = withWorkspace(parkedWithQueuedAnswer({ workerId: 'worker-2' }));
+      second.id = 'worker-2';
+      second.taskId = 'task-2';
+      second.task = { ...second.task, id: 'task-2' };
+      return second;
+    }
+
+    beforeEach(() => {
+      mockDispatchNewTask.mockReset();
+      mockDispatchNewTask.mockImplementation(async () => {});
+      mockTasksUpdate.mockReset();
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      } as any);
+      let n = 0;
+      mockTasksInsert.mockReturnValue({
+        values: mock((v: any) => ({
+          returning: mock(() => [{ ...v, id: `continuation-${++n}` }]),
+        })),
+      } as any);
+    });
+
+    it('dispatches each continuation it creates once, with its workspace', async () => {
+      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer()), secondCandidate()] as any);
+
+      const result = await cleanupUnresumedAnswers('account-1');
+
+      expect(result.degraded).toBe(2);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(2);
+      const calls = mockDispatchNewTask.mock.calls as any[];
+      expect(calls.map(([t]) => t.id)).toEqual(['continuation-1', 'continuation-2']);
+      expect(calls[0][0].title).toBe('Continue: Pick a database');
+      expect(calls[0][1]).toBe(workspace);
+    });
+
+    it('does not re-dispatch a continuation on a later pass', async () => {
+      // The first pass flips the recorded path to cold_continuation; the next
+      // read of the same worker sees that and skips it.
+      const worker = withWorkspace(parkedWithQueuedAnswer());
+      mockWorkersFindMany.mockReturnValue([worker] as any);
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          if (vals.context) worker.task = { ...worker.task, context: vals.context };
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      } as any);
+
+      await cleanupUnresumedAnswers('account-1');
+      const second = await cleanupUnresumedAnswers('account-1');
+
+      expect(second.degraded).toBe(0);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dispatch when the claiming compare-and-swap matches no row', async () => {
+      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer())] as any);
+      workersUpdateReturning = [];
+
+      await cleanupUnresumedAnswers('account-1');
+
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('keeps sweeping when a dispatch throws', async () => {
+      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer()), secondCandidate()] as any);
+      mockDispatchNewTask.mockImplementationOnce(async () => { throw new Error('webhook exploded'); });
+
+      const result = await cleanupUnresumedAnswers('account-1');
+
+      expect(result.degraded).toBe(2);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(2);
+      // Neither worker is rolled back: the continuation already exists.
+      expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
+      expect(capturedAccountsSet).not.toBeNull();
+    });
   });
 });
