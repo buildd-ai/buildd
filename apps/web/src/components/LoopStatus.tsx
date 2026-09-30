@@ -54,21 +54,37 @@ export function LoopStatusChip({
       ? 'text-status-success border-status-success bg-status-success/8'
       : 'text-purple-400 border-purple-400 bg-purple-500/8';
 
+  const fullLabel = loopState === 'exhausted'
+    ? `LOOP EXHAUSTED · ${attempt}/${maxLoops}`
+    : loopState === 'satisfied'
+      ? `LOOP SATISFIED · ${attempt}/${maxLoops}`
+      : `LOOPING · attempt ${attempt}/${maxLoops}`;
+
   return (
     <span
       data-loop-status={deferred ? 'deferred' : terminal ? loopState : 'active'}
       className={`inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[11px] md:text-[10px] font-semibold uppercase tracking-wide border ${color} shrink-0`}
     >
       {!terminal && <span className="w-1.5 h-1.5 rounded-full bg-current animate-status-pulse" />}
-      {loopState === 'exhausted'
-        ? `LOOP EXHAUSTED · ${attempt}/${maxLoops}`
-        : loopState === 'satisfied'
-          ? `LOOP SATISFIED · ${attempt}/${maxLoops}`
-          : `LOOPING · attempt ${attempt}/${maxLoops}`}
-      {deferred && (
-        <span className="normal-case font-normal opacity-80">
-          · resumes <ZonedTime value={startAt!} format="datetime-short" />
-        </span>
+      {loopState === 'exhausted' || loopState === 'satisfied' ? (
+        fullLabel
+      ) : (
+        <>
+          {/* Below md the chip sits shrink-0 beside the task title, so it must stay short. */}
+          <span className="md:hidden" aria-hidden="true">{`LOOP ${attempt}/${maxLoops}`}</span>
+          <span className="hidden md:inline" aria-hidden="true">
+            {fullLabel}
+            {deferred && (
+              <span className="normal-case font-normal opacity-80">
+                {' '}· resumes <ZonedTime value={startAt!} format="datetime-short" />
+              </span>
+            )}
+          </span>
+          <span className="sr-only">
+            {fullLabel}
+            {deferred && <> · resumes <ZonedTime value={startAt!} format="datetime-short" /></>}
+          </span>
+        </>
       )}
     </span>
   );

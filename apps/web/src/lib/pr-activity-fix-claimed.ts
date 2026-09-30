@@ -44,21 +44,25 @@ export function fixAttemptOf(task: ClaimedTaskShape): {
   };
 }
 
+async function workspaceRepo(workspaceId: string): Promise<{ installationId: number; repoFullName: string } | null> {
+  const ws = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { id: true },
+    with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
+  });
+  const installationId = ws?.githubRepo?.installation?.installationId;
+  const repoFullName = ws?.githubRepo?.fullName;
+  return installationId && repoFullName ? { installationId, repoFullName } : null;
+}
+
 export async function announceFixClaimed(task: ClaimedTaskShape): Promise<void> {
   const fix = fixAttemptOf(task);
   if (!fix) return;
   try {
-    const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, task.workspaceId),
-      columns: { id: true },
-      with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
-    });
-    const installationId = ws?.githubRepo?.installation?.installationId;
-    const repoFullName = ws?.githubRepo?.fullName;
-    if (!installationId || !repoFullName) return;
+    const repo = await workspaceRepo(task.workspaceId);
+    if (!repo) return;
     await appendPrActivity({
-      installationId,
-      repoFullName,
+      ...repo,
       prNumber: fix.prNumber,
       entry: {
         kind: 'fix_started',
@@ -72,5 +76,38 @@ export async function announceFixClaimed(task: ClaimedTaskShape): Promise<void> 
     });
   } catch (err) {
     console.warn(`[pr-activity] could not announce fix claim for task ${task.id}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * The fix task's worker finished — the counterpart to `announceFixClaimed`.
+ * Without it the comment kept reading `Fixing` with a spinner after the task
+ * completed, while nothing was running. Written from the worker's terminal
+ * update; a later red CI result appends its own entry after this one.
+ */
+export async function announceFixEnded(
+  task: ClaimedTaskShape,
+  outcome: 'completed' | 'failed' | 'cancelled',
+): Promise<void> {
+  const fix = fixAttemptOf(task);
+  if (!fix) return;
+  try {
+    const repo = await workspaceRepo(task.workspaceId);
+    if (!repo) return;
+    await appendPrActivity({
+      ...repo,
+      prNumber: fix.prNumber,
+      entry: {
+        kind: 'fix_ended',
+        detail: outcome === 'completed' ? null : outcome,
+        iteration: fix.iteration,
+        maxIterations: fix.maxIterations,
+        taskUrl: taskActivityUrl(task.id),
+      },
+      onlyIfPresent: true,
+      workspaceId: task.workspaceId,
+    });
+  } catch (err) {
+    console.warn(`[pr-activity] could not announce fix end for task ${task.id}:`, err instanceof Error ? err.message : err);
   }
 }

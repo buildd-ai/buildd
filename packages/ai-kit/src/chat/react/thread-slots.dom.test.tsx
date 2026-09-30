@@ -163,3 +163,56 @@ describe('ChatComposer inputId (0.9.0)', () => {
     expect($('[data-testid="kit-composer-input"]')!.id.length).toBeGreaterThan(0);
   });
 });
+
+describe('ChatThread turnFold (0.13.0)', () => {
+  const withSteps = [
+    { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Go' }] },
+    { id: 'a1', role: 'assistant', parts: [
+      { type: 'data-step', id: 's1', data: { id: 's1', label: 'Looked', state: 'done' } },
+      tool('r1'), tool('r2', 'list'),
+      { type: 'tool-file', toolCallId: 'w1', state: 'output-available', input: {}, output: {}, approval: { id: 'ap1', approved: true } },
+      { type: 'text', text: 'Answer.' },
+    ] },
+  ];
+  const fold = (open: Set<string>, toggles: Array<[string, boolean]> = []) => ({
+    summary: (_m: unknown, steps: readonly unknown[]) => `Did ${steps.length} step`,
+    isOpen: (m: { id: string }) => open.has(m.id),
+    onToggle: (m: { id: string }, o: boolean) => { toggles.push([m.id, o]); },
+  });
+
+  it('a finished turn folds its steps and tool rows under the line; text and approvals stay', async () => {
+    await render(h(kit.ChatThread, { messages: withSteps, status: 'ready', toolRows: 'rich', turnFold: fold(new Set()) }));
+    const d = $<HTMLDetailsElement>('[data-testid="kit-thinking"]')!;
+    expect(d.dataset.settled).toBe('true');
+    expect(d.open).toBe(false);
+    expect($('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 1 step');
+    expect($$('[data-testid="tool-call-row"]')).toHaveLength(0);
+    expect($('[data-testid="kit-approval"]')).not.toBeNull();
+    expect($('.kit-msg[data-role="assistant"]')?.textContent).toContain('Answer.');
+    expect($('.kit-msg[data-role="assistant"]')?.dataset.folded).toBe('true');
+  });
+
+  it('open, the rows draw in place; a toggle reports back', async () => {
+    const toggles: Array<[string, boolean]> = [];
+    await render(h(kit.ChatThread, { messages: withSteps, status: 'ready', toolRows: 'rich', turnFold: fold(new Set(['a1']), toggles) }));
+    expect($$('[data-testid="tool-call-row"]').length).toBeGreaterThan(0);
+    const d = $<HTMLDetailsElement>('[data-testid="kit-thinking"]')!;
+    expect(d.open).toBe(true);
+    // happy-dom fires `toggle` itself when `open` flips, as a browser does.
+    await act(async () => { d.open = false; });
+    expect(toggles).toEqual([['a1', false]]);
+  });
+
+  it('while streaming the turn is the live panel, never folded', async () => {
+    await render(h(kit.ChatThread, { messages: withSteps, status: 'streaming', toolRows: 'rich', turnFold: fold(new Set()) }));
+    const d = $<HTMLDetailsElement>('[data-testid="kit-thinking"]')!;
+    expect(d.dataset.streaming).toBe('true');
+    expect(d.dataset.settled).toBeUndefined();
+    expect($$('[data-testid="tool-call-row"]').length).toBeGreaterThan(0);
+  });
+
+  it('a null summary leaves the turn as it was', async () => {
+    await render(h(kit.ChatThread, { messages: withSteps, status: 'ready', toolRows: 'rich', turnFold: { ...fold(new Set()), summary: () => null } }));
+    expect($$('[data-testid="tool-call-row"]').length).toBeGreaterThan(0);
+  });
+});

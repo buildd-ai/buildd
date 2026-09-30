@@ -109,7 +109,7 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
     name: mcpGroupToolName(group),
     description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
     annotations: {
-      readOnlyHint: false,
+      readOnlyHint: group === 'analytics',
       destructiveHint: false,
       openWorldHint: true,
     },
@@ -233,7 +233,9 @@ export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy' }: 
   if (accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "check_path_claim",
-      description: `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
+      description: surface === 'groups'
+        ? 'Claim paths discovered mid-task (worker context required). Unclaimed paths extend pathManifest atomically. A conflict returns blockingTaskId: report blocked to add a dependency. deadlock=true includes the cycle and recovery guidance: cancel/retry, escalate to the blocking owner, or serialize the mission. Do not edit blocked paths.'
+        : `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
 
 If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
 If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
@@ -251,7 +253,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           paths: {
             type: "array" as const,
             items: { type: "string" as const },
-            description: "File paths (or directory prefixes) you need to claim. Non-empty array of strings.",
+            description: "Non-empty paths or directory prefixes to claim.",
           },
         },
         required: ["paths"],
@@ -263,7 +265,9 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
   if (accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "send_worker_message",
-      description: `Send a structured message to another active task worker in the same workspace.
+      description: surface === 'groups'
+        ? 'Message an active sibling task in your workspace; sender comes from worker context. Delivered on its next update_progress. Use path_blocked_on_you, question or answer. Terminal recipient returns delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
+        : `Send a structured message to another active task worker in the same workspace.
 
 Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
 
@@ -298,7 +302,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           },
           hopCount: {
             type: "number" as const,
-            description: "Hop count for forwarded messages (0-based). Omit for new messages. Messages with hopCount >= 5 are dropped to prevent loops.",
+            description: "Forwarded hop count (default 0); >=5 dropped.",
           },
         },
         required: ["recipientTaskId", "type", "body"],

@@ -13,22 +13,34 @@ import {
   INITIAL_STATE,
   resolveInactivityTimeoutMs,
   resolveStartTimeoutMs,
+  resumableRunsEnabled,
+  warmReposEnabled,
+  type DispatchRequest,
   type RunState,
 } from './lifecycle';
 import {
   GithubTokenCache,
   INTERCEPTED_HOSTS,
+  ModelEndpointCache,
+  NoModelEndpointError,
   githubTokenRequest,
+  modelEndpointRequest,
   parseGithubGrant,
+  parseServerModelEndpoint,
   type GithubGrant,
+  type ServerModelEndpoint,
+  type ServerModelEndpointState,
 } from './outbound';
 import type { EgressProps } from './egress';
+import { otlpInterceptHosts } from './otel';
+import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
 import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
 
 /** `ctx.exports` loopback for the EgressHandler entrypoint exported from index.ts. */
 type EgressExports = { EgressHandler(options: { props: EgressProps }): Fetcher };
 
 const GITHUB_TOKEN_TIMEOUT_MS = 10_000;
+const MODEL_ENDPOINT_TIMEOUT_MS = 10_000;
 
 export class WorkerAgent extends Agent<Env, RunState> {
   initialState: RunState = INITIAL_STATE;
@@ -55,8 +67,21 @@ export class WorkerAgent extends Agent<Env, RunState> {
         PUSHER_KEY: env.PUSHER_KEY,
         PUSHER_CLUSTER: env.PUSHER_CLUSTER,
         BUILDD_ONCE_MAX_WAIT_MS: env.BUILDD_ONCE_MAX_WAIT_MS,
+        // Telemetry vars only; the collector credential stays with the egress handler.
+        OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL: env.OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_LOG_TOOL_DETAILS: env.OTEL_LOG_TOOL_DETAILS,
+        OTEL_TRACES_BETA: env.OTEL_TRACES_BETA,
+        WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
+        RESUMABLE_RUNS: resumableRunsEnabled(env) ? '1' : undefined,
+        resumableRuns: resumableRunsEnabled(env),
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
+        instanceType: env.CONTAINER_INSTANCE_TYPE,
+        // No instance ID on ctx.container; the container is bound to this
+        // Durable Object and Cloudflare identifies the instance by its ID
+        // (run-report.ts, RunReport.containerInstanceId).
+        containerInstanceId: this.ctx.id.toString(),
       },
       keepAliveWhile: (fn) => this.keepAliveWhile(fn),
       waitUntil: (p) => this.ctx.waitUntil(p),
@@ -76,13 +101,23 @@ export class WorkerAgent extends Agent<Env, RunState> {
   }
 
   /** RPC from the dispatcher Worker. Idempotent while a run is live. */
-  async dispatch(): Promise<DispatchResult> {
-    return this.supervisor.dispatch();
+  async dispatch(request: DispatchRequest = {}): Promise<DispatchResult> {
+    return this.supervisor.dispatch(request);
   }
 
   /** RPC from the dispatcher Worker, for `GET /tasks/:taskId`. */
   async getRunState(): Promise<RunState> {
     return this.supervisor.status();
+  }
+
+  /**
+   * RPC from EgressHandler: one request seen, or one response body's size.
+   * Counts only; no URL or header ever crosses this call (run-report.ts
+   * EgressEvent). Ignored unless a run is live.
+   */
+  async recordEgress(event: unknown): Promise<void> {
+    if (!this.ctx.container) return;
+    this.supervisor.recordEgress(event);
   }
 
   /**
@@ -106,6 +141,23 @@ export class WorkerAgent extends Agent<Env, RunState> {
   }
 
   /**
+   * RPC from EgressHandler for the snapshot host: whose keys this run may
+   * touch. Only while a run is live and warm repos are on. The workspace ID
+   * is the one buildd returned with the GitHub grant (authenticated with the
+   * dispatch token), never anything the container or the webhook body said.
+   */
+  async getSnapshotScope(): Promise<SnapshotScope | null> {
+    if (!warmReposEnabled(this.env) && !resumableRunsEnabled(this.env)) return null;
+    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
+    const grant = await this.githubTokens.get();
+    if (!grant?.workspaceId) return null;
+    // The worker is the one this agent is running (its claim line, or the
+    // task.resume it was dispatched with), so a park bundle is only ever
+    // this run's own.
+    return { workspaceId: grant.workspaceId, ...(this.state.workerId ? { workerId: this.state.workerId } : {}) };
+  }
+
+  /**
    * Asks buildd for a token scoped to this task's repo. Fetched lazily on the
    * container's first GitHub request, which comes after the claim (the clone
    * runs inside claimAndStart), so the task already has this account's worker.
@@ -121,14 +173,49 @@ export class WorkerAgent extends Agent<Env, RunState> {
   }
 
   /**
+   * The team's agent model endpoint for this task (docs/design/agent-model-endpoint.md §3).
+   * Memory only: not in agent state or storage, and never in the container env.
+   */
+  private readonly modelEndpoints = new ModelEndpointCache({
+    fetchEndpoint: () => this.fetchModelEndpoint(),
+    now: () => Date.now(),
+    log: (m) => console.log(m),
+  });
+
+  /** RPC from EgressHandler on a model request. Only while a run is live. */
+  async getModelEndpoint(): Promise<ServerModelEndpointState> {
+    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
+    return this.modelEndpoints.get();
+  }
+
+  /** RPC from EgressHandler after the endpoint answered 401/403. */
+  async reportModelEndpointAuthFailure(): Promise<void> {
+    this.modelEndpoints.invalidate();
+  }
+
+  private async fetchModelEndpoint(): Promise<ServerModelEndpoint> {
+    const { url, init } = modelEndpointRequest(this.env, this.name, this.state.workerId);
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(MODEL_ENDPOINT_TIMEOUT_MS) });
+    if (res.status === 404) throw new NoModelEndpointError();
+    if (!res.ok) {
+      // The body of a refusal carries no key; still, keep it short.
+      const detail = (await res.text().catch(() => '')).slice(0, 200);
+      throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+    return parseServerModelEndpoint(await res.json());
+  }
+
+  /**
    * Route the container's traffic for the credentialed hosts through
    * EgressHandler (egress.ts; rules in outbound.ts). HTTPS is re-signed with
    * the per-container CA that buildd-once trusts; plain HTTP to the same hosts
-   * is intercepted too, and refused by the handler. Every other host keeps
+   * is intercepted too, and refused by the handler. So is the OTLP collector's
+   * host when OTEL_EXPORTER_OTLP_ENDPOINT is set. Every other host keeps
    * open egress. Called before each start, so each run gets a fresh token.
    */
   private async installEgressHandlers(): Promise<void> {
     this.githubTokens.reset();
+    this.modelEndpoints.reset();
     const container = this.ctx.container;
     if (!container) throw new Error('WorkerAgent has no container binding');
     const exports = (this.ctx as unknown as { exports: EgressExports }).exports;
@@ -136,6 +223,15 @@ export class WorkerAgent extends Agent<Env, RunState> {
     for (const host of INTERCEPTED_HOSTS) {
       await container.interceptOutboundHttps(host, handler);
       await container.interceptOutboundHttp(host, handler);
+    }
+    // The OTLP collector's host, when one is configured (otel.ts); nothing otherwise.
+    const otlp = otlpInterceptHosts(this.env);
+    for (const host of otlp.https) await container.interceptOutboundHttps(host, handler);
+    for (const host of otlp.http) await container.interceptOutboundHttp(host, handler);
+    // The snapshot pseudo-host, HTTPS only, and only with warm repos or
+    // resumable runs on.
+    if (warmReposEnabled(this.env) || resumableRunsEnabled(this.env)) {
+      await container.interceptOutboundHttps(SNAPSHOT_HOST, handler);
     }
   }
 }

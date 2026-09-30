@@ -57,6 +57,16 @@
  * written for stayed invisible for months.
  */
 
+import {
+  BASH_FAILURE_PATTERN,
+  BASH_RECOVERED_PATTERN,
+  formatBashTraceExcerpt,
+  parseExitCode,
+  stripExitCodeLine,
+  verifyFamilyOf,
+  type VerifyFamily,
+} from '@buildd/core/bash-failure-trace';
+
 export interface ErrorTrace {
   pattern: string;   // slug, e.g. 'cd_no_such_file'
   excerpt: string;   // truncated raw line, max 500 chars
@@ -255,7 +265,79 @@ export function scanToolResult(
   return matches;
 }
 
+/** Bash non-zero-exit traces one worker may file over its whole session. */
+export const BASH_FAILURE_CAP_PER_WORKER = 25;
+
+interface BashFailureState {
+  filed: number;
+  seen: Set<string>;
+  failedFamilies: Set<VerifyFamily>;
+}
+const bashFailureState: Map<string, BashFailureState> = new Map();
+
+/**
+ * Record what a Bash call hit, whatever it was. `scanToolResult` only matches
+ * known patterns, so a failing `bun test`, a red `tsc` or a non-zero `gh` call
+ * left nothing. This files one trace per distinct failure: the redacted command,
+ * its exit code and a short tail of the output.
+ *
+ * Bounded three ways: only results the SDK marked `is_error` with an exit code
+ * are considered; a repeat of the same command/exit/last-line is dropped; and a
+ * worker files at most BASH_FAILURE_CAP_PER_WORKER. An exit 1 with no output
+ * (`grep` finding nothing, `git diff --quiet`) says nothing and is skipped.
+ *
+ * A passing verify command (test / typecheck / lint) after an earlier failure of
+ * the same family files a `bash_verify_recovered` marker, so the server can tell
+ * "the last test run failed" from "it failed once, then passed".
+ */
+export function scanBashResult(
+  workerId: string,
+  input: { command: string | undefined; content: string; isError: boolean },
+  redact: (text: string) => string = (t) => t,
+): ErrorTrace[] {
+  const { command, content, isError } = input;
+  if (typeof command !== 'string' || command.trim() === '' || typeof content !== 'string') return [];
+
+  let state = bashFailureState.get(workerId);
+  if (!state) {
+    state = { filed: 0, seen: new Set(), failedFamilies: new Set() };
+    bashFailureState.set(workerId, state);
+  }
+  const family = verifyFamilyOf(command);
+
+  if (!isError) {
+    if (family && state.failedFamilies.delete(family)) {
+      return [{
+        pattern: BASH_RECOVERED_PATTERN,
+        excerpt: redact(formatBashTraceExcerpt({ command, exitCode: 0, output: '' })),
+        source: 'Bash',
+      }];
+    }
+    return [];
+  }
+
+  const exitCode = parseExitCode(content);
+  if (exitCode === null) return [];
+  const output = stripExitCodeLine(content);
+  if (family) state.failedFamilies.add(family);
+  if (output.trim() === '' && exitCode === 1) return [];
+
+  const lastLine = output.split('\n').map(l => l.trim()).filter(Boolean).pop() ?? '';
+  const key = `${command.trim().slice(0, 200)}\u0000${exitCode}\u0000${lastLine.slice(0, 120)}`;
+  if (state.seen.has(key)) return [];
+  if (state.filed >= BASH_FAILURE_CAP_PER_WORKER) return [];
+  state.seen.add(key);
+  state.filed++;
+
+  return [{
+    pattern: BASH_FAILURE_PATTERN,
+    excerpt: redact(formatBashTraceExcerpt({ command, exitCode, output })),
+    source: 'Bash',
+  }];
+}
+
 /** Drop throttle state for a finished worker so the Map doesn't leak. */
 export function clearWorkerThrottle(workerId: string): void {
   throttleMap.delete(workerId);
+  bashFailureState.delete(workerId);
 }

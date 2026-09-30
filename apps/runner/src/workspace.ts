@@ -1,8 +1,10 @@
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync, rmSync } from 'fs';
 import { join, resolve, basename } from 'path';
 import { execSync } from 'child_process';
 import { homedir, tmpdir } from 'os';
 import { isolatedWorkspacePath } from './isolation-paths.js';
+import { timedPhase } from './phase-lines';
+import type { CloneHooks } from './warm-repo';
 
 export { isolatedWorkspacePath };
 
@@ -14,6 +16,8 @@ export { isolatedWorkspacePath };
 export function ensureIsolatedClone(
   workspace: { id: string; repo: string },
   isolationRoot: string,
+  /** Warm-repo restore before the clone (warm-repo.ts). Any failure there falls back to the clone. */
+  hooks?: CloneHooks,
 ): string {
   const clonePath = isolatedWorkspacePath(workspace.id, isolationRoot);
 
@@ -34,9 +38,23 @@ export function ensureIsolatedClone(
     throw new Error(`[isolation] invalid repo URL format: "${cloneUrl}"`);
   }
 
+  let restored = false;
+  try {
+    restored = hooks?.restore(clonePath, cloneUrl) ?? false;
+  } catch (err) {
+    console.warn(`[isolation] warm restore threw (${err instanceof Error ? err.message : String(err)}); cloning`);
+    rmSync(clonePath, { recursive: true, force: true });
+  }
+  if (restored) {
+    console.log(`[isolation] restored "${clonePath}" from the warm snapshot for workspace ${workspace.id}`);
+    return clonePath;
+  }
+
   console.log(`[isolation] cloning "${cloneUrl}" → "${clonePath}" for workspace ${workspace.id}…`);
-  execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120_000 });
+  // BUILDD_PHASE=clone_start/clone_end in a cloud container (phase-lines.ts).
+  timedPhase('clone', () => execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120_000 }));
   console.log(`[isolation] clone ready: ${clonePath}`);
+  hooks?.afterClone(clonePath);
   return clonePath;
 }
 
@@ -362,7 +380,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
 
         try {
           console.log(`Auto-cloning "${cloneUrl}" into "${clonePath}" for workspace "${workspace.name}"...`);
-          execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+          timedPhase('clone', () => execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 }));
 
           // Invalidate git cache so the new repo is discoverable
           gitRemoteCache = null;

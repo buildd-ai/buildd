@@ -3,12 +3,13 @@
  * passed in, so Bun tests drive it with a stub namespace.
  *
  *   POST /dispatch        buildd's task webhook (task-dispatch.ts). 202 fast.
+ *                         `event: 'task.resume'` + `workerId` continues a parked worker.
  *   GET  /tasks/:taskId   the task's WorkerAgent state, for debugging.
  *
  * Both require `Authorization: Bearer <DISPATCH_TOKEN>`, the token set in the
  * workspace's webhookConfig.
  */
-import { isValidTaskId, type RunState } from './lifecycle';
+import { isValidTaskId, type DispatchRequest, type RunState } from './lifecycle';
 import type { DispatchResult } from './supervisor';
 
 export interface DispatcherEnv {
@@ -19,7 +20,7 @@ export interface DispatcherEnv {
 
 /** The RPC surface of a WorkerAgent stub that the Worker calls. */
 export interface AgentHandle {
-  dispatch(): Promise<DispatchResult>;
+  dispatch(request?: DispatchRequest): Promise<DispatchResult>;
   getRunState(): Promise<RunState>;
 }
 
@@ -89,9 +90,16 @@ export async function handleRequest(request: Request, env: DispatcherEnv, getAge
     }
     const taskId = (body as { taskId?: unknown } | null)?.taskId;
     if (!isValidTaskId(taskId)) return json({ error: 'invalid_task_id' }, 400);
+    const b = body as { event?: unknown; workerId?: unknown };
+    const dispatchRequest: DispatchRequest = {};
+    if (b.event === 'task.resume') {
+      // Worker IDs share the task ID shape (uuid-like tokens, never flags or paths).
+      if (!isValidTaskId(b.workerId)) return json({ error: 'invalid_worker_id' }, 400);
+      dispatchRequest.resumeWorkerId = b.workerId;
+    }
 
     const agent = await getAgent(taskId);
-    const result = await agent.dispatch();
+    const result = await agent.dispatch(dispatchRequest);
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and
     // falls back to Pusher, which would let a polling runner race this one.
     return json({ taskId, ...result }, 202);

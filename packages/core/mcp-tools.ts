@@ -12,6 +12,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import { formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
 import { saveMemory, updateMemory } from './memory-write';
@@ -48,6 +49,7 @@ import type {
  * exists for, and the truncation marker always reports how much was cut.
  */
 const GET_PR_BODY_PREVIEW_CHARS = 2000;
+const GET_TASK_DESCRIPTION_PREVIEW_CHARS = 400;
 
 /**
  * `hint` values from the worker completion route (apps/web/src/app/api/workers/[id]/route.ts)
@@ -280,6 +282,8 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  'get_manifest_coverage',
+  'get_path_claim_stats',
   // Read-only heartbeat snapshot for the caller's runners — the same data
   // GET /api/workers/active serves, exposed as an MCP action so a task doing
   // update/version recon doesn't need SSH or a dashboard session to see it.
@@ -486,7 +490,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
@@ -495,7 +499,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
@@ -515,10 +519,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
-    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides), whenToUse? (20–300 chars: the work this role should pick up; a role without it is never inferred for a role-less task), notFor? (≤200 chars: nearby work that belongs to another role, named) } — create/upsert skill by slug [admin]',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
-    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null), whenToUse? (20–300 chars, null clears), notFor? (≤200 chars, null clears) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
@@ -537,8 +541,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
-    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
+    get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns errors caught from agent tool output: every non-zero Bash exit (redacted command, exit code, output tail) plus known patterns (cd: No such file, git fatal, OOM, etc.). taskId also returns the evidence record written when the task ended (error class, key lines, last failing command, CI checks) and any mismatch flags — the answer to "why did it fail". workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
+    get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
+    get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
@@ -977,6 +983,9 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
   if (params.defaultBackend === 'claude' || params.defaultBackend === 'codex' || params.defaultBackend === null) {
     body.defaultBackend = params.defaultBackend;
   }
+  // Routing text (docs/design/role-routing.md §2); the API validates the limits.
+  if (params.whenToUse !== undefined) body.whenToUse = params.whenToUse;
+  if (params.notFor !== undefined) body.notFor = params.notFor;
   return body;
 }
 
@@ -1643,8 +1652,13 @@ export async function handleBuilddAction(
         lines.push(`**Mission:** ${task.mission.title} (${task.mission.id}) — ${task.mission.status}`);
       }
       if (task.description) {
-        const desc = task.description.length > 400 ? task.description.slice(0, 400) + '…' : task.description;
+        const desc = params.fullDescription === true
+          ? task.description
+          : truncate(task.description, GET_TASK_DESCRIPTION_PREVIEW_CHARS);
         lines.push('', '## Description', desc);
+        if (params.fullDescription !== true && task.description.length > GET_TASK_DESCRIPTION_PREVIEW_CHARS) {
+          lines.push('Call get_task with fullDescription:true to read the complete instructions and policy sections.');
+        }
       }
 
       const result = task.result;
@@ -1673,6 +1687,16 @@ export async function handleBuilddAction(
           if (typeof result.removed === 'number') stats.push(`-${result.removed}`);
           if (stats.length > 0) lines.push(`**Diff:** ${stats.join(' / ')}`);
         }
+      }
+
+      // Why it ended as it did: written when the task failed or completed with a
+      // caveat, so "did it fail, why" needs no second call.
+      const mismatchLines = formatTaskMismatch(result?.mismatch);
+      if (mismatchLines.length > 0) lines.push('', ...mismatchLines);
+      const evidenceLines = formatTaskEvidence(result?.evidence);
+      if (evidenceLines.length > 0) lines.push('', ...evidenceLines);
+      if (result?.error && typeof result.error === 'string' && !result.evidence) {
+        lines.push('', `**Error:** ${String(result.error).slice(0, 400)}`);
       }
 
       const workers = Array.isArray(task.workers) ? task.workers : [];
@@ -2350,6 +2374,25 @@ export async function handleBuilddAction(
           })()
         : '';
 
+      // Fix attempts on this PR's chain (after CI #N / after review #N), each with
+      // why it ended as it did. A PR opened on a new branch by a resumed attempt
+      // shows its own number.
+      const attemptRows = Array.isArray(data.attempts)
+        ? data.attempts as Array<{
+            taskId: string; title: string; status: string; prNumber: number | null;
+            evidence: { errorClass: string; keyLines: string[] } | null;
+            mismatch: Array<{ kind: string; detail: string }>;
+          }>
+        : [];
+      const attemptsSection = attemptRows.length > 0
+        ? `\n\n**Fix attempts (${attemptRows.length}):**\n${attemptRows.map((a) => {
+            const pr2 = a.prNumber ? ` PR #${a.prNumber}` : '';
+            const why = a.evidence ? ` — ${a.evidence.errorClass}${a.evidence.keyLines[0] ? `: ${truncate(a.evidence.keyLines[0], 160)}` : ''}` : '';
+            const flags = a.mismatch.length > 0 ? ` ⚠️ ${a.mismatch.map((m) => m.kind).join(', ')}` : '';
+            return `- ${a.taskId.slice(0, 8)} ${a.status}${pr2} ${truncate(a.title, 80)}${why}${flags}`;
+          }).join('\n')}\nRead one: action=get_task { taskId }, action=get_error_traces { taskId }.`
+        : '';
+
       return text([
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
@@ -2362,6 +2405,7 @@ export async function handleBuilddAction(
         bodyPreview,
         commentsSection,
         ciFailuresSection,
+        attemptsSection,
       ].filter(Boolean).join('\n'));
     }
 
@@ -3347,6 +3391,8 @@ export async function handleBuilddAction(
       if (Array.isArray(params.connectorRefs)) skillBody.connectorRefs = params.connectorRefs;
       if (typeof params.isRole === 'boolean') skillBody.isRole = params.isRole;
       if (params.slug) skillBody.slug = params.slug;
+      if (params.whenToUse !== undefined) skillBody.whenToUse = params.whenToUse;
+      if (params.notFor !== undefined) skillBody.notFor = params.notFor;
 
       const data = await api(`/api/workspaces/${wsId}/skills`, {
         method: 'POST',
@@ -3473,6 +3519,8 @@ export async function handleBuilddAction(
         requiredEnvVars: s.requiredEnvVars ?? {},
         connectorRefs: s.connectorRefs ?? [],
         isRole: s.isRole ?? false,
+        whenToUse: s.metadata?.routing?.whenToUse ?? null,
+        notFor: s.metadata?.routing?.notFor ?? null,
         enabled: s.enabled,
         repoUrl: s.repoUrl ?? null,
         source: s.source ?? null,
@@ -3992,9 +4040,16 @@ export async function handleBuilddAction(
 
       const data = await api(endpoint);
       const traces = (data.traces || []) as Array<{ pattern: string; excerpt: string; source: string | null; ts: string }>;
+      // A task-scoped answer also carries the record written when it ended.
+      const evidenceBlock = [
+        ...formatTaskMismatch(data.mismatch),
+        ...formatTaskEvidence(data.evidence),
+      ];
 
       if (traces.length === 0) {
-        return text(`No error traces for ${scope}.`);
+        return text(evidenceBlock.length > 0
+          ? `No error traces for ${scope}.\n\n${evidenceBlock.join('\n')}`
+          : `No error traces for ${scope}.`);
       }
 
       const summary = traces.map((t) => {
@@ -4002,7 +4057,7 @@ export async function handleBuilddAction(
         return `- **${t.pattern}**${src} at ${t.ts}\n  ${t.excerpt}`;
       }).join('\n');
 
-      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
+      return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}${evidenceBlock.length > 0 ? `\n\n${evidenceBlock.join('\n')}` : ''}`);
     }
 
     case 'get_budget_forecast': {
@@ -4068,6 +4123,23 @@ export async function handleBuilddAction(
         lines.push('Dollar figures are estimates at API list price; on a subscription (OAuth) seat they are a list-price equivalent, not a charge.');
       }
       return text(lines.join('\n'));
+    }
+
+    case 'get_manifest_coverage':
+    case 'get_path_claim_stats': {
+      const rawWindow = typeof params.window === 'string' ? params.window : null;
+      if (rawWindow !== null && !(USAGE_WINDOW_VALUES as readonly string[]).includes(rawWindow)) {
+        return errorResult(`Invalid window "${rawWindow}". Expected one of ${USAGE_WINDOW_VALUES.join(', ')}.`);
+      }
+      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
+      const query = new URLSearchParams();
+      if (wsId) query.set('workspace', wsId);
+      if (typeof params.missionId === 'string') query.set('mission', params.missionId);
+      if (rawWindow) query.set('window', rawWindow);
+      const data = await api(`/api/stats/coordination${query.size ? `?${query}` : ''}`);
+      const metric = action === 'get_manifest_coverage' ? data?.manifestCoverage : data?.pathClaims;
+      return text(JSON.stringify(metric ?? {}, null, 2));
     }
 
     case 'get_usage_stats': {

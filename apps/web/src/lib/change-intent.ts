@@ -13,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { changeIntents, missionNotes, tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, isNull, inArray, ne } from 'drizzle-orm';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { fireGateEvent, GATE_SLUGS } from './gate-ledger';
 
 // ── Surface matching ─────────────────────────────────────────────────────────
 
@@ -168,12 +169,13 @@ async function postConflictNote(
   taskId: string,
   title: string,
   body: string,
+  detail: { surfaces: string[]; currentPrNumber: number; conflictingPrNumber: number | null },
 ): Promise<void> {
   try {
     // Resolve missionId so the note appears on the mission timeline too
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
-      columns: { missionId: true },
+      columns: { missionId: true, workspaceId: true },
     });
 
     await db.insert(missionNotes).values({
@@ -184,6 +186,18 @@ async function postConflictNote(
       title,
       body,
       status: 'open',
+    });
+    // Count delivered warning notes, including both tasks in the conflict.
+    fireGateEvent({
+      gate: GATE_SLUGS.CHANGE_INTENT,
+      surface: 'create_pr',
+      outcome: 'warned',
+      reason: 'Change intent conflict surface overlap',
+      workspaceId: task?.workspaceId ?? null,
+      missionId: task?.missionId ?? null,
+      taskId,
+      callerOrigin: 'system',
+      detail,
     });
   } catch (err) {
     console.error('[changeIntent] Failed to post conflict note on task', taskId, ':', err);
@@ -227,6 +241,7 @@ export async function postConflictWarnings(params: {
           `To avoid a merge conflict, coordinate with the other PR before pushing. ` +
           `For Drizzle migrations: rebase your branch onto the other PR's branch ` +
           `(or renumber your migration file) before opening a follow-up PR.`,
+        { surfaces, currentPrNumber, conflictingPrNumber: prNumber },
       );
     }
 
@@ -238,6 +253,7 @@ export async function postConflictWarnings(params: {
         `To avoid a merge conflict, land one PR before the other, or coordinate ` +
         `which branch should be rebased. For Drizzle migrations: the later branch ` +
         `should rebase onto the earlier one.`,
+      { surfaces, currentPrNumber, conflictingPrNumber: prNumber },
     );
   }
 }

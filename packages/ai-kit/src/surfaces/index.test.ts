@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { DECIDE_ENGINE_VERSION, expectDecisionPinned, JEV_MODEL } from '@builddai/ai-kit/decide';
-import { DEFAULT_RANK_LEVELS, defineRankSurface } from './index';
+import { DEFAULT_RANK_LEVELS, defineRankSurface, MIN_GATE_EVAL_ROWS, RANK_SLOT, type SlotGate } from './index';
 
 const catalogue = [
   { id: 'cash', label: 'Why did cash move?' },
@@ -11,9 +11,17 @@ const catalogue = [
 type State = { stale: number; weekday: string };
 const fallback = (s: State) => (s.stale > 0 ? ['sync', 'cash', 'due'] : ['cash', 'due']);
 
-const surface = (over: Partial<Parameters<typeof defineRankSurface>[0]> = {}) => defineRankSurface<typeof catalogue[number], State>({
+const base = {
   id: 'test.chips', promptVersion: '2026-09-28.a', candidates: catalogue,
-  question: c => `Offer "${c.label}"?`, fallback, max: 2, mode: 'gated', minConfidence: 0.6,
+  question: (c: typeof catalogue[number]) => `Offer "${c.label}"?`, fallback, max: 2,
+};
+const fingerprint = () => defineRankSurface<typeof catalogue[number], State>({ ...base, mode: 'shadow' }).slotFingerprint(RANK_SLOT);
+/** What gateFromEval returns for this surface: bound to its fingerprint, from enough rows. */
+const gate = (over: Partial<SlotGate> = {}): SlotGate => ({
+  slot: RANK_SLOT, fingerprint: fingerprint(), minConfidence: 0.6, evalRows: MIN_GATE_EVAL_ROWS, heldOutAccuracy: 0.95, coverage: 0.8, ...over,
+});
+const surface = (over: Record<string, unknown> = {}) => defineRankSurface<typeof catalogue[number], State>({
+  ...base, mode: 'gated', gate: gate(),
   ...(over as object),
 });
 
@@ -32,9 +40,31 @@ describe('defineRankSurface', () => {
     expectDecisionPinned(s.decision, { fingerprint: s.decision.fingerprint });
   });
 
-  it('rejects duplicate ids and a gated surface without a threshold', () => {
+  it('rejects duplicate ids and a gated surface without an eval gate', () => {
     expect(() => surface({ candidates: [{ id: 'a' }, { id: 'a' }] as never })).toThrow(/unique/);
-    expect(() => surface({ minConfidence: undefined })).toThrow(/minConfidence/);
+    expect(() => surface({ gate: undefined })).toThrow(/gateFromEval/);
+  });
+
+  // The P7 gate cannot be skipped through the single-slot surface (0.14.0).
+  it('refuses a hand-typed threshold, gated or not', () => {
+    expect(() => surface({ gate: undefined, minConfidence: 0.6 })).toThrow(/hand-typed minConfidence/);
+    expect(() => surface({ mode: 'shadow', gate: undefined, minConfidence: 0.6 })).toThrow(/hand-typed minConfidence/);
+  });
+
+  it("refuses 'live', which would apply Jev at any confidence", () => {
+    expect(() => surface({ mode: 'live', gate: undefined })).toThrow(/'shadow' or 'gated'/);
+    expect(() => surface({ mode: 'live' })).toThrow(/'shadow' or 'gated'/);
+  });
+
+  it('refuses a gate from too few rows, for another slot, or for a changed surface', () => {
+    expect(() => surface({ gate: gate({ evalRows: MIN_GATE_EVAL_ROWS - 1 }) })).toThrow(/at least 700/);
+    expect(() => surface({ gate: gate({ slot: 'chips' }) })).toThrow(/evaluated for slot/);
+    expect(() => surface({ question: (c: typeof catalogue[number]) => `Show "${c.label}"?` })).toThrow(/re-run/);
+  });
+
+  it('a gate from the shadow surface gates it: the fingerprint ignores mode', () => {
+    expect(surface().slotFingerprint(RANK_SLOT)).toBe(fingerprint());
+    expect(surface().decision.policyOf('cash')).toEqual({ mode: 'gated', minConfidence: 0.6 });
   });
 
   it('no key ⇒ no call, the fallback order, filled from the catalogue, capped at max', async () => {
@@ -62,7 +92,7 @@ describe('defineRankSurface', () => {
     expect(low).toMatchObject({ source: 'fallback', reason: 'low_confidence', ids: ['cash', 'due'] });
     const failed = await surface().pick(quiet, { apiKey: 'k', sleep: noSleep, fetch: (async () => new Response('no', { status: 500 })) as never });
     expect(failed).toMatchObject({ source: 'fallback', reason: 'call_failed' });
-    const shadow = await surface({ mode: 'shadow', minConfidence: undefined }).pick(quiet, { apiKey: 'k', sleep: noSleep, fetch: reply({ cash: answer(0), due: answer(0), sync: answer(2), classify: answer(2) }) as never });
+    const shadow = await surface({ mode: 'shadow', gate: undefined }).pick(quiet, { apiKey: 'k', sleep: noSleep, fetch: reply({ cash: answer(0), due: answer(0), sync: answer(2), classify: answer(2) }) as never });
     expect(shadow).toMatchObject({ source: 'fallback', reason: 'shadow', ids: ['cash', 'due'] });
   });
 

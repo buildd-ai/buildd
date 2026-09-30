@@ -94,10 +94,17 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
   const wsName = draft.workspaceId ? actions.workspaceName(draft.workspaceId) : null;
   const approver = actions.viewerName ? `approved by ${actions.viewerName}` : 'approved';
 
+  // Every state shares one wrapper, so a decided card folds to its row in
+  // place (same node, nothing removed and re-inserted), and the feed can find
+  // the reply that follows it by the approval id (ChatWorkspace's anchor).
+  const wrap = (state: string, kind: string | undefined, children: ReactNode) => (
+    <div data-testid="approval-card" data-state={state} data-approval-id={part.approval?.id ?? undefined} data-kind={kind}>{children}</div>
+  );
+
   // Decided: the card is its row now (buildd's feed row, like every other
   // tool call); the object renders right after it.
   if (part.state === 'output-available' || part.state === 'output-error') {
-    return <ToolCallRow view={toolRowView(part)} label={verb} note={approver} />;
+    return wrap('done', undefined, <ToolCallRow view={toolRowView(part)} label={verb} note={approver} />);
   }
 
   const denied = part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false);
@@ -110,10 +117,6 @@ export default function ApprovalCard({ part }: { part: ChatToolPart }) {
     meta: wsName ? <span data-testid="approval-workspace">{wsName}</span> : undefined,
     settled: 'row' as const,
   };
-
-  const wrap = (state: string, kind: string | undefined, children: ReactNode) => (
-    <div data-testid="approval-card" data-state={state} data-approval-id={part.approval?.id ?? undefined} data-kind={kind}>{children}</div>
-  );
 
   // Refused before any card was shown (the card was full, or another card
   // stood alone): the kit's "not proposed yet" row. Never "discarded".

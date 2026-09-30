@@ -28,6 +28,7 @@ import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
+import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import type { MigrationCollision } from '@/lib/migration-safety';
@@ -246,6 +247,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
       prNumber: worker.prNumber,
+      ...lineageStamp(originalTask, [worker.prNumber]),
       // Cross-repo override: when the PR is in a different repo than the task's workspace,
       // pass the PR repo URL so the worker resolver can find the correct directory.
       // This enables conflict-retry on cross-repo PRs (e.g., a dispatch PR in a buildd workspace).
@@ -610,9 +612,12 @@ export async function dispatchConflictRetry(
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
         isNotNull(tasks.pathManifest),
       ),
-      columns: { id: true, pathManifest: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true },
     });
     for (const t of inFlightTasks) {
+      // This attempt must run before its own PR can merge. Depending on that
+      // PR's task (or another attempt on it) makes the repair unclaimable.
+      if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) continue;
       if (shouldSerializeByManifest(retryTask.pathManifest, t.pathManifest as string[] | null)) {
         resolvedDependsOn.push(t.id);
       }

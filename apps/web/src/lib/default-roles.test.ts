@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { createHash } from 'crypto';
-import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, roleContentHash } from './default-roles';
+import { mcpToolSurfaceFor, listMcpTools } from '../app/api/mcp/tools';
+import { DEFAULT_ROLES, defaultRoleMetadata, planDefaultRoleResync, planDefaultRoleRoutingBackfill, roleContentHash } from './default-roles';
 import { EXPLICIT_ROLE_SLUGS, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 describe('DEFAULT_ROLES', () => {
@@ -242,6 +243,48 @@ describe('DEFAULT_ROLES', () => {
     expect(bySlug.analyst.model).toBe('sonnet');
   });
 
+  describe('Analyst analytics consumer tools', () => {
+    const role = () => bySlug.analyst;
+
+    it('uses grouped analytics and lifecycle tools with knowledge tools', () => {
+      for (const tool of ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn']) {
+        expect(role().allowedTools).toContain(tool);
+      }
+      expect(role().allowedTools).not.toContain('mcp__buildd__buildd');
+      expect(bySlug.builder.allowedTools).not.toContain('mcp__buildd__buildd_analytics');
+    });
+
+    it('advertises its declared tools from its configured URL with worker context', () => {
+      const config = role().mcpServers.buildd as { url: string };
+      const url = new URL(config.url);
+      url.searchParams.set('worker', 'test-worker');
+      const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
+      const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
+      for (const name of ['buildd_analytics', 'buildd_work']) expect(names).toContain(name);
+      for (const other of DEFAULT_ROLES.filter(r => r.slug !== 'analyst')) {
+        expect((other.mcpServers.buildd as { url: string }).url).toBe('https://buildd.dev/api/mcp');
+      }
+    });
+
+    it('documents aggregate metrics and narrower detail access', () => {
+      expect(role().content).toContain('get_manifest_coverage');
+      expect(role().content).toContain('get_path_claim_stats');
+      expect(role().content).toContain('family: "gate"');
+      expect(role().content).toContain('analytics:read');
+      expect(role().content).toMatch(/per-user/i);
+      expect(role().content).toContain('cost detail');
+    });
+
+    it('resyncs the previous unedited analyst prompt', () => {
+      expect(role().version).toBeGreaterThanOrEqual(2);
+      expect(role().supersededContentHashes).toHaveLength(1);
+      expect(planDefaultRoleResync([{
+        id: 'analyst-row', slug: 'analyst', source: 'system',
+        contentHash: role().supersededContentHashes[0], metadata: { defaultRoleVersion: 1 },
+      }])).toHaveLength(1);
+    });
+  });
+
   it('no role defaults to `inherit` — model must be explicit for routing', () => {
     for (const role of DEFAULT_ROLES) {
       expect(role.model).not.toBe('inherit');
@@ -430,5 +473,37 @@ describe('DEFAULT_ROLES', () => {
     expect(c).toContain('`tier`');
     expect(c).toContain('premium');
     expect(c).toContain('budget');
+  });
+});
+
+describe('planDefaultRoleRoutingBackfill (role-routing.md §2 backfill)', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const row = (over: Partial<{ id: string; slug: string; source: string | null; metadata: unknown }> = {}) => ({
+    id: 'r1', slug: 'builder', source: 'system', contentHash: null, metadata: {}, ...over,
+  });
+
+  it('fills a seeded default role that has no routing key, keeping the seeded text', () => {
+    const [p] = planDefaultRoleRoutingBackfill([row()], now);
+    const builder = DEFAULT_ROLES.find(r => r.slug === 'builder')!;
+    expect(p).toEqual({ id: 'r1', slug: 'builder', routing: { ...builder.routing, updatedAt: now.toISOString() } });
+  });
+
+  it('carries an explicit opt-out for reviewer', () => {
+    const [p] = planDefaultRoleRoutingBackfill([row({ slug: 'reviewer' })], now);
+    expect(p.routing).toMatchObject({ disabled: true });
+  });
+
+  it('never touches a row with any routing block, a non-system row, or a custom slug', () => {
+    expect(planDefaultRoleRoutingBackfill([
+      row({ metadata: { routing: { whenToUse: 'A team wrote their own text here.' } } }),
+      row({ metadata: { routing: { disabled: true } } }),
+      row({ source: 'manual' }),
+      row({ source: null }),
+      row({ slug: 'migrations' }),
+    ], now)).toEqual([]);
+  });
+
+  it('treats null metadata as absent routing', () => {
+    expect(planDefaultRoleRoutingBackfill([row({ metadata: null })], now)).toHaveLength(1);
   });
 });
