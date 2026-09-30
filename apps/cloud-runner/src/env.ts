@@ -38,6 +38,12 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * the SNAPSHOTS binding too (lifecycle.ts warmReposEnabled).
    */
   WARM_REPOS?: string;
+  /**
+   * `1` turns on resumable runs (Phase 2): a worker waiting for input is
+   * parked (container released) and a `task.resume` dispatch continues it.
+   * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).
+   */
+  RESUMABLE_RUNS?: string;
   /** R2 bucket for snapshots (wrangler.jsonc `r2_buckets`). Only the Worker writes it. */
   SNAPSHOTS?: R2Bucket;
 }

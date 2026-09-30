@@ -368,6 +368,50 @@ export class BuilddClient {
    * Returns the parsed response body on success (200 or 409), or null on
    * timeout / network error (fail-open — caller must not block on null).
    */
+  /**
+   * Cloud --once park (docs/design/cloudflare-sandbox-runner.md, Phase 2):
+   * mark the worker parked after its park bundle is uploaded. The server picks
+   * the expiry. Null when refused or unreachable; never queued in the outbox,
+   * since a park that did not land must not be reported as one.
+   */
+  async parkWorker(workerId: string): Promise<{ parkedUntil: string } | null> {
+    return this.parkCall(workerId, 'park', 'POST', (b) => (typeof b?.parkedUntil === 'string' ? { parkedUntil: b.parkedUntil } : null));
+  }
+
+  /** Clear a park (a resume that could not restore the bundle). */
+  async unparkWorker(workerId: string): Promise<boolean> {
+    return (await this.parkCall(workerId, 'park', 'DELETE', (b) => (b?.ok === true ? true : null))) === true;
+  }
+
+  /**
+   * Take over a parked worker: one conditional UPDATE on the server. `refused`
+   * is the server's answer (already re-attached, expired, not ours); `failed`
+   * is a transport or server error.
+   */
+  async reattachWorker(workerId: string): Promise<'ok' | 'refused' | 'failed'> {
+    try {
+      const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/reattach`, { method: 'POST' });
+      if (res.ok) return 'ok';
+      return res.status === 409 || res.status === 404 || res.status === 403 ? 'refused' : 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  private async parkCall<T>(workerId: string, route: string, method: string, pick: (body: any) => T | null): Promise<T | null> {
+    try {
+      const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/${route}`, { method });
+      if (!res.ok) {
+        console.log(`[once] ${method} /${route} answered ${res.status}`);
+        return null;
+      }
+      return pick(await res.json().catch(() => null));
+    } catch (err) {
+      console.log(`[once] ${method} /${route} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   async claimPaths(taskId: string, paths: string[]): Promise<{ claimed: boolean; blockingTaskId?: string } | null> {
     try {
       const result = await this.fetch(`/api/tasks/${taskId}/path-claim`, {

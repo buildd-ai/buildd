@@ -106,6 +106,8 @@ mock.module('drizzle-orm', () => ({
   gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
+  or: (...args: any[]) => ({ or: args }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   lte: (field: any, value: any) => ({ field, value, type: 'lte' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   sql: Object.assign(

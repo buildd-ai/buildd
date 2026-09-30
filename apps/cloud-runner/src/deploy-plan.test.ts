@@ -28,7 +28,10 @@ describe('snapshot bucket', () => {
     const text = readFileSync(join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
     const cfg = JSON.parse(text) as { r2_buckets: Array<{ binding: string; bucket_name: string }> };
     expect(cfg.r2_buckets).toEqual([{ binding: 'SNAPSHOTS', bucket_name: SNAPSHOT_BUCKET.name }]);
-    expect(SNAPSHOT_BUCKET.lifecycle).toEqual([{ id: 'warm-expiry', prefix: 'warm/', expireDays: 14 }]);
+    expect(SNAPSHOT_BUCKET.lifecycle).toEqual([
+      { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
+      { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
+    ]);
   });
 });
 
@@ -42,8 +45,8 @@ describe('planDeploy: first deploy', () => {
     expect(hook).toMatchObject({ config: { url: DISPATCH, token: GEN, enabled: true } });
     // Opts into every dispatch event: without `events`, buildd sends a webhook
     // only new and unblocked tasks, and a push-only runner never sees a retry.
-    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry'] } });
-    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry']);
+    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] } });
+    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry', 'task.resume']);
     const tok = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
     expect(tok).toMatchObject({ value: GEN });
   });

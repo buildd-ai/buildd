@@ -81,7 +81,8 @@ it as above).
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
-| `SNAPSHOTS` | R2 binding | for warm repos | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
+| `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
+| `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
@@ -364,6 +365,30 @@ binding, streaming bodies both ways.
 
 What goes in a snapshot and what the runner refuses to upload:
 `docs/runner-container.md`, "Warm repos".
+
+### Resumable runs
+
+Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
+`SNAPSHOTS` binding exist. The container then gets `BUILDD_ONCE_PARK=1`.
+
+- **Park on a question.** When the worker waits for an answer with no live
+  session, the runner uploads a park bundle (`PUT /park`, stored at
+  `park/<workspaceId>/<workerId>`), calls `POST /api/workers/[id]/park` and
+  exits 4. The agent records `outcome: parked`, sends no crash report and
+  destroys the container.
+- **Resume.** The answer queues on the same worker, and buildd sends
+  `task.resume` with `workerId`. The agent accepts it only when its last
+  attempt parked that worker. It starts a container and execs
+  `buildd-once --resume-worker <id>`, which restores the warm snapshot and then
+  the bundle, re-attaches (`POST /api/workers/[id]/reattach`) and drains the
+  answer into the old transcript.
+- **Orphan park.** A container still running when the agent restarts gets
+  `buildd-once --park-orphan <id>`, and the agent marks the park and resumes it
+  at once.
+- **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
+  mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
+- **Local smoke.** `bun run smoke:resume` (with `SMOKE_HOST_ADDR` set, like the
+  warm case) covers both paths: a question and a mid-run agent restart.
 
 ### Model routes
 

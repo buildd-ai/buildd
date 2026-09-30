@@ -10,7 +10,7 @@ import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
  * dispatcher, docs/design/cloudflare-sandbox-runner.md) keys on `taskId`; the
  * event only says which path made the task claimable.
  */
-export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry';
+export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume';
 
 /** How long a webhook POST may take before it counts as not dispatched. */
 export const WEBHOOK_DISPATCH_TIMEOUT_MS = 10_000;
@@ -51,6 +51,8 @@ export interface TaskWebhookPayload {
   missionId: string | null;
   backend: string | null;
   roleSlug: string | null;
+  /** `task.resume` only: the parked worker the consumer continues. */
+  workerId?: string;
 }
 
 /** The task fields the dispatch chain reads. Full task rows satisfy it. */
@@ -76,7 +78,7 @@ export type DispatchWorkspace = {
   githubRepoId?: string | null;
 };
 
-export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent): TaskWebhookPayload {
+export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent, extra: { workerId?: string } = {}): TaskWebhookPayload {
   const message = `Work on Buildd task: ${task.title}
 
 ${task.description || 'No description provided.'}
@@ -95,6 +97,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
     missionId: task.missionId ?? null,
     backend: task.backend ?? null,
     roleSlug: task.roleSlug ?? null,
+    ...(extra.workerId ? { workerId: extra.workerId } : {}),
   };
 }
 
@@ -120,6 +123,7 @@ export async function dispatchToWebhook(
   task: DispatchTask,
   event: TaskDispatchEvent,
   timeoutMs: number = WEBHOOK_DISPATCH_TIMEOUT_MS,
+  extra: { workerId?: string } = {},
 ): Promise<boolean> {
   if (!webhookConfig.enabled || !webhookConfig.url) {
     return false;
@@ -132,7 +136,7 @@ export async function dispatchToWebhook(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${webhookConfig.token}`,
       },
-      body: JSON.stringify(buildWebhookPayload(task, event)),
+      body: JSON.stringify(buildWebhookPayload(task, event, extra)),
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -322,6 +326,33 @@ export async function dispatchRetriedTask(
   workspace: DispatchWorkspace,
 ): Promise<void> {
   await wakeOptInWebhookOrBroadcast(task, workspace, 'task.retry');
+}
+
+/**
+ * Wake the cloud runner for a worker it parked (docs/design/cloudflare-sandbox-
+ * runner.md, Phase 2 "Resumable runs"): the answer to its question is queued
+ * on the SAME worker, and the consumer starts a container that re-attaches to
+ * it (`POST /api/workers/[id]/reattach`). Webhook only, and only when it lists
+ * 'task.resume'. No Pusher fallback: the worker is still live, so no polling
+ * runner could claim the task, and an answer nobody picks up is degraded to a
+ * cold continuation by cleanupUnresumedAnswers after RESUME_ACK_DEADLINE_MS.
+ * No held-task gate either: the task was claimed long ago.
+ */
+export async function dispatchResumedTask(
+  task: DispatchTask,
+  workspace: DispatchWorkspace,
+  workerId: string,
+): Promise<boolean> {
+  const webhookConfig = workspace?.webhookConfig as WorkspaceWebhookConfig | null | undefined;
+  if (
+    !webhookConfig?.enabled ||
+    !webhookConfig.url ||
+    !webhookSubscribes(webhookConfig, 'task.resume', false) ||
+    !webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference)
+  ) {
+    return false;
+  }
+  return dispatchToWebhook(webhookConfig, task, 'task.resume', WEBHOOK_DISPATCH_TIMEOUT_MS, { workerId });
 }
 
 /**

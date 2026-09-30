@@ -20,11 +20,15 @@ export const RUN_PHASES = [
   'clone_start', 'clone_end', 'install_start', 'install_end',
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
+  'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
-export const RUN_METRICS = ['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes'] as const;
+export const RUN_METRICS = [
+  'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
+  'park_bytes', 'resume_layer',
+] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
@@ -71,7 +75,7 @@ export function emitRepoSource(source: RepoSource, reason?: RepoFallbackReason, 
 }
 
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */
-export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload', fn: () => T, opts?: EmitOpts): T {
+export function timedPhase<T>(step: 'clone' | 'install' | 'restore_warm' | 'fetch' | 'warm_upload' | 'park' | 'restore_park', fn: () => T, opts?: EmitOpts): T {
   emitPhase(`${step}_start`, opts);
   try {
     return fn();

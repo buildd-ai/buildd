@@ -302,7 +302,9 @@ setting in the dashboard.
 
 **Status:** Warm repos are built (`apps/runner/src/warm-repo.ts`,
 `apps/cloud-runner/src/snapshots.ts`) behind the Worker var `WARM_REPOS`,
-default off. Resumable runs are proposed. Every new behaviour ships behind
+default off. Resumable runs are built (`apps/runner/src/park.ts`,
+`apps/web/src/lib/worker-park.ts`) behind the Worker var `RESUMABLE_RUNS`,
+default off. Every new behaviour ships behind
 a Worker var that defaults off, so merging any slice changes nothing until a
 workspace opts in.
 
@@ -326,6 +328,38 @@ workspace opts in.
 > - With warm repos on, `--once` tries the isolated clone before any other
 >   checkout (`createOnceResolver`'s `preferIsolated`); otherwise the base
 >   resolver's auto-clone would bypass the restore.
+
+> **As built (resumable runs), where it differs from the text below.**
+> - The park marker is its own route, `POST /api/workers/[id]/park` (the
+>   server picks `parkedUntil`), with `DELETE` for the restore-failure path,
+>   rather than a field on the worker PATCH.
+> - `parkedUntil` is park time + 24 h, or 4 h for a mission task. A park also
+>   bumps `updatedAt`, so the `waiting_input` sweep's clock restarts with it;
+>   3 parks bound the total.
+> - Park and re-attach accept `running` as well as `waiting_input`: an orphan
+>   park (below) leaves the worker `running`.
+> - Orphan recovery execs `buildd-once --park-orphan <worker>` into the
+>   container that outlived its agent. That stops every other process of the
+>   image user except init's first child (the image's `sleep infinity`), and
+>   parks from disk. The agent then resumes the worker at once, with no answer
+>   to wait for, and the resumed session gets a short "the platform restarted"
+>   prompt. Three details the local smoke forced:
+>   - The park runs after `onStart` returns, not inside it. `onStart` holds the
+>     object's input gate, and the upload calls back into the agent for its
+>     snapshot scope, so awaiting the park there deadlocks.
+>   - The agent re-installs egress before the exec, because the interception
+>     belonged to the agent that was restarted.
+>   - The agent marks the park (`POST /park`), not the container. Under
+>     `wrangler dev` a container that survives a reload keeps its intercepted
+>     hosts but loses plain egress. Whether production behaves the same is
+>     unverified.
+> - Uncommitted work is captured as a commit built from a temporary index
+>   (untracked files included), not `git stash create`, which skips
+>   untracked files.
+> - The park count lives in `<BUILDD_HOME>/parks/<id>.json` and travels in
+>   the bundle, so every later container sees the same bound.
+> - The running-staleness and silent-start arms of `staleWorkerScope` skip a
+>   live park too, not only `heartbeatOrphanScope`.
 
 ### Problem
 

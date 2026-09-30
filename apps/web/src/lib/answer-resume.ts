@@ -95,8 +95,20 @@ export interface AnswerPathInput {
    * see G4.
    */
   waitingForType?: string | null;
+  /**
+   * `workers.parkedUntil`. A cloud runner that parked this worker uploaded its
+   * transcript and worktree before its container went away; until this time
+   * the park bundle, not a live runner, holds them (G2).
+   */
+  parkedUntil?: Date | number | null;
   /** Injectable clock. Defaults to now. */
   now?: number;
+}
+
+/** Whether the worker is parked by a cloud runner right now (`parkedUntil` in the future). */
+export function isParked(parkedUntil: Date | number | null | undefined, now: number = Date.now()): boolean {
+  const until = toEpoch(parkedUntil);
+  return until !== null && until > now;
 }
 
 export interface AnswerPathDecision {
@@ -136,10 +148,13 @@ export function evaluateAnswerPath(input: AnswerPathInput): AnswerPathDecision {
 
   // G2: the transcript and the worktree are node-local, and the runner holding
   // them is the only one that will ever drain this worker's instruction queue.
+  // A parked cloud worker has no live runner at all: its park bundle holds
+  // both until `parkedUntil`, and the answer wakes a new container that
+  // re-attaches to this same worker (task.resume).
   const updatedAt = toEpoch(input.workerUpdatedAt);
-  if (updatedAt === null || now - updatedAt > RESUME_RUNNER_FRESH_MS) {
-    return cold('runner_not_holding_transcript');
-  }
+  const holdsTranscript = isParked(input.parkedUntil, now)
+    || (updatedAt !== null && now - updatedAt <= RESUME_RUNNER_FRESH_MS);
+  if (!holdsTranscript) return cold('runner_not_holding_transcript');
 
   // G3: without an acknowledgement there is no way to tell a resumed session
   // from an answer that vanished, and the platform does not guess.

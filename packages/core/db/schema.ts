@@ -602,8 +602,9 @@ export interface WorkspaceWebhookConfig {
   // Absent = the legacy set, new and unblocked tasks only. Retries, approved-plan
   // children and deferred-start re-dispatches reach a webhook only when listed here;
   // otherwise they wake runners over Pusher. A listed config also has runnerPreference
-  // applied to unblocked dispatches.
-  events?: Array<'task.created' | 'task.unblocked' | 'task.retry'>;
+  // applied to unblocked dispatches. 'task.resume' (cloud runner park → answer)
+  // is only ever sent to a webhook that lists it.
+  events?: Array<'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume'>;
   // The same column also carries POST /api/webhooks/ingest's keys (webhookSecret,
   // labelFilter, ...). PATCH /api/workspaces/[id] merges onto the stored object, so
   // setting or clearing the dispatch keys above leaves those untouched.
@@ -1686,6 +1687,13 @@ export const workers = pgTable('workers', {
   // copy and then the queued copy, duplicating the message. Drop this column once
   // no pre-ack runner can check in.
   supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
+  // Cloud runner (docs/design/cloudflare-sandbox-runner.md, Phase 2 "Resumable
+  // runs"): set when a --once runner parked this worker — uploaded its branch,
+  // uncommitted work and transcript, then let its container go — and cleared
+  // by POST /api/workers/[id]/reattach or on expiry. While it is in the future
+  // the worker counts as holding its transcript (answer-resume.ts G2) and is
+  // exempt from the offline-runner sweep. NULL for every other runner.
+  parkedUntil: timestamp('parked_until', { withTimezone: true }),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // What the agent actually sent on a completion the outputRequirement gate
