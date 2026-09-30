@@ -189,18 +189,38 @@ async function resolveIncumbentChatModel(
   return { ok: false, reason: 'no_key', provider, tier: opts.tier };
 }
 
+type CostUsage = { inputTokens?: number; outputTokens?: number };
+type CostStep = { usage?: CostUsage; providerMetadata?: Record<string, unknown> };
+
+function reportedCostOf(providerMetadata?: Record<string, unknown>): number | null {
+  const c = (providerMetadata?.openrouter as { usage?: { cost?: unknown } } | undefined)?.usage?.cost;
+  return typeof c === 'number' && Number.isFinite(c) ? c : null;
+}
+
+function estimatedCostOf(modelId: string, usage: CostUsage): number {
+  const p = priceForModel(modelId.includes('/') ? modelId.split('/').pop()! : modelId);
+  return ((usage.inputTokens ?? 0) * p.input + (usage.outputTokens ?? 0) * p.output) / 1_000_000;
+}
+
 /**
  * USD for a turn: the provider's own figure when it reports one (OpenRouter
  * does), else an estimate from the price table. Null when there's no usage.
+ *
+ * `providerMetadata` is the LAST step's alone, so a multi-step turn passes
+ * `steps`: their reported costs are summed, and a step with none is priced from
+ * its own usage. When no step reports a cost this is the whole-turn estimate.
  */
 export function turnCostUsd(
   modelId: string,
-  usage: { inputTokens?: number; outputTokens?: number } | undefined,
+  usage: CostUsage | undefined,
   providerMetadata?: Record<string, unknown>,
+  steps?: ReadonlyArray<CostStep>,
 ): number | null {
-  const reported = (providerMetadata?.openrouter as { usage?: { cost?: unknown } } | undefined)?.usage?.cost;
-  if (typeof reported === 'number' && Number.isFinite(reported)) return reported;
+  if (steps?.some(s => reportedCostOf(s.providerMetadata) !== null)) {
+    return steps.reduce((sum, s) => sum + (reportedCostOf(s.providerMetadata) ?? estimatedCostOf(modelId, s.usage ?? {})), 0);
+  }
+  const reported = reportedCostOf(providerMetadata);
+  if (reported !== null) return reported;
   if (!usage) return null;
-  const p = priceForModel(modelId.includes('/') ? modelId.split('/').pop()! : modelId);
-  return ((usage.inputTokens ?? 0) * p.input + (usage.outputTokens ?? 0) * p.output) / 1_000_000;
+  return estimatedCostOf(modelId, usage);
 }

@@ -27,19 +27,23 @@ import { PlanDeniedError } from '@builddai/ai-kit/models';
 
 // ── Mock model streams ────────────────────────────────────────────────────────
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const finish = (unified: string) => ({ type: 'finish', finishReason: { unified, raw: unified }, usage });
-const textStream = (text: string) => ({
+const finish = (unified: string, cost?: number) => ({
+  type: 'finish', finishReason: { unified, raw: unified }, usage,
+  ...(cost !== undefined ? { providerMetadata: { openrouter: { usage: { cost } } } } : {}),
+});
+const textStream = (text: string, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: text }, { type: 'text-end', id: 't' },
-    finish('stop'),
+    finish('stop', cost),
   ]),
 });
-const toolStream = (...calls: Array<[id: string, name: string, input: unknown]>) => ({
+const toolStream = (...calls: Array<[id: string, name: string, input: unknown]>) => costedToolStream(undefined, ...calls);
+const costedToolStream = (cost: number | undefined, ...calls: Array<[id: string, name: string, input: unknown]>) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     ...calls.map(([toolCallId, toolName, input]) => ({ type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) })),
-    finish('tool-calls'),
+    finish('tool-calls', cost),
   ]),
 });
 const mockModel = (...responses: unknown[]) => new MockLanguageModelV4({ doStream: responses as any });
@@ -215,6 +219,30 @@ describe('usage', () => {
     // Estimated from the plan's list price: 20 × $1 + 10 × $2 per 1M tokens.
     expect(ledger[0]).toMatchObject({ userId: 'u-1', conversationId: 'c-1', inputTokens: 20, outputTokens: 10, costUsd: 0.00004, outcome: 'ok', continuation: false });
     expect(lastAssistant().usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
+  });
+});
+
+describe('multi-step cost', () => {
+  it('sums the provider-reported cost of every step, not just the last', async () => {
+    const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.', 0.002)) });
+    await send(userMsg('what notes?'));
+    expect(ledger[0].costUsd).toBeCloseTo(0.012, 10);
+    expect(receipts[0].costUsd).toBeCloseTo(0.012, 10);
+    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.012, 10);
+  });
+
+  it('estimates a step that reported no cost from that step\'s own usage', async () => {
+    const { send } = harness({ model: mockModel(costedToolStream(0.01, ['r1', 'search_notes', {}]), textStream('One note.')) });
+    await send(userMsg('what notes?'));
+    // Step 2 is estimated from its own 10 in / 5 out: 10 × $1 + 5 × $2 per 1M tokens.
+    expect(ledger[0].costUsd).toBeCloseTo(0.01 + 0.00002, 10);
+  });
+
+  it('keeps the whole-turn estimate when no step reports a cost', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['r1', 'search_notes', {}]), textStream('One note.')) });
+    await send(userMsg('what notes?'));
+    expect(ledger[0].costUsd).toBe(0.00004);
+    expect(receipts[0]).not.toHaveProperty('costUsd');
   });
 });
 

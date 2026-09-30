@@ -295,6 +295,21 @@ function reportedCost(meta: unknown): number | null {
   return typeof c === 'number' && Number.isFinite(c) ? c : null;
 }
 
+/**
+ * A turn's cost from its steps. `result.providerMetadata` is the last step's
+ * alone, so a tool round-trip would otherwise be dropped. A step with no
+ * reported cost is priced from its own usage. Null when no step reports one, so
+ * the caller falls back to the whole-turn estimate.
+ */
+function reportedStepsCost(
+  steps: ReadonlyArray<{ usage?: { inputTokens?: number; outputTokens?: number }; providerMetadata?: unknown }>,
+  price: Price,
+): number | null {
+  const reported = steps.map(s => reportedCost(s.providerMetadata));
+  if (!reported.some(c => c !== null)) return null;
+  return steps.reduce((sum, s, i) => sum + (reported[i] ?? estimatedCost(price, s.usage?.inputTokens ?? 0, s.usage?.outputTokens ?? 0) ?? 0), 0);
+}
+
 type Price = { inputPerMTok: number; outputPerMTok: number } | null | undefined;
 
 function estimatedCost(price: Price, input: number, output: number): number | null {
@@ -624,7 +639,7 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
       try {
         const u = await result.totalUsage;
         tokens = { input: u?.inputTokens ?? 0, output: u?.outputTokens ?? 0 };
-        providerCost = reportedCost(await result.providerMetadata);
+        providerCost = reportedStepsCost(await result.steps, resolved.plan.price);
       } catch { /* an aborted stream may have no usage */ }
       const latencyMs = clock() - startedAt;
       const costUsd = providerCost ?? estimatedCost(resolved.plan.price, tokens.input, tokens.output);
