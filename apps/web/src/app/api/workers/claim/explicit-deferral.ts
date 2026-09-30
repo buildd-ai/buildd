@@ -36,7 +36,7 @@ export function describeExplicitDeferral(
       const peer = str(detail.blockingPeer);
       return {
         code: reason,
-        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Declare a pathManifest, or wait for that task.`,
+        detail: `It declares no file scope and its mission already has a scope-undeclared task in flight${peer ? ` (${peer})` : ''}; only one runs at a time. Wait for that task, or re-create this one with a pathManifest (or outputRequirement 'artifact_required' / 'none' if it edits no files).`,
       };
     }
     case 'mission_budget':
