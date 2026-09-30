@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.12.0
+npm i -E @builddai/ai-kit@0.13.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -188,10 +188,10 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 
 - `read`: runs.
 - a write the person set to Allow runs without a card only if `canSkipCard` holds (first skip of the turn, no tool output anywhere in the stored conversation or earlier in this turn, nothing docked, not `startsUnattendedWork`, not `spends`, only `skippableFields`) **and** your `preview` resolves. Its output gets `allowed: true`.
-- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one. The card renders that denial as "not proposed · one change per turn", never as a Discard (`isSystemDenied`).
+- anything else gets an approval card carrying your preview. **One card per turn, a row per write** (0.13.0): each write keeps its own approval id, input hash, preview and compare-and-set, and the turn's writes are the rows of one card, at most `APPROVAL_ROW_CAP` (8). A write past the cap is denied with `ROW_CAP_REASON` and the model is told to propose it after the card is answered. An admin write (`confirmText`) stands alone: any other write that turn is denied with `ONE_CARD_PER_TURN_REASON`. Both denials render as "not proposed yet", never as a Discard (`isSystemDenied`, `isHeldBack`).
 - a preview may return `input`, what actually runs; each field it rewrote is listed on the card (`key (runs as): proposed → runs`), so the card never reads narrower than the call.
 - a preview that can't resolve the target (`ok: false`) shows no card; the tool answers `Needs clarification: <question>`.
-- on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise). `execute` re-checks all of this, so nothing a tool result says can make a write run.
+- on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise, `CHANGED_SINCE_SHOWN`). Each row of a card is checked on its own, with no transaction across rows: one that fails is refused and the others still run. `approvalRowOutcome(part)` says how each went. `execute` re-checks all of this, so nothing a tool result says can make a write run.
 
 **Thinking steps.** The runner emits `data-step` parts from the tool lifecycle (active → done, "Check it with you" while a card waits, "Filed as a task" for a hand-off), labelled from the tool declaration's `steps: { active, done, failed? }` or the group label, never the tool name. Plus your own `ctx.step()` rows.
 
@@ -292,6 +292,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | `<TierPicker value onChange last? options? policy? auto? autoMeta? autoDetail? footer? triggerExtra? hover?>` | `Auto`, `Auto · Standard`, or a pinned tier; `options[].price` shows as meta, `options[].detail` / `autoDetail` as a second line under the name. `triggerExtra` rides on the trigger, `hover` shows on pointer hover. With `policy` (below): only its tiers, its names, Auto only if it offers Auto |
 | `<ThinkingPanel steps streaming>` | the `data-step` checklist (`thinkingSteps(parts, streaming)`) |
 | `<ApprovalCard part onRespond onEdit? approverName? headline? eyebrow? meta? body? details? fold? confirmLabel? busyLabel? settled? deniedNote?>` | before → after from the server preview; typed confirm for `confirmText`. `eyebrow` / `meta` join the status in a head row; `body` and `details` are yours (e.g. a draft); `fold` folds the details behind "Show details · N changes" below 640px; `settled: 'row'` folds a decided or discarded card to one line |
+| `<ApprovalRowsCard parts held? onRespond approverName? eyebrow? meta? rowLabel? confirmLabel? busyLabel?>` | (0.13.0) a turn's writes as one card: a checked row each, "Confirm N" answers every row (unchecked ones declined), "Discard all" declines them all; a row folds to two truncated lines and taps open to the full target and its changes; settled, each row says done, changed since shown, failed or discarded. `ChatThread` draws it for any message with two or more writes (`approvalRowGroup(parts)`); an app with its own `renderTool` calls `approvalRowGroup` itself and returns `null` for the other rows |
 | `<HandoffCard data renderLink?>` | a filed task as a live object |
 | `<ChatEmpty name chips onChip greeting? overline? mood? sub? chipsHeader? chipsAside? variant?>` | "Hi {name}, what are we working on?" + your chips `{ id?, label, text, send, tone? }`; `send: false` prefills. Order them yourself or with `/surfaces` `defineRankSurface`. An overline (with a mood dot), a sub line, a header over the chips; `variant: 'rows'` for full-width rows |
 | `<ChatSetupCard reason message? action?>` | for `unavailable` |

@@ -13,6 +13,7 @@
  * declares, so a read op can't reach a write route even if its handler tried.
  */
 
+import { CHANGED_SINCE_SHOWN } from '@builddai/ai-kit/chat/contract';
 import { isLiveWorkerStatus } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
@@ -507,7 +508,7 @@ export function buildChatTools(deps: ChatToolDeps): ToolSet {
             const now = await deps.preview(action, input).catch(e => ({ ok: false as const, question: String(e) }));
             if (!now.ok) return errorResult(`nothing changed: ${now.question}`);
             if (!approved || !previewMatches(approved, now.preview)) {
-              return errorResult(`nothing changed: ${now.preview.target.label} changed since the card was shown. Show the user the current state and ask again.`);
+              return errorResult(`nothing changed: ${now.preview.target.label} ${CHANGED_SINCE_SHOWN}. Show the user the current state and ask again.`);
             }
             callInput = now.input;
             target = now.preview.target;

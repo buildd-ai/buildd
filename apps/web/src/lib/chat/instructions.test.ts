@@ -26,4 +26,10 @@ describe('CHAT_INSTRUCTIONS: one write per intent', () => {
     expect(CHAT_INSTRUCTIONS).toMatch(/not shown to the person/);
     expect(CHAT_INSTRUCTIONS).toMatch(/don't call it discarded or done/);
   });
+
+  // One card per turn, a row per write: several asks go in one step, not one per turn.
+  it('asks for every requested write at once, as rows of one card', () => {
+    expect(CHAT_INSTRUCTIONS).toMatch(/propose them all at once, in the same step: they become rows of one card, up to 8/);
+    expect(CHAT_INSTRUCTIONS).not.toMatch(/at most one write per turn/i);
+  });
 });
