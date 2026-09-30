@@ -514,15 +514,16 @@ export async function runChatTurn(args: {
         try {
           // A stream the watchdog ended never reports usage: don't wait on it.
           const settleMs = watchdogFired ? 0 : USAGE_SETTLE_MS;
-          const [u, metaRaw] = await Promise.all([
+          const [u, metaRaw, stepResults] = await Promise.all([
             settleWithin(result.usage, settleMs),
             settleWithin(result.providerMetadata, settleMs),
+            settleWithin(result.steps, settleMs),
           ]);
           const meta = metaRaw as Record<string, unknown> | undefined;
           usage = {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
-            costUsd: turnCostUsd(resolved.modelId, u, meta),
+            costUsd: turnCostUsd(resolved.modelId, u, meta, stepResults),
             latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }
