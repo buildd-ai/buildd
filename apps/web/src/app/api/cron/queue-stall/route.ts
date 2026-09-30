@@ -60,7 +60,7 @@ import { eq, and, lt, inArray, isNull, isNotNull, asc } from 'drizzle-orm';
 // or mislabelling the alert as taskFailed.
 import { notify } from '@/lib/pushover';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
-import { checkMissionHeld, checkMissionLocal } from '@/app/api/workers/claim/held-gate';
+import { checkMissionHeld, checkMissionLocal, TASK_HOLD_KEY } from '@/app/api/workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '@/app/api/workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '@/app/api/workers/claim/workspace-cap-gate';
 import { isSubjectDead } from '@/lib/subject-gate-contract';
@@ -235,6 +235,14 @@ async function resolveStallGate(
   // through the whole ladder and reported as stalled while it was merely
   // scheduled.
   if (task.startAt && task.startAt > now) {
+    return null;
+  }
+
+  // ── Single-task hold (held-gate.ts taskNotHeld) ───────────────────────────
+  // A person paused this one task (PATCH { held: true }); only resume lifts it,
+  // force-start does not. Paused, not stalled — same key the claim query reads.
+  // Key presence, not truthiness: `context->'heldBy'` is non-NULL even for a JSON null.
+  if (Object.prototype.hasOwnProperty.call(ctx, TASK_HOLD_KEY)) {
     return null;
   }
 
