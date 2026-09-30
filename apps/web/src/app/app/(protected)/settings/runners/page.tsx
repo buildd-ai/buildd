@@ -1,24 +1,51 @@
 import SettingsPage from '../_components/SettingsPage';
+import SettingsSection from '../SettingsSection';
 import AgentBackendsSection from '../AgentBackendsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
-import { loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadAccountLastSeen, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadFleetSnapshot } from '@/lib/home-fleet';
+import type { FleetSnapshot } from '@buildd/shared';
+import FleetOverview from './FleetOverview';
+import CloudRunnerRow from './CloudRunnerRow';
 
 export const dynamic = 'force-dynamic';
 
-/** Settings → Connections → Runners (was /app/settings#agent-backends). */
+const NO_FLEET: FleetSnapshot = { runners: [], live: 0, capacity: 0, window: { from: 0, to: 0 } };
+
+/**
+ * Settings → Connections → Runners (was /app/settings#agent-backends).
+ * Fleet first (what runs your tasks), then connections (what it signs in
+ * with), then runner tokens (how it reaches buildd).
+ */
 export default async function RunnersSettingsPage() {
   const { teams, currentTeamId, workspaces } = await loadSettingsContext();
-  const accounts = await loadRunnerAccounts(teams.map((t) => t.id));
+  const teamId = currentTeamId ?? teams[0]?.id ?? null;
+  const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
+  const [accounts, fleet] = await Promise.all([
+    loadRunnerAccounts(teams.map((t) => t.id)),
+    loadFleetSnapshot({ teamId, wsIds: teamWsIds, now: Date.now() }).catch((err) => {
+      console.error('[settings/runners] fleet load failed (non-fatal):', err);
+      return NO_FLEET;
+    }),
+  ]);
+  const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
+  const tokens = accounts.map((a) => ({ ...a, lastSeenAt: lastSeen[a.id] ?? null }));
+  const cloudTeams = teams.map((t) => ({ id: t.id, name: t.name }));
 
   return (
     <SettingsPage
       title="Runners"
-      description="Your machines do the work, signed in to Claude or Codex and connected to buildd with a runner token."
+      description="What runs your tasks, what it signs in with, and the tokens that connect it to buildd."
     >
-      <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
-      <RunnerTokensSection accounts={accounts} workspaces={workspaces} />
-      <CloudflareSection teams={teams.map((t) => ({ id: t.id, name: t.name }))} />
+      <FleetOverview fleet={fleet} cloud={teamId ? <CloudRunnerRow teamId={teamId} /> : undefined} />
+      <SettingsSection title="Connections" id="agent-backends" bare>
+        <div data-testid="runners-connections" className="card divide-y divide-border-default p-0">
+          <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
+          <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} />
+        </div>
+      </SettingsSection>
+      <RunnerTokensSection accounts={tokens} workspaces={workspaces} />
     </SettingsPage>
   );
 }
