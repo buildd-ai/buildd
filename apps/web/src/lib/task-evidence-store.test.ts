@@ -36,6 +36,7 @@ mock.module('drizzle-orm', () => ({
   asc: (c: unknown) => ({ asc: c }),
   eq: (c: unknown, v: unknown) => ({ eq: [c, v] }),
   inArray: (c: unknown, v: unknown) => ({ inArray: [c, v] }),
+  or: (...a: unknown[]) => ({ or: a }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings: [...strings], values }),
 }));
 mock.module('@/lib/github', () => ({ githubApi: async () => ({}), githubApiText: async () => '' }));

@@ -7,7 +7,7 @@
  *
  * Never throws into the caller — completion must not depend on it.
  */
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, workerErrorTraces } from '@buildd/core/db/schema';
 import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
@@ -144,7 +144,7 @@ export async function persistTaskEvidence(
     await db
       .update(tasks)
       .set({ result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
-      .where(and(eq(tasks.id, taskId), inArray(tasks.status, ['completed', 'failed'])));
+      .where(and(eq(tasks.id, taskId), or(eq(tasks.status, 'completed'), eq(tasks.status, 'failed'))));
     return built;
   } catch (err) {
     console.error(`[task-evidence] failed to persist evidence for task ${taskId.slice(0, 8)}:`, err);
