@@ -97,6 +97,9 @@ describe('POST /api/runner/github-token', () => {
       token: 'ghs_scoped_token',
       expiresAt: '2026-01-01T01:00:00.000Z',
       repository: { owner: 'acme', name: 'widget', fullName: 'acme/widget' },
+      // The cloud runner keys its per-workspace snapshots by this, so the
+      // container can never choose whose snapshot it reads (warm repos).
+      workspaceId: 'ws-1',
     });
     // Repo identity from the github_repos link, not free text.
     expect(mockMint).toHaveBeenCalledWith({ installationId: 99, repoId: 4242, installedPermissions: { contents: 'write' } });

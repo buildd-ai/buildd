@@ -15,6 +15,8 @@
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
  *   api.github.com, uploads  -> `Authorization: Bearer <installation token>`
  *   codeload.github.com      -> container auth stripped, nothing added
+ *   buildd-snapshots.invalid -> never forwarded: served by the snapshot store (snapshots.ts),
+ *                               and intercepted only with warm repos on
  *   anything else            -> untouched (open egress in phase 1)
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
@@ -26,6 +28,12 @@ export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
 /** Hosts whose traffic is routed through the egress handler. */
 export const GITHUB_HOSTS = ['github.com', 'api.github.com', 'uploads.github.com', 'codeload.github.com'] as const;
 export const INTERCEPTED_HOSTS: readonly string[] = [ANTHROPIC_HOST, ...GITHUB_HOSTS];
+/**
+ * Mirrors SNAPSHOT_HOST in snapshots.ts (not imported, to keep this file's
+ * imports empty). outbound.test.ts checks they are equal. Not in
+ * INTERCEPTED_HOSTS: the agent intercepts it only when warm repos are on.
+ */
+export const SNAPSHOT_HOST_NAME = 'buildd-snapshots.invalid';
 
 /**
  * Request headers that can carry a credential. All are removed from a
@@ -205,15 +213,18 @@ export interface GithubGrant {
   expiresAt: number;
   owner: string;
   repo: string;
+  /** The task's workspace, as buildd knows it. Keys the snapshot store (snapshots.ts). */
+  workspaceId?: string;
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-export type EgressKind = 'anthropic' | 'github' | 'passthrough';
+export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'passthrough';
 
 export function classifyEgressHost(hostname: string): EgressKind {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (host === ANTHROPIC_HOST) return 'anthropic';
+  if (host === SNAPSHOT_HOST_NAME) return 'snapshot';
   if ((GITHUB_HOSTS as readonly string[]).includes(host)) return 'github';
   return 'passthrough';
 }
@@ -310,6 +321,9 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   }
   const kind = classifyEgressHost(url.hostname);
   if (kind === 'passthrough') return { action: 'passthrough' };
+  // Served in the Worker by the snapshot store; forwarding it would send the
+  // container's snapshot bytes to whatever that name resolves to.
+  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather
   // than upgraded, so nothing credentialed is ever built from it.
@@ -434,7 +448,10 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   if (typeof owner !== 'string' || !owner || typeof repo !== 'string' || !repo) {
     throw new Error('github-token response has no repository owner/name');
   }
-  return { token, expiresAt, owner, repo };
+  const ws = (b as { workspaceId?: unknown } | null)?.workspaceId;
+  const grant: GithubGrant = { token, expiresAt, owner, repo };
+  if (typeof ws === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(ws)) grant.workspaceId = ws;
+  return grant;
 }
 
 // ── Server model endpoint cache (lives in the WorkerAgent) ────────────────────

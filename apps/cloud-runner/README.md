@@ -19,6 +19,7 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
 | `src/lifecycle.ts` | Pure decisions: exit code to outcome, dispatch dedupe, container env |
 | `src/run-report.ts` | The per-run report: phase lines, egress counters, assembly, delivery. Runtime-free |
+| `src/snapshots.ts` | The snapshot store behind the egress-intercepted pseudo-host (warm repos). Runtime-free |
 | `src/eval-report.ts`, `src/eval-client.ts`, `scripts/eval-report.ts` | The eval report over many runs (see Measuring runs) |
 
 The runtime-free files are what the Bun tests cover (`bun run test`); they
@@ -79,6 +80,8 @@ it as above).
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
+| `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `SNAPSHOTS` | R2 binding | for warm repos | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
@@ -116,6 +119,14 @@ The report is built from an allowlist of typed fields; identifiers that do not
 look like IDs are dropped. It never holds header values, tokens, URLs, request
 or response bodies, or runner output. Egress counters and timings are lost if
 the agent is evicted mid-run (the orphan report has what was persisted).
+
+The `repo` section (report version 2) says how the repo got onto the disk:
+`source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
+`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
+`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
+`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
+`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
 
 ### Eval report
 
@@ -158,7 +169,14 @@ Needs Docker. From this directory:
 ```bash
 bunx wrangler dev --var DISPATCH_TOKEN:dev --var BUILDD_API_KEY:<key> --var BUILDD_SERVER:<dev server>
 bash scripts/local-smoke.sh     # end-to-end check against an unreachable server
+SMOKE_HOST_ADDR=<host LAN address> bash scripts/local-smoke.sh   # also runs the warm-repo case
 ```
+
+R2 works under `wrangler dev` (local simulation); the smoke keeps it in a
+throwaway `--persist-to` directory. The warm-repo case needs the Worker, which
+runs on the host, to reach the smoke's fake buildd for the grant, and Docker
+Desktop's `host.docker.internal` resolves only inside containers; hence
+`SMOKE_HOST_ADDR`.
 
 The first run builds the image for linux/amd64, which is slow on an arm64 host
 (emulation).
@@ -312,6 +330,40 @@ container sent in `authorization`, `proxy-authorization`, `x-api-key`,
 only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
+
+### Warm repos
+
+Design Phase 2, "Warm repos". Off unless `WARM_REPOS=1` and the `SNAPSHOTS`
+binding exist. Then the container gets `BUILDD_WARM_REPO=1` and
+`BUILDD_SNAPSHOT_URL=https://buildd-snapshots.invalid`, and the agent
+intercepts that pseudo-host (HTTPS only) with the same `EgressHandler`. The
+handler never forwards it: it serves `src/snapshots.ts` against the R2
+binding, streaming bodies both ways.
+
+- **Keys are the Worker's.** The workspace comes from buildd: the
+  `/api/runner/github-token` grant (authenticated with the dispatch token)
+  now carries `workspaceId`, and `WorkerAgent.getSnapshotScope` hands it out
+  only while a run is live. The request path names an operation (`GET /warm`,
+  `POST /warm/begin`, `PUT /warm/<generation>/repo`, ...), never a key, and
+  the query string is ignored. No grant (no GitHub App link, token refused):
+  `503`, and the runner clones as usual.
+- **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
+  lifecycle rule can cover it.
+- **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
+  with a conditional put (create-only, or replace a lock older than 30
+  minutes), uploads go only to the lock's generation, and `commit` writes the
+  manifest last, so a half-uploaded generation is never visible. Commit keeps
+  the newest two committed generations and deletes the rest.
+- **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
+  (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
+  buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
+- **Limits.** `content-length` is required on uploads, at most 5 GB (single
+  part). The runner skips the warm path when the snapshot is over a quarter of
+  free disk.
+
+What goes in a snapshot and what the runner refuses to upload:
+`docs/runner-container.md`, "Warm repos".
 
 ### Model routes
 

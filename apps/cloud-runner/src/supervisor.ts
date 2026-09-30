@@ -36,7 +36,10 @@ import {
   deliverRunReport,
   emptyEgressCounters,
   isEgressEvent,
+  parseMetricLine,
   parsePhaseLine,
+  parseRepoSourceLine,
+  recordMetric,
   recordPhase,
   runLabel,
   type EgressCounters,
@@ -333,7 +336,15 @@ export class TaskSupervisor {
       if (phase) {
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
         if (runnerPhases !== state.timings?.runnerPhases) this.patchTimings({ runnerPhases });
+        return;
       }
+      const metric = parseMetricLine(line);
+      if (metric) {
+        this.patchTimings({ runnerMetrics: recordMetric(state.timings?.runnerMetrics, metric.metric, metric.value) });
+        return;
+      }
+      const source = parseRepoSourceLine(line);
+      if (source) this.patchTimings({ repoSource: source });
     };
     try {
       for (;;) {

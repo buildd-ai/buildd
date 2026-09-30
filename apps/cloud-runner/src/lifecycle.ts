@@ -22,6 +22,7 @@ export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 // ── State ─────────────────────────────────────────────────────────────────────
 
 import type { RunTimings, StoredRunReport } from './run-report';
+import { SNAPSHOT_HOST } from './snapshots';
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
@@ -164,6 +165,17 @@ export interface ContainerEnvSource {
   PUSHER_KEY?: string;
   PUSHER_CLUSTER?: string;
   BUILDD_ONCE_MAX_WAIT_MS?: string;
+  /** `1` turns on warm repos in the container (see warmReposEnabled). */
+  WARM_REPOS?: string;
+}
+
+/**
+ * Warm repos (docs/design/cloudflare-sandbox-runner.md, Phase 2) need both the
+ * opt-in var and the R2 binding. Off by default: without either, the
+ * container env and the egress routes are exactly as before.
+ */
+export function warmReposEnabled(env: { WARM_REPOS?: string; SNAPSHOTS?: unknown }): boolean {
+  return env.WARM_REPOS === '1' && !!env.SNAPSHOTS;
 }
 
 /**
@@ -206,6 +218,12 @@ export function buildContainerEnv(env: ContainerEnvSource): Record<string, strin
   for (const key of optional) {
     const v = env[key];
     if (v) out[key] = v;
+  }
+  if (env.WARM_REPOS === '1') {
+    // The runner restores and uploads snapshots through this pseudo-host;
+    // the egress handler serves it (snapshots.ts). No key, no credential.
+    out.BUILDD_WARM_REPO = '1';
+    out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
   }
   return out;
 }

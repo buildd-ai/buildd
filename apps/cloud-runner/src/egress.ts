@@ -23,6 +23,7 @@ import {
 } from './outbound';
 import { rewriteOtlp } from './otel';
 import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent } from './run-report';
+import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
 export interface EgressProps {
   /** The task whose container this handler serves. Set by the WorkerAgent, never by the container. */
@@ -31,6 +32,7 @@ export interface EgressProps {
 
 interface AgentSource {
   getGithubGrant(): Promise<GithubGrant | null>;
+  getSnapshotScope(): Promise<SnapshotScope | null>;
   recordEgress(event: EgressEvent): Promise<void>;
   getModelEndpoint(): Promise<ServerModelEndpointState>;
   reportModelEndpointAuthFailure(): Promise<void>;
@@ -44,6 +46,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const otlp = rewriteOtlp({ url: request.url, headers: request.headers }, this.env);
     if (otlp) return this.forwardOtlp(request, otlp, at);
     const kind = classifyEgressHost(new URL(request.url).hostname);
+    if (kind === 'snapshot') return this.snapshot(request);
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
 
@@ -145,6 +148,29 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       console.log(`[cloud-runner] task ${taskId}: model endpoint lookup failed: ${err instanceof Error ? err.message : String(err)}`);
       return 'unavailable';
     }
+  }
+
+  /**
+   * The snapshot store (snapshots.ts), streamed to and from the R2 binding.
+   * The scope (which workspace's keys) comes from the task's WorkerAgent,
+   * never from the request. Not counted as egress: it never leaves Cloudflare.
+   */
+  private async snapshot(request: Request): Promise<Response> {
+    const bucket = this.env.SNAPSHOTS;
+    if (!bucket || this.env.WARM_REPOS !== '1') return Response.json({ error: 'unavailable' }, { status: 503 });
+    let scope: SnapshotScope | null = null;
+    const taskId = this.ctx.props?.taskId;
+    if (taskId) {
+      try {
+        const agent = await this.agent();
+        scope = agent ? await agent.getSnapshotScope() : null;
+      } catch (err) {
+        console.log(`[cloud-runner] task ${taskId}: snapshot scope lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return handleSnapshotRequest(request, scope, new SnapshotStore(bucket as unknown as BucketPort), {
+      fixedLength: (body, length) => body.pipeThrough(new FixedLengthStream(length)),
+    });
   }
 
   /** The task's installation token, from its WorkerAgent's in-memory cache. */

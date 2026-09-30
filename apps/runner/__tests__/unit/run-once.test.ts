@@ -229,6 +229,36 @@ describe('runOnce', () => {
   });
 });
 
+describe('runOnce afterRun hook (warm-repo refresh)', () => {
+  test.each([
+    [['working', 'done'] as Status[], 'completed'],
+    [['working', 'error'] as Status[], 'failed'],
+  ])('called once with the outcome, before the final flush', async (statuses, want) => {
+    const { wm, calls } = fakeManager({ statuses });
+    const seen: string[] = [];
+    const { d } = deps(wm, { afterRun: async (o) => { seen.push(o); calls.push('afterRun'); } });
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(seen).toEqual([want]);
+    expect(calls.indexOf('afterRun')).toBeLessThan(calls.indexOf('flushToServer'));
+  });
+
+  test('wait timeout reports wait_timeout; a throwing hook does not change the exit code', async () => {
+    const { wm } = fakeManager({ statuses: ['waiting'] });
+    const seen: string[] = [];
+    const { d } = deps(wm, { maxWaitMs: 2_000, afterRun: async (o) => { seen.push(o); throw new Error('boom'); } });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_FAILED);
+    expect(seen).toEqual(['wait_timeout']);
+  });
+
+  test('not called when the claim is refused (nothing was cloned for this run)', async () => {
+    const { wm } = fakeManager({ claim: async () => null });
+    const seen: string[] = [];
+    const { d } = deps(wm, { afterRun: async (o) => { seen.push(o); } });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_REFUSED);
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('classifyClaimFailure', () => {
   test('server_rejected and 4xx refusals are refused; workspace_not_found, 408/429, 5xx and network are failed', () => {
     expect(classifyClaimFailure(Object.assign(new Error(''), { claimError: 'server_rejected' }))).toBe('refused');
@@ -289,6 +319,18 @@ describe('createOnceResolver', () => {
     const r = createOnceResolver(base, '/iso', () => { cloned = true; return '/x'; });
     expect(r.resolve({ id: 'ws-9', name: 'remote', repo: null })).toBeNull();
     expect(cloned).toBe(false);
+  });
+
+  test('preferIsolated (warm repos on): the isolated clone wins over any local checkout or auto-clone', () => {
+    const clones: any[] = [];
+    const r = createOnceResolver(base, '/iso', (ws, root) => { clones.push([ws, root]); return `/iso/${ws.id}`; }, { preferIsolated: true });
+    expect(r.resolve({ id: 'ws-9', name: 'local', repo: 'https://github.com/example/local' })).toBe('/iso/ws-9');
+    expect(clones).toHaveLength(1);
+  });
+
+  test('preferIsolated: a failed isolated clone still falls back to the base resolver', () => {
+    const r = createOnceResolver(base, '/iso', () => { throw new Error('clone failed'); }, { preferIsolated: true });
+    expect(r.resolve({ id: 'ws-9', name: 'local', repo: 'https://github.com/example/local' })).toBe('/repos/local');
   });
 });
 

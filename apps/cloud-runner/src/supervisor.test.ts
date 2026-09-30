@@ -407,6 +407,39 @@ describe('run report', () => {
     expect(body.metadata.report.delivery).toBeUndefined();
   });
 
+  test('warm-repo lines land in the report: source, restore/fetch timings and bytes', async () => {
+    const h = harness();
+    h.fc.setStdout([
+      'BUILDD_WORKER_ID=worker-7',
+      'BUILDD_PHASE=restore_warm_start 1000',
+      'BUILDD_METRIC=restore_bytes 5000',
+      'BUILDD_PHASE=restore_warm_end 1400',
+      'BUILDD_PHASE=fetch_start 1400',
+      'BUILDD_PHASE=fetch_end 1500',
+      'BUILDD_METRIC=fetch_bytes 64',
+      'BUILDD_METRIC=snapshot_age_ms 7200000',
+      'BUILDD_REPO_SOURCE=warm',
+      'BUILDD_METRIC=bogus 1',
+    ]);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.repoSource !== undefined);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    const r = h.state.report!;
+    expect(r.repo).toEqual({ source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null } });
+    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null });
+  });
+
+  test('a clone fallback is reported with its reason', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-8', 'BUILDD_REPO_SOURCE=clone no_snapshot', 'BUILDD_METRIC=clone_bytes 9000']);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.runnerMetrics?.clone_bytes !== undefined);
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.report!.repo).toMatchObject({ source: 'clone', fallbackReason: 'no_snapshot', bytes: { clone: 9000 } });
+  });
+
   test('a run that never claimed stores its report and posts nothing', async () => {
     const h = harness();
     h.sup.dispatch();

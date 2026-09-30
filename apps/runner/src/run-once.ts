@@ -104,19 +104,28 @@ export function createOnceResolver(
   base: WorkspaceResolver,
   isolationRoot: string,
   clone: (workspace: { id: string; repo: string }, isolationRoot: string) => string,
+  /**
+   * preferIsolated: try the isolated clone first (it is where the warm-repo
+   * restore lives, warm-repo.ts) and use the base resolver only if it fails.
+   * Set only when warm repos are on, so every other --once run resolves as
+   * before.
+   */
+  opts: { preferIsolated?: boolean } = {},
 ): WorkspaceResolver {
+  const isolated = (workspace: { id: string; repo?: string | null }): string | null => {
+    if (!workspace.id || !workspace.repo) return null;
+    try {
+      return clone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+    } catch (err) {
+      console.error(`[once] could not clone ${workspace.repo}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  };
   return {
     ...base,
     resolve(workspace, taskContext) {
-      const found = base.resolve(workspace, taskContext);
-      if (found) return found;
-      if (!workspace.id || !workspace.repo) return null;
-      try {
-        return clone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
-      } catch (err) {
-        console.error(`[once] could not clone ${workspace.repo}: ${err instanceof Error ? err.message : err}`);
-        return null;
-      }
+      if (opts.preferIsolated) return isolated(workspace) ?? base.resolve(workspace, taskContext);
+      return base.resolve(workspace, taskContext) ?? isolated(workspace);
     },
   };
 }
@@ -179,6 +188,11 @@ export interface RunOnceDeps {
   flushOutbox(): Promise<{ remaining: number }>;
   /** Stop auxiliary daemons (credential broker). */
   shutdown?(): Promise<void>;
+  /**
+   * After the outcome is known and before the final flush: the warm-repo
+   * refresh (warm-repo.ts). Best effort; a throw is logged and ignored.
+   */
+  afterRun?(outcome: Outcome): Promise<void>;
   maxWaitMs: number;
   pollMs: number;
   now(): number;
@@ -186,7 +200,7 @@ export interface RunOnceDeps {
   log(msg: string): void;
 }
 
-type Outcome = 'completed' | 'failed' | 'wait_timeout';
+export type Outcome = 'completed' | 'failed' | 'wait_timeout';
 
 async function waitForOutcome(workerId: string, d: RunOnceDeps): Promise<Outcome> {
   let waitingSince: number | null = null;
@@ -241,6 +255,7 @@ export async function runOnce(opts: { taskId: string }, d: RunOnceDeps): Promise
       await wm.abort(worker.id, `No input received within ${mins} minutes (--once max wait)`).catch(() => {});
     }
     d.log(`[once] worker ${worker.id} finished: ${outcome}`);
+    await d.afterRun?.(outcome).catch(err => d.log(`[once] after-run step failed: ${err instanceof Error ? err.message : err}`));
     return (code = outcome === 'completed' ? EXIT_COMPLETED : EXIT_FAILED);
   } finally {
     await wm.flushToServer().catch(err => d.log(`[once] final sync failed: ${err instanceof Error ? err.message : err}`));
@@ -278,10 +293,19 @@ export async function runOnceFromCli(opts: {
   const { Outbox, createReplayHandler } = await import('./outbox');
   const { ensureIsolatedClone } = await import('./workspace');
   const { credentialBroker } = await import('./broker');
+  const { createWarmRepoSession, warmRepoEnabled } = await import('./warm-repo');
 
   const config = buildOnceConfig(opts.config, { taskId: opts.taskId, host: opts.host });
   const isolationRoot = config.workspaceIsolationRoot || join(opts.builddHome, 'once-workspaces');
-  const resolver = createOnceResolver(opts.resolver, isolationRoot, ensureIsolatedClone);
+  // Warm repos (BUILDD_WARM_REPO=1, set only by the cloud Worker): restore the
+  // workspace snapshot before cloning, refresh it after the run.
+  const warm = warmRepoEnabled(opts.env) ? createWarmRepoSession(opts.env, join(opts.builddHome, 'warm-tmp')) : null;
+  const resolver = createOnceResolver(
+    opts.resolver,
+    isolationRoot,
+    (ws, root) => ensureIsolatedClone(ws, root, warm?.cloneHooks()),
+    { preferIsolated: !!warm },
+  );
 
   // Own file: a long-lived runner on the same host keeps its own outbox.
   const outbox = new Outbox(join(opts.builddHome, `outbox-once-${opts.taskId}.json`));
@@ -302,6 +326,7 @@ export async function runOnceFromCli(opts: {
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
     shutdown: () => (cloud ? Promise.resolve() : credentialBroker.shutdown()),
+    afterRun: async (outcome) => warm?.refresh(outcome),
     maxWaitMs: resolveOnceMaxWaitMs(opts.env),
     pollMs: DEFAULT_POLL_MS,
     now: Date.now,
