@@ -24,7 +24,6 @@ const FLOOR = 11;
  * other small size on the same line is still a violation.
  */
 const TOKEN_EXEMPT: Array<{ file: string; context: string; why: string }> = [
-  { file: 'components/MissionsBottomNav.tsx', context: 'text-[10px] tracking-[.02em] min-[390px]:text-[11px]', why: 'tab labels must fit five tabs at 320px; 11px from 390px up' },
   { file: 'app/app/(protected)/tasks/TaskGrid.tsx', context: 'text-[9px] leading-none transition-transform duration-150', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] transition-transform duration-200', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] rotate-90 inline-block">▶', why: 'disclosure chevron glyph' },
