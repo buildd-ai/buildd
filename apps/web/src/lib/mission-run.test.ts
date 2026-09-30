@@ -40,8 +40,11 @@ mock.module('@/lib/github', () => ({
 const mockEnsureMissionIntegrationBranch = mock(() =>
   Promise.resolve({ ok: true as const, branch: 'mission/my-mission-obj-1', created: false }) as any,
 );
+const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+  missionBranchRemedy: (reason: string) => `remedy for ${reason}`,
+  reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)

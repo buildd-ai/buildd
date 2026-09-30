@@ -29,7 +29,7 @@ const GIT_CONFIG = {
   commitStyle: 'conventional',
 };
 
-function ctx(taskOverrides: Record<string, unknown> = {}) {
+function ctx(taskOverrides: Record<string, unknown> = {}, workerOverrides: Record<string, unknown> = {}) {
   return {
     task: {
       id: '510c4619-e02e-47bb-a018-e6336d1ff989',
@@ -37,7 +37,7 @@ function ctx(taskOverrides: Record<string, unknown> = {}) {
       description: 'Do the thing properly',
       ...taskOverrides,
     },
-    worker: { id: 'worker-1', workspaceName: 'demo', branch: WORKER_BRANCH, worktreePath: '/tmp/wt' },
+    worker: { id: 'worker-1', workspaceName: 'demo', branch: WORKER_BRANCH, worktreePath: '/tmp/wt', ...workerOverrides },
     gitConfig: GIT_CONFIG,
     isConfigured: true,
     compactResult: { count: 0 },
@@ -97,5 +97,30 @@ describe('Git Workflow "checked out with latest code from" line', () => {
   test('the sequential-index warning is absent when the default branch is the answer', () => {
     const built = buildPromptWithComposition(ctx({}));
     expect(built.promptText).not.toContain('sequential-index');
+  });
+});
+
+// Regression (mission 6341fe61): the integration branch was never created, so
+// `resolveWorktreeBase` cut the worktree from trunk — while this line still
+// claimed the integration branch, and the agent went looking for a ref that
+// did not exist. The ref the worktree was actually cut from wins.
+describe('Git Workflow when the mission integration branch was missing at checkout', () => {
+  const task = {
+    mission: { workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true },
+    missionId: 'mission-1',
+  };
+
+  test('names the ref the worktree was really cut from, and says why', () => {
+    const built = buildPromptWithComposition(ctx(task, { worktreeBaseRef: 'origin/dev' }));
+    const m = /is already checked out with latest code from `([^`]+)`/.exec(built.promptText);
+    expect(m?.[1]).toBe('origin/dev');
+    expect(built.promptText).toContain(`\`${INTEGRATION_BRANCH}\` was not on the remote when this worktree was cut`);
+    // The PR target is still the integration branch — create_pr recovers it.
+    expect(built.promptText).toContain(`Changes require PR to \`${INTEGRATION_BRANCH}\``);
+  });
+
+  test('no missing-branch note when the worktree was cut from the integration branch itself', () => {
+    const built = buildPromptWithComposition(ctx(task, { worktreeBaseRef: `origin/${INTEGRATION_BRANCH}` }));
+    expect(built.promptText).not.toContain('was not on the remote when this worktree was cut');
   });
 });
