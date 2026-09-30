@@ -9,6 +9,7 @@
  * and dispatched to a connected runner via pusher.
  */
 
+import { isOpenTaskStatus } from '@buildd/shared';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { lineageStamp } from '@/lib/attempt-lineage';
 
@@ -61,6 +62,54 @@ export interface CIRetryTask {
   taskClass: 'attempt';
   missionId: string | null;
   context: Record<string, unknown>;
+}
+
+/** A fix attempt already filed against a PR — the columns `summarizePrFixAttempts` reads. */
+export interface PrFixAttemptRow {
+  id: string;
+  status: string;
+  creationSource: string | null;
+  outputRequirement?: string | null;
+  ciRetryPrNumber: number | null;
+  context: unknown;
+  createdAt: Date | string;
+}
+
+/**
+ * What the fix attempts already filed for one PR say about the next CI failure.
+ *
+ * - `inFlight`: a fix attempt (CI retry, review fix, conflict fix) that is still
+ *   pending or running. It will push again, so a new CI retry would stack on it.
+ * - `ciRetriesUsed`: agent-authored CI retries the automatic loop has filed
+ *   since the last manual "Fix CI" click (which grants a fresh budget). Foreign
+ *   pushes and drift-diagnose tasks never count.
+ *
+ * The budget is counted from the rows rather than from the owner task's
+ * `context.iteration`: once the PR's root task and its attempts are all
+ * completed, which of them the owner lookup returns is arbitrary, and the root
+ * task never carries an iteration at all.
+ */
+export function summarizePrFixAttempts(
+  rows: PrFixAttemptRow[],
+  prNumber: number,
+): { inFlight: PrFixAttemptRow | null; ciRetriesUsed: number } {
+  const time = (r: PrFixAttemptRow) => new Date(r.createdAt).getTime();
+  const inFlight = rows.find((r) => isOpenTaskStatus(r.status)) ?? null;
+
+  const ciRows = rows.filter((r) => r.ciRetryPrNumber === prNumber);
+  const lastManual = ciRows
+    .filter((r) => r.creationSource === 'dashboard')
+    .reduce((max, r) => Math.max(max, time(r)), Number.NEGATIVE_INFINITY);
+
+  const ciRetriesUsed = ciRows.filter((r) => {
+    if (r.creationSource !== 'webhook') return false;
+    if (r.outputRequirement === 'artifact_required') return false;
+    const ctx = (r.context && typeof r.context === 'object' ? r.context : {}) as Record<string, unknown>;
+    if (ctx.foreign_head_sha === true) return false;
+    return time(r) > lastManual;
+  }).length;
+
+  return { inFlight, ciRetriesUsed };
 }
 
 /**

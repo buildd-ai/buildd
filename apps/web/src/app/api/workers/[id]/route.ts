@@ -57,6 +57,7 @@ import { BASH_FAILURE_PATTERN, BASH_RECOVERED_PATTERN, BASH_TRACE_EXCERPT_MAX } 
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -1202,7 +1203,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -3882,6 +3883,17 @@ export async function PATCH(
         ? 'pending_merge' as const
         : 'abandoned' as const;
     await releaseAndNotify(worker.taskId, releaseReason);
+  }
+
+  // A fix attempt (review fix, CI retry) just ended. The claim route wrote
+  // `Fixing` on the PR comment; close it here, or the comment keeps a spinner
+  // on a task that is no longer running. A later red CI result appends its own
+  // entry after this one. Only on the transition into a terminal status.
+  if (isTerminalStatus && worker.taskId && terminalTaskRow[0] && !isTerminalWorkerStatus(worker.status)) {
+    await announceFixEnded(
+      { id: worker.taskId, workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+      taskCancelledUnderSession ? 'cancelled' : status === 'completed' ? 'completed' : 'failed',
+    );
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
