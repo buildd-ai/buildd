@@ -168,7 +168,9 @@ export const FAMILIES: Record<string, Family> = {
   v5a: v5('a', 'dark'),
   v5b: v5('b', 'light'),
   v5c: v5('c', 'light'),
-  v6a: { dir: 'a', prefix: 'buildd-demo-v6a', theme: 'dark', cuts: (s) => [v6aFilm(s), v6aHero(s), ...v6aBeats(s)] },
+  v6a: { dir: 'a', prefix: 'buildd-demo-v6a', theme: 'dark', cuts: (s) => [v6aFilm(s), v6aHero(s), ...v6aBeats(s), ...v6aBeats(s, { mobile: true })] },
+  // The site's light set: the same beats and the v6x hero loop, on light stills.
+  v6l: { dir: 'l', prefix: 'buildd-demo-v6l', theme: 'light', cuts: (s) => [v6xHero(s, 'light'), ...v6aBeats(s, { theme: 'light' }), ...v6aBeats(s, { mobile: true, theme: 'light' })] },
   v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s)] },
 };
 
@@ -181,7 +183,7 @@ async function main() {
   }
   const manifest = JSON.parse(readFileSync(join(shotsDir, 'manifest.json'), 'utf8'));
   const board = manifest.storyboard ?? '';
-  const names = arg('cuts')?.split(',') ?? (/demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
+  const names = arg('cuts')?.split(',') ?? (/demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x', 'v6l'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
   // v6 promises: the floating Ask button never shows, and nothing below is drawn if a check fails.
   if (names.some((n) => n.startsWith('v6'))) {
     const asks = askButtonShots(manifest);
@@ -277,12 +279,13 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
         const poster = join(frames, `${String(Math.min(n - 1, Math.round((cut.poster ?? 0) * cut.fps))).padStart(5, '0')}.jpg`);
 
         if (cut.name.startsWith('beat-')) {
-          const loopFilter = seamlessLoopFilter(duration, cut.fade, 'scale=1280:-2:flags=lanczos');
+          // Beats render at their own frame (1280x720, 720x900): no scaling here.
+          const loopFilter = seamlessLoopFilter(duration, cut.fade);
           const out = (fmt: string[], file: string) => ff(...input, '-filter_complex', loopFilter, '-map', '[v]', ...fmt, '-an', join(outDir, file));
           out(['-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'], `${PREFIX}-${cut.name}.mp4`);
           out(['-c:v', 'libvpx-vp9', '-crf', '38', '-b:v', '0', '-row-mt', '1', '-pix_fmt', 'yuv420p'], `${PREFIX}-${cut.name}.webm`);
           const mid = join(frames, `${String(Math.min(n - 1, Math.round((cut.fade + beatLoopSeconds(cut) * 0.6) * cut.fps))).padStart(5, '0')}.jpg`);
-          ff('-i', mid, '-vf', 'scale=1280:-2:flags=lanczos', '-q:v', '3', join(outDir, `${PREFIX}-${cut.name}-poster.jpg`));
+          ff('-i', mid, '-q:v', '3', join(outDir, `${PREFIX}-${cut.name}-poster.jpg`));
         } else if (cut.name === 'full') {
           const audio = join(outDir, `.${PREFIX}.wav`);
           writeFileSync(audio, wav(synthesize(soundCues(cut), duration)));
@@ -321,12 +324,15 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
 
 /** The fixed names the site codes against: <beat>.*, hero.* (v6x loop), full.* (v6a with sound). */
 export function siteFiles(): Array<[from: string, to: string]> {
-  const a = (f: string) => join(FAMILIES.v6a.dir, `${FAMILIES.v6a.prefix}${f}`);
-  const x = (f: string) => join(FAMILIES.v6x.dir, `${FAMILIES.v6x.prefix}${f}`);
+  const in_ = (fam: string, f: string) => join(FAMILIES[fam].dir, `${FAMILIES[fam].prefix}${f}`);
+  const set = (fam: string, from: string, to: string): Array<[string, string]> =>
+    [['.webm', '.webm'], ['.mp4', '.mp4'], ['-poster.jpg', '-poster.jpg']].map(([a, b]) => [in_(fam, from + a), to + b]);
   return [
-    ...BEATS.flatMap((b): Array<[string, string]> => [[a(`-beat-${b}.webm`), `${b}.webm`], [a(`-beat-${b}.mp4`), `${b}.mp4`], [a(`-beat-${b}-poster.jpg`), `${b}-poster.jpg`]]),
-    [x('-hero.webm'), 'hero.webm'], [x('-hero.mp4'), 'hero.mp4'], [x('-hero-poster.jpg'), 'hero-poster.jpg'],
-    [a('.mp4'), 'full.mp4'], [a('.webm'), 'full.webm'], [a('-poster.jpg'), 'full-poster.jpg'],
+    ...BEATS.flatMap((b) => [
+      ...set('v6a', `-beat-${b}`, b), ...set('v6a', `-beat-${b}-mobile`, `${b}-mobile`),
+      ...set('v6l', `-beat-${b}`, `${b}-light`), ...set('v6l', `-beat-${b}-mobile`, `${b}-light-mobile`),
+    ]),
+    ...set('v6x', '-hero', 'hero'), ...set('v6l', '-hero', 'hero-light'), ...set('v6a', '', 'full'),
   ];
 }
 
@@ -336,8 +342,10 @@ function assembleSite(outRoot: string, site: string) {
   if (missing.length) throw new Error(`[render] --site: not rendered yet:\n  ${missing.join('\n  ')}`);
   for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(site, to));
   const probe = (f: string) => +Bun.spawnSync(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).stdout.toString().trim();
-  const manifest = [...BEATS, 'hero', 'full'].map((beat) => ({
-    beat, durationSec: +probe(join(site, `${beat}.mp4`)).toFixed(2),
+  const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
+  const size = (f: string) => Bun.spawnSync(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim().split(',').map(Number);
+  const manifest = clips.map((beat) => ({
+    beat, durationSec: +probe(join(site, `${beat}.mp4`)).toFixed(2), size: size(join(site, `${beat}.mp4`)),
     bytes: statSync(join(site, `${beat}.mp4`)).size, webmBytes: statSync(join(site, `${beat}.webm`)).size,
   }));
   writeFileSync(join(site, 'manifest.json'), JSON.stringify(manifest, null, 2));

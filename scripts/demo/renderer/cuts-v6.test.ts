@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
 import { mergeShotlists, seamlessLoopFilter, siteFiles } from './render';
-import { askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
+import { placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars } from './motion-model';
 
@@ -46,7 +46,18 @@ describe('v6a', () => {
     expect(captionCollisions(film)).toEqual([]);
   });
   test('every crop leaves the caption band free: lit boxes end above the bottom caption', () => {
-    for (const shot of film.shots.filter((x) => x.layout === 'screen' && x.caption)) expect(captionPlace(film, shot)).toBe('bottom');
+    // The Board fills the frame with tiles, so its caption goes up top instead.
+    for (const shot of film.shots.filter((x) => x.layout === 'screen' && x.caption && !x.burst)) expect(captionPlace(film, shot)).toBe('bottom');
+  });
+  test('fan-out: the caption never covers a tile, landed or in flight', () => {
+    const board = film.shots.find((x) => x.id === 'board')!;
+    expect(captionPlace(film, board)).toBe('top');
+    expect(captionCollisions({ ...film, shots: [board] })).toEqual([]);
+  });
+  test('review: the light cross-fades from the deck to the button, never gliding over the controls', () => {
+    const review = film.shots.find((x) => x.id === 'review')!;
+    const onBtn = review.spot!.find((k) => k.at > 0.5 && k.rects.length === 1 && k.rects[0].w < 0.5)!;
+    expect(onBtn.cross).toBe(true);
   });
   test('fan-out: one column at a time, each tile inside its column, below the strip, at 0.9 scale or more', () => {
     expect(fanoutEscapes(film)).toEqual([]);
@@ -117,33 +128,63 @@ test('askButtonShots flags a step where the Ask button was visible, and passes w
 });
 
 describe('v6a beats (one short loop per feature, for the site)', () => {
-  const beats = v6aBeats(fake);
   const film = v6aFilm(fake);
-  test('one cut per beat, in story order, named beat-<beat>', () => {
-    expect(beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}`));
+  const LOOKS = [
+    { name: 'desktop dark', beats: v6aBeats(fake), frame: [1280, 720], theme: 'dark', minPx: 1.4 },
+    { name: 'mobile dark', beats: v6aBeats(fake, { mobile: true }), frame: [720, 900], theme: 'dark', minPx: 1.5 },
+    { name: 'desktop light', beats: v6aBeats(fake, { theme: 'light' }), frame: [1280, 720], theme: 'light', minPx: 1.4 },
+    { name: 'mobile light', beats: v6aBeats(fake, { mobile: true, theme: 'light' }), frame: [720, 900], theme: 'light', minPx: 1.5 },
+  ] as const;
+  test('one cut per beat, in story order, named beat-<beat>[-mobile]', () => {
     expect(BEATS).toEqual(['ask', 'remember', 'fanout', 'fleet', 'decide', 'proof', 'done']);
+    expect(LOOKS[0].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}`));
+    expect(LOOKS[1].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}-mobile`));
   });
   test('every film shot lands in exactly one beat', () => {
-    const used = beats.flatMap((c) => c.shots.map((s) => s.id));
+    const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
     expect(used.sort()).toEqual(film.shots.map((s) => s.id).sort());
   });
-  test('silent and caption-free: the page carries the words; the loop is closed at encode', () => {
-    for (const c of beats) {
-      expect(c.loop).toBeFalsy();
-      expect(c.fadeOut).toBeFalsy();
-      expect(c.captions).toBe(false);
-      for (const s of c.shots) { expect(s.caption).toBeUndefined(); expect(s.chime).toBeUndefined(); }
-    }
+  for (const look of LOOKS) describe(look.name, () => {
+    test('frame, theme, silent and caption-free; the loop is closed at encode', () => {
+      for (const c of look.beats) {
+        expect([c.width, c.height]).toEqual([...look.frame]);
+        expect(c.theme).toBe(look.theme);
+        expect(c.loop).toBeFalsy();
+        expect(c.fadeOut).toBeFalsy();
+        expect(c.captions).toBe(false);
+        for (const s of c.shots) { expect(s.caption).toBeUndefined(); expect(s.chime).toBeUndefined(); }
+      }
+    });
+    test('light dimming: the rest stays at 60% brightness or more', () => {
+      for (const c of look.beats) for (const s of c.shots) for (const k of s.spot ?? []) expect(k.dim).toBeLessThanOrEqual(0.4);
+    });
+    test('readable: every camera key puts at least minPx output px on a CSS px', () => {
+      for (const c of look.beats) for (const s of c.shots) {
+        expect(s.layout).toBe('screen');
+        const img = s.images[0];
+        const css = img.width / (img.width < 2000 ? 3 : 2);
+        const floor = s.id === 'rule' ? Math.min(look.minPx, RULE_MIN_PX) : look.minPx;
+        for (const k of s.camera ?? []) expect((c.width / css) * k.zoom).toBeGreaterThanOrEqual(floor - 1e-6);
+      }
+    });
+    test('4-12s loops (the cut runs one crossfade longer, folded into the start)', () => {
+      for (const c of look.beats) {
+        expect(beatLoopSeconds(c)).toBeCloseTo(cutDuration(c) - c.fade, 5);
+        expect(beatLoopSeconds(c)).toBeGreaterThanOrEqual(4);
+        expect(beatLoopSeconds(c)).toBeLessThanOrEqual(12);
+        expect(c.fps).toBe(film.fps);
+      }
+    });
   });
-  test('short: 4-12s loops (the cut runs one crossfade longer, folded into the start)', () => {
-    for (const c of beats) {
-      expect(beatLoopSeconds(c)).toBeCloseTo(cutDuration(c) - c.fade, 5);
-      expect(beatLoopSeconds(c)).toBeGreaterThanOrEqual(4);
-      expect(beatLoopSeconds(c)).toBeLessThanOrEqual(12);
-      expect(c.fps).toBe(film.fps);
-      expect(c.fade).toBe(film.fade);
-    }
+  test('the film itself is unchanged by the beat looks: dark, 1920, dims to 0.75', () => {
+    expect([film.width, film.height]).toEqual([1920, 1080]);
+    expect(film.shots.some((s) => (s.spot ?? []).some((k) => Math.abs(k.dim - 0.75) < 1e-9))).toBe(true);
   });
+});
+
+test('v6x hero comes in both themes', () => {
+  expect(v6xHero(fake).theme).toBe('dark');
+  expect(v6xHero(fake, 'light').theme).toBe('light');
 });
 
 describe('seamlessLoopFilter', () => {
@@ -157,11 +198,31 @@ describe('seamlessLoopFilter', () => {
 
 test('siteFiles: the exact names the site codes against', () => {
   const names = siteFiles().map(([, to]) => to).sort();
-  const want = [...BEATS, 'hero', 'full'].flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]).sort();
+  const clips = [...BEATS.flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]), 'hero', 'hero-light', 'full'];
+  const want = clips.flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]).sort();
   expect(names).toEqual(want);
 });
 
 test('mergeShotlists: a beats-only run keeps the full cut', () => {
   const merged = mergeShotlists([{ name: 'full' }, { name: 'hero' }, { name: 'beat-ask', v: 1 }] as any[], [{ name: 'beat-ask', v: 2 }] as any[]);
   expect(merged.map((c: any) => [c.name, c.v])).toEqual([['full', undefined], ['hero', undefined], ['beat-ask', 2]]);
+});
+
+describe('aim', () => {
+  const look = beatLook();
+  const phone = { width: 1170, height: 2532 };
+  test('a tall phone region in a wide beat frame is framed (zoom < 1), not blown up to the frame width', () => {
+    const region = { x: 0.06, y: 0.3, w: 0.88, h: 0.45 };
+    const k = aim(look, phone, region, 1.1);
+    expect(k.zoom).toBeLessThan(1);
+    expect((1280 / 390) * k.zoom).toBeGreaterThanOrEqual(1.4 - 1e-9);
+    // The region's centre lands near the frame's middle.
+    const p = placeScreen(phone, { width: 1280, height: 720 }, k);
+    const mid = p.y + (region.y + region.h / 2) * phone.height * p.scale;
+    expect(Math.abs(mid - 360)).toBeLessThan(40);
+  });
+  test('the film never frames: its zoom stays at 1 or more', () => {
+    const film = { ...look, beat: false, minPx: 0, reserve: 0, tight: 1, frame: { width: 1920, height: 1080 } };
+    expect(aim(film, phone, { x: 0.06, y: 0.3, w: 0.88, h: 0.45 }, 1.1).zoom).toBeGreaterThanOrEqual(1);
+  });
 });

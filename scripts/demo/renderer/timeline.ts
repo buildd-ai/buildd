@@ -18,7 +18,11 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * (0 = off, 0.65 = the rest at ~35%). Moving between keys eases over
  * SPOT_MOVE; flat fills only, no blur.
  */
-export type SpotKey = { at: number; rects: Rect[]; dim: number; /** Air around every hole, in output pixels (so it survives the zoom). */ padPx?: number };
+export type SpotKey = {
+  at: number; rects: Rect[]; dim: number; /** Air around every hole, in output pixels (so it survives the zoom). */ padPx?: number;
+  /** Cross-fade to this key through an undimmed frame instead of gliding: a big hole shrinking onto a button would sweep a lit band across the controls. */
+  cross?: boolean;
+};
 
 /**
  * Covers `rect` from `from` (default: the start) until `until` (default:
@@ -302,7 +306,7 @@ export function spotAt(keys: SpotKey[] | undefined, local: number, move = SPOT_M
   const prev = k > 0 ? keys[k - 1] : { at: cur.at, rects: cur.rects, dim: 0 };
   const e = ease((local - cur.at) / move);
   if (e >= 1) return { rects: cur.rects, dim: cur.dim };
-  if (prev.rects.length === cur.rects.length) return { rects: cur.rects.map((r, i) => lerpRect(prev.rects[i], r, e)), dim: lerp(prev.dim, cur.dim, e) };
+  if (prev.rects.length === cur.rects.length && !cur.cross) return { rects: cur.rects.map((r, i) => lerpRect(prev.rects[i], r, e)), dim: lerp(prev.dim, cur.dim, e) };
   return e < 0.5 ? { rects: prev.rects, dim: prev.dim * (1 - 2 * e) } : { rects: cur.rects, dim: cur.dim * (2 * e - 1) };
 }
 
@@ -441,6 +445,11 @@ export function keepClear(cut: Pick<Cut, 'width' | 'height'>, shot: Shot, local:
     return { x: b.x - k, y: b.y - k, w: b.w + 2 * k, h: b.h + 2 * k };
   });
   for (const c of shot.controls ?? []) boxes.push(toFrameBox(img, cut, cam, c));
+  // Fan-out tiles, wherever they are in flight: the caption must not sit on the Board.
+  if (shot.burst) shot.burst.tiles.forEach((_, i) => {
+    const q = burstPose(shot.burst!, i, local);
+    if (q.opacity > 0) boxes.push(toFrameBox(img, cut, cam, q));
+  });
   return boxes;
 }
 

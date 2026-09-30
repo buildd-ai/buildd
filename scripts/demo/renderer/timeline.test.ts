@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captionPlace, captionBox, captionReserve, burstAt, burstEnd, fleetAt, focus, maskAt, spotAt, fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
+import { keepClear, captionPlace, captionBox, captionReserve, burstAt, burstEnd, fleetAt, focus, maskAt, spotAt, fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
 
 const img = (src: string, at = 0) => ({ src, at, width: 2880, height: 1620 });
 const shot = (id: string, dur: number, extra: Partial<Shot> = {}): Shot => ({ id, layout: 'screen', dur, images: [img(`${id}.png`)], ...extra });
@@ -144,6 +144,28 @@ describe('spotAt', () => {
   test('a different count dips the dim through zero instead of popping', () => {
     expect(spotAt(keys, 5.3).dim).toBeLessThan(0.1);
     expect(spotAt(keys, 6).rects).toHaveLength(2);
+  });
+  test('cross: the hole never glides, it cross-fades through an undimmed frame', () => {
+    const big = R(0.1, 0.1, 0.8, 0.8), btn = R(0.6, 0.8, 0.2, 0.05);
+    const ks = [{ at: 0, rects: [big], dim: 0.6 }, { at: 1, rects: [btn], dim: 0.6, cross: true }];
+    for (let t = 1; t <= 2; t += 0.02) {
+      const r = spotAt(ks, t).rects[0];
+      expect([big, btn]).toContainEqual(r);
+    }
+    expect(spotAt(ks, 1.3).dim).toBeLessThan(0.2);
+  });
+});
+
+describe('keepClear counts fan-out tiles', () => {
+  test('a landed or flying tile is something a caption must not cover', () => {
+    const tile = R(0.05, 0.8, 0.3, 0.1);
+    const shot = { id: 'board', layout: 'screen', dur: 4, images: [{ src: 'x', at: 0, width: 1920, height: 1080 }],
+      burst: { origin: { x: 0.5, y: 0.5 }, tiles: [tile], from: 0.5, stagger: 0, dur: 0.5, mode: 'column' } } as any;
+    const cut = { width: 1920, height: 1080 };
+    expect(keepClear(cut, shot, 0.2)).toHaveLength(0);
+    const landed = keepClear(cut, shot, 2);
+    expect(landed).toHaveLength(1);
+    expect(landed[0].y).toBeCloseTo(0.8 * 1080, 0);
   });
 });
 

@@ -764,7 +764,7 @@ chat = {
                  {"type": "text", "text": "Nothing in flight touches currency. The team already decided amounts stay integer cents in one base currency, so this reaches six surfaces: the invoice schema, an FX rates service, a currency picker, invoice rendering, Stripe checkout and the accounting export. The public Invoices API needs a currency field too, added without breaking v2 clients."},
              ]},
             {"key": "C1m3", "role": "user", "_at": "-2m",
-             "parts": [{"type": "text", "text": "Make it a mission. Keep the public API backward compatible."}]},
+             "parts": [{"type": "text", "text": "Make it a mission. From now on, keep the public API backward compatible."}]},
             {"key": "C1m4", "role": "assistant", "_at": "-2m", "tier": "standard",
              "parts": [
                  {"type": "step-start"},
@@ -780,11 +780,12 @@ chat = {
             "data": f"Mission created: {M1_TITLE}. The Organizer is planning it.",
             "objects": [{"kind": "mission", "id": "{{M1}}", "workspaceId": "{{ws}}", "title": M1_TITLE, "fallbackText": f"Mission: {M1_TITLE}"}],
             "followUp": "Filed. The Organizer is planning it now; the board fills in as agents pick up tasks.",
-            # "Keep the public API backward compatible" reads as a standing rule, so
-            # the confirmed turn also offers it as a directive card
+            # "From now on, ..." is a rule cue (packages/core/chat-directives.ts
+            # keywordDirective), so the confirmed turn also offers it as a directive
+            # card, with the text directiveText() proposes
             # (components/chat/DirectiveCard.tsx): one tap saves it to the workspace.
             "followUpParts": [{"type": "data-buildd-directive", "data": {
-                "conversationId": "{{C1}}", "text": "Keep the public Invoices API backward compatible.",
+                "conversationId": "{{C1}}", "text": "From now on, keep the public API backward compatible.",
                 "suggestedScope": "workspace", "workspace": {"id": "{{ws}}", "name": "billing-web"}, "source": "jev",
             }}],
         },
