@@ -69,6 +69,7 @@ import {
   flushStderrTrace,
   uploadSessionDiagnostics,
 } from './session-diagnostics';
+import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
@@ -729,6 +730,9 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
+  // Per-worker BYO evidence writers (command_output / test_report). Built next
+  // to the redactor in startSession and dropped with it. Best-effort only.
+  private evidenceWriters = new Map<string, EvidenceWriter>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -2674,16 +2678,24 @@ export class WorkerManager {
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
-    // Build a secret redactor for this worker from the BUILDD_API_KEY and any
-    // MCP credential values delivered during claim. Applies to milestones,
-    // currentAction, error traces, and the history archive before persistence.
-    const secretValues = [
-      { label: 'BUILDD_API_KEY', value: this.config.apiKey },
-      ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
-      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
-    ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and every
+    // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
+    // credentials — see buildWorkerSecretValues). Applies to milestones,
+    // currentAction, error traces, evidence bodies and the history archive.
+    const secretValues = buildWorkerSecretValues(this.config.apiKey, worker);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
+    // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
+    // on a client that does not have the method.
+    this.evidenceWriters.set(worker.id, new EvidenceWriter({
+      workerId: worker.id,
+      taskId: task.id,
+      redact: redactWorkerSecrets,
+      deps: {
+        requestEvidenceUploadUrl: async (workerId, req) =>
+          (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
+      },
+    }));
 
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -5062,6 +5074,12 @@ export class WorkerManager {
         // itself produced.
         return;
       }
+      // BYO evidence: read the session's test report BEFORE the worktree can be
+      // removed below (error/abort sessions lose it). Upload is awaited later by
+      // drain(). Best-effort; never touches worker.status.
+      if (!bwrapRetryAfterCleanup) {
+        this.evidenceWriters.get(worker.id)?.queueTestReport(cwd);
+      }
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {
@@ -5202,6 +5220,17 @@ export class WorkerManager {
           console.warn(`[Worker ${worker.id}] session diagnostics failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
       }
+
+      // BYO evidence: wait for in-flight command_output / test_report uploads. Never throws, never touches worker.status.
+      const evidenceWriter = this.evidenceWriters.get(worker.id);
+      if (evidenceWriter && !bwrapRetryAfterCleanup) {
+        try {
+          await evidenceWriter.drain();
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] evidence write failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      this.evidenceWriters.delete(worker.id);
 
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
@@ -5895,6 +5924,13 @@ export class WorkerManager {
           // Without it, five in six firings landed on successful output.
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
+          });
+          // BYO evidence: full redacted output of a failing Bash call.
+          // Fire-and-forget; drained at session end.
+          this.evidenceWriters.get(worker.id)?.onToolResult({
+            source,
+            isError: block.is_error === true,
+            text,
           });
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
