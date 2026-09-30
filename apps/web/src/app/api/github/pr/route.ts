@@ -141,6 +141,8 @@ async function requestIntegrationBranchReview(params: {
           description: null,
           workspaceId: params.workspace.id,
           missionId: params.task.missionId,
+          backend: params.task.backend,
+          roleSlug: picked.role,
         },
         params.workspace as never,
       );

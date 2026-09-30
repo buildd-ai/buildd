@@ -38,7 +38,7 @@ import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
 import { parseReviewerOutput, applyConfidenceGate } from '@/lib/reviewer-output';
@@ -3618,8 +3618,19 @@ export async function PATCH(
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
           where: eq(tasks.id, taskId),
-          columns: { title: true },
-          with: { workspace: { columns: { name: true, teamId: true } } },
+          // The dispatch fields feed the auto-retry wake-up below.
+          columns: {
+            id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
+            missionId: true, backend: true, roleSlug: true, runnerPreference: true, startAt: true,
+          },
+          with: {
+            workspace: {
+              columns: {
+                id: true, name: true, teamId: true, repo: true, webhookConfig: true,
+                githubInstallationId: true, githubRepoId: true,
+              },
+            },
+          },
         });
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
@@ -3631,11 +3642,19 @@ export async function PATCH(
           // already applies this same correction).
           const isDone = status === 'completed' && !contractViolation;
           if (shouldAutoRetry) {
-            // Broadcast the task as available for any worker to claim
-            await triggerEvent(
-              channels.workspace(worker.workspaceId),
-              events.TASK_ASSIGNED,
-              { task: { id: worker.taskId, workspaceId: worker.workspaceId, status: 'pending' }, targetLocalUiUrl: null }
+            // Wake runners for the requeued task: the workspace webhook when one
+            // is configured (a push runner has no Pusher subscription), else a
+            // TASK_ASSIGNED broadcast to any connected worker, as before.
+            await dispatchRetriedTask(
+              {
+                ...taskRecord,
+                id: worker.taskId!,
+                workspaceId: worker.workspaceId,
+                description: taskRecord.description ?? null,
+                mode: taskRecord.mode ?? undefined,
+                priority: taskRecord.priority ?? undefined,
+              },
+              taskRecord.workspace ?? {},
             );
             // A retry is a (transient) failure — gate it on the taskFailed toggle.
             void notifyTeam(notifyTeamId, 'taskFailed', {

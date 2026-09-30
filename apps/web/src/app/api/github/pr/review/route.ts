@@ -382,6 +382,8 @@ export async function POST(req: NextRequest) {
         description: null,
         workspaceId: workspace.id,
         missionId: originalTask.missionId,
+        backend: originalTask.backend,
+        roleSlug: picked.role,
       },
       workspace as never,
     );

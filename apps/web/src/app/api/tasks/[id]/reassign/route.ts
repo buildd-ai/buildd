@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, inArray, gt, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { dispatchRetriedTask } from '@/lib/task-dispatch';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -191,12 +192,12 @@ export async function POST(
     // a single atomic update after the status reset so it covers every branch
     // (assigned/failed/pending) without duplicating .set() logic.
     const switchedBackend = requestedBackend && requestedBackend !== task.backend;
+    // Switching provider also lifts a budget/rate-limit deferral belonging to
+    // the OLD provider: start_at was set to that provider's reset, so leaving
+    // it in place would park the task despite the switch.
+    const reassignCtx = (task.context || {}) as Record<string, unknown>;
+    const liftPause = !!switchedBackend && reassignCtx.budgetExhausted === true;
     if (switchedBackend) {
-      // Switching provider also lifts a budget/rate-limit deferral belonging to
-      // the OLD provider: start_at was set to that provider's reset, so leaving
-      // it in place would park the task despite the switch.
-      const reassignCtx = (task.context || {}) as Record<string, unknown>;
-      const liftPause = reassignCtx.budgetExhausted === true;
       const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = reassignCtx;
       await db.update(tasks)
         .set({
@@ -210,24 +211,17 @@ export async function POST(
         .where(eq(tasks.id, taskId));
     }
 
-    // Build minimal task payload for Pusher (10KB event limit).
-    // Full task data (with context, attachments, workspace config) is fetched
-    // via the claim API. Sending the full object can exceed Pusher's limit.
-    const taskPayload = {
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      workspaceId: task.workspaceId,
-      status: 'pending' as const,
-      mode: task.mode,
-      priority: task.priority,
-    };
-
-    // Broadcast to all workers (no targetLocalUiUrl = any worker can claim)
-    await triggerEvent(
-      channels.workspace(task.workspaceId),
-      events.TASK_ASSIGNED,
-      { task: taskPayload, targetLocalUiUrl: null }
+    // Wake runners: the workspace webhook when one is configured (a push
+    // runner never sees the Pusher broadcast), else TASK_ASSIGNED to any
+    // connected runner (no targetLocalUiUrl = any worker can claim). The
+    // payload is the same minimal shape as every other nudge (10KB limit).
+    await dispatchRetriedTask(
+      {
+        ...task,
+        ...(switchedBackend && { backend: requestedBackend }),
+        ...(liftPause && { startAt: null }),
+      },
+      task.workspace ?? {},
     );
 
     // Check for online workers to give feedback on pickup likelihood.
