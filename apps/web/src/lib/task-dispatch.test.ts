@@ -12,6 +12,13 @@ mock.module('@/lib/github', () => ({
   isGitHubAppConfigured: () => false,
 }));
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
+// The held / local-executor gate the webhook leg of a retry consults. The real
+// query reuses the claim route's notHeldOrLocal() fragment (held-gate.ts).
+let taskNotParked = true;
+const mockIsTaskNotHeldOrLocal = mock(async (_taskId: string) => taskNotParked);
+mock.module('@/app/api/workers/claim/held-gate', () => ({
+  isTaskNotHeldOrLocal: mockIsTaskNotHeldOrLocal,
+}));
 
 import {
   buildTaskPayload,
@@ -19,6 +26,9 @@ import {
   dispatchNewTask,
   dispatchUnblockedTask,
   dispatchRetriedTask,
+  dispatchPlanChildTask,
+  dispatchToWebhook,
+  WEBHOOK_DISPATCH_TIMEOUT_MS,
 } from './task-dispatch';
 
 describe('buildTaskPayload', () => {
@@ -103,7 +113,13 @@ describe('buildTaskPayload', () => {
 
 // ── Webhook dispatch ───────────────────────────────────────────────────────
 
-const WEBHOOK = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+/** A webhook configured before the `events` opt-in existed. */
+const LEGACY_WEBHOOK = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+/** A webhook that opted into every dispatch event (the cloud runner's deploy). */
+const WEBHOOK = {
+  ...LEGACY_WEBHOOK,
+  events: ['task.created', 'task.unblocked', 'task.retry'] as Array<'task.created' | 'task.unblocked' | 'task.retry'>,
+};
 
 const TASK = {
   id: 'task-w1',
@@ -124,7 +140,10 @@ let fetchStatus = 200;
 beforeEach(() => {
   fetchCalls = [];
   fetchStatus = 200;
+  taskNotParked = true;
+  mockIsTaskNotHeldOrLocal.mockClear();
   mockTriggerEvent.mockClear();
+  mockGitHubDispatch.mockClear();
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     fetchCalls.push({ url, init });
     return new Response('ok', { status: fetchStatus });
@@ -248,5 +267,154 @@ describe('dispatchRetriedTask', () => {
     await dispatchRetriedTask(TASK, { webhookConfig: WEBHOOK, githubInstallationId: 'i', githubRepoId: 'r' });
     expect(mockGitHubDispatch).not.toHaveBeenCalled();
     expect(assignedCalls()).toHaveLength(1);
+  });
+});
+
+// ── Timeout ────────────────────────────────────────────────────────────────
+
+describe('webhook fetch timeout', () => {
+  /** A consumer that accepts the connection and never answers. */
+  function hangingFetch() {
+    globalThis.fetch = ((url: string, init: RequestInit) => {
+      fetchCalls.push({ url, init });
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it('defaults to ten seconds', () => {
+    expect(WEBHOOK_DISPATCH_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it('every dispatch carries an abort signal', async () => {
+    await dispatchNewTask(TASK, { webhookConfig: WEBHOOK });
+    expect(fetchCalls[0].init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('a webhook that never answers counts as not dispatched', async () => {
+    hangingFetch();
+    const ok = await dispatchToWebhook(WEBHOOK, TASK, 'task.created', 20);
+    expect(ok).toBe(false);
+  });
+
+  it('a timed-out webhook falls back to the TASK_ASSIGNED broadcast', async () => {
+    hangingFetch();
+    // Rejects the way AbortSignal.timeout does, without waiting ten seconds.
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      fetchCalls.push({ url, init });
+      throw new DOMException('The operation timed out.', 'TimeoutError');
+    }) as unknown as typeof fetch;
+    await dispatchNewTask(TASK, { webhookConfig: WEBHOOK });
+    expect(assignedCalls()).toHaveLength(1);
+  });
+});
+
+// ── events opt-in ──────────────────────────────────────────────────────────
+
+describe('webhook events opt-in: a config without `events` sees only the legacy dispatches', () => {
+  it('new tasks still reach a legacy webhook', async () => {
+    await dispatchNewTask(TASK, { webhookConfig: LEGACY_WEBHOOK });
+    expect(fetchCalls).toHaveLength(1);
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it('unblocked tasks still reach a legacy webhook, whatever event the caller names', async () => {
+    await dispatchUnblockedTask(TASK, { webhookConfig: LEGACY_WEBHOOK });
+    await dispatchUnblockedTask(TASK, { webhookConfig: LEGACY_WEBHOOK }, { event: 'task.retry' });
+    expect(fetchCalls).toHaveLength(2);
+  });
+
+  it('unblocked dispatch ignores runnerPreference for a legacy webhook, as before', async () => {
+    const restricted = { ...LEGACY_WEBHOOK, runnerPreference: 'service' as const };
+    await dispatchUnblockedTask({ ...TASK, runnerPreference: 'user' }, { webhookConfig: restricted });
+    expect(fetchCalls).toHaveLength(1);
+  });
+
+  it('a retry does not reach a legacy webhook; it wakes runners over Pusher as before', async () => {
+    await dispatchRetriedTask(TASK, { webhookConfig: LEGACY_WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('a deferred-sweep retry (startAt passed, omitted) does not reach a legacy webhook', async () => {
+    const { startAt: _s, ...row } = { ...TASK, startAt: undefined, runnerPreference: 'any' };
+    await dispatchRetriedTask(row, { webhookConfig: LEGACY_WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('an approved plan child does not reach a legacy webhook; Pusher only', async () => {
+    await dispatchPlanChildTask(TASK, { webhookConfig: LEGACY_WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+});
+
+describe('webhook events opt-in: a config that lists events gets exactly those', () => {
+  it('opted-in retry reaches the webhook and suppresses Pusher', async () => {
+    await dispatchRetriedTask(TASK, { webhookConfig: WEBHOOK });
+    expect(fetchCalls).toHaveLength(1);
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it("an approved plan child reaches a webhook that opted into 'task.created', as task.created", async () => {
+    await dispatchPlanChildTask(TASK, { webhookConfig: { ...LEGACY_WEBHOOK, events: ['task.created'] } });
+    expect(fetchCalls).toHaveLength(1);
+    expect(sentBody().event).toBe('task.created');
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it('a plan child honours the webhook runnerPreference, like a new task', async () => {
+    const restricted = { ...WEBHOOK, runnerPreference: 'service' as const };
+    await dispatchPlanChildTask({ ...TASK, runnerPreference: 'user' }, { webhookConfig: restricted });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('a plan child never starts a GitHub Actions run', async () => {
+    fetchStatus = 500;
+    await dispatchPlanChildTask(TASK, { webhookConfig: WEBHOOK, githubInstallationId: 'i', githubRepoId: 'r' });
+    expect(mockGitHubDispatch).not.toHaveBeenCalled();
+  });
+
+  it('an event left out of the list is not sent', async () => {
+    const createdOnly = { ...LEGACY_WEBHOOK, events: ['task.created'] as Array<'task.created'> };
+    await dispatchRetriedTask(TASK, { webhookConfig: createdOnly });
+    await dispatchUnblockedTask(TASK, { webhookConfig: createdOnly });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(2);
+  });
+
+  it('opted-in unblocked dispatch honours runnerPreference like the new/retry paths', async () => {
+    const restricted = { ...WEBHOOK, runnerPreference: 'service' as const };
+    await dispatchUnblockedTask({ ...TASK, runnerPreference: 'user' }, { webhookConfig: restricted });
+    expect(fetchCalls).toHaveLength(0);
+    await dispatchUnblockedTask({ ...TASK, runnerPreference: 'service' }, { webhookConfig: restricted });
+    expect(fetchCalls).toHaveLength(1);
+  });
+});
+
+// ── held / local-executor ──────────────────────────────────────────────────
+
+describe('dispatchRetriedTask: held and local-executor work stays off the webhook', () => {
+  it('a held task or held / local-executor mission is not sent to the webhook; Pusher wakes as before', async () => {
+    taskNotParked = false;
+    await dispatchRetriedTask(TASK, { webhookConfig: WEBHOOK });
+    expect(mockIsTaskNotHeldOrLocal).toHaveBeenCalledWith('task-w1');
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('the gate failing to answer keeps the task off the webhook', async () => {
+    mockIsTaskNotHeldOrLocal.mockImplementationOnce(async () => { throw new Error('db down'); });
+    await dispatchRetriedTask(TASK, { webhookConfig: WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('the gate is not consulted when the webhook would not be called anyway', async () => {
+    await dispatchRetriedTask(TASK, { webhookConfig: LEGACY_WEBHOOK });
+    expect(mockIsTaskNotHeldOrLocal).not.toHaveBeenCalled();
   });
 });

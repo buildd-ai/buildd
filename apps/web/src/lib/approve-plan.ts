@@ -9,7 +9,7 @@ import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, ty
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
-import { dispatchUnblockedTask } from './task-dispatch';
+import { dispatchPlanChildTask } from './task-dispatch';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -134,7 +134,7 @@ export async function approvePlan(
     ? await db.query.workspaces.findFirst({
         where: eq(workspaces.id, task.workspaceId),
         // gitConfig for branch prediction; the rest wakes runners for the
-        // children this plan creates (dispatchUnblockedTask).
+        // children this plan creates (dispatchPlanChildTask).
         columns: {
           id: true, name: true, repo: true, gitConfig: true, webhookConfig: true,
           githubInstallationId: true, githubRepoId: true,
@@ -409,7 +409,8 @@ export async function approvePlan(
  *
  * Without this, plan children reached a runner only by polling, so a
  * push-dispatched workspace (webhookConfig, no Pusher subscriber) never heard
- * about them. Skipped for a held mission (nothing is claimable until it is
+ * about them. The webhook is used only when it lists 'task.created' in
+ * `events`; otherwise this is a Pusher TASK_ASSIGNED wake (dispatchPlanChildTask). Skipped for a held mission (nothing is claimable until it is
  * armed) and a local-executor mission (runners must never auto-claim it).
  * Best-effort: a failed wake never fails the approval — the poll still finds
  * the task.
@@ -418,7 +419,7 @@ async function wakeRunnersForReadyChildren(
   plan: PlanStep[],
   refToId: Record<string, string>,
   createdByRef: Record<string, typeof tasks.$inferSelect>,
-  workspace: Parameters<typeof dispatchUnblockedTask>[1] | null | undefined,
+  workspace: Parameters<typeof dispatchPlanChildTask>[1] | null | undefined,
   mission: { isHeld?: boolean | null; executor?: string | null } | null | undefined,
 ): Promise<void> {
   if (!workspace) return;
@@ -428,14 +429,13 @@ async function wakeRunnersForReadyChildren(
     const hasDeps = (step.dependsOn ?? []).some((ref) => !!refToId[ref]);
     const created = createdByRef[step.ref];
     if (hasDeps || !created) continue;
-    await dispatchUnblockedTask(
+    await dispatchPlanChildTask(
       {
         ...created,
         mode: created.mode ?? undefined,
         priority: created.priority ?? undefined,
       },
       workspace,
-      { event: 'task.created' },
     ).catch((err) =>
       console.error(`[approve-plan] dispatch failed for task ${created.id}:`, err),
     );

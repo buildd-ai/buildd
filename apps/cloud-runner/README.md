@@ -183,14 +183,23 @@ never calls that route. It then:
 2. `wrangler secret put` `BUILDD_SERVER` (`--worker-server`, default the
    buildd URL), `BUILDD_API_KEY` (the runner key) and a freshly generated
    `DISPATCH_TOKEN`
-3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true }`
+3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry'] }`
+
+`events` is the opt-in. A webhook without it gets what webhooks always got:
+new and unblocked tasks. Retries, approved-plan children and deferred-start
+re-dispatches reach a webhook only when it lists the event (`task.retry` for
+retries and the deferred sweep, `task.created` for plan children); otherwise
+they wake runners over Pusher. A re-run adds any event the workspace's webhook
+is missing, without touching the token. PATCH merges `webhookConfig`, so keys
+it does not manage (the issue-ingest settings) are kept, and plain `http` is
+accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
 
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Print the plan (secrets redacted); change nothing |
 | (re-run) | Redeploys code; rotates nothing. An existing `DISPATCH_TOKEN` and runner key stay |
 | `--rotate` | New `DISPATCH_TOKEN` on the Worker and the workspace. Other workspaces on the same Worker stop dispatching until re-pointed |
-| `--remove` | `webhookConfig = null`: the workspace goes back to Pusher-notified runners (Coder, local). The Worker stays deployed |
+| `--remove` | `webhookConfig = null`: clears the dispatch keys (`url`, `token`, `enabled`, `runnerPreference`, `events`); the workspace goes back to Pusher-notified runners (Coder, local). The Worker stays deployed |
 | `--print-token` | Print the `DISPATCH_TOKEN` it set |
 | `--url` | Worker base URL, for a custom domain |
 
@@ -241,7 +250,8 @@ the account may claim from the task's workspace, that the dispatch token
 matches that workspace's enabled webhook, and that the task has a live worker
 claimed by the same account, then mints an installation token with
 `repository_ids: [<the workspace's github_repos link>]` and only the
-permissions a run needs. The agent keeps it in memory (never in storage, never
+permissions a run needs. `workflows` is not among them, so a push that
+changes `.github/workflows/` is refused; workflow changes go to a person. The agent keeps it in memory (never in storage, never
 in the container), shares one fetch between concurrent requests, refetches 5
 minutes before expiry, and backs off 15 s after a failure (requests then go out
 unauthenticated). It is only handed out while a run is `starting`/`running`.

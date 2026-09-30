@@ -2,7 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 
 mock.module('./github', () => ({ generateAppJWT: () => 'app-jwt' }));
 
-import { mintRepoScopedInstallationToken, scopedTokenPermissions } from './github-scoped-token';
+import { mintRepoScopedInstallationToken, scopedTokenPermissions, TASK_TOKEN_PERMISSIONS } from './github-scoped-token';
 
 function res(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -19,6 +19,12 @@ describe('scopedTokenPermissions', () => {
 
   it('never asks for more than wanted even when the installation has admin', () => {
     expect(scopedTokenPermissions({ contents: 'admin', checks: 'write' })).toEqual({ contents: 'write', checks: 'read' });
+  });
+
+  // Workflow-file changes are escalated to a person, not pushed by a task run.
+  it('never requests workflows, even when the installation grants it', () => {
+    expect(TASK_TOKEN_PERMISSIONS).not.toHaveProperty('workflows');
+    expect(scopedTokenPermissions({ contents: 'write', workflows: 'write' })).toEqual({ contents: 'write' });
   });
 
   it('unknown installed set: no permissions field (still repo-scoped)', () => {

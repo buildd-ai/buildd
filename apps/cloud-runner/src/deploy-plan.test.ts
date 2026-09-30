@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { planDeploy, describePlan, dispatchUrl, type DeployInputs, type DeployStep } from './deploy-plan';
+import { planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
 
 const URL_ = 'https://buildd-cloud-runner.example.workers.dev';
 const DISPATCH = `${URL_}/dispatch`;
@@ -29,6 +29,10 @@ describe('planDeploy: first deploy', () => {
     expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'put:BUILDD_API_KEY', 'put:DISPATCH_TOKEN', 'set_webhook']);
     const hook = p.steps.find((s) => s.kind === 'set_webhook');
     expect(hook).toMatchObject({ config: { url: DISPATCH, token: GEN, enabled: true } });
+    // Opts into every dispatch event: without `events`, buildd sends a webhook
+    // only new and unblocked tasks, and a push-only runner never sees a retry.
+    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry'] } });
+    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry']);
     const tok = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
     expect(tok).toMatchObject({ value: GEN });
   });
@@ -46,7 +50,10 @@ describe('planDeploy: first deploy', () => {
 describe('planDeploy: idempotent re-run', () => {
   const deployed = {
     workerSecretNames: ['DISPATCH_TOKEN', 'BUILDD_API_KEY', 'BUILDD_SERVER'],
-    workspace: { id: 'ws-1', name: 'demo', webhookConfig: { url: DISPATCH, enabled: true, hasToken: true } },
+    workspace: {
+      id: 'ws-1', name: 'demo',
+      webhookConfig: { url: DISPATCH, enabled: true, hasToken: true, events: [...DISPATCH_EVENTS] as string[] | undefined },
+    },
     runnerApiKey: undefined,
   };
 
@@ -56,6 +63,37 @@ describe('planDeploy: idempotent re-run', () => {
     if (!p.ok) return;
     expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
     expect(p.notes.join(' ')).toContain('token unchanged');
+  });
+
+  it('a webhook that already lists every event is left alone', () => {
+    const p = planDeploy(inputs({
+      ...deployed,
+      workspace: { ...deployed.workspace, webhookConfig: { ...deployed.workspace.webhookConfig, events: [...DISPATCH_EVENTS] } },
+    }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER']);
+  });
+
+  it('a webhook set before the events opt-in (no events) is opted in', () => {
+    const p = planDeploy(inputs({
+      ...deployed,
+      workspace: { ...deployed.workspace, webhookConfig: { ...deployed.workspace.webhookConfig, events: undefined } },
+    }));
+    expect(p.ok && kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
+  });
+
+  it('a webhook missing an event is opted in without touching the token', () => {
+    const p = planDeploy(inputs({
+      ...deployed,
+      workspace: { ...deployed.workspace, webhookConfig: { ...deployed.workspace.webhookConfig, events: ['task.created'] } },
+    }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(kinds(p.steps)).toEqual(['wrangler_deploy', 'put:BUILDD_SERVER', 'set_webhook']);
+    const hook = p.steps.find((s) => s.kind === 'set_webhook');
+    // No token: PATCH merges, so the stored one stays.
+    expect(hook).toMatchObject({ config: { url: DISPATCH, enabled: true, events: [...DISPATCH_EVENTS] } });
+    expect(hook && 'config' in hook && 'token' in hook.config).toBe(false);
+    expect(describePlan(p).join('\n')).toContain('token: (unchanged)');
   });
 
   it('never uses the generated token unless it needs one', () => {

@@ -182,13 +182,24 @@ the container API, which is the Sandbox SDK pattern.
   consumers are unaffected.
 - Retries and unblocked tasks must reach the webhook too. `dispatchUnblockedTask`
   already runs the same chain; the retry and budget-reset paths need an audit.
+- As built: `webhookConfig.events` is an explicit opt-in (`task.created`,
+  `task.unblocked`, `task.retry`). A webhook without it sees exactly what it
+  saw before: new and unblocked tasks. Retries (`dispatchRetriedTask`, also
+  used by the deferred-start sweep) need `task.retry`; approved-plan children
+  (`dispatchPlanChildTask`) need `task.created` listed explicitly. Otherwise
+  those paths send the Pusher `TASK_ASSIGNED` wake. `deploy.ts` lists all
+  three. The retry and plan-child webhook legs skip held tasks and held or
+  local-executor missions, and every webhook POST times out after 10 s and
+  then falls back to Pusher.
 - A way to get a per-task GitHub installation token to the dispatcher (see
   Open questions).
 
 ### Opt-in and defaults
 
-A workspace opts in by setting `webhookConfig` to the dispatcher URL. That
-field and its exclusive-dispatch behaviour already exist. With no
+A workspace opts in by setting `webhookConfig` to the dispatcher URL, with
+`events` listing the dispatches it wants. That field and its
+exclusive-dispatch behaviour already exist. Only owner/admin (or an admin API
+key) can set it, through `PATCH /api/workspaces/[id]`. With no
 `webhookConfig`, nothing changes. Coder runners that still list the workspace
 can race-claim by polling; the claim is atomic, so this is safe, but a canary
 workspace should not be listed on any Coder runner.

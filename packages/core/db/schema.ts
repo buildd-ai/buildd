@@ -593,6 +593,15 @@ export interface WorkspaceWebhookConfig {
   enabled: boolean;
   // Optional: only dispatch tasks with specific runner preference
   runnerPreference?: 'any' | 'user' | 'service' | 'action';
+  // Optional: which dispatch events this webhook receives (apps/web/src/lib/task-dispatch.ts).
+  // Absent = the legacy set, new and unblocked tasks only. Retries, approved-plan
+  // children and deferred-start re-dispatches reach a webhook only when listed here;
+  // otherwise they wake runners over Pusher. A listed config also has runnerPreference
+  // applied to unblocked dispatches.
+  events?: Array<'task.created' | 'task.unblocked' | 'task.retry'>;
+  // The same column also carries POST /api/webhooks/ingest's keys (webhookSecret,
+  // labelFilter, ...). PATCH /api/workspaces/[id] merges onto the stored object, so
+  // setting or clearing the dispatch keys above leaves those untouched.
 }
 
 // Schedule trigger - conditional check before creating a task

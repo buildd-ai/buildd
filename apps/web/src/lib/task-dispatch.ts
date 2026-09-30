@@ -3,6 +3,7 @@ import { githubInstallations, githubRepos, type WorkspaceWebhookConfig } from '@
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
+import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 
 /**
  * Why the webhook fired. A consumer that runs tasks (the Cloudflare
@@ -10,6 +11,27 @@ import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
  * event only says which path made the task claimable.
  */
 export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry';
+
+/** How long a webhook POST may take before it counts as not dispatched. */
+export const WEBHOOK_DISPATCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether this webhook receives `event`.
+ *
+ * `webhookConfig.events` is an opt-in. A config that lists events gets exactly
+ * those. A config without it (every webhook configured before the list
+ * existed) keeps what it always received: `legacyDefault` is true only for the
+ * two paths that reached webhooks before, new tasks (dispatchNewTask) and
+ * dispatchUnblockedTask. Retries, approved-plan children and the deferred-start
+ * sweep reach a webhook only when it lists the event.
+ */
+function webhookSubscribes(
+  webhookConfig: WorkspaceWebhookConfig,
+  event: TaskDispatchEvent,
+  legacyDefault: boolean,
+): boolean {
+  return Array.isArray(webhookConfig.events) ? webhookConfig.events.includes(event) : legacyDefault;
+}
 
 /**
  * Body POSTed to `workspace.webhookConfig.url`.
@@ -42,6 +64,7 @@ export interface DispatchTask {
   missionId?: string | null;
   backend?: string | null;
   roleSlug?: string | null;
+  runnerPreference?: string | null;
 }
 
 export type DispatchWorkspace = {
@@ -89,12 +112,14 @@ function webhookAcceptsRunnerPreference(
 }
 
 /**
- * Dispatch task to external webhook (e.g., OpenClaw)
+ * Dispatch task to external webhook (e.g., OpenClaw). False on any failure,
+ * including no answer within `timeoutMs`, so the caller's Pusher fallback runs.
  */
-async function dispatchToWebhook(
+export async function dispatchToWebhook(
   webhookConfig: WorkspaceWebhookConfig,
   task: DispatchTask,
   event: TaskDispatchEvent,
+  timeoutMs: number = WEBHOOK_DISPATCH_TIMEOUT_MS,
 ): Promise<boolean> {
   if (!webhookConfig.enabled || !webhookConfig.url) {
     return false;
@@ -108,6 +133,7 @@ async function dispatchToWebhook(
         'Authorization': `Bearer ${webhookConfig.token}`,
       },
       body: JSON.stringify(buildWebhookPayload(task, event)),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -164,7 +190,10 @@ export async function dispatchNewTask(
   let dispatched = false;
   if (workspace?.webhookConfig) {
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    if (webhookAcceptsRunnerPreference(webhookConfig, options?.runnerPreference)) {
+    if (
+      webhookSubscribes(webhookConfig, 'task.created', true) &&
+      webhookAcceptsRunnerPreference(webhookConfig, options?.runnerPreference)
+    ) {
       dispatched = await dispatchToWebhook(webhookConfig, task, 'task.created');
     }
   }
@@ -202,11 +231,21 @@ export async function dispatchUnblockedTask(
 ): Promise<void> {
   const taskPayload = buildTaskPayload(task, workspace);
 
-  // Check webhook dispatch
+  // Check webhook dispatch. A webhook without `events` receives every call
+  // here, whatever the event, with no runnerPreference filter: that is what
+  // this path always did. One that lists events gets only those, filtered by
+  // runnerPreference the way the new-task and retry paths are.
   let dispatched = false;
   if (workspace?.webhookConfig) {
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    dispatched = await dispatchToWebhook(webhookConfig, task, options?.event ?? 'task.unblocked');
+    const event = options?.event ?? 'task.unblocked';
+    const optedIn = Array.isArray(webhookConfig.events);
+    if (
+      webhookSubscribes(webhookConfig, event, true) &&
+      (!optedIn || webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference))
+    ) {
+      dispatched = await dispatchToWebhook(webhookConfig, task, event);
+    }
   }
 
   // Try GitHub Actions dispatch
@@ -225,33 +264,42 @@ export async function dispatchUnblockedTask(
 }
 
 /**
- * Wake runners for a task an automatic or manual retry just put back to
- * `pending` (worker auto-retry / loop requeue, the reassign route).
+ * The wake-up for paths that, before webhook `events` existed, sent only a
+ * bare TASK_ASSIGNED broadcast (retries) or nothing at all (approved-plan
+ * children, the deferred-start sweep). The webhook is tried only when the
+ * config lists `event`, so an existing webhook consumer sees none of these;
+ * everything else falls back to the broadcast, as before.
  *
- * Narrower than dispatchUnblockedTask on purpose — it replaces what these
- * paths already did (a bare TASK_ASSIGNED broadcast) and adds only the webhook:
- *  - The webhook honours the task's own runnerPreference, the same filter
- *    dispatchNewTask applied when the task was created, so a retry never
- *    reaches a webhook the original dispatch was kept away from.
- *  - A task deferred to a future `startAt` (infra backoff) is not sent to the
- *    webhook: the claim would refuse it until then, and a push consumer would
- *    spend a cold start learning that. It falls back to the broadcast, exactly
- *    as before.
+ * When the webhook is tried:
+ *  - It honours the task's runnerPreference, the filter dispatchNewTask
+ *    applies, so a wake never reaches a webhook creation was kept away from.
+ *  - A task deferred to a future `startAt` is not sent: the claim would
+ *    refuse it until then, and a push consumer would spend a cold start
+ *    learning that. The sweep re-sends it once `startAt` passes.
+ *  - A held task, or one in a held or local-executor mission, is not sent
+ *    (the claim route's notHeldOrLocal gate). A gate that cannot answer keeps
+ *    the task off the webhook too.
  *  - No GitHub Actions dispatch: these paths never started an Actions run.
  */
-export async function dispatchRetriedTask(
-  task: DispatchTask & { runnerPreference?: string | null; startAt?: Date | string | null },
+async function wakeOptInWebhookOrBroadcast(
+  task: DispatchTask & { startAt?: Date | string | null },
   workspace: DispatchWorkspace,
+  event: TaskDispatchEvent,
 ): Promise<void> {
   const taskPayload = buildTaskPayload(task, workspace);
 
   let dispatched = false;
+  const webhookConfig = workspace?.webhookConfig as WorkspaceWebhookConfig | null | undefined;
   const deferred = task.startAt != null && new Date(task.startAt).getTime() > Date.now();
-  if (workspace?.webhookConfig && !deferred) {
-    const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    if (webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference)) {
-      dispatched = await dispatchToWebhook(webhookConfig, task, 'task.retry');
-    }
+  if (
+    webhookConfig?.enabled &&
+    webhookConfig.url &&
+    !deferred &&
+    webhookSubscribes(webhookConfig, event, false) &&
+    webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference) &&
+    (await isTaskNotHeldOrLocal(task.id).catch(() => false))
+  ) {
+    dispatched = await dispatchToWebhook(webhookConfig, task, event);
   }
 
   if (!dispatched) {
@@ -261,6 +309,31 @@ export async function dispatchRetriedTask(
       { task: taskPayload, targetLocalUiUrl: null }
     );
   }
+}
+
+/**
+ * Wake runners for a task an automatic or manual retry just put back to
+ * `pending` (worker auto-retry / loop requeue, the reassign route) or whose
+ * deferred `startAt` has passed (deferred-dispatch-sweep). Webhook only when
+ * it lists 'task.retry'; see wakeOptInWebhookOrBroadcast.
+ */
+export async function dispatchRetriedTask(
+  task: DispatchTask & { startAt?: Date | string | null },
+  workspace: DispatchWorkspace,
+): Promise<void> {
+  await wakeOptInWebhookOrBroadcast(task, workspace, 'task.retry');
+}
+
+/**
+ * Wake runners for a child an approved plan just created with nothing left to
+ * wait on. Sent as 'task.created', to a webhook only when it lists that event
+ * explicitly; see wakeOptInWebhookOrBroadcast.
+ */
+export async function dispatchPlanChildTask(
+  task: DispatchTask,
+  workspace: DispatchWorkspace,
+): Promise<void> {
+  await wakeOptInWebhookOrBroadcast(task, workspace, 'task.created');
 }
 
 /** Build minimal task payload for Pusher events (10KB limit).
