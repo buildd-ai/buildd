@@ -56,7 +56,7 @@ import {
   workers,
   workspaces,
 } from '@buildd/core/db/schema';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, type SQL } from 'drizzle-orm';
 import { reportOps } from '@buildd/core/report-ops';
 import {
   DEP_SATISFYING_STATUSES,
@@ -64,6 +64,7 @@ import {
 } from '@/lib/dep-gate-contract';
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
+import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -203,9 +204,34 @@ interface PendingRow {
 }
 
 /**
+ * The SQL half of "claimable by a runner": pending, waited past the threshold,
+ * not deferred, and not gated by a hold or a local executor.
+ *
+ * The hold/executor gates are the claim route's own predicates, imported —
+ * not re-derived — so this scan cannot drift from what a runner may actually
+ * claim. Without them, a held mission or an `executor = 'local'` mission (both
+ * never auto-claimed, by design) read as a fleet refusing work and paged.
+ * Force-start (`context.bypassHeldGate`) lifts both mission gates here exactly
+ * as it does in the claim query; a single-task hold is lifted only by resume.
+ *
+ * Exported so a test can render it through PgDialect.
+ */
+export function claimablePendingWhere(cutoff: Date): SQL {
+  return and(
+    eq(tasks.status, 'pending'),
+    lte(tasks.createdAt, cutoff),
+    or(isNull(tasks.startAt), lte(tasks.startAt, cutoff)),
+    missionNotHeld(),
+    missionNotLocal(),
+    taskNotHeld(),
+  )!;
+}
+
+/**
  * Pending tasks that have been genuinely claimable for longer than the
  * threshold.
  *
+ * Held and local-executor work is excluded in SQL (see claimablePendingWhere).
  * Deferred (`startAt` in the future) and dependency-blocked work is excluded
  * from the definition rather than absorbed into the threshold — the same
  * choice the gate pass makes, and for the same reason: otherwise the threshold
@@ -218,11 +244,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   const cutoff = new Date(now.getTime() - FLEET_IDLE_THRESHOLD_MS);
 
   const rows = (await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.status, 'pending'),
-      lte(tasks.createdAt, cutoff),
-      or(isNull(tasks.startAt), lte(tasks.startAt, cutoff)),
-    ),
+    where: claimablePendingWhere(cutoff),
     columns: {
       id: true,
       workspaceId: true,
