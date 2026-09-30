@@ -186,7 +186,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 2,
+      version: 3,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -194,7 +194,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -205,7 +205,8 @@ describe('assembleRunReport', () => {
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
     expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
@@ -250,7 +251,7 @@ describe('assembleRunReport', () => {
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
       'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'repo', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
+      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });
 
@@ -269,6 +270,28 @@ describe('assembleRunReport', () => {
       source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000,
       bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0 },
     });
+  });
+
+  test('a resumed attempt: flag, gap from the parked attempt to this dispatch, layer, park timings', () => {
+    const r = assembleRunReport({
+      ...FULL,
+      resumed: true,
+      parkedAt: 400,
+      timings: {
+        ...FULL.timings,
+        runnerPhases: { restore_park_start: 5_000, restore_park_end: 5_250, park_start: 50_000, park_end: 50_900 },
+        runnerMetrics: { resume_layer: 1, park_bytes: 4096 },
+      },
+    });
+    expect(r.resume).toEqual({ resumed: true, gapMs: 600, layer: 1, parkBytes: 4096 });
+    expect(r.durationsMs).toMatchObject({ restorePark: 250, park: 900 });
+    expect(r.outcome).toBe('done');
+    expect(assembleRunReport({ ...FULL, outcome: 'parked' }).outcome).toBe('parked');
+  });
+
+  test('no gap without a resume, and only layers 1 and 2', () => {
+    expect(assembleRunReport({ ...FULL, parkedAt: 400 }).resume.gapMs).toBeNull();
+    expect(assembleRunReport({ ...FULL, resumed: true, timings: { runnerMetrics: { resume_layer: 7 } } }).resume.layer).toBeNull();
   });
 
   test('clone fallback: the reason is kept, from the closed list only', () => {

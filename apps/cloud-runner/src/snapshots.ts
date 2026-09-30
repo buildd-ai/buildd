@@ -25,6 +25,17 @@
  *   POST /warm/begin               take the refresh lock; 201 {generation} or 409
  *   PUT  /warm/<gen>/repo|cache    upload a part (lock holder only, content-length required)
  *   POST /warm/<gen>/commit        {defaultBranch}; publish, prune to two generations, unlock
+ *
+ * Park bundles (resumable runs; `park/` at 2 days as the lifecycle backstop):
+ *
+ *   park/<workspaceId>/<workerId>/bundle.tar       branch, uncommitted work, transcript, worker record
+ *
+ *   PUT    /park                   upload this run's park bundle
+ *   GET    /park                   fetch it (a resumed run)
+ *   DELETE /park                   drop it once the resume took
+ *
+ * The worker is the one the agent is supervising (from the runner's
+ * BUILDD_WORKER_ID line, or the task.resume dispatch), never the request's.
  */
 
 export const SNAPSHOT_HOST = 'buildd-snapshots.invalid';
@@ -68,6 +79,8 @@ export interface BucketPort {
 /** What the Worker knows about the run, from buildd; never from the container. */
 export interface SnapshotScope {
   workspaceId: string;
+  /** The worker the agent is running; park bundles need it. */
+  workerId?: string;
 }
 
 export type WarmPart = 'repo' | 'cache';
@@ -97,6 +110,10 @@ export function warmLockKey(workspaceId: string): string {
   return `${warmPrefix(workspaceId)}lock`;
 }
 
+export function parkKey(workspaceId: string, workerId: string): string {
+  return `park/${checkId(workspaceId)}/${checkId(workerId)}/bundle.tar`;
+}
+
 export function formatGeneration(n: number): string {
   return String(Math.max(0, Math.floor(n))).padStart(16, '0');
 }
@@ -108,11 +125,20 @@ export type SnapshotRoute =
   | { op: 'warm_begin' }
   | { op: 'warm_get'; generation: string; part: WarmPart }
   | { op: 'warm_put'; generation: string; part: WarmPart }
-  | { op: 'warm_commit'; generation: string };
+  | { op: 'warm_commit'; generation: string }
+  | { op: 'park_put' }
+  | { op: 'park_get' }
+  | { op: 'park_delete' };
 
 /** Exact paths only. The query string is ignored and nothing in the path is ever a key. */
 export function parseSnapshotRoute(method: string, pathname: string): SnapshotRoute | null {
   const m = method.toUpperCase();
+  if (pathname === '/park') {
+    if (m === 'PUT') return { op: 'park_put' };
+    if (m === 'GET') return { op: 'park_get' };
+    if (m === 'DELETE') return { op: 'park_delete' };
+    return null;
+  }
   if (pathname === '/warm') return m === 'GET' ? { op: 'warm_latest' } : null;
   if (pathname === '/warm/begin') return m === 'POST' ? { op: 'warm_begin' } : null;
   const part = /^\/warm\/(\d{16})\/(repo|cache)$/.exec(pathname);
@@ -237,6 +263,19 @@ export class SnapshotStore {
     return put ? put.size : null;
   }
 
+  async putPark(workspaceId: string, workerId: string, body: ReadableStream): Promise<number | null> {
+    const put = await this.bucket.put(parkKey(workspaceId, workerId), body, { httpMetadata: { contentType: 'application/octet-stream' } });
+    return put ? put.size : null;
+  }
+
+  async getPark(workspaceId: string, workerId: string): Promise<BucketBodyLike | null> {
+    return this.bucket.get(parkKey(workspaceId, workerId));
+  }
+
+  async deletePark(workspaceId: string, workerId: string): Promise<void> {
+    await this.bucket.delete(parkKey(workspaceId, workerId));
+  }
+
   /** Publish the generation, then prune, then unlock. Null when the repo part is missing. */
   async commit(workspaceId: string, generation: string, defaultBranch: string): Promise<WarmManifest | null> {
     const repo = await this.bucket.head(warmKey(workspaceId, generation, 'repo'));
@@ -271,6 +310,8 @@ function json(body: unknown, status = 200): Response {
 }
 
 export interface SnapshotHandlerOptions {
+  /** Which families this Worker serves (WARM_REPOS, RESUMABLE_RUNS). Both on when absent. */
+  enabled?: { warm: boolean; park: boolean };
   /**
    * Wrap an upload body so the bucket sees a known length (Workers:
    * `body.pipeThrough(new FixedLengthStream(n))`). Identity when absent.
@@ -291,10 +332,32 @@ export async function handleSnapshotRequest(
 ): Promise<Response> {
   const route = parseSnapshotRoute(request.method, new URL(request.url).pathname);
   if (!route) return json({ error: 'not_found' }, 404);
+  const isPark = route.op.startsWith('park_');
+  const enabled = opts.enabled ?? { warm: true, park: true };
+  if (isPark ? !enabled.park : !enabled.warm) return json({ error: 'not_found' }, 404);
   if (!scope || !SCOPE_ID_RE.test(scope.workspaceId)) return json({ error: 'unavailable' }, 503);
   const ws = scope.workspaceId;
+  if (isPark && (!scope.workerId || !SCOPE_ID_RE.test(scope.workerId))) return json({ error: 'unavailable' }, 503);
 
   switch (route.op) {
+    case 'park_put': {
+      const len = Number(request.headers.get('content-length'));
+      if (!request.headers.has('content-length') || !Number.isSafeInteger(len) || len < 0) return json({ error: 'length_required' }, 411);
+      if (len > MAX_SNAPSHOT_BYTES) return json({ error: 'too_large' }, 413);
+      if (!request.body) return json({ error: 'empty' }, 400);
+      const body = opts.fixedLength ? opts.fixedLength(request.body, len) : request.body;
+      const size = await store.putPark(ws, scope.workerId!, body);
+      return size === null ? json({ error: 'put_failed' }, 500) : json({ bytes: size }, 201);
+    }
+    case 'park_get': {
+      const obj = await store.getPark(ws, scope.workerId!);
+      if (!obj) return json({ error: 'not_found' }, 404);
+      return new Response(obj.body, { headers: { 'content-type': 'application/octet-stream', 'content-length': String(obj.size) } });
+    }
+    case 'park_delete': {
+      await store.deletePark(ws, scope.workerId!);
+      return json({ ok: true });
+    }
     case 'warm_latest': {
       const m = await store.latest(ws);
       return m ? json(m) : json({ error: 'no_snapshot' }, 404);

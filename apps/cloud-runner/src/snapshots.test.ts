@@ -7,6 +7,7 @@ import {
   SnapshotStore,
   handleSnapshotRequest,
   parseSnapshotRoute,
+  parkKey,
   warmKey,
   warmLockKey,
   type BucketObjectLike,
@@ -241,5 +242,49 @@ describe('warm generations', () => {
     now -= 60_000;
     const g2 = await seedGeneration();
     expect(g2 > g1).toBe(true);
+  });
+});
+
+describe('park bundles', () => {
+  const parkScope: SnapshotScope = { workspaceId: WS, workerId: 'worker-1' };
+
+  test('PUT / GET / DELETE /park use park/<workspace>/<worker>, from the scope only', async () => {
+    const put = await call('PUT', '/park', 'park-bytes', parkScope);
+    expect(put.status).toBe(201);
+    expect(bucket.objects.has(parkKey(WS, 'worker-1'))).toBe(true);
+    expect(parkKey(WS, 'worker-1')).toBe(`park/${WS}/worker-1/bundle.tar`);
+    const got = await call('GET', '/park', undefined, parkScope);
+    expect(got.status).toBe(200);
+    expect(await got.text()).toBe('park-bytes');
+    expect((await call('DELETE', '/park', undefined, parkScope)).status).toBe(200);
+    expect(bucket.objects.has(parkKey(WS, 'worker-1'))).toBe(false);
+    expect((await call('GET', '/park', undefined, parkScope)).status).toBe(404);
+  });
+
+  test("a different worker's scope cannot read another worker's bundle, even in the same workspace", async () => {
+    await call('PUT', '/park', 'mine', parkScope);
+    const other = await call('GET', '/park?worker=worker-1', undefined, { workspaceId: WS, workerId: 'worker-2' });
+    expect(other.status).toBe(404);
+  });
+
+  test('no worker in the scope (claim not seen yet): 503', async () => {
+    expect((await call('PUT', '/park', 'x', { workspaceId: WS })).status).toBe(503);
+  });
+
+  test('a path cannot name a worker', () => {
+    expect(parseSnapshotRoute('GET', '/park/worker-2')).toBeNull();
+    expect(parseSnapshotRoute('PUT', '/park')).toEqual({ op: 'park_put' });
+    expect(parseSnapshotRoute('POST', '/park')).toBeNull();
+  });
+
+  test('each family can be switched off on its own', async () => {
+    const warmOnly = { enabled: { warm: true, park: false } };
+    expect((await handleSnapshotRequest(req('GET', '/park'), parkScope, store, warmOnly)).status).toBe(404);
+    const parkOnly = { enabled: { warm: false, park: true } };
+    expect((await handleSnapshotRequest(req('GET', '/warm'), parkScope, store, parkOnly)).status).toBe(404);
+  });
+
+  test('size guard applies to park uploads too', async () => {
+    expect((await call('PUT', '/park', 'x', parkScope, { 'content-length': String(MAX_SNAPSHOT_BYTES + 1) })).status).toBe(413);
   });
 });

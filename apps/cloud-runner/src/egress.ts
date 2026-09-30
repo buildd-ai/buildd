@@ -23,6 +23,7 @@ import {
 } from './outbound';
 import { rewriteOtlp } from './otel';
 import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent } from './run-report';
+import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
 export interface EgressProps {
@@ -157,7 +158,8 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    */
   private async snapshot(request: Request): Promise<Response> {
     const bucket = this.env.SNAPSHOTS;
-    if (!bucket || this.env.WARM_REPOS !== '1') return Response.json({ error: 'unavailable' }, { status: 503 });
+    const enabled = { warm: warmReposEnabled(this.env), park: resumableRunsEnabled(this.env) };
+    if (!bucket || (!enabled.warm && !enabled.park)) return Response.json({ error: 'unavailable' }, { status: 503 });
     let scope: SnapshotScope | null = null;
     const taskId = this.ctx.props?.taskId;
     if (taskId) {
@@ -169,6 +171,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       }
     }
     return handleSnapshotRequest(request, scope, new SnapshotStore(bucket as unknown as BucketPort), {
+      enabled,
       fixedLength: (body, length) => body.pipeThrough(new FixedLengthStream(length)),
     });
   }

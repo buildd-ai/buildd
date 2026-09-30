@@ -14,10 +14,14 @@
 export const EXIT_COMPLETED = 0;
 export const EXIT_FAILED = 1;
 export const EXIT_CLAIM_REFUSED = 3;
+/** The runner parked its waiting worker (Phase 2, resumable runs); not a crash. */
+export const EXIT_PARKED = 4;
 export const EXIT_USAGE = 64;
 
 /** Same prefix run-once prints once the worker exists (`WORKER_ID_LINE_PREFIX`). */
 export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
+/** Printed by run-once just before EXIT_PARKED (`PARKED_LINE_PREFIX`). */
+export const PARKED_LINE_PREFIX = 'BUILDD_PARKED=';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -29,10 +33,12 @@ export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 /**
  * - done / failed / refused / usage: the runner exited with a code it chose,
  *   so it already reported whatever there was to report.
+ * - parked: the runner uploaded a park bundle and marked the worker parked;
+ *   a `task.resume` dispatch continues it in a new container.
  * - crashed: anything else (killed, OOM, container gone, agent restarted
  *   mid-run). The runner probably could not report.
  */
-export type RunOutcome = 'done' | 'failed' | 'refused' | 'usage' | 'crashed';
+export type RunOutcome = 'done' | 'failed' | 'refused' | 'usage' | 'parked' | 'crashed';
 
 /** What happened to the best-effort "mark the worker failed" call after a crash. */
 export type CrashReport = 'sent' | 'rejected' | 'error' | 'no_worker_id';
@@ -59,6 +65,10 @@ export interface RunState {
   report?: StoredRunReport;
   /** Earlier attempts' reports, oldest first, at most REPORT_HISTORY_MAX. */
   reportHistory?: StoredRunReport[];
+  /** Set when this attempt continues a parked worker (`--resume-worker`); `workerId` is that worker. */
+  resumed?: boolean;
+  /** When the parked attempt this one resumes ended (agent clock), for the report's gap time. */
+  parkedAt?: number;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -66,18 +76,34 @@ export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle
 // ── Decisions ─────────────────────────────────────────────────────────────────
 
 export type DispatchDecision =
-  | { action: 'start'; attempt: number }
-  | { action: 'ignore'; reason: 'already_live' };
+  | { action: 'start'; attempt: number; resumeWorkerId?: string }
+  | { action: 'ignore'; reason: 'already_live' | 'not_parked' };
+
+export interface DispatchRequest {
+  /** `task.resume`: continue this parked worker instead of claiming. */
+  resumeWorkerId?: string;
+}
 
 /**
  * A dispatch while a run is starting or running is a duplicate webhook and
  * does nothing. Otherwise it starts the next attempt. This is the only place a
  * run is started: the agent never re-dispatches by itself, retries come from
- * buildd firing a new webhook.
+ * buildd firing a new webhook. (The one exception is the orphan park in
+ * supervisor.ts, which resumes the run a restart interrupted.)
+ *
+ * A resume starts only when the last attempt of this agent parked exactly that
+ * worker. The check-and-set that follows (status `starting`) makes a duplicate
+ * `task.resume` a no-op, and a resume that has already run leaves the outcome
+ * no longer `parked`, so a late duplicate is ignored too.
  */
-export function decideDispatch(state: RunState): DispatchDecision {
+export function decideDispatch(state: RunState, request: DispatchRequest = {}): DispatchDecision {
   if (state.status === 'starting' || state.status === 'running') {
     return { action: 'ignore', reason: 'already_live' };
+  }
+  if (request.resumeWorkerId !== undefined) {
+    const parked = state.status === 'exited' && state.outcome === 'parked' && state.workerId === request.resumeWorkerId;
+    if (!parked) return { action: 'ignore', reason: 'not_parked' };
+    return { action: 'start', attempt: state.attempt + 1, resumeWorkerId: request.resumeWorkerId };
   }
   return { action: 'start', attempt: state.attempt + 1 };
 }
@@ -88,6 +114,7 @@ export function outcomeForExitCode(code: number | null | undefined): RunOutcome 
     case EXIT_COMPLETED: return 'done';
     case EXIT_FAILED: return 'failed';
     case EXIT_CLAIM_REFUSED: return 'refused';
+    case EXIT_PARKED: return 'parked';
     case EXIT_USAGE: return 'usage';
     default: return 'crashed';
   }
@@ -116,6 +143,14 @@ export function isOrphanedRun(state: RunState, hasLiveRunInMemory: boolean): boo
 // ── Parsing / validation ──────────────────────────────────────────────────────
 
 const WORKER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/** The worker ID from a `BUILDD_PARKED=<id>` line, or null. */
+export function parseParkedLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith(PARKED_LINE_PREFIX)) return null;
+  const id = trimmed.slice(PARKED_LINE_PREFIX.length);
+  return WORKER_ID_RE.test(id) ? id : null;
+}
 
 /** The worker ID from a `BUILDD_WORKER_ID=<id>` line, or null. */
 export function parseWorkerIdLine(line: string): string | null {
@@ -167,6 +202,17 @@ export interface ContainerEnvSource {
   BUILDD_ONCE_MAX_WAIT_MS?: string;
   /** `1` turns on warm repos in the container (see warmReposEnabled). */
   WARM_REPOS?: string;
+  /** `1` turns on parking a waiting worker (see resumableRunsEnabled). */
+  RESUMABLE_RUNS?: string;
+}
+
+/**
+ * Resumable runs (Phase 2): the container parks a worker that waits for input
+ * and a `task.resume` dispatch continues it. Needs the opt-in var and the R2
+ * binding (the park bundle lives there). Off by default.
+ */
+export function resumableRunsEnabled(env: { RESUMABLE_RUNS?: string; SNAPSHOTS?: unknown }): boolean {
+  return env.RESUMABLE_RUNS === '1' && !!env.SNAPSHOTS;
 }
 
 /**
@@ -225,12 +271,28 @@ export function buildContainerEnv(env: ContainerEnvSource): Record<string, strin
     out.BUILDD_WARM_REPO = '1';
     out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
   }
+  if (env.RESUMABLE_RUNS === '1') {
+    // Park a worker that waits for input instead of holding the container.
+    out.BUILDD_ONCE_PARK = '1';
+    out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
+  }
   return out;
 }
 
 /** The command exec'd in the container. `buildd-once` is baked into the image. */
-export function runnerCommand(taskId: string): string[] {
-  return ['buildd-once', '--task', taskId];
+export function runnerCommand(taskId: string, resumeWorkerId?: string): string[] {
+  return resumeWorkerId
+    ? ['buildd-once', '--resume-worker', resumeWorkerId, '--task', taskId]
+    : ['buildd-once', '--task', taskId];
+}
+
+/**
+ * Exec'd in a container still running after the agent restarted: stops the
+ * runner it can no longer supervise and parks its worker (exit 4), so a
+ * resume can continue it instead of the run being lost.
+ */
+export function orphanParkCommand(taskId: string, workerId: string): string[] {
+  return ['buildd-once', '--park-orphan', workerId, '--task', taskId];
 }
 
 export const OUTPUT_TAIL_LINES = 20;

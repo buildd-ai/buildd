@@ -6,7 +6,12 @@ import {
   EXIT_CLAIM_REFUSED,
   EXIT_COMPLETED,
   EXIT_FAILED,
+  EXIT_PARKED,
   EXIT_USAGE,
+  PARKED_LINE_PREFIX,
+  resumableRunsEnabled,
+  parseParkedLine,
+  orphanParkCommand,
   INITIAL_STATE,
   WORKER_ID_LINE_PREFIX,
   appendTail,
@@ -29,7 +34,10 @@ describe('exit code contract with run-once.ts', () => {
     expect(EXIT_FAILED).toBe(runOnce.EXIT_FAILED);
     expect(EXIT_CLAIM_REFUSED).toBe(runOnce.EXIT_CLAIM_REFUSED);
     expect(EXIT_USAGE).toBe(runOnce.EXIT_USAGE);
+    expect(EXIT_PARKED).toBe(runOnce.EXIT_PARKED);
+    expect(EXIT_PARKED).toBe(4);
     expect(WORKER_ID_LINE_PREFIX).toBe(runOnce.WORKER_ID_LINE_PREFIX);
+    expect(PARKED_LINE_PREFIX).toBe(runOnce.PARKED_LINE_PREFIX);
   });
 });
 
@@ -38,6 +46,7 @@ describe('outcomeForExitCode', () => {
     [0, 'done'],
     [1, 'failed'],
     [3, 'refused'],
+    [4, 'parked'],
     [64, 'usage'],
     [137, 'crashed'], // SIGKILL / OOM
     [143, 'crashed'], // SIGTERM
@@ -70,13 +79,57 @@ describe('decideDispatch', () => {
     expect(decideDispatch(at('exited', 1))).toEqual({ action: 'start', attempt: 2 });
     expect(decideDispatch(at('exited', 4))).toEqual({ action: 'start', attempt: 5 });
   });
+
+  const parked = (workerId = 'w-1'): RunState => ({ ...at('exited', 1), outcome: 'parked', workerId });
+
+  test('task.resume: only for the worker this agent parked, and only after that park', () => {
+    expect(decideDispatch(parked(), { resumeWorkerId: 'w-1' })).toEqual({ action: 'start', attempt: 2, resumeWorkerId: 'w-1' });
+    expect(decideDispatch(parked(), { resumeWorkerId: 'w-2' })).toEqual({ action: 'ignore', reason: 'not_parked' });
+    expect(decideDispatch({ ...parked(), outcome: 'failed' }, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'not_parked' });
+    expect(decideDispatch(INITIAL_STATE, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'not_parked' });
+  });
+
+  test('duplicate task.resume: the first starts the resume, the second sees a live run', () => {
+    expect(decideDispatch({ ...parked(), status: 'starting', attempt: 2 }, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'already_live' });
+    // ...and once that resume has exited (done), a late duplicate is not a second resume.
+    expect(decideDispatch({ ...parked(), status: 'exited', outcome: 'done', attempt: 2 }, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'not_parked' });
+  });
+});
+
+describe('resumable runs config', () => {
+  test('needs the var and the binding', () => {
+    expect(resumableRunsEnabled({ RESUMABLE_RUNS: '1', SNAPSHOTS: {} })).toBe(true);
+    expect(resumableRunsEnabled({ RESUMABLE_RUNS: '1' })).toBe(false);
+    expect(resumableRunsEnabled({ SNAPSHOTS: {} })).toBe(false);
+  });
+
+  test('container env: BUILDD_ONCE_PARK and the snapshot URL only when on', () => {
+    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' });
+    expect('BUILDD_ONCE_PARK' in off).toBe(false);
+    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', RESUMABLE_RUNS: '1' });
+    expect(on.BUILDD_ONCE_PARK).toBe('1');
+    expect(on.BUILDD_SNAPSHOT_URL).toBe('https://buildd-snapshots.invalid');
+    expect('BUILDD_WARM_REPO' in on).toBe(false);
+  });
+
+  test('commands: a resume continues the named worker; the orphan park names the task and worker', () => {
+    expect(runnerCommand('task-1')).toEqual(['buildd-once', '--task', 'task-1']);
+    expect(runnerCommand('task-1', 'w-1')).toEqual(['buildd-once', '--resume-worker', 'w-1', '--task', 'task-1']);
+    expect(orphanParkCommand('task-1', 'w-1')).toEqual(['buildd-once', '--park-orphan', 'w-1', '--task', 'task-1']);
+  });
+
+  test('parseParkedLine', () => {
+    expect(parseParkedLine('BUILDD_PARKED=w-1')).toBe('w-1');
+    expect(parseParkedLine('BUILDD_PARKED=../x')).toBeNull();
+    expect(parseParkedLine('x BUILDD_PARKED=w-1')).toBeNull();
+  });
 });
 
 describe('crashReportAction', () => {
   test('only a crash with a known worker is reported', () => {
     expect(crashReportAction('crashed', 'w-1')).toBe('report');
     expect(crashReportAction('crashed', undefined)).toBe('skip_no_worker');
-    for (const o of ['done', 'failed', 'refused', 'usage'] as const) {
+    for (const o of ['done', 'failed', 'refused', 'usage', 'parked'] as const) {
       expect(crashReportAction(o, 'w-1')).toBe('none');
     }
   });

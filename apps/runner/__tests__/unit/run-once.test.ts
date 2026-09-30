@@ -9,7 +9,13 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   runOnce,
+  runResume,
+  runParkOrphan,
   parseOnceArgs,
+  EXIT_PARKED,
+  PARKED_LINE_PREFIX,
+  RESUMED_LINE_PREFIX,
+  type ResumePort,
   buildOnceConfig,
   classifyClaimFailure,
   createOnceResolver,
@@ -81,7 +87,8 @@ function deps(wm: OnceWorkerManager, overrides: Partial<RunOnceDeps> = {}) {
 
 describe('exit codes', () => {
   test('are distinct and never collide with the launcher restart code (75)', () => {
-    const codes = [EXIT_COMPLETED, EXIT_FAILED, EXIT_CLAIM_REFUSED, EXIT_USAGE];
+    const codes = [EXIT_COMPLETED, EXIT_FAILED, EXIT_CLAIM_REFUSED, EXIT_PARKED, EXIT_USAGE];
+    expect(EXIT_PARKED).toBe(4);
     expect(new Set(codes).size).toBe(codes.length);
     expect(codes).not.toContain(75);
     expect(EXIT_COMPLETED).toBe(0);
@@ -105,6 +112,26 @@ describe('parseOnceArgs', () => {
     const r = parseOnceArgs(['bun', 'index.ts', '--once']);
     expect(r.once).toBe(true);
     expect('error' in r && r.error).toBeTruthy();
+  });
+
+  test('--resume-worker <id> continues a parked worker (the task id is optional)', () => {
+    expect(parseOnceArgs(['bun', 'index.ts', '--once', '--resume-worker', 'w-1', '--task', TASK_ID]))
+      .toEqual({ once: true, taskId: TASK_ID, resumeWorkerId: 'w-1' });
+    expect(parseOnceArgs(['bun', 'index.ts', '--once', '--resume-worker', 'w-1']))
+      .toEqual({ once: true, taskId: '', resumeWorkerId: 'w-1' });
+  });
+
+  test('--park-orphan <id> --task <id>', () => {
+    expect(parseOnceArgs(['bun', 'index.ts', '--once', '--park-orphan', 'w-1', '--task', TASK_ID]))
+      .toEqual({ once: true, taskId: TASK_ID, parkOrphanWorkerId: 'w-1' });
+    expect('error' in parseOnceArgs(['bun', 'index.ts', '--once', '--park-orphan', 'w-1'])).toBe(true);
+  });
+
+  test('worker ids that could be flags or paths are usage errors', () => {
+    for (const bad of ['--x', '../w', 'a/b']) {
+      expect('error' in parseOnceArgs(['bun', 'index.ts', '--once', '--resume-worker', bad])).toBe(true);
+    }
+    expect('error' in parseOnceArgs(['bun', 'index.ts', '--once', '--resume-worker', 'w', '--park-orphan', 'w', '--task', 't'])).toBe(true);
   });
 
   test('--task followed by another flag is a usage error', () => {
@@ -226,6 +253,123 @@ describe('runOnce', () => {
       expect(shut).toBe(1);
       expect(calls).toContain('destroy');
     }
+  });
+});
+
+describe('park on waiting_input (BUILDD_ONCE_PARK)', () => {
+  test('a waiting worker with no live session is parked once: BUILDD_PARKED line, exit 4, no abort', async () => {
+    const { wm, calls, aborted } = fakeManager({ statuses: ['working', 'waiting'] });
+    const logs: string[] = [];
+    const parks: string[] = [];
+    const ends: string[] = [];
+    const { d } = deps(wm, {
+      log: (m) => logs.push(m),
+      park: async (id) => { parks.push(id); return true; },
+      afterRun: async (o) => { ends.push(o); },
+    });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_PARKED);
+    expect(parks).toEqual(['worker-1']);
+    expect(logs).toContain(`${PARKED_LINE_PREFIX}worker-1`);
+    expect(aborted).toHaveLength(0);
+    expect(ends).toEqual(['parked']);
+    expect(calls).toContain('flushToServer');
+  });
+
+  test('a waiting worker whose session is still live (a permission prompt) is not parked', async () => {
+    const { wm } = fakeManager({ statuses: ['waiting', 'waiting', 'waiting', 'done'], liveSessionPolls: 3 });
+    const parks: string[] = [];
+    const { d } = deps(wm, { park: async (id) => { parks.push(id); return true; } });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_COMPLETED);
+    expect(parks).toEqual([]);
+  });
+
+  test('a park that fails keeps waiting as before, and is not retried every poll', async () => {
+    const { wm } = fakeManager({ statuses: ['waiting'] });
+    let tries = 0;
+    const { d } = deps(wm, { maxWaitMs: 5_000, park: async () => { tries++; return false; } });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_FAILED);
+    expect(tries).toBe(1);
+  });
+
+  test('without a park dep (flag off), nothing changes', async () => {
+    const { wm } = fakeManager({ statuses: ['waiting'] });
+    const { d } = deps(wm, { maxWaitMs: 2_000 });
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_FAILED);
+  });
+});
+
+describe('runResume (--resume-worker)', () => {
+  function resumePort(over: Partial<ResumePort> = {}) {
+    const calls: string[] = [];
+    const port: ResumePort = {
+      restore: async () => { calls.push('restore'); return { ok: true, kind: 'waiting' }; },
+      reattach: async () => { calls.push('reattach'); return 'ok'; },
+      unpark: async () => { calls.push('unpark'); },
+      adopt: async () => { calls.push('adopt'); return true; },
+      discardBundle: async () => { calls.push('discard'); },
+      ...over,
+    };
+    return { port, calls };
+  }
+
+  test('restore → reattach → adopt, then runs to completion on the SAME worker and drops the bundle', async () => {
+    const { wm, calls: wmCalls } = fakeManager({ statuses: ['waiting', 'working', 'done'] });
+    const logs: string[] = [];
+    const { port, calls } = resumePort();
+    const { d } = deps(wm, { log: (m) => logs.push(m) });
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_COMPLETED);
+    expect(calls).toEqual(['restore', 'reattach', 'adopt', 'discard']);
+    expect(wmCalls).not.toContain('claimAndStart');
+    expect(logs).toContain(`${WORKER_ID_LINE_PREFIX}worker-7`);
+    expect(logs).toContain(`${RESUMED_LINE_PREFIX}worker-7`);
+  });
+
+  test('restore failure: no re-attach; the park is cleared so the ack-deadline sweep degrades the answer', async () => {
+    const { wm } = fakeManager();
+    const { port, calls } = resumePort({ restore: async () => { calls.push('restore'); return { ok: false, reason: 'bundle missing' }; } });
+    const { d } = deps(wm);
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_FAILED);
+    expect(calls).toEqual(['restore', 'unpark']);
+  });
+
+  test('re-attach refused (another container won, or expired): exit 3, nothing adopted', async () => {
+    const { wm } = fakeManager();
+    const { port, calls } = resumePort({ reattach: async () => { calls.push('reattach'); return 'refused'; } });
+    const { d } = deps(wm);
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_CLAIM_REFUSED);
+    expect(calls).toEqual(['restore', 'reattach']);
+  });
+
+  test('a resumed worker that asks again parks again (and keeps its bundle)', async () => {
+    const { wm } = fakeManager({ statuses: ['waiting', 'working', 'waiting'] });
+    // The first poll after adopt sees `waiting` before the queued answer is drained;
+    // only a wait after the worker ran again may park.
+    const { port, calls } = resumePort();
+    const parks: string[] = [];
+    const { d } = deps(wm, { park: async (id) => { parks.push(id); return true; } });
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_PARKED);
+    expect(parks).toEqual(['worker-7']);
+    expect(calls).not.toContain('discard');
+  });
+});
+
+describe('runParkOrphan (--park-orphan)', () => {
+  test('stops the orphaned runner first, then parks from disk: exit 4', async () => {
+    const order: string[] = [];
+    const logs: string[] = [];
+    const code = await runParkOrphan({ workerId: 'w-9' }, {
+      stopOthers: () => { order.push('stop'); },
+      parkFromDisk: async (id) => { order.push(`park:${id}`); return true; },
+      log: (m) => logs.push(m),
+    });
+    expect(code).toBe(EXIT_PARKED);
+    expect(order).toEqual(['stop', 'park:w-9']);
+    expect(logs).toContain(`${PARKED_LINE_PREFIX}w-9`);
+  });
+
+  test('a park that fails exits 1 (the agent falls back to the crash report)', async () => {
+    expect(await runParkOrphan({ workerId: 'w-9' }, { stopOthers: () => {}, parkFromDisk: async () => false, log: () => {} })).toBe(EXIT_FAILED);
+    expect(await runParkOrphan({ workerId: 'w-9' }, { stopOthers: () => {}, parkFromDisk: async () => { throw new Error('x'); }, log: () => {} })).toBe(EXIT_FAILED);
   });
 });
 

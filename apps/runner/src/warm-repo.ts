@@ -69,6 +69,8 @@ export interface SnapshotTransport {
   download(path: string, file: string): { status: number; bytes: number };
   upload(path: string, file: string): { status: number; body: unknown };
   post(path: string, body?: unknown): { status: number; body: unknown };
+  /** DELETE (park bundles). */
+  remove?(path: string): { status: number };
 }
 
 function parseJson(text: string): unknown {
@@ -107,6 +109,10 @@ export function curlTransport(baseUrl: string): SnapshotTransport {
         '-w', '\n%{http_code}', `${base}${path}`,
       ]));
       return { status, body: parseJson(text) };
+    },
+    remove(path) {
+      const { status } = splitStatus(curl(['--max-time', String(CONTROL_TIMEOUT_S), '-X', 'DELETE', '-w', '\n%{http_code}', `${base}${path}`]));
+      return { status };
     },
     post(path, body) {
       const { status, text } = splitStatus(curl([
@@ -205,7 +211,7 @@ export type WarmResult =
   | { source: 'warm'; ageMs: number; fetchBytes: number }
   | { source: 'clone'; reason: RepoFallbackReason };
 
-export type RunEnd = 'completed' | 'failed' | 'wait_timeout';
+export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
 
 /**
  * - seed: the workspace had no usable snapshot (none, or a corrupt one).

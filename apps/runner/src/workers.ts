@@ -1308,6 +1308,37 @@ export class WorkerManager {
     return this.sessions.has(id);
   }
 
+  /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
+  persistWorker(id: string): void {
+    const worker = this.workers.get(id);
+    if (worker) storeSaveWorker(worker);
+  }
+
+  /**
+   * --once --resume-worker: take on ONE worker restored from a park bundle
+   * (docs/design/cloudflare-sandbox-runner.md, Phase 2), the single-worker
+   * form of restoreWorkersFromDisk that singleTask mode skips. A worker
+   * parked on a question keeps `waiting`, so the 10s sync drains its queued
+   * answer into sendMessage → resumeSession. A run parked mid-session after
+   * an agent restart ('orphan') had no question; it is marked interrupted so
+   * the caller's follow-up message resumes it the same way.
+   */
+  adoptParkedWorker(id: string, kind: 'waiting' | 'orphan'): LocalWorker | null {
+    const worker = storeLoadWorker(id);
+    if (!worker) return null;
+    if (!worker.checkpoints) worker.checkpoints = [];
+    if (!worker.subagentTasks) worker.subagentTasks = [];
+    if (worker.subagentTasksObservedCount === undefined) worker.subagentTasksObservedCount = worker.subagentTasks.length;
+    if (kind === 'orphan' || worker.status !== 'waiting') {
+      worker.status = 'error';
+      worker.error = 'Interrupted by a platform restart; resuming';
+    }
+    this.workers.set(id, worker);
+    this.pusherManager.subscribeToWorker(id);
+    this.dirtyWorkers.add(id);
+    return worker;
+  }
+
   /**
    * Route this manager's server mutations through an outbox, so a PATCH that
    * hits a 5xx or a network fault is queued for replay instead of lost. Used by

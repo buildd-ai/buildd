@@ -14,8 +14,11 @@
  */
 import type { CrashReport, RunOutcome } from './lifecycle';
 
-/** 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations. */
-export const RUN_REPORT_VERSION = 2;
+/**
+ * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
+ * 3: adds `resume` (a parked run continued in a new container) and the park durations.
+ */
+export const RUN_REPORT_VERSION = 3;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -41,6 +44,7 @@ export const RUN_PHASES = [
   'clone_start', 'clone_end', 'install_start', 'install_end',
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
+  'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -58,7 +62,10 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 }
 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
-export const RUN_METRICS = ['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes'] as const;
+export const RUN_METRICS = [
+  'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
+  'park_bytes', 'resume_layer',
+] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
 
@@ -239,6 +246,10 @@ export interface RunReport {
     fetch: number | null;
     /** Uploading a new warm generation at the end of the run. */
     warmUpload: number | null;
+    /** Building and uploading the park bundle. */
+    park: number | null;
+    /** Downloading and applying the park bundle in a resumed run. */
+    restorePark: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -253,6 +264,13 @@ export interface RunReport {
     snapshotAgeMs: number | null;
     bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null };
   };
+  /**
+   * Resumable runs. `resumed`: this attempt continued a parked worker.
+   * `gapMs`: from the end of the parked attempt to this dispatch (the answer
+   * plus the webhook). `layer`: 1 = the transcript resumed, 2 = rebuilt from a
+   * text reconstruction. `parkBytes`: the park bundle this attempt uploaded.
+   */
+  resume: { resumed: boolean; gapMs: number | null; layer: 1 | 2 | null; parkBytes: number | null };
   egress: EgressCounters;
   exitCode: number | null;
   outcome: RunOutcome | null;
@@ -271,11 +289,14 @@ export interface RunReportInput {
   exitCode?: number | null;
   outcome?: RunOutcome;
   crashReport?: CrashReport;
+  resumed?: boolean;
+  /** End of the parked attempt this one resumes (agent clock). */
+  parkedAt?: number;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
@@ -344,6 +365,8 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       restoreWarm: span(phase('restore_warm_start'), phase('restore_warm_end')),
       fetch: span(phase('fetch_start'), phase('fetch_end')),
       warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
+      park: span(phase('park_start'), phase('park_end')),
+      restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
@@ -359,6 +382,12 @@ export function assembleRunReport(input: RunReportInput): RunReport {
         cache: metric('cache_bytes'),
         upload: metric('warm_upload_bytes'),
       },
+    },
+    resume: {
+      resumed: input.resumed === true,
+      gapMs: input.resumed === true ? span(ts(input.parkedAt), timestamps.dispatchReceivedAt) : null,
+      layer: metric('resume_layer') === 1 ? 1 : metric('resume_layer') === 2 ? 2 : null,
+      parkBytes: metric('park_bytes'),
     },
     egress,
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,

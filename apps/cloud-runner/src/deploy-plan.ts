@@ -25,7 +25,7 @@ export interface ObservedWebhook {
  * before the list existed), so the Worker must opt in to hear about retries,
  * approved-plan children and deferred-start re-dispatches.
  */
-export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry'] as const;
+export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] as const;
 export type DispatchEvent = (typeof DISPATCH_EVENTS)[number];
 
 export interface DeployInputs {
@@ -70,7 +70,10 @@ const PLAIN_SECRET_NAMES: ReadonlySet<SecretName> = new Set(['BUILDD_SERVER', 'M
  */
 export const SNAPSHOT_BUCKET = {
   name: 'buildd-cloud-runner-snapshots',
-  lifecycle: [{ id: 'warm-expiry', prefix: 'warm/', expireDays: 14 }],
+  lifecycle: [
+    { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
+    { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
+  ],
 } as const;
 
 export type DeployStep =
