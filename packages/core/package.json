@@ -89,6 +89,8 @@
     "./heartbeat-triage-readout-source": "./heartbeat-triage-readout-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
     "./experiment-readout-source": "./experiment-readout-source.ts",
+    "./experiment-health": "./experiment-health.ts",
+    "./experiment-health-source": "./experiment-health-source.ts",
     "./task-path-inference": "./task-path-inference.ts",
     "./task-area-prediction": "./task-area-prediction.ts",
     "./task-area-prediction-source": "./task-area-prediction-source.ts",

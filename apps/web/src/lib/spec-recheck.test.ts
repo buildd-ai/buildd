@@ -46,6 +46,8 @@ mock.module('drizzle-orm', () => ({
   isNull: (col: string) => ({ op: 'isNull', col }),
   isNotNull: (col: string) => ({ op: 'isNotNull', col }),
   inArray: (col: string, v: any[]) => ({ op: 'inArray', col, v }),
+  // lib/repo-scope.ts imports `sql`; a partial mock would fail its import.
+  sql: (strings: any, ...values: any[]) => ({ op: 'sql', strings, values }),
 }));
 mock.module('@buildd/core/db/schema', () => ({ specDiscrepancies, tasks, workers, workspaces }));
 
@@ -90,14 +92,17 @@ const dispatchedTasks: Row[] = [];
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: (task: Row) => { dispatchedTasks.push(task); return Promise.resolve(); },
 }));
-mock.module('@/lib/github', () => ({ githubApi: () => Promise.resolve({}) }));
+const githubCalls: string[] = [];
+mock.module('@/lib/github', () => ({
+  githubApi: (_id: number, path: string) => { githubCalls.push(path); return Promise.resolve({}); },
+}));
 // The doc-fix dispatch picks a role (role-routing §1 row 9); none resolves here.
 mock.module('@/lib/effective-roles', () => ({
   pickEffectiveRole: async () => null,
   resolveEffectiveRoleSlugs: async () => new Set<string>(),
 }));
 
-const { requestRecheckForMergedDocFix, sweepSpecDiscrepancyRechecks } = await import('./spec-recheck');
+const { requestRecheckForMergedDocFix, sweepSpecDiscrepancyRechecks, dispatchLedgerWorkflow } = await import('./spec-recheck');
 const { DOC_FIX_RECHECK_GRACE_MS, DOC_FIX_AUTOMATION_BUDGET_MS } = await import('./action-queue');
 
 const HOUR = 60 * 60 * 1000;
@@ -137,6 +142,39 @@ beforeEach(() => {
   dispatchedTasks.length = 0;
   dispatcherOk = true;
   nextId = 1;
+  githubCalls.length = 0;
+});
+
+// Regression: this split `workspaces.repo` on '/', and that column holds a URL
+// — owner `https:`, name '' — so every forced re-run refused with "no repo".
+describe('dispatchLedgerWorkflow repo resolution', () => {
+  const LEDGER_PATH = '/actions/workflows/spec-discrepancy-ledger.yml/dispatches';
+
+  it('dispatches against a URL-shaped workspace repo', async () => {
+    tables.workspaces = [{
+      id: 'ws-1', repo: 'https://github.com/o/n', gitConfig: { defaultBranch: 'dev' },
+      githubInstallation: { installationId: 11 }, githubRepo: null,
+    }];
+    expect(await dispatchLedgerWorkflow('ws-1')).toEqual({ ok: true });
+    expect(githubCalls).toEqual([`/repos/o/n${LEDGER_PATH}`]);
+  });
+
+  it('prefers the github_repos FK, which follows a rename, over the free-text column', async () => {
+    tables.workspaces = [{
+      id: 'ws-1', repo: 'https://github.com/o/n', gitConfig: {},
+      githubInstallation: { installationId: 11 }, githubRepo: { fullName: 'o/n-renamed' },
+    }];
+    expect(await dispatchLedgerWorkflow('ws-1')).toEqual({ ok: true });
+    expect(githubCalls).toEqual([`/repos/o/n-renamed${LEDGER_PATH}`]);
+  });
+
+  it('refuses rather than building a path from an unparseable repo', async () => {
+    tables.workspaces = [{
+      id: 'ws-1', repo: 'not a repo', gitConfig: {}, githubInstallation: { installationId: 11 }, githubRepo: null,
+    }];
+    expect((await dispatchLedgerWorkflow('ws-1')).ok).toBe(false);
+    expect(githubCalls).toEqual([]);
+  });
 });
 
 describe('doc-fix merge → forced ledger re-run', () => {

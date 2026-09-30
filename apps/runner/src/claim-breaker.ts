@@ -13,6 +13,7 @@
  */
 
 import type { BuilddTask } from './types';
+import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import {
   CLAUDE_SESSION_LIMIT_PATTERN,
   CODEX_USAGE_LIMIT_PATTERN,
@@ -93,17 +94,10 @@ export function authContextOf(task: ContextualTask): string {
  * `text` must be lowercased by the caller.
  */
 export function isAuthError(text: string): boolean {
-  return (
-    text.includes('invalid api key') ||
-    text.includes('invalid authentication') ||
-    text.includes('authentication failed') ||
-    text.includes('401 unauthorized') ||
-    text.includes('api key is required') ||
-    text.includes('please run /login') ||
-    text.includes('oauth token has expired') ||
-    text.includes('credential expired') ||
-    text.includes('credentials expired')
-  );
+  // Core's classifier is the one pattern list (revocation + degraded); the
+  // runner's former private copy lacked invalid_grant / revoked / "not logged
+  // in" / "could not be refreshed", so those burn-looped instead of pausing.
+  return classifyAuthErrorSeverity(text) !== 'none';
 }
 
 /**

@@ -2648,6 +2648,27 @@ export interface UpdateExperimentInput {
   decision?: string;
 }
 
+/**
+ * One enrolment-health finding for a running experiment
+ * (packages/core/experiment-health.ts). Returned as `health` by
+ * GET /api/experiments/[id]/readout (an array, or null when the check failed)
+ * and GET /api/experiments (a map of experiment id → findings, running only).
+ */
+export type ExperimentHealthCode =
+  | 'no_recent_assignments'
+  | 'arm_never_drawn'
+  | 'split_imbalance'
+  | 'unit_concentration'
+  | 'past_duration_cap';
+
+export interface ExperimentHealthFinding {
+  code: ExperimentHealthCode;
+  severity: 'warning' | 'critical';
+  detail: string;
+  arm?: string;
+  unitId?: string;
+}
+
 // ── Error traces ─────────────────────────────────────────────────────────────
 
 /** One recurring trace pattern in a workspace, from GET /api/workspaces/[id]/error-traces. */
