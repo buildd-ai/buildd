@@ -152,7 +152,6 @@ export function resolveStartTimeoutMs(env: { CONTAINER_START_TIMEOUT_MS?: string
 export interface ContainerEnvSource {
   BUILDD_SERVER?: string;
   BUILDD_API_KEY?: string;
-  ANTHROPIC_BASE_URL?: string;
   MODEL?: string;
   PUSHER_KEY?: string;
   PUSHER_CLUSTER?: string;
@@ -166,9 +165,22 @@ export interface ContainerEnvSource {
 export const ANTHROPIC_API_KEY_PLACEHOLDER = 'sk-ant-placeholder-replaced-at-egress';
 
 /**
+ * Tells the runner's claim that it is running in a cloud container, so the
+ * server leaves every credential out of the claim response
+ * (apps/web/src/app/api/workers/claim/cloud-executor.ts).
+ */
+export const CLOUD_EXECUTOR = 'cloud';
+
+/**
  * The container env, per docs/runner-container.md ("Set by the caller"). The
  * only real secret is BUILDD_API_KEY. No GH_TOKEN and no model key: those are
- * added at egress (next step, see worker-agent.ts `installEgressHandlers`).
+ * added at egress (outbound.ts). This is an allowlist; nothing else from the
+ * Worker's env is copied.
+ *
+ * ANTHROPIC_BASE_URL is deliberately not passed: model traffic must go to
+ * api.anthropic.com, where the egress handler rewrites it to AI Gateway and
+ * adds the gateway credential. A base URL pointing anywhere else would bypass
+ * the handler and arrive with only the placeholder key.
  */
 export function buildContainerEnv(env: ContainerEnvSource): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');
@@ -178,8 +190,9 @@ export function buildContainerEnv(env: ContainerEnvSource): Record<string, strin
     BUILDD_API_KEY: env.BUILDD_API_KEY,
     ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
     BUILDD_DISABLE_AUTO_UPDATE: '1',
+    BUILDD_EXECUTOR: CLOUD_EXECUTOR,
   };
-  const optional = ['ANTHROPIC_BASE_URL', 'MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
+  const optional = ['MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
   for (const key of optional) {
     const v = env[key];
     if (v) out[key] = v;

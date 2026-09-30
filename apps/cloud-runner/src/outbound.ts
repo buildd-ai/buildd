@@ -1,0 +1,374 @@
+/**
+ * Egress credential injection: pure decisions for the container's outbound
+ * requests. No Workers runtime imports, so Bun tests load this file directly.
+ * `EgressHandler` (egress.ts) is the WorkerEntrypoint that applies them, and
+ * `WorkerAgent.installEgressHandlers` routes the container's traffic to it.
+ *
+ * Invariant: a request from the container never leaves with a credential the
+ * container supplied. For every host this module rewrites, `x-api-key`,
+ * `authorization` and friends are deleted first and only then is the real
+ * credential (held by the Worker, never by the container) added.
+ *
+ *   api.anthropic.com        -> AI Gateway, `cf-aig-authorization: Bearer <gateway token>`
+ *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
+ *   api.github.com, uploads  -> `Authorization: Bearer <installation token>`
+ *   codeload.github.com      -> container auth stripped, nothing added
+ *   anything else            -> untouched (open egress in phase 1)
+ *
+ * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
+ */
+
+export const ANTHROPIC_HOST = 'api.anthropic.com';
+export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
+
+/** Hosts whose traffic is routed through the egress handler. */
+export const GITHUB_HOSTS = ['github.com', 'api.github.com', 'uploads.github.com', 'codeload.github.com'] as const;
+export const INTERCEPTED_HOSTS: readonly string[] = [ANTHROPIC_HOST, ...GITHUB_HOSTS];
+
+/**
+ * Request headers that can carry a credential. All are removed from a
+ * rewritten request before the Worker adds its own. `cookie` is included
+ * because github.com accepts a session cookie.
+ */
+export const CONTAINER_CREDENTIAL_HEADERS = [
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'anthropic-api-key',
+  'cf-aig-authorization',
+  'cookie',
+] as const;
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+/** Worker vars/secrets the handler reads. See README "Egress credentials". */
+export interface EgressEnv {
+  AI_GATEWAY_ACCOUNT_ID?: string;
+  AI_GATEWAY_ID?: string;
+  /** Secret. Sent as `cf-aig-authorization`; the Anthropic key itself lives in AI Gateway. */
+  AI_GATEWAY_TOKEN?: string;
+  /** Secret, local development only. Used only when ALLOW_DIRECT_ANTHROPIC=1. */
+  ANTHROPIC_DIRECT_API_KEY?: string;
+  /** Var, local development only. `1` sends model traffic straight to Anthropic. Default off. */
+  ALLOW_DIRECT_ANTHROPIC?: string;
+}
+
+export type ModelRoute =
+  | { kind: 'gateway'; baseUrl: string; token: string }
+  | { kind: 'direct'; apiKey: string }
+  | { kind: 'unconfigured'; reason: string };
+
+const GATEWAY_SEGMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Where model traffic goes. The direct escape hatch needs both the opt-in var
+ * and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing.
+ * With neither route configured the request is refused rather than forwarded
+ * with the container's placeholder key.
+ */
+export function resolveModelRoute(env: EgressEnv): ModelRoute {
+  if (env.ALLOW_DIRECT_ANTHROPIC === '1' && env.ANTHROPIC_DIRECT_API_KEY) {
+    return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY };
+  }
+  const account = env.AI_GATEWAY_ACCOUNT_ID;
+  const gateway = env.AI_GATEWAY_ID;
+  const token = env.AI_GATEWAY_TOKEN;
+  if (!account || !gateway || !token) {
+    return { kind: 'unconfigured', reason: 'AI_GATEWAY_ACCOUNT_ID, AI_GATEWAY_ID and AI_GATEWAY_TOKEN must all be set' };
+  }
+  if (!GATEWAY_SEGMENT_RE.test(account) || !GATEWAY_SEGMENT_RE.test(gateway)) {
+    return { kind: 'unconfigured', reason: 'AI_GATEWAY_ACCOUNT_ID / AI_GATEWAY_ID contain unexpected characters' };
+  }
+  return { kind: 'gateway', baseUrl: `https://${AI_GATEWAY_HOST}/v1/${account}/${gateway}/anthropic`, token };
+}
+
+// ── GitHub grant ──────────────────────────────────────────────────────────────
+
+/** A repo-scoped installation token, as returned by `POST /api/runner/github-token`. */
+export interface GithubGrant {
+  token: string;
+  /** Epoch ms. */
+  expiresAt: number;
+  owner: string;
+  repo: string;
+}
+
+// ── Classification ────────────────────────────────────────────────────────────
+
+export type EgressKind = 'anthropic' | 'github' | 'passthrough';
+
+export function classifyEgressHost(hostname: string): EgressKind {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  if (host === ANTHROPIC_HOST) return 'anthropic';
+  if ((GITHUB_HOSTS as readonly string[]).includes(host)) return 'github';
+  return 'passthrough';
+}
+
+// ── Rewrite ───────────────────────────────────────────────────────────────────
+
+export interface OutboundRequestLike {
+  url: string;
+  headers: Headers | Record<string, string>;
+}
+
+export type EgressDecision =
+  | { action: 'passthrough' }
+  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
+  | { action: 'reject'; status: number; message: string };
+
+export interface RewriteContext {
+  model: ModelRoute;
+  /** Resolved only for GitHub hosts. `null`: no token available, forward unauthenticated. */
+  github?: GithubGrant | null;
+  now?: number;
+}
+
+/** Copy of the request headers with every container-supplied credential removed. */
+export function stripContainerCredentials(input: Headers | Record<string, string>): Headers {
+  const headers = new Headers(input as HeadersInit);
+  for (const name of CONTAINER_CREDENTIAL_HEADERS) headers.delete(name);
+  // The URL decides the host; a stale Host header from the original request
+  // must not ride along to a different origin.
+  headers.delete('host');
+  return headers;
+}
+
+function base64(s: string): string {
+  return btoa(s);
+}
+
+function sameName(a: string | undefined, b: string): boolean {
+  return a !== undefined && a.toLowerCase() === b.toLowerCase();
+}
+
+/** `/<owner>/<repo>` or `/<owner>/<repo>.git`, then end or `/`. */
+function gitPathMatches(pathname: string, grant: GithubGrant): boolean {
+  const [, owner, repoSeg] = pathname.split('/');
+  if (!sameName(owner, grant.owner) || repoSeg === undefined) return false;
+  const repo = repoSeg.toLowerCase().endsWith('.git') ? repoSeg.slice(0, -4) : repoSeg;
+  return sameName(repo, grant.repo);
+}
+
+/** `/repos/<owner>/<repo>`, then end or `/`. */
+function apiRepoPathMatches(pathname: string, grant: GithubGrant): boolean {
+  const [, first, owner, repo] = pathname.split('/');
+  return first === 'repos' && sameName(owner, grant.owner) && sameName(repo, grant.repo);
+}
+
+/**
+ * Whether the installation token is attached to this GitHub request.
+ *
+ * Scoping achieved, in layers:
+ *  1. GitHub itself: the token is minted with `repository_ids: [<task repo>]`,
+ *     so it authorizes nothing outside that one repo whatever it is sent with.
+ *  2. Here: on github.com and uploads/api repo paths the token is added only
+ *     when the path names the task's `<owner>/<repo>`. A clone of any other
+ *     repo goes out unauthenticated (public repos still work).
+ *  3. `api.github.com/graphql` cannot be scoped by path (the repo is in the
+ *     body), so it gets the token and relies on layer 1. `gh pr create` and
+ *     friends need it.
+ * Any other api.github.com path (`/user`, `/search`, `/orgs/...`) gets none.
+ */
+export function githubAuthFor(url: URL, grant: GithubGrant): 'github_basic' | 'github_bearer' | 'none' {
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname;
+  if (host === 'github.com') return gitPathMatches(path, grant) ? 'github_basic' : 'none';
+  if (host === 'api.github.com') {
+    if (path === '/graphql') return 'github_bearer';
+    return apiRepoPathMatches(path, grant) ? 'github_bearer' : 'none';
+  }
+  if (host === 'uploads.github.com') return apiRepoPathMatches(path, grant) ? 'github_bearer' : 'none';
+  // codeload serves archives behind signed redirects from api.github.com; it
+  // needs no token of ours.
+  return 'none';
+}
+
+/**
+ * Decide what to do with one outbound request. Pure: the handler does the
+ * I/O (fetching the GitHub grant, forwarding the request).
+ */
+export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): EgressDecision {
+  let url: URL;
+  try {
+    url = new URL(req.url);
+  } catch {
+    return { action: 'reject', status: 400, message: 'unparseable request URL' };
+  }
+  const kind = classifyEgressHost(url.hostname);
+  if (kind === 'passthrough') return { action: 'passthrough' };
+
+  // Credentialed hosts are HTTPS only: a plaintext request is refused rather
+  // than upgraded, so nothing credentialed is ever built from it.
+  if (url.protocol !== 'https:') {
+    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS` };
+  }
+  if (url.port && url.port !== '443') {
+    return { action: 'reject', status: 403, message: `${url.hostname}: only port 443 is allowed` };
+  }
+
+  const headers = stripContainerCredentials(req.headers);
+  // Credentials in the URL itself (`https://user:token@github.com/...`) are
+  // container-supplied too.
+  url.username = '';
+  url.password = '';
+
+  if (kind === 'anthropic') {
+    const route = ctx.model;
+    if (route.kind === 'unconfigured') {
+      return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}` };
+    }
+    if (route.kind === 'direct') {
+      headers.set('x-api-key', route.apiKey);
+      return { action: 'forward', url: url.toString(), headers, injected: 'direct' };
+    }
+    headers.set('cf-aig-authorization', `Bearer ${route.token}`);
+    return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'gateway' };
+  }
+
+  // GitHub
+  const grant = ctx.github;
+  const now = ctx.now ?? Date.now();
+  const usable = grant && grant.token && grant.expiresAt > now ? grant : null;
+  const auth = usable ? githubAuthFor(url, usable) : 'none';
+  if (usable && auth === 'github_basic') {
+    headers.set('authorization', `Basic ${base64(`x-access-token:${usable.token}`)}`);
+  } else if (usable && auth === 'github_bearer') {
+    headers.set('authorization', `Bearer ${usable.token}`);
+  }
+  return { action: 'forward', url: url.toString(), headers, injected: auth };
+}
+
+// ── Token cache (lives in the WorkerAgent) ────────────────────────────────────
+
+/** Refetch this long before GitHub's stated expiry. */
+export const GITHUB_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+/** After a failed fetch, don't ask again for this long (a clone makes many requests). */
+export const GITHUB_TOKEN_FAILURE_BACKOFF_MS = 15 * 1000;
+
+export interface GithubTokenCacheDeps {
+  fetchGrant(): Promise<GithubGrant>;
+  now(): number;
+  log?(message: string): void;
+}
+
+/**
+ * The agent's copy of the installation token. In memory only: never written
+ * to Durable Object storage and never passed to the container. Concurrent
+ * callers share one in-flight fetch; the token is refetched once it is within
+ * GITHUB_TOKEN_REFRESH_MARGIN_MS of expiry, so a run longer than the token's
+ * ~60 min life keeps working. A failure yields `null` (the request goes out
+ * unauthenticated) and is not retried for GITHUB_TOKEN_FAILURE_BACKOFF_MS.
+ */
+export class GithubTokenCache {
+  private grant: GithubGrant | null = null;
+  private inflight: Promise<GithubGrant | null> | null = null;
+  private failedAt: number | null = null;
+  private generation = 0;
+
+  constructor(private readonly d: GithubTokenCacheDeps) {}
+
+  /** Forget everything; called at the start of each run. */
+  reset(): void {
+    this.grant = null;
+    this.inflight = null;
+    this.failedAt = null;
+    this.generation++;
+  }
+
+  async get(): Promise<GithubGrant | null> {
+    const now = this.d.now();
+    if (this.grant && this.grant.expiresAt - GITHUB_TOKEN_REFRESH_MARGIN_MS > now) return this.grant;
+    if (this.inflight) return this.inflight;
+    if (this.failedAt !== null && now - this.failedAt < GITHUB_TOKEN_FAILURE_BACKOFF_MS) return null;
+    const gen = this.generation;
+    const p = this.d.fetchGrant().then(
+      (grant) => {
+        if (gen !== this.generation) return null;
+        this.grant = grant;
+        this.failedAt = null;
+        return grant;
+      },
+      (err) => {
+        if (gen !== this.generation) return null;
+        this.grant = null;
+        this.failedAt = this.d.now();
+        this.d.log?.(`[cloud-runner] GitHub token fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      },
+    ).finally(() => {
+      if (this.inflight === p) this.inflight = null;
+    });
+    this.inflight = p;
+    return p;
+  }
+}
+
+/** Parse and validate the buildd endpoint's JSON. Throws on anything unexpected. */
+export function parseGithubGrant(body: unknown): GithubGrant {
+  const b = body as { token?: unknown; expiresAt?: unknown; repository?: { owner?: unknown; name?: unknown } } | null;
+  const token = b?.token;
+  const expiresAt = typeof b?.expiresAt === 'string' ? Date.parse(b.expiresAt) : NaN;
+  const owner = b?.repository?.owner;
+  const repo = b?.repository?.name;
+  if (typeof token !== 'string' || !token) throw new Error('github-token response has no token');
+  if (!Number.isFinite(expiresAt)) throw new Error('github-token response has no valid expiresAt');
+  if (typeof owner !== 'string' || !owner || typeof repo !== 'string' || !repo) {
+    throw new Error('github-token response has no repository owner/name');
+  }
+  return { token, expiresAt, owner, repo };
+}
+
+// ── buildd request ────────────────────────────────────────────────────────────
+
+/** Header carrying DISPATCH_TOKEN on the token request. Mirrors the buildd route. */
+export const DISPATCH_TOKEN_HEADER = 'X-Buildd-Dispatch-Token';
+export const GITHUB_TOKEN_PATH = '/api/runner/github-token';
+
+/**
+ * The agent's request for a repo-scoped installation token. Two credentials:
+ * the runner API key (the account that claimed the task) and DISPATCH_TOKEN,
+ * which the container never has. Without the second, the container could
+ * call this endpoint with its own BUILDD_API_KEY and get the token directly.
+ */
+export function githubTokenRequest(cfg: {
+  BUILDD_SERVER?: string;
+  BUILDD_API_KEY?: string;
+  DISPATCH_TOKEN?: string;
+}, taskId: string, workerId?: string): { url: string; init: RequestInit } {
+  if (!cfg.BUILDD_SERVER || !cfg.BUILDD_API_KEY || !cfg.DISPATCH_TOKEN) {
+    throw new Error('BUILDD_SERVER, BUILDD_API_KEY and DISPATCH_TOKEN are needed to fetch a GitHub token');
+  }
+  return {
+    url: `${cfg.BUILDD_SERVER.replace(/\/+$/, '')}${GITHUB_TOKEN_PATH}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.BUILDD_API_KEY}`,
+        [DISPATCH_TOKEN_HEADER]: cfg.DISPATCH_TOKEN,
+      },
+      body: JSON.stringify(workerId ? { taskId, workerId } : { taskId }),
+    },
+  };
+}
+
+// ── Local debug echo ──────────────────────────────────────────────────────────
+
+/**
+ * With the var EGRESS_DEBUG_ECHO=1 (local smoke only), the handler answers
+ * with this description instead of forwarding. Header values are replaced by
+ * a short SHA-256 fingerprint, so the echo proves which credential was set
+ * without ever printing one, and leaks nothing if the var is set by mistake.
+ */
+export async function describeForwardForDebug(
+  d: Extract<EgressDecision, { action: 'forward' }>,
+): Promise<{ url: string; injected: string; headers: Record<string, string> }> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of d.headers) headers[name] = await fingerprint(value);
+  return { url: d.url, injected: d.injected, headers };
+}
+
+export async function fingerprint(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  return `sha256:${Array.from(digest.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('')}`;
+}

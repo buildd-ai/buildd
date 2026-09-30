@@ -61,7 +61,7 @@ export interface SupervisorDeps {
   keepAliveWhile<T>(fn: () => Promise<T>): Promise<T>;
   /** ctx.waitUntil, so the run outlives the RPC call that started it. */
   waitUntil(promise: Promise<unknown>): void;
-  /** Egress credential injection. A no-op until the outbound handler lands. */
+  /** Egress credential injection (WorkerAgent.installEgressHandlers). A failure fails the run before start. */
   installEgress(): Promise<void>;
   fetch: typeof fetch;
   now(): number;

@@ -4,3 +4,4 @@ export * from './runner-liveness';
 export * from './generated-paths';
 export * from './heartbeat-protocol';
 export * from './chat';
+export * from './executor';

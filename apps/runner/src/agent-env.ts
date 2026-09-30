@@ -38,6 +38,12 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   // --once container image (apps/runner/Dockerfile.once), where every outbound
   // call goes through an egress proxy. Not secret.
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  // TLS trust. In the --once container, buildd-once points these at a bundle
+  // that includes the Cloudflare egress CA; without them the agent's own
+  // git/gh/curl/node calls to intercepted hosts fail verification. Paths, not
+  // secrets.
+  'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'GIT_SSL_CAINFO',
+  'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE',
 ]);
 
 /**

@@ -1,8 +1,8 @@
 ---
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
-# Components 1-3 have shipped (run-once, the image, apps/cloud-runner).
-# `cloud-egress-handler` tracks Component 4, the outbound credential handler.
+# Components 1-4 have shipped (run-once, the image, apps/cloud-runner, the
+# egress handler). The canary (implementation step 6) has not run.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -19,7 +19,7 @@ assertions:
 ---
 # Cloudflare Agents Runner
 
-**Status:** Partially implemented (Components 1-3; egress injection pending)
+**Status:** Partially implemented (Components 1-4; canary pending)
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
@@ -166,6 +166,12 @@ the container API, which is the Sandbox SDK pattern.
   GitHub App installation token scoped to the task's repo.
 - Everything else passes through (open egress in phase 1). Allowlisting is a
   per-workspace follow-up.
+- As built: rules in `apps/cloud-runner/src/outbound.ts`, handler
+  `EgressHandler` in `src/egress.ts`. The token comes from
+  `POST /api/runner/github-token` (open question 1, server-minted), which
+  also requires the workspace's dispatch token so the container cannot fetch
+  it with its own API key. Cloud claims (`executor: 'cloud'`) carry no
+  credential material at all (`packages/shared/src/executor.ts`).
 
 **5. Server changes (small, additive).**
 - The webhook payload gains structured fields (`taskId`, `workspaceId`,
