@@ -1017,6 +1017,41 @@ describe('buildActionQueue — CI gate', () => {
     expect(gated[0].chip).not.toBe('MERGE');
     expect(gated[0].chip).not.toBe('REVIEW');
   });
+
+  it('excludes draft PRs with CI failures — they are not actionable until ready_for_review', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prIsDraft: true,
+      ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null },
+    })]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('includes non-draft PRs with CI failures', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prIsDraft: false,
+      ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null },
+    })]);
+    expect(result).toHaveLength(1);
+    expect(result[0].chip).toBe('BLOCKED');
+  });
+
+  it('includes draft PRs without CI failures', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prIsDraft: true,
+    })]);
+    expect(result).toHaveLength(1);
+    expect(result[0].chip).toBe('MERGE');
+  });
+
+  it('produces a BLOCKED card when draft PR goes to ready_for_review with CI still failing', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prIsDraft: false,
+      ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null },
+    })]);
+    expect(result).toHaveLength(1);
+    expect(result[0].chip).toBe('BLOCKED');
+    expect(isActionableChip(result[0].chip)).toBe(true);
+  });
 });
 
 describe('isActionableChip', () => {
