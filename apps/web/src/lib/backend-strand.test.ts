@@ -55,6 +55,12 @@ const mockIsBackendConfigured = mock((backend: string, _scope: any) =>
 );
 const mockTeamEnabledBackends = mock(() => Promise.resolve(enabledMask));
 
+// The held/local gate renders real SQL against the schema this file stubs;
+// its SQL is asserted in a PgDialect test, so a marker suffices here.
+mock.module('@/app/api/workers/claim/held-gate', () => ({
+  notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
+}));
+
 mock.module('@/lib/backend-failover', () => ({
   isBackendConfigured: mockIsBackendConfigured,
   teamEnabledBackends: mockTeamEnabledBackends,
