@@ -107,8 +107,11 @@ mock.module('@/lib/path-claim-release', () => ({
 // The cold path inserts a Continue: task and must wake runners for it the way
 // every other new task does, or a webhook-only workspace never runs it.
 const mockDispatchNewTask = mock(async (_task: any, _workspace: any) => {});
+// A worker a cloud runner parked has no container: the answer must wake one.
+const mockDispatchResumedTask = mock(async (_task: any, _workspace: any, _workerId: string) => true);
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
+  dispatchResumedTask: mockDispatchResumedTask,
 }));
 
 import { POST } from './route';
@@ -740,6 +743,64 @@ describe('POST /api/workers/[id]/respond', () => {
       // The caller navigates back to the SAME task — the resumed worker is there.
       expect(data.taskId).toBe('task-1');
       expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    describe('a worker parked by the cloud runner', () => {
+      const PARKED_UNTIL = () => new Date(Date.now() + 60 * 60 * 1000);
+
+      it('resumes although its last sync is hours old, and fires task.resume for the SAME worker', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({
+          updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+          parkedUntil: PARKED_UNTIL(),
+        }));
+
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.path).toBe('resume');
+        expect(data.resumeDispatched).toBe(true);
+        expect(mockInsertValues).not.toHaveBeenCalled();
+        expect(mockDispatchResumedTask).toHaveBeenCalledTimes(1);
+        const [task, , workerId] = mockDispatchResumedTask.mock.calls[0]!;
+        expect(task.id).toBe('task-1');
+        expect(workerId).toBe(WORKER_ID);
+        // The answer is queued first: the container that wakes drains it.
+        expect((mockWorkersUpdateSet.mock.calls.at(-1)![0] as any).pendingInstructions).toBe('Use JWT tokens');
+      });
+
+      it('an unparked (host runner) resume fires no task.resume', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({ parkedUntil: null }));
+        const data = await (await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).json();
+        expect(data.path).toBe('resume');
+        expect(mockDispatchResumedTask).not.toHaveBeenCalled();
+      });
+
+      it('an expired park with a stale sync goes cold, as before', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({
+          updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+          parkedUntil: new Date(Date.now() - 1000),
+        }));
+        const data = await (await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).json();
+        expect(data.path).toBe('cold_continuation');
+        expect(mockDispatchResumedTask).not.toHaveBeenCalled();
+      });
+
+      it('a failed task.resume still answers resume: the ack deadline sweep covers it', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockDispatchResumedTask.mockImplementationOnce(async () => { throw new Error('webhook down'); });
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({ updatedAt: new Date(0), parkedUntil: PARKED_UNTIL() }));
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect((await res.json()).resumeDispatched).toBe(false);
+      });
     });
 
     // AC-AQR-10 — the answer rides the acknowledged instruction queue, which is

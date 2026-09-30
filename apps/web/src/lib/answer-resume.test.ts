@@ -57,6 +57,34 @@ describe('evaluateAnswerPath', () => {
     expect(decision.reasonCode).toBe('runner_not_holding_transcript');
   });
 
+  // Cloud runner park (docs/design/cloudflare-sandbox-runner.md, Phase 2): the
+  // container is gone, so no sync can be fresh; the park bundle holds the
+  // transcript instead, until parkedUntil.
+  it('a parked worker satisfies G2 while parkedUntil is in the future, however stale its sync', () => {
+    const decision = evaluateAnswerPath(eligible({
+      workerUpdatedAt: new Date(NOW - 6 * 60 * 60 * 1000),
+      parkedUntil: new Date(NOW + 60_000),
+    }));
+    expect(decision.path).toBe('resume');
+    expect(decision.reasonCode).toBe('resume_eligible');
+  });
+
+  it('an expired or absent park falls back to the freshness rule', () => {
+    const stale = new Date(NOW - RESUME_RUNNER_FRESH_MS - 1);
+    expect(evaluateAnswerPath(eligible({ workerUpdatedAt: stale, parkedUntil: new Date(NOW) })).reasonCode)
+      .toBe('runner_not_holding_transcript');
+    expect(evaluateAnswerPath(eligible({ workerUpdatedAt: stale, parkedUntil: null })).reasonCode)
+      .toBe('runner_not_holding_transcript');
+    expect(evaluateAnswerPath(eligible({ workerUpdatedAt: null, parkedUntil: new Date(NOW - 1) })).reasonCode)
+      .toBe('runner_not_holding_transcript');
+  });
+
+  it('a park does not bypass the other gates (G1 parked status, G3 ack)', () => {
+    const parked = { workerUpdatedAt: null, parkedUntil: new Date(NOW + 60_000) };
+    expect(evaluateAnswerPath(eligible({ ...parked, workerStatus: 'running' })).reasonCode).toBe('worker_not_parked');
+    expect(evaluateAnswerPath(eligible({ ...parked, supportsInstructionAck: false })).reasonCode).toBe('runner_cannot_confirm_delivery');
+  });
+
   it('accepts a sync exactly at the freshness boundary', () => {
     const decision = evaluateAnswerPath(
       eligible({ workerUpdatedAt: new Date(NOW - RESUME_RUNNER_FRESH_MS) }),

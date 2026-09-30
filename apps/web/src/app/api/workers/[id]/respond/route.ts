@@ -8,12 +8,13 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { dispatchNewTask, dispatchResumedTask } from '@/lib/task-dispatch';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
 } from '@/lib/worker-instructions';
 import {
+  isParked,
   evaluateAnswerPath,
   describeAnswerPath,
   buildAnswerDeliveryRecord,
@@ -162,6 +163,7 @@ export async function POST(
     supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
     credentialPreflight: preflight.state,
     waitingForType: waitingFor.type ?? null,
+    parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({
@@ -269,6 +271,18 @@ async function respondByResume(args: {
     { action: 'message', text: message, timestamp: Date.now() },
   ).catch(() => { /* durable queue is the contract; the push is an accelerator */ });
 
+  // A worker the cloud runner parked has no container to drain the queue:
+  // wake one (task.resume) that re-attaches to this same worker. Best effort;
+  // an answer nobody acknowledges is degraded by cleanupUnresumedAnswers.
+  let resumeDispatched: boolean | undefined;
+  if (isParked(worker.parkedUntil)) {
+    resumeDispatched = await dispatchResumedTask(task ?? { id: worker.taskId, title: '', description: null, workspaceId: worker.workspaceId }, worker.workspace ?? { id: worker.workspaceId }, workerId)
+      .catch((err) => {
+        console.error(`[Worker ${workerId}] task.resume dispatch failed:`, err);
+        return false;
+      });
+  }
+
   await postAnswerNote({
     task,
     workerId,
@@ -278,6 +292,7 @@ async function respondByResume(args: {
   });
 
   return NextResponse.json({
+    ...(resumeDispatched !== undefined ? { resumeDispatched } : {}),
     path: 'resume',
     reasonCode: decision.reasonCode,
     // Same task — the resumed worker continues under it. Callers navigate here.
