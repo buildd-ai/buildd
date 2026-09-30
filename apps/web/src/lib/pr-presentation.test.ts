@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { PR_LIFECYCLE, derivePrLifecycle } from './pr-presentation';
+import { PR_LIFECYCLE, derivePrLifecycle, derivePrDisplayState, type PrDisplayState } from './pr-presentation';
 
 describe('PR_LIFECYCLE map', () => {
   // AC-3: ci_green must be in the map so it renders as a CI state, never as Open
@@ -55,5 +55,39 @@ describe('derivePrLifecycle', () => {
   it('merged renders correctly', () => {
     const result = derivePrLifecycle('merged', true);
     expect(result?.label).toBe('Merged');
+  });
+});
+
+// The one mapping from stored PR facts to a display state. Every surface
+// (chat PR object, explain history, mission feed) projects from this.
+describe('derivePrDisplayState', () => {
+  // Every value of workers.prLifecycleStatus (packages/core/db/schema.ts), plus null.
+  const TABLE: Array<[string | null, PrDisplayState]> = [
+    [null, 'open'],
+    ['pr_open', 'awaiting_ci'],
+    ['ci_running', 'ci_running'],
+    ['ci_green', 'ci_passed'],
+    ['ci_failed', 'ci_failed'],
+    ['conflict', 'conflict'],
+    ['merged', 'merged'],
+    ['closed', 'closed'],
+    ['unresolvable', 'unresolvable'],
+    ['something_new', 'open'],
+  ];
+  for (const [lifecycle, state] of TABLE) {
+    it(`${lifecycle} -> ${state}`, () => {
+      expect(derivePrDisplayState(lifecycle, null)).toBe(state);
+    });
+  }
+
+  it('a merge stamp wins over any lifecycle value', () => {
+    for (const [lifecycle] of TABLE) expect(derivePrDisplayState(lifecycle, new Date())).toBe('merged');
+    expect(derivePrDisplayState(null, '2026-01-01T00:00:00Z')).toBe('merged');
+  });
+});
+
+describe('derivePrLifecycle: unresolvable', () => {
+  it('an unresolvable PR does not render as Open', () => {
+    expect(derivePrLifecycle('unresolvable', true)?.label).not.toBe('Open');
   });
 });

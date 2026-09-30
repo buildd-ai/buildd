@@ -152,6 +152,20 @@ describe('approval card', () => {
     expect(q('[data-kind="mission"]')).toBeNull();
   });
 
+  // Two writes in one turn: the cap refused the second before any card was
+  // shown. It used to read "discarded · nothing filed", as if the person had
+  // discarded something they never saw.
+  it('a write the one-card cap refused is "not proposed", never "discarded"', async () => {
+    await render(fixtures.chatFixture('capped').messages as Msgs, 'confirmed');
+    const capped = q('[data-testid="approval-card"]')!;
+    expect(capped.dataset.state).toBe('skipped');
+    expect(capped.querySelector('.kit-card-title')?.textContent).toBe('New task');
+    expect(capped.textContent).toContain('not proposed · one change per turn');
+    expect(container.textContent).not.toMatch(/discarded/i);
+    // The first write still reads approved.
+    expect(qa('[data-testid="tool-call-row"]').some(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'))).toBe(true);
+  });
+
   it('once filed, the card is its tool row and the live mission renders under it', async () => {
     await render(fixtures.chatFixture('confirmed').messages as Msgs, 'confirmed');
     expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();
@@ -205,6 +219,26 @@ describe('tool rows', () => {
     expect(first.textContent).toContain('3 open, none touch currency');
     await act(async () => { (first.querySelector('button') as HTMLButtonElement).click(); });
     expect(first.querySelector('[data-testid="tool-call-raw"]')?.textContent).toContain('"action": "list"');
+  });
+
+  it('the rows are the kit\'s, with buildd\'s key args, read classes and result line', async () => {
+    const call = (id: string, name: string, input: Record<string, unknown>, output: unknown) =>
+      ({ type: `tool-${name}`, toolCallId: id, state: 'output-available', input, output });
+    await render([{ id: 'a', role: 'assistant', parts: [
+      call('c1', 'manage_missions', { action: 'list', workspaceId: '5f0c7a51-2b9e-4c1e-9d55-0c3a4b1d2e3f', teamId: 'team-a', repo: 'web', workspace: 'billing-web' }, { data: [1, 2], objects: [] }),
+      call('c2', 'create_task', { title: 'Fix checkout' }, { data: {}, objects: [], summary: 'filed', allowed: true }),
+      { type: 'text', text: 'Done.' },
+    ] }] as unknown as Msgs);
+    const group = q('[data-testid="tool-call-group"]')!;
+    expect(group.classList.contains('kit-toolcalls')).toBe(true);
+    // A write in the run: not read-only.
+    expect(group.textContent).not.toContain('read-only');
+    const [read, write] = qa('[data-testid="tool-call-row"]');
+    expect(read.classList.contains('kit-toolcall')).toBe(true);
+    // buildd's arg order (workspace before repo), its skips (teamId), and its count result.
+    expect(read.querySelector('.kit-toolcall-args')?.textContent).toBe('· billing-web · web');
+    expect(read.querySelector('.kit-toolcall-result')?.textContent).toBe('→ 2 results');
+    expect(write.querySelector('[data-testid="tool-call-allowed"]')).not.toBeNull();
   });
 
   it('while a turn streams, the Thinking panel shows the server\'s steps, in plain words', async () => {

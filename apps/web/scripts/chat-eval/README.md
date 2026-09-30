@@ -30,6 +30,15 @@ any good.
 - **Jev is the one exception.** `questions --classify` runs chat's own router
   (`routeTurn`: complexity, intent, area), and `judge` scores answers. Each is
   one small OpenRouter decision call per question.
+- **Routing deadline.** Classification uses an 8s deadline so it measures the
+  questions, not the network. Production routes at `ROUTING_TIMEOUT_MS`
+  (900ms) and a slow call is a fallback turn. `--timeout 900` observes that:
+  on `questions --classify` it tallies outcomes (`decision`, `low_confidence`,
+  `error:<kind>`) and latency from each call's routing record, writes the
+  records to `routing-<ms>ms-<ts>.jsonl` and leaves stored classifications
+  alone; on `run` it routes every question live at that deadline and keeps the
+  record in `results.jsonl`. The eval passes its own key, so unlike production
+  none of the deadline goes on the policy check or key lookup.
 
 ## Run it
 
@@ -46,6 +55,7 @@ bun run chat-eval questions --mine --days 60     # real chat messages (DATABASE_
 bun run chat-eval questions --synth 40 --replace # likely questions, grounded in live state (OAuth)
 bun run chat-eval questions --add "what's stuck?" --weight 5
 doppler run -p buildd -c prd -- bun run chat-eval questions --classify
+doppler run -p buildd -c prd -- bun run chat-eval questions --classify --timeout 900   # production's deadline
 bun run chat-eval questions --list
 
 bun run chat-eval run --surface chat             # routing jev (default) | fallback | all

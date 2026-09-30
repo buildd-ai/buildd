@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -272,10 +273,9 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check maxConcurrentFromSchedule - count active tasks from this schedule
         if (schedule.maxConcurrentFromSchedule > 0) {
-          const activeStatuses = ['pending', 'assigned', 'in_progress'];
           const concurrentConditions = [
             ...(schedule.workspaceId ? [eq(tasks.workspaceId, schedule.workspaceId)] : []),
-            inArray(tasks.status, activeStatuses),
+            inArray(tasks.status, OPEN_TASK_STATUSES),
             sql`${tasks.context}->>'scheduleId' = ${schedule.id}`,
           ] as const;
           const [activeCount] = await db
@@ -443,13 +443,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check mission-level maxConcurrentTasks cap
         if (linkedMission && linkedMission.maxConcurrentTasks != null && linkedMission.maxConcurrentTasks > 0) {
-          const activeStatuses = ['pending', 'assigned', 'in_progress'];
           const [missionActiveCount] = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(tasks)
             .where(and(
               eq(tasks.missionId, linkedMission.id),
-              inArray(tasks.status, activeStatuses),
+              inArray(tasks.status, OPEN_TASK_STATUSES),
             ));
 
           if ((missionActiveCount?.count ?? 0) >= linkedMission.maxConcurrentTasks) {
@@ -1063,11 +1062,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       console.warn('[Cron] task category sweep failed:', taskCategories.error);
     }
 
+    // The watcher and overdue-heartbeat sweeps ride this tick, so their results
+    // belong in its run row — otherwise a watcher that throws every hour looks
+    // exactly like a quiet one. A watcher error counts in `errors`. Neither is
+    // folded into `changed`: this job's `changed` is work performed (tasks
+    // created), and watcher fires / overdue alerts are findings — adding them
+    // would invert the health reading (see CRON_JOB_REGISTRY polarity).
+    const healthWatcherErrors = 'error' in healthWatcher ? 1 : healthWatcher.errors;
     report({
       processed,
       changed: created,
-      errors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories },
+      errors: errors + healthWatcherErrors,
+      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories, healthWatcher, overdueHeartbeatAlerts },
     });
 
     return NextResponse.json({

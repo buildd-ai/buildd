@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { isSystemDenied, ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 
 /**
@@ -48,19 +49,22 @@ const { hashToolInput } = await import('./approvals');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const finish = (unified: string) => ({ type: 'finish', finishReason: { unified, raw: unified }, usage });
-const textStream = (text: string) => ({
+const finish = (unified: string, cost?: number) => ({
+  type: 'finish', finishReason: { unified, raw: unified }, usage,
+  ...(cost !== undefined ? { providerMetadata: { openrouter: { usage: { cost } } } } : {}),
+});
+const textStream = (text: string, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: text }, { type: 'text-end', id: 't' },
-    finish('stop'),
+    finish('stop', cost),
   ]),
 });
-const toolStream = (toolCallId: string, toolName: string, input: unknown) => ({
+const toolStream = (toolCallId: string, toolName: string, input: unknown, cost?: number) => ({
   stream: convertArrayToReadableStream([
     { type: 'stream-start', warnings: [] },
     { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) },
-    finish('tool-calls'),
+    finish('tool-calls', cost),
   ]),
 });
 
@@ -164,6 +168,26 @@ describe('a read-only question', () => {
     expect(toolPart.output.objects[0]).toMatchObject({ kind: 'task', id: 'task-1' });
     expect(saved.parts.some(p => p.type === 'text' && p.text.includes('One task'))).toBe(true);
     expect(saved.usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
+  });
+
+  it('records the cost of every step, not just the last one', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}, 0.01), textStream('One task is in flight.', 0.002)] as any,
+    });
+    const { turn } = harness({ model });
+    await turn(userMsg("what's in flight on billing-web?"));
+    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.012, 10);
+  });
+
+  it('prices a step that reported no cost from its own usage', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [toolStream('call-r', 'list_tasks', {}, 0.01), textStream('One task is in flight.')] as any,
+    });
+    const { turn } = harness({ model });
+    await turn(userMsg("what's in flight on billing-web?"));
+    const { turnCostUsd } = await import('./models');
+    const own = turnCostUsd('test-model', { inputTokens: 10, outputTokens: 5 })!;
+    expect(lastAssistant().usage.costUsd).toBeCloseTo(0.01 + own, 10);
   });
 
   it('the context block carries the user\'s local date and zone', async () => {
@@ -322,6 +346,12 @@ describe('"make this a mission"', () => {
     await turn(userMsg('file two missions'));
     expect(lastAssistant().parts.filter(p => p.state === 'approval-requested')).toHaveLength(1);
     expect(apiCalls).toEqual([]);
+    // The refused call was never shown: it carries the server's mark and the
+    // kit's reason, so the card reads "not proposed", never "discarded".
+    const capped = lastAssistant().parts.find(p => p.toolCallId === 'c2');
+    expect(capped.state).toBe('output-denied');
+    expect(capped.approval).toMatchObject({ isAutomatic: true, reason: ONE_CARD_PER_TURN_REASON });
+    expect(isSystemDenied(capped)).toBe(true);
   });
 
   it('confirming files exactly one mission, links it to the conversation, and replay files nothing', async () => {
@@ -355,6 +385,8 @@ describe('"make this a mission"', () => {
     expect(linked).toEqual([]);
     expect(approvals[0].status).toBe('denied');
     expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('output-denied');
+    // The person's Discard: still reads "discarded".
+    expect(isSystemDenied(lastAssistant().parts.find(p => p.type === 'tool-manage_missions'))).toBe(false);
   });
 
   it('an edited approval (different input) decides and files nothing', async () => {
@@ -468,6 +500,31 @@ describe('limits', () => {
     await turn(userMsg('hello'));
     const saved = messages.find(m => m.role === 'user')!;
     expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007 });
+  });
+
+  it('the routing record is saved under usage.routing, with the spend; nothing of the message', async () => {
+    const routing = {
+      outcome: 'decision', latencyMs: 420, attempts: 1, questionCount: 3, workspaceCount: 0,
+      answers: { complexity: { label: 'simple', confidence: 0.95, applied: true } },
+    };
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({
+      model,
+      route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision', usage: { inputTokens: 40, outputTokens: 4, costUsd: 0.0007 }, routing }),
+    });
+    await turn(userMsg('SECRET-MESSAGE-TEXT hello'));
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.usage).toEqual({ inputTokens: 40, outputTokens: 4, costUsd: 0.0007, routing });
+    expect(JSON.stringify(saved.usage)).not.toContain('SECRET');
+  });
+
+  it('a failed routing call is still recorded: zero tokens, null cost, the error outcome', async () => {
+    const routing = { outcome: 'error:timeout', latencyMs: 903, attempts: 1, questionCount: 3, workspaceCount: 0, answers: {} };
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async () => ({ tier: 'standard', allowWrites: true, source: 'fallback', routing }) });
+    await turn(userMsg('hello'));
+    const saved = messages.find(m => m.role === 'user')!;
+    expect(saved.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routing });
   });
 });
 
@@ -1057,23 +1114,47 @@ describe('titles: the docked object, and the re-title question', () => {
     expect(titled).toEqual([null]);
   });
 
-  it('every third user turn of an auto-titled chat asks routing about the title and hands the answer on', async () => {
+  it('every third user turn of an auto-titled chat asks about the title post-response and hands the answer to retitle', async () => {
     const routed: any[] = [];
+    const topicAsked: any[] = [];
     const verdicts: any[] = [];
     const topic = { label: 'new_topic', confidence: 0.95 };
     const opts = {
       conversation: { title: 'Release status', titleSource: 'auto' },
-      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'decision', topic }; },
-      extraDeps: { retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push({ t, n: msgs.length }); } },
+      route: async (input?: any) => { routed.push(input); return { tier: 'standard', allowWrites: true, source: 'decision' }; },
+      extraDeps: {
+        askTopicQuestion: async (input?: any) => { topicAsked.push(input); return topic; },
+        retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push({ t, n: msgs.length }); },
+      },
     };
     seed(2);
     await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('different subject now'));
-    expect(routed[0].title).toBe('Release status');
+    expect(routed[0].title).toBeUndefined();
+    expect(topicAsked).toHaveLength(1);
+    expect(topicAsked[0].title).toBe('Release status');
     expect(verdicts).toEqual([{ t: topic, n: 6 }]);
 
     await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('fourth turn'));
     expect(routed[1].title).toBeUndefined();
+    expect(topicAsked).toHaveLength(1);
     expect(verdicts).toHaveLength(1);
+  });
+
+  it('an acknowledgement on the 3rd user turn of an auto-titled chat does not call askTopicQuestion', async () => {
+    const topicAsked: any[] = [];
+    const verdicts: any[] = [];
+    const opts = {
+      conversation: { title: 'Release status', titleSource: 'auto' },
+      route: async () => { return { tier: 'budget', allowWrites: false, source: 'fallback' }; },
+      extraDeps: {
+        askTopicQuestion: async (input?: any) => { topicAsked.push(input); return undefined; },
+        retitle: async (_c: any, msgs: any[], t: any) => { verdicts.push(t); },
+      },
+    };
+    seed(2);
+    await harness({ ...opts, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }) }).turn(userMsg('thanks'));
+    expect(topicAsked).toHaveLength(0);
+    expect(verdicts).toHaveLength(0);
   });
 
   it('a title the person set is never asked about', async () => {
@@ -1110,3 +1191,85 @@ describe('routing receives the previous assistant text', () => {
   });
 });
 
+
+// ── the turn's wall clock (turn-deadline.ts) ─────────────────────────────────
+// A slow reasoning model used to spend the whole budget and end mid-thought:
+// the stream carried only an `abort` chunk, so the person saw the reply stop
+// with no words, and the "Stopped" note existed only in the database.
+describe('the turn\'s wall clock', () => {
+  /** A step that reasons and then stalls; it ends only when the turn's signal aborts (a real provider's fetch). */
+  const stalling = (signal?: AbortSignal) => ({
+    stream: new ReadableStream({
+      start(c) {
+        c.enqueue({ type: 'stream-start', warnings: [] });
+        c.enqueue({ type: 'reasoning-start', id: 'r' });
+        c.enqueue({ type: 'reasoning-delta', id: 'r', delta: 'Let me look at every workspace…' });
+        signal?.addEventListener('abort', () => c.error(signal.reason));
+      },
+    }),
+  });
+  const timing = (t: Partial<{ budgetMs: number; wrapUpMs: number; graceMs: number }>) => ({ timing: { budgetMs: 150, wrapUpMs: 10_000, graceMs: 100, ...t } });
+
+  it('a turn cut off by its time limit tells the person so in the stream, and saves the same note once', async () => {
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => stalling(o.abortSignal)) as any });
+    const { turn } = harness({ model, extraDeps: timing({}) });
+    const { res, text } = await turn(userMsg('what shipped this week?'));
+    expect(res.status).toBe(200);
+    expect(text).toContain('"type":"abort"');
+    expect(text).toContain('Stopped: this turn hit its time limit');
+    // The note comes before the abort, so the client renders it as text.
+    expect(text.indexOf('Stopped: this turn hit its time limit')).toBeLessThan(text.indexOf('"type":"abort"'));
+    const saved = lastAssistant();
+    expect(saved.parts.filter(p => p.type === 'text' && String(p.text).includes('time limit'))).toHaveLength(1);
+  });
+
+  it('the next question after a stopped turn still gets an answer', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => (calls++ === 0 ? stalling(o.abortSignal) : textStream('Here is what shipped.'))) as any });
+    const { turn } = harness({ model, extraDeps: timing({}) });
+    await turn(userMsg('what shipped this week?'));
+    const { text } = await turn(userMsg('just buildd, please'));
+    expect(text).toContain('Here is what shipped.');
+    expect(messages.filter(m => m.role === 'assistant')).toHaveLength(2);
+  });
+
+  it('a tool that ignores the abort cannot hold the turn open: the watchdog ends it and the turn is saved', async () => {
+    const model = new MockLanguageModelV4({ doStream: toolStream('call-h', 'list_tasks', {}) as any });
+    const { turn } = harness({ model, api: (_m, path) => (path === '/api/tasks' ? new Promise(() => {}) : {}), extraDeps: timing({ budgetMs: 100, graceMs: 100 }) });
+    const started = Date.now();
+    const { text } = await Promise.race([
+      turn(userMsg('what is in flight?')),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('turn hung past its deadline')), 3_000)),
+    ]);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(text).toContain('Stopped: this turn hit its time limit');
+    expect(lastAssistant().parts.some(p => p.type === 'text' && String(p.text).includes('time limit'))).toBe(true);
+  });
+
+  it('the deadline counts from the request: slow routing leaves the model less time, not more', async () => {
+    const model = new MockLanguageModelV4({ doStream: (async (o: any) => stalling(o.abortSignal)) as any });
+    const { turn } = harness({
+      model,
+      route: async () => { await new Promise(r => setTimeout(r, 200)); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+      extraDeps: timing({ budgetMs: 300, graceMs: 2_000 }),
+    });
+    const started = Date.now();
+    await turn(userMsg('what shipped this week?'));
+    // Timed from the stream start it would end near 500ms.
+    expect(Date.now() - started).toBeLessThan(450);
+  });
+
+  it('past the wrap-up mark, the next step may not call a tool and is told to answer', async () => {
+    const seen: any[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: (async (o: any) => { seen.push(o); return seen.length === 1 ? toolStream('call-r', 'list_tasks', {}) : textStream('One task is in flight.'); }) as any,
+    });
+    const { turn } = harness({ model, extraDeps: timing({ budgetMs: 10_000, wrapUpMs: 0 }) });
+    const { text } = await turn(userMsg('what is in flight?'));
+    expect(text).toContain('One task is in flight.');
+    expect(seen).toHaveLength(2);
+    expect(seen[0].toolChoice?.type).not.toBe('none');
+    expect(seen[1].toolChoice).toEqual({ type: 'none' });
+    expect(JSON.stringify(seen[1].prompt)).toContain('Do not call any more tools');
+  });
+});

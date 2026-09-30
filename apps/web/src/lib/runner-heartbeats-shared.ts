@@ -7,8 +7,11 @@
  * reads `process.stdout.isTTY`, which is undefined in the browser and throws
  * `Cannot read properties of undefined (reading 'isTTY')` during module
  * evaluation — taking down the whole client bundle and every page that ships
- * it. Keep DB access in `runner-heartbeats.ts`.
+ * it. Keep DB access in `runner-heartbeats.ts`. (`@buildd/shared` is fine: it
+ * is DB-free and already bundled into client components.)
  */
+
+import { RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
 
 export interface RunnerHeartbeat {
   id: string;
@@ -99,8 +102,10 @@ export function deriveSandboxPosture(hb: {
   };
 }
 
-// 3× the 60-second liveness ping interval — absorbs transient network hiccups.
-export const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+// "Online now" — 3× the 60-second liveness ping interval, absorbs transient
+// network hiccups. Presence only: never gate a destructive action on this (see
+// the window table in @buildd/shared runner-liveness).
+export const RUNNER_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
 
 /**
  * Runner is "online" when its last liveness beat arrived within the past 3

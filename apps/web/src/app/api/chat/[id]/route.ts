@@ -23,6 +23,7 @@ import {
   workspaceForConversation,
 } from '@/lib/chat/session';
 import { runChatTurn } from '@/lib/chat/turn';
+import { routeTurn } from '@/lib/chat/routing';
 import { loadAllowedToolGroups } from '@/lib/chat/permissions-store';
 import { checkChatLimits } from '@/lib/chat/limits';
 import { resolveDecisionAccess } from '@buildd/core/decision-client';
@@ -34,11 +35,13 @@ import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { loadStandingRules } from '@/lib/chat/directives-store';
-import { webMemoryDecisionDeps } from '@/lib/memory-decisions';
+import { insertDecisionReceipts, webMemoryDecisionDeps } from '@/lib/memory-decisions';
 import { createMemoryDecider } from '@buildd/core/memory-decisions';
 
-// The turn streams for up to ~45s (TURN_BUDGET_MS) plus persistence.
-export const maxDuration = 60;
+// A turn runs for up to TURN_BUDGET_MS (120s, from the request) plus the
+// watchdog's grace and persistence (lib/chat/turn-deadline.ts). Kept well
+// above that sum; turn-deadline.test.ts fails if the two drift.
+export const maxDuration = 180;
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -200,6 +203,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       scopeFor: wsId => scopeFor(wsId),
       allowedToolGroups,
       limits: a => checkChatLimits({ ...a, settings }),
+      // The routing call's ai_usage receipt (surface 'decision', kind
+      // 'chat_routing'), timeouts included, flushed with the directive writes.
+      route: input => routeTurn(input, {
+        onUsage: receipt => { decisionWrites.push(insertDecisionReceipts([receipt], { teamId: conv.teamId, accountId: null })); },
+      }),
       routingAccess: scope => resolveDecisionAccess({ capability: 'chat', ...scope, team: settings.decisionTeam }),
       makeApi: (onCall, opts) => createInProcessApi({ origin: req.nextUrl.origin, headers: req.headers, onCall, reach, routes: opts?.routes }),
       memory: base.memory,

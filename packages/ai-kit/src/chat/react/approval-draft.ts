@@ -10,6 +10,7 @@
  */
 import {
   approvalChangeLine,
+  approvalChanges,
   approvalHeadline,
   parseApprovalPreview,
   toolNameOf,
@@ -62,7 +63,7 @@ export function approvalDraft<C extends { kind: string } = never>(
     return {
       kind: 'preview',
       headline: approvalHeadline(preview),
-      changes: preview.changes.map(c => ({ ...c, line: approvalChangeLine(c) })),
+      changes: approvalChanges(preview).map(c => ({ ...c, line: approvalChangeLine(c) })),
       note: preview.note ?? null,
       confirmText: preview.confirmText ?? null,
       workspaceId: preview.target.workspaceId ?? workspaceId,

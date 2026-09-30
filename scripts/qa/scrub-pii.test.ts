@@ -86,12 +86,14 @@ function sqlCoverage(sql: string) {
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
   teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'decision_model',
-    'chat_default_tier'], // a chat tier name (CHAT_TIER_NAMES) or null
+    'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
+    'chat_retro'], // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
   accounts: ['monthly_cost_month', 'budget_alerts_sent'],
-  missions: ['context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+  missions: ['status', // MissionStatusValue (@buildd/shared)
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
@@ -112,6 +114,10 @@ const SAFE: Record<string, string[]> = {
     'reverify_ref'], // 'pr:<number>'
   // Content-free by construction: ids, decision names, labels, error kinds.
   memory_decisions: ['memory_id', 'decision', 'version', 'verdict', 'rule', 'error', 'caller'],
+  // Chat retro lessons: every text column is a fixed vocabulary or pattern
+  // (apps/web/src/lib/chat-retro/vocab.ts LESSON_TEXT_COLUMNS, checked before
+  // each write); evidence is refs, counts and labels. Cascades with conversations.
+  chat_retros: ['status', 'skip_reason', 'intent', 'satisfied', 'primary_cause', 'fix_class', 'tool_name', 'signature', 'version', 'error', 'evidence'],
   artifacts: ['type'],
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as

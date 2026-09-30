@@ -21,7 +21,7 @@ import { getCachedOpenRouterCatalog } from './model-catalog-cache';
 import type { CatalogEntry, CatalogTier } from './model-catalog';
 import { loadTeamRankings, refreshTeamRankings, type RankingsRefresh } from './openrouter-rankings-source';
 import { utcDay } from './openrouter-rankings';
-import { aggregateEvidence, type ArmEvidence, type GradedUnit } from './tier-explore';
+import { aggregateEvidence, type ArmEvidence, type ExploreStepResult, type GradedUnit } from './tier-explore';
 import { MAX_POOL_ARMS, agentUnitSeverity, chatTurnSeverity, type Allocation } from './tier-pool';
 import { writeAllocation } from './tier-pool-admin';
 import { planPoolDay, type DailyAction, type DailyPool, type DailyPoolArm } from './tier-pool-daily';
@@ -206,6 +206,33 @@ async function writeHold(armId: string, hold: { successorArmId: string; multipli
   `);
 }
 
+/**
+ * The numbers the step judged each arm on, as its `tier_pool_arms.stats`
+ * snapshot (design tier-model-pools.md §8): evidence always, and the explore
+ * posterior when the step ran one. Popularity priors are left out (§4a
+ * licence), as they are from the change log. Merged with `||`, so a
+ * `successionHold` already on the row survives.
+ */
+export function armStatsSnapshot(evidence: ArmEvidence, step: ExploreStepResult | null, armId: string, now: Date): Record<string, unknown> {
+  const e = step?.evidence.arms[armId];
+  return {
+    graded: evidence.graded,
+    successes: evidence.successes,
+    failures: evidence.failures,
+    earlyCritical: evidence.earlyCritical,
+    spread: evidence.spread,
+    ...(e ? { stage: e.stage, alpha: e.alpha, beta: e.beta, pBest: e.pBest } : {}),
+    updatedAt: now.toISOString(),
+  };
+}
+
+async function writeArmStats(armId: string, stats: Record<string, unknown>): Promise<void> {
+  await db.execute(sql`
+    UPDATE tier_pool_arms SET stats = stats || ${JSON.stringify(stats)}::jsonb
+    WHERE id = ${armId}
+  `);
+}
+
 export interface PoolDayOutcome {
   poolId: string;
   written: boolean;
@@ -241,17 +268,25 @@ export async function runPoolDay(pool: DailyPool, ctx: {
 }): Promise<PoolDayOutcome> {
   const out: PoolDayOutcome = { poolId: pool.id, written: false, actorSystem: null, suggestions: 0, added: 0, stale: false };
   let current = pool;
-  let plan = planPoolDay({ pool: current, evidence: await loadPoolEvidence(current, ctx.now), catalog: ctx.catalog, rankings: ctx.rankings, now: ctx.now });
+  let evidence = await loadPoolEvidence(current, ctx.now);
+  let plan = planPoolDay({ pool: current, evidence, catalog: ctx.catalog, rankings: ctx.rankings, now: ctx.now });
   const adds = plan.actions.filter((a): a is Extract<DailyAction, { type: 'add_challenger' }> => a.type === 'add_challenger');
   if (adds.length > 0) {
     for (const a of adds) if (await addAutoChallenger(current.id, a.route, a.model, a.evidence)) out.added += 1;
     const next = out.added > 0 ? await ctx.reload() : null;
     if (next) {
       current = next;
-      plan = planPoolDay({ pool: current, evidence: await loadPoolEvidence(current, ctx.now), catalog: ctx.catalog, rankings: ctx.rankings, now: ctx.now });
+      evidence = await loadPoolEvidence(current, ctx.now);
+      plan = planPoolDay({ pool: current, evidence, catalog: ctx.catalog, rankings: ctx.rankings, now: ctx.now });
     }
   }
   await execute(current, plan.actions.filter(a => a.type !== 'add_challenger'), out);
+  // Stats describe the evidence the step read, so they are written whether or
+  // not the allocation moved — a split pool with no harm cut moves nothing.
+  for (const arm of current.arms) {
+    const e = evidence.get(arm.id);
+    if (e) await writeArmStats(arm.id, armStatsSnapshot(e, plan.step, arm.id, ctx.now));
+  }
   return out;
 }
 

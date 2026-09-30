@@ -5,15 +5,24 @@
  * are not pooled; `?policyVersion=N` reads an earlier one on its own.
  *
  * Same visibility gate as GET /api/experiments/[id]: hidden → 404.
+ *
+ * Each kind has its own readout, dispatched explicitly: the two-arm task
+ * readout joins on tasks, so any kind whose units are not tasks (a chat
+ * tier pool's turns) would read as all zeros through it. A kind with no
+ * readout is a 422, never a silent fall-through.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
-import { parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
+import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
+import { CBM_ACCESS_EXPERIMENT_KIND } from '@buildd/core/cbm-access-experiment';
+import { TIER_POOL_EXPERIMENT_KIND } from '@buildd/core/tier-pool';
+import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
-import { getTeamExperiment } from '@/lib/experiments-store';
+import { getTeamExperimentForReadout } from '@/lib/experiments-store';
+import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
@@ -24,7 +33,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   if (!UUID_RE.test(id)) return notFound();
 
-  const row = await getTeamExperiment(who.viewer.teamId, id);
+  const row = await getTeamExperimentForReadout(who.viewer.teamId, id);
   if (!row || !canViewExperiment(row.visibility, who.viewer.role)) return notFound();
 
   let policyVersion = row.policyVersion;
@@ -37,12 +46,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     policyVersion = n;
   }
 
+  // Enrolment health (starved, unbalanced, past its cap) of the running
+  // experiment — lib in packages/core/experiment-health.ts. Never fails the readout.
+  const health = await runExperimentHealth(row).catch(() => null);
+
   // Heartbeat triage is measured per mission, over its own look rows, not per task.
   if (row.kind === HEARTBEAT_TRIAGE_EXPERIMENT_KIND) {
     const readout = await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config));
-    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
+  }
+  // Tier pools are measured per arm over their own assignment rows (chat turns or tasks).
+  if (row.kind === TIER_POOL_EXPERIMENT_KIND) {
+    const readout = await runTierPoolReadout({ id: row.id, policyVersion });
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
+  }
+  if (row.kind !== MODEL_ROUTING_EXPERIMENT_KIND && row.kind !== CBM_ACCESS_EXPERIMENT_KIND) {
+    return NextResponse.json({ error: `No readout for experiment kind '${row.kind}'` }, { status: 422 });
   }
   const { minSamplePerArm } = parseModelRoutingConfig(row.config);
   const readout = await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm });
-  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout });
+  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
 }

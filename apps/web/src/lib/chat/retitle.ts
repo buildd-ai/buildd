@@ -30,7 +30,7 @@ export { RETITLE_EVERY_USER_TURNS, RETITLE_LOG_PREFIX, RETITLE_MIN_CONFIDENCE, R
 export async function handleTopicVerdict(
   conversation: ConversationRow,
   messages: UIMessage[],
-  topic: NonNullable<TurnRoute['topic']>,
+  topic: { label: 'same_topic' | 'new_topic'; confidence: number },
   userId: string,
   deps: {
     mode?: RetitleMode;

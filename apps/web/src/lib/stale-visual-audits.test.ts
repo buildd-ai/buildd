@@ -69,6 +69,12 @@ describe('notifyStalledVisualAudits', () => {
     expect(q.sql).toMatch(/not exists \(select 1 from "tasks" "dep" where "dep"\."id"::text in \(select jsonb_array_elements_text\(case when jsonb_typeof\("tasks"\."depends_on"\) = 'array' then "tasks"\."depends_on" else '\[\]'::jsonb end\)\) and "dep"\."status" not in \('completed', 'cancelled'\)\)/);
   });
 
+  it('candidates: no notice for an audit in a held or local-executor mission, or held on its own', async () => {
+    const { notHeldOrLocal } = await import('@/app/api/workers/claim/held-gate');
+    const norm = (q: any) => new PgDialect().sqlToQuery(q).sql.replace(/\$\d+/g, '$?');
+    expect(norm(stalledVisualAuditCandidatesWhere(NOW, missions))).toContain(norm(notHeldOrLocal()));
+  });
+
   it('oldest candidates first, so a candidate that keeps failing the phase check cannot hold the window', async () => {
     await notifyStalledVisualAudits(NOW);
     const q = new PgDialect().sqlToQuery(orderBy as any);

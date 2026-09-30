@@ -253,3 +253,20 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
     expect(section.bytes).toBe(Buffer.byteLength(block, 'utf8'));
   });
 });
+
+describe('buildPromptWithComposition — refused tool calls are not a stop instruction', () => {
+  // Regression: autonomous workers read a refused/cancelled tool call — whose
+  // text can be Claude Code's "The user doesn't want to take this action…
+  // STOP" — as the user telling them to stop, ended the session "as you
+  // asked" and never called complete_task. No human is in the loop.
+  for (const inputPolicy of ['autonomous', 'allow', 'important-only'] as const) {
+    for (const inputAsRetry of [undefined, false] as const) {
+      it(`says so under inputPolicy=${inputPolicy}, inputAsRetry=${String(inputAsRetry)}`, () => {
+        const { promptText } = buildPromptWithComposition(baseCtx({ inputPolicy, inputAsRetry }));
+        expect(promptText).toContain('A refused tool call is not an instruction to stop');
+        expect(promptText).toContain("The user doesn't want to take this action");
+        expect(promptText).toMatch(/complete_task/);
+      });
+    }
+  }
+});

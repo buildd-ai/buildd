@@ -8,7 +8,7 @@ Status: **in transition.** The per-team channel (`notifyTeam`) and the ops chann
 - PR #911 — per-team Pushover/webhook routing (`notify.ts`, `notification_preferences`)
 - PR #910 — `reportOps()` ops alerting + the RQB FROM-clause fix
 
-Until those merge and the legacy lifecycle `notify()` calls are removed (see Migration), some events fire on **both** the global and the per-team channel.
+The legacy lifecycle calls on the global channel have been removed (see Migration); tenant events fire on the per-team channel only.
 
 ---
 
@@ -21,7 +21,7 @@ Everything below is one of two kinds of signal. Keep them separate — they have
 | Question it answers | "Are *our* systems healthy?" | "What's happening with *my* tasks?" |
 | Recipient | buildd team (one inbox) | the customer team that owns the task |
 | Credentials | env `PUSHOVER_*` (buildd's own app) | per-team, encrypted in `secrets` |
-| Code | `notify()` (`pushover.ts`), `reportOps()` (`report-ops.ts`) | `notifyTeam()` (`notify.ts`) |
+| Code | `notifyOperator()` (`pushover.ts`), `reportOps()` (`report-ops.ts`) | `notifyTeam()` / `notifyTeamOf()` (`notify.ts`) |
 | Toggle | `OPS_ALERTS_ENABLED` (for `reportOps`) | per-team `notification_preferences` |
 | Rule | **never** carries tenant-specific task content to a shared inbox once migration completes | **never** sends through buildd's app — each team brings its own token |
 
@@ -40,15 +40,16 @@ PUSHOVER_TOKEN_ALERT  — "alerts" app (failures/warnings)
 PUSHOVER_TOKEN        — fallback if a per-app token is unset
 ```
 
-### 1. `notify()` — `apps/web/src/lib/pushover.ts`
-Fire-and-forget env-based send. Genuinely platform-level call sites that **stay** here:
+### 1. `notifyOperator()` — `apps/web/src/lib/pushover.ts`
+Fire-and-forget env-based send, for platform-health alerts only. Every call
+site is pinned, with its reason, in `lib/notify-routing-invariant.test.ts`; a
+new one fails that test until it is classified. Today: cron health
+(`lib/cron-run.ts`), the cross-tenant watchdogs (`cron/mission-invariants`,
+`cron/queue-stall`, overdue check-in crons), the project health watcher, the
+release pipeline, and GitHub installation sync.
 
-| Source | Event |
-|---|---|
-| `lib/health-watcher.ts:274,468` | CI red on a release PR / Vercel prod unhealthy |
-| `lib/api-response.ts:25` | response payload > 100KB |
-| `lib/mission-notifications.ts:41` | mission PR needs review / auto-merge blocked |
-| `api/workers/[id]/route.ts:408` | budget/rate-limit pause (operator-facing) |
+Anything about one team's tasks, PRs, missions, budget or credentials is a
+tenant alert and goes through the tenant plane below.
 
 ### 2. `reportOps()` — `packages/core/report-ops.ts` (PR #910)
 Drop-in for **swallowed catch blocks** so internal errors don't die silently in Vercel logs. Lives in `@buildd/core` so the runner can call it too. This is **the foundation** — see [Ops alerting design](#ops-alerting-design-the-foundation) for the full spec.
@@ -76,6 +77,8 @@ Each team configures **its own** channel; alerts route to the team that owns the
 
 ### Code
 - `apps/web/src/lib/notify.ts` — `notifyTeam(teamId, event, payload)`. Loads channel + prefs, `resolveNotifyPlan` decides, sends. No-op when no channel or event disabled. Fire-and-forget.
+- `notifyTeamOf({ teamId | workspaceId | missionId | taskId }, event, payload)` resolves the owning team first; an unresolvable owner sends nothing (no fallback to the ops plane).
+- Event `needsAttention` covers "a person has to act" alerts (agent question, PR waiting on a human, reviewer/conflict escalation, mission or budget paused). It has no preference column, so it is sent whenever the team has a channel.
 - `apps/web/src/lib/notify-rules.ts` — pure decision logic (no IO, unit-tested), plus `isCredentialExpiredError()`.
 - API: `apps/web/src/app/api/teams/[id]/notifications/route.ts`
 - UI: `apps/web/src/app/app/(protected)/settings/NotificationsSection.tsx` → **Settings → Notifications**
@@ -153,15 +156,12 @@ on task outcome:
 ## Migration plan
 
 1. **Land #910 + #911** onto `dev`.
-2. **Remove the legacy tenant events from the global channel.** Task lifecycle currently double-fires:
-   - `workers/[id]/route.ts:190` "Agent needs your input" → add a `taskNeedsInput` event to `notifyTeam` and drop the env `notify()`.
-   - `workers/[id]/route.ts:494` task done/failed → already covered by `notifyTeam`; remove the env `notify()`.
-   After this, the global `PUSHOVER_*` app carries **only** ops-plane events.
+2. **Remove the legacy tenant events from the global channel.** Done: tenant alerts (agent questions, PR and reviewer escalations, mission and budget pauses) go through `notifyTeamOf` with event `needsAttention`, and the env sender was renamed `notifyOperator` with every call site pinned in `lib/notify-routing-invariant.test.ts`.
 3. **Build the ops-alerting foundation** — see [Ops alerting design](#ops-alerting-design-the-foundation): add the `critical` tier, wire the 4 swallowed catches, add the consecutive-failure detector, flip `OPS_ALERTS_ENABLED`.
 
 ### Decision rule for new alerts
 > Is this about a **specific customer's task**? → `notifyTeam` (tenant plane).
-> Is this about **buildd's own health/internals**? → `notify()` or `reportOps` (ops plane).
+> Is this about **buildd's own health/internals**? → `notifyOperator()` or `reportOps` (ops plane).
 > Never route tenant task content through the global `PUSHOVER_*` app.
 
 ## Future (deferred — multi-tenant)

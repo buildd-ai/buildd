@@ -55,8 +55,9 @@ const WINDOW_MS: Record<FailureWindow, number> = {
   '30d': 30 * 24 * 60 * 60 * 1000,
 };
 
-/** Worker statuses that count as a failure. `error` is the legacy spelling. */
-export const FAILED_WORKER_STATUSES = ['failed', 'error'] as const;
+/** Worker statuses that count as a failure. Canonical in @buildd/shared. */
+export { FAILED_WORKER_STATUSES } from '@buildd/shared';
+import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 
 /**
  * Worker statuses that are still in flight.

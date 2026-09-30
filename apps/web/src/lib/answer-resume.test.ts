@@ -8,6 +8,8 @@ import {
   RESUME_RUNNER_FRESH_MS,
   RESUME_MAX_TURNS,
   RESUME_ACK_DEADLINE_MS,
+  explainNotWaiting,
+  isAnswerableWaitingFor,
   type AnswerPathInput,
 } from './answer-resume';
 
@@ -89,6 +91,38 @@ describe('evaluateAnswerPath', () => {
   it('accepts a worker exactly at the turn ceiling', () => {
     const decision = evaluateAnswerPath(eligible({ workerTurns: RESUME_MAX_TURNS }));
     expect(decision.path).toBe('resume');
+  });
+
+  // A permission prompt is not a parked session: the runner's PermissionRequest
+  // hook is blocked INSIDE the live session, and the answer resolves that hook.
+  // Nothing is resumed, so the transcript size is irrelevant. Sending one cold
+  // superseded a live session thousands of turns deep and handed a fresh
+  // session a bare "Allow once" it could not act on.
+  it('does not apply the turn ceiling to a permission prompt on a live session', () => {
+    const decision = evaluateAnswerPath(
+      eligible({ workerTurns: RESUME_MAX_TURNS * 20, waitingForType: 'permission' }),
+    );
+    expect(decision.path).toBe('resume');
+    expect(decision.reasonCode).toBe('resume_eligible');
+  });
+
+  it('still applies the turn ceiling to a question', () => {
+    const decision = evaluateAnswerPath(
+      eligible({ workerTurns: RESUME_MAX_TURNS + 1, waitingForType: 'question' }),
+    );
+    expect(decision.reasonCode).toBe('context_ceiling');
+  });
+
+  it.each([
+    [{ workerStatus: 'failed' }, 'worker_not_parked'],
+    [{ workerUpdatedAt: null }, 'runner_not_holding_transcript'],
+    [{ supportsInstructionAck: false }, 'runner_cannot_confirm_delivery'],
+    [{ credentialPreflight: 'unhealthy' as const }, 'credential_unhealthy'],
+  ] as const)('keeps every other gate for a permission prompt (%p)', (override, reason) => {
+    const decision = evaluateAnswerPath(
+      eligible({ ...override, workerTurns: RESUME_MAX_TURNS + 1, waitingForType: 'permission' }),
+    );
+    expect(decision.reasonCode).toBe(reason);
   });
 
   it('treats an unknown turn count as zero rather than as over the ceiling', () => {
@@ -248,5 +282,69 @@ describe('buildContinuationDescription', () => {
   it('tolerates a task with no description', () => {
     const description = buildContinuationDescription({ ...base, taskDescription: null });
     expect(description).toContain('Which database?');
+  });
+});
+
+// The rejection a stale card gets. The raw gate text ("Worker is not waiting
+// for input") told the reader nothing: not why, not what to do next.
+describe('explainNotWaiting', () => {
+  it('points at the continuation when the question was already answered', () => {
+    const r = explainNotWaiting({ workerStatus: 'superseded', continuationTaskId: 'task-2' });
+    expect(r.reasonCode).toBe('already_answered');
+    expect(r.nextAction).toEqual({ kind: 'open_task', taskId: 'task-2' });
+    expect(r.message).not.toMatch(/waitingFor|not waiting for input/i);
+  });
+
+  it('asks for a refresh when an answered worker has no recorded continuation', () => {
+    const r = explainNotWaiting({ workerStatus: 'superseded', continuationTaskId: null });
+    expect(r.reasonCode).toBe('already_answered');
+    expect(r.nextAction).toEqual({ kind: 'refresh' });
+  });
+
+  it.each([['completed'], ['failed'], ['error']])('says a %s worker has stopped and offers a follow-up', (status) => {
+    const r = explainNotWaiting({ workerStatus: status, continuationTaskId: null });
+    expect(r.reasonCode).toBe('worker_ended');
+    expect(r.nextAction).toEqual({ kind: 'follow_up' });
+  });
+
+  it.each([['running'], ['waiting_input'], ['idle'], [null]])('says a %p worker moved on', (status) => {
+    const r = explainNotWaiting({ workerStatus: status as string | null, continuationTaskId: null });
+    expect(r.reasonCode).toBe('no_longer_waiting');
+    expect(r.nextAction).toEqual({ kind: 'refresh' });
+  });
+
+  it('every reason carries plain-language prose', () => {
+    for (const status of ['superseded', 'failed', 'running']) {
+      const r = explainNotWaiting({ workerStatus: status, continuationTaskId: null });
+      expect(r.message.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe('isAnswerableWaitingFor', () => {
+  const permission = { type: 'permission', prompt: 'Permission required for Bash: ls' };
+  const question = { type: 'question', prompt: 'Which database?' };
+
+  it('shows nothing without a waitingFor', () => {
+    expect(isAnswerableWaitingFor('waiting_input', null)).toBe(false);
+  });
+
+  it('shows a permission prompt only while the session is parked on it', () => {
+    expect(isAnswerableWaitingFor('waiting_input', permission)).toBe(true);
+  });
+
+  // The permission hook is resolved (deny) the moment the session ends, so a
+  // prompt still carried by an ended worker grants nothing if answered.
+  it.each([['failed'], ['error'], ['completed'], ['superseded'], ['running']])(
+    'hides a permission prompt carried by a %s worker',
+    (status) => {
+      expect(isAnswerableWaitingFor(status, permission)).toBe(false);
+    },
+  );
+
+  // A question is different: an AskUserQuestion abort legitimately leaves
+  // status=error with the question open, and answering it is the whole point.
+  it.each([['error'], ['failed'], ['waiting_input']])('keeps a question on a %s worker', (status) => {
+    expect(isAnswerableWaitingFor(status, question)).toBe(true);
   });
 });

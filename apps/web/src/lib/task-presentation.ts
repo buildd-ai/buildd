@@ -33,19 +33,17 @@ export const PROGRESS_THRESHOLD_MS = 60 * 60 * 1000;
 // ─── Live worker statuses ─────────────────────────────────────────────────────
 
 /**
- * Canonical set of worker statuses that indicate an active (live) worker.
- * Use this in every DB query that joins workers to filter for active ones.
+ * The canonical lists live in @buildd/shared (packages/shared/src/status.ts);
+ * re-exported here so existing imports keep reading the same array.
  * task.status NEVER becomes 'running'; liveness is worker-derived only.
  */
-export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
-export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
+export { LIVE_WORKER_STATUSES, type LiveWorkerStatus } from '@buildd/shared';
 
 /**
  * Task statuses that mean "an agent still owns this" — dispatched or running,
- * not yet terminal. Use for "is someone already working on it" checks.
+ * not yet terminal. Same list as OPEN_TASK_STATUSES.
  */
-export const LIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
-export type LiveTaskStatus = (typeof LIVE_TASK_STATUSES)[number];
+export { OPEN_TASK_STATUSES as LIVE_TASK_STATUSES, type OpenTaskStatus as LiveTaskStatus } from '@buildd/shared';
 
 // ─── Display status ───────────────────────────────────────────────────────────
 

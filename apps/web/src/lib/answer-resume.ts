@@ -19,6 +19,8 @@
  * without a database. See docs/specs/answered-question-resume.md.
  */
 
+import { isTerminalWorkerStatus } from '@buildd/shared';
+
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
  * this worker's transcript and worktree is alive and will drain its queue".
@@ -87,6 +89,12 @@ export interface AnswerPathInput {
   /** `workers.supportsInstructionAck`. */
   supportsInstructionAck: boolean;
   credentialPreflight: CredentialPreflightState;
+  /**
+   * `workers.waitingFor.type`. A `permission` prompt is answered into a hook
+   * that is blocked inside the live session, not into a resumed transcript —
+   * see G4.
+   */
+  waitingForType?: string | null;
   /** Injectable clock. Defaults to now. */
   now?: number;
 }
@@ -137,8 +145,15 @@ export function evaluateAnswerPath(input: AnswerPathInput): AnswerPathDecision {
   // from an answer that vanished, and the platform does not guess.
   if (!input.supportsInstructionAck) return cold('runner_cannot_confirm_delivery');
 
-  // G4: see RESUME_MAX_TURNS.
-  if ((input.workerTurns ?? 0) > RESUME_MAX_TURNS) return cold('context_ceiling');
+  // G4: see RESUME_MAX_TURNS. Not for a permission prompt: the runner's
+  // PermissionRequest hook is blocked inside the still-running session, and the
+  // queued answer resolves that hook (workers.ts sendMessage → resolvePermission)
+  // without resuming anything, so transcript size cannot matter. Going cold
+  // there superseded a live session thousands of turns deep and handed a fresh
+  // one a bare "Allow once" it had no context for.
+  if (input.waitingForType !== 'permission' && (input.workerTurns ?? 0) > RESUME_MAX_TURNS) {
+    return cold('context_ceiling');
+  }
 
   // G5: `unknown` means no managed credential row — the account supplies its
   // own key. Reading absence as breakage would send those accounts cold forever.
@@ -149,6 +164,73 @@ export function evaluateAnswerPath(input: AnswerPathInput): AnswerPathDecision {
     reasonCode: 'resume_eligible',
     reason: ANSWER_PATH_REASONS.resume_eligible,
   };
+}
+
+/**
+ * Why `/respond` refused an answer because nothing is waiting any more, in
+ * words a reader can act on. The reader reached this from a card that was
+ * rendered while the worker was still waiting — so the card is stale, and the
+ * useful reply is what happened and where to go, not the gate that fired.
+ */
+export type NotWaitingReason = 'already_answered' | 'worker_ended' | 'no_longer_waiting';
+
+export type NotWaitingNextAction =
+  | { kind: 'open_task'; taskId: string }
+  | { kind: 'follow_up' }
+  | { kind: 'refresh' };
+
+export interface NotWaitingExplanation {
+  reasonCode: NotWaitingReason;
+  message: string;
+  nextAction: NotWaitingNextAction;
+}
+
+
+export function explainNotWaiting(input: {
+  workerStatus: string | null;
+  continuationTaskId: string | null | undefined;
+}): NotWaitingExplanation {
+  // `superseded` is written only by an answer (cold path) or a reassign.
+  if (input.workerStatus === 'superseded') {
+    return {
+      reasonCode: 'already_answered',
+      message: 'This was already answered, and the work moved to a follow-up task.',
+      nextAction: input.continuationTaskId
+        ? { kind: 'open_task', taskId: input.continuationTaskId }
+        : { kind: 'refresh' },
+    };
+  }
+  if (isTerminalWorkerStatus(input.workerStatus)) {
+    return {
+      reasonCode: 'worker_ended',
+      message: 'This agent has already stopped, so it can no longer take an answer. Retry the task or start a follow-up from it.',
+      nextAction: { kind: 'follow_up' },
+    };
+  }
+  return {
+    reasonCode: 'no_longer_waiting',
+    message: 'The agent is no longer waiting on this. It was answered elsewhere or the agent moved on.',
+    nextAction: { kind: 'refresh' },
+  };
+}
+
+/**
+ * Whether a worker's `waitingFor` is something a human can still usefully
+ * answer — the rule every needs-input card renders by.
+ *
+ * A question survives its session: an AskUserQuestion abort leaves
+ * status=error with the question open, and answering it starts the
+ * continuation. A permission prompt does not: it is a hook blocked inside the
+ * live session, resolved (as deny) the moment that session ends. Once the
+ * worker is not `waiting_input`, "Allow once" grants nothing.
+ */
+export function isAnswerableWaitingFor(
+  workerStatus: string | null | undefined,
+  waitingFor: { type?: string | null } | null | undefined,
+): boolean {
+  if (!waitingFor) return false;
+  if (waitingFor.type === 'permission') return workerStatus === 'waiting_input';
+  return true;
 }
 
 /** One owner-facing sentence naming which path ran and, when it degraded, why. */

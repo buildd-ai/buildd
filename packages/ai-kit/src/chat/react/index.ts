@@ -67,4 +67,14 @@ export {
 // 0.6.0: per-app tier policy (also in /chat/contract, for the server).
 export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@builddai/ai-kit/chat/contract';
 
+// 0.11.0: rich tool rows (lifted from buildd's chat).
+export {
+  ToolCallRow, ToolCallGroup,
+  type ToolCallRowProps, type ToolCallGroupProps,
+} from './ToolCalls';
+export {
+  toolCallView, toolCallState, toolCallResult, keyArgs, toolGroupSummary, DEFAULT_KEY_ARG_SKIP,
+  type ToolCallView, type ToolCallState, type ToolCallOptions, type KeyArgsOptions, type ToolGroupSummary,
+} from './tool-calls';
+
 export { KIT_CSS_VARS, KIT_MENU_FIT_VARS, type KitCssVar } from './vars';

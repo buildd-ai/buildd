@@ -877,6 +877,22 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --kit-sheet-bottom-offset: 0px;
   /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
   --kit-scrim: rgb(0 0 0 / 0.5);
+  /* The rich tool rows (kit 0.11.0): the accent as text, a live row's tint,
+     a hovered row, and the done / waiting / failed marks. */
+  --kit-ink-soft: var(--text-secondary);
+  --kit-accent-text: var(--accent-text);
+  --kit-accent-soft: var(--accent-soft);
+  --kit-raised: var(--chat-raised);
+  --kit-ok: var(--status-success);
+  --kit-warn: var(--status-warning);
+  --kit-danger: var(--status-error);
+}
+
+/* Tool rows (the kit's ToolCallRow / ToolCallGroup) read in the app's text
+ * roles, not the conversation's, like the fleet objects around them. */
+.kit-toolcall, .kit-toolcalls {
+  --kit-ink: var(--text-primary);
+  --kit-muted: var(--text-muted);
 }
 
 /* buildd's look for the kit's classes: the v3 chat foreground
@@ -884,6 +900,9 @@ textarea.kit-composer-input:focus-visible { outline: none; }
  * in source, so these win without !important, and Tailwind utilities still
  * win over both. */
 @layer components {
+  /* ── Tool rows: the "allowed" badge takes the app's border, like a pill. */
+  .kit-toolcall-badge { border-color: var(--border); }
+
   /* ── Composer control cells (tools, tier): square, filling their toolbar
      slot, split by the toolbar's 1px rules. At least 44px to touch. */
   .buildd-menu-cell > .kit-menu { height: 100%; width: 100%; }
@@ -994,7 +1013,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* The phone fold: "▸ Show details · 3 changes". */
   .buildd-approval .kit-fold-toggle { min-height: 36px; color: var(--text-muted); }
   .buildd-approval .kit-fold-toggle > span:first-child, .buildd-approval .kit-fold-label { color: var(--text-secondary); }
-  .buildd-approval .kit-actions { flex-wrap: nowrap; gap: 8px; padding-top: 4px; }
+  /* Three actions don't fit one row at 320px: they wrap (the kit's default). */
+  .buildd-approval .kit-actions { gap: 8px; padding-top: 4px; }
   .buildd-approval .kit-btn {
     min-height: 44px; padding: 0 14px; white-space: nowrap;
     font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;

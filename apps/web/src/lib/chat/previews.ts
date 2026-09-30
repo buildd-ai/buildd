@@ -16,6 +16,7 @@
  * "checkout") yields a question instead of a preview, and no card.
  */
 
+import { isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import type { ApiFn } from '@buildd/core/mcp-tools';
 import type { ChatApprovalPreview } from '@buildd/shared';
 import { hashToolInput } from './canonical';
@@ -38,7 +39,7 @@ export type PreviewOutcome =
 type Obj = Record<string, any>;
 type Change = ChatApprovalPreview['changes'][number];
 
-const LIVE_WORKER = (w: Obj) => !['completed', 'failed', 'error'].includes(String(w?.status));
+const LIVE_WORKER = (w: Obj) => isLiveWorkerStatus(w?.status);
 const clip = (s: unknown, n = 140): string | null => {
   if (s === undefined || s === null || s === '') return null;
   const t = (typeof s === 'string' ? s : JSON.stringify(s)).replace(/\s+/g, ' ').trim();
@@ -371,8 +372,6 @@ const createSchedule: Builder = async (input, env) => {
   };
 };
 
-const TERMINAL = ['completed', 'failed', 'cancelled'];
-
 /**
  * "Watch: PR #42 (billing-web)" / When: it merges / Where: here / Ends: after
  * it tells you once, or in 7 days. What, until when, and where it goes.
@@ -389,7 +388,7 @@ const watch: Builder = async (input, env) => {
     const t = await resolveTask(env, input.taskId);
     if (!t.ok) return question(t.question);
     const { task } = t.loaded;
-    if (TERMINAL.includes(task.status)) return question(`"${taskLabel(task)}" is already ${task.status}, so there is nothing left to watch for. Tell the user.`);
+    if (isTerminalTaskStatus(task.status)) return question(`"${taskLabel(task)}" is already ${task.status}, so there is nothing left to watch for. Tell the user.`);
     types = watchEventTypes('task', input.on);
     if (types.length === 0) return question('A task can be watched for: done, failed, or needs_input.');
     target = { kind: 'task', id: task.id, label: taskLabel(task), detail: String(task.status), workspaceId: task.workspaceId ?? null };

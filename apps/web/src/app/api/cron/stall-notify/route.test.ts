@@ -84,8 +84,10 @@ mock.module('@buildd/core/db/schema', () => ({
   missionNotes: { taskId: 'taskId', type: 'type', status: 'status', title: 'title', createdAt: 'createdAt', missionId: 'missionId' },
 }));
 
-const mockNotify = mock((_args: any) => Promise.resolve(true));
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+// The page is about one tenant's PR: it goes to that team's channel.
+const mockNotify = mock((_subject: any, _event: any, _payload: any) => Promise.resolve());
+mock.module('@/lib/notify', () => ({ notifyTeamOf: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
 const { POST } = await import('./route');
 
@@ -160,6 +162,10 @@ describe('POST /api/cron/stall-notify', () => {
 
     expect(res.status).toBe(200);
     expect(mockNotify).toHaveBeenCalledTimes(1);
+    // Delivered to the team that owns the PR's workspace, not the operator.
+    const [subject, event] = mockNotify.mock.calls[0];
+    expect(subject).toEqual({ workspaceId: workerRows[0].workspaceId });
+    expect(event).toBe('needsAttention');
   });
 
   it('does not page a human about a task PR based on the mission integration branch', async () => {

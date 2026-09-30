@@ -32,6 +32,7 @@ import {
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { TERMINAL_PR_LIFECYCLE, isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -109,7 +110,7 @@ export function _resetFailureBackoffForTests(): void {
   rateLimitedUntil = 0;
 }
 
-const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as ('pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null)[];
+const TERMINAL_STATUSES = [...TERMINAL_PR_LIFECYCLE];
 
 export interface StalePrCandidate {
   id: string;
@@ -185,7 +186,7 @@ export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promi
     .filter(w => {
       if (!w.prNumber) return false;
       if (backedOff.has(w.id)) return false;
-      if (TERMINAL_STATUSES.includes(w.prLifecycleStatus as any)) return false;
+      if (isTerminalPrLifecycle(w.prLifecycleStatus)) return false;
       const lastChecked = w.prLastCheckedAt?.getTime() ?? 0;
       return now - lastChecked >= STALE_THRESHOLD_MS;
     })

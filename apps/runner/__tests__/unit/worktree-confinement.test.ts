@@ -16,7 +16,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/worktree-confinement.test.ts
  */
 import { describe, test, expect, afterEach } from 'bun:test';
-import { warnOnPrimaryCloneDrift, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
+import { warnOnPrimaryCloneDrift, __setGitOpsDeps, __resetGitOpsDeps, __resetPrimaryCloneDriftWarnings } from '../../src/git-operations';
 import {
   classifyWorktreePath,
   findWorktreeEscape,
@@ -318,5 +318,81 @@ describe('warnOnPrimaryCloneDrift (probe)', () => {
       'git stash list': new Error('boom'),
     }));
     expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1')).toBeNull();
+  });
+});
+
+// The probe runs on every worker start, so an unchanged drift used to print
+// the same multi-line warning once per worker for the life of the process.
+describe('warnOnPrimaryCloneDrift (dedupe per process)', () => {
+  const drifted = {
+    'git rev-parse --abbrev-ref HEAD': 'mission/old-arc\n',
+    'git status --porcelain': ' M a.ts\n',
+    'git stash list': '',
+  };
+  const deps = (outputs: Record<string, string>) => ({
+    execSync: ((cmd: string) => outputs[cmd] ?? '') as any,
+    execFile: (() => {}) as any,
+    existsSync: () => false,
+    mkdirSync: (() => {}) as any,
+    appendFileSync: () => {},
+    readFileSync: (() => '') as any,
+    rmSync: () => {},
+    sessionLog: () => {},
+  });
+
+  function captureWarn() {
+    const lines: string[] = [];
+    const orig = { warn: console.warn, log: console.log };
+    console.warn = (...a: unknown[]) => lines.push(a.map(String).join(' '));
+    console.log = (...a: unknown[]) => lines.push(a.map(String).join(' '));
+    return { lines, restore: () => { console.warn = orig.warn; console.log = orig.log; } };
+  }
+
+  afterEach(() => { __resetGitOpsDeps(); __resetPrimaryCloneDriftWarnings(); });
+
+  test('the same drift on the same repo is printed once, however many workers start', () => {
+    __setGitOpsDeps(deps(drifted));
+    const cap = captureWarn();
+    try {
+      for (let i = 0; i < 5; i++) {
+        // Still returned every time — callers that want the state get it.
+        expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', `w-${i}`)).toContain('PRIMARY CLONE DRIFT');
+      }
+    } finally { cap.restore(); }
+    expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(1);
+  });
+
+  test('a different repo warns separately', () => {
+    __setGitOpsDeps(deps(drifted));
+    const cap = captureWarn();
+    try {
+      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      warnOnPrimaryCloneDrift('/home/coder/project/other', 'dev', 'w-2');
+    } finally { cap.restore(); }
+    expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
+  });
+
+  test('a change in the drift re-warns', () => {
+    __setGitOpsDeps(deps(drifted));
+    const cap = captureWarn();
+    try {
+      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      __setGitOpsDeps(deps({ ...drifted, 'git stash list': 'stash@{0}: WIP\n' }));
+      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2');
+    } finally { cap.restore(); }
+    expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
+  });
+
+  test('drift that clears and comes back warns again', () => {
+    const cap = captureWarn();
+    try {
+      __setGitOpsDeps(deps(drifted));
+      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      __setGitOpsDeps(deps({ 'git rev-parse --abbrev-ref HEAD': 'dev\n' }));
+      expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2')).toBeNull();
+      __setGitOpsDeps(deps(drifted));
+      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-3');
+    } finally { cap.restore(); }
+    expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
   });
 });

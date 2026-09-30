@@ -50,6 +50,11 @@ mock.module('@buildd/core/gate-events', () => ({
     recorded.push(input);
     return 'row-1';
   },
+  recordOrCoalesceRepeat: async (input: Recorded, _opts?: unknown) => {
+    if (ledgerShouldReject) throw new Error('gate_events is unreachable');
+    recorded.push(input);
+    return 'row-1';
+  },
 }));
 
 // ── Route dependencies ────────────────────────────────────────────────────────

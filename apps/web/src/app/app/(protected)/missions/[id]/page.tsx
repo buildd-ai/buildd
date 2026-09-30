@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
-import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
@@ -92,6 +92,8 @@ import {
   MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
 import { explainMission } from '@/lib/explain';
+import { deriveMissionStateView } from '@/lib/mission-state-view';
+import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -366,7 +368,9 @@ export default async function MissionDetailPage({
   const heartbeatWaitingUntil = (mission.schedule as any)?.lastDeferralReason === 'heartbeat_waiting'
     ? (mission.schedule as any)?.nextRunAt ?? null
     : null;
-  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || []);
+  // Out-of-mission dependencies are loaded by id so they are judged, not guessed.
+  const foreignDeps = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
+  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], { dependencies: foreignDeps });
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
@@ -376,7 +380,6 @@ export default async function MissionDetailPage({
   // must say that rather than "READY FOR REVIEW".
   const missionCriteria = (mission as any).goalCriteria as unknown[] | null;
   const missionCriteriaOverall = ((mission as any).goalCriteriaState as { overall?: string } | null)?.overall ?? null;
-  const criteriaUnverified = Array.isArray(missionCriteria) && missionCriteria.length > 0 && missionCriteriaOverall !== 'pass';
 
   // Shared presentation for the above-fold banner and Summary view — same
   // helper the mission card pill and initiative KPI chip read from, so this
@@ -419,20 +422,24 @@ export default async function MissionDetailPage({
 
   // Single derived display state for the header chip and CTA — read off the
   // SAME accessor answer the waiting-on panel renders, so the chip cannot say
-  // AUTO/RUNNING while the panel below says blocked or idle. The historical
-  // chain is only the fallback for when the explain read failed.
-  const displayState = missionAnswer?.displayState ?? deriveMissionDisplayState({
+  // AUTO/RUNNING while the panel below says blocked or idle. When the explain
+  // read failed, the same accessor is asked directly from what the page already
+  // holds (no completion or wait reads), never a second derivation.
+  const fallbackView = missionAnswer ? null : deriveMissionStateView({
     status: mission.status,
     isHeld,
+    executor: (mission as any).executor ?? null,
     orchestrationMode,
     activeAgents,
     health: healthState,
     progress,
-    criteriaUnverified,
+    dependsOnMissionId: (mission as any).dependsOnMissionId ?? null,
+    criteriaGate,
     criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork,
   });
-  const stateChip = missionAnswer?.chip ?? getMissionStateChip(displayState);
+  const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
+  const stateChip = missionAnswer?.chip ?? fallbackView!.chip;
 
   // The Verified pill is the page's only `#mission-criteria` target. It is
   // hidden on a terminal mission whose criteria do not pass, and renders

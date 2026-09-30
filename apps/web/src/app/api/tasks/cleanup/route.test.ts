@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -30,7 +31,7 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
-const mockCleanupStaleWorkers = mock(() => Promise.resolve());
+const mockCleanupStaleWorkers = mock(() => Promise.resolve({ heartbeatOrphans: 0 } as any));
 const mockCleanupStuckWaitingInput = mock(() => Promise.resolve({ failedWorkers: 0, retriedTasks: 0 }));
 mock.module('@/lib/stale-workers', () => ({
   cleanupStaleWorkers: mockCleanupStaleWorkers,
@@ -158,7 +159,7 @@ describe('POST /api/tasks/cleanup', () => {
     mockHeartbeatsFindMany.mockReset();
     mockHeartbeatsDelete.mockReset();
     mockCleanupStaleWorkers.mockReset();
-    mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStaleWorkers.mockResolvedValue({ heartbeatOrphans: 0 });
     mockCleanupStuckWaitingInput.mockReset();
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
     mockReleaseAndNotify.mockReset();
@@ -554,77 +555,62 @@ describe('POST /api/tasks/cleanup', () => {
     expect(res.status).toBe(200);
   });
 
-  it('fails workers when their heartbeat is stale (runner offline)', async () => {
+  // Regression (task 5c0ea9bc): this route used to run its own copy of the
+  // offline-runner rule, keyed on ANY heartbeat row on the account older than
+  // 10 minutes. One dead row (a second runner, a restarted runner's old URL)
+  // failed every in-flight worker under the account's live runner. The rule
+  // now lives only in failWorkersOfOfflineRunners, reached via
+  // cleanupStaleWorkers, and is gated on the account having NO live runner.
+  it('a stale heartbeat row alone does not fail any worker', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-
-    // No stalled running/starting workers
     mockWorkersFindMany
-      .mockResolvedValueOnce([])  // stalled running
-      .mockResolvedValueOnce([])  // active account IDs for per-account cleanup
-      // heartbeat orphan check: workers with stale heartbeat accounts
-      .mockResolvedValueOnce([
-        { id: 'w1', taskId: 'task-1' },
-        { id: 'w2', taskId: 'task-2' },
-      ])
-      // resetOrFailTask prior-failure counts (one per orphan task, both under cap)
-      .mockResolvedValueOnce([{ id: 'w1' }])
-      .mockResolvedValueOnce([{ id: 'w2' }]);
+      .mockResolvedValueOnce([])                               // stalled running
+      .mockResolvedValueOnce([{ accountId: 'account-1' }])     // active accounts
+      .mockResolvedValue([{ id: 'w1', taskId: 'task-1' }]);    // anything else: a live worker
+    mockTasksFindMany.mockResolvedValue([]);
+    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-dead', accountId: 'account-1' }]);
+    mockWorkersUpdate.mockClear();
 
-    mockTasksFindMany
-      .mockResolvedValueOnce([]) // No orphaned assigned tasks
-      // Both orphan tasks are in the caller's workspaces
-      .mockResolvedValueOnce([{ id: 'task-1' }, { id: 'task-2' }]);
-    mockTasksUpdate.mockClear();
-
-    // Stale heartbeats found
-    mockHeartbeatsFindMany.mockResolvedValue([
-      { id: 'hb-1', accountId: 'account-offline' },
-    ]);
-
-    const req = createMockRequest();
-    const res = await POST(req);
+    const res = await POST(createMockRequest());
 
     expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.cleaned.heartbeatOrphans).toBe(2);
-    // Both in-scope tasks were reset to pending.
-    expect(mockTasksUpdate).toHaveBeenCalledTimes(2);
-    // Path-claims leak regression: these workers are terminated here, outside
-    // PATCH /api/workers/[id], so this sweep must release their path claims
-    // itself.
-    expect(mockReleaseAndNotify).toHaveBeenCalledTimes(2);
-    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
-    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-2', 'abandoned');
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    expect((await res.json()).cleaned.heartbeatOrphans).toBe(0);
   });
 
-  it('releases path claims with pending_merge when a heartbeat-orphaned worker had an open PR', async () => {
+  it('reports the shared offline-runner rule\'s count', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-
     mockWorkersFindMany
-      .mockResolvedValueOnce([])  // stalled running
-      .mockResolvedValueOnce([])  // active account IDs
-      .mockResolvedValueOnce([
-        { id: 'w1', taskId: 'task-1', prNumber: 42 },
-      ]);
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ accountId: 'account-1' }, { accountId: 'account-2' }])
+      .mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockAccountsFindMany.mockResolvedValue([{ id: 'account-1' }, { id: 'account-2' }]);
+    mockCleanupStaleWorkers.mockResolvedValue({ heartbeatOrphans: 2 });
 
-    mockTasksFindMany
-      .mockResolvedValueOnce([]) // No orphaned assigned tasks
-      .mockResolvedValueOnce([{ id: 'task-1' }]);
-    mockCheckWorkerDeliverables.mockReturnValue({
-      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'pr',
-    });
+    const res = await POST(createMockRequest());
 
-    mockHeartbeatsFindMany.mockResolvedValue([
-      { id: 'hb-1', accountId: 'account-offline' },
-    ]);
+    expect((await res.json()).cleaned.heartbeatOrphans).toBe(4);
+  });
 
-    const req = createMockRequest();
-    const res = await POST(req);
+  it('deletes heartbeat rows only once the runner is presumed dead, not after 10 minutes', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    const deleteWhere = mock((_w: any) => ({ returning: mock(() => []) }));
+    mockHeartbeatsDelete.mockReturnValue({ where: deleteWhere });
 
-    expect(res.status).toBe(200);
-    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'pending_merge');
+    const before = Date.now();
+    await POST(createMockRequest());
+
+    const where = deleteWhere.mock.calls[0][0];
+    const lt = where.args.find((a: any) => a.type === 'lt');
+    expect(lt.field).toBe('workerHeartbeats.lastHeartbeatAt');
+    const ageMs = before - (lt.value as Date).getTime();
+    expect(Math.abs(ageMs - RUNNER_STALE_CUTOFF_MS)).toBeLessThan(5_000);
   });
 });
 
@@ -643,7 +629,7 @@ describe('POST /api/tasks/cleanup: interactive MCP workers', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
     mockHeartbeatsFindMany.mockResolvedValue([]);
-    mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStaleWorkers.mockResolvedValue({ heartbeatOrphans: 0 });
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
     mockHeartbeatsDelete.mockReturnValue({ where: mock(() => ({ returning: mock(() => []) })) });
   });
@@ -652,15 +638,6 @@ describe('POST /api/tasks/cleanup: interactive MCP workers', () => {
     await POST(createMockRequest());
     const stalledWhere = (mockWorkersFindMany.mock.calls[0] as any[])[0].where;
     expect(nes(stalledWhere)).toContainEqual({ field: 'workers.runner', value: 'mcp' });
-  });
-
-  it('a stale runner heartbeat does not fail the account\'s interactive workers', async () => {
-    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'account-1' }]);
-    await POST(createMockRequest());
-    // calls: stalled running, active account ids, heartbeat orphans
-    const orphanWhere = (mockWorkersFindMany.mock.calls[2] as any[])[0].where;
-    expect(inArrays(orphanWhere)).toContainEqual({ field: 'workers.accountId', values: ['account-1'] });
-    expect(nes(orphanWhere)).toContainEqual({ field: 'workers.runner', value: 'mcp' });
   });
 });
 
@@ -674,7 +651,7 @@ describe('POST /api/tasks/cleanup — caller scope', () => {
     mockTasksFindMany.mockResolvedValue([]);
     mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-a' });
     mockHeartbeatsFindMany.mockResolvedValue([]);
-    mockCleanupStaleWorkers.mockResolvedValue(undefined);
+    mockCleanupStaleWorkers.mockResolvedValue({ heartbeatOrphans: 0 });
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
     mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
     mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
@@ -740,15 +717,13 @@ describe('POST /api/tasks/cleanup — caller scope', () => {
     expect(inArrays(assignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
   });
 
-  it('only reads and deletes heartbeats for the caller account', async () => {
+  it('only deletes heartbeats for the caller account', async () => {
     adminKeyForTeamA();
     const deleteWhere = mock((_w: any) => ({ returning: mock(() => []) }));
     mockHeartbeatsDelete.mockReturnValue({ where: deleteWhere });
 
     await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
 
-    const hbWhere = (mockHeartbeatsFindMany.mock.calls[0] as any[])[0].where;
-    expect(inArrays(hbWhere)).toContainEqual({ field: 'workerHeartbeats.accountId', values: ['account-a'] });
     expect(deleteWhere).toHaveBeenCalledTimes(1);
     expect(inArrays(deleteWhere.mock.calls[0][0])).toContainEqual({
       field: 'workerHeartbeats.accountId', values: ['account-a'],
@@ -769,31 +744,6 @@ describe('POST /api/tasks/cleanup — caller scope', () => {
     const stillAssignedWhere = (mockTasksFindMany.mock.calls[0] as any[])[0].where;
     expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
     expect(inArrays(stillAssignedWhere)).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
-    expect(mockTasksUpdate).not.toHaveBeenCalled();
-  });
-
-  it("does not change a heartbeat orphan's task that lives outside the caller's workspaces", async () => {
-    adminKeyForTeamA();
-    mockHeartbeatsFindMany.mockResolvedValue([{ id: 'hb-1', accountId: 'account-a' }]);
-    mockWorkersFindMany
-      .mockResolvedValueOnce([])                               // stalled running
-      .mockResolvedValueOnce([])                               // active accounts
-      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-b' }]) // heartbeat orphans (own account)
-      .mockResolvedValue([]);
-    mockTasksFindMany.mockResolvedValue([]);
-    mockTasksUpdate.mockClear();
-
-    const res = await POST(createMockRequest({ Authorization: 'Bearer bld_admin' }));
-
-    // The orphaned worker itself is still the caller's to fail...
-    expect((await res.json()).cleaned.heartbeatOrphans).toBe(1);
-    // ...but its task is only touched if it is in one of the caller's workspaces.
-    const lookup = mockTasksFindMany.mock.calls
-      .map(c => inArrays((c as any[])[0].where))
-      .find(preds => preds.some(p => p.field === 'tasks.id'));
-    expect(lookup).toBeDefined();
-    expect(lookup).toContainEqual({ field: 'tasks.id', values: ['task-b'] });
-    expect(lookup).toContainEqual({ field: 'tasks.workspaceId', values: ['ws-a'] });
     expect(mockTasksUpdate).not.toHaveBeenCalled();
   });
 

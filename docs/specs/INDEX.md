@@ -65,7 +65,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### runners (6)
 
-- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-23
+- [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-12
   Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through five named reasons, and MUST never fail a task.
@@ -73,7 +73,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-28
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.

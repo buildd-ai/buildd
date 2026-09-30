@@ -23,7 +23,7 @@ import { missions, missionNotes, taskSchedules, tasks } from '@buildd/core/db/sc
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { isDiedEarly, normalizeErrorSignature } from './failure-analytics';
-import { notify } from './pushover';
+import { notifyTeamOf } from './notify';
 
 /** Consecutive died-early heartbeat failures before the breaker trips. */
 export const HEARTBEAT_BREAKER_THRESHOLD = 3;
@@ -151,8 +151,7 @@ export async function tripHeartbeatCircuitBreaker(input: {
     status: 'open',
   }).catch(e => console.error(`[heartbeat-circuit-breaker] note failed for ${input.missionId}:`, e));
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ missionId: input.missionId }, 'needsAttention', {
     title: `Check-ins paused: ${input.missionTitle}`,
     message: body,
     priority: 0,

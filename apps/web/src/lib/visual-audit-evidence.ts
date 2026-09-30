@@ -21,6 +21,7 @@
  * The verdicts themselves never block.
  */
 
+import { TERMINAL_TASK_STATUSES as SHARED_TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { artifacts, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -116,7 +117,7 @@ export function mintedByUploadUrl(shot: { id: string; storageKey: string | null 
     || isAuditScreenshotKeyForUpload(shot.storageKey, workspaceId, shot.id);
 }
 
-const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_TASK_STATUSES = new Set<string>(SHARED_TERMINAL_TASK_STATUSES);
 
 /**
  * Which of the looked-up tasks may stand as an issue's fix task.

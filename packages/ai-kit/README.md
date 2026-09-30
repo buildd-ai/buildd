@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.10.0
+npm i -E @builddai/ai-kit@0.12.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -188,7 +188,8 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 
 - `read`: runs.
 - a write the person set to Allow runs without a card only if `canSkipCard` holds (first skip of the turn, no tool output anywhere in the stored conversation or earlier in this turn, nothing docked, not `startsUnattendedWork`, not `spends`, only `skippableFields`) **and** your `preview` resolves. Its output gets `allowed: true`.
-- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one.
+- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one. The card renders that denial as "not proposed · one change per turn", never as a Discard (`isSystemDenied`).
+- a preview may return `input`, what actually runs; each field it rewrote is listed on the card (`key (runs as): proposed → runs`), so the card never reads narrower than the call.
 - a preview that can't resolve the target (`ok: false`) shows no card; the tool answers `Needs clarification: <question>`.
 - on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise). `execute` re-checks all of this, so nothing a tool result says can make a write run.
 
@@ -283,7 +284,8 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 | Export | |
 |---|---|
 | `useKitChat({ api, id?, initialMessages?, body?, headers?, credentials?, steer?, onUnavailable?, fetch? })` | → `{ messages, status, busy, error, unavailable, turnError, send, stop, respond, steer, setMessages, clearError }`. Sends only the newest message plus `body`; approval answers go back automatically; a refusal lands in `unavailable`; a mid-stream provider failure in `turnError` |
-| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderToolGroup? renderEvent? eventPartType? renderHandoff? renderMessageHeader? renderMessageFooter? steps? thinkingTitle? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer; it gets the text part too), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after). An app with its own feed adds a header and footer per message, draws each run of tool calls as one group, supplies its own checklist and title, and names its own event part |
+| `<ChatThread messages status? onApprovalResponse? onEditApproval? renderText? renderObject? renderTool? renderToolGroup? toolRows? toolCallOptions? renderEvent? eventPartType? renderHandoff? renderMessageHeader? renderMessageFooter? steps? thinkingTitle? viewerName? empty? error? label?>` | `role="log"`. Text (plain by default: pass a markdown renderer; it gets the text part too), tool rows by step label + summary, approval cards, hand-off cards at their newest state, steers, events, and the thinking panel (open while streaming, folded after). An app with its own feed adds a header and footer per message, draws each run of tool calls as one group, supplies its own checklist and title, and names its own event part. `toolRows="rich"` (0.11.0) draws each run of calls as `<ToolCallGroup>` instead of one line per call |
+| `<ToolCallGroup calls toolLabel? keyArgs? isReadOnly? result?>` + `<ToolCallRow view label? note? flush?>` | Rich tool rows (0.11.0): the tool as the verb, its action and key arguments, a live state mark, a one-line result, an `allowed` badge when a write ran under Allow; a row expands to its raw input and output. Two or more calls sit under a header that folds them ("3 tool calls · read-only · 1 running"). Your hooks (`ToolCallOptions`): `toolLabel(name, part)` (a label table), `keyArgs` (`{ skip?, prefer?, max? }` or your own list per call), `isReadOnly(part)` (default: none, so the tag never shows), `result(part)` (default `toolCallResult`). `toolCallView(part, opts)` builds a row's `view` |
 | `<ChatComposer onSend onStop? busy? disabled? value? onChange? placeholder? onSteer? busyPlaceholder? scope? tools? tier? formFallbackHref? formFallback? showFormFallback? label? leading? actions? edge? footer? mood? compact? inputId?>` | Enter sends, Shift+Enter new line, IME-safe. Send becomes Stop while busy. `leading`: a row in the box above the message (an object chip, a locked scope); `actions`: toolbar controls after `tier`; `edge`: decoration over the top edge; `footer`: under the box; `mood` / `compact` land as `data-mood` / `data-compact`. Ref: `{ focus(), prefill(text) }` |
 | `<ToolsMenu rows onChange busyKey? error?>` | The `···` control, named "Tools", with no count on the trigger (since 0.5.0). Ask first / Allow toggles; locked rows read READ ONLY / ASK FIRST / NEVER. `<ToolRows>` for a settings page |
 | `<ScopePicker options value onChange routed? allLabel?>` | `@ all`, `→ routed`, `@ pinned` |
@@ -531,6 +533,12 @@ const chips = CHIPS.resolve(pick.ids);
 
 Import `@builddai/ai-kit/chat/theme.css` and `@builddai/ai-kit/chat/styles.css`,
 and override the `--kit-*` variables with your own tokens.
+
+The rich tool rows (0.11.0) also read `--kit-ink-soft` (secondary text),
+`--kit-accent-text` (the accent as text), `--kit-accent-soft` (a live row's
+tint), `--kit-raised` (a hovered row) and `--kit-ok` / `--kit-warn` /
+`--kit-danger` (the done, waiting and failed marks). theme.css gives each a
+light default; nothing else reads them.
 
 ## License
 

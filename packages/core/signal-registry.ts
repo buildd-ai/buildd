@@ -319,6 +319,17 @@ export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
     },
   },
   {
+    slug: 'experiment-health',
+    job: 'experiment-health',
+    name: 'Experiment enrolment health',
+    changedPolarity: 'findings',
+    changedMeaning: 'running experiments with an enrolment finding this run (starved, never-drawn arm, split off, one unit dominating, past cap), not work performed',
+    notifyTest: {
+      file: 'apps/web/src/app/api/cron/experiment-health/route.test.ts',
+      title: 'sends one alert naming each unhealthy experiment and its findings',
+    },
+  },
+  {
     // Declared rather than defaulted: this job feeds a detector, so it is the
     // one most likely to be mis-declared `findings` by analogy — which would
     // invert its health check and page on every busy hour.

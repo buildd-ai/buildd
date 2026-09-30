@@ -8,7 +8,7 @@
  * can pick a cheaper tier for a turn; it never changes which model backs one.
  */
 
-import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionResult, type DecisionUsage, decisionCall } from '@buildd/core/decision-client';
+import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionError, type DecisionResult, type DecisionUsage, type GateOutcome, type UsageSink, decisionCall } from '@buildd/core/decision-client';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
 
@@ -59,9 +59,8 @@ export const CHAT_ROUTING_QUESTIONS = {
 };
 
 /**
- * Asked only when the turn passes the conversation's auto title (see
- * `retitle.ts`): has the conversation moved on from what its title names?
- * Rides the routing call, so it costs a question, never a request.
+ * Asked post-response to check whether the conversation has moved on from its auto title (see
+ * `retitle.ts`). Made as a separate decision call after the response is saved, not during routing.
  */
 export const TITLE_TOPIC_QUESTION = {
   type: 'choice',
@@ -234,9 +233,54 @@ export interface TurnRoute {
    * message names, the previous turn's (sticky), or the workspace question.
    */
   workspaceSource?: 'docked' | 'named' | 'sticky' | 'decision';
-  /** The title-topic answer, ungated, when `title` was passed and the call answered it. */
-  topic?: { label: 'same_topic' | 'new_topic'; confidence: number };
+  /** What routing did, for the record (`RoutingRecord`). Absent on turns routing didn't run for. */
+  routing?: RoutingRecord;
 }
+
+/** `ai_usage.kind` of the routing call's receipt (surface `decision`). */
+export const ROUTING_DECISION_ID = 'chat_routing';
+
+/**
+ * How the routing call ended: some gate applied (`decision`, same rule as
+ * `source`), it answered and nothing cleared a gate (`low_confidence`), or it
+ * failed (`error:<DecisionError kind>`; `error:threw` for a throw, which
+ * `decisionCall` never does).
+ */
+export type RoutingOutcome = 'decision' | 'low_confidence' | `error:${DecisionError['kind'] | 'threw'}`;
+
+/**
+ * One question's answer: the label (a workspace pick is recorded as its id),
+ * its confidence, and whether routing acted on it. Null label/confidence: not
+ * answered.
+ */
+export interface RoutingAnswerRecord { label: string | null; confidence: number | null; applied: boolean }
+
+/**
+ * A content-free record of one routing call: labels, numbers and ids only,
+ * never message text, titles or workspace names. Persisted with the user
+ * message (`usage.routing`) and logged as `[chat-routing] {json}`.
+ */
+export interface RoutingRecord {
+  outcome: RoutingOutcome;
+  latencyMs: number;
+  attempts: number;
+  /** Questions asked (3 base, or 2 with a pinned tier, + workspace). */
+  questionCount: number;
+  /** Workspaces offered to the workspace question (0 when not asked). */
+  workspaceCount: number;
+  /** Per question; empty when the call failed. */
+  answers: Partial<Record<'complexity' | 'intent' | 'area' | 'workspace', RoutingAnswerRecord>>;
+}
+
+/** The one log line per routed turn. Never throws. */
+export function logRoutingRecord(record: RoutingRecord, log: (line: string) => void = console.info): void {
+  try { log(`[chat-routing] ${JSON.stringify(record)}`); } catch { /* a log line never fails a turn */ }
+}
+
+function answerRecord(gate: GateOutcome<string>, label: string | null | undefined = gate.label): RoutingAnswerRecord {
+  return { label: label ?? null, confidence: gate.confidence ?? null, applied: gate.apply };
+}
+
 
 /** Longest message the acknowledgement fast path considers. */
 const ACK_MAX_LENGTH = 40;
@@ -265,10 +309,52 @@ export function offeredAction(previous: string | null | undefined): boolean {
 }
 
 type RoutingQuestions = Omit<typeof CHAT_ROUTING_QUESTIONS, 'complexity'> & {
-  complexity?: typeof CHAT_ROUTING_QUESTIONS.complexity; workspace?: ChoiceQuestion<string>; topic?: typeof TITLE_TOPIC_QUESTION;
+  complexity?: typeof CHAT_ROUTING_QUESTIONS.complexity; workspace?: ChoiceQuestion<string>;
 };
 type Decide = (p: Parameters<typeof decisionCall<RoutingQuestions>>[0])
   => Promise<DecisionResult<RoutingQuestions>>;
+type TopicDecide = (p: Parameters<typeof decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }>>[0])
+  => Promise<DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>>;
+
+/**
+ * Ask the topic question in a post-response call (made after the turn is saved,
+ * in the `later` callback). Returns the answer ungated.
+ */
+export async function askTopicQuestion(
+  input: {
+    teamId: string; workspaceId: string | null; userId: string; message: string; title: string;
+    /**
+     * The decision policy and key, resolved ahead, so the whole `ROUTING_TIMEOUT_MS`
+     * goes to the provider. Absent ⇒ resolved inside the call.
+     */
+    access?: Promise<DecisionAccess>;
+  },
+  deps: { decide?: TopicDecide } = {},
+): Promise<{ label: 'same_topic' | 'new_topic'; confidence: number } | undefined> {
+  const decide = deps.decide ?? decisionCall<{ topic: typeof TITLE_TOPIC_QUESTION }> as TopicDecide;
+  let res: DecisionResult<{ topic: typeof TITLE_TOPIC_QUESTION }>;
+  try {
+    res = await decide({
+      capability: 'chat',
+      teamId: input.teamId,
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      state: { turn: { message: input.message.slice(0, 2000), title: input.title } },
+      questions: { topic: TITLE_TOPIC_QUESTION },
+      timeoutMs: ROUTING_TIMEOUT_MS,
+      ...(input.access ? { access: input.access } : {}),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!res.ok) return undefined;
+
+  const topicAnswer = (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic;
+  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
+    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
+    : undefined;
+  return topic;
+}
 
 export async function routeTurn(
   input: {
@@ -279,8 +365,6 @@ export async function routeTurn(
     impliedWorkspaceId?: string | null;
     /** The previous turn's routed workspace: the default unless the message names another. */
     previousWorkspaceId?: string | null;
-    /** The conversation's auto title, to ask whether the conversation has moved on (`TITLE_TOPIC_QUESTION`). */
-    title?: string;
     /** The conversation pins its tier: the complexity answer would be overwritten, so it isn't asked. */
     tierPinned?: boolean;
     /**
@@ -290,10 +374,14 @@ export async function routeTurn(
      */
     access?: Promise<DecisionAccess>;
   },
-  deps: { decide?: Decide } = {},
+  deps: {
+    decide?: Decide;
+    /** Receipt sink for the routing call (`ai_usage`, kind `ROUTING_DECISION_ID`). */
+    onUsage?: UsageSink;
+    now?: () => number;
+  } = {},
 ): Promise<TurnRoute> {
   const settled = input.workspaces ? settleWorkspace(input, input.workspaces) : null;
-  const fallback: TurnRoute = { tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', ...settled };
   // An acknowledgement or greeting needs no reasoning and no tools beyond the
   // fallback set: the cheap tier, without a routing call. Writes stay offered
   // only when the previous turn offered something ("Shall I file it?" → "ok").
@@ -301,6 +389,7 @@ export async function routeTurn(
     return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback', ...settled };
   }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
+  const now = deps.now ?? (() => Date.now());
   // Asked only when nothing above settled it, and only over a bounded list.
   const ws = input.workspaces && !settled ? workspaceQuestion(workspacesToAsk(input.workspaces)) : null;
   const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
@@ -308,8 +397,13 @@ export async function routeTurn(
     ...(input.tierPinned ? {} : { complexity }),
     ...base,
     ...(ws ? { workspace: ws.question } : {}),
-    ...(input.title ? { topic: TITLE_TOPIC_QUESTION } : {}),
   };
+  const shape = {
+    questionCount: Object.keys(questions).length,
+    workspaceCount: ws ? ws.idFor.size : 0,
+  };
+  const fallback = (routing: RoutingRecord): TurnRoute => ({ tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', ...settled, routing });
+  const started = now();
   let res: DecisionResult<RoutingQuestions>;
   try {
     res = await decide({
@@ -317,15 +411,21 @@ export async function routeTurn(
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000), ...(input.title ? { title: input.title } : {}) } },
+      state: { turn: { message: input.message.slice(0, 2000), previous: (input.previous ?? '').slice(0, 1000) } },
       questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
+      decisionId: ROUTING_DECISION_ID,
+      ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
       ...(input.access ? { access: input.access } : {}),
     });
   } catch {
-    return fallback;
+    return fallback({ outcome: 'error:threw', latencyMs: now() - started, attempts: 0, ...shape, answers: {} });
   }
-  if (!res.ok) return fallback;
+  const timing = {
+    latencyMs: typeof res.latencyMs === 'number' ? res.latencyMs : now() - started,
+    attempts: typeof res.attempts === 'number' ? res.attempts : 0,
+  };
+  if (!res.ok) return fallback({ outcome: `error:${res.error.kind}`, ...timing, ...shape, answers: {} });
 
   // Unanswered when not asked (a pinned tier): no answer, fallback tier.
   const tierGate = gateChoice(res.answers.complexity, TIER_MIN_CONFIDENCE);
@@ -335,20 +435,24 @@ export async function routeTurn(
   const wsAnswer = (res.answers as { workspace?: Parameters<typeof gateChoice>[0] }).workspace;
   const wsGate = ws && wsAnswer ? gateChoice(wsAnswer, WORKSPACE_MIN_CONFIDENCE) : null;
   const workspaceId = wsGate?.apply ? ws!.idFor.get(wsGate.label) : undefined;
-  const topicAnswer = input.title ? (res.answers as { topic?: { choice?: unknown; confidence?: unknown } }).topic : undefined;
-  const topic = topicAnswer && (topicAnswer.choice === 'same_topic' || topicAnswer.choice === 'new_topic') && typeof topicAnswer.confidence === 'number'
-    ? { label: topicAnswer.choice, confidence: topicAnswer.confidence } as const
-    : undefined;
+  const source = tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback';
+  const answers: RoutingRecord['answers'] = {
+    complexity: answerRecord(tierGate),
+    intent: answerRecord(intentGate),
+    area: answerRecord(areaGate),
+    // The label is a workspace name: record the id it maps to instead.
+    ...(ws ? { workspace: answerRecord(wsGate ?? { apply: false, reason: 'no_answer' }, wsGate?.label !== undefined ? ws.idFor.get(wsGate.label) ?? null : null) } : {}),
+  };
   return {
     tier: tierGate.apply ? TIER_FOR[tierGate.label] : FALLBACK_TIER,
     // Withhold the write tools only on a confident "not acting"; low
     // confidence keeps them (the approval card is the backstop either way).
     allowWrites: !(intentGate.apply && intentGate.label !== 'act'),
     ...(area ? { area } : {}),
-    source: tierGate.apply || intentGate.apply || areaGate.apply ? 'decision' : 'fallback',
+    source,
     ...(res.usage ? { usage: res.usage } : {}),
     ...(settled ?? (workspaceId ? { workspaceId, workspaceSource: 'decision' as const } : {})),
-    ...(topic ? { topic } : {}),
+    routing: { outcome: source === 'decision' ? 'decision' : 'low_confidence', ...timing, ...shape, answers },
   };
 }
 

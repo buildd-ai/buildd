@@ -43,6 +43,11 @@ const mockConnectorSharesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspaceSkillsFindFirst = mock(() => Promise.resolve(null as any));
 const mockMissionsFindMany = mock(() => [] as any[]);
+// checkTaskMissionLocal's two-step lookup (task → missionId, then the mission's
+// executor). Defaults to "not found" so existing tests that never touch a local
+// mission keep the role gate applying exactly as before.
+const mockTasksFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => null as any);
 const mockOauthEpisodesFindMany = mock(() => [] as any[]);
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
@@ -107,7 +112,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findMany: mockWorkspacesFindMany },
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
-      tasks: { findMany: mockTasksFindMany },
+      tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
       secrets: { findMany: mockSecretsFindMany },
@@ -122,7 +127,7 @@ mock.module('@buildd/core/db', () => ({
       connectors: { findMany: mockConnectorsFindMany },
       connectorWorkspaces: { findMany: mockConnectorWorkspacesFindMany },
       connectorShares: { findMany: mockConnectorSharesFindMany },
-      missions: { findMany: mockMissionsFindMany },
+      missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
@@ -236,7 +241,7 @@ mock.module('@/lib/storage', () => ({
   generateDownloadUrl: mock(() => ''),
 }));
 mock.module('@/lib/pushover', () => ({
-  notify: mock(() => Promise.resolve()),
+  notifyOperator: mock(() => Promise.resolve()),
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
@@ -247,9 +252,11 @@ mock.module('@buildd/core/path-claim', () => ({
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
 const mockFireDeferralEvent = mock((_input: any) => {});
 const mockFireGateEvent = mock((_input: any) => 'sig');
+const mockFireRepeatGateEvent = mock((_input: any, _opts: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireDeferralEvent: mockFireDeferralEvent,
   fireGateEvent: mockFireGateEvent,
+  fireRepeatGateEvent: mockFireRepeatGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
@@ -268,6 +275,14 @@ mock.module('./explicit-task-exclusion', () => ({
   diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
   evaluateForcedGates: mockEvaluateForcedGates,
   stampLastClaimAttempt: mockStampLastClaimAttempt,
+}));
+
+// Role-env pre-filter + injection (own tests in role-env-injection.test.ts).
+// Here only the wiring: a gap the pre-filter reports defers the task.
+const mockRunRoleEnvPreFilter = mock((_tasks: any, _accountId: string) => Promise.resolve(new Map<string, any>()));
+mock.module('./role-env-injection', () => ({
+  runRoleEnvPreFilter: mockRunRoleEnvPreFilter,
+  attachRoleEnvSecrets: async () => {},
 }));
 
 // Model-routing experiment glue. The real module is exercised against rendered
@@ -420,10 +435,13 @@ describe('POST /api/workers/claim', () => {
   });
 
   describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
-    const gateReasons = () => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason);
+    const gateReasons = () => [
+      ...mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),
+      ...mockFireRepeatGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),
+    ];
     const userAccount = { id: 'account-1', maxConcurrentWorkers: 3, type: 'user' };
 
-    beforeEach(() => mockFireGateEvent.mockClear());
+    beforeEach(() => { mockFireGateEvent.mockClear(); mockFireRepeatGateEvent.mockClear(); });
 
     it('probe with invalid API key: 401, no gate event', async () => {
       mockAuthenticateApiKey.mockResolvedValue(null);
@@ -467,6 +485,23 @@ describe('POST /api/workers/claim', () => {
       }));
       expect(res.status).toBe(400);
       expect(gateReasons()).toContain('runner_field_missing');
+    });
+
+    it('missing runner is attributed to the account and collapsed per account per hour', async () => {
+      // One client polling without `runner` once a minute used to be most of the
+      // gate ledger, with nothing on the row saying whose client it was.
+      mockAuthenticateApiKey.mockResolvedValue(userAccount);
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test', 'User-Agent': 'poller/1.0' },
+        body: { workspaceId: 'ws-1', maxTasks: 1 },
+      }));
+      expect(mockFireRepeatGateEvent).toHaveBeenCalledTimes(1);
+      const [input, opts] = mockFireRepeatGateEvent.mock.calls[0] as any[];
+      expect(input.reason).toBe('runner_field_missing');
+      expect(input.detail).toMatchObject({ accountId: 'account-1', userAgent: 'poller/1.0' });
+      expect(input.detail.bodyKeys).toEqual(['maxTasks', 'workspaceId']);
+      expect(opts).toEqual({ key: { accountId: 'account-1' }, windowMs: 60 * 60 * 1000 });
+      expect(gateReasons().filter(r => r === 'runner_field_missing')).toHaveLength(1);
     });
 
     it('X-Probe with a value other than "true" is not treated as a probe', async () => {
@@ -4678,6 +4713,87 @@ describe('path-overlap claim guard', () => {
     });
   }
 
+  // A task whose title/description names a PR as its subject (e.g. "rebase and
+  // land PR #2659") gets subjectKind='pull_request' + subjectPrNumber stamped
+  // at creation (packages/core/subject-anchor-extractor.ts). Its job IS that
+  // PR, so an overlap with exactly that PR must not defer it forever — the
+  // friction this guards against: a task with no *RetryPrNumber but a subject
+  // anchor naming the PR sat deferred on every poll since only the retry
+  // columns were exempted.
+  it('claims a task whose subject anchor names the blocking PR despite the pathManifest overlap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+      ]);
+
+    const takeoverTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'takeover-task',
+      title: 'Rebase and land PR #2659',
+      subjectKind: 'pull_request',
+      subjectPrNumber: 2659,
+      context: null,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([takeoverTask])
+      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('takeover-task');
+  });
+
+  it('still defers a task with a subject anchor whose manifest overlaps a DIFFERENT open PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    const takeoverTask = {
+      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      id: 'takeover-task',
+      title: 'Rebase and land PR #2659',
+      subjectKind: 'pull_request',
+      subjectPrNumber: 2659,
+      context: null,
+    };
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([takeoverTask])
+      .mockResolvedValueOnce([
+        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+      ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
   // A loopUntilMerged parent re-queues as pending while its own earlier worker's
   // PR is still open. It carries no *RetryPrNumber, so without a task-id check
   // its own PR deferred it on every claim and the fleet sat idle.
@@ -6094,6 +6210,30 @@ describe('claim gate overrides', () => {
       expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
     });
 
+    it.each(['artifact_required', 'none'])('does not defer a %s candidate behind a scope-undeclared sibling', async (outputRequirement) => {
+      mockTasksFindMany.mockResolvedValueOnce([{ ...advisoryTask('task-1', 'mission-A'), outputRequirement }]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('an in-flight artifact_required sibling does not occupy the scope-undeclared slot', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: null, outputRequirement: 'artifact_required' },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
     it('claims when the in-flight sibling declared concrete scope (no undeclared-vs-undeclared collision)', async () => {
       mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
       mockDbSelect.mockReturnValue(makeSelectChain([
@@ -6713,13 +6853,16 @@ describe('explicit taskId claims (organizer workflow)', () => {
     process.env.AUTH_SECRET = 'organizer-test-secret';
     resetExplicitClaimRateLimit();
     for (const m of [mockAuthenticateApiKey, mockGetAccountWorkspacePermissions, mockWorkersFindMany, mockWorkspacesFindMany,
-      mockTasksFindMany, mockMissionsFindMany, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
+      mockTasksFindMany, mockMissionsFindMany, mockTasksFindFirst, mockMissionsFindFirst, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
       mockEvaluateForcedGates, mockGetActiveClaimsByWorkspace, mockFireGateEvent] as any[]) m.mockReset();
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
     mockWorkersFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindMany.mockResolvedValue([]);
+    // checkTaskMissionLocal's lookup: not a local mission unless a test says so.
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockResolvedValue(null);
     mockTeamsFindFirst.mockResolvedValue(null);
     mockHasCodexCredential.mockResolvedValue(false);
     mockDiagnoseExplicitTaskExclusion.mockResolvedValue(null);
@@ -6746,6 +6889,30 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.taskExclusion.code).toBe('mission_concurrent');
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
+  });
+
+  it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'mailer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map([['task-1', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] }]]));
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.deferrals.role_env_unsatisfied).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('role_env_unsatisfied');
+    expect(data.diagnostics.taskExclusion.detail).toContain('SERVICE_API_KEY, TENANT_ID');
+    expect(data.diagnostics.taskExclusion.detail).toContain('mailer');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'role_env_unsatisfied');
+    expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
+  });
+
+  it('a task with no role env gap is claimed as before', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'reviewer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map());
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
   });
 
   it('a Codex task the caller cannot run names capability_mismatch', async () => {
@@ -6832,6 +6999,59 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(probedGates()).not.toContain('missionLocal');
   });
 
+  // ── friction 22b389df: a local mission's own audit task was unclaimable ────
+  // The `[surface audit]` task ensureMissionSurfaceAudit appends carries
+  // roleSlug='visual-auditor' (EXPLICIT_ROLE_SLUGS), which an interactive
+  // session never advertises in availableSkills — so even the missionLocal
+  // exemption above left it stuck with role_mismatch, including under an
+  // admin force claim (role/runner routing is never force-bypassed).
+  it("local executor: a verified interactive session's explicit claim is exempt from the role gate too", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+
+    // Empty candidate set so the route falls into the explicit-taskId diagnosis
+    // path and names which gates it actually built (same pattern the missionLocal
+    // exemption test above uses) — the mocked query result never observes real
+    // WHERE-clause filtering.
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+
+    expect(probedGates()).not.toContain('role');
+  });
+
+  it('local executor: an exempted audit task still claims end to end', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', roleSlug: 'visual-auditor' })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it('local executor: the role exemption is scoped to local missions — a non-local mission still gates on role', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    // checkTaskMissionLocal resolves the task's own mission, which is NOT local.
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-R' });
+    mockMissionsFindFirst.mockResolvedValue(null);
+
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+
+    expect(probedGates()).toContain('role');
+  });
+
+  it('local executor: an admin force claim still does NOT lift the role gate on the audit task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    // Not an interactive session, so checkTaskMissionLocal is never consulted —
+    // force alone must not open the explicit-role-slug gate.
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(probedGates()).toContain('role');
+  });
+
   it('rate-limits a session\'s explicit claims of one task to one per window', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     await claim({ runner: 'mcp' }, interactiveHeaders());
@@ -6841,6 +7061,15 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // A different task is its own window.
     const other = await (await POST(createMockRequest({ headers: interactiveHeaders(), body: { runner: 'mcp', taskId: 'task-2' } }))).json();
     expect(other.diagnostics?.reason).not.toBe('rate_limited');
+  });
+
+  it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    const second = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(second.diagnostics?.reason).not.toBe('rate_limited');
   });
 
   it('force: an admin explicit claim drops the overridable SQL gates, keeps the rest', async () => {
