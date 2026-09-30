@@ -163,6 +163,86 @@ describe('evaluateAutoMergeSafety CI verification', () => {
   });
 });
 
+describe('evaluateAutoMergeSafety superseded check runs', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('ignores an old failed run once a newer run of the same check passed', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({
+        check_runs: [
+          { id: 100, name: 'check', status: 'completed', conclusion: 'failure' },
+          { id: 200, name: 'check', status: 'completed', conclusion: 'success' },
+        ],
+      })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+
+    // Gets past the CI gate and stops at the later, unrelated mergeable_state gate.
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('dirty') });
+  });
+
+  it('is order-independent: the newest id wins wherever it appears', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({
+        check_runs: [
+          { id: 200, name: 'check', status: 'completed', conclusion: 'success' },
+          { id: 100, name: 'check', status: 'completed', conclusion: 'failure' },
+        ],
+      })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('dirty') });
+  });
+
+  it('still refuses when the newest run of a check is the failing one', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [
+        { id: 100, name: 'check', status: 'completed', conclusion: 'success' },
+        { id: 200, name: 'check', status: 'completed', conclusion: 'failure' },
+      ],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: check' });
+  });
+
+  it('keeps a failing run that cannot be ordered against a same-name run', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [
+        { name: 'check', status: 'completed', conclusion: 'success' },
+        { name: 'check', status: 'completed', conclusion: 'failure' },
+      ],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('check') });
+  });
+
+  it('does not let a passing run of one check mask a failing run of another', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [
+        { id: 1, name: 'build', status: 'completed', conclusion: 'failure' },
+        { id: 2, name: 'check', status: 'completed', conclusion: 'success' },
+      ],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: build' });
+  });
+});
+
 describe('evaluateAutoMergeSafety mergeable_state check', () => {
   beforeEach(() => {
     mockGithubApi.mockReset();
