@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { taskSchedules, missions } from '@buildd/core/db/schema';
 import { eq, and, lt } from 'drizzle-orm';
 import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 
 /**
  * Check for heartbeat missions whose nextRunAt is still far in the past
@@ -44,7 +44,7 @@ export async function runOverdueHeartbeatAlerts(now: Date): Promise<number> {
       const missionTitle = linkedMission?.title ?? schedule.name;
       const overdueMin = Math.round((now.getTime() - new Date(schedule.nextRunAt).getTime()) / 60_000);
 
-      notify({
+      notifyOperator({
         app: 'alerts',
         title: `Check-in overdue: ${missionTitle}`,
         message: `Mission check-in is ${overdueMin}m overdue. The cron may have stalled.`,

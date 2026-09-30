@@ -1,5 +1,7 @@
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
+import { isGateSatisfied } from './task-presentation';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -100,8 +102,8 @@ export function deriveDriveState(mission: {
  */
 export type Health = 'NOMINAL' | 'BLOCKED' | 'FAILING' | 'STALLED';
 
-const LIVE_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
-const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_STATUSES = new Set<string>(LIVE_WORKER_STATUSES);
+const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
 
 /**
  * The legacy, family-scoped predicate: everything except coordination/planning
@@ -134,27 +136,65 @@ function isFamilyHealthTask(t: { status: string; kind?: string | null; title?: s
  */
 export const STALL_GRACE_MS = 5 * 60_000;
 
-type DependencyRow = {
+export type DependencyRow = {
   id?: string;
+  title?: string | null;
   status: string;
   updatedAt?: Date | string | null;
-  workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
+  workers?: Array<{
+    status: string;
+    prUrl?: string | null;
+    mergedAt?: Date | string | null;
+    prLifecycleStatus?: string | null;
+  }> | null;
 };
 
 /**
- * The same "satisfied" rule the claim route's `dependenciesSatisfied()` gate
- * applies: a dependency is met when it is cancelled, or completed with its PR
- * (if any) merged. A dependency that is not in `byId` is unknown here and is
- * treated as met — this is a display read, and it must never invent a block.
+ * The claim gate's own predicate (`isGateSatisfied`, which mirrors the SQL in
+ * `api/workers/claim/deps-gate.ts`): cancelled, or completed with no open PR on
+ * ANY of its workers — a closed PR releases the guard. Normalised to null so a
+ * caller that did not select a column is never read as "PR open".
  */
 function dependencyMet(dep: DependencyRow): boolean {
-  if (dep.status === 'cancelled') return true;
-  if (dep.status !== 'completed') return false;
-  const latest = dep.workers?.[0];
-  return !latest?.prUrl || !!latest.mergedAt;
+  return isGateSatisfied(dep, (dep.workers ?? []).map(w => ({
+    prUrl: w.prUrl ?? null,
+    mergedAt: w.mergedAt ?? null,
+    prLifecycleStatus: w.prLifecycleStatus ?? null,
+  })));
 }
 
-/** Ids of `task.dependsOn` entries that would still keep it out of the claim query. */
+/**
+ * Status stamped on a dependency that was looked up by id and has no row. Not
+ * in DEP_SATISFYING_STATUSES, so it is unmet — the claim SQL's
+ * `EXISTS (... t2.id = dep_id ...)` blocks on it too.
+ */
+export const MISSING_DEPENDENCY_STATUS = 'missing';
+
+export function missingDependencyRow(id: string): DependencyRow {
+  return { id, status: MISSING_DEPENDENCY_STATUS, workers: [] };
+}
+
+/**
+ * `dependsOn` entries that point outside `rows` (another mission, or gone),
+ * deduplicated. A caller loads these by id (`loadDependencyRows`) and passes
+ * them as `dependencies` so an out-of-mission dependency is judged, not guessed.
+ */
+export function foreignDependencyIds(rows: ReadonlyArray<{ id?: string; dependsOn?: string[] | null }>): string[] {
+  const own = new Set(rows.map(r => r.id).filter((id): id is string => !!id));
+  const out = new Set<string>();
+  for (const r of rows) for (const id of Array.isArray(r.dependsOn) ? r.dependsOn : []) if (!own.has(id)) out.add(id);
+  return [...out];
+}
+
+/**
+ * Ids of `task.dependsOn` entries that would still keep it out of the claim
+ * query. Three cases, kept distinct:
+ *   - in `byId` and unmet (including `missingDependencyRow`) → listed
+ *   - in `byId` and met → not listed
+ *   - not in `byId` → UNKNOWN, not listed: the caller did not load it (e.g. a
+ *     dependency in another mission), and a display read must not invent a
+ *     wait. Callers that can, load foreign dependencies by id first.
+ */
 export function unmetDependencyIds(
   task: { dependsOn?: string[] | null },
   byId: ReadonlyMap<string, DependencyRow>,
@@ -189,7 +229,8 @@ function claimableSince(
   for (const id of Array.isArray(task.dependsOn) ? task.dependsOn : []) {
     const dep = byId.get(id);
     if (!dep) continue;
-    const t = ms(dep.workers?.[0]?.mergedAt) ?? ms(dep.updatedAt);
+    const merged = (dep.workers ?? []).map(w => ms(w.mergedAt)).filter((m): m is number => m !== null);
+    const t = merged.length > 0 ? Math.max(...merged) : ms(dep.updatedAt);
     if (t !== null) times.push(t);
   }
   return times.length > 0 ? Math.max(...times) : null;
@@ -236,7 +277,7 @@ export function deriveTaskHealthSignal(
     /** Select it: without it, pre-migration title heuristics decide what counts. */
     taskClass?: string | null;
     category?: string | null;
-    workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
+    workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null; prLifecycleStatus?: string | null }> | null;
     /**
      * True when this failed task's deliverable shipped anyway — its target PR
      * merged, or a title-equivalent sibling task completed with a merged PR
@@ -254,6 +295,12 @@ export function deriveTaskHealthSignal(
     scope?: 'mission' | 'family';
     /** Clock for the stall grace window. Defaults to `Date.now()`. */
     now?: Date;
+    /**
+     * Dependency rows outside `tasks` (`foreignDependencyIds` → `loadDependencyRows`).
+     * Without them an out-of-mission dependency is unknown and its dependent
+     * counts as claimable.
+     */
+    dependencies?: ReadonlyMap<string, DependencyRow>;
   } = {},
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
@@ -274,7 +321,7 @@ export function deriveTaskHealthSignal(
     activeTasks.length > 0 &&
     !tasks.some(t => OPEN_TASK_STATUSES.has(t.status) && t.workers?.some(w => LIVE_STATUSES.has(w.status)))
   ) {
-    const byId = new Map<string, DependencyRow>();
+    const byId = new Map<string, DependencyRow>(opts.dependencies ?? []);
     for (const t of tasks) if (t.id) byId.set(t.id, t);
     // A row waiting on an unmet dependency cannot be claimed, so it is not
     // evidence the platform failed to progress anything. If every open row is
@@ -296,56 +343,14 @@ export function deriveTaskHealthSignal(
 // ─── Single derived display state ─────────────────────────────────────────────
 
 /**
- * Collapses isHeld + orchestrationMode + activeAgents + health into ONE label
- * for the mission detail page header chip and state-driven CTA.
- * Priority: complete > held > running > failed > manual > active.
- */
-/**
  * `blocked` and `stalled` close the two gaps the mission-state audit found
  * (`docs/design/mission-state-ownership.md` §3, Bugs A and B): an unmet
  * dependency and a mission whose open tasks have no live worker both used to
  * fall through to `active`, so the header chip read AUTO for a mission that
- * could not move. Only `deriveMissionStateView` produces them —
- * `deriveMissionDisplayState` keeps its historical chain, so nothing that reads
- * it changes behaviour until it adopts the accessor.
+ * could not move. `deriveMissionStateView` (`lib/mission-state-view.ts`) is
+ * the only producer of a `MissionDisplayState`.
  */
 export type MissionDisplayState = 'held' | 'local' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
-
-export function deriveMissionDisplayState(opts: {
-  status: string;
-  isHeld: boolean;
-  /** `missions.executor`: a 'local' mission reads LOCAL (active work), never HELD. */
-  executor?: string | null;
-  orchestrationMode?: string | null;
-  activeAgents: number;
-  health: Health;
-  /** Pass the computed 0-100 progress to unlock the 'review' state. */
-  progress?: number;
-  /**
-   * True when the mission states goal criteria whose stored verdict is not
-   * `pass`. The work may be finished, but the mission is not complete and will
-   * not close — it is awaiting verification.
-   */
-  criteriaUnverified?: boolean;
-  /** `missions.criteriaEscalatedAt` — set when goal-criteria gate has escalated to owner. */
-  criteriaEscalatedAt?: Date | string | null;
-  /** True when a deliverable task is still open. */
-  hasPendingDeliverableWork?: boolean;
-}): MissionDisplayState {
-  if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
-  if (opts.isHeld) return 'held';
-  if (opts.activeAgents > 0) return opts.executor === 'local' ? 'local' : 'running';
-  if (opts.health === 'FAILING') return 'failed';
-  if (opts.executor === 'local' && opts.hasPendingDeliverableWork !== false) return 'local';
-  // Escalated + no pending work: mission awaiting owner decision on criteria
-  if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'waiting_decision';
-  // Work done + verdict missing outranks 'review': "READY FOR REVIEW" would
-  // invite a human to close a mission the platform is refusing to close.
-  if (opts.criteriaUnverified && opts.progress !== undefined && opts.progress >= 100) return 'awaiting_verification';
-  if (opts.progress !== undefined && opts.progress >= 100) return 'review';
-  if (opts.orchestrationMode === 'manual') return 'manual';
-  return 'active';
-}
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   held: 'HELD',

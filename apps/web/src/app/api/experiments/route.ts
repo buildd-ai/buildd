@@ -14,15 +14,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { canViewExperiment, isExperimentAdmin, parseCreateExperiment, toExperimentDTO } from '@/lib/experiments';
 import { insertExperiment, listTeamExperiments } from '@/lib/experiments-store';
+import { runExperimentHealth } from '@buildd/core/experiment-health-source';
+import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 
 export async function GET(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
 
-  const rows = await listTeamExperiments(viewer.teamId);
-  const experiments = rows.filter(r => canViewExperiment(r.visibility, viewer.role)).map(toExperimentDTO);
-  return NextResponse.json({ experiments, canManage: isExperimentAdmin(viewer.role) });
+  const rows = (await listTeamExperiments(viewer.teamId)).filter(r => canViewExperiment(r.visibility, viewer.role));
+  const experiments = rows.map(toExperimentDTO);
+  // Enrolment health of the running ones (at most one per kind per team), so a
+  // starved or unbalanced experiment shows up where it is listed. A failed
+  // check drops that entry rather than the list.
+  const health: Record<string, ExperimentHealthFinding[]> = {};
+  await Promise.all(rows.filter(r => r.status === 'running').map(async r => {
+    const findings = await runExperimentHealth(r).catch(() => null);
+    if (findings) health[r.id] = findings;
+  }));
+  return NextResponse.json({ experiments, canManage: isExperimentAdmin(viewer.role), health });
 }
 
 export async function POST(req: NextRequest) {

@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import {
   watchedProjects,
@@ -11,7 +12,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
 import { dispatchNewTask } from '@/lib/task-dispatch';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
 import { getSecretsProvider } from '@buildd/core/secrets';
@@ -22,7 +23,6 @@ import {
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
-const ACTIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress', 'review'];
 
 export interface RunResult {
   checked: number;
@@ -188,7 +188,7 @@ async function isProdSuppressed(project: WatchedProject): Promise<boolean> {
     .where(
       and(
         eq(tasks.workspaceId, project.workspaceId),
-        inArray(tasks.status, ACTIVE_TASK_STATUSES),
+        inArray(tasks.status, OPEN_TASK_STATUSES),
         sql`${tasks.context}->>'watchedProjectId' = ${project.id}`,
         sql`${tasks.context}->>'watcherKind' = 'prod_unhealthy'`,
       ),
@@ -277,7 +277,7 @@ Diagnose the failure, push a fix to \`main\`, and confirm the next deploy goes R
     );
   }
 
-  notify({
+  notifyOperator({
     app: project.pushoverApp,
     title,
     message: health.reason,
@@ -379,7 +379,7 @@ async function isPrSuppressed(project: WatchedProject, pr: OpenPR): Promise<bool
     .where(
       and(
         eq(tasks.workspaceId, project.workspaceId),
-        inArray(tasks.status, ACTIVE_TASK_STATUSES),
+        inArray(tasks.status, OPEN_TASK_STATUSES),
         sql`${tasks.context}->>'watchedProjectId' = ${project.id}`,
         sql`(${tasks.context}->>'pr')::int = ${pr.number}`,
       ),
@@ -503,7 +503,7 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
     );
   }
 
-  notify({
+  notifyOperator({
     app: project.pushoverApp,
     title: `CI failing on ${project.repo} #${pr.number}`,
     message: `${failing.length} check(s) red\n${pr.title}`,

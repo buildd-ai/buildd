@@ -97,7 +97,10 @@ mock.module('fs', () => ({
   rmSync: () => {},
 }));
 
+// Spread the real module so a new roles export cannot vanish under this stub.
+const realRoles = await import('../../src/roles');
 mock.module('../../src/roles', () => ({
+  ...realRoles,
   getRoleDir: (slug: string) => `/tmp/roles/${slug}`,
   syncRoleToLocal: async () => ({ cwd: '/tmp/roles/builder' }),
   overlayRoleFiles: async () => {},

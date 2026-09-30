@@ -26,6 +26,15 @@ export function teamExperimentScope(teamId: string, id: string) {
   return and(eq(experiments.id, id), eq(experiments.teamId, teamId), ne(experiments.kind, 'tier_pool'));
 }
 
+/**
+ * The readout reads a tier pool's experiment too: it is where a pool's
+ * per-arm numbers come from (runTierPoolReadout). Reading only — the generic
+ * surface still neither lists nor edits a tier pool.
+ */
+export function teamExperimentReadoutScope(teamId: string, id: string) {
+  return and(eq(experiments.id, id), eq(experiments.teamId, teamId));
+}
+
 /** Another running experiment of the same kind on the same team. */
 export function otherRunningScope(teamId: string, kind: string, excludeId: string) {
   return and(
@@ -77,6 +86,11 @@ export async function listTeamExperiments(teamId: string): Promise<ExperimentRow
 
 export async function getTeamExperiment(teamId: string, id: string): Promise<ExperimentRow | null> {
   const rows = await db.select().from(experiments).where(teamExperimentScope(teamId, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function getTeamExperimentForReadout(teamId: string, id: string): Promise<ExperimentRow | null> {
+  const rows = await db.select().from(experiments).where(teamExperimentReadoutScope(teamId, id)).limit(1);
   return rows[0] ?? null;
 }
 

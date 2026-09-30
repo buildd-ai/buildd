@@ -13,7 +13,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY } from './held-gate';
+import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY, notHeldOrLocal } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -212,5 +212,23 @@ describe('checkTaskMissionLocal', () => {
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-abc' });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-abc' });
     expect(await checkTaskMissionLocal('task-1')).toBe(true);
+  });
+});
+
+// ─── sweeps and alerts share the claim gates (task 07132c03) ─────────────────
+describe('notHeldOrLocal() — the three claim gates, conjoined', () => {
+  const norm = (q: Parameters<PgDialect['sqlToQuery']>[0]) =>
+    dialect.sqlToQuery(q).sql.replace(/\$\d+/g, '$?');
+
+  it('embeds missionNotHeld, missionNotLocal and taskNotHeld verbatim', () => {
+    const text = norm(notHeldOrLocal());
+    for (const gate of [missionNotHeld(), missionNotLocal(), taskNotHeld()]) {
+      expect(text).toContain(norm(gate));
+    }
+  });
+
+  it('ANDs them: every gate must pass, not any one', () => {
+    const text = norm(notHeldOrLocal());
+    expect(text).toContain(`${norm(missionNotHeld())} AND ${norm(missionNotLocal())} AND ${norm(taskNotHeld())}`);
   });
 });

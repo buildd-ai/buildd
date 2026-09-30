@@ -20,7 +20,8 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { fireDeferralEvent, GATE_SLUGS } from './gate-ledger';
 // A task pending past its own `startAt`, OR stuck in a claim-loop deferral
 // streak, for at least STRAND_MS is stranded. The decision is made in JS
@@ -78,6 +79,59 @@ function isStrandedCandidate(c: StrandedCandidateRow, now: number): boolean {
 }
 
 /**
+ * Candidate rows for the sweep: pending tasks with an old startAt or any
+ * deferral history, minus work a person has deliberately parked (held task,
+ * held mission, local-executor mission — the claim route's own gates). That
+ * work is pending by design; flagging it stranded is a false alarm.
+ *
+ * Unaliased "tasks" so the shared gates, which reference "tasks".<col>, bind.
+ */
+export function strandedCandidatesQuery(strandMinutes: number): SQL {
+  return sql`
+    WITH latest_deferral AS (
+      SELECT DISTINCT ON (task_id) task_id, reason, detail
+      FROM gate_events
+      WHERE gate = ${GATE_SLUGS.CLAIM_LOOP_DEFERRAL}
+        AND outcome = 'deferred'
+        AND task_id IS NOT NULL
+      ORDER BY task_id, occurred_at DESC
+    )
+    SELECT
+      ${tasks.id} AS "id",
+      ${tasks.title} AS "title",
+      ${tasks.workspaceId} AS "workspaceId",
+      ${tasks.missionId} AS "missionId",
+      ${tasks.startAt} AS "startAt",
+      ld.reason AS "reason",
+      ld.detail AS "detail"
+    FROM ${tasks}
+    LEFT JOIN latest_deferral ld ON ld.task_id = ${tasks.id}
+    WHERE ${tasks.status} = 'pending'
+      AND ${notHeldOrLocal()}
+      AND (
+        (${tasks.startAt} IS NOT NULL AND ${tasks.startAt} < now() - (${strandMinutes} * interval '1 minute'))
+        OR ld.detail IS NOT NULL
+      )
+  `;
+}
+
+/**
+ * Open `[stranded]` notes whose task is no longer stranded: it left pending
+ * (claimed, cancelled, completed, failed), was deleted, or has since been
+ * parked by a person (held, or its mission held / moved to local executor).
+ */
+export function resolvedStrandedNotesQuery(): SQL {
+  return sql`
+    SELECT mn.id AS "id"
+    FROM ${missionNotes} mn
+    LEFT JOIN ${tasks} ON ${tasks.id} = mn.task_id
+    WHERE mn.title LIKE ${STRANDED_NOTE_PREFIX + '%'}
+      AND mn.status = 'open'
+      AND (${tasks.id} IS NULL OR ${tasks.status} <> 'pending' OR NOT ${notHeldOrLocal()})
+  `;
+}
+
+/**
  * Flag every pending task stuck past the strand threshold with one gate_events
  * row (outcome=stranded, coalesced) and one open mission note, then clear any
  * previously-stranded task that re-armed (claimed, cancelled, completed, or
@@ -88,32 +142,7 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
   // deferral history at all. The exact strand decision — including the
   // firstDeferredAt elapsed-time check — happens in isStrandedCandidate below,
   // using the exact same STRAND_MS constant, so the two cannot drift apart.
-  const strandMinutes = STRAND_MS / 60_000;
-  const result = await db.execute(sql`
-    WITH latest_deferral AS (
-      SELECT DISTINCT ON (task_id) task_id, reason, detail
-      FROM gate_events
-      WHERE gate = ${GATE_SLUGS.CLAIM_LOOP_DEFERRAL}
-        AND outcome = 'deferred'
-        AND task_id IS NOT NULL
-      ORDER BY task_id, occurred_at DESC
-    )
-    SELECT
-      t.id AS "id",
-      t.title AS "title",
-      t.workspace_id AS "workspaceId",
-      t.mission_id AS "missionId",
-      t.start_at AS "startAt",
-      ld.reason AS "reason",
-      ld.detail AS "detail"
-    FROM ${tasks} t
-    LEFT JOIN latest_deferral ld ON ld.task_id = t.id
-    WHERE t.status = 'pending'
-      AND (
-        (t.start_at IS NOT NULL AND t.start_at < now() - (${strandMinutes} * interval '1 minute'))
-        OR ld.detail IS NOT NULL
-      )
-  `);
+  const result = await db.execute(strandedCandidatesQuery(STRAND_MS / 60_000));
 
   const now = Date.now();
   const candidates = ((result.rows ?? []) as unknown as StrandedCandidateRow[]).filter(c =>
@@ -180,19 +209,13 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
 
 /**
  * Supersede any open `[stranded]` note whose task is no longer pending — it
- * claimed, was cancelled, completed, or failed since the last sweep. This is
+ * claimed, was cancelled, completed, or failed since the last sweep, or was
+ * parked by a person (see resolvedStrandedNotesQuery). This is
  * the "re-armed task clears the stranded state" half of the detector; without
  * it a note posted once would sit open forever even after the task resolved.
  */
 async function clearResolvedStrandedNotes(): Promise<number> {
-  const resolved = await db.execute(sql`
-    SELECT mn.id AS "id"
-    FROM ${missionNotes} mn
-    LEFT JOIN ${tasks} t ON t.id = mn.task_id
-    WHERE mn.title LIKE ${STRANDED_NOTE_PREFIX + '%'}
-      AND mn.status = 'open'
-      AND (t.id IS NULL OR t.status <> 'pending')
-  `);
+  const resolved = await db.execute(resolvedStrandedNotesQuery());
   const ids = ((resolved.rows ?? []) as unknown as { id: string }[]).map(r => r.id);
   if (ids.length === 0) return 0;
 

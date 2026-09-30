@@ -493,6 +493,36 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
+  // Friction task 2a201508: PATCH silently ignored pathManifest, echoing the
+  // OLD value back with 200 and no error. Narrowing it has no matching
+  // "release the dropped claim" path, so it must be rejected outright.
+  describe('pathManifest is immutable via PATCH', () => {
+    const task = {
+      id: TASK_ID, title: 'T', status: 'pending', mode: 'execution', missionId: null,
+      dependsOn: [], pathManifest: ['a.ts', 'b.ts'], workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+    };
+    function setup() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task);
+    }
+
+    it('rejects a narrowed pathManifest with 400 and writes nothing', async () => {
+      setup();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { pathManifest: ['a.ts'] } }), TASK_ID);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('pathManifest is immutable');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('rejects even a no-op pathManifest (same value) rather than silently succeeding', async () => {
+      setup();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { pathManifest: ['a.ts', 'b.ts'] } }), TASK_ID);
+      expect(res.status).toBe(400);
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+  });
+
   describe('mission link scope', () => {
     const task = {
       id: TASK_ID,

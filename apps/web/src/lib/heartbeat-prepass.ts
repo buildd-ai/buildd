@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
@@ -8,7 +9,7 @@ import { CLAUDE_WEEKLY_LIMIT_PATTERN } from '@buildd/core/budget-error-classifie
 import type { LoopConfig, LoopState } from '@buildd/shared';
 
 /** Non-terminal task statuses — still counted as "remaining work" for a mission. */
-const NON_TERMINAL_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const NON_TERMINAL_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
 /** Bounded default resume window for a wait with no known resolve time (e.g. a queued reviewer). */
 const DEFAULT_WAIT_MS = 30 * 60 * 1000;

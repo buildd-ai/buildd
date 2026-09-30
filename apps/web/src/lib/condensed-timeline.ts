@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import type { SegmentState } from '@/lib/task-presentation';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
@@ -280,7 +281,9 @@ export function identifyChains<T extends CondensedTask>(
 
 // ─── Terminal chain collapse — timeline-mobile-rail.md D1 ────────────────────
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed']);
+// A cancel is terminal too — it used to be missed, so a cancelled run never
+// collapsed and its rail tick sat at creation time.
+const TERMINAL_STATUSES = new Set<string>(TERMINAL_TASK_STATUSES);
 
 /**
  * Second adjacency pass over tasks that have already landed (Rule D1-1).
@@ -702,7 +705,7 @@ export function buildRail<T extends RailTaskLike>(
         );
       }
       accum.segments.push({ taskId: member.id, state: phaseSegmentState(member) });
-      if (!['completed', 'failed', 'cancelled'].includes(member.status)) accum.hasActiveMember = true;
+      if (!isTerminalTaskStatus(member.status)) accum.hasActiveMember = true;
     }
   }
 

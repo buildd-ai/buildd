@@ -21,6 +21,7 @@
 // `notMissionIntegrationMerge()` for the same reason: "did this merge reach
 // trunk" is one question with one implementation, in
 // `@buildd/core/release-queue-scope`, not a fifth private variant here.
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, releases, releaseTasks } from '@buildd/core/db/schema';
 import { eq, sql, and, inArray } from 'drizzle-orm';
@@ -122,14 +123,9 @@ export function classifyMissionShipState(input: {
   return 'building';
 }
 
-/**
- * A task's status is not its terminal state in every sense (its PR's state can
- * lag — see lib/mission-completion.ts), but for "is there open work" the status
- * set is the right and cheap answer. Kept in sync with
- * `TERMINAL_TASK_STATUSES` in lib/mission-completion.ts, which is module-private
- * there; duplicated deliberately rather than widening that module's API.
- */
-const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'] as const;
+// TERMINAL_TASK_STATUSES (@buildd/shared): a task's status is not its terminal
+// state in every sense (its PR's state can lag — see lib/mission-completion.ts),
+// but for "is there open work" the status set is the right and cheap answer.
 
 export interface MissionShipStateMission {
   id: string;

@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import {
   taskSubjectReports,
@@ -18,7 +19,7 @@ import {
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { trackEvent } from '@/lib/axiom';
 
-const ACTIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
+const ACTIVE_TASK_STATUSES = OPEN_TASK_STATUSES;
 
 export interface PrepareSubjectFilingInput extends AnchorExtractionInput {
   workspaceId: string;

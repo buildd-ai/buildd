@@ -7,6 +7,7 @@
  * knowledge section arrives. The spec contract in docs/design/mission-task-handoff.md
  * §4 update reflects this ordering.
  */
+import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions, missionNotes, artifacts } from '@buildd/core/db/schema';
 import { eq, inArray, and, not, sql } from 'drizzle-orm';
@@ -159,7 +160,7 @@ export async function attachMissionHandoff(
       const workerRows = await db
         .selectDistinct({ taskId: workers.taskId, prUrl: workers.prUrl, prNumber: workers.prNumber, mergedAt: workers.mergedAt })
         .from(workers)
-        .where(and(inArray(workers.taskId, depTaskIds), not(inArray(workers.status, ['failed', 'error', 'cancelled']))))
+        .where(and(inArray(workers.taskId, depTaskIds), not(inArray(workers.status, FAILED_WORKER_STATUSES))))
         .orderBy(workers.createdAt);
 
       for (const wr of workerRows) {

@@ -1,3 +1,4 @@
+import { type WorkerStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
 
   const conditions = [eq(workers.accountId, account.id)];
   if (status) {
-    conditions.push(inArray(workers.status, status.split(',')));
+    conditions.push(inArray(workers.status, status.split(',') as WorkerStatusValue[]));
   }
 
   const myWorkers = await db.query.workers.findMany({

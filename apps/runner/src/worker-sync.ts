@@ -1,3 +1,4 @@
+import { TERMINAL_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { LocalWorker, CheckpointEventType } from './types';
 import type { BuilddClient } from './buildd';
 import type { LocalUIConfig } from './types';
@@ -5,7 +6,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
-import { cleanupWorktree } from './git-operations';
+import { removeWorktreeIfUnowned } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
@@ -33,9 +34,14 @@ export const TERMINAL_WORKER_RETENTION_MS = 10 * 60 * 1000;
 /**
  * Server-side worker statuses that genuinely end a lease. A 409 that names one
  * of these is a real termination; anything else is coordination noise and must
- * not kill a live SDK session.
+ * not kill a live SDK session. The server's own set (@buildd/shared), so a
+ * `superseded` worker ends here too; `cancelled` stays as a defensive extra
+ * (it is a task status, but a cancel must never be read as noise).
  */
-const SERVER_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled']);
+export const SERVER_TERMINAL_STATUSES: ReadonlySet<string> = new Set([...TERMINAL_WORKER_STATUSES, 'cancelled']);
+
+/** Server-side task statuses that end the task; a cancel counts. */
+export const SERVER_TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set(TERMINAL_TASK_STATUSES);
 
 /**
  * How long an injected human message suppresses re-injection of identical text.
@@ -587,11 +593,25 @@ export class WorkerSync {
           if (isWorktreePathOwnedByOtherLiveWorker(this.ctx.workers, worker.worktreePath, id)) {
             sessionLog(id, 'info', 'waiting_worktree_reclaim_skipped', 'Skipped TTL reclaim: worktree path is now owned by another active worker');
           } else {
-            const repoPath = repoPathFromWorktree(worker.worktreePath);
-            cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+            // Guarded removal: a waiting worker's tree can hold commits that
+            // exist nowhere else. protectUnpushed refuses those (fail-closed);
+            // a refused tree is left for the doctor reaper, which is the cheap
+            // side of being wrong.
+            const worktreePath = worker.worktreePath;
+            removeWorktreeIfUnowned({
+              repoPath: repoPathFromWorktree(worktreePath),
+              worktreePath,
+              workerId: id,
+              workers: this.ctx.workers,
+              branch: worker.branch,
+              protectUnpushed: true,
+            }).then(outcome => {
+              if (outcome.removed) {
+                sessionLog(id, 'info', 'waiting_worktree_reclaimed', `Reclaimed worktree of abandoned waiting worker after ${Math.round(WAITING_WORKTREE_TTL_MS / 3600000)}h TTL`);
+              }
+            }).catch(err => {
               console.error(`[Worker ${id}] Waiting worktree TTL cleanup failed:`, err);
             });
-            sessionLog(id, 'info', 'waiting_worktree_reclaimed', `Reclaimed worktree of abandoned waiting worker after ${Math.round(WAITING_WORKTREE_TTL_MS / 3600000)}h TTL`);
           }
           worker.worktreePath = undefined;
         }
@@ -615,8 +635,14 @@ export class WorkerSync {
           if (isWorktreePathOwnedByOtherLiveWorker(this.ctx.workers, worker.worktreePath, id)) {
             sessionLog(id, 'info', 'eviction_worktree_cleanup_skipped', 'Skipped worktree cleanup on eviction: path is now owned by another active worker');
           } else {
-            const repoPath = repoPathFromWorktree(worker.worktreePath);
-            cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+            removeWorktreeIfUnowned({
+              repoPath: repoPathFromWorktree(worker.worktreePath),
+              worktreePath: worker.worktreePath,
+              workerId: id,
+              workers: this.ctx.workers,
+              branch: worker.branch,
+              protectUnpushed: true,
+            }).catch(err => {
               console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
             });
           }

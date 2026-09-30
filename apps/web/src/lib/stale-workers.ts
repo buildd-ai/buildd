@@ -5,11 +5,12 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
+import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import {
   ANSWER_PATH_REASONS,
   buildContinuationTaskValues,
@@ -35,8 +36,13 @@ export const INFRA_BACKOFF_MINUTES: readonly number[] = [5, 15, 30];
  */
 const MAX_SILENT_START_ATTEMPTS = 3;
 
-/** 150 minutes — 2.5× the 60-min poll cycle so one dropped beat doesn't kill in-flight workers */
-export const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
+/**
+ * How long an account may go without any runner heartbeat before its runner
+ * workers are failed as orphaned. This is the "not dead" window
+ * (RUNNER_STALE_CUTOFF_MS, 2.5× the poll cycle): being wrong here kills
+ * in-flight work, so it must never be a presence window.
+ */
+export const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
 
 /** 24 hours — how long a standalone worker can sit in waiting_input before being cleaned up */
 const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
@@ -574,7 +580,7 @@ export function staleWorkerScope(accountId: string, now: Date = new Date()) {
   );
 }
 
-export async function cleanupStaleWorkers(accountId: string) {
+export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbeatOrphans: number }> {
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
   const staleWorkers = await db.query.workers.findMany({
     where: staleWorkerScope(accountId),
@@ -743,93 +749,131 @@ export async function cleanupStaleWorkers(accountId: string) {
     }
   }
 
-  // 2. Fail active workers when their runner's heartbeat is stale (machine went offline).
-  // Heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min) so the
-  // DB can stay idle long enough for Neon to suspend — use 2.5× as the cutoff so one
-  // dropped beat doesn't fail in-flight workers.
-  const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
+  // 2. Fail active workers when their runner is offline — the one shared rule.
+  const heartbeatOrphans = await failWorkersOfOfflineRunners({ accountIds: [accountId] });
+  return { heartbeatOrphans };
+}
+
+/**
+ * THE offline-runner rule. Every sweep that fails workers because "the runner
+ * went offline" calls this — the claim-path reaper (cleanupStaleWorkers), the
+ * runner's own /api/tasks/cleanup call, and the per-minute maintenance cron.
+ * It used to exist three times with three different gates; two of them failed
+ * every live worker on an account as soon as ANY one heartbeat row on it went
+ * stale (a second runner, a restarted runner's old URL), one after only 10
+ * minutes — killing in-flight workers under a runner that was still beating.
+ *
+ * Per account in `scope`:
+ *  - If ANY heartbeat row on the account is inside HEARTBEAT_STALE_MS, a runner
+ *    is alive and nothing is failed. Workers do not record which heartbeat row
+ *    they belong to reliably enough to judge them row by row, and a false kill
+ *    of live work is far worse than a late reap (a dead runner's workers are
+ *    also reaped by the WORKER_STALE_REAP_MS arm of staleWorkerScope).
+ *  - Otherwise, runner workers (never interactive MCP ones) in a live status
+ *    with no update since the cutoff are failed, their seats released, and
+ *    their tasks resolved (requeued, completed on deliverables, or failed at the
+ *    retry cap) with path claims released.
+ *
+ * Returns the number of workers failed.
+ */
+export async function failWorkersOfOfflineRunners(
+  scope: { accountIds: readonly string[] },
+  now: Date = new Date(),
+): Promise<number> {
+  let failed = 0;
+  for (const accountId of new Set(scope.accountIds)) {
+    failed += await failWorkersOfOfflineRunner(accountId, now);
+  }
+  return failed;
+}
+
+async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise<number> {
+  // Heartbeat fires every 60s (liveness ping) and on the aligned
+  // BUILDD_RUNNER_POLL_MIN cycle (default 60 min); older runner builds only do
+  // the latter. The cutoff is 2.5× the poll cycle so one dropped beat doesn't
+  // fail in-flight workers.
+  const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
     where: heartbeatFreshnessScope(accountId, heartbeatCutoff),
     columns: { id: true },
   });
+  if (freshHeartbeat) return 0;
 
-  if (!freshHeartbeat) {
-    const orphanedByHeartbeat = await db.query.workers.findMany({
-      // Account-scoped on purpose — NOT widened to the team. See
-      // heartbeatOrphanScope for why widening it is unsafe either way.
-      where: heartbeatOrphanScope(accountId, heartbeatCutoff),
-      columns: {
-        id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
-        startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
-      },
+  const orphanedByHeartbeat = await db.query.workers.findMany({
+    // Account-scoped on purpose — NOT widened to the team. See
+    // heartbeatOrphanScope for why widening it is unsafe either way.
+    where: heartbeatOrphanScope(accountId, heartbeatCutoff),
+    columns: {
+      id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
+      startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
+    },
+  });
+  if (orphanedByHeartbeat.length === 0) return 0;
+
+  const orphanIds = orphanedByHeartbeat.map(w => w.id);
+  const orphanTaskIds = orphanedByHeartbeat.map(w => w.taskId).filter(Boolean) as string[];
+
+  // Same taxonomy as section 1: an offline runner is an infra failure, but a
+  // row that runner never started is still a never-started row, and must not
+  // be charged to the task.
+  const hbByCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
+  for (const w of orphanedByHeartbeat) {
+    const { exitCause, error } = classifyStaleExit(w as any);
+    const message = exitCause === 'infra_failure'
+      ? 'Worker runner went offline (heartbeat expired)'
+      : error;
+    const group = hbByCause.get(exitCause);
+    if (group) group.ids.push(w.id);
+    else hbByCause.set(exitCause, { ids: [w.id], error: message });
+  }
+
+  for (const [exitCause, group] of hbByCause) {
+    await db
+      .update(workers)
+      .set({
+        status: 'failed',
+        exitCause,
+        error: group.error,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(inArray(workers.id, group.ids));
+  }
+
+  // Release concurrency seats for the orphaned workers (same pattern as section 1).
+  await db
+    .update(accounts)
+    .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${orphanedByHeartbeat.length}, 0)` })
+    .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+
+  if (orphanTaskIds.length > 0) {
+    // Fetch workspace IDs for dependency resolution
+    const orphanTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, orphanTaskIds),
+      columns: { id: true, workspaceId: true },
     });
 
-    if (orphanedByHeartbeat.length > 0) {
-      const orphanIds = orphanedByHeartbeat.map(w => w.id);
-      const orphanTaskIds = orphanedByHeartbeat.map(w => w.taskId).filter(Boolean) as string[];
+    // Only reset tasks that have NO other active workers
+    for (const task of orphanTasks) {
+      const otherActiveWorkers = await db.query.workers.findMany({
+        where: and(
+          eq(workers.taskId, task.id),
+          inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
+          not(inArray(workers.id, orphanIds)),
+        ),
+        columns: { id: true },
+        limit: 1,
+      });
 
-      // Same taxonomy as section 1: an offline runner is an infra failure, but a
-      // row that runner never started is still a never-started row, and must not
-      // be charged to the task.
-      const hbByCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
-      for (const w of orphanedByHeartbeat) {
-        const { exitCause, error } = classifyStaleExit(w as any);
-        const message = exitCause === 'infra_failure'
-          ? 'Worker runner went offline (heartbeat expired)'
-          : error;
-        const group = hbByCause.get(exitCause);
-        if (group) group.ids.push(w.id);
-        else hbByCause.set(exitCause, { ids: [w.id], error: message });
-      }
-
-      const hbReapedAt = new Date();
-      for (const [exitCause, group] of hbByCause) {
-        await db
-          .update(workers)
-          .set({
-            status: 'failed',
-            exitCause,
-            error: group.error,
-            completedAt: hbReapedAt,
-            updatedAt: hbReapedAt,
-          })
-          .where(inArray(workers.id, group.ids));
-      }
-
-      // Release concurrency seats for the orphaned workers (same pattern as section 1).
-      await db
-        .update(accounts)
-        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${orphanedByHeartbeat.length}, 0)` })
-        .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
-
-      if (orphanTaskIds.length > 0) {
-        // Fetch workspace IDs for dependency resolution
-        const orphanTasks = await db.query.tasks.findMany({
-          where: inArray(tasks.id, orphanTaskIds),
-          columns: { id: true, workspaceId: true },
-        });
-
-        // Only reset tasks that have NO other active workers
-        for (const task of orphanTasks) {
-          const otherActiveWorkers = await db.query.workers.findMany({
-            where: and(
-              eq(workers.taskId, task.id),
-              inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
-              not(inArray(workers.id, orphanIds)),
-            ),
-            columns: { id: true },
-            limit: 1,
-          });
-
-          if (otherActiveWorkers.length === 0) {
-            const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === task.id);
-            await resolveStaleTask(task.id, task.workspaceId, orphanWorker);
-          }
-        }
+      if (otherActiveWorkers.length === 0) {
+        const orphanWorker = orphanedByHeartbeat.find(w => w.taskId === task.id);
+        await resolveStaleTask(task.id, task.workspaceId, orphanWorker);
       }
     }
   }
+
+  return orphanedByHeartbeat.length;
 }
 
 /**
@@ -1263,6 +1307,9 @@ export function stalledVisualAuditCandidatesWhere(now: Date, missionsTable: type
     lt(tasks.createdAt, new Date(now.getTime() - STALLED_VISUAL_AUDIT_AFTER_MS)),
     isNotNull(missionsTable.conversationId),
     sql`(${tasks.context} -> 'visualQa' ->> 'stallNotifiedAt') is null`,
+    // No runner may take a held audit, or one in a held or local-executor
+    // mission, so "no browser runner" is the wrong thing to tell the chat.
+    notHeldOrLocal(),
     // Dependencies all done (claimableSince's DEP_DONE; a missing row counts
     // as done there too): an audit still waiting on its build is not a
     // candidate, so a long build phase does not hold a slot in the window.

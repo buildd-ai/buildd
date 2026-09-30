@@ -621,11 +621,16 @@ and to the `updates` object: `if (typeof branch === 'string' && branch.length > 
 Even with §8.2, if `fetchBranch` returns `'missing'` (e.g. branch was force-pushed or
 deleted), the runner falls back and a new PR opens. To enforce the one-open-PR invariant:
 
-**`apps/web/src/app/api/github/pr/route.ts`** — the `closeAncestorRetryPrs` function walks
-the `parentTaskId` chain when a retry task opens a fallback PR (`retryIteration > 0`). It
-finds ancestor workers with open `prNumber`s and closes them via GitHub PATCH
-`{ state: 'closed' }`, posting a comment linking the successor PR. Called as a non-blocking
-`.catch()`-guarded promise after the new PR is created.
+**`apps/web/src/lib/retry-pr-supersession.ts`** — `closeAncestorRetryPrs` walks the
+`parentTaskId` chain when a retry task opens a fallback PR (the task is `taskClass:
+'attempt'`, or `context.iteration > 0`). It finds ancestor workers with open `prNumber`s in
+the same repo and closes them via GitHub PATCH `{ state: 'closed' }` (one retry on a 5xx),
+then posts a comment linking the successor PR that names the cause the runner reported
+(`resume_branch_fallback` missing/diverged, `resume_branch_held` checked out) or none when
+there is no trace. create_pr awaits it and returns `supersededPrs`. A PR left open is a
+`retry_pr_supersession` / `stranded` gate event, and the hourly pr-reconcile cron runs
+`sweepDuplicateLineagePrs`, which closes the older open PRs in any retry lineage through
+the same function.
 
 The walk stops climbing past any task that isn't itself a genuine retry attempt
 (`taskClass === 'attempt'`, the marker `ci-retry.ts` / `conflict-retry.ts` / the

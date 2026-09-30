@@ -26,6 +26,7 @@
  * materialise in the worktree. That happens after dispatch and is invisible
  * from here.
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, tasks, workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
@@ -140,7 +141,6 @@ export function missingSkillFrictionSignature(scheduleId: string): string {
   return `schedule-missing-skill:${scheduleId}`;
 }
 
-const CLOSED_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /**
  * File the friction report for a schedule blocked on a missing skill — once.
@@ -161,7 +161,7 @@ export async function fileMissingSkillFriction(input: {
       eq(tasks.workspaceId, input.workspaceId),
       like(tasks.title, '[friction] %'),
       sql`${tasks.context}->>'frictionSignature' = ${signature}`,
-      notInArray(tasks.status, CLOSED_TASK_STATUSES),
+      notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
     ),
     columns: { id: true },
   });

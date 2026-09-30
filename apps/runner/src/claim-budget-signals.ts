@@ -132,14 +132,8 @@ export function withClaimHealthCheck(report: DoctorReport, health: ClaimHealth =
  * classifier: this is a task-level failure, not a provider wall.
  */
 export const SESSION_BUDGET_CAP_ERROR = 'Session cost cap reached';
-
-export function isSessionBudgetCapError(err: string | undefined | null): boolean {
-  if (!err) return false;
-  const lower = err.toLowerCase();
-  return lower.includes(SESSION_BUDGET_CAP_ERROR.toLowerCase())
-    || lower.includes('maxbudgetusd')
-    || lower.includes('error_max_budget_usd');
-}
+// Classify with isSessionBudgetCapError from @buildd/core/budget-error-classifier
+// — the one shared list, which includes this wording.
 
 // ── A.3: no dollar cap on seat credentials ───────────────────────────────────
 

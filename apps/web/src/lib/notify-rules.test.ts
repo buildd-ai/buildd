@@ -73,6 +73,24 @@ describe('resolveNotifyPlan', () => {
   });
 });
 
+describe('resolveNotifyPlan: needsAttention (a team alert with no preference column)', () => {
+  const ALL_OFF = Object.fromEntries(Object.keys(DEFAULT_NOTIFICATION_PREFERENCES).map(k => [k, false])) as Record<NotifyEvent, boolean>;
+
+  it('sends on the team channel when one is configured', () => {
+    const plan = resolveNotifyPlan('needsAttention', { pushover: { appToken: 'aXXXX', userKey: 'uXXXX' } }, ALL_ON);
+    expect(plan).toEqual({ pushover: true, webhook: false, noop: false });
+  });
+
+  it('is not muted by the per-event toggles, which do not cover it', () => {
+    const plan = resolveNotifyPlan('needsAttention', { webhookUrl: 'https://example.test/hook' }, ALL_OFF);
+    expect(plan).toEqual({ pushover: false, webhook: true, noop: false });
+  });
+
+  it('still no-ops when the team has no channel', () => {
+    expect(resolveNotifyPlan('needsAttention', null, ALL_ON).noop).toBe(true);
+  });
+});
+
 describe('DEFAULT_NOTIFICATION_PREFERENCES', () => {
   it('defaults every event on (preserves prior behaviour, now muteable)', () => {
     expect(DEFAULT_NOTIFICATION_PREFERENCES).toEqual({

@@ -11,11 +11,12 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
-import { CAPABILITY_BROWSER } from '@buildd/shared';
+import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 
-// Runner heartbeat fires on the aligned BUILDD_RUNNER_POLL_MIN cycle (default 60 min)
-// to let Neon suspend. Stale threshold is 2.5× so a single dropped beat isn't fatal.
-const HEARTBEAT_STALE_MS = 150 * 60 * 1000;
+// "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
+// but has not been presumed dead. Presence is judged separately below with
+// RUNNER_ONLINE_WINDOW_MS.
+const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
 
 /**
  * GET /api/workers/active

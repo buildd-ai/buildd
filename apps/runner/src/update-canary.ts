@@ -42,8 +42,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { isAuthError, classifyClaimError } from './claim-breaker';
-import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
-import { isSessionBudgetCapError } from './claim-budget-signals';
+import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 import type { UpdateResult } from './updater';
 import type { RunnerUpdateCanaryReport } from '@buildd/shared';
 

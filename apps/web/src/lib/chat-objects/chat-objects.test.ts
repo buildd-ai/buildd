@@ -35,7 +35,7 @@ describe('prStateOf', () => {
     expect(prStateOf('closed', null)).toBe('closed');
     expect(prStateOf('unresolvable', null)).toBe('closed');
     expect(prStateOf('pr_open', null)).toBe('open');
-    expect(prStateOf('conflict', null)).toBe('open');
+    expect(prStateOf('conflict', null)).toBe('conflict');
     expect(prStateOf(null, null)).toBe('open');
   });
 });

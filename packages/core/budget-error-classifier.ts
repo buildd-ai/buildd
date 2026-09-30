@@ -58,6 +58,10 @@ export const SESSION_BUDGET_CAP_PATTERNS: readonly string[] = [
   'budget limit exceeded',
   'max budget',
   'maxbudgetusd',
+  // The runner's own wording (SESSION_BUDGET_CAP_ERROR in
+  // apps/runner/src/claim-budget-signals.ts). The runner used to keep a
+  // private classifier that knew this phrase; it now uses this one.
+  'session cost cap reached',
 ];
 
 /**

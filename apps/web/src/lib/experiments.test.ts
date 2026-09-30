@@ -247,3 +247,35 @@ describe('toExperimentDTO', () => {
     expect('createdBy' in dto).toBe(false);
   });
 });
+
+describe('duration cap (config.maxDurationDays / config.endsAt)', () => {
+  it('adding a cap to a running experiment saves it without bumping the version (it does not shape the draw)', () => {
+    const current = state({ status: 'running', startedAt: EARLIER, policyVersion: 2 });
+    const r = plan(current, { config: { ...current.config, maxDurationDays: 14 } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.bumpedPolicyVersion).toBe(false);
+    expect(r.value.set.config).toEqual({ ...current.config, maxDurationDays: 14 });
+    expect('policyVersion' in r.value.set).toBe(false);
+  });
+
+  it('a cap change alongside a real config change still bumps', () => {
+    const current = state({ status: 'running', startedAt: EARLIER });
+    const r = plan(current, { config: { arms: { treatment: { tier: 'budget' } }, endsAt: '2026-03-01T00:00:00Z' } });
+    expect(r.ok && r.value.bumpedPolicyVersion).toBe(true);
+  });
+
+  it('rejects an invalid cap on update and on create', () => {
+    const r = plan(state({ status: 'running', startedAt: EARLIER }), { config: { maxDurationDays: -1 } });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/maxDurationDays/);
+    const c = parseCreateExperiment({ key: 'k', title: 't', config: { endsAt: 'whenever' } });
+    expect(c.ok).toBe(false);
+    if (!c.ok) expect(c.error).toMatch(/endsAt/);
+  });
+
+  it('accepts a valid cap on create', () => {
+    const c = parseCreateExperiment({ key: 'k', title: 't', config: { maxDurationDays: 21 } });
+    expect(c.ok && c.value.config).toEqual({ maxDurationDays: 21 });
+  });
+});

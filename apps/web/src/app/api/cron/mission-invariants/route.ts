@@ -55,11 +55,12 @@
  * Auth: Bearer CRON_SECRET.
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { and, eq, like, notInArray, sql } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { cronRuns, tasks } from '@buildd/core/db/schema';
+import { and, desc, eq, like, notInArray, sql } from 'drizzle-orm';
+import { notifyOperator } from '@/lib/pushover';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { loadInvariantSnapshot } from '@/lib/mission-invariant-scan';
 import {
@@ -75,9 +76,6 @@ import { systemActor } from '@/lib/mission-feed';
 export const maxDuration = 60;
 
 const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev';
-
-/** Task statuses that mean an existing friction report is still live. */
-const CLOSED_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /** Lines in the Pushover digest before it collapses into "+N more". */
 const DIGEST_LINES = 5;
@@ -123,7 +121,7 @@ async function fileViolation(
       eq(tasks.workspaceId, violation.workspaceId),
       like(tasks.title, '[friction] %'),
       sql`${tasks.context}->>'frictionSignature' = ${signature}`,
-      notInArray(tasks.status, CLOSED_TASK_STATUSES),
+      notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
     ),
     columns: { id: true },
   });
@@ -213,8 +211,42 @@ async function reconcileViolation(
   }
 }
 
+const CRON_JOB = 'mission-invariants';
+
 export async function POST(req: NextRequest) {
-  return withCronRun('mission-invariants', req, cronReport => runCronJob(cronReport));
+  return withCronRun(CRON_JOB, req, cronReport => runCronJob(cronReport));
+}
+
+/** Distinct offending entities, so one row breaching twice is not two problems. */
+function distinctEntities(violations: InvariantViolation[]): number {
+  return new Set(violations.map(v => `${v.entityKind}:${v.entityId}`)).size;
+}
+
+interface EntityBaseline {
+  entities: number;
+  byInvariant: Record<string, number>;
+}
+
+/**
+ * The previous recorded run's entity counts. `withCronRun` writes this run's
+ * row only after the handler returns, so the newest row is the prior run.
+ * Best-effort: no readable baseline means no delta, never a failed sweep.
+ */
+async function previousEntityBaseline(): Promise<EntityBaseline | null> {
+  try {
+    const prev = await db.query.cronRuns.findFirst({
+      where: and(eq(cronRuns.job, CRON_JOB), eq(cronRuns.ok, true)),
+      columns: { result: true },
+      orderBy: desc(cronRuns.startedAt),
+    });
+    const result = prev?.result as Record<string, unknown> | null | undefined;
+    const byInvariant = result?.entitiesByInvariant;
+    if (typeof result?.entities !== 'number' || !byInvariant || typeof byInvariant !== 'object') return null;
+    return { entities: result.entities, byInvariant: byInvariant as Record<string, number> };
+  } catch (err) {
+    console.warn('[mission-invariants] could not read the previous run for a delta:', err);
+    return null;
+  }
 }
 
 async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
@@ -266,7 +298,7 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
       .slice(0, DIGEST_LINES)
       .map(f => `• ${f.key} — ${f.entityId}`);
     if (created.length > DIGEST_LINES) lines.push(`• +${created.length - DIGEST_LINES} more`);
-    notify({
+    notifyOperator({
       app: 'alerts',
       title:
         created.length === 1
@@ -281,13 +313,30 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     });
   }
 
-  const totals = results.map(r => ({
-    key: r.key,
-    count: r.violations.length,
-    files: r.files,
-    thresholdMs: r.thresholdMs,
-  }));
+  const baseline = await previousEntityBaseline();
+  const totals = results.map(r => {
+    const entities = distinctEntities(r.violations);
+    return {
+      key: r.key,
+      count: r.violations.length,
+      entities,
+      // null = no baseline to compare against, not "unchanged".
+      entitiesDelta: baseline ? entities - (Number(baseline.byInvariant[r.key]) || 0) : null,
+      files: r.files,
+      thresholdMs: r.thresholdMs,
+    };
+  });
   const violations = results.reduce((n, r) => n + r.violations.length, 0);
+  const entities = distinctEntities(results.flatMap(r => r.violations));
+  const entitiesDelta = baseline ? entities - baseline.entities : null;
+  const entitiesByInvariant = Object.fromEntries(
+    totals.filter(t => t.entities > 0).map(t => [t.key, t.entities]),
+  );
+  const movement =
+    entitiesDelta === null
+      ? 'no previous run to compare'
+      : `${entitiesDelta > 0 ? '+' : ''}${entitiesDelta} since last run`;
+  const fullReport = `${report}\n\nentities: ${entities} distinct (${movement})`;
 
   const appendedCount = filings.filter(f => f.outcome === 'appended').length;
   const skippedCount = filings.filter(f => f.outcome === 'skipped').length;
@@ -298,6 +347,8 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     JSON.stringify({
       event: 'mission_invariant_sweep',
       violations,
+      entities,
+      entitiesDelta,
       scanned: coverage,
       filed: created.length,
       appended: appendedCount,
@@ -310,13 +361,25 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     processed: results.length,
     changed: created.length + appendedCount + resolvedCount,
     errors: skippedCount,
-    result: { violations, filed: created.length, appended: appendedCount, dropped: filingsDropped, resolved: resolvedCount },
+    result: {
+      violations,
+      entities,
+      entitiesDelta,
+      entitiesByInvariant,
+      remoteRefsSkipped: coverage.remoteRefsSkipped ?? 0,
+      filed: created.length,
+      appended: appendedCount,
+      dropped: filingsDropped,
+      resolved: resolvedCount,
+    },
   });
 
   return NextResponse.json({
     ok: true,
     scanned: coverage,
     violations,
+    entities,
+    entitiesDelta,
     invariants: totals,
     filed: created.length,
     appended: appendedCount,
@@ -324,7 +387,7 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     resolved: resolvedCount,
     filings,
     reconciliations,
-    report,
+    report: fullReport,
     // The offending ids per invariant, so an agent consuming this response does
     // not have to parse the human-readable report to act on it.
     detail: results

@@ -31,7 +31,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { cronRuns } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, lt } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 import { getCronJobPolarity } from '@buildd/core/signal-registry';
 import {
   evaluateCronHealth,
@@ -104,12 +104,23 @@ export async function withCronRun(
     response = NextResponse.json({ error }, { status: 500 });
   }
 
+  // A test process never writes run history: a route test that forgets to mock
+  // the db would otherwise put its fixtures (fake failures included) into
+  // whatever DATABASE_URL the checkout has loaded. cron-run.test.ts opts back in
+  // to exercise the recorder against its mocked db.
+  if (!shouldRecordRuns()) return response;
+
   // Everything below is best-effort by design — see invariant (1).
   await recordRun({ job, startedAt, ok, error, outcome }).catch(err =>
     console.error(`[cron:${job}] failed to record run:`, err),
   );
 
   return response;
+}
+
+function shouldRecordRuns(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.NODE_ENV !== 'test') return true;
+  return env.BUILDD_CRON_RUN_RECORD_IN_TESTS === '1';
 }
 
 async function recordRun(args: {
@@ -166,7 +177,7 @@ async function checkHealth(job: string, runId: string | null, now: Date): Promis
   if (!verdict.alarm) return;
 
   console.error(`[cron:${job}] UNHEALTHY: ${verdict.reason}`);
-  notify({
+  notifyOperator({
     app: 'alerts',
     title: `Cron unhealthy: ${job}`,
     message:

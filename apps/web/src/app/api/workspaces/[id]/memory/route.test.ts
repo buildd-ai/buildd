@@ -69,7 +69,7 @@ mock.module('@buildd/core/memory-scope', () => ({
   resolveMemoryHitScope: async () => null,
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'user-1' }) }));
-mock.module('@/lib/api-auth', () => ({ hashApiKey: (k: string) => k }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => null }));
 let hasAccess = true;
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),

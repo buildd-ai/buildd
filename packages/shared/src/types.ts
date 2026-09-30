@@ -1,3 +1,5 @@
+import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
+
 // ============================================================================
 // UTILS
 // ============================================================================
@@ -24,9 +26,14 @@ export const WorkerStatus = {
   WAITING_INPUT: 'waiting_input',
   PAUSED: 'paused',
   COMPLETED: 'completed',
+  FAILED: 'failed',
   ERROR: 'error',
-} as const;
+  SUPERSEDED: 'superseded',
+  /** Legacy: old rows only. */
+  DONE: 'done',
+} as const satisfies Record<string, WorkerStatusValue>;
 
+/** Same union as `WorkerStatusValue` (./status). */
 export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
 
 export const TaskMode = {
@@ -40,10 +47,12 @@ export const TaskStatus = {
   PENDING: 'pending',
   ASSIGNED: 'assigned',
   IN_PROGRESS: 'in_progress',
+  /** Legacy: never written today. */
   REVIEW: 'review',
   COMPLETED: 'completed',
   FAILED: 'failed',
-} as const;
+  CANCELLED: 'cancelled',
+} as const satisfies Record<string, TaskStatusValue>;
 
 export type TaskStatusType = typeof TaskStatus[keyof typeof TaskStatus];
 
@@ -167,9 +176,8 @@ export const MissionStatus = {
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ARCHIVED: 'archived',
-} as const;
-
-export type MissionStatusValue = typeof MissionStatus[keyof typeof MissionStatus];
+  BUDGET_EXHAUSTED: 'budget_exhausted',
+} as const satisfies Record<string, MissionStatusValue>;
 
 export type AgentBackend = 'claude' | 'codex';
 
@@ -1380,6 +1388,13 @@ export interface ClaimDiagnostics {
      * Codex, or tenant work. See `budgetPressure` for the reading behind it.
      */
     oauth_parallelism?: number;
+    /**
+     * Its role (or workspace envMapping) declares env vars no delivery channel
+     * can satisfy — no role_env_secret under the mapped label, no mcp_credential
+     * of that name, not runner-provided. Held rather than claimed to run
+     * degraded or fail at provisioning. See claim/role-env-injection.ts.
+     */
+    role_env_unsatisfied?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -2646,6 +2661,27 @@ export interface UpdateExperimentInput {
   visibility?: ExperimentVisibility;
   status?: ExperimentStatus;
   decision?: string;
+}
+
+/**
+ * One enrolment-health finding for a running experiment
+ * (packages/core/experiment-health.ts). Returned as `health` by
+ * GET /api/experiments/[id]/readout (an array, or null when the check failed)
+ * and GET /api/experiments (a map of experiment id → findings, running only).
+ */
+export type ExperimentHealthCode =
+  | 'no_recent_assignments'
+  | 'arm_never_drawn'
+  | 'split_imbalance'
+  | 'unit_concentration'
+  | 'past_duration_cap';
+
+export interface ExperimentHealthFinding {
+  code: ExperimentHealthCode;
+  severity: 'warning' | 'critical';
+  detail: string;
+  arm?: string;
+  unitId?: string;
 }
 
 // ── Error traces ─────────────────────────────────────────────────────────────

@@ -20,11 +20,14 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal, unmetDependencyIds } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, type DependencyRow } from '@/lib/mission-helpers';
+import { loadDependencyRows } from '@/lib/dependency-rows';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
@@ -177,8 +180,8 @@ const WORKER_WITH = {
   orderBy: [desc(workers.startedAt)],
 };
 
-const LIVE_WORKER_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
-const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
+const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
 
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
@@ -190,12 +193,17 @@ function iso(d: Date | string | null | undefined): string | null {
   return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
 }
 
-function prStateOf(w: LoadedTask['workers'][number] | undefined): HistoryNode['prState'] {
+/** A history node's PR state: `derivePrDisplayState`, projected onto `HistoryNode['prState']`. */
+export function historyPrStateOf(
+  w: Pick<LoadedTask['workers'][number], 'prNumber' | 'prLifecycleStatus' | 'mergedAt'> | undefined,
+): HistoryNode['prState'] {
   if (!w?.prNumber) return 'none';
-  if (w.mergedAt) return 'merged';
-  if (w.prLifecycleStatus === 'conflict') return 'conflict';
-  if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'unresolvable') return 'closed';
-  return 'open';
+  const state = derivePrDisplayState(w.prLifecycleStatus, w.mergedAt);
+  switch (state) {
+    case 'merged': case 'closed': case 'conflict': case 'ci_failed': return state;
+    case 'unresolvable': return 'closed';
+    default: return 'open';
+  }
 }
 
 /**
@@ -212,7 +220,7 @@ function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
       status: t.status,
       taskClass: t.taskClass,
       prNumber: w?.prNumber ?? null,
-      prState: prStateOf(w),
+      prState: historyPrStateOf(w),
       createdAt: iso(t.createdAt),
       attempts,
     };
@@ -279,6 +287,9 @@ async function viewForMission(missionId: string): Promise<{
   const heartbeatWaitingUntil =
     schedule?.lastDeferralReason === 'heartbeat_waiting' ? schedule?.nextRunAt ?? null : null;
 
+  // Dependencies outside this mission are judged from their own rows, never
+  // guessed (unknown is not unmet): one query by id list.
+  const foreignDeps = await loadDependencyRows(foreignDependencyIds(loaded));
   const deliverables = loaded.filter(isDeliverableTask);
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
   const supersededMap = await computeSupersededFailedTasks(
@@ -295,6 +306,7 @@ async function viewForMission(missionId: string): Promise<{
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+    { dependencies: foreignDeps },
   );
 
   // The card's n/N (`missionCardProgress`): rows folded (D1), cancelled out of
@@ -357,7 +369,8 @@ async function viewForMission(missionId: string): Promise<{
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
   // A pending row waiting on an unmet dependency cannot be the blocker; the
   // accessor cites the dependency instead (same rule as the claim gate).
-  const loadedById = new Map(loaded.map(t => [t.id, t]));
+  const loadedById = new Map<string, DependencyRow>(foreignDeps);
+  for (const t of loaded) loadedById.set(t.id, t);
   const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
