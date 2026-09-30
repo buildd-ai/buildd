@@ -94,16 +94,15 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor, redactTranscriptMessages, type SecretRedactor } from '@buildd/core/redaction';
-import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
+import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 import {
   resumeAtForReset,
   claimHealth,
   DEGRADED_CLAIM_POLL_MS,
   SESSION_BUDGET_CAP_ERROR,
-  isSessionBudgetCapError,
   sdkMaxBudgetUsd,
 } from './claim-budget-signals';
-import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS } from './worker-sync';
+import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
@@ -119,6 +118,7 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
+import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -1201,8 +1201,10 @@ export class WorkerManager {
           continue;
         }
 
-        const remoteTerminal = remote.status === 'completed' || remote.status === 'failed';
-        const taskTerminal = remote.task && (remote.task.status === 'completed' || remote.task.status === 'failed');
+        // Cancelled (task or worker) is terminal too — it used to be missed, so a
+        // cancelled task's local worker and session never reconciled.
+        const remoteTerminal = SERVER_TERMINAL_STATUSES.has(remote.status);
+        const taskTerminal = !!remote.task && SERVER_TERMINAL_TASK_STATUSES.has(remote.task.status);
 
         if (remoteTerminal || taskTerminal) {
           const isSuccess = remote.status === 'completed' || remote.task?.status === 'completed';
@@ -1438,12 +1440,37 @@ export class WorkerManager {
   }
 
   /**
-   * Prepare and start a single claimed worker (cwd resolution + role sync).
+   * Prepare and start a single claimed worker from the poll path.
    * Extracted from the claim loop so a failure here is contained to one worker.
    */
   private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
-    const task = claimedWorker.task;
-    if (!task) return null;
+    const prepared = await this.prepareClaimedWorker(claimedWorker);
+    if (prepared.kind !== 'ready') return null;
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+  }
+
+  /**
+   * Everything between "the server handed us a worker" and startFromClaim,
+   * shared by the poll path (startClaimedWorker) and the Pusher path
+   * (claimAndStart). They used to be two hand-copied blocks that drifted: the
+   * Pusher path never announced the per-worker credentials to the broker, and
+   * the poll path never marked an unresolvable task, so the next Pusher nudge
+   * re-claimed it. Add a preparation step HERE, not to one caller.
+   *
+   * `fallbackTask` is the Pusher payload, used only when the claim response
+   * carries no task (the claim response's task is the full one — see
+   * claimAndStart).
+   */
+  private async prepareClaimedWorker(
+    claimedWorker: any,
+    fallbackTask?: BuilddTask,
+  ): Promise<
+    | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
+    | { kind: 'no_task' }
+    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string }
+  > {
+    const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
+    if (!task) return { kind: 'no_task' };
 
     const workspacePath = this.resolver.resolve(
       {
@@ -1455,21 +1482,25 @@ export class WorkerManager {
     );
 
     if (!workspacePath) {
-      console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+      const wsName = task.workspace?.name || task.workspaceId;
+      const repoHint = task.workspace?.repo ? ` (repo: ${task.workspace.repo})` : '';
+      console.error(`Cannot resolve workspace for claimed task: ${task.title} (${task.id}) — will skip on future retries`);
+      // Skip this task on future Pusher nudges; a poll re-claim would fail the
+      // same way.
+      this.pusherManager.markUnresolvable(task.id);
       // Fail the worker on server so it doesn't stay "running" forever
       this.buildd.updateWorker(claimedWorker.id, {
         status: 'failed',
-        error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
       }).catch(() => {});
-      return null;
+      return { kind: 'unresolvable', task, wsName, repoHint };
     }
 
     // Role cwd + overlay source. The overlay itself is deferred to
     // startFromClaim, which runs it against the worktree once one exists.
     const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
-    const resolvedPath = roleCwd.cwd;
-    if (resolvedPath !== workspacePath) {
-      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
+    if (roleCwd.cwd !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${roleCwd.cwd}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
 
@@ -1482,7 +1513,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return this.startFromClaim(claimedWorker, task, resolvedPath, roleCwd.overlayFrom);
+    return { kind: 'ready', task, cwd: roleCwd.cwd, overlayFrom: roleCwd.overlayFrom };
   }
 
   /**
@@ -1682,45 +1713,18 @@ export class WorkerManager {
 
     const claimedWorker = claimed[0];
 
-    // Prefer claim response task data (full) over Pusher event task data (minimal payload)
-    const fullTask = claimedWorker.task || task;
-
-    // Resolve workspace path from the FULL claimed task (see note above).
-    const workspacePath = this.resolver.resolve(
-      {
-        id: fullTask.workspaceId,
-        name: fullTask.workspace?.name || 'unknown',
-        repo: fullTask.workspace?.repo,
-      },
-      (fullTask.context as Record<string, unknown> | null) ?? null
-    );
-
-    if (!workspacePath) {
-      const wsName = fullTask.workspace?.name || fullTask.workspaceId;
-      const repoHint = fullTask.workspace?.repo ? ` (repo: ${fullTask.workspace.repo})` : '';
-      console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
-      this.pusherManager.markUnresolvable(task.id);
-      // Fail the claimed worker on the server so it doesn't stay "running" forever
-      this.buildd.updateWorker(claimedWorker.id, {
-        status: 'failed',
-        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
-      }).catch(() => {});
+    // Prefer claim response task data (full) over Pusher event task data
+    // (minimal payload); resolve the workspace from the FULL task (see note
+    // above). Same preparation as the poll path — one shared routine.
+    const prepared = await this.prepareClaimedWorker(claimedWorker, task);
+    if (prepared.kind === 'unresolvable') {
       throw Object.assign(
-        new Error(`Workspace "${wsName}" is not cloned locally${repoHint} — clone the repo first`),
+        new Error(`Workspace "${prepared.wsName}" is not cloned locally${prepared.repoHint} — clone the repo first`),
         { claimError: 'workspace_not_found' as const },
       );
     }
-
-    // Same resolution as the poll-claim path above — one shared rule, so the
-    // two entry points cannot drift on which directory a role-assigned task
-    // runs in.
-    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, fullTask, workspacePath);
-    const resolvedPath = roleCwd.cwd;
-    if (resolvedPath !== workspacePath) {
-      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
-    }
-    this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
-    return this.startFromClaim(claimedWorker, fullTask, resolvedPath, roleCwd.overlayFrom);
+    if (prepared.kind !== 'ready') return null; // unreachable: `task` is the fallback
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
   }
 
   private async startFromClaim(
@@ -3082,75 +3086,32 @@ export class WorkerManager {
         // "mcpJsonPath is not defined" (only the Codex path reads it, so the Claude
         // path never tripped this).
         const mcpJsonPath = join(cwd, '.mcp.json');
-        const codexAdditionalServers: Array<{ name: string; url: string; bearerTokenEnvVar: string }> = [];
+        let codexMcpJson: unknown;
         if (existsSync(mcpJsonPath)) {
           try {
-            const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as {
-              mcpServers?: Record<string, { url?: string; headers?: Record<string, string> }>;
-            };
-            for (const [name, serverCfg] of Object.entries(mcpJson.mcpServers || {})) {
-              if (name === 'buildd' || !serverCfg?.url) continue;
-              const envVarName = `MCP_BEARER_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-              const authHeader = serverCfg.headers?.Authorization || serverCfg.headers?.authorization;
-              if (authHeader) {
-                const match = authHeader.match(/\$\{([^}]+)\}/);
-                if (match) {
-                  const sourceVar = match[1];
-                  // Resolve from headerExpansionEnv (includes mcpSecrets) — do NOT
-                  // copy the raw secret under its original name into cleanEnv.
-                  const tokenValue = headerExpansionEnv[sourceVar];
-                  // Put the resolved token under a per-server bearer name. This is
-                  // still in Codex cleanEnv (needed by the Codex CLI subprocess to
-                  // authenticate with the MCP server) but renamed away from the
-                  // original secret label so it's not trivially guessable.
-                  if (tokenValue) cleanEnv[envVarName] = tokenValue;
-                }
-              }
-              codexAdditionalServers.push({ name, url: serverCfg.url, bearerTokenEnvVar: envVarName });
-            }
-            if (codexAdditionalServers.length > 0) {
-              console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
-            }
+            codexMcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Failed to parse .mcp.json for Codex MCP injection:`, err);
           }
         }
-
-        // Inject claim-time connectors (worker.mcpConnectors) into Codex config.toml.
-        // For Claude workers, connectors reach queryOptions.mcpServers (below). Codex
-        // ignores queryOptions and reads only config.toml, so connectors were silently
-        // dropped for Codex tasks. Only http+Bearer connectors are supported by the
-        // `bearer_token_env_var` config.toml field; non-Bearer and stdio connectors
-        // cannot be modelled in config.toml and are skipped with a warning.
-        const claimConnsForCodex = (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined;
-        if (claimConnsForCodex && claimConnsForCodex.length > 0) {
-          for (const conn of claimConnsForCodex) {
-            if (!conn?.name || conn.name === 'buildd' || !conn.url) continue;
-            if (conn.assertionMode) continue; // async mint+exchange not supported here
-            if ((conn.transport ?? 'http') !== 'http') {
-              console.warn(`[Worker ${worker.id}] Codex: skipping stdio connector "${conn.name}" (not supported in config.toml)`);
-              continue;
-            }
-            // Skip if .mcp.json already registered this server name (prefer .mcp.json entry)
-            if (codexAdditionalServers.find(s => s.name === conn.name)) continue;
-            const authHeader = conn.headers?.Authorization || conn.headers?.authorization;
-            if (!authHeader) {
-              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" has no Authorization header — cannot inject into config.toml`);
-              continue;
-            }
-            const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-            if (!bearerMatch) {
-              console.warn(`[Worker ${worker.id}] Codex: connector "${conn.name}" uses non-Bearer auth — cannot inject into config.toml`);
-              continue;
-            }
-            const envVarName = `MCP_BEARER_CONN_${conn.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-            cleanEnv[envVarName] = bearerMatch[1];
-            codexAdditionalServers.push({ name: conn.name, url: conn.url, bearerTokenEnvVar: envVarName });
-          }
-          const injected = codexAdditionalServers.filter(s => s.bearerTokenEnvVar.startsWith('MCP_BEARER_CONN_'));
-          if (injected.length > 0) {
-            console.log(`[Worker ${worker.id}] Injected ${injected.length} claim-time connector(s) into Codex config: ${injected.map(s => s.name).join(', ')}`);
-          }
+        // Claim-time connectors (worker.mcpConnectors) and .mcp.json servers both
+        // go into config.toml. Only http+Bearer connectors fit its
+        // `bearer_token_env_var` field. ${VAR} refs (url AND headers) resolve from
+        // headerExpansionEnv (includes mcpSecrets) through the same expandVarRefs
+        // the Claude path uses; a server with an unresolved ref is skipped, not
+        // mounted without auth. A connector beats a .mcp.json entry of the same
+        // name, as on the Claude path — see PRECEDENCE in mcp-json.ts. Tokens go
+        // into cleanEnv under per-server MCP_BEARER_* names, never config.toml.
+        const codexMcp = buildCodexMcpServers({
+          mcpJson: codexMcpJson,
+          connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
+          env: headerExpansionEnv,
+        });
+        Object.assign(cleanEnv, codexMcp.bearerEnv);
+        for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
+        const codexAdditionalServers = codexMcp.servers;
+        if (codexAdditionalServers.length > 0) {
+          console.log(`[Worker ${worker.id}] Injecting ${codexAdditionalServers.length} additional MCP server(s) into Codex config: ${codexAdditionalServers.map(s => s.name).join(', ')}`);
         }
 
         // Codebase graph. Codex reads no `mcpServers` option, so the only way the
@@ -3944,39 +3905,29 @@ export class WorkerManager {
       }
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
-      // resolving ${VAR} references using headerExpansionEnv (which includes
-      // BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not expand ${VAR} in
-      // HTTP server headers when reading .mcp.json — servers with unresolved refs
-      // connect without auth and receive 401 (which the agent sees as "OAuth required").
-      // Connectors already in queryOptions.mcpServers take precedence.
-      // Skip buildd (reserved) and already-mounted names. Codex path handles its own
-      // .mcp.json injection above.
+      // resolving ${VAR} references (url and headers) using headerExpansionEnv
+      // (which includes BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not
+      // expand ${VAR} in HTTP server headers when reading .mcp.json — servers with
+      // unresolved refs would connect without auth and receive 401 (which the
+      // agent sees as "OAuth required"), so they are skipped and warned instead.
+      // Connectors already in queryOptions.mcpServers take precedence (see
+      // PRECEDENCE in mcp-json.ts). buildd is reserved. Codex path handles its own
+      // .mcp.json injection above, through the same expansion helper.
       if (!isCodexTask) {
         const cwdMcpJsonPath = join(cwd, '.mcp.json');
         if (existsSync(cwdMcpJsonPath)) {
           try {
-            const cwdMcpData = JSON.parse(readFileSync(cwdMcpJsonPath, 'utf-8')) as {
-              mcpServers?: Record<string, { type?: string; url?: string; headers?: Record<string, string> }>;
-            };
-            for (const [name, serverCfg] of Object.entries(cwdMcpData.mcpServers || {})) {
-              if (name === 'buildd') continue; // reserved — never override coordination server
-              if (queryOptions.mcpServers[name]) continue; // connector already mounted — skip
-              if (serverCfg?.type === 'http' && serverCfg?.url) {
-                const resolvedUrl = serverCfg.url.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
-                const resolvedHeaders: Record<string, string> = {};
-                let hasUnresolved = false;
-                for (const [hk, hv] of Object.entries(serverCfg.headers ?? {})) {
-                  const resolved = hv.replace(/\$\{([^}]+)\}/g, (_, v: string) => headerExpansionEnv[v] ?? '');
-                  if (/\$\{/.test(resolved)) { hasUnresolved = true; break; }
-                  resolvedHeaders[hk] = resolved;
-                }
-                if (!hasUnresolved) {
-                  queryOptions.mcpServers[name] = { type: 'http', url: resolvedUrl, headers: resolvedHeaders };
-                  console.log(`[Worker ${worker.id}] Injected .mcp.json server "${name}" into queryOptions (${Object.keys(resolvedHeaders).length} header(s))`);
-                } else {
-                  console.warn(`[Worker ${worker.id}] MCP server "${name}": unresolved \${VAR} in headers — mcpSecrets not delivered by claim route?`);
-                }
-              }
+            const cwdMcpData = JSON.parse(readFileSync(cwdMcpJsonPath, 'utf-8'));
+            const { servers, skipped } = resolveMcpJsonHttpServers(cwdMcpData, headerExpansionEnv, {
+              requireHttpType: true,
+              isTaken: name => Boolean(queryOptions.mcpServers[name]),
+            });
+            for (const srv of servers) {
+              queryOptions.mcpServers[srv.name] = { type: 'http', url: srv.url, headers: srv.headers };
+              console.log(`[Worker ${worker.id}] Injected .mcp.json server "${srv.name}" into queryOptions (${Object.keys(srv.headers).length} header(s))`);
+            }
+            for (const sk of skipped) {
+              console.warn(`[Worker ${worker.id}] MCP server "${sk.name}" not mounted: unresolved \${${sk.unresolved.join('}, ${')}} — mcpSecrets not delivered by claim route?`);
             }
           } catch {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
