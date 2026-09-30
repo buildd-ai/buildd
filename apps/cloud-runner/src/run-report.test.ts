@@ -1,8 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import * as runnerPhases from '../../runner/src/phase-lines';
 import {
+  METRIC_LINE_PREFIX,
   PHASE_LINE_PREFIX,
+  REPO_FALLBACK_REASONS,
+  REPO_SOURCE_LINE_PREFIX,
+  RUN_METRICS,
   RUN_PHASES,
+  parseMetricLine,
+  parseRepoSourceLine,
+  recordMetric,
   applyEgressEvent,
   assembleRunReport,
   countResponseBytes,
@@ -27,6 +34,54 @@ describe('phase line contract with apps/runner', () => {
     for (const p of runnerPhases.RUN_PHASES) {
       expect(parsePhaseLine(runnerPhases.formatPhaseLine(p, 1_700_000_000_000))).toEqual({ phase: p, at: 1_700_000_000_000 });
     }
+  });
+
+  test('metric and repo source lines match phase-lines.ts and parse back', () => {
+    expect(METRIC_LINE_PREFIX).toBe(runnerPhases.METRIC_LINE_PREFIX);
+    expect([...RUN_METRICS]).toEqual([...runnerPhases.RUN_METRICS]);
+    expect(REPO_SOURCE_LINE_PREFIX).toBe(runnerPhases.REPO_SOURCE_LINE_PREFIX);
+    expect([...REPO_FALLBACK_REASONS]).toEqual([...runnerPhases.REPO_FALLBACK_REASONS]);
+    for (const m of runnerPhases.RUN_METRICS) {
+      expect(parseMetricLine(runnerPhases.formatMetricLine(m, 4096))).toEqual({ metric: m, value: 4096 });
+    }
+    expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('warm'))).toEqual({ source: 'warm' });
+    for (const r of runnerPhases.REPO_FALLBACK_REASONS) {
+      expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('clone', r))).toEqual({ source: 'clone', reason: r });
+    }
+  });
+});
+
+describe('parseMetricLine / parseRepoSourceLine', () => {
+  test.each([
+    'BUILDD_METRIC=clone_bytes',
+    'BUILDD_METRIC=clone_bytes -1',
+    'BUILDD_METRIC=clone_bytes 1.5',
+    'BUILDD_METRIC=secret_token 1',
+    'BUILDD_METRIC=clone_bytes 1 extra',
+    'BUILDD_METRIC=clone_bytes 99999999999999999',
+    '[once] BUILDD_METRIC=clone_bytes 1',
+  ])('metric rejects %p', (line) => {
+    expect(parseMetricLine(line)).toBeNull();
+  });
+
+  test('metric accepts zero', () => {
+    expect(parseMetricLine('BUILDD_METRIC=fetch_bytes 0')).toEqual({ metric: 'fetch_bytes', value: 0 });
+  });
+
+  test.each([
+    'BUILDD_REPO_SOURCE=',
+    'BUILDD_REPO_SOURCE=warm extra',
+    'BUILDD_REPO_SOURCE=clone',
+    'BUILDD_REPO_SOURCE=clone because-i-said-so',
+    'BUILDD_REPO_SOURCE=tarball',
+  ])('source rejects %p', (line) => {
+    expect(parseRepoSourceLine(line)).toBeNull();
+  });
+
+  test('recordMetric: last value wins (a refresh overwrites nothing else)', () => {
+    let m = recordMetric(undefined, 'fetch_bytes', 5);
+    m = recordMetric(m, 'fetch_bytes', 7);
+    expect(m).toEqual({ fetch_bytes: 7 });
   });
 });
 
@@ -131,7 +186,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 1,
+      version: 2,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -139,7 +194,7 @@ describe('assembleRunReport', () => {
       runLabel: 'task-1.2',
       instanceType: 'standard-1',
       timestamps: { dispatchReceivedAt: 1_000, containerRunningAt: 4_000, claimedAt: 6_000, firstModelRequestAt: 9_000, exitedAt: 60_000 },
-      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, toFirstModelRequest: 3_000, total: 59_000 },
+      durationsMs: { containerStart: 3_000, toClaim: 2_000, clone: 500, install: 1_000, restoreWarm: null, fetch: null, warmUpload: null, toFirstModelRequest: 3_000, total: 59_000 },
       exitCode: 0,
       outcome: 'done',
       crashReport: null,
@@ -150,7 +205,8 @@ describe('assembleRunReport', () => {
   test('missing pieces are null, never guessed', () => {
     const r = assembleRunReport({ taskId: 'task-1', attempt: 1, dispatchReceivedAt: 1_000, timings: { exitedAt: 2_000, runnerPhases: { clone_start: 5 } }, exitCode: null, outcome: 'crashed', crashReport: 'no_worker_id' });
     expect(r.workerId).toBeNull();
-    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, toFirstModelRequest: null, total: 1_000 });
+    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
@@ -194,8 +250,36 @@ describe('assembleRunReport', () => {
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
       'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
+      'outcome', 'repo', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
+  });
+
+  test('warm restore: source, timings and bytes for restore, fetch and upload', () => {
+    const r = assembleRunReport({
+      ...FULL,
+      timings: {
+        ...FULL.timings,
+        runnerPhases: { restore_warm_start: 5_000, restore_warm_end: 5_300, fetch_start: 5_300, fetch_end: 5_400, warm_upload_start: 59_000, warm_upload_end: 59_800 },
+        runnerMetrics: { restore_bytes: 1_000_000, fetch_bytes: 2_048, cache_bytes: 500_000, snapshot_age_ms: 3_600_000, warm_upload_bytes: 0 },
+        repoSource: { source: 'warm' },
+      },
+    });
+    expect(r.durationsMs).toMatchObject({ clone: null, restoreWarm: 300, fetch: 100, warmUpload: 800 });
+    expect(r.repo).toEqual({
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000,
+      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0 },
+    });
+  });
+
+  test('clone fallback: the reason is kept, from the closed list only', () => {
+    const base = { ...FULL, timings: { ...FULL.timings, runnerMetrics: { clone_bytes: 42 }, repoSource: { source: 'clone' as const, reason: 'no_snapshot' as const } } };
+    expect(assembleRunReport(base).repo).toMatchObject({ source: 'clone', fallbackReason: 'no_snapshot', bytes: { clone: 42 } });
+    const hostile = { ...base, timings: { ...base.timings, repoSource: { source: 'clone', reason: 'sk-ant-leak' }, runnerMetrics: { clone_bytes: 'x', evil: 5 } } } as unknown as RunReportInput;
+    const r = assembleRunReport(hostile);
+    expect(r.repo.fallbackReason).toBeNull();
+    expect(r.repo.bytes.clone).toBeNull();
+    expect(JSON.stringify(r)).not.toContain('sk-ant');
+    expect(JSON.stringify(r)).not.toContain('evil');
   });
 });
 

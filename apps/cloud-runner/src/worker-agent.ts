@@ -13,6 +13,7 @@ import {
   INITIAL_STATE,
   resolveInactivityTimeoutMs,
   resolveStartTimeoutMs,
+  warmReposEnabled,
   type RunState,
 } from './lifecycle';
 import {
@@ -30,6 +31,7 @@ import {
 } from './outbound';
 import type { EgressProps } from './egress';
 import { otlpInterceptHosts } from './otel';
+import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
 import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
 
 /** `ctx.exports` loopback for the EgressHandler entrypoint exported from index.ts. */
@@ -68,6 +70,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         OTEL_EXPORTER_OTLP_PROTOCOL: env.OTEL_EXPORTER_OTLP_PROTOCOL,
         OTEL_LOG_TOOL_DETAILS: env.OTEL_LOG_TOOL_DETAILS,
         OTEL_TRACES_BETA: env.OTEL_TRACES_BETA,
+        WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
         instanceType: env.CONTAINER_INSTANCE_TYPE,
@@ -131,6 +134,19 @@ export class WorkerAgent extends Agent<Env, RunState> {
   async getGithubGrant(): Promise<GithubGrant | null> {
     if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
     return this.githubTokens.get();
+  }
+
+  /**
+   * RPC from EgressHandler for the snapshot host: whose keys this run may
+   * touch. Only while a run is live and warm repos are on. The workspace ID
+   * is the one buildd returned with the GitHub grant (authenticated with the
+   * dispatch token), never anything the container or the webhook body said.
+   */
+  async getSnapshotScope(): Promise<SnapshotScope | null> {
+    if (!warmReposEnabled(this.env)) return null;
+    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
+    const grant = await this.githubTokens.get();
+    return grant?.workspaceId ? { workspaceId: grant.workspaceId } : null;
   }
 
   /**
@@ -204,5 +220,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const otlp = otlpInterceptHosts(this.env);
     for (const host of otlp.https) await container.interceptOutboundHttps(host, handler);
     for (const host of otlp.http) await container.interceptOutboundHttp(host, handler);
+    // The snapshot pseudo-host, HTTPS only, and only with warm repos on.
+    if (warmReposEnabled(this.env)) await container.interceptOutboundHttps(SNAPSHOT_HOST, handler);
   }
 }

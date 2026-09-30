@@ -11,6 +11,7 @@ import {
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  warmReposEnabled,
   crashReportAction,
   decideDispatch,
   isOrphanedRun,
@@ -163,6 +164,23 @@ describe('container env', () => {
     });
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
+  });
+
+  test('warm repos: the flag and the snapshot URL only when the Worker turned them on', () => {
+    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' });
+    expect('BUILDD_WARM_REPO' in off).toBe(false);
+    expect('BUILDD_SNAPSHOT_URL' in off).toBe(false);
+    expect('BUILDD_WARM_REPO' in buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '0' })).toBe(false);
+    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '1' });
+    expect(on.BUILDD_WARM_REPO).toBe('1');
+    expect(on.BUILDD_SNAPSHOT_URL).toBe('https://buildd-snapshots.invalid');
+  });
+
+  test('warmReposEnabled needs both the var and the R2 binding', () => {
+    expect(warmReposEnabled({ WARM_REPOS: '1', SNAPSHOTS: {} })).toBe(true);
+    expect(warmReposEnabled({ WARM_REPOS: '1' })).toBe(false);
+    expect(warmReposEnabled({ SNAPSHOTS: {} })).toBe(false);
+    expect(warmReposEnabled({ WARM_REPOS: 'yes', SNAPSHOTS: {} })).toBe(false);
   });
 
   test('refuses to build without a server or key (the runner would default to production)', () => {
