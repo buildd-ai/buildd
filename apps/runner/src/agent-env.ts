@@ -34,6 +34,10 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   'OPENAI_API_KEY',
   // GitHub token — needed for gh CLI (PRs, issues). Not a runner secret.
   'GITHUB_TOKEN', 'GH_TOKEN',
+  // Claude Code: no telemetry, error reporting or auto-update calls. Set by the
+  // --once container image (apps/runner/Dockerfile.once), where every outbound
+  // call goes through an egress proxy. Not secret.
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
 ]);
 
 /**
