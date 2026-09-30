@@ -171,23 +171,31 @@ export const ANTHROPIC_API_KEY_PLACEHOLDER = 'sk-ant-placeholder-replaced-at-egr
  */
 export const CLOUD_EXECUTOR = 'cloud';
 
+/** Prefix of a per-task token (apps/web/src/lib/task-token.ts). */
+export const TASK_TOKEN_PREFIX = 'bldt_';
+
 /**
  * The container env, per docs/runner-container.md ("Set by the caller"). The
- * only real secret is BUILDD_API_KEY. No GH_TOKEN and no model key: those are
- * added at egress (outbound.ts). This is an allowlist; nothing else from the
- * Worker's env is copied.
+ * only real secret is the per-task token minted for this run, passed as
+ * BUILDD_API_KEY: it is good for this task's claim and its own worker's calls
+ * only. The Worker's runner key never enters the container, and anything that
+ * is not a per-task token is refused here. No GH_TOKEN and no model key:
+ * those are added at egress (outbound.ts). This is an allowlist; nothing else
+ * from the Worker's env is copied.
  *
  * ANTHROPIC_BASE_URL is deliberately not passed: model traffic must go to
  * api.anthropic.com, where the egress handler rewrites it to AI Gateway and
  * adds the gateway credential. A base URL pointing anywhere else would bypass
  * the handler and arrive with only the placeholder key.
  */
-export function buildContainerEnv(env: ContainerEnvSource): Record<string, string> {
+export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');
-  if (!env.BUILDD_API_KEY) throw new Error('BUILDD_API_KEY is not set');
+  if (typeof taskToken !== 'string' || !taskToken.startsWith(TASK_TOKEN_PREFIX)) {
+    throw new Error('the container credential must be a per-task token');
+  }
   const out: Record<string, string> = {
     BUILDD_SERVER: env.BUILDD_SERVER,
-    BUILDD_API_KEY: env.BUILDD_API_KEY,
+    BUILDD_API_KEY: taskToken,
     ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
     BUILDD_DISABLE_AUTO_UPDATE: '1',
     BUILDD_EXECUTOR: CLOUD_EXECUTOR,
@@ -198,6 +206,39 @@ export function buildContainerEnv(env: ContainerEnvSource): Record<string, strin
     if (v) out[key] = v;
   }
   return out;
+}
+
+/** Checked before minting, so a misconfigured Worker is a usage outcome, not a crash. */
+export function assertRunnerConfig(env: ContainerEnvSource): void {
+  if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');
+  if (!env.BUILDD_API_KEY) throw new Error('BUILDD_API_KEY is not set');
+}
+
+export const TASK_TOKEN_PATH = '/api/runner/task-token';
+
+/**
+ * The request that mints this run's per-task token. Made by the agent with
+ * the Worker's runner key, which stays in the agent.
+ */
+export function taskTokenRequest(env: ContainerEnvSource, taskId: string): { url: string; init: RequestInit } {
+  assertRunnerConfig(env);
+  return {
+    url: `${env.BUILDD_SERVER!.replace(/\/+$/, '')}${TASK_TOKEN_PATH}`,
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.BUILDD_API_KEY}` },
+      body: JSON.stringify({ taskId }),
+    },
+  };
+}
+
+export function parseTaskTokenResponse(body: unknown, taskId: string): string {
+  const b = (body ?? {}) as { token?: unknown; taskId?: unknown };
+  if (typeof b.token !== 'string' || !b.token.startsWith(TASK_TOKEN_PREFIX)) {
+    throw new Error('task-token response has no per-task token');
+  }
+  if (b.taskId !== taskId) throw new Error('task-token response is for a different task');
+  return b.token;
 }
 
 /** The command exec'd in the container. `buildd-once` is baked into the image. */

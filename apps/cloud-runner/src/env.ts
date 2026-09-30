@@ -12,10 +12,13 @@ export interface Env extends EgressEnv {
   /**
    * Must equal the workspace's webhookConfig.token. Also proves to buildd
    * that a GitHub token request comes from the dispatcher, not the container
-   * (which holds BUILDD_API_KEY but never this).
+   * (which holds a per-task token but never this).
    */
   DISPATCH_TOKEN?: string;
-  /** Runner API key handed to the container (ideally scoped to one workspace). */
+  /**
+   * Runner API key (ideally scoped to one workspace). Never handed to the
+   * container: it mints the per-task token the container gets instead.
+   */
   BUILDD_API_KEY?: string;
   /** buildd base URL. Required: the runner would otherwise default to production. */
   BUILDD_SERVER?: string;

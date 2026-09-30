@@ -16,6 +16,7 @@
  */
 import {
   appendTail,
+  assertRunnerConfig,
   buildContainerEnv,
   crashReportAction,
   decideDispatch,
@@ -63,6 +64,11 @@ export interface SupervisorDeps {
   waitUntil(promise: Promise<unknown>): void;
   /** Egress credential injection (WorkerAgent.installEgressHandlers). A failure fails the run before start. */
   installEgress(): Promise<void>;
+  /**
+   * Mint this run's per-task token (WorkerAgent.mintTaskToken). The container
+   * gets only this token; the runner key in `config` stays with the agent.
+   */
+  mintTaskToken(): Promise<string>;
   fetch: typeof fetch;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -152,14 +158,14 @@ export class TaskSupervisor {
     let error: string | undefined;
     let configError = false;
     try {
-      let env: Record<string, string>;
       try {
-        env = buildContainerEnv(this.d.config);
+        assertRunnerConfig(this.d.config);
       } catch (err) {
         configError = true;
         throw err;
       }
       if (c.running) await c.destroy('leftover container from a previous attempt');
+      const env = buildContainerEnv(this.d.config, await this.d.mintTaskToken());
       await this.d.installEgress();
       c.start({ env, enableInternet: true });
       await c.setInactivityTimeout(this.d.config.inactivityTimeoutMs);

@@ -70,7 +70,7 @@ it as above).
 | Name | Kind | Required | Notes |
 |---|---|---|---|
 | `DISPATCH_TOKEN` | secret | yes | Must equal the workspace's `webhookConfig.token` |
-| `BUILDD_API_KEY` | secret | yes | Runner API key passed to the container; also used for the crash report |
+| `BUILDD_API_KEY` | secret | yes | Runner API key. Stays in the Worker: it mints a per-task token for each run (`POST /api/runner/task-token`), and only that token goes into the container. Also used for the crash report |
 | `BUILDD_SERVER` | var | yes | No default: the Worker refuses to dispatch without it, because the runner would fall back to production |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
