@@ -152,6 +152,20 @@ describe('approval card', () => {
     expect(q('[data-kind="mission"]')).toBeNull();
   });
 
+  // Two writes in one turn: the cap refused the second before any card was
+  // shown. It used to read "discarded · nothing filed", as if the person had
+  // discarded something they never saw.
+  it('a write the one-card cap refused is "not proposed", never "discarded"', async () => {
+    await render(fixtures.chatFixture('capped').messages as Msgs, 'confirmed');
+    const capped = q('[data-testid="approval-card"]')!;
+    expect(capped.dataset.state).toBe('skipped');
+    expect(capped.querySelector('.kit-card-title')?.textContent).toBe('New task');
+    expect(capped.textContent).toContain('not proposed · one change per turn');
+    expect(container.textContent).not.toMatch(/discarded/i);
+    // The first write still reads approved.
+    expect(qa('[data-testid="tool-call-row"]').some(r => r.dataset.tool === 'manage_missions' && r.textContent?.includes('approved by Maya'))).toBe(true);
+  });
+
   it('once filed, the card is its tool row and the live mission renders under it', async () => {
     await render(fixtures.chatFixture('confirmed').messages as Msgs, 'confirmed');
     expect(q('[data-testid="kit-approval-confirm"]')).toBeNull();

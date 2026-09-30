@@ -16,7 +16,7 @@ const { act, createElement } = await import('react');
 const h = createElement as (type: unknown, props?: unknown, ...children: unknown[]) => any;
 const { createRoot } = await import('react-dom/client');
 const kit = await import('./index');
-const { encodeApprovalPreview } = await import('@builddai/ai-kit/chat/contract');
+const { encodeApprovalPreview, ONE_CARD_PER_TURN_REASON } = await import('@builddai/ai-kit/chat/contract');
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -143,6 +143,39 @@ describe('ApprovalCard slots (0.8.0)', () => {
     await render(h(kit.ApprovalCard, { part: part(), onRespond() {}, settled: 'row' }));
     expect($('.kit-approval-row')).toBeNull();
     expect($('[data-testid="kit-approval-confirm"]')).not.toBeNull();
+  });
+
+  // 0.12.0: a write the server refused before any card was shown (the one-card
+  // cap) is never "discarded": the person didn't see it, let alone discard it.
+  const capped = (over: Record<string, unknown> = {}) => part({
+    state: 'output-denied',
+    approval: { id: 'a2', isAutomatic: true, approved: false, reason: ONE_CARD_PER_TURN_REASON },
+    ...over,
+  });
+
+  it('a capped write reads "not proposed · one change per turn", as a row and as a card', async () => {
+    await render(h(kit.ApprovalCard, { part: capped(), onRespond() {}, settled: 'row', headline: 'Mute sender', deniedNote: 'nothing changed' }));
+    const row = $('[data-testid="kit-approval"]')!;
+    expect(row.dataset.state).toBe('skipped');
+    expect(row.textContent).toBe('Mute sendernot proposed · one change per turn');
+    expect(row.textContent).not.toContain('discarded');
+    await render(h(kit.ApprovalCard, { part: capped(), onRespond() {}, headline: 'Mute sender' }));
+    expect($('[data-testid="kit-approval"]')!.dataset.state).toBe('skipped');
+    expect($('.kit-eyebrow')!.textContent).toBe('Not proposed');
+    expect($('.kit-note')!.textContent).toBe('One change per turn. Nothing changed.');
+    expect($('[data-testid="kit-approval"]')!.textContent).not.toMatch(/discarded/i);
+  });
+
+  it('the person\'s Discard still reads "discarded · nothing changed"', async () => {
+    await render(h(kit.ApprovalCard, { part: part({ state: 'output-denied', approval: { id: 'a1', approved: false } }), onRespond() {}, settled: 'row', headline: 'Mute sender', deniedNote: 'nothing changed' }));
+    expect($('[data-testid="kit-approval"]')!.dataset.state).toBe('denied');
+    expect($('[data-testid="kit-approval"]')!.textContent).toBe('Mute senderdiscarded · nothing changed');
+  });
+
+  it('a rewritten field is a change line: what the model proposed → what runs', async () => {
+    const rewritten = { ...preview, changes: [], resolved: [{ key: 'sender', proposed: 'survey_at_resellerratings_com', runs: 'resellerratings_com' }] };
+    await render(h(kit.ApprovalCard, { part: part({ approval: { id: 'a1', requestReason: encodeApprovalPreview(rewritten) } }), onRespond() {} }));
+    expect($$('.kit-change').map(e => e.textContent!.replace(/\s+/g, ' '))).toEqual(['sender (runs as)survey_at_resellerratings_com → becomes resellerratings_com']);
   });
 });
 

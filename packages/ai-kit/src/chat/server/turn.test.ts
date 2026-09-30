@@ -23,6 +23,7 @@ import {
   type TurnUsageRecord,
 } from './index';
 import type { UsageReceipt } from '@builddai/ai-kit/models';
+import { isSystemDenied, parseApprovalPreview, systemDeniedNote } from '@builddai/ai-kit/chat/contract';
 import { PlanDeniedError } from '@builddai/ai-kit/models';
 
 // ── Mock model streams ────────────────────────────────────────────────────────
@@ -94,6 +95,15 @@ const tools = {
 
 const preview = (tool: string, input: Record<string, unknown>): PreviewOutcome => {
   if (input.title === '??') return { ok: false, question: 'Which note do you mean?' };
+  // An app that normalizes what runs: a sender address widened to its domain.
+  if (typeof input.title === 'string' && input.title.startsWith('survey_at_')) {
+    const runs = input.title.slice('survey_at_'.length);
+    return {
+      ok: true,
+      input: { ...input, title: runs },
+      preview: { v: 1, verb: 'Create note', target: { kind: 'note', id: 'new', label: String(input.title) }, changes: [], fingerprint: `fp-${notes.length}` },
+    };
+  }
   return {
     ok: true,
     preview: {
@@ -300,6 +310,39 @@ describe('approval cards', () => {
     expect(denied.state).toBe('output-denied');
     expect(JSON.stringify(denied)).toContain(ONE_CARD_PER_TURN_REASON);
     expect(notes).toHaveLength(1);
+    // Nobody saw it: the part says the server decided, so no card reads it as a Discard.
+    expect(denied.approval.isAutomatic).toBe(true);
+    expect(isSystemDenied(denied)).toBe(true);
+    expect(systemDeniedNote(denied)).toBe('one change per turn');
+  });
+
+  it('the cap tells the model not to report the refused call as discarded, and not to fire a twin', () => {
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/not shown to the person/i);
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/nothing was discarded/i);
+    expect(ONE_CARD_PER_TURN_REASON).toMatch(/another way of doing what that card does, drop it/i);
+  });
+
+  it('a field the preview rewrites is on the card, and the card is what runs', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['w1', 'create_note', { title: 'survey_at_resellerratings_com' }]), textStream('Card.'), textStream('Done.')) });
+    await send(userMsg('auto-dismiss that sender'));
+    const card = partsOf('tool-create_note')[0];
+    const shown = parseApprovalPreview(card.approval.requestReason)!;
+    expect(shown.resolved).toEqual([{ key: 'title', proposed: 'survey_at_resellerratings_com', runs: 'resellerratings_com' }]);
+    await send(answer(true));
+    expect(notes.at(-1)!.title).toBe(shown.resolved![0].runs);
+  });
+
+  it('a rewrite that moved after the card was shown runs nothing', async () => {
+    const { send } = harness({ model: mockModel(toolStream(['w1', 'create_note', { title: 'survey_at_a.com' }]), textStream('Card.'), textStream('It changed.')) });
+    await send(userMsg('add a note'));
+    const a = answer(true) as any;
+    // Tamper with the stored card so it shows a different rewrite than execution would run.
+    const p = a.parts.find((x: any) => x.state === 'approval-responded');
+    const stored = lastAssistant().parts.find((x: any) => x.toolCallId === p.toolCallId) as any;
+    const tampered = { ...parseApprovalPreview(stored.approval.requestReason)!, resolved: [{ key: 'title', proposed: 'survey_at_a.com', runs: 'survey_at_a.com' }] };
+    stored.approval.requestReason = `buildd-preview:${JSON.stringify(tampered)}`;
+    await send(a);
+    expect(notes.map(n => n.title)).not.toContain('a.com');
   });
 
   it('confirming runs the write exactly once; replaying the approval runs nothing', async () => {
@@ -330,6 +373,8 @@ describe('approval cards', () => {
     expect(notes).toHaveLength(1);
     expect(store.approvals[0].status).toBe('denied');
     expect(partsOf('tool-create_note')[0].state).toBe('output-denied');
+    // The person's Discard, not the server's: it still reads as discarded.
+    expect(isSystemDenied(partsOf('tool-create_note')[0])).toBe(false);
   });
 
   it('an edited approval (different input) decides and runs nothing', async () => {

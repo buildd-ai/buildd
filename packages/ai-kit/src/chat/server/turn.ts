@@ -27,8 +27,10 @@ import {
   isToolPart,
   STEER_PART_TYPE,
   STEP_PART_TYPE,
+  ONE_CARD_PER_TURN_REASON,
   TURN_ERROR_PART_TYPE,
   toolNameOf,
+  withResolvedFields,
   type ApprovalPreview,
   type ChatMessage,
   type ChatPart,
@@ -74,8 +76,8 @@ export const DEFAULT_TURN_LIMITS = {
 
 export type TurnLimits = { [K in keyof typeof DEFAULT_TURN_LIMITS]: number };
 
-/** What `denied` tells the model when a second card would be shown in one turn. */
-export const ONE_CARD_PER_TURN_REASON = 'Only one approval card per turn. Ask the person after this one is answered.';
+/** What `denied` tells the model when a second card would be shown in one turn (defined in the contract, so a card can tell it from a Discard). */
+export { ONE_CARD_PER_TURN_REASON };
 /** Appended to a turn the deadline or a Stop cut short. */
 export const STOPPED_NOTE = '_Stopped before the answer was finished._';
 
@@ -483,7 +485,10 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     const safePreview = async (tool: string, input: unknown): Promise<PreviewOutcome | null> => {
       if (!opts.preview) return null;
       try {
-        return await opts.preview(tool, (input ?? {}) as Record<string, unknown>, ctx);
+        const proposed = (input ?? {}) as Record<string, unknown>;
+        const p = await opts.preview(tool, proposed, ctx);
+        // The card must show what runs: a field the app rewrote is listed on it.
+        return p.ok ? { ...p, preview: withResolvedFields(p.preview, proposed, p.input) } : p;
       } catch (e) {
         return { ok: false, question: e instanceof Error ? e.message : String(e) };
       }

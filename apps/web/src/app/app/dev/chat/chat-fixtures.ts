@@ -12,6 +12,7 @@ import { encodeApprovalPreview, type ChatApprovalPreview, type ChatToolPermissio
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 import { backfillSteps, mergeStepParts } from '@/lib/chat/thinking-steps';
+import { ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
 
 /** The card `watch` gets without an allow (lib/chat/previews.ts builds the real one). */
 const WATCH_PREVIEW: ChatApprovalPreview = {
@@ -237,8 +238,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'watch' | 'visual';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'watch', 'visual'];
 
 /** A visual review moment as mission-events.ts posts it: the same words and data. */
 const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
@@ -280,6 +281,21 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
         ], 2400)],
       };
     }
+    case 'capped':
+      // Two writes in one turn: the first got its card (and was confirmed),
+      // the second was refused by the one-card cap before anyone saw it.
+      return {
+        title: 'Multi-currency invoices', status: 'ready',
+        messages: [...explore(), agent('m4', 4, [
+          { type: 'text', text: 'Here’s a draft.' },
+          call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-1', approved: true } }),
+          call('create_task', { title: 'Add currency to invoice PDFs', workspaceId: WS.id }, undefined, {
+            state: 'output-denied',
+            approval: { id: 'approval-2', approved: false, isAutomatic: true, reason: ONE_CARD_PER_TURN_REASON },
+          }),
+          { type: 'text', text: 'Filed the mission. Want the PDF task too, once you’ve seen it?' },
+        ], 2400)],
+      };
     case 'confirmed':
       return {
         title: 'Multi-currency invoices', status: 'ready',
