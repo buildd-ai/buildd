@@ -155,7 +155,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       return z.object({
         title: z.string().max(200),
         description: z.string().max(8000),
-        missionId: z.string().optional().describe('The mission it belongs to (the docked one, usually).'),
+        missionId: z.string().nullable().optional().describe('The mission it belongs to. Omit it to join the docked mission (or the one this conversation filed). Pass null to file a standalone task in no mission, whenever the user says "not part of a mission" or the work is unrelated to that mission.'),
         dependsOn: z.array(z.string()).optional().describe('Tasks it must wait for: ids, short ids or the words the user used.'),
         baseBranch: z.string().optional().describe('Branch to build on, e.g. the branch of the PR being fixed.'),
         pathManifest: z.array(z.string()).optional().describe('Files it will change. Mission tasks that open a PR need at least one.'),
@@ -312,7 +312,7 @@ const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
   manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners), or turns its automatic visual audit off or on (autoSurfaceAudit). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
-  create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch.',
+  create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch. Mission: omitted joins the docked or conversation-filed mission, shown on the card; missionId null files it standalone. Join a mission only when the request is about it; for an unrelated task pass null, and if unsure ask the user.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',
   list_schedules: 'Recurring schedules, with last run, last error and where their output goes.',
   trace_schedule: 'Find the schedule behind a task or a recent notification: taskId is the strongest signal; minutesAgo lists schedules that fired in that window; taskTitleContains matches the template title.',
