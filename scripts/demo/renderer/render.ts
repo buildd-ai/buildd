@@ -379,7 +379,7 @@ function assembleSite(outRoot: string, site: string) {
   const missing = siteFiles().filter(([from]) => !existsSync(join(outRoot, from))).map(([from]) => from);
   if (missing.length) throw new Error(`[render] --site: not rendered yet:\n  ${missing.join('\n  ')}`);
   const probe = (f: string) => +Bun.spawnSync(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).stdout.toString().trim();
-  const size = (f: string) => Bun.spawnSync(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim().split(',').map(Number);
+  const size = (f: string) => Bun.spawnSync(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim().split(',').filter(Boolean).map(Number);
   publishDir(site, (tmp) => {
     for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(tmp, to));
     capMp4(join(tmp, 'full.mp4'), FULL_MAX_BYTES);

@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars } from './motion-model';
 
@@ -216,6 +216,15 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     expect([film.width, film.height]).toEqual([1920, 1080]);
     expect(film.shots.some((s) => (s.spot ?? []).some((k) => Math.abs(k.dim - 0.75) < 1e-9))).toBe(true);
   });
+});
+
+test('the hero poster is a frame from the fleet, not the empty first frame', () => {
+  for (const h of [v6xHero(fake), v6xHero(fake, 'light')]) {
+    const starts = shotStartsOf(h);
+    const i = h.shots.findIndex((x) => x.id === 'fleet');
+    expect(h.poster).toBeGreaterThan(starts[i]);
+    expect(h.poster).toBeLessThan(starts[i] + h.shots[i].dur);
+  }
 });
 
 test('v6x hero comes in both themes', () => {

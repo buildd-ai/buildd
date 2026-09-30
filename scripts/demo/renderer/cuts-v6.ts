@@ -373,7 +373,10 @@ export function v6xFilm(s: Stills): Cut {
 export function v6xHero(s: Stills, theme: 'dark' | 'light' = 'dark'): Cut {
   const all = v6xShots(s);
   const pick = (id: string) => ({ ...all.find((x) => x.id === id)!, dur: 4, taps: undefined });
-  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme, shots: [pick('plan'), pick('fleet'), pick('review'), pick('done')] };
+  const shots = [pick('plan'), pick('fleet'), pick('review'), pick('done')];
+  // Poster: most of the fleet lit. Frame 0 is the plan before any tile lands.
+  const poster = +(shotStarts({ shots })[1] + 3).toFixed(2);
+  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme, poster, shots };
 }
 
 // ── Checks run by render.ts before a frame is drawn (and by the tests) ─────
