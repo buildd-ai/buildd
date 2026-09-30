@@ -201,6 +201,10 @@ $f$;
 -- ---------------------------------------------------------------------------
 
 DELETE FROM secrets;             -- cascades credential_leases
+-- Evidence storage: backend configuration holds S3 bucket details and
+-- evidence objects hold real bucket paths; wiped like credentials.
+DELETE FROM evidence_objects;    -- cascades to anything referencing objects
+DELETE FROM evidence_backends;   -- cascades to anything referencing backends
 -- Agent chat: every message part is tenant-authored text or tool output over
 -- it. Chat renders from fixtures in QA; missions.conversation_id sets null.
 DELETE FROM conversation_approvals;

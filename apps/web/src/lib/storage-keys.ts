@@ -186,14 +186,14 @@ export function isAuditStorageKey(key: unknown): boolean {
 }
 
 /**
- * `{prefix}/{workspaceId}/{rootTaskId}/{taskId}/{workerId}/{kind}/{ts}-{seq}.{jsonl|log}.gz`
+ * `{prefix}/{workspaceId}/{rootTaskId}/{taskId}/{workerId}/{kind}/{filename}`
  *
  * Evidence object key for task run diagnostics (transcripts, logs, test reports).
- * Every segment except the trailing filename is validated. The prefix comes from
- * the backend config and is validated at the backend level, not here.
+ * All segments are validated: the filename must be a safe key segment, not a
+ * caller-supplied path. The prefix comes from the backend config.
  *
  * All evidence objects are server-derived and never accepted from a caller, so
- * every structural segment is validated rather than sanitised.
+ * every segment is validated rather than sanitised.
  */
 export function buildEvidenceObjectKey(
   prefix: unknown,
