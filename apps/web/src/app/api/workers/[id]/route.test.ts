@@ -701,6 +701,37 @@ describe('GET /api/workers/[id]', () => {
     expect(data.error).toBe('Forbidden');
   });
 
+  it("returns 403 when a per-task token reads the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', taskId: 'task-2' });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('serves a per-task token its own worker without the dispatch token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'running',
+      workspace: { id: 'ws-1', webhookConfig: { url: 'https://dispatch.example', token: 'dispatch-secret' } },
+    });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('dispatch-secret');
+    expect(JSON.parse(text).status).toBe('running');
+  });
+
   it('returns worker when authenticated and authorized', async () => {
     const mockWorker = {
       id: 'worker-1',
@@ -914,6 +945,55 @@ describe('PATCH /api/workers/[id]', () => {
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(403);
+  });
+
+  it("returns 403 when a per-task token updates the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      level: 'worker',
+      taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-2',
+      status: 'running',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a per-task token past auth for its own worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      level: 'worker',
+      taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    // Reaches the handler proper: the terminal-state guard, not the auth guard.
+    expect(res.status).toBe(409);
   });
 
   it('returns 409 when worker is already completed and update is not reactivation', async () => {

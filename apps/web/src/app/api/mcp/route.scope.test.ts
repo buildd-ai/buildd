@@ -58,6 +58,9 @@ const mockAccountWorkspacesFindFirst = mock(async (opts: any) => {
     : null;
 });
 
+// The worker a `?worker=` lookup finds; null unless a test sets one.
+let workerRow: any = null;
+
 const mockAuthenticateApiKey = mock(async () => ({ id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'api' } as any));
 const mockHandleBuilddAction = mock(async (..._args: any[]) => ({ content: [{ type: 'text', text: '{}' }] }));
 const mockHandleRecallAction = mock(async () => ({ content: [{ type: 'text', text: '{"recalled":true}' }] }));
@@ -76,7 +79,7 @@ mock.module('@buildd/core/db', () => ({
       workers: {
         findFirst: mock(async (opts: any) => {
           assertUuidParams(render(opts.where).params);
-          return null;
+          return workerRow;
         }),
       },
       tasks: { findFirst: mock(async () => null) },
@@ -282,5 +285,51 @@ describe('/api/mcp session id keys interactive liveness per session', () => {
     const res = await call(mintMcpSessionId('someone-else')!);
     expect(mockTouchInteractiveWorkers.mock.calls[0][0]).toMatchObject({ sessionKey: null });
     expect(res.headers.get('mcp-session-id')).not.toBeNull();
+  });
+});
+
+describe('/api/mcp per-task token', () => {
+  const OWN_WORKER = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const scoped = {
+    id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'api',
+    taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 },
+  };
+
+  beforeEach(() => {
+    mockHandleRecallAction.mockClear();
+    workerRow = null;
+  });
+  afterEach(() => {
+    mockAuthenticateApiKey.mockImplementation(async () => ({ id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'api' } as any));
+    workerRow = null;
+  });
+
+  it('requires ?worker=', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => scoped as any);
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}`));
+    expect(res.status).toBe(403);
+    expect(mockHandleRecallAction).not.toHaveBeenCalled();
+  });
+
+  it("refuses the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => scoped as any);
+    workerRow = { accountId: ACCOUNT_ID, taskId: 'task-other', workspace: { teamId: TEAM_A } };
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}&worker=${OWN_WORKER}`));
+    expect(res.status).toBe(403);
+    expect(mockHandleRecallAction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a team worker run by another account, which an account key may name", async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => scoped as any);
+    workerRow = { accountId: 'acc-2', taskId: 'task-own', workspace: { teamId: TEAM_A } };
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}&worker=${OWN_WORKER}`));
+    expect(res.status).toBe(403);
+  });
+
+  it('serves its own worker', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => scoped as any);
+    workerRow = { accountId: ACCOUNT_ID, taskId: 'task-own', workspace: { teamId: TEAM_A } };
+    const res = await POST(recallRequest(`?workspace=${OWN_WS}&worker=${OWN_WORKER}`));
+    expect(res.status).toBe(200);
   });
 });

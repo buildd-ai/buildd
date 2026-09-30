@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -141,7 +141,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may claim only its own task.
+  const account = await authenticateTaskScopedCaller(apiKey);
   // Incident-responder health probes hit this route once a minute with an empty
   // body and mark themselves with `X-Probe: true`. They still get the normal
   // 4xx below, but must not land in the gate ledger — every probe otherwise
@@ -177,6 +178,16 @@ export async function POST(req: NextRequest) {
 
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
+
+  // A per-task token claims its own task and nothing else.
+  if (account.taskScope) {
+    if (taskId && taskId !== account.taskScope.taskId) {
+      return NextResponse.json({ error: 'This token can only claim its own task.' }, { status: 403 });
+    }
+    taskId = account.taskScope.taskId;
+    maxTasks = 1;
+    claimAcrossAccessible = false;
+  }
 
   // A person's interactive MCP session, proven by the marker the MCP routes
   // sign server-side (lib/interactive-session.ts). `runner: 'mcp'` alone is

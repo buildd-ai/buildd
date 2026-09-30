@@ -226,6 +226,23 @@ describe('POST /api/workers/[id]/artifacts', () => {
     expect(data.error).toBe('Forbidden');
   });
 
+  it("returns 403 when a per-task token adds to the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: WORKER_ID,
+      accountId: 'account-1',
+      taskId: 'task-other',
+      task: { id: 'task-other' },
+    });
+
+    const req = createMockPostRequest({ type: 'content', title: 'Test' }, 'bld_test');
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
   it('returns 400 for invalid artifact type', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({

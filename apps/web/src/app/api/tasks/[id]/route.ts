@@ -18,6 +18,7 @@ function validateTaskId(id: string): NextResponse | null {
 }
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsTask } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
@@ -81,7 +82,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own task.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -89,6 +91,10 @@ export async function GET(
 
   const idError = validateTaskId(id);
   if (idError) return idError;
+
+  if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+  }
 
   try {
     const task = await db.query.tasks.findFirst({

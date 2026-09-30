@@ -211,6 +211,12 @@ export const accounts = pgTable('accounts', {
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
 
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),

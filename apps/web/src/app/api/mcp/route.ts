@@ -22,7 +22,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { authenticateApiKey } from "@/lib/api-auth";
+import { authenticateTaskScopedCaller } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
@@ -794,7 +794,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) is accepted only as its own worker:
+  // `?worker=` is required and checked below.
+  const account = await authenticateTaskScopedCaller(apiKey);
   if (!account) {
     return new Response(JSON.stringify({ error: "Invalid API key" }), {
       status: 401,
@@ -830,6 +832,12 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   // A `?worker=` id is the worker this session acts as; it must be one the
   // calling account runs, or one in its own team's workspaces.
   const workerParam = url.searchParams.get("worker");
+  if (account.taskScope && !workerParam) {
+    return new Response(JSON.stringify({ error: "This token requires ?worker=<its own worker id>" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
     return new Response(JSON.stringify({ error: "Worker not found for this account" }), {
       status: 403,

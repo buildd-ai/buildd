@@ -434,6 +434,37 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('runner is required');
   });
 
+  describe('per-task token', () => {
+    const scoped = {
+      id: 'account-1',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 3,
+      type: 'service',
+      level: 'worker',
+      taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 },
+    };
+
+    it('refuses to claim any task but its own', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-other' },
+      }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('its own task');
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    });
+
+    it('is not refused by the scope for its own task', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-own' },
+      }));
+      expect(res.status).not.toBe(403);
+    });
+  });
+
   describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
     const gateReasons = () => [
       ...mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),

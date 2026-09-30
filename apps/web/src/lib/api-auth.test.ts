@@ -460,3 +460,16 @@ describe('authenticateApiKey', () => {
 // Restore the spy so verifyAccessTokenAnyAudience is real again in subsequent test files.
 // spyOn + mockRestore() properly unwinds; mock.restore() does not restore mock.module() overrides.
 afterAll(() => spyVerifyJwt.mockRestore());
+
+describe('authenticateApiKey — per-task tokens', () => {
+  it('never resolves a per-task token to an account, even one whose hash matches a row', async () => {
+    clearAccountCache();
+    mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    mockGetCachedApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    expect(await authenticateApiKey('bldt_payload.sig')).toBeNull();
+    expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+    expect(mockGetCachedApiKey).not.toHaveBeenCalled();
+  });
+});
