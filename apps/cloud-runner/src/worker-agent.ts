@@ -31,6 +31,7 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import type { EgressProps } from './egress';
+import { otlpInterceptHosts } from './otel';
 import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
 
 /** `ctx.exports` loopback for the EgressHandler entrypoint exported from index.ts. */
@@ -65,6 +66,11 @@ export class WorkerAgent extends Agent<Env, RunState> {
         PUSHER_KEY: env.PUSHER_KEY,
         PUSHER_CLUSTER: env.PUSHER_CLUSTER,
         BUILDD_ONCE_MAX_WAIT_MS: env.BUILDD_ONCE_MAX_WAIT_MS,
+        // Telemetry vars only; the collector credential stays with the egress handler.
+        OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_EXPORTER_OTLP_PROTOCOL: env.OTEL_EXPORTER_OTLP_PROTOCOL,
+        OTEL_LOG_TOOL_DETAILS: env.OTEL_LOG_TOOL_DETAILS,
+        OTEL_TRACES_BETA: env.OTEL_TRACES_BETA,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
         instanceType: env.CONTAINER_INSTANCE_TYPE,
@@ -197,7 +203,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
    * Route the container's traffic for the credentialed hosts through
    * EgressHandler (egress.ts; rules in outbound.ts). HTTPS is re-signed with
    * the per-container CA that buildd-once trusts; plain HTTP to the same hosts
-   * is intercepted too, and refused by the handler. Every other host keeps
+   * is intercepted too, and refused by the handler. So is the OTLP collector's
+   * host when OTEL_EXPORTER_OTLP_ENDPOINT is set. Every other host keeps
    * open egress. Called before each start, so each run gets a fresh token.
    */
   private async installEgressHandlers(): Promise<void> {
@@ -211,5 +218,9 @@ export class WorkerAgent extends Agent<Env, RunState> {
       await container.interceptOutboundHttps(host, handler);
       await container.interceptOutboundHttp(host, handler);
     }
+    // The OTLP collector's host, when one is configured (otel.ts); nothing otherwise.
+    const otlp = otlpInterceptHosts(this.env);
+    for (const host of otlp.https) await container.interceptOutboundHttps(host, handler);
+    for (const host of otlp.http) await container.interceptOutboundHttp(host, handler);
   }
 }

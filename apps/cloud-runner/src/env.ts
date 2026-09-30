@@ -1,13 +1,15 @@
 import type { EgressEnv } from './outbound';
+import type { OtelEgressEnv } from './otel';
 import type { WorkerAgent } from './worker-agent';
 
 /**
  * Worker bindings, vars and secrets. See README.md for which is which.
  * Secrets: DISPATCH_TOKEN, BUILDD_API_KEY, AI_GATEWAY_TOKEN or MODEL_PROXY_KEY,
- * and (local only) ANTHROPIC_DIRECT_API_KEY. Everything else is a plain var. The egress
- * settings are in EgressEnv (outbound.ts).
+ * OTEL_EXPORTER_OTLP_AUTH_HEADER / OTEL_EXPORTER_OTLP_AUTH_VALUE, and (local only)
+ * ANTHROPIC_DIRECT_API_KEY. Everything else is a plain var. The egress settings
+ * are in EgressEnv (outbound.ts), the telemetry ones in OtelEgressEnv (otel.ts).
  */
-export interface Env extends EgressEnv {
+export interface Env extends EgressEnv, OtelEgressEnv {
   WorkerAgent: DurableObjectNamespace<WorkerAgent>;
   /**
    * Must equal the workspace's webhookConfig.token. Also proves to buildd

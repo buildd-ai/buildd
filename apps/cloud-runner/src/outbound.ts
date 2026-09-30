@@ -227,7 +227,7 @@ export interface OutboundRequestLike {
 
 export type EgressDecision =
   | { action: 'passthrough' }
-  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
+  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none' }
   | { action: 'reject'; status: number; message: string };
 
 export interface RewriteContext {

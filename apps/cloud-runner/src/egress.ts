@@ -21,6 +21,7 @@ import {
   type GithubGrant,
   type ServerModelEndpointState,
 } from './outbound';
+import { rewriteOtlp } from './otel';
 import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent } from './run-report';
 
 export interface EgressProps {
@@ -38,6 +39,10 @@ interface AgentSource {
 export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
   async fetch(request: Request): Promise<Response> {
     const at = Date.now();
+    // The OTLP collector, only when OTEL_EXPORTER_OTLP_ENDPOINT is set and this
+    // is its exact origin (otel.ts). Otherwise null and nothing below changes.
+    const otlp = rewriteOtlp({ url: request.url, headers: request.headers }, this.env);
+    if (otlp) return this.forwardOtlp(request, otlp, at);
     const kind = classifyEgressHost(new URL(request.url).hostname);
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
@@ -77,6 +82,26 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       return r;
     });
     return this.counted(cls, at, res);
+  }
+
+  /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
+  private async forwardOtlp(request: Request, decision: NonNullable<ReturnType<typeof rewriteOtlp>>, at: number): Promise<Response> {
+    if (decision.action === 'reject') {
+      this.record({ type: 'request', cls: 'passthrough', at, rejected: true });
+      return new Response(`${decision.message}\n`, { status: decision.status });
+    }
+    if (decision.action !== 'forward') return this.counted('passthrough', at, fetch(request));
+    if (this.env.EGRESS_DEBUG_ECHO === '1') {
+      // Local smoke only: the path and what was injected, never a value.
+      console.log(`[cloud-runner] otlp echo ${new URL(decision.url).pathname} injected=${decision.injected}`);
+      return this.counted('passthrough', at, Promise.resolve(Response.json(await describeForwardForDebug(decision), { headers: { 'x-buildd-egress-echo': '1' } })));
+    }
+    return this.counted('passthrough', at, fetch(decision.url, {
+      method: request.method,
+      headers: decision.headers,
+      body: request.body,
+      redirect: 'manual',
+    }));
   }
 
   /**

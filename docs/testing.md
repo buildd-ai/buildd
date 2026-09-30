@@ -197,7 +197,15 @@ Run unit tests through the runner, never `bun test` directly:
 bun run test                   # scripts/run-unit-tests.ts — every file in its own process
 bun run scripts/run-unit-tests.ts apps/web/src/lib/foo.test.ts   # one or more specific files
 BUILDD_TEST_CONCURRENCY=8 bun run test                           # default 4, max 16
+BUILDD_TEST_TIMEOUT_MS=60000 bun run test                        # per-test deadline, default 30000
 ```
+
+The runner passes `--timeout` to every child because Bun's 5s default assumes an
+idle machine. Running `tsc` or a production build alongside the suite can push a
+millisecond-scale test past 5s, and it then passes when rerun alone. If a file
+times out at 30s it is hung, not slow — don't raise the number to hide it. Even
+so, prefer running resource-heavy checks (build, type check) and the unit suite
+one after another on a shared host.
 
 `bun test` (no `run`) is Bun's built-in runner and does NOT read the package
 script — it loads everything into one process, which is the failure mode this

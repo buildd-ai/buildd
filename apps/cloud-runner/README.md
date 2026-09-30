@@ -78,6 +78,7 @@ it as above).
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
@@ -302,6 +303,7 @@ registers `ctx.container.interceptOutboundHttps(host, ctx.exports.EgressHandler(
 | `github.com` | `/<owner>/<repo>[.git]/...` of the task's repo: `Authorization: Basic base64(x-access-token:<token>)` (git over HTTPS) |
 | `api.github.com`, `uploads.github.com` | `/repos/<owner>/<repo>/...` of the task's repo, and `api.github.com/graphql`: `Authorization: Bearer <token>` |
 | `codeload.github.com`, and any other path on the hosts above | Nothing added |
+| The OTLP collector's origin, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set | `<OTEL_EXPORTER_OTLP_AUTH_HEADER>: <OTEL_EXPORTER_OTLP_AUTH_VALUE>` (see Telemetry) |
 | anything else | Not intercepted (open egress in phase 1) |
 
 For every intercepted host the handler **first deletes** whatever the
@@ -410,3 +412,70 @@ host's LAN IP>` it checks `sent` and the fake buildd's receipt.
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
 "egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy
 configured alongside the gateway and checks that the proxy wins.
+
+## Telemetry
+
+Claude Code in the container can export its own OpenTelemetry to a collector
+you choose. Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set; without it the
+container env and the egress rules are exactly what they are otherwise (pinned
+in `src/otel.test.ts` and `src/supervisor.test.ts`). Logic: `src/otel.ts`.
+
+**What is emitted** (Claude Code's
+[monitoring docs](https://code.claude.com/docs/en/monitoring-usage)):
+
+- **Events, as OTLP logs.** `claude_code.tool_decision` (accept/reject and
+  who decided) and `claude_code.tool_result` (`tool_name`, `tool_use_id`,
+  `success`, `duration_ms`, `error_type`, input/result sizes) for every tool
+  call, `claude_code.api_request` (model, tokens, cost, `duration_ms`) and
+  `claude_code.api_error` for every model call, plus `user_prompt`,
+  `assistant_response` (text redacted) and others. Each carries `session.id`,
+  `prompt.id`, `event.timestamp` and `event.sequence` (a per-process counter),
+  so one dispatch's tool calls read in order, with outcomes, by filtering on
+  `buildd.task_id` + `buildd.attempt` and sorting by `event.sequence`.
+- **Metrics**: cost, tokens, sessions, lines changed, commits, PRs.
+- **Traces (beta, opt-in)**: with `OTEL_TRACES_BETA=1`, spans per prompt
+  (`claude_code.interaction` → `llm_request`, `tool` → `tool.execution`). The
+  container also gets a fresh `TRACEPARENT` per dispatch, which Agent SDK
+  sessions adopt as the parent, so all of one dispatch's spans share a trace
+  ID. The parent span itself is never exported.
+
+Every signal carries the resource attributes `buildd.task_id`,
+`buildd.attempt` and, set by the runner once the claim succeeds,
+`buildd.worker_id`.
+
+**Point it at a collector** (Worker vars, then redeploy):
+
+| Name | Kind | Notes |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | var | Base OTLP/HTTP URL, e.g. `https://otel.example.com`; Claude Code appends `/v1/logs`, `/v1/metrics`, `/v1/traces`. `https:` only (plain `http:` only for `localhost`, `127.0.0.1`, `host.docker.internal`), no userinfo, query or fragment, not a model or GitHub host |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | var | `http/protobuf` (default) or `http/json`. `grpc` is refused: the egress handler forwards HTTP requests |
+| `OTEL_EXPORTER_OTLP_AUTH_HEADER` | secret | Header for the collector credential; default `authorization` |
+| `OTEL_EXPORTER_OTLP_AUTH_VALUE` | secret | The full header value, e.g. `Bearer <token>`. Unset: exports go unauthenticated |
+| `OTEL_LOG_TOOL_DETAILS` | var | `1` to include tool arguments (Bash commands, MCP server/tool names, file paths on spans). Default off |
+| `OTEL_TRACES_BETA` | var | `1` for beta span tracing, see above. Default off |
+
+The container gets `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`,
+`OTEL_METRICS_EXPORTER=otlp`, the endpoint, protocol and
+`OTEL_RESOURCE_ATTRIBUTES`, and never the credential or any
+`OTEL_EXPORTER_OTLP_*HEADERS`. The egress handler intercepts the collector's
+host and, for its exact origin only (scheme, host and port), deletes the
+container's credential headers and the configured one, then adds the Worker's.
+A look-alike host, a subdomain or another port gets nothing; plain http to an
+https collector is refused. An invalid endpoint fails the run before the
+container starts (`usage`) rather than exporting nothing without saying so.
+
+**Privacy.** By default no content leaves: prompts and responses are redacted
+and tool arguments are omitted, leaving tool names, outcomes, durations and
+sizes. `OTEL_LOG_TOOL_DETAILS=1` is the only content opt-in the cloud runner
+passes; it adds commands and arguments, which can include file paths, repo
+names and anything else an agent types into a shell. Claude Code's
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT` and `OTEL_LOG_RAW_API_BODIES`
+are never set and are not on the runner's agent env allowlist
+(`apps/runner/src/agent-env.ts`). Claude Code's standard attributes also
+carry the signed-in Claude account's ids and email, when there is a sign-in. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (set by the image) blocks
+Anthropic-bound telemetry, not export to your collector.
+
+The smoke's egress step checks the container env, a synthetic OTLP POST
+(credential added by fingerprint, container auth stripped, plain http refused)
+and runs a real `claude -p` in the container, whose exports are logged by the
+echoing handler.
