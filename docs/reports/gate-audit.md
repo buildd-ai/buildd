@@ -102,12 +102,14 @@ regression without a human noticing nine dead runs.
 | 27 | `pr/route.ts:1214` | `merge_policy` | rejected | `evaluateAutoMergeSafety` refused |
 | 28 | `pr/route.ts:1236` | `mission_pr_lifecycle` | deferred | sibling task PRs still open against the integration branch |
 
-### check_path_claim — `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`
+### check_path_claim — `apps/web/src/lib/path-claim-check.ts` (shared by the MCP tool and `POST /api/tasks/[id]/path-claim`)
+
+Both entry points call `checkPathClaim`; `surface` is `mcp:check_path_claim` or `POST /api/tasks/[id]/path-claim`. Before the extraction the MCP copy fired neither row.
 
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
-| 29 | `path-claim/route.ts:96` | `path_claim` | rejected | wildcard claim |
-| 30 | `path-claim/route.ts:193` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
+| 29 | `path-claim-check.ts:98` | `path_claim` | rejected | wildcard claim |
+| 30 | `path-claim-check.ts:176` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
 
 ### request_pr_review — `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`
 
