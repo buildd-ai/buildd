@@ -6,6 +6,13 @@ import {
   GITHUB_TOKEN_REFRESH_MARGIN_MS,
   GithubTokenCache,
   INTERCEPTED_HOSTS,
+  MODEL_ENDPOINT_FAILURE_BACKOFF_MS,
+  ModelEndpointCache,
+  NoModelEndpointError,
+  modelEndpointRequest,
+  needsServerModelEndpoint,
+  parseServerModelEndpoint,
+  type ServerModelEndpoint,
   classifyEgressHost,
   describeForwardForDebug,
   fingerprint,
@@ -503,5 +510,161 @@ describe('describeForwardForDebug', () => {
     expect(echo).toMatchObject({ url: 'https://litellm.example.com/v1/messages', injected: 'proxy' });
     expect(echo.headers.authorization).toBe(await fingerprint('Bearer proxy-secret-key'));
     expect(JSON.stringify(echo)).not.toContain('proxy-secret-key');
+  });
+});
+
+
+// ── Server model endpoint (docs/design/agent-model-endpoint.md §3) ────────────
+
+const SERVER: ServerModelEndpoint = { baseUrl: 'https://litellm.example.com', key: 'sk-team-endpoint', authHeader: 'authorization' };
+const PROXY = { MODEL_PROXY_URL: 'https://litellm.example.com/override', MODEL_PROXY_KEY: 'proxy-secret-key' };
+const DIRECT = { ALLOW_DIRECT_ANTHROPIC: '1', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' };
+
+describe('resolveModelRoute: server endpoint precedence', () => {
+  test('direct > Worker MODEL_PROXY_URL > server endpoint > AI Gateway > refuse', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY, ...DIRECT }, SERVER).kind).toBe('direct');
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY }, SERVER)).toMatchObject({ kind: 'proxy', baseUrl: 'https://litellm.example.com/override', key: 'proxy-secret-key' });
+    expect(resolveModelRoute({ ...GATEWAY_ENV }, SERVER)).toEqual({ kind: 'proxy', baseUrl: SERVER.baseUrl, key: SERVER.key, authHeader: 'authorization' });
+    expect(resolveModelRoute({}, SERVER)).toEqual({ kind: 'proxy', baseUrl: SERVER.baseUrl, key: SERVER.key, authHeader: 'authorization' });
+    expect(resolveModelRoute({ ...GATEWAY_ENV }, null).kind).toBe('gateway');
+    expect(resolveModelRoute({}, null).kind).toBe('unconfigured');
+  });
+
+  test('the x-api-key header choice is kept', () => {
+    expect(resolveModelRoute({}, { ...SERVER, authHeader: 'x-api-key' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
+  });
+
+  test("'unavailable' refuses rather than silently spending on the gateway", () => {
+    const r = resolveModelRoute({ ...GATEWAY_ENV }, 'unavailable');
+    expect(r.kind).toBe('unconfigured');
+    // ...but never overrides the operator override or the local direct route.
+    expect(resolveModelRoute({ ...PROXY }, 'unavailable').kind).toBe('proxy');
+    expect(resolveModelRoute({ ...DIRECT }, 'unavailable').kind).toBe('direct');
+  });
+
+  test('default no-op: omitted and null are byte-identical to the pre-endpoint result', () => {
+    const envs = [
+      {}, GATEWAY_ENV, PROXY, DIRECT, { ...GATEWAY_ENV, ...PROXY }, { ...GATEWAY_ENV, ...PROXY, ...DIRECT },
+      { ...PROXY, MODEL_PROXY_AUTH_HEADER: 'x-api-key' }, { ...PROXY, MODEL_PROXY_AUTH_HEADER: 'cookie' },
+      { MODEL_PROXY_URL: 'nope', MODEL_PROXY_KEY: 'k' }, { MODEL_PROXY_URL: 'https://litellm.example.com' },
+      { ...GATEWAY_ENV, AI_GATEWAY_ID: '../x' }, { ANTHROPIC_DIRECT_API_KEY: 'sk' }, { ALLOW_DIRECT_ANTHROPIC: '1' },
+    ];
+    for (const env of envs) {
+      expect(resolveModelRoute(env, null)).toEqual(resolveModelRoute(env));
+      expect(resolveModelRoute(env, undefined)).toEqual(resolveModelRoute(env));
+    }
+  });
+
+  test('a server-endpoint route strips container credentials and sets only its own header', () => {
+    const d = rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', headers: hostileHeaders() },
+      { model: resolveModelRoute({}, SERVER) },
+    );
+    expect(d.action).toBe('forward');
+    if (d.action !== 'forward') return;
+    expect(d.url).toBe('https://litellm.example.com/v1/messages?beta=true');
+    expect(d.headers.get('authorization')).toBe('Bearer sk-team-endpoint');
+    expect(d.headers.get('x-api-key')).toBeNull();
+  });
+});
+
+describe('needsServerModelEndpoint', () => {
+  test('false when direct or MODEL_PROXY_URL wins, true otherwise', () => {
+    expect(needsServerModelEndpoint({})).toBe(true);
+    expect(needsServerModelEndpoint(GATEWAY_ENV)).toBe(true);
+    expect(needsServerModelEndpoint({ ANTHROPIC_DIRECT_API_KEY: 'sk' })).toBe(true);
+    expect(needsServerModelEndpoint(PROXY)).toBe(false);
+    expect(needsServerModelEndpoint(DIRECT)).toBe(false);
+  });
+});
+
+describe('parseServerModelEndpoint', () => {
+  test('accepts the route shape and defaults the header', () => {
+    expect(parseServerModelEndpoint({ kind: 'gateway', baseUrl: 'https://litellm.example.com/', key: 'k', authHeader: 'authorization', models: {} }))
+      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).authHeader).toBe('authorization');
+  });
+  test('throws on anything unexpected', () => {
+    for (const b of [null, {}, { baseUrl: 'http://litellm.example.com', key: 'k' }, { baseUrl: 'https://u:p@litellm.example.com', key: 'k' },
+      { baseUrl: 'https://litellm.example.com', key: '' }, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'cookie' },
+      { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 5 }]) {
+      expect(() => parseServerModelEndpoint(b)).toThrow();
+    }
+  });
+});
+
+describe('modelEndpointRequest', () => {
+  test('carries both credentials, the task and the worker', () => {
+    const { url, init } = modelEndpointRequest({ BUILDD_SERVER: 'https://buildd.example/', BUILDD_API_KEY: 'bld_x', DISPATCH_TOKEN: 'd' }, 'task-1', 'worker-1');
+    expect(url).toBe('https://buildd.example/api/runner/model-endpoint');
+    const h = init.headers as Record<string, string>;
+    expect(h.Authorization).toBe('Bearer bld_x');
+    expect(h[DISPATCH_TOKEN_HEADER]).toBe('d');
+    expect(JSON.parse(String(init.body))).toEqual({ taskId: 'task-1', workerId: 'worker-1' });
+  });
+  test('refuses without the dispatch token', () => {
+    expect(() => modelEndpointRequest({ BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_x' }, 't')).toThrow();
+  });
+});
+
+describe('ModelEndpointCache', () => {
+  function make(fetchEndpoint: () => Promise<ServerModelEndpoint>) {
+    let now = NOW;
+    let calls = 0;
+    const cache = new ModelEndpointCache({ fetchEndpoint: () => { calls++; return fetchEndpoint(); }, now: () => now, log: () => {} });
+    return { cache, advance: (ms: number) => { now += ms; }, calls: () => calls };
+  }
+
+  test('lazy, cached for the run, one in-flight fetch for concurrent callers', async () => {
+    const c = make(async () => SERVER);
+    expect(c.calls()).toBe(0);
+    const [a, b] = await Promise.all([c.cache.get(), c.cache.get()]);
+    expect(a).toEqual(SERVER);
+    expect(b).toEqual(SERVER);
+    await c.cache.get();
+    expect(c.calls()).toBe(1);
+  });
+
+  test('a 404 is cached as none for the run', async () => {
+    const c = make(async () => { throw new NoModelEndpointError(); });
+    expect(await c.cache.get()).toBeNull();
+    c.advance(60 * 60 * 1000);
+    expect(await c.cache.get()).toBeNull();
+    expect(c.calls()).toBe(1);
+  });
+
+  test('other failures are unavailable for the backoff, then refetched', async () => {
+    let fail = true;
+    const c = make(async () => { if (fail) throw new Error('HTTP 502'); return SERVER; });
+    expect(await c.cache.get()).toBe('unavailable');
+    fail = false;
+    expect(await c.cache.get()).toBe('unavailable');
+    expect(c.calls()).toBe(1);
+    c.advance(MODEL_ENDPOINT_FAILURE_BACKOFF_MS);
+    expect(await c.cache.get()).toEqual(SERVER);
+    expect(c.calls()).toBe(2);
+  });
+
+  test('invalidate after a 401 drops the key and refetches only after the backoff', async () => {
+    const c = make(async () => SERVER);
+    await c.cache.get();
+    c.cache.invalidate();
+    expect(await c.cache.get()).toBe('unavailable');
+    expect(c.calls()).toBe(1);
+    c.advance(MODEL_ENDPOINT_FAILURE_BACKOFF_MS);
+    expect(await c.cache.get()).toEqual(SERVER);
+    expect(c.calls()).toBe(2);
+  });
+
+  test('reset forgets everything, and a fetch from the previous run is discarded', async () => {
+    let resolve!: (e: ServerModelEndpoint) => void;
+    const c = make(() => new Promise<ServerModelEndpoint>((r) => { resolve = r; }));
+    const stale = c.cache.get();
+    c.cache.reset();
+    resolve(SERVER);
+    expect(await stale).toBe('unavailable');
+    const fresh = c.cache.get();
+    resolve({ ...SERVER, key: 'next-run' });
+    expect(await fresh).toMatchObject({ key: 'next-run' });
   });
 });

@@ -12,7 +12,15 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { getAgentByName } from 'agents';
 import type { Env } from './env';
-import { classifyEgressHost, describeForwardForDebug, resolveModelRoute, rewriteOutbound, type GithubGrant } from './outbound';
+import {
+  classifyEgressHost,
+  describeForwardForDebug,
+  needsServerModelEndpoint,
+  resolveModelRoute,
+  rewriteOutbound,
+  type GithubGrant,
+  type ServerModelEndpointState,
+} from './outbound';
 import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent } from './run-report';
 
 export interface EgressProps {
@@ -23,6 +31,8 @@ export interface EgressProps {
 interface AgentSource {
   getGithubGrant(): Promise<GithubGrant | null>;
   recordEgress(event: EgressEvent): Promise<void>;
+  getModelEndpoint(): Promise<ServerModelEndpointState>;
+  reportModelEndpointAuthFailure(): Promise<void>;
 }
 
 export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
@@ -33,9 +43,13 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
 
     const github = kind === 'github' ? await this.githubGrant() : null;
+    // The team's agent model endpoint, only when neither the local direct
+    // route nor the Worker's MODEL_PROXY_URL override would win anyway.
+    const server = kind === 'anthropic' && needsServerModelEndpoint(this.env) ? await this.modelEndpoint() : null;
+    const viaServer = !!server && server !== 'unavailable';
     const decision = rewriteOutbound(
       { url: request.url, headers: request.headers },
-      { model: resolveModelRoute(this.env), github },
+      { model: resolveModelRoute(this.env, server), github },
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
     if (decision.action === 'reject') {
@@ -49,12 +63,20 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // redirect: 'manual' so a redirect goes back to the container, which
     // follows it itself. The Worker never carries an injected credential to a
     // redirect target.
-    return this.counted(cls, at, fetch(decision.url, {
+    const res = fetch(decision.url, {
       method: request.method,
       headers: decision.headers,
       body: request.body,
       redirect: 'manual',
-    }));
+    }).then((r) => {
+      if (viaServer && (r.status === 401 || r.status === 403)) {
+        // The endpoint rejected its key: have the agent drop it and refetch
+        // after a short backoff (a rotated key then takes effect mid-run).
+        void this.agent().then(a => a?.reportModelEndpointAuthFailure()).catch(() => {});
+      }
+      return r;
+    });
+    return this.counted(cls, at, res);
   }
 
   /**
@@ -73,12 +95,31 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     if (!taskId) return;
     this.ctx.waitUntil((async () => {
       try {
-        const agent = (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
-        await agent.recordEgress(event);
+        const agent = await this.agent();
+        await agent?.recordEgress(event);
       } catch {
         // Counting is best effort.
       }
     })());
+  }
+
+  private async agent(): Promise<AgentSource | null> {
+    const taskId = this.ctx.props?.taskId;
+    if (!taskId) return null;
+    return (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+  }
+
+  /** The task's agent model endpoint, from its WorkerAgent's in-memory cache. */
+  private async modelEndpoint(): Promise<ServerModelEndpointState> {
+    const taskId = this.ctx.props?.taskId;
+    if (!taskId) return null;
+    try {
+      const agent = await this.agent();
+      return agent ? await agent.getModelEndpoint() : null;
+    } catch (err) {
+      console.log(`[cloud-runner] task ${taskId}: model endpoint lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 'unavailable';
+    }
   }
 
   /** The task's installation token, from its WorkerAgent's in-memory cache. */

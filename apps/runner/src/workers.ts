@@ -71,8 +71,9 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import { applyModelEnv, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
-import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -1788,7 +1789,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1830,7 +1831,9 @@ export class WorkerManager {
     // particular claim but a valid one was delivered recently).
     let serverApiKey = fromClaim.serverApiKey;
     let serverOauthToken = fromClaim.serverOauthToken;
-    if (!serverApiKey && !serverOauthToken) {
+    // A team agent model endpoint won the claim's ranking: it is the only model
+    // credential for this worker, so no cached Anthropic credential is reused.
+    if (!serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
@@ -1916,6 +1919,11 @@ export class WorkerManager {
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
     }
+    if (claimedWorker.modelEndpoint) {
+      worker.modelEndpoint = claimedWorker.modelEndpoint;
+      console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
+    }
+    if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
     if (claimedWorker.claudeAccessToken) {
       worker.claudeAccessToken = claimedWorker.claudeAccessToken;
       worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
@@ -3032,7 +3040,17 @@ export class WorkerManager {
         tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
+        modelEndpoint: worker.modelEndpoint,
+        teamEndpointWithheld: worker.modelEndpointIgnored,
+        budgetModel: TIER_DEFAULTS.budget.model,
       });
+      const teamEndpointApplied = modelEnv.endpoint === 'team';
+      if (teamEndpointApplied) {
+        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no Anthropic credential given to the agent`);
+      }
+      if (modelEnv.teamEndpointIgnored) {
+        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's LLM_PROVIDER (per-machine config) takes priority`);
+      }
       if (this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
       }
@@ -3216,7 +3234,9 @@ export class WorkerManager {
       // Fallback: use claudeAccessToken from the claim response (always available if a
       // claude_credential exists), which remains valid until the broker has had time to
       // refresh it.
-      if (worker.claudeAccessToken || worker.claudeCredentialId) {
+      // Never alongside a team endpoint: a Claude seat token must not ride
+      // along to a third-party host.
+      if (!teamEndpointApplied && (worker.claudeAccessToken || worker.claudeCredentialId)) {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 
@@ -3826,8 +3846,12 @@ export class WorkerManager {
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: invocationSessionId,
         cwd,
-        model: sessionModel,
-        ...(fallbackModel ? { fallbackModel } : {}),
+        // Through a team endpoint the wire name may be an alias (§5); the
+        // native id stays what is recorded and priced.
+        ...(() => {
+          const wire = endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
+          return { model: wire.model, ...(wire.fallbackModel ? { fallbackModel: wire.fallbackModel } : {}) };
+        })(),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         ...(!isCodexTask && workerBwrapArgv
           ? {

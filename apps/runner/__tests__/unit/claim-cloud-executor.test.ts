@@ -15,12 +15,13 @@ const realFetch = globalThis.fetch;
 const realError = console.error;
 const realExecutor = process.env.BUILDD_EXECUTOR;
 
-function makeClient() {
+function makeClient(extra: Partial<LocalUIConfig> = {}) {
   return new BuilddClient({
     projectsRoot: '/tmp',
     builddServer: 'http://server.invalid',
     apiKey: 'test-key',
     maxConcurrent: 1,
+    ...extra,
   } as LocalUIConfig);
 }
 
@@ -75,5 +76,39 @@ describe('claimTask executor marker', () => {
     const { workers } = await makeClient().claimTask(1);
     expect('executor' in sentBodies[0]).toBe(false);
     expect(workers[0].serverApiKey).toBe('leaked-serverApiKey');
+  });
+});
+
+describe('agent model endpoint on the claim (docs/design/agent-model-endpoint.md)', () => {
+  beforeEach(() => { sentBodies = []; console.error = () => {}; });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+    if (realExecutor === undefined) delete process.env.BUILDD_EXECUTOR;
+    else process.env.BUILDD_EXECUTOR = realExecutor;
+  });
+
+  test('modelEndpoint is a credential field, so a cloud claim drops it', async () => {
+    expect(CLAIM_CREDENTIAL_FIELDS as readonly string[]).toContain('modelEndpoint');
+    process.env.BUILDD_EXECUTOR = 'cloud';
+    respond([{ id: 'w-1', taskId: 't-1', modelEndpoint: { kind: 'gateway', baseUrl: 'https://litellm.example.com', authToken: 'leaked-endpoint-key', authHeader: 'authorization', models: {} } }]);
+    const { workers } = await makeClient().claimTask(1, 'ws-1', 'r', 't-1');
+    expect(workers[0].modelEndpoint).toBeUndefined();
+    expect(JSON.stringify(workers)).not.toContain('leaked-endpoint-key');
+  });
+
+  test('llmProviderOverride: true when a per-machine provider is configured, a boolean only', async () => {
+    delete process.env.BUILDD_EXECUTOR;
+    respond([]);
+    await makeClient({ llmProvider: { provider: 'openrouter', apiKey: 'machine-key', baseUrl: 'https://openrouter.ai/api' } }).claimTask(1);
+    expect(sentBodies[0].llmProviderOverride).toBe(true);
+    expect(JSON.stringify(sentBodies[0])).not.toContain('machine-key');
+  });
+
+  test('no per-machine provider: llmProviderOverride is false', async () => {
+    delete process.env.BUILDD_EXECUTOR;
+    respond([]);
+    await makeClient().claimTask(1);
+    expect(sentBodies[0].llmProviderOverride).toBe(false);
   });
 });

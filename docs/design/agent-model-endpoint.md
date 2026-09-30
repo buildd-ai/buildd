@@ -1,6 +1,39 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "agent-endpoint-resolver"
+    type: "symbol"
+    name: "resolveAgentModelRoute"
+    path: "packages/core/agent-endpoint.ts"
+  - id: "claim-attaches-endpoint"
+    type: "symbol_reachable"
+    symbol: "attachAgentEndpoints"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+  - id: "runner-applies-endpoint"
+    type: "symbol_reachable"
+    symbol: "mapAgentModel"
+    entry: "apps/runner/src/agent-model-env.ts"
+  - id: "cloud-route"
+    type: "symbol_reachable"
+    symbol: "resolveAgentModelRoute"
+    entry: "apps/web/src/app/api/runner/model-endpoint/route.ts"
+  - id: "ranking-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/agent-endpoint-resolve.test.ts"
+  - id: "claim-injection-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/claim/agent-endpoint-injection.test.ts"
+  - id: "runner-env-invariant-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/agent-model-env.test.ts"
+  - id: "cloud-route-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/runner/model-endpoint/route.test.ts"
+---
 # One agent model endpoint for host and cloud runners
 
-**Status:** Proposed
+**Status:** Implemented (task `6da66631`)
 **Related:** `docs/credentials-architecture.md`, `packages/core/litellm-gateway.ts`, `packages/core/secrets/types.ts`, `packages/core/db/schema.ts` (`secrets`), `packages/shared/src/executor.ts` (`CLAIM_CREDENTIAL_FIELDS`), `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`, `apps/web/src/app/api/runner/github-token/route.ts`, `apps/web/src/lib/credential-health.ts`, `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/chat/openrouter-id.ts`, `packages/ai-kit/src/models/call-config.ts` (`gatewayModel`), `packages/core/model-tier-defaults.ts`, `apps/runner/src/index.ts` (`buildProviderConfig`), `apps/runner/src/workers.ts`, `apps/runner/src/prompt-builder.ts` (`resolveSessionModel`), `apps/cloud-runner/src/outbound.ts` (`resolveModelRoute`), `apps/cloud-runner/src/egress.ts`, `apps/web/src/app/app/(protected)/settings/providers/`, `docs/design/cloudflare-sandbox-runner.md`
 
 ---
