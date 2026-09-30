@@ -58,6 +58,7 @@ describe('FleetOverview', () => {
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 5)])).map(p => p.text).join('')).toBe('Fleet idle. 5 slots free.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 2, false)])).map(p => p.text).join('')).toBe('All runners offline.');
     expect(fleetOverviewHeadline(fleet([])).map(p => p.text).join('')).toBe('No runners online.');
+    expect(fleetOverviewHeadline(fleet([]), 'Team 1').map(p => p.text).join('')).toBe('No runners online for Team 1.');
   });
 
   it('flags a runner whose agent is waiting on you', () => {

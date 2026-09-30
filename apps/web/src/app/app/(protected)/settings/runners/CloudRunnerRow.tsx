@@ -19,10 +19,10 @@ export default function CloudRunnerRow({ teamId }: { teamId: string }) {
           <span className="font-mono text-[13px] font-semibold text-text-primary">Cloud runner</span>
           {loaded && <StatusChip tone={state.tone}>{state.chip}</StatusChip>}
         </div>
-        <div className="mt-1 truncate font-mono text-[11px] text-text-muted">Cloudflare containers, one per task</div>
+        <div className="mt-1 truncate font-mono text-[11px] text-text-muted">One container per task</div>
       </div>
       {loaded && (
-        <a href="#cloudflare" className={`btn shrink-0 ${state.kind === 'empty' ? '' : 'btn-quiet'}`}>
+        <a href="#cloudflare" className={`btn shrink-0 ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}>
           {state.kind === 'empty' ? 'Set up' : state.next}
         </a>
       )}

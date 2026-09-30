@@ -150,7 +150,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
       {teamName ? `${teamName} · ` : ''}Account {cred.accountId ?? '?'} · token {cred.tokenHint ?? '?'}
     </span>
   ) : (
-    <>{teamName ? `${teamName} · ` : ''}Run tasks in Cloudflare containers, one per task</>
+    <>{teamName ? `${teamName} · ` : ''}Cloud runner account</>
   );
 
   return (
@@ -167,7 +167,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
           onClick={nextStep}
           disabled={busy}
           data-testid="cloudflare-next"
-          className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}
+          className={`btn ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}
         >
           {busy ? 'Working…' : state.next}
         </button>

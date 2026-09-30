@@ -962,8 +962,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
   const meta = loading ? 'Checking…'
     : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
     : status?.connected ? `One-tap login · ${where}${status.lastVerifiedAt ? ` · verified ${new Date(status.lastVerifiedAt).toLocaleDateString()}` : ''}`
-    : fallbackConnected ? 'Setup token or API key · all workspaces'
-    : 'Seat or API key sign-in for your runners';
+    : fallbackConnected ? 'Setup token or API key'
+    : 'Seat or API key';
   const needsConnect = !loading && !allTeams && !oauth && (status?.connected ? status.expired : !fallbackConnected);
 
   return (
@@ -975,7 +975,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       open={open}
       onToggle={onToggle}
       action={needsConnect ? (
-        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-primary">
+        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
           {status?.connected ? 'Reconnect' : 'Connect'}
         </button>
       ) : undefined}
@@ -1364,7 +1364,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
   const meta = loading ? 'Checking…'
     : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
     : status?.connected ? `${status.accountId ? `${status.accountId} · ` : ''}${where}`
-    : 'ChatGPT sign-in for Codex runs';
+    : 'ChatGPT sign-in';
   const needsSignIn = !loading && !allTeams && !device && (!status?.connected || status.expired);
 
   return (
@@ -1376,7 +1376,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       open={open}
       onToggle={onToggle}
       action={needsSignIn ? (
-        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className="btn btn-primary">
+        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className={`btn ${status?.expired ? 'btn-accent' : ''}`}>
           Sign in
         </button>
       ) : undefined}

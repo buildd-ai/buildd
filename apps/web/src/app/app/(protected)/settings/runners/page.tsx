@@ -19,7 +19,7 @@ const NO_FLEET: FleetSnapshot = { runners: [], live: 0, capacity: 0, window: { f
  * with), then runner tokens (how it reaches buildd).
  */
 export default async function RunnersSettingsPage() {
-  const { teams, currentTeamId, workspaces } = await loadSettingsContext();
+  const { teams, currentTeamId, currentTeam, workspaces } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet] = await Promise.all([
@@ -38,7 +38,11 @@ export default async function RunnersSettingsPage() {
       title="Runners"
       description="What runs your tasks, what it signs in with, and the tokens that connect it to buildd."
     >
-      <FleetOverview fleet={fleet} cloud={teamId ? <CloudRunnerRow teamId={teamId} /> : undefined} />
+      <FleetOverview
+        fleet={fleet}
+        teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}
+        cloud={teamId ? <CloudRunnerRow teamId={teamId} /> : undefined}
+      />
       <SettingsSection title="Connections" id="agent-backends" bare>
         <div data-testid="runners-connections" className="card divide-y divide-border-default p-0">
           <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />

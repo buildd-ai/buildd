@@ -16,10 +16,11 @@ import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 
 /** "3 of 8 slots busy." / "Fleet idle. 8 slots free." plus "1 offline." */
-export function fleetOverviewHeadline(fleet: FleetSnapshot): HeadlinePart[] {
+export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | null): HeadlinePart[] {
   const offline = fleet.runners.filter(r => !r.online).length;
   const tail: HeadlinePart[] = offline > 0 ? [{ text: ` ${offline} offline.` }] : [];
-  if (fleet.runners.length === 0) return [{ text: 'No runners online.' }];
+  // Another team's runner can be online, so say whose fleet is empty.
+  if (fleet.runners.length === 0) return [{ text: teamName ? `No runners online for ${teamName}.` : 'No runners online.' }];
   if (fleet.capacity === 0 && fleet.live === 0) return [{ text: 'All runners offline.' }];
   if (fleet.live > 0) {
     return [{ text: `${fleet.live} of ${fleet.capacity}`, tone: 'accent' }, { text: ' slots busy.' }, ...tail];
@@ -56,8 +57,8 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
   );
 }
 
-export default function FleetOverview({ fleet, cloud }: { fleet: FleetSnapshot; cloud?: ReactNode }) {
-  const headline = fleetOverviewHeadline(fleet);
+export default function FleetOverview({ fleet, cloud, teamName }: { fleet: FleetSnapshot; cloud?: ReactNode; teamName?: string | null }) {
+  const headline = fleetOverviewHeadline(fleet, teamName);
   return (
     <SettingsSection
       title={fleetLabel(fleet)}
@@ -68,16 +69,18 @@ export default function FleetOverview({ fleet, cloud }: { fleet: FleetSnapshot; 
         <p data-testid="runners-fleet-headline" className="font-mono text-[18px] font-semibold leading-tight tracking-[-0.3px] text-text-primary md:text-[20px]">
           {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
         </p>
-        <ul className="card divide-y divide-border-default p-0">
-          {fleet.runners.length === 0 ? (
-            <li data-testid="fleet-runner-empty" className="px-4 py-4 font-mono text-[12.5px] text-text-secondary">
-              Start one with <code className="text-text-primary">buildd</code> on any machine, signed in with a runner token below.
-            </li>
-          ) : (
-            fleet.runners.map(r => <RunnerRow key={r.id} runner={r} />)
-          )}
-          {cloud}
-        </ul>
+        {/* Home's empty-fleet box, same words. */}
+        {fleet.runners.length === 0 && (
+          <div data-testid="fleet-runner-empty" className="border border-dashed border-border-strong px-4 py-4 font-mono text-[12.5px] text-text-secondary md:px-5">
+            Start one with <code className="text-text-primary">buildd</code> on any machine, signed in with a runner token below.
+          </div>
+        )}
+        {(fleet.runners.length > 0 || cloud) && (
+          <ul className="card divide-y divide-border-default p-0">
+            {fleet.runners.map(r => <RunnerRow key={r.id} runner={r} />)}
+            {cloud}
+          </ul>
+        )}
       </div>
     </SettingsSection>
   );

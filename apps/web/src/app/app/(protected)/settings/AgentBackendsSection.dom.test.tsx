@@ -54,8 +54,8 @@ describe('AgentBackendsSection rows', () => {
     expect(chips('codex-row')).toEqual(['Not connected']);
     expect(chips('routing-row')).toEqual(['Both on']);
     // Nothing to connect for a connected Claude; Codex's one next step is Sign in.
-    expect(row('claude-row').querySelector('.btn-primary')).toBeNull();
-    expect(row('codex-row').querySelector('.btn-primary')?.textContent).toBe('Sign in');
+    expect(row('claude-row').querySelectorAll('button').length).toBe(1);
+    expect([...row('codex-row').querySelectorAll('button')].map((b) => b.textContent)).toContain('Sign in');
   });
 
   it('opens one row at a time, with the shared scope control inside', async () => {
