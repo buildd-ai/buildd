@@ -161,6 +161,15 @@ describe('warm generations', () => {
     expect((await call('GET', '/warm')).status).toBe(404);
   });
 
+  test('a refresh in flight does not hide the committed generation below it', async () => {
+    const g = await seedGeneration('committed');
+    const { generation } = await (await call('POST', '/warm/begin', '{}')).json() as { generation: string };
+    await call('PUT', `/warm/${generation}/repo`, 'half-uploaded');
+    const res = await call('GET', '/warm');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { generation: string }).generation).toBe(g);
+  });
+
   test('one refresh per workspace in flight: a second begin is refused, another workspace is not affected', async () => {
     expect((await call('POST', '/warm/begin', '{}')).status).toBe(201);
     expect((await call('POST', '/warm/begin', '{}')).status).toBe(409);
