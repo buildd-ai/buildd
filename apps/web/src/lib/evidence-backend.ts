@@ -22,6 +22,7 @@ import { isIP } from 'net';
 import {
   DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '@buildd/core/config';
 import { db } from '@buildd/core/db';
 import { evidenceBackends, secrets, workspaces } from '@buildd/core/db/schema';
@@ -29,7 +30,7 @@ import { decrypt } from '@buildd/core/secrets';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { recordCredentialAuthSuccess } from './credential-health';
 import { getDefaultStorageClient, isStorageConfigured } from './storage';
-import { buildEvidenceProbeKey } from './storage-keys';
+import { assertNormalizedObjectKey, buildEvidenceProbeKey } from './storage-keys';
 
 export const EVIDENCE_CREDENTIAL_PURPOSE = 'evidence_storage_credential' as const;
 
@@ -362,6 +363,76 @@ export function evidenceSseParams(backend: Pick<ResolvedEvidenceBackend, 'sse' |
   if (backend.sse === 'aws:kms') return { ServerSideEncryption: 'aws:kms', ...(backend.kmsKeyId ? { SSEKMSKeyId: backend.kmsKeyId } : {}) };
   return {};
 }
+
+/** Presigned evidence PUTs are valid for 15 minutes (spec, invariant 2). */
+export const EVIDENCE_UPLOAD_EXPIRY_SECONDS = 15 * 60;
+
+/**
+ * Presign a PUT of exactly `sizeBytes` to `key` on the resolved backend.
+ *
+ * `content-length` is a signed header, so a body of any other length fails
+ * SigV4 at the bucket. SSE fields go into the signed request. The URL carries
+ * the access key id (as every SigV4 presigned URL does) but never the secret.
+ * Throws on an unusable backend or a signing failure; callers turn that into a
+ * refusal.
+ */
+export async function generateEvidenceUploadUrl(
+  backend: ResolvedEvidenceBackend,
+  key: string,
+  sizeBytes: number,
+  opts: { resolveHost?: ResolveHost } = {},
+): Promise<string> {
+  assertNormalizedObjectKey(key);
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    throw new Error('sizeBytes must be a positive integer');
+  }
+  if (!backend.usable) throw new Error(backend.problem ?? 'backend is not usable');
+
+  let client: S3Client;
+  if (!backend.backendId) {
+    client = getDefaultStorageClient();
+  } else {
+    const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, backend.backendId) });
+    if (!row) throw new Error('backend not found');
+    client = await getEvidenceS3Client(row as EvidenceBackendRow, opts);
+  }
+
+  const command = new PutObjectCommand({
+    Bucket: backend.bucket,
+    Key: key,
+    ContentLength: sizeBytes,
+    ...evidenceSseParams(backend),
+  });
+  // The SDK's default checksum mode adds x-amz-checksum-crc32 to a presigned
+  // PutObject, computed over the EMPTY body at signing time; S3 then rejects
+  // the real body against it. The body is unknown here, so no checksum.
+  // The checksum middleware (build step) is attached only when the command
+  // resolves, so it cannot be removed up front. Strip its output later in the
+  // build step; the presigner intercepts in finalizeRequest and never calls on.
+  command.middlewareStack.add(
+    (next) => async (args) => {
+      const headers = (args.request as { headers?: Record<string, string> }).headers;
+      if (headers) {
+        for (const name of Object.keys(headers)) {
+          const lower = name.toLowerCase();
+          if (lower.startsWith('x-amz-checksum-') || lower === 'x-amz-sdk-checksum-algorithm') delete headers[name];
+        }
+      }
+      return next(args);
+    },
+    { step: 'build', priority: 'low', name: 'evidenceStripPresignChecksum' },
+  );
+  return getSignedUrl(client, command, {
+    expiresIn: EVIDENCE_UPLOAD_EXPIRY_SECONDS,
+    signableHeaders: new Set(['content-length']),
+    // SSE rides in the signed query string, so the runner's PUT needs no
+    // header beyond Content-Length. Left to the default, the presigner makes
+    // these SIGNED HEADERS, and a PUT without them fails the signature.
+    hoistableHeaders: EVIDENCE_SSE_HEADERS,
+  });
+}
+
+const EVIDENCE_SSE_HEADERS = new Set(['x-amz-server-side-encryption', 'x-amz-server-side-encryption-aws-kms-key-id']);
 
 // ── Verification ───────────────────────────────────────────────────────────
 
