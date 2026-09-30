@@ -46,6 +46,7 @@ import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, 
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
+import { ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
@@ -423,9 +424,10 @@ export async function runChatTurn(args: {
           return 'not-applicable' as const;
         }
       }
-      // At most one approval card per turn; a second write waits.
+      // At most one approval card per turn; a second write waits. The kit's
+      // reason, so the card reads "not proposed", never "discarded".
       if (approvalsThisTurn >= 1) {
-        return { type: 'denied' as const, reason: 'Only one approval card per turn. Ask the user after this one is answered.' };
+        return { type: 'denied' as const, reason: ONE_CARD_PER_TURN_REASON };
       }
       // The card says exactly what changes, from current state. A target that
       // isn't exactly one thing gets no card: the tool answers with a question.

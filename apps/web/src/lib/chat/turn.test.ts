@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { isSystemDenied, ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 
 /**
@@ -345,6 +346,12 @@ describe('"make this a mission"', () => {
     await turn(userMsg('file two missions'));
     expect(lastAssistant().parts.filter(p => p.state === 'approval-requested')).toHaveLength(1);
     expect(apiCalls).toEqual([]);
+    // The refused call was never shown: it carries the server's mark and the
+    // kit's reason, so the card reads "not proposed", never "discarded".
+    const capped = lastAssistant().parts.find(p => p.toolCallId === 'c2');
+    expect(capped.state).toBe('output-denied');
+    expect(capped.approval).toMatchObject({ isAutomatic: true, reason: ONE_CARD_PER_TURN_REASON });
+    expect(isSystemDenied(capped)).toBe(true);
   });
 
   it('confirming files exactly one mission, links it to the conversation, and replay files nothing', async () => {
@@ -378,6 +385,8 @@ describe('"make this a mission"', () => {
     expect(linked).toEqual([]);
     expect(approvals[0].status).toBe('denied');
     expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('output-denied');
+    // The person's Discard: still reads "discarded".
+    expect(isSystemDenied(lastAssistant().parts.find(p => p.type === 'tool-manage_missions'))).toBe(false);
   });
 
   it('an edited approval (different input) decides and files nothing', async () => {

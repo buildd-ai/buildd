@@ -143,10 +143,12 @@ export async function reconcileApprovals(
 
 /**
  * Does the preview rebuilt at execution time describe the same write the
- * person approved? Same target and the same before-state fingerprint.
+ * person approved? Same target, the same before-state fingerprint, and the
+ * same rewritten fields (what runs is what the card showed).
  */
 export function previewMatches(approved: ApprovalPreview, now: ApprovalPreview): boolean {
   return approved.target.kind === now.target.kind
     && approved.target.id === now.target.id
-    && approved.fingerprint === now.fingerprint;
+    && approved.fingerprint === now.fingerprint
+    && JSON.stringify(approved.resolved ?? []) === JSON.stringify(now.resolved ?? []);
 }
