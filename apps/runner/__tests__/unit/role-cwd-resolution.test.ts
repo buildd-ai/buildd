@@ -173,8 +173,10 @@ function countOccurrences(haystack: string, needle: string): number {
 describe('workers.ts call sites', () => {
   test('both claim entry points resolve cwd through resolveRoleCwd', () => {
     // startClaimedWorker (poll claim) and claimAndStart (nudge/resume claim)
-    // carried byte-identical copies of the branching this replaces.
-    expect(countOccurrences(workersSrc, 'resolveRoleCwd(')).toBe(2);
+    // carried byte-identical copies of the branching this replaces. Both now
+    // go through prepareClaimedWorker, the single call site.
+    expect(countOccurrences(workersSrc, 'resolveRoleCwd(')).toBe(1);
+    expect(countOccurrences(workersSrc, 'this.prepareClaimedWorker(')).toBe(2);
   });
 
   test('cwd is never keyed off the bundle type again', () => {

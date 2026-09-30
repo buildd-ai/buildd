@@ -1423,12 +1423,37 @@ export class WorkerManager {
   }
 
   /**
-   * Prepare and start a single claimed worker (cwd resolution + role sync).
+   * Prepare and start a single claimed worker from the poll path.
    * Extracted from the claim loop so a failure here is contained to one worker.
    */
   private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
-    const task = claimedWorker.task;
-    if (!task) return null;
+    const prepared = await this.prepareClaimedWorker(claimedWorker);
+    if (prepared.kind !== 'ready') return null;
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+  }
+
+  /**
+   * Everything between "the server handed us a worker" and startFromClaim,
+   * shared by the poll path (startClaimedWorker) and the Pusher path
+   * (claimAndStart). They used to be two hand-copied blocks that drifted: the
+   * Pusher path never announced the per-worker credentials to the broker, and
+   * the poll path never marked an unresolvable task, so the next Pusher nudge
+   * re-claimed it. Add a preparation step HERE, not to one caller.
+   *
+   * `fallbackTask` is the Pusher payload, used only when the claim response
+   * carries no task (the claim response's task is the full one — see
+   * claimAndStart).
+   */
+  private async prepareClaimedWorker(
+    claimedWorker: any,
+    fallbackTask?: BuilddTask,
+  ): Promise<
+    | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
+    | { kind: 'no_task' }
+    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string }
+  > {
+    const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
+    if (!task) return { kind: 'no_task' };
 
     const workspacePath = this.resolver.resolve(
       {
@@ -1440,21 +1465,25 @@ export class WorkerManager {
     );
 
     if (!workspacePath) {
-      console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
+      const wsName = task.workspace?.name || task.workspaceId;
+      const repoHint = task.workspace?.repo ? ` (repo: ${task.workspace.repo})` : '';
+      console.error(`Cannot resolve workspace for claimed task: ${task.title} (${task.id}) — will skip on future retries`);
+      // Skip this task on future Pusher nudges; a poll re-claim would fail the
+      // same way.
+      this.pusherManager.markUnresolvable(task.id);
       // Fail the worker on server so it doesn't stay "running" forever
       this.buildd.updateWorker(claimedWorker.id, {
         status: 'failed',
-        error: `Cannot resolve workspace "${task.workspace?.name || 'unknown'}" (repo: ${task.workspace?.repo || 'none'})`,
+        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
       }).catch(() => {});
-      return null;
+      return { kind: 'unresolvable', task, wsName, repoHint };
     }
 
     // Role cwd + overlay source. The overlay itself is deferred to
     // startFromClaim, which runs it against the worktree once one exists.
     const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
-    const resolvedPath = roleCwd.cwd;
-    if (resolvedPath !== workspacePath) {
-      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
+    if (roleCwd.cwd !== workspacePath) {
+      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${roleCwd.cwd}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
 
@@ -1467,7 +1496,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return this.startFromClaim(claimedWorker, task, resolvedPath, roleCwd.overlayFrom);
+    return { kind: 'ready', task, cwd: roleCwd.cwd, overlayFrom: roleCwd.overlayFrom };
   }
 
   /**
@@ -1667,45 +1696,18 @@ export class WorkerManager {
 
     const claimedWorker = claimed[0];
 
-    // Prefer claim response task data (full) over Pusher event task data (minimal payload)
-    const fullTask = claimedWorker.task || task;
-
-    // Resolve workspace path from the FULL claimed task (see note above).
-    const workspacePath = this.resolver.resolve(
-      {
-        id: fullTask.workspaceId,
-        name: fullTask.workspace?.name || 'unknown',
-        repo: fullTask.workspace?.repo,
-      },
-      (fullTask.context as Record<string, unknown> | null) ?? null
-    );
-
-    if (!workspacePath) {
-      const wsName = fullTask.workspace?.name || fullTask.workspaceId;
-      const repoHint = fullTask.workspace?.repo ? ` (repo: ${fullTask.workspace.repo})` : '';
-      console.error(`Cannot resolve workspace for task: ${fullTask.title} (${fullTask.id}) — will skip on future retries`);
-      this.pusherManager.markUnresolvable(task.id);
-      // Fail the claimed worker on the server so it doesn't stay "running" forever
-      this.buildd.updateWorker(claimedWorker.id, {
-        status: 'failed',
-        error: `Cannot resolve workspace "${wsName}"${repoHint}`,
-      }).catch(() => {});
+    // Prefer claim response task data (full) over Pusher event task data
+    // (minimal payload); resolve the workspace from the FULL task (see note
+    // above). Same preparation as the poll path — one shared routine.
+    const prepared = await this.prepareClaimedWorker(claimedWorker, task);
+    if (prepared.kind === 'unresolvable') {
       throw Object.assign(
-        new Error(`Workspace "${wsName}" is not cloned locally${repoHint} — clone the repo first`),
+        new Error(`Workspace "${prepared.wsName}" is not cloned locally${prepared.repoHint} — clone the repo first`),
         { claimError: 'workspace_not_found' as const },
       );
     }
-
-    // Same resolution as the poll-claim path above — one shared rule, so the
-    // two entry points cannot drift on which directory a role-assigned task
-    // runs in.
-    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, fullTask, workspacePath);
-    const resolvedPath = roleCwd.cwd;
-    if (resolvedPath !== workspacePath) {
-      console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${resolvedPath}`);
-    }
-    this.workerAuthContexts.set(claimedWorker.id, authContextOf(fullTask));
-    return this.startFromClaim(claimedWorker, fullTask, resolvedPath, roleCwd.overlayFrom);
+    if (prepared.kind !== 'ready') return null; // unreachable: `task` is the fallback
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
   }
 
   private async startFromClaim(
