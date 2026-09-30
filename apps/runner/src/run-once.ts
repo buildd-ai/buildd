@@ -35,6 +35,14 @@ export const EXIT_CLAIM_REFUSED = 3;
 /** Bad invocation or missing configuration (no --task, no API key). */
 export const EXIT_USAGE = 64;
 
+/**
+ * Printed on its own stdout line as soon as the worker exists, e.g.
+ * `BUILDD_WORKER_ID=<uuid>`. A supervisor that only knows the task ID (the
+ * Cloudflare WorkerAgent, apps/cloud-runner) reads it so it can mark the
+ * worker failed if the container dies before the runner reports.
+ */
+export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
+
 export const DEFAULT_ONCE_MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_POLL_MS = 1_000;
 
@@ -224,6 +232,7 @@ export async function runOnce(opts: { taskId: string }, d: RunOnceDeps): Promise
       return (code = EXIT_CLAIM_REFUSED);
     }
 
+    d.log(`${WORKER_ID_LINE_PREFIX}${worker.id}`);
     d.log(`[once] worker ${worker.id} started for task ${taskId}`);
     const outcome = await waitForOutcome(worker.id, d);
     if (outcome === 'wait_timeout') {

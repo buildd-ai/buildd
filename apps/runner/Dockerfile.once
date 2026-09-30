@@ -51,6 +51,7 @@ COPY patches ./patches
 COPY apps/runner/package.json apps/runner/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/responder/package.json apps/responder/package.json
+COPY apps/cloud-runner/package.json apps/cloud-runner/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ai-kit/package.json packages/ai-kit/package.json

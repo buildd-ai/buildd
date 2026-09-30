@@ -20,6 +20,7 @@ import {
   EXIT_CLAIM_REFUSED,
   EXIT_USAGE,
   DEFAULT_ONCE_MAX_WAIT_MS,
+  WORKER_ID_LINE_PREFIX,
   type RunOnceDeps,
   type OnceWorkerManager,
 } from '../../src/run-once';
@@ -124,6 +125,25 @@ describe('runOnce', () => {
     expect(flushed.length).toBeGreaterThan(0);
     // Sync to the server happens before teardown.
     expect(calls.indexOf('flushToServer')).toBeLessThan(calls.indexOf('destroy'));
+  });
+
+  test('prints a machine-readable BUILDD_WORKER_ID line once the worker exists', async () => {
+    // The Cloudflare WorkerAgent only knows the task ID; it reads this line to
+    // mark the worker failed if the container dies before the runner reports.
+    const { wm } = fakeManager({ claim: async () => ({ id: 'worker-abc' }) });
+    const lines: string[] = [];
+    const { d } = deps(wm, { log: (m) => lines.push(m) });
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(lines.filter(l => l.startsWith(`${WORKER_ID_LINE_PREFIX}`))).toEqual([`${WORKER_ID_LINE_PREFIX}worker-abc`]);
+    expect(WORKER_ID_LINE_PREFIX).toBe('BUILDD_WORKER_ID=');
+  });
+
+  test('prints no BUILDD_WORKER_ID line when nothing was claimed', async () => {
+    const { wm } = fakeManager({ claim: async () => null });
+    const lines: string[] = [];
+    const { d } = deps(wm, { log: (m) => lines.push(m) });
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(lines.some(l => l.startsWith('BUILDD_WORKER_ID='))).toBe(false);
   });
 
   test('does not report done while the session is still tearing down', async () => {
