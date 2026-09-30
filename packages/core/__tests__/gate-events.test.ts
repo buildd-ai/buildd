@@ -26,6 +26,8 @@ let insertShouldThrow = false;
 /** What `recordOrCoalesceDeferral`'s lookup SELECT should return — the "latest row for this task" fixture. */
 let latestRow: { id: string; reason: string; outcome: string; detail: Record<string, unknown> | null } | undefined;
 let updateCalls: Array<{ id: string; set: Record<string, unknown> }> = [];
+/** The WHERE the lookup SELECT was built with — rendered to SQL so scoping is observable. */
+let lastWhere: unknown = null;
 
 mock.module('../db/client', () => ({
   db: {
@@ -40,7 +42,7 @@ mock.module('../db/client', () => ({
     }),
     select: () => ({
       from: () => ({
-        where: () => ({
+        where: (w: unknown) => (lastWhere = w, {
           orderBy: () => ({
             limit: async () => (latestRow ? [latestRow] : []),
           }),
@@ -57,7 +59,9 @@ mock.module('../db/client', () => ({
   },
 }));
 
-const { recordGateEvent, recordOrCoalesceDeferral, GATE_SLUGS } = await import('../gate-events');
+const { recordGateEvent, recordOrCoalesceDeferral, recordOrCoalesceRepeat, GATE_SLUGS } = await import('../gate-events');
+const { PgDialect } = await import('drizzle-orm/pg-core');
+const renderWhere = () => new PgDialect().sqlToQuery(lastWhere as any);
 
 const WS = '11111111-2222-4333-8444-555555555555';
 const TASK = '99999999-8888-4777-8666-555555555555';
@@ -67,6 +71,7 @@ beforeEach(() => {
   insertShouldThrow = false;
   latestRow = undefined;
   updateCalls = [];
+  lastWhere = null;
 });
 
 describe('recordGateEvent', () => {
@@ -244,5 +249,61 @@ describe('recordOrCoalesceDeferral', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0].outcome).toBe('stranded');
     expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
+  });
+});
+
+describe('recordOrCoalesceRepeat', () => {
+  const ACCOUNT = '12345678-1234-4234-8234-123456789abc';
+  const HOUR = 60 * 60 * 1000;
+  const base = {
+    gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+    surface: 'POST /api/workers/claim',
+    outcome: 'rejected' as const,
+    reason: 'runner_field_missing',
+    detail: { accountId: ACCOUNT },
+  };
+
+  it('inserts a fresh row with count=1 when nothing matches in the window', async () => {
+    await recordOrCoalesceRepeat(base, { key: { accountId: ACCOUNT }, windowMs: HOUR });
+    expect(inserted).toHaveLength(1);
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted[0].detail).toMatchObject({ accountId: ACCOUNT, count: 1 });
+    expect(typeof inserted[0].detail?.lastSeenAt).toBe('string');
+  });
+
+  it('bumps count on the matching row instead of inserting', async () => {
+    latestRow = { id: 'row-existing', reason: 'runner_field_missing', outcome: 'rejected', detail: { accountId: ACCOUNT, count: 41 } };
+    const id = await recordOrCoalesceRepeat(base, { key: { accountId: ACCOUNT }, windowMs: HOUR });
+    expect(id).toBe('row-existing');
+    expect(inserted).toHaveLength(0);
+    expect(updateCalls).toHaveLength(1);
+    const detail = updateCalls[0].set.detail as Record<string, unknown>;
+    expect(detail.count).toBe(42);
+    expect(detail.accountId).toBe(ACCOUNT);
+    // occurredAt stays the window's first occurrence, so "one row per hour" holds.
+    expect(updateCalls[0].set.occurredAt).toBeUndefined();
+  });
+
+  it('scopes the lookup by gate, outcome, reason, the key, and the window', async () => {
+    await recordOrCoalesceRepeat(base, { key: { accountId: ACCOUNT }, windowMs: HOUR });
+    const { sql, params } = renderWhere();
+    expect(sql).toContain('"gate_events"."gate" = $');
+    expect(sql).toContain('"gate_events"."outcome" = $');
+    expect(sql).toContain('"gate_events"."reason" = $');
+    expect(sql).toContain('"gate_events"."occurred_at" > $');
+    expect(sql).toContain('"gate_events"."detail" @> $');
+    expect(params).toContain(GATE_SLUGS.CLAIM_LOOP_DEFERRAL);
+    expect(params).toContain('rejected');
+    expect(params).toContain('runner_field_missing');
+    expect(params).toContain(JSON.stringify({ accountId: ACCOUNT }));
+    const cutoff = params.find(p => p instanceof Date || (typeof p === 'string' && /^\d{4}-/.test(p)));
+    const cutoffMs = new Date(cutoff as any).getTime();
+    expect(Math.abs(Date.now() - HOUR - cutoffMs)).toBeLessThan(5000);
+  });
+
+  it('never throws when the lookup fails', async () => {
+    insertShouldThrow = true;
+    const id = await recordOrCoalesceRepeat(base, { key: { accountId: ACCOUNT }, windowMs: HOUR });
+    expect(id).toBeNull();
   });
 });

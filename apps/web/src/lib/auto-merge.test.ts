@@ -98,14 +98,19 @@ mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardR
 const mockFireGateEvent = mock((_input: any) => {});
 mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
-  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict', MERGE_BASE_FRESHNESS: 'merge_base_freshness' },
+  GATE_SLUGS: {
+    REVIEW_VERDICT: 'review_verdict',
+    MERGE_BASE_FRESHNESS: 'merge_base_freshness',
+    AUTO_MERGE: 'auto_merge',
+    MISSION_PR_LIFECYCLE: 'mission_pr_lifecycle',
+  },
 }));
 const mockAppendPrActivity = mock((_input: any) => Promise.resolve({ action: 'updated', commentId: 1 }));
 mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
 }));
 
-import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -1964,5 +1969,132 @@ describe('isBehindBaseRefusal', () => {
       'PR is 1 commit behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch',
     )).toBe(true);
     expect(isBehindBaseRefusal('PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch')).toBe(false);
+  });
+});
+
+// ── The unattended merge path's decisions are durable, not console-only ─────
+//
+// Only the base-freshness and review-verdict refusals used to reach the gate
+// ledger, so "why didn't this green PR merge" had no answer after the fact.
+describe('tryAutoMergeWorkerPr — decisions reach the gate ledger', () => {
+  const GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const RED = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+  const FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+  const run = (worker: any = { id: 'worker-1', taskId: null, workspaceId: 'ws-1' }) => tryAutoMergeWorkerPr({
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prNumber: 42,
+    headSha: 'head-sha',
+    worker,
+    policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+  });
+  const gateCalls = (gate: string) => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]).filter((c: any) => c.gate === gate);
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFireGateEvent.mockReset();
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFindFirst = mock(() => null as any);
+    mockTasksFindMany = mock(() => [] as any[]);
+    mockWorkersFindMany = mock(() => [] as any[]);
+  });
+
+  it('records a safety refusal with its reason class and the PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha', ref: 'task/x' } });
+    await run();
+    const [call] = gateCalls('auto_merge');
+    expect(call).toMatchObject({
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      workspaceId: 'ws-1',
+      workerId: 'worker-1',
+      callerOrigin: 'system',
+      detail: { prNumber: 42, headSha: 'head-sha', reasonClass: 'conflict', repoFullName: 'buildd-ai/buildd' },
+    });
+  });
+
+  it('records red CI as a deferral — the next green webhook re-evaluates it', async () => {
+    mockGithubApi.mockResolvedValueOnce({ check_runs: RED });
+    await run();
+    const [call] = gateCalls('auto_merge');
+    expect(call.outcome).toBe('deferred');
+    expect(call.detail.reasonClass).toBe('ci');
+  });
+
+  it('does not double-record a base-freshness refusal, which has its own gate', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ ahead_by: 0, behind_by: 2 });
+    await run();
+    expect(gateCalls('merge_base_freshness')).toHaveLength(1);
+    expect(gateCalls('auto_merge')).toHaveLength(0);
+  });
+
+  it('records the mission-PR lifecycle wait', async () => {
+    mockFindFirst = mock(() => ({
+      id: 'task-owner', title: 'Ship mission: Checkout arc', taskClass: 'bookkeeping',
+      missionId: 'mission-1', mission: optedInMission,
+    })) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
+    mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'pending', mode: 'execution', taskClass: 'work' }]) as any;
+    await run({ id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    const [call] = gateCalls('mission_pr_lifecycle');
+    expect(call).toMatchObject({ surface: 'auto-merge', outcome: 'deferred', taskId: 'task-owner', detail: { prNumber: 42 } });
+  });
+
+  it('records a merge API failure', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Base branch was modified' });
+    await run();
+    const [call] = gateCalls('auto_merge');
+    expect(call).toMatchObject({ outcome: 'rejected', detail: { reasonClass: 'merge_api', mergeFailureClass: 'retryable' } });
+  });
+
+  it('writes no auto_merge refusal row when the merge lands', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    const result = await run();
+    expect(result).toEqual({ merged: true });
+    expect(gateCalls('auto_merge')).toHaveLength(0);
+  });
+});
+
+describe('classifyAutoMergeRefusal', () => {
+  it.each([
+    ['CI checks still pending or failed: build', 'ci'],
+    ['could not verify CI status — GitHub check-runs lookup failed: x', 'ci'],
+    ['touches protected path (packages/core/db/schema.ts)', 'deny_path'],
+    ['modifies existing migration 0001_x.sql', 'migration'],
+    ['could not check migration number collisions', 'migration'],
+    ['auto-threshold tier: diff size 900 source lines > default limit 800 (2 noise files excluded)', 'size'],
+    ['PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch', 'conflict'],
+    ['PR is blocked (mergeable_state: blocked) — branch protection or review required', 'blocked'],
+    ['PR is 3 commits behind dev — the green CI result was measured against a base that no longer exists, needs rebase onto base branch', 'base_freshness'],
+    ["model approve: base 'dev' is a protected trunk branch — human merge required", 'model_bound'],
+    ['PR head changed — ignoring stale merge trigger', 'stale_head'],
+    ['could not verify the live PR head — refusing the merge', 'stale_head'],
+    ['could not fetch PR files: timeout', 'github_read'],
+    ['something new', 'other'],
+  ])('%s → %s', (reason, cls) => {
+    expect(classifyAutoMergeRefusal(reason)).toBe(cls as any);
   });
 });

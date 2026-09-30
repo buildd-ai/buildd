@@ -1063,11 +1063,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       console.warn('[Cron] task category sweep failed:', taskCategories.error);
     }
 
+    // The watcher and overdue-heartbeat sweeps ride this tick, so their results
+    // belong in its run row — otherwise a watcher that throws every hour looks
+    // exactly like a quiet one. A watcher error counts in `errors`. Neither is
+    // folded into `changed`: this job's `changed` is work performed (tasks
+    // created), and watcher fires / overdue alerts are findings — adding them
+    // would invert the health reading (see CRON_JOB_REGISTRY polarity).
+    const healthWatcherErrors = 'error' in healthWatcher ? 1 : healthWatcher.errors;
     report({
       processed,
       changed: created,
-      errors,
-      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories },
+      errors: errors + healthWatcherErrors,
+      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions, abandonedClaimsReleased, taskCategories, healthWatcher, overdueHeartbeatAlerts },
     });
 
     return NextResponse.json({

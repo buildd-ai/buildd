@@ -24,6 +24,31 @@ mock.module('@/lib/retry-pr-supersession', () => ({
   sweepDuplicateLineagePrs: mockLineageSweep,
 }));
 
+// The two sweeps below were unmocked too, so they queried the live database.
+mock.module('@/lib/stranded-tasks-sweep', () => ({
+  sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
+}));
+mock.module('@/lib/spec-recheck', () => ({
+  sweepSpecDiscrepancyRechecks: async () => ({
+    candidates: 0, rechecksDispatched: 0, rechecksCovered: 0, rechecksFailed: 0,
+    followUpsDispatched: 0, followUpsFailed: 0,
+  }),
+}));
+
+// This file used to import the real db. withCronRun's run-history insert was
+// then unmocked, so every run with a live DATABASE_URL loaded (a checkout's
+// apps/web/.env.local) wrote this file's fake "DB unavailable" / "GitHub
+// timeout" failures into real cron run history. Any db access now lands here.
+const dbTouches: string[] = [];
+mock.module('@buildd/core/db', () => ({
+  db: new Proxy({}, {
+    get(_t, prop) {
+      dbTouches.push(String(prop));
+      throw new Error(`pr-reconcile route test touched db.${String(prop)}`);
+    },
+  }),
+}));
+
 import { GET } from './route';
 
 function makeRequest(token?: string, query = '') {
@@ -50,6 +75,14 @@ describe('GET /api/cron/pr-reconcile', () => {
   afterAll(() => {
     if (originalEnv === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = originalEnv;
+  });
+
+  it('never touches the database, even when a sweep throws', async () => {
+    mockReconcile.mockRejectedValue(new Error('DB unavailable'));
+    await GET(makeRequest('test-secret'));
+    mockReconcile.mockResolvedValue(ZERO);
+    await GET(makeRequest('test-secret'));
+    expect(dbTouches).toEqual([]);
   });
 
   it('returns 401 when no authorization header', async () => {

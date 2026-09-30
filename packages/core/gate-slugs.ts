@@ -89,6 +89,13 @@ export const GATE_SLUGS = {
    */
   DEPENDENCY_BOT_PR: 'dependency_bot_pr',
   /**
+   * The unattended merge path (`tryAutoMergeWorkerPr`) — a safety-rail refusal
+   * (red CI, protected path, size cap, migration, conflict, ...) or a failed
+   * merge call. `detail.reasonClass` says which. Base freshness and review
+   * verdicts keep their own slugs and are not double-recorded here.
+   */
+  AUTO_MERGE: 'auto_merge',
+  /**
    * Retry-lineage supersession (`lib/retry-pr-supersession.ts`). `stranded`: an
    * ancestor PR that should have been closed when a retry opened a fresh PR was
    * left open (state unreadable, close failed). `warned`: the pr-reconcile

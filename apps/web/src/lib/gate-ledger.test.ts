@@ -34,6 +34,11 @@ mock.module('@buildd/core/gate-events', () => ({
     recorded.push(input);
     return 'row-1';
   },
+  recordOrCoalesceRepeat: async (input: Recorded, _opts?: unknown) => {
+    if (recordShouldReject) throw new Error('ledger exploded');
+    recorded.push(input);
+    return 'row-1';
+  },
 }));
 
 let workspaceLookup: { id: string } | null = null;
@@ -54,7 +59,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
 }));
 
-const { fireGateEvent, fireGateEventForWorkspaceRef, gateCallerOrigin } = await import('./gate-ledger');
+const { fireGateEvent, fireGateEventForWorkspaceRef, fireRepeatGateEvent, gateCallerOrigin } = await import('./gate-ledger');
 
 /** The wrapper is fire-and-forget by design, so tests wait a microtask turn. */
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -99,6 +104,25 @@ describe('fireGateEvent', () => {
     // regardless of what the ledger does.
     expect(() =>
       fireGateEvent({ gate: 'prose_gate', surface: 'POST /api/tasks', outcome: 'warned', reason: 'x' }),
+    ).not.toThrow();
+    await settle();
+    expect(recorded).toHaveLength(0);
+  });
+});
+
+describe('fireRepeatGateEvent', () => {
+  const opts = { key: { accountId: 'acct-1' }, windowMs: 3_600_000 };
+  it('records through the coalescing writer and returns the signature synchronously', async () => {
+    const sig = fireRepeatGateEvent({ gate: 'claim_loop_deferral', surface: 'POST /api/workers/claim', outcome: 'rejected', reason: 'runner_field_missing' }, opts);
+    expect(sig).toBe(gateFrictionSignature('claim_loop_deferral', 'runner_field_missing'));
+    await settle();
+    expect(recorded).toHaveLength(1);
+  });
+
+  it('does not produce an unhandled rejection when the writer throws', async () => {
+    recordShouldReject = true;
+    expect(() =>
+      fireRepeatGateEvent({ gate: 'claim_loop_deferral', surface: 'POST /api/workers/claim', outcome: 'rejected', reason: 'x' }, opts),
     ).not.toThrow();
     await settle();
     expect(recorded).toHaveLength(0);

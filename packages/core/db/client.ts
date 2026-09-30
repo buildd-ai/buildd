@@ -5,6 +5,7 @@ import * as schema from './schema';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { capturePostgresErrorOnSpan } from './error-span';
+import { assertTestDatabaseSafe } from './test-guard';
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
@@ -15,6 +16,8 @@ function getSql() {
     if (!config.databaseUrl) {
       throw new Error('DATABASE_URL is required');
     }
+    // A unit test must never reach a real database (see ./test-guard).
+    assertTestDatabaseSafe(config.databaseUrl);
     // Opt-in local Postgres via a Neon HTTP proxy (scripts/demo). No-op unless
     // NEON_LOCAL_FETCH_ENDPOINT is set; throws if DATABASE_URL is not loopback.
     applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });

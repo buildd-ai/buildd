@@ -14,6 +14,7 @@ mock.module('@buildd/core/gate-events', () => ({
   gateFrictionSignature: (gate: string, reason: string) => `gate:${gate}_${Buffer.from(reason).toString('hex').slice(0, 12)}`,
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
+  recordOrCoalesceRepeat: async () => null,
 }));
 import { NextRequest } from 'next/server';
 
