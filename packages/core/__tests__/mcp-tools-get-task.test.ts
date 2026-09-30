@@ -453,3 +453,69 @@ describe('get_task', () => {
     expect(result.content[0].text).not.toContain('no result snapshot available');
   });
 });
+
+describe('get_task — evidence', () => {
+  const evidence = {
+    errorClass: 'test_failure',
+    keyLines: ['(fail) billing > rounds up', 'error: expected 2 received 3'],
+    lastFailingCommand: { command: 'bun run test', exitCode: 1 },
+    ciChecks: [{ name: 'unit', state: 'failed', url: 'https://ci.example/job/1' }],
+    diff: { files: 0, added: 0, removed: 0 },
+    links: { prUrl: 'https://example.invalid/pr/7' },
+    keyLinesSource: 'traces',
+    capturedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const base = { id: TASK_ID, title: 'Fix rounding', priority: 3, workspace: { name: 'buildd' }, workers: [], artifacts: [] };
+
+  it('answers "why did it fail" inline: class, command, failing check and key lines', async () => {
+    const mockApi = mock().mockResolvedValue({ ...base, status: 'failed', result: { error: 'boom', evidence } });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('## Evidence');
+    expect(text).toContain('**Error class:** test_failure');
+    expect(text).toContain('`bun run test` (exit 1)');
+    expect(text).toContain('✗ unit — https://ci.example/job/1');
+    expect(text).toContain('(fail) billing > rounds up');
+  });
+
+  it('shows mismatch flags before the evidence', async () => {
+    const mockApi = mock().mockResolvedValue({
+      ...base, status: 'completed',
+      result: { summary: 'Pushed the fix', evidence, mismatch: [{ kind: 'pushed_without_diff', detail: 'diff is 0 files' }] },
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('## ⚠️ Mismatch');
+    expect(text).toContain('diff is 0 files');
+    expect(text.indexOf('## ⚠️ Mismatch')).toBeLessThan(text.indexOf('## Evidence'));
+  });
+
+  it('prints nothing extra for a clean run', async () => {
+    const mockApi = mock().mockResolvedValue({ ...base, status: 'completed', result: { summary: 'Done' } });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).not.toContain('## Evidence');
+    expect(text).not.toContain('Mismatch');
+  });
+});
+
+describe('get_error_traces — evidence', () => {
+  it('returns the task\'s evidence with its traces', async () => {
+    const mockApi = mock().mockResolvedValue({
+      traces: [{ pattern: 'bash_nonzero_exit', excerpt: '$ bun run test [exit 1]\n(fail) x', source: 'Bash', ts: 't' }],
+      evidence: { errorClass: 'type_error', keyLines: ['a.ts(1,1): error TS2322'], diff: { files: 1, added: 1, removed: 0 }, links: {}, keyLinesSource: 'traces', capturedAt: 'x' },
+      mismatch: [],
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_error_traces', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('bash_nonzero_exit');
+    expect(text).toContain('**Error class:** type_error');
+    expect(text).toContain('error TS2322');
+  });
+
+  it('still returns evidence when no trace was captured', async () => {
+    const mockApi = mock().mockResolvedValue({
+      traces: [],
+      evidence: { errorClass: 'test_failure', keyLines: ['(fail) from digest'], diff: { files: 0, added: 0, removed: 0 }, links: {}, keyLinesSource: 'ci_digest', capturedAt: 'x' },
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_error_traces', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('No error traces');
+    expect(text).toContain('(fail) from digest');
+  });
+});
