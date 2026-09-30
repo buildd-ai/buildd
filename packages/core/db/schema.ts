@@ -438,6 +438,13 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
+  // docs/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
+  // paths only. `shadow` (absent = shadow): the landing decision is computed and
+  // recorded on the gate ledger beside the legacy action, which still runs.
+  // `enforce`: doors act on the landing outcome.
+  landing?: { mode?: 'off' | 'shadow' | 'enforce' };
+
   // Supersession precheck: ratio threshold for the drift-ratio detector.
   // When live GitHub PR stats are ≥ this multiple larger than recorded stats,
   // the drift detector fires. Requires content-already-upstream to also fire
