@@ -238,7 +238,10 @@ async function missionOf(env: PreviewEnv, id: unknown): Promise<Obj | null> {
 }
 
 const createTask: Builder = async (input, env) => {
-  const mission = await missionOf(env, input.missionId);
+  // `missionId: null` is the explicit "no mission": it beats the docked mission
+  // and the one this conversation filed. Omitted means inherit, and the card says so.
+  const standalone = input.missionId === null;
+  const mission = standalone ? null : await missionOf(env, input.missionId);
   if (input.missionId && !mission) return question('That mission isn\'t available here. Ask the user which mission the task belongs to.');
   const dependsOn: string[] = [];
   const depLabels: string[] = [];
@@ -258,11 +261,13 @@ const createTask: Builder = async (input, env) => {
   if (str(input.roleSlug)) changes.push({ label: 'Role', before: null, after: str(input.roleSlug)! });
   const paths = listOf(input.pathManifest).filter((p): p is string => typeof p === 'string');
   if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
+  if (standalone) changes.push({ label: 'Mission', before: null, after: 'none' });
   const workspaceId = str(input.workspaceId) ?? mission?.workspaceId ?? env.scope.workspaceId ?? null;
+  const { missionId: _missionId, ...rest } = input;
   return {
     ok: true,
     input: {
-      ...input,
+      ...rest,
       ...(mission ? { missionId: mission.id } : {}),
       ...(dependsOn.length ? { dependsOn } : {}),
       ...(paths.length ? { pathManifest: paths } : {}),

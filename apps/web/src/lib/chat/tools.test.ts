@@ -245,6 +245,12 @@ describe('descriptions of tools with a typed chat schema', () => {
     for (const f of ['parentTaskId', 'callbackUrl', 'context?']) expect(d).not.toContain(f);
   });
 
+  it('create_task accepts missionId null (standalone) and says how in its description', () => {
+    const t = setup().tools.create_task as any;
+    expect(t.inputSchema.safeParse({ title: 't', description: 'd', missionId: null }).success).toBe(true);
+    expect(t.description).toContain('missionId null');
+  });
+
   it('manage_missions types the fields its ops take', () => {
     const schema = (setup().tools.manage_missions as any).inputSchema;
     expect(schema.safeParse({ action: 'list', query: 'wix' }).success).toBe(true);
