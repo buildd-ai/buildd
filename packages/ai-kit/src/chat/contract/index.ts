@@ -53,25 +53,90 @@ export interface ToolApproval {
 }
 
 /**
- * What `denied` tells the model when a second write would need a card in one
- * turn. The call was never shown to the person: the model must not report it
- * as done or discarded, and must not fire a twin of the card already shown.
+ * What `denied` tells the model when a write can't join the turn's card: a
+ * card that must stand alone (an admin write's typed confirmation, an app's
+ * own full card) is already up, or this one must stand alone and rows are
+ * already up. The call was never shown to the person: the model must not
+ * report it as done or discarded, and must not fire a twin of the card shown.
  */
 export const ONE_CARD_PER_TURN_REASON =
   'Not shown to the person: only one approval card per turn, and one is already up. Nothing ran and nothing was discarded; do not say either. '
   + 'If this call was another way of doing what that card does, drop it. If it is a separate change, ask about it after the person answers the card.';
 
+/** Most rows one approval card holds (0.13.0). A write past it is `ROW_CAP_REASON`. */
+export const APPROVAL_ROW_CAP = 8;
+
 /**
- * A write the server refused before any card was shown (the one-card cap,
- * an unknown tool): never a person's Discard.
+ * What `denied` tells the model when the turn's card already holds
+ * `APPROVAL_ROW_CAP` rows (0.13.0). Never shown, so "not proposed yet".
+ */
+export const ROW_CAP_REASON =
+  `Not shown to the person: the card is full (${APPROVAL_ROW_CAP} changes). Nothing ran and nothing was discarded; do not say either. `
+  + 'Propose the rest after the person answers this card.';
+
+/**
+ * What a write approved on a card answers when its target moved after the
+ * card was shown (0.13.0). Its row reads "changed since shown".
+ */
+export const CHANGED_SINCE_SHOWN = 'changed since the card was shown';
+
+/**
+ * A write the server refused before any card was shown (the card is full,
+ * a card that must stand alone, an unknown tool): never a person's Discard.
  */
 export function isSystemDenied(part: Pick<ChatToolPart, 'state' | 'approval'>): boolean {
   return part.state === 'output-denied' && part.approval?.isAutomatic === true && part.approval.approved !== true;
 }
 
-/** "one change per turn": why a system-denied write never got its card. */
+/**
+ * A system-denied write the model may propose once the card is answered
+ * (0.13.0): it reads "not proposed yet", not a refusal.
+ */
+export function isHeldBack(part: Pick<ChatToolPart, 'state' | 'approval'>): boolean {
+  const r = part.approval?.reason;
+  return isSystemDenied(part) && (r === ROW_CAP_REASON || r === ONE_CARD_PER_TURN_REASON);
+}
+
+/** "the card is full": why a system-denied write never got its card. */
 export function systemDeniedNote(part: Pick<ChatToolPart, 'approval'>): string {
-  return part.approval?.reason === ONE_CARD_PER_TURN_REASON ? 'one change per turn' : 'not allowed here';
+  const r = part.approval?.reason;
+  return r === ROW_CAP_REASON ? 'the card is full' : r === ONE_CARD_PER_TURN_REASON ? 'another card is up' : 'not allowed here';
+}
+
+/** "not proposed yet · the card is full" (0.13.0): a system-denied write, in one line. */
+export function systemDeniedLine(part: Pick<ChatToolPart, 'state' | 'approval'>): string {
+  return `${isHeldBack(part) ? 'not proposed yet' : 'not proposed'} · ${systemDeniedNote(part)}`;
+}
+
+/**
+ * Where one row of an approval card stands (0.13.0).
+ * - `awaiting`: the person hasn't answered; `deciding`: answered, not run yet.
+ * - `ran`: it ran. `changed`: approved, but the target moved since the card
+ *   was shown, so nothing ran. `failed`: approved and it failed.
+ * - `discarded`: the person's Discard or an unchecked row.
+ * - `held`: never shown (`isSystemDenied`).
+ */
+export type ApprovalRowOutcome = 'awaiting' | 'deciding' | 'ran' | 'changed' | 'failed' | 'discarded' | 'held';
+
+function outputText(output: unknown): string {
+  if (typeof output === 'string') return output;
+  const data = (output as { data?: unknown } | null | undefined)?.data;
+  return typeof data === 'string' ? data : '';
+}
+
+export function approvalRowOutcome(part: Pick<ChatToolPart, 'state' | 'approval' | 'output'>): ApprovalRowOutcome {
+  if (isSystemDenied(part)) return 'held';
+  switch (part.state) {
+    case 'output-denied': return 'discarded';
+    case 'output-error': return 'failed';
+    case 'approval-responded': return part.approval?.approved === false ? 'discarded' : 'deciding';
+    case 'output-available': {
+      const text = outputText(part.output);
+      if (text.includes(CHANGED_SINCE_SHOWN)) return 'changed';
+      return text.startsWith('Error:') ? 'failed' : 'ran';
+    }
+    default: return 'awaiting';
+  }
 }
 
 export interface ChatToolPart {

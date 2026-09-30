@@ -12,6 +12,32 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.13.0 — 2026-09-30
+
+Minor: a turn's writes are the rows of one approval card instead of one card
+per turn (docs/design/chat-write-approval-v2.md, step 2). What runs is
+unchanged; only how many cards it takes.
+
+- `createChatTurn`: the one-card-per-turn cap is gone. Each write that needs a
+  card still gets its own approval id, input hash, preview and compare-and-set,
+  and up to `APPROVAL_ROW_CAP` (8) of them are one card. A write past the cap
+  is denied with the new `ROW_CAP_REASON` (never shown; the model proposes it
+  after the card is answered). An admin write (`confirmText`) still stands
+  alone: other writes that turn are denied with `ONE_CARD_PER_TURN_REASON`.
+- New `<ApprovalRowsCard>`: a row per write, all checked, "Confirm N" and
+  "Discard all". Confirm answers every row (an unchecked one is declined as the
+  person's), so the continuation goes once. Each row settles on its own: done,
+  changed since shown, failed or discarded. Rows fold to two truncated lines at
+  a fixed height and open to the full target and its changes.
+- `ChatThread` draws a message with two or more writes as one
+  `ApprovalRowsCard` (`approvalRowGroup(parts, { alone? })`). `renderTool`
+  returning `null` now draws nothing, not an empty frame.
+- Contract: `APPROVAL_ROW_CAP`, `ROW_CAP_REASON`, `CHANGED_SINCE_SHOWN`,
+  `isHeldBack(part)`, `systemDeniedLine(part)`, `approvalRowOutcome(part)`.
+  A held-back write reads "not proposed yet · the card is full" or "not
+  proposed yet · another card is up" (was "not proposed · one change per
+  turn").
+
 ## 0.12.0 — 2026-09-30
 
 Minor: a write the server refused never reads as the person's Discard, and a
