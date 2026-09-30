@@ -78,10 +78,17 @@ const MAX_REPEAT_COUNT = 1000;
 function backtrackingProblem(pattern: string): string | null {
   let unbounded = 0;
   let choices = 1;
-  const groups: number[] = []; // alternatives per open group
+  // Per open group: its alternatives, and whether its body holds any
+  // quantifier or alternation (then the group may not be quantified at all).
+  const groups: Array<{ alts: number; complex: boolean; quantified: boolean }> = [];
   const p = pattern;
   let i = 0;
   const skipLazy = () => { if (p[i] === '?') i++; };
+  const markComplex = (quantified = true) => {
+    const top = groups[groups.length - 1];
+    if (top) { top.complex = true; if (quantified) top.quantified = true; }
+  };
+  const quantifierAt = (j: number) => p[j] === '*' || p[j] === '+' || p[j] === '?' || (p[j] === '{' && /^\{\d+(,\d*)?\}/.test(p.slice(j)));
   while (i < p.length) {
     const c = p[i];
     if (c === '\\') { i += 2; continue; }
@@ -94,7 +101,7 @@ function backtrackingProblem(pattern: string): string | null {
       continue;
     }
     if (c === '(') {
-      groups.push(1);
+      groups.push({ alts: 1, complex: false, quantified: false });
       i++;
       if (p[i] === '?') {
         i++;
@@ -107,21 +114,37 @@ function backtrackingProblem(pattern: string): string | null {
       continue;
     }
     if (c === '|') {
-      if (groups.length) groups[groups.length - 1]++;
+      if (groups.length) { groups[groups.length - 1].alts++; markComplex(false); }
       i++;
       continue;
     }
     if (c === ')') {
-      choices *= groups.pop() ?? 1;
+      const g = groups.pop() ?? { alts: 1, complex: false, quantified: false };
       i++;
+      // A plain alternation made optional, "fail(ed|ure)?", is alts + 1 paths.
+      const quantifierFree = !g.complex || (g.alts > 1 && !g.quantified);
+      if (quantifierFree && g.alts > 1 && p[i] === '?' && !quantifierAt(i + 1)) {
+        choices *= g.alts + 1;
+        i++;
+        markComplex();
+        continue;
+      }
+      choices *= g.alts;
+      // (?:a?){10} is 2^10 paths, not 10: a repeated group multiplies its
+      // body's choices by the repeat count. Log grep never needs one.
+      if (g.complex && quantifierAt(i)) {
+        return 'grep pattern repeats a group that already has a quantifier or alternation inside (e.g. "(?:a?){5}" or "(a|b)+"); write it out without the repeat';
+      }
+      if (g.complex) markComplex(g.quantified);
       continue;
     }
-    if (c === '*' || c === '+') { unbounded++; i++; skipLazy(); continue; }
-    if (c === '?') { choices *= 2; i++; skipLazy(); continue; }
+    if (c === '*' || c === '+') { unbounded++; markComplex(); i++; skipLazy(); continue; }
+    if (c === '?') { choices *= 2; markComplex(); i++; skipLazy(); continue; }
     if (c === '{') {
       const m = p.slice(i).match(/^\{(\d+)(,(\d*))?\}/);
       if (m) {
         const min = Number(m[1]);
+        markComplex();
         if (m[2] && m[3] === '') unbounded++;
         else {
           const max = m[3] ? Number(m[3]) : min;
@@ -162,7 +185,7 @@ export function compileGrepPattern(pattern: string): Parsed<{ re: RegExp }> {
   if (/\([^()]*([+*}]|\|)[^()]*\)\s*([+*]|\{\d)/.test(noClasses)) {
     return { ok: false, error: 'grep pattern has a nested quantifier; simplify it (e.g. "a+" instead of "(a+)+")' };
   }
-  if (/\\\d/.test(pattern)) return { ok: false, error: 'grep pattern may not use backreferences' };
+  if (/\\(\d|k<)/.test(pattern)) return { ok: false, error: 'grep pattern may not use backreferences' };
   try {
     return { ok: true, re: new RegExp(pattern, 'i') };
   } catch (err) {

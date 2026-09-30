@@ -63,10 +63,47 @@ describe('compileGrepPattern', () => {
     }
   });
 
+  it('rejects any quantifier on a group whose body has a quantifier or alternation', () => {
+    for (const p of [
+      '(?:\\s?){10}\\s*x', '(?:a?){16}b', '(?:a|b){12}c', '(?:\\s?){6}\\s*x', '(?:\\s?){16}x',
+      '(?:x|x?){8}y', '(?:a|b)+c', '(?:x|x?)?y', '((?:a?))*b', '(?:(?:a|b)c){5}d', '(?=a?){9}b', '(a{2}){3}', '(?<n>a|b)+c',
+    ]) {
+      expect(compileGrepPattern(p).ok).toBe(false);
+    }
+  });
+
+  it('rejects named backreferences', () => {
+    expect(compileGrepPattern('(?<n>a)\\k<n>').ok).toBe(false);
+  });
+
   it('rejects stacked optional and wide bounded repeats', () => {
     expect(compileGrepPattern('a?'.repeat(30) + 'a'.repeat(30)).ok).toBe(false);
     expect(compileGrepPattern('a{0,100}a{0,100}b').ok).toBe(false);
     expect(compileGrepPattern('x{1,5000}').ok).toBe(false);
+  });
+
+  it('fuzz: every accepted pattern runs over an adversarial 1 KB line in under 50 ms', () => {
+    const pieces = ['a', 'a?', 'a*', 'a+', '\\s', '\\s?', '\\s*', '.', '.?', '.*', '[a ]', '[a ]?', '[a ]*', '(?:a|a)', '(?:a|\\s)',
+      '(?:a?)', '(?:\\s?){4}', '(?:a|b){3}', 'a{0,7}', 'a{2,}', '(?=a*)', '(?!\\s?)', 'x', '(?:ab){0,9}', ' ?'];
+    let seed = 7;
+    const rand = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+    const handPicked = [' ?\\s ?\\s ?\\s*x', 'a?a?a?a*b', 'a{0,7}a*b', '(?:a|b|c|d|e|f|g|h)a*z', 'a?a?a?a?a?a?a?a?aaaaaaaab',
+      '(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)b', '(?=.*x)', '[\\s\\S]*x', '(?:ab){0,10}c'];
+    const generated = Array.from({ length: 400 }, () => Array.from({ length: 1 + rand(6) }, () => pieces[rand(pieces.length)]).join('') + 'x');
+    const lines = ['a'.repeat(1024), ' '.repeat(1024), 'a '.repeat(512), 'ab'.repeat(512)];
+    let accepted = 0;
+    for (const p of [...handPicked, ...generated]) {
+      const c = compileGrepPattern(p);
+      if (!c.ok) continue;
+      accepted++;
+      for (const line of lines) {
+        const t0 = performance.now();
+        c.re.test(line);
+        const ms = performance.now() - t0;
+        if (ms >= 50) throw new Error(`accepted pattern ${p} took ${ms.toFixed(0)} ms`);
+      }
+    }
+    expect(accepted).toBeGreaterThan(50);
   });
 
   it('still accepts one unbounded quantifier, lazy suffixes and groups', () => {
