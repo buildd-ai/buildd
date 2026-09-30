@@ -20,7 +20,9 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { collectLineage } from '@/lib/attempt-lineage';
+import { evidenceHint } from '@/lib/task-evidence';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
@@ -213,8 +215,15 @@ export function historyPrStateOf(
  */
 function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
   const attemptsByParent = attachAttempts(loaded);
-  const toNode = (t: LoadedTask, attempts: HistoryNode[]): HistoryNode => {
+  const ids = new Set(loaded.map(t => t.id));
+  const byCreated = (a: LoadedTask, b: LoadedTask) =>
+    (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0);
+
+  const toNode = (t: LoadedTask, path: Set<string>): HistoryNode => {
     const w = t.workers?.[0];
+    const result = (t.result ?? null) as { evidence?: TaskEvidence; mismatch?: TaskMismatch[] } | null;
+    const hint = evidenceHint(result?.evidence);
+    const nextPath = new Set(path).add(t.id);
     return {
       taskId: t.id,
       title: t.title,
@@ -223,21 +232,24 @@ function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
       prNumber: w?.prNumber ?? null,
       prState: historyPrStateOf(w),
       createdAt: iso(t.createdAt),
-      attempts,
+      ...(hint ? { evidence: hint } : {}),
+      ...(Array.isArray(result?.mismatch) && result.mismatch.length > 0 ? { mismatch: result.mismatch } : {}),
+      // Attempts nest through attempts (a CI fix's own CI fix), not one level.
+      attempts: (attemptsByParent.get(t.id) ?? [])
+        .filter(a => !nextPath.has(a.id))
+        .sort(byCreated)
+        .map(a => toNode(a, nextPath)),
     };
   };
 
+  // A root is any task that is not an attempt of another task in view. An
+  // attempt whose parent is outside the loaded set still reads as a root, so
+  // the history of an attempt subject is never empty.
+  const parentInView = (t: LoadedTask) => t.parentTaskId != null && ids.has(t.parentTaskId);
   return loaded
-    .filter(t => t.taskClass !== 'attempt')
-    .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0))
-    .map(t =>
-      toNode(
-        t,
-        (attemptsByParent.get(t.id) ?? [])
-          .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0))
-          .map(a => toNode(a, [])),
-      ),
-    );
+    .filter(t => t.taskClass !== 'attempt' || !parentInView(t))
+    .sort(byCreated)
+    .map(t => toNode(t, new Set()));
 }
 
 /** `workers.observedTouches` ∪ `tasks.pathManifest`, with how it was determined. */
@@ -523,6 +535,8 @@ async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   task: LoadedTask;
   family: LoadedTask[];
+  /** The whole fix-attempt chain this task sits in, for `history` only — state is still derived from `family`. */
+  lineage: LoadedTask[];
   answerExtras: StateBecauseExtras;
   workspaceId: string | null;
   missionId: string | null;
@@ -554,6 +568,28 @@ async function viewForTask(taskId: string): Promise<{
   const executor = parentMission && !parentMission.isHeld ? parentMission.executor ?? null : null;
 
   const family = [task as LoadedTask, ...attempts];
+  // History reads the whole chain: from an attempt (a CI fix that opened a PR
+  // of its own after a failed resume) the direct children alone leave the
+  // predecessor PR and its siblings out.
+  const lineage = await collectLineage<LoadedTask>(taskId, {
+    fetchTask: async (id) =>
+      id === taskId
+        ? (task as LoadedTask)
+        : (((await db.query.tasks.findFirst({
+            where: eq(tasks.id, id),
+            columns: TASK_COLUMNS,
+            with: { workers: WORKER_WITH },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          })) as any as LoadedTask | undefined) ?? null),
+    fetchChildren: async (parentIds) =>
+      (await db.query.tasks.findMany({
+        where: inArray(tasks.parentTaskId, parentIds),
+        columns: TASK_COLUMNS,
+        with: { workers: WORKER_WITH },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as any as LoadedTask[],
+  });
+  const historyTasks = [...new Map([...lineage, ...family].map(t => [t.id, t])).values()];
   // Family scope: the attempts ARE this task's work, so they count here even
   // though mission-scope health (deliverables only) ignores them.
   const health = deriveTaskHealthSignal({}, family, { scope: 'family' });
@@ -639,6 +675,7 @@ async function viewForTask(taskId: string): Promise<{
     view: deriveMissionStateView(input),
     task: task as LoadedTask,
     family,
+    lineage: historyTasks,
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
@@ -656,7 +693,7 @@ async function viewForTask(taskId: string): Promise<{
 export async function explainTask(taskId: string): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, family, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'task',
@@ -670,7 +707,7 @@ export async function explainTask(taskId: string): Promise<ExplainResult | null>
 
   const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
   const gateHistory = await loadGateHistory(taskId);
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(family), because, gateHistory)] };
+  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -757,7 +794,7 @@ export async function explainPr(worker: {
 
   const loaded = await viewForTask(worker.taskId);
   if (!loaded) return null;
-  const { view, task, family, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -810,7 +847,7 @@ export async function explainPr(worker: {
     ]);
   }
 
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(family), because)] };
+  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

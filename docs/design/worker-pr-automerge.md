@@ -16,7 +16,7 @@ assertions:
 ---
 # Worker PR Auto-Merge — Design Spec
 
-> **Status:** Proposed — awaiting approval before any implementation begins.
+> **Status:** Implemented in part. What shipped: the `mergeable_state` `dirty`/`blocked` checks from S1 (a dirty PR dispatches an agent conflict retry, not update-branch; update-branch is used only for behind-only PRs, added later with the base-freshness gate), and S4 as `threshold.maxSourceLines`. What did not: S2 (no per-skip notification; refusals write a gate-ledger row and, for mission tasks only, a mission-feed note), S3 (no `autoMergePending` marker), S5 (no `review_needed` note type; escalations use the needs-you inbox). The stall S2/S3 were meant to prevent returned with the base-freshness gate; its successor is [`pr-landing-guarantee.md`](pr-landing-guarantee.md), which carries the marker and alerting forward. The text below is the original proposal, kept for history.
 > **Scope:** Track 1 = CI-gated auto-merge reliability + observability. Track 2 = fan-out task primitives (appendix, input to a separate spec).
 
 ---

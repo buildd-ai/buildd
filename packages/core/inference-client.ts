@@ -130,9 +130,9 @@ async function teamAllowsCapability(teamId: string, capability: InferenceCapabil
   try {
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceFeatureModes: true },
+      columns: { inferenceFeatureModes: true, enabledDecisionShadows: true },
     });
-    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null);
+    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null);
   } catch (e) {
     console.warn(`[inference] capability lookup failed for team ${teamId}:`, e);
     return false;

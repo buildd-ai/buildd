@@ -57,6 +57,8 @@ import { deriveTaskOrigin } from '@/lib/task-origin';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import TaskEvidenceCard from './TaskEvidenceCard';
+import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import TaskOverflowMenu from './TaskOverflowMenu';
@@ -776,6 +778,7 @@ export default async function TaskDetailPage({
       commits: lineage.commits.map(c => ({
         ...c,
         fix: c.state === 'failed' ? ((retried[c.attempt - 1]?.result as { summary?: string } | null)?.summary ?? null) : null,
+        fixEvidence: c.state === 'failed' ? evidenceViewOf(retried[c.attempt - 1]?.result) : null,
       })),
     };
   }
@@ -1240,6 +1243,8 @@ export default async function TaskDetailPage({
             maxLoops={task.loopConfig.maxLoops ?? 5}
           />
         )}
+
+        <TaskEvidenceCard status={task.status} result={task.result} />
 
         {/* Agent error traces */}
         {errorTraces.length > 0 && (

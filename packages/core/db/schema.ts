@@ -80,6 +80,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // The `opt_in` decision capabilities this team turned on (e.g.
+  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
+  // an opt_in capability never switches it on for anyone. See
+  // packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -310,6 +315,11 @@ export interface WorkspaceGitConfig {
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
+
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
