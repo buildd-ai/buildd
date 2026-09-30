@@ -147,6 +147,9 @@ export const CHAT_TOOL_SPECS = withAreas({
   // A runner row carries a workspaceIds array: the reach filter keeps a row
   // only if one of them is in reach, and strips the rest (in-process-api.ts).
   list_runners: one(read('GET /api/workers/active')),
+  // Text only, redacted and capped at 64 KB; never a presigned URL. The task
+  // route checks the object's lineage against :id (evidenceId is a query param).
+  read_evidence: one(read('GET /api/tasks/:id/evidence', 'GET /api/evidence')),
 
   // ── PRs, reviews, releases ──
   get_pr: one(read('GET /api/github/pr')),

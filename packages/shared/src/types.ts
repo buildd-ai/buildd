@@ -2840,3 +2840,61 @@ export interface ListPrsResponse {
   sinceDays?: number;
   prs: PrListItem[];
 }
+
+// ── Evidence reads (docs/specs/byo-evidence-storage.md, "Read paths") ──────
+
+export type EvidenceKind = 'command_output' | 'test_report' | 'ci_job_log' | 'transcript' | 'pr_diff';
+
+/** One `evidence_objects` pointer as the read routes list it. Never a bucket URL. */
+export interface EvidenceObjectSummary {
+  id: string;
+  workspaceId: string;
+  taskId: string;
+  rootTaskId: string;
+  workerId: string;
+  prNumber: number | null;
+  kind: EvidenceKind;
+  bytes: number;
+  uploadState: 'pending' | 'stored' | 'failed' | 'unreadable';
+  indexState: 'skipped' | 'queued' | 'indexed' | 'failed';
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+/** Text cut from one object: at most 64 KB, redacted. */
+export interface EvidenceReadResult {
+  text: string;
+  /** More matched than fits the cap, or the scan hit one of its bounds. */
+  truncated: boolean;
+  /** Pass back as `cursor=` to continue a forward read; null when nothing is left, and in tail mode. */
+  cursor: string | null;
+  fromLine: number | null;
+  toLine: number | null;
+  lineCount: number;
+  scannedLines: number;
+  /** The decompressed-size bound was hit before the end of the object. */
+  scanLimited: boolean;
+}
+
+/** GET /api/tasks/:id/evidence (no evidenceId). */
+export interface TaskEvidenceListResponse {
+  taskId: string;
+  workspaceId: string;
+  objects: EvidenceObjectSummary[];
+  resolvedFrom?: string;
+}
+
+/** GET /api/tasks/:id/evidence?evidenceId=… */
+export interface TaskEvidenceReadResponse extends EvidenceReadResult {
+  taskId: string;
+  workspaceId: string;
+  object: EvidenceObjectSummary;
+}
+
+/** GET /api/evidence?workspaceId=&prNumber=|evidenceId=&kind= */
+export interface EvidenceLookupResponse {
+  workspaceId: string;
+  prNumber: number | null;
+  taskIds: string[];
+  objects: EvidenceObjectSummary[];
+}

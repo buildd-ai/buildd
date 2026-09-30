@@ -54,6 +54,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_usage_stats: 'workers',
   list_connectors: 'workers',
   list_runners: 'workers',
+  read_evidence: 'workers',
   // PRs, reviews, releases
   get_pr: 'prs',
   list_prs: 'prs',
@@ -197,7 +198,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   runners: {
     parts: [
       { text: 'why something is stuck', actions: ['explain'] },
-      { text: 'errors and failure patterns', actions: ['get_error_traces', 'get_failure_analytics'] },
+      { text: 'errors, failures, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'budget and usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners and connectors', actions: ['list_runners', 'list_connectors'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
@@ -264,6 +265,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_usage_stats: 'token, cost and turn stats',
   list_connectors: 'mounted connectors and their health',
   list_runners: 'runners: slots, branch, build, heartbeat',
+  read_evidence: 'run logs of a task or PR',
   get_pr: 'PR state, CI, reviews, body',
   list_prs: 'open PRs (conflicts and red CI first), or merged ones',
   get_pr_review: 'where a PR review stands',
@@ -319,6 +321,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, provider?, bucket?, endpoint?, credentials?, …}',
+  read_evidence: '{taskId?|prNumber?|evidenceId?, kind?, tail?, grep?, …}',
   register_skill: '{name, content, description?, slug?, model?, allowedTools?, isRole?, …}',
   update_skill: '{slug, workspaceId?, name?, description?, content?, model?, allowedTools?, isRole?, enabled?, …}',
 };

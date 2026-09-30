@@ -55,6 +55,9 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   },
   { pattern: '/api/tasks/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/tasks/[id]/route'), reach: byTask },
   { pattern: '/api/tasks/:id/messages', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/messages/route'), reach: byTask },
+  // evidenceId travels as a query param: OwnedKind has no evidence member, and the route checks it belongs to :id.
+  { pattern: '/api/tasks/:id/evidence', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/evidence/route'), reach: byTask },
+  { pattern: '/api/evidence', methods: ['GET'], load: () => import('@/app/api/evidence/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
   { pattern: '/api/tasks/:id/notes', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/notes/route'), reach: byTask },
   { pattern: '/api/tasks/:id/approve-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/approve-plan/route'), reach: byTask },
   { pattern: '/api/tasks/:id/reject-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/reject-plan/route'), reach: byTask },

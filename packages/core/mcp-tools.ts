@@ -286,6 +286,9 @@ export const workerActions = [
   // Worker level, not admin: any worker's own recon needs this, same
   // reasoning as get_failure_analytics above.
   'list_runners',
+  // Read-only over run evidence (logs, test reports) of tasks the caller can
+  // already see; the routes check reach and lineage and audit every read.
+  'read_evidence',
   // Split by sub-action: list/get/readout are worker level (and only return
   // visibility='team' experiments below admin — the API 404s the rest); every
   // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
@@ -542,6 +545,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -3984,6 +3988,90 @@ export async function handleBuilddAction(
       }).join('\n');
 
       return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}`);
+    }
+
+    case 'read_evidence': {
+      // Every read goes through the evidence routes, which check reach and the
+      // object's task lineage and audit the read. This never asks for, and the
+      // routes never return, a presigned URL.
+      const strParam = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+      const taskIdParam = strParam(params.taskId);
+      const evidenceId = strParam(params.evidenceId);
+      const prNumber = typeof params.prNumber === 'number' ? params.prNumber
+        : typeof params.prNumber === 'string' && /^\d+$/.test(params.prNumber) ? Number(params.prNumber) : null;
+      if (!taskIdParam && !evidenceId && !prNumber) {
+        return errorResult('read_evidence needs taskId, prNumber or evidenceId.');
+      }
+      const kind = strParam(params.kind);
+      const readQs = new URLSearchParams();
+      if (typeof params.tail === 'number' || typeof params.tail === 'string') readQs.set('tail', String(params.tail));
+      if (strParam(params.grep)) readQs.set('grep', params.grep as string);
+      if (typeof params.cursor === 'number' || strParam(params.cursor)) readQs.set('cursor', String(params.cursor));
+      const wantsRead = !!evidenceId || [...readQs.keys()].length > 0;
+      const kindQs = kind ? `kind=${encodeURIComponent(kind)}` : '';
+
+      type EvidenceRow = { id: string; taskId: string; rootTaskId: string; kind: string; bytes: number; uploadState: string; createdAt: string; prNumber: number | null };
+      const kib = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(n / 1024))} KiB`);
+      const row = (o: EvidenceRow) =>
+        `- ${o.kind} ${kib(o.bytes)} [${o.uploadState}] ${o.createdAt} task ${o.taskId.slice(0, 8)}${o.prNumber ? ` PR #${o.prNumber}` : ''} (id: ${o.id})`;
+
+      let objects: EvidenceRow[] = [];
+      let scope: string;
+      let readVia: (o: EvidenceRow) => string;
+      if (evidenceId) {
+        const id = requireFullUuid(evidenceId, 'evidenceId');
+        let owner = taskIdParam;
+        if (!owner) {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) return errorResult('read_evidence with only evidenceId needs a workspace: pass workspaceId or taskId.');
+          const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&evidenceId=${encodeURIComponent(id)}`);
+          owner = data?.objects?.[0]?.taskId ?? null;
+          if (!owner) return errorResult(`Evidence object ${id} not found.`);
+        }
+        objects = [{ id, taskId: owner } as EvidenceRow];
+        scope = `evidence ${id}`;
+        readVia = () => owner!;
+      } else if (taskIdParam) {
+        const data = await api(`/api/tasks/${encodeURIComponent(taskIdParam)}/evidence${kindQs ? `?${kindQs}` : ''}`);
+        objects = (data?.objects ?? []) as EvidenceRow[];
+        const resolvedTask = (data?.taskId as string) || taskIdParam;
+        scope = `task ${resolvedTask}`;
+        readVia = () => resolvedTask;
+      } else {
+        const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+        if (!wsId) return errorResult('read_evidence with prNumber needs a workspace: pass workspaceId.');
+        const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&prNumber=${prNumber}${kindQs ? `&${kindQs}` : ''}`);
+        objects = (data?.objects ?? []) as EvidenceRow[];
+        scope = `PR #${prNumber}`;
+        readVia = (o) => o.taskId;
+      }
+
+      const kindLabel = kind ? `${kind} ` : '';
+      if (!wantsRead) {
+        if (objects.length === 0) return text(`No ${kindLabel}evidence stored for ${scope}.`);
+        return text(`${objects.length} ${kindLabel}evidence object(s) for ${scope}, newest first:\n${objects.map(row).join('\n')}\n\nRead one with tail or grep (and evidenceId to pick a specific object).`);
+      }
+
+      const target = evidenceId ? objects[0] : objects.find(o => o.uploadState === 'stored');
+      if (!target) {
+        return text(objects.length === 0
+          ? `No ${kindLabel}evidence stored for ${scope}.`
+          : `No readable ${kindLabel}evidence for ${scope}: ${objects.length} object(s), none stored.\n${objects.map(row).join('\n')}`);
+      }
+      const qs = new URLSearchParams(readQs);
+      qs.set('evidenceId', target.id);
+      const read = await api(`/api/tasks/${encodeURIComponent(readVia(target))}/evidence?${qs}`);
+      const o = read.object as EvidenceRow;
+      const span = read.fromLine ? `lines ${read.fromLine}-${read.toLine}` : 'no lines';
+      const more = read.truncated
+        ? read.cursor
+          ? `\nTRUNCATED at 64 KB: continue with cursor=${read.cursor}.`
+          : '\nTRUNCATED at 64 KB: earlier lines were dropped; narrow with grep or a smaller tail.'
+        : '';
+      const others = !evidenceId && objects.length > 1 ? `\n(${objects.length - 1} other object(s) for ${scope}; pass evidenceId to read one.)` : '';
+      return text(
+        `${o.kind} evidence ${o.id} (task ${read.taskId}, ${span}, ${read.lineCount} line(s) returned, ${read.scannedLines} scanned)${more}${others}\n\n${read.text || '(no matching lines)'}`,
+      );
     }
 
     case 'get_budget_forecast': {
