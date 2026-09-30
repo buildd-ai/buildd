@@ -71,6 +71,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
+import { applyModelEnv, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import {
   resolveBypassPermissions,
@@ -3006,60 +3007,47 @@ export class WorkerManager {
       // resolveCbmOutcome asks cannot be answered by inspecting that map.
       let codexCbmMounted = false;
 
-      // Codex tasks run against OpenAI, not Anthropic. Strip any inherited
-      // ANTHROPIC_API_KEY from the runner's own process.env so it can't leak
-      // into the Codex CLI subprocess (which uses Claude Code internally and
-      // would try — and potentially fail — to authenticate with Anthropic).
-      if (isCodexTask) {
-        delete cleanEnv.ANTHROPIC_API_KEY;
-      }
-
-      // Inject LLM provider config into environment (for OpenRouter, etc.)
-      // The Claude Agent SDK reads ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
-      if (this.config.llmProvider?.provider === 'openrouter') {
-        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl || 'https://openrouter.ai/api';
-        cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey || '';
-        cleanEnv.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
-        console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
-      } else if (this.config.llmProvider?.baseUrl) {
-        // Custom provider with base URL
-        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl;
-        if (this.config.llmProvider.apiKey) {
-          cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
-          cleanEnv.ANTHROPIC_API_KEY = '';
-        }
-      }
-
-      // Inject server-managed API key (delivered inline during claim).
-      // Skipped for Codex tasks — they use OpenAI credentials, not Anthropic.
-      if (!isCodexTask && worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
-        cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
-        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
-      }
-
-      // Inject server-managed OAuth token (delivered inline during claim).
-      // Skipped for Codex tasks: CLAUDE_CODE_OAUTH_TOKEN is not needed and can
-      // cause spurious Claude auth failures if the token is expired/revoked —
-      // the Codex CLI uses Claude Code internally and would attempt a refresh.
-      if (!isCodexTask && worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-        cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
-        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
-      }
-
-      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
-      // Tenants authenticate via their Anthropic subscription (OAuth).
-      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
+      // Model auth: provider config, server-managed Anthropic credentials and
+      // the tenant OAuth token (Dispatch multi-tenant mode). See
+      // agent-model-env.ts — server/tenant Anthropic credentials are only given
+      // to an agent whose model traffic goes to Anthropic. Codex tasks run
+      // against OpenAI, so an inherited ANTHROPIC_API_KEY is stripped and no
+      // server-managed Anthropic credential is injected for them.
+      // Tenant tokens are decrypted at runtime using the shared TENANT_MASTER_KEY
+      // so costs go to the tenant's subscription.
       const tenantCtx = extractTenantContext(task.context as Record<string, unknown>);
+      let tenantOauthToken: string | undefined;
       if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
         try {
-          const tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
-          cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
-          console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
-          this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
+          tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
         } catch (err) {
           console.error(`[Worker ${worker.id}] Failed to decrypt tenant OAuth token:`, err);
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
+      }
+      const modelEnv = applyModelEnv(cleanEnv, {
+        llmProvider: this.config.llmProvider,
+        serverApiKey: worker.serverApiKey,
+        serverOauthToken: worker.serverOauthToken,
+        tenantOauthToken,
+        isCodexTask,
+        trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
+      });
+      if (this.config.llmProvider?.provider === 'openrouter') {
+        console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
+      }
+      if (modelEnv.injected.includes('serverApiKey')) {
+        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
+      }
+      if (modelEnv.injected.includes('serverOauthToken')) {
+        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
+      }
+      if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
+        console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
+        this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
+      }
+      if (modelEnv.withheld.length > 0) {
+        console.log(`[Worker ${worker.id}] Custom model endpoint (${modelEnv.baseUrlOrigin || 'unparseable ANTHROPIC_BASE_URL'}): server-managed Anthropic credentials not given to the agent (${modelEnv.withheld.join(', ')}). Set ${TRUSTED_MODEL_BASE_URL_ENV} to that origin only if it forwards to Anthropic.`);
       }
 
       // Build a separate expansion env for resolving ${VAR} references in .mcp.json
