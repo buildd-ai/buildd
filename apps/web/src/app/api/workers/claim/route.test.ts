@@ -6180,6 +6180,30 @@ describe('claim gate overrides', () => {
       expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
     });
 
+    it.each(['artifact_required', 'none'])('does not defer a %s candidate behind a scope-undeclared sibling', async (outputRequirement) => {
+      mockTasksFindMany.mockResolvedValueOnce([{ ...advisoryTask('task-1', 'mission-A'), outputRequirement }]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('an in-flight artifact_required sibling does not occupy the scope-undeclared slot', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: null, outputRequirement: 'artifact_required' },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
     it('claims when the in-flight sibling declared concrete scope (no undeclared-vs-undeclared collision)', async () => {
       mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
       mockDbSelect.mockReturnValue(makeSelectChain([
@@ -6983,6 +7007,15 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // A different task is its own window.
     const other = await (await POST(createMockRequest({ headers: interactiveHeaders(), body: { runner: 'mcp', taskId: 'task-2' } }))).json();
     expect(other.diagnostics?.reason).not.toBe('rate_limited');
+  });
+
+  it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    const second = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(second.diagnostics?.reason).not.toBe('rate_limited');
   });
 
   it('force: an admin explicit claim drops the overridable SQL gates, keeps the rest', async () => {

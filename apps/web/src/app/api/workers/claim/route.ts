@@ -98,6 +98,16 @@ function isDispatchedReview(category: unknown, context: unknown): boolean {
 }
 
 /**
+ * True when the task's declared deliverable is not a code change
+ * ('artifact_required' / 'none'), so it cannot conflict with another task's
+ * files. Same exemption the task-create manifest gate grants these tasks.
+ * 'auto' and 'pr_required' still count as file-editing.
+ */
+function producesNoFileEdits(outputRequirement: unknown): boolean {
+  return outputRequirement === 'artifact_required' || outputRequirement === 'none';
+}
+
+/**
  * The workspace concurrency cap as a claim predicate (see the call site for the
  * rules). A function so a force claim can evaluate it for the audit without
  * applying it.
@@ -447,7 +457,14 @@ export async function POST(req: NextRequest) {
   // A person's explicit claims from an interactive session skip the per-runner
   // cooldown (below), so they get their own limit instead: one attempt per
   // (task, account) per EXPLICIT_CLAIM_WINDOW_SEC.
-  if (taskId && interactiveSession && !(await allowExplicitClaim(taskId, account.id))) {
+  //
+  // Skipped for a task in an executor='local' mission: there the interactive
+  // session IS the executor, and fanning subagents out over a mission's tasks
+  // is the intended use. The window is armed by the attempt, not the outcome,
+  // so it also turned a retry after a gate rejection (e.g. workspace_cap) into
+  // a second, unrelated rate_limited failure.
+  const localMissionClaim = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId!);
+  if (taskId && interactiveSession && !localMissionClaim && !(await allowExplicitClaim(taskId, account.id))) {
     return emptyClaim({
       diagnostics: {
         reason: 'rate_limited',
@@ -641,7 +658,7 @@ export async function POST(req: NextRequest) {
   // enforces it regardless of who claims. Scoped to local missions only: a
   // runner-executed mission's browser-capability requirement is untouched, and a
   // force claim still never lifts this gate (see the force-claim comment above).
-  const roleGateExempt = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId);
+  const roleGateExempt = localMissionClaim;
   const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
   if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
   claimableConditions.push(...roleConditions);
@@ -1277,7 +1294,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context, outputRequirement: tasks.outputRequirement })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -1289,7 +1306,8 @@ export async function POST(req: NextRequest) {
       if (!isDispatchedReview(row.category, row.context)) {
         missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
       }
-      if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
+      if (row.category !== 'review' && !producesNoFileEdits(row.outputRequirement)
+        && declaresNoScope(row.pathManifest as string[] | null)) {
         const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
         if (row.taskId) set.add(row.taskId);
         missionAdvisoryInFlight.set(row.missionId, set);
@@ -1528,7 +1546,14 @@ export async function POST(req: NextRequest) {
         //    gating it here just adds a second review-starvation failure mode
         //    on top of the one already fixed above (an orchestration task
         //    holding the slot would otherwise block every reviewer forever).
-        if ((task as any).category !== 'review' && declaresNoScope(taskManifest)) {
+        //
+        //    `artifact_required` / `none` candidates skip it too, and never
+        //    occupy the slot: their deliverable is not a code change, so they
+        //    have no files to collide on. Without this a research task filed
+        //    without a manifest (there is no way to add one after creation)
+        //    waited behind any unrelated '**' task in the mission.
+        if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
+          && declaresNoScope(taskManifest)) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
@@ -1947,6 +1972,7 @@ export async function POST(req: NextRequest) {
     // subsequent tasks in the same batch respect the gates we just passed.
     // Review tasks consume neither the concurrency count nor the pacing slot.
     if (taskMissionId && (task as any).category !== 'review'
+      && !producesNoFileEdits((task as any).outputRequirement)
       && declaresNoScope((task as any).pathManifest as string[] | null)) {
       // Reserve the mission's single scope-undeclared slot for the rest of the
       // batch, so one poll cannot claim two '**' tasks from the same mission.
