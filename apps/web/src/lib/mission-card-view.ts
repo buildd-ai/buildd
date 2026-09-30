@@ -56,6 +56,7 @@ import { missionTaskHref, type MissionOrigin } from './mission-task-href';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { isGreenAutoMergePending } from './auto-merge-grace';
+import { deriveCiRedChains } from './ci-red-chain';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -433,6 +434,7 @@ function deriveCardState(
       ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
       : null,
     unmergedPrs,
+    ciRed: deriveCiRedChains(unmergedPrs, tasks),
   });
 }
 

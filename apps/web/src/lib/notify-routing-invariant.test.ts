@@ -20,12 +20,10 @@ const WEB_SRC = join(import.meta.dir, '..');
 
 const OPERATOR_SENDER_CALLS: Record<string, { calls: number; why: string }> = {
   'app/api/cron/mission-invariants/route.ts': { calls: 1, why: 'cross-tenant invariant scan digest' },
-  'app/api/cron/queue-stall/route.ts': { calls: 1, why: 'cross-tenant queue health watchdog' },
-  'app/api/cron/schedules/maintenance/overdue-heartbeats.ts': { calls: 1, why: 'scheduler health: the cron itself stalled' },
-  'app/api/github/webhook/route.ts': { calls: 5, why: 'installation sync health + release pipeline failures' },
-  'app/api/workers/[id]/route.ts': { calls: 1, why: 'release pipeline failure' },
+  'app/api/cron/queue-stall/route.ts': { calls: 1, why: 'cross-tenant queue health watchdog; ids and gate only' },
+  'app/api/cron/schedules/maintenance/overdue-heartbeats.ts': { calls: 1, why: 'scheduler health: the cron itself stalled; ids only' },
+  'app/api/github/webhook/route.ts': { calls: 2, why: 'installation sync health (release failures go to the owning team)' },
   'lib/cron-run.ts': { calls: 1, why: 'cron job health' },
-  'lib/health-watcher.ts': { calls: 2, why: 'project health watcher (operator-configured)' },
 };
 
 /** Modules whose alerts are about one tenant: they must use the team path. */
@@ -37,6 +35,7 @@ const TENANT_ALERT_MODULES = [
   'app/api/workers/[id]/route.ts',
   'lib/auto-merge.ts',
   'lib/conflict-retry.ts',
+  'lib/health-watcher.ts',
   'lib/heartbeat-circuit-breaker.ts',
   'lib/mission-budget.ts',
   'lib/mission-notifications.ts',

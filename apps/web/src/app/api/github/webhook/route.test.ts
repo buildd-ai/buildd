@@ -109,6 +109,15 @@ const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
   notifyOperator: mockNotify,
 }));
+// Tenant alerts go to the owning team's channel: mockNotifyTeamOf records the
+// subject and event so a test reads where each one was routed.
+const mockNotifyTeamOf = mock((_subject: any, _event: any, _payload: any) => {});
+mock.module('@/lib/notify', () => ({
+  notifyTeam: mock(async () => {}),
+  notifyTeamOf: async (subject: any, event: any, payload: any) => {
+    mockNotifyTeamOf(subject, event, payload);
+  },
+}));
 
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
@@ -679,6 +688,7 @@ function resetAll() {
   updateCalls = [];
   selectWhereCalls = [];
   mockNotify.mockClear();
+  mockNotifyTeamOf.mockClear();
   selectTableResults = () => null;
   jobInsertConflicts = false;
 
@@ -4429,7 +4439,14 @@ describe('workflow_run → releases state advancement', () => {
     const taskUpdate = updateCalls.find((c) => c.table === schemaMock.tasks);
     expect(taskUpdate).toBeDefined();
     expect((taskUpdate!.setValues as any).releaseResult.status).toBe('failed');
-    expect(mockNotify.mock.calls.length).toBeGreaterThan(0);
+    // A release failure is the owning team's alert, routed by the task, never
+    // the operator's own phone.
+    expect(mockNotifyTeamOf).toHaveBeenCalledTimes(1);
+    const [subject, event, payload] = mockNotifyTeamOf.mock.calls[0] as any[];
+    expect(subject).toEqual({ taskId: 'task-rel-1' });
+    expect(event).toBe('needsAttention');
+    expect(payload.title).toContain('Release workflow failed');
+    expect(mockNotify).not.toHaveBeenCalled();
   });
 
   it('matches runId as text and skips rows with no release_result', async () => {

@@ -29,12 +29,16 @@
   // Plain vars. Secrets (wrangler secret put): DISPATCH_TOKEN, BUILDD_API_KEY,
   // AI_GATEWAY_TOKEN, and for local development only ANTHROPIC_DIRECT_API_KEY
   // (used only with the var ALLOW_DIRECT_ANTHROPIC=1; never on a deployed
-  // Worker). Egress vars: AI_GATEWAY_ACCOUNT_ID, AI_GATEWAY_ID. See README
+  // Worker). Egress vars: AI_GATEWAY_ACCOUNT_ID, AI_GATEWAY_ID, or for an
+  // Anthropic-compatible proxy (LiteLLM and similar) MODEL_PROXY_URL,
+  // MODEL_PROXY_AUTH_HEADER plus the secret MODEL_PROXY_KEY. See README
   // "Egress credentials".
   // BUILDD_SERVER has no default on purpose: set it per deployment
   // (dashboard, `--var`, or an env block). The Worker refuses to dispatch
   // without it, because the runner would otherwise fall back to production.
   "vars": {
+    // Must equal containers[0].instance_type above (run report; run-report.test.ts checks).
+    "CONTAINER_INSTANCE_TYPE": "standard-1",
     "CONTAINER_INACTIVITY_TIMEOUT_MS": "1800000",
     "CONTAINER_START_TIMEOUT_MS": "300000"
   }

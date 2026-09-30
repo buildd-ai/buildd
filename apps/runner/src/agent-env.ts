@@ -44,6 +44,17 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   // secrets.
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'GIT_SSL_CAINFO',
   'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE',
+  // Claude Code's OpenTelemetry export. The cloud runner sets these on the
+  // container when the operator configures a collector (apps/cloud-runner
+  // otel.ts). None is secret: OTEL_EXPORTER_OTLP_*HEADERS is deliberately
+  // absent (it can carry a collector credential; the cloud runner adds that at
+  // egress instead), and so are the content opt-ins (OTEL_LOG_USER_PROMPTS,
+  // OTEL_LOG_TOOL_CONTENT, OTEL_LOG_RAW_API_BODIES). OTEL_LOG_TOOL_DETAILS is
+  // the one opt-in passed, because the operator chose it explicitly.
+  'CLAUDE_CODE_ENABLE_TELEMETRY', 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA',
+  'OTEL_LOGS_EXPORTER', 'OTEL_METRICS_EXPORTER', 'OTEL_TRACES_EXPORTER',
+  'OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_PROTOCOL',
+  'OTEL_RESOURCE_ATTRIBUTES', 'OTEL_LOG_TOOL_DETAILS', 'TRACEPARENT',
 ]);
 
 /**
@@ -61,4 +72,19 @@ export function buildAgentBaseEnv(
     if (val !== undefined) env[key] = val;
   }
   return browser === undefined ? applyAgentPlaywrightEnv(env) : applyAgentPlaywrightEnv(env, browser);
+}
+
+/**
+ * With telemetry on, tag the agent's OpenTelemetry resource with this worker
+ * (`buildd.worker_id`), which the cloud runner cannot know when it starts the
+ * container: the worker exists only after the claim. Mutates `env`. No-op
+ * when telemetry is off or the attribute is already set.
+ */
+export function withWorkerResourceAttribute(env: Record<string, string>, workerId: string): Record<string, string> {
+  if (env.CLAUDE_CODE_ENABLE_TELEMETRY !== '1' || !workerId) return env;
+  const current = env.OTEL_RESOURCE_ATTRIBUTES ?? '';
+  if (current.split(',').some(pair => pair.split('=')[0]?.trim() === 'buildd.worker_id')) return env;
+  const attr = `buildd.worker_id=${encodeURIComponent(workerId)}`;
+  env.OTEL_RESOURCE_ATTRIBUTES = current ? `${current},${attr}` : attr;
+  return env;
 }

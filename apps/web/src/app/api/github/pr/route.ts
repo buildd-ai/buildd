@@ -1589,6 +1589,7 @@ export async function GET(req: NextRequest) {
     const prNumberParam = searchParams.get('prNumber');
     const workspaceIdParam = searchParams.get('workspaceId');
     const includeComments = searchParams.get('includeComments') === 'true';
+    const includeCiFailures = searchParams.get('includeCiFailures') === 'true';
 
     if (!workerId && !prNumberParam) {
       return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
@@ -1712,6 +1713,23 @@ export async function GET(req: NextRequest) {
       failedChecks: failedChecks(checkRuns),
     };
 
+    // Opt-in: why each failing check failed, from its job log. Imported lazily
+    // so the default request never loads the log reader, and a failure here
+    // costs the excerpts, not the PR.
+    let ciFailures: Array<{ name: string; conclusion: string; url: string | null; step: string | null; excerpt: string | null }> | null = null;
+    if (includeCiFailures) {
+      const failing = ciSummary.failedChecks;
+      ciFailures = failing.map(f => ({ ...f, step: null, excerpt: null }));
+      if (failing.length > 0) {
+        try {
+          const { fetchCiFailureExcerpts } = await import('@/lib/ci-failure-excerpts');
+          ciFailures = await fetchCiFailureExcerpts(installationId, fullName, failing);
+        } catch (err) {
+          console.warn(`Could not read CI failure logs for ${fullName}#${prNumber}:`, err);
+        }
+      }
+    }
+
     // Summarise reviews — count only the latest actionable review per user.
     // Skip COMMENTED (comment-only submits) so a follow-up comment after an
     // approval doesn't overwrite the approval in the Map.
@@ -1789,6 +1807,7 @@ export async function GET(req: NextRequest) {
       checks: ciSummary,
       reviews: reviewSummary,
       ...(comments ? { comments } : {}),
+      ...(ciFailures ? { ciFailures } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

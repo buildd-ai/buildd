@@ -8,13 +8,15 @@ import { verifyClaudeCredential } from '@/lib/claude-credential';
 import { getCodexSecretId, verifyCodexCredential } from '@/lib/codex-credential';
 import { isUuid } from '@/lib/uuid';
 import { verifyCloudflareCredential } from '@/lib/cloudflare-credential';
+import { verifyAgentEndpointSecret } from '@/lib/agent-endpoint-settings';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 // POST /api/secrets/[id]/verify
 // Smoke-tests a stored credential against its provider API.
 // Supports: oauth_token, anthropic_api_key (Claude), codex_credential (Codex)
-// and cloudflare_token (the cloud runner's Cloudflare API token).
+// cloudflare_token (the cloud runner's Cloudflare API token) and agent_endpoint
+// (one Messages call through the team's agent model endpoint).
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   if (!isUuid(id)) {
@@ -49,6 +51,11 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
     // Result carries status and error only, never the token.
     const result = await verifyCloudflareCredential(id);
     return NextResponse.json(result);
+  }
+
+  if (row.purpose === 'agent_endpoint') {
+    // { health, error }: the error is scrubbed of the key.
+    return NextResponse.json(await verifyAgentEndpointSecret(id));
   }
 
   return NextResponse.json({ error: 'Verification not supported for this credential type' }, { status: 400 });

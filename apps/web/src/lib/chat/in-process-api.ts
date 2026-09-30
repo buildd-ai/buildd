@@ -54,6 +54,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
     reach: { unpinned: 'lists the caller\'s tasks; every row carries its workspaceId and is filtered', requireBody: ['workspaceId'], ...ROWS },
   },
   { pattern: '/api/tasks/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/tasks/[id]/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/error-traces', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/error-traces/route'), reach: byTask },
   { pattern: '/api/tasks/:id/messages', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/messages/route'), reach: byTask },
   { pattern: '/api/tasks/:id/notes', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/notes/route'), reach: byTask },
   { pattern: '/api/tasks/:id/approve-plan', methods: ['POST'], load: () => import('@/app/api/tasks/[id]/approve-plan/route'), reach: byTask },

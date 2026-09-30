@@ -151,7 +151,7 @@ describe('MCP group tools — tools/list', () => {
   it('admin, opted in: every group tool, no buildd', async () => {
     authenticateAs({ level: 'admin', authType: 'api' });
     const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
-    for (const t of ['buildd_missions', 'buildd_tasks', 'buildd_work', 'buildd_prs', 'buildd_runners', 'buildd_artifacts', 'buildd_schedules', 'buildd_admin', 'recall', 'learn', 'check_path_claim', 'send_worker_message']) {
+    for (const t of ['buildd_missions', 'buildd_tasks', 'buildd_work', 'buildd_prs', 'buildd_runners', 'buildd_analytics', 'buildd_artifacts', 'buildd_schedules', 'buildd_admin', 'recall', 'learn', 'check_path_claim', 'send_worker_message']) {
       expect(names).toContain(t);
     }
     expect(names).not.toContain('buildd');
@@ -236,7 +236,7 @@ describe('MCP group tools — tools/call', () => {
   it('a wrong-group action gets a one-line error naming the right tool, and nothing runs', async () => {
     const result = await callTool('buildd_missions', { action: 'list_runners', params: {} }, `?workspace=${WORKSPACE_ID}`);
     expect(result.isError).toBe(true);
-    expect(text(result)).toContain('buildd_runners');
+    expect(text(result)).toContain('buildd_analytics');
     expect(text(result).includes('\n')).toBe(false);
     expect(mockHandleBuilddAction).not.toHaveBeenCalled();
   });

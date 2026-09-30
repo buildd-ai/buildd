@@ -64,6 +64,10 @@ describe('every op is declared well enough to be enforced', () => {
     }
   }
 
+  it('get_error_traces reaches a single task\'s traces, not only a workspace\'s', () => {
+    expect(ALL_CHAT_TOOL_SPECS.get_error_traces.ops[''].routes).toContain('GET /api/tasks/:id/error-traces');
+  });
+
   it('every write route in CHAT_ROUTES is reachable only by some write, admin or self op', () => {
     const byWriteOps = new Set(Object.values(ALL_CHAT_TOOL_SPECS).flatMap(s => opsOf(s))
       .filter(([, o]) => o.class === 'write' || o.class === 'admin' || o.class === 'self').flatMap(([, o]) => o.routes));

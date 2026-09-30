@@ -32,6 +32,7 @@ export const WITHHELD_WORKER_FIELDS = [
   'assertionTokenCache',
   'assertionReAuthFailed',
   'roleEnvSecrets', // resolved secret VALUES (ENV_NAME -> value), never client-safe
+  'modelEndpoint', // the team agent model endpoint's key
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -119,6 +120,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   roleInstructions: true,
   skillBundles: true,
   roleEnvMissing: true,
+  modelEndpointIgnored: true,
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
@@ -128,6 +130,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   claudeTokenExpiresAt: false,
   claudeCredentialId: false,
   codexCredential: false,
+  modelEndpoint: false,
   roleConfig: false,
   assertionTokenCache: false,
   assertionReAuthFailed: false,
