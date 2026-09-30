@@ -2,10 +2,17 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
-const mockNotify = mock(() => {});
-mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+// Escalations are about one tenant's PR: they go to that team's channel.
+// mockNotify sees the payload; mockNotifySubject sees who it was routed to.
+const mockNotify = mock((_payload: unknown) => {});
+const mockNotifySubject = mock((_subject: unknown, _event: unknown) => {});
+mock.module('@/lib/notify', () => ({
+  notifyTeamOf: async (subject: unknown, event: unknown, payload: unknown) => {
+    mockNotifySubject(subject, event);
+    mockNotify(payload);
+  },
 }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
 const mockGithubApi = mock(() => Promise.resolve({ check_runs: [] }) as Promise<unknown>);
 const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'merged' }) as Promise<any>);
@@ -650,6 +657,7 @@ describe('escalateConflictExhaustion', () => {
 
   beforeEach(() => {
     mockNotify.mockReset();
+    mockNotifySubject.mockReset();
     capturedInsertValues = [];
     mockUpdateReturns = [];
     mockFindFirst = mock(() => baseTask);
@@ -666,7 +674,7 @@ describe('escalateConflictExhaustion', () => {
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(call.app).toBe('tasks');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add dark mode');
@@ -741,6 +749,7 @@ describe('escalateReviewerExhaustion', () => {
 
   beforeEach(() => {
     mockNotify.mockReset();
+    mockNotifySubject.mockReset();
     capturedInsertValues = [];
     mockUpdateReturns = [];
     mockFindFirst = mock(() => baseTask);
@@ -757,7 +766,7 @@ describe('escalateReviewerExhaustion', () => {
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(call.app).toBe('tasks');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add search');
@@ -836,6 +845,7 @@ describe('escalateReviewContractFailure', () => {
 
   beforeEach(() => {
     mockNotify.mockReset();
+    mockNotifySubject.mockReset();
     capturedInsertValues = [];
     mockUpdateReturns = [];
     mockFindFirst = mock(() => baseTask);
@@ -854,7 +864,7 @@ describe('escalateReviewContractFailure', () => {
     await call();
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const notifyCall = mockNotify.mock.calls[0][0] as any;
-    expect(notifyCall.app).toBe('tasks');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
     expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
     expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });

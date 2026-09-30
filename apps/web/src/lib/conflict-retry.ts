@@ -23,7 +23,7 @@ import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
 import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
@@ -730,8 +730,7 @@ export async function escalateSupersession(
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: SUPERSEDED · close?`,
     message: `${task.title}\nChanges appear to already be in base.${successorClause}\nClose or re-investigate.`,
     url: taskUrl,
@@ -811,8 +810,7 @@ export async function escalateBaseRewrite(
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: BASE REWRITTEN · cherry-pick?`,
     message: `${task.title}\nBase branch force-pushed (${oldSha}→${newSha}). Cherry-pick own commits onto fresh base.`,
     url: taskUrl,

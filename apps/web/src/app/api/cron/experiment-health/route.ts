@@ -13,8 +13,8 @@
  *   PAUSED, through the same guarded update the API uses, so the cap is a cap.
  *   Paused, not concluded: concluding needs a human decision. Tier pools are
  *   never paused here; they have no cap and are managed on their own page.
- * - One Pushover alert (the 'alerts' app, same path as the other health
- *   crons) listing every unhealthy experiment. Daily cadence is the dedupe: a
+ * - One alert per team, on that team's own channel (experiments belong to a
+ *   team), listing its unhealthy experiments. Daily cadence is the dedupe: a
  *   finding nobody acts on repeats once a day, not hourly.
  *
  * `changed` = experiments with at least one finding (findings polarity).
@@ -25,7 +25,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { buildRunningExperimentsQuery, runExperimentHealth } from '@buildd/core/experiment-health-source';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 import { applyExperimentUpdate } from '@/lib/experiments-store';
-import { notify } from '@/lib/pushover';
+import { notifyTeam } from '@/lib/notify';
 import { withCronRun } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -39,6 +39,7 @@ const DIGEST_LINES = 8;
 
 interface Unhealthy {
   id: string;
+  teamId: string;
   key: string;
   kind: string;
   findings: ExperimentHealthFinding[];
@@ -79,18 +80,20 @@ export async function GET(req: NextRequest) {
           console.error(`[experiment-health] pausing ${row.id} past its cap failed:`, err);
         }
       }
-      unhealthy.push({ id: row.id, key: row.key, kind: row.kind, findings, paused });
+      unhealthy.push({ id: row.id, teamId: row.teamId, key: row.key, kind: row.kind, findings, paused });
     }
 
-    if (unhealthy.length > 0) {
-      const lines = unhealthy.flatMap(u => u.findings.map(f => `• ${u.key}: ${f.code}: ${f.detail}${u.paused && f.code === 'past_duration_cap' ? ' (paused)' : ''}`));
+    // Experiments belong to a team: each team hears about its own, on its own channel.
+    const byTeam = new Map<string, Unhealthy[]>();
+    for (const u of unhealthy) byTeam.set(u.teamId, [...(byTeam.get(u.teamId) ?? []), u]);
+    for (const [teamId, list] of byTeam) {
+      const lines = list.flatMap(u => u.findings.map(f => `• ${u.key}: ${f.code}: ${f.detail}${u.paused && f.code === 'past_duration_cap' ? ' (paused)' : ''}`));
       const shown = lines.slice(0, DIGEST_LINES);
       if (lines.length > DIGEST_LINES) shown.push(`• +${lines.length - DIGEST_LINES} more`);
-      notify({
-        app: 'alerts',
-        title: unhealthy.length === 1
-          ? `[buildd] Experiment unhealthy — ${unhealthy[0].key}`
-          : `[buildd] ${unhealthy.length} experiments unhealthy`,
+      await notifyTeam(teamId, 'needsAttention', {
+        title: list.length === 1
+          ? `[buildd] Experiment unhealthy — ${list[0].key}`
+          : `[buildd] ${list.length} experiments unhealthy`,
         message: shown.join('\n'),
         priority: 0,
         url: `${APP_BASE_URL}/app/health`,

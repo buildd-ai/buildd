@@ -157,7 +157,7 @@ mock.module('@/lib/heartbeat-helpers', () => ({
 }));
 
 mock.module('@/lib/pushover', () => ({
-  notify: mockNotify,
+  notifyOperator: mockNotify,
 }));
 
 // Heartbeat decision chain. Inert for non-heartbeat schedules (the prepass is

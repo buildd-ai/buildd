@@ -22,7 +22,7 @@ What exists and will be built on, not duplicated.
 | Piece | Where | What it does now |
 |---|---|---|
 | Team alerts | `lib/notify.ts` `notifyTeam`, `lib/notify-rules.ts` `resolveNotifyPlan` | Per-team Pushover (team's own app token + user key) and webhook URL, read from team-wide `secrets` rows (purposes `pushover`, `notify_webhook`). Toggled per event in `notification_preferences` (one row per team). Fire-and-forget, swallows errors. |
-| Platform alerts | `lib/pushover.ts` `notify` | Env-keyed Pushover for ops alerts. Not tenant-scoped. `lib/mission-notifications.ts` `notifyMissionPrReady` also uses it, deduped by head SHA via an atomic `UPDATE ... WHERE lastNotifiedSha IS DISTINCT` on `missions`. |
+| Platform alerts | `lib/pushover.ts` `notifyOperator` | Env-keyed Pushover for platform-health alerts only; call sites pinned in `lib/notify-routing-invariant.test.ts`. `lib/mission-notifications.ts` `notifyMissionPrReady` sends to the mission's team channel (`notifyTeamOf`, event `needsAttention`), deduped by head SHA via an atomic `UPDATE ... WHERE lastNotifiedSha IS DISTINCT` on `missions`. |
 | Settings UI | `settings/notifications/page.tsx`, `settings/NotificationsSection.tsx`, `api/teams/[id]/notifications/route.ts` | Team channel + five toggles. |
 | Task callback | `lib/task-callback.ts` `sendTaskCallback`, set from `tasks.context.callback` (`create_task` or `webhooks/ingest` config) | One https POST on task completion or failure, optional bearer token, 5s timeout, no retry. Chat refuses these fields (`CREATE_TASK_REFUSED_FIELDS` in `lib/chat/tools.ts`). |
 | PR review callback | `lib/pr-review-request.ts` `deliverPrReviewCallback`, `api/github/pr/review/route.ts` | https only; `on: 'verdict' \| 'merge'`; claimed once so the verdict handler and the close webhook cannot both fire. |
@@ -239,7 +239,7 @@ Defaults are no-ops: no subscription rows means `publishEvent` matches nothing a
 
 - Replacing `notifyTeam` or its five team toggles. They stay the team broadcast; they share senders, not semantics.
 - Changing the existing `callbackUrl` contracts on `create_task` and `request_pr_review`.
-- Platform/ops alerts through `lib/pushover.ts` `notify`.
+- Platform/ops alerts through `lib/pushover.ts` `notifyOperator`.
 - A general event bus or event store. `publishEvent` is a synchronous match at existing emit sites, not a queue product.
 - Slack or Discord as a chat front end (`chat-integrations.md`, `agent-chat.md` P3).
 - Letting an agent watch on a person's behalf without that person's card.

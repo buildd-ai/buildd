@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions } from '@buildd/core/db/schema';
 import { eq, and, isNull, or, ne } from 'drizzle-orm';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 
 /**
  * Push a "mission PR needs attention" notification, deduped by head SHA.
@@ -38,8 +38,7 @@ export async function notifyMissionPrReady(
     return { notified: false };
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ missionId }, 'needsAttention', {
     title: opts.title,
     message: opts.message,
     url: opts.prUrl,

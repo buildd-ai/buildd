@@ -21,7 +21,8 @@ import {
   type ReviewFeedbackRow,
   type PrOwner,
 } from '@/lib/review-feedback';
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import {
@@ -256,14 +257,14 @@ async function backLinkInstallationRepos(installationId: number, source: string)
         `back-linked ${linked} workspace(s)${linked > 0 ? ` (${linkedWorkspaceIds.join(', ')})` : ''}`
     );
     if (linked > 0) {
-      notify({
+      notifyOperator({
         title: 'GitHub repos linked',
         message: `${source}: back-linked ${linked} workspace(s) to installation ${installationId}`,
       });
     }
   } catch (err) {
     console.error(`[github-repo-link] ${source} failed for installation ${installationId}:`, err);
-    notify({
+    notifyOperator({
       app: 'alerts',
       title: 'GitHub repo back-link failed',
       message: `${source} for installation ${installationId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -2195,8 +2196,7 @@ async function maybeDispatchReviewer(
           message: `${task.title} — ${reason}`,
         });
       }
-      notify({
-        app: 'alerts',
+      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
         title: `PR #${pr.number} escalated`,
         message: reason,
         url: pr.html_url,
@@ -2664,7 +2664,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
 
-      notify({
+      notifyOperator({
         app: 'alerts',
         title: `Release merge failed — ${repoFullName}#${prNumber}`,
         message: errMsg,
@@ -2718,7 +2718,7 @@ async function handleReleasePrCiFailure(
         })
         .where(eq(tasks.id, task.id));
 
-      notify({
+      notifyOperator({
         app: 'alerts',
         title: `Release CI failed — ${repoFullName}#${pr.number}`,
         message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
@@ -2853,7 +2853,7 @@ async function handleWorkflowRunEvent(event: {
   );
 
   if (!succeeded) {
-    notify({
+    notifyOperator({
       app: 'alerts',
       title: `Release workflow failed — ${run.name}`,
       message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,

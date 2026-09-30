@@ -9,19 +9,20 @@
  *
  * No channel configured OR the event disabled → no-op (no cross-tenant spam).
  *
- * For platform/ops alerts that are NOT tenant-specific (project health watcher,
- * large-payload guard, budget cron) keep using the env-based `notify()` in
- * ./pushover — do not route those through here.
+ * Only platform-health alerts that are about no single tenant use the
+ * operator sender (`notifyOperator` in ./pushover); every call site of it is
+ * pinned in notify-routing-invariant.test.ts.
  */
 
 import { db } from '@buildd/core/db';
-import { secrets, notificationPreferences } from '@buildd/core/db/schema';
+import { secrets, notificationPreferences, workspaces, missions, tasks } from '@buildd/core/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { decrypt, encrypt } from '@buildd/core/secrets';
 import {
   resolveNotifyPlan,
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotifyEvent,
+  type TeamAlertEvent,
   type TeamChannel,
   type PushoverChannel,
 } from './notify-rules';
@@ -32,7 +33,7 @@ export {
   isCredentialExpiredError,
   DEFAULT_NOTIFICATION_PREFERENCES,
 } from './notify-rules';
-export type { NotifyEvent, TeamChannel, PushoverChannel, NotifyPlan } from './notify-rules';
+export type { NotifyEvent, TeamAlertEvent, TeamChannel, PushoverChannel, NotifyPlan } from './notify-rules';
 
 export interface NotifyPayload {
   title: string;
@@ -126,7 +127,7 @@ const PUSHOVER_API = 'https://api.pushover.net/1/messages.json';
  * deliver another tenant's alerts. resolveNotifyPlan guarantees both fields are
  * present before this is called.
  */
-async function sendPushover(channel: PushoverChannel, event: NotifyEvent, payload: NotifyPayload): Promise<void> {
+async function sendPushover(channel: PushoverChannel, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
   try {
     await fetch(PUSHOVER_API, {
       method: 'POST',
@@ -146,7 +147,7 @@ async function sendPushover(channel: PushoverChannel, event: NotifyEvent, payloa
 }
 
 /** POST the alert as JSON to the team's webhook. */
-async function sendWebhook(url: string, event: NotifyEvent, payload: NotifyPayload): Promise<void> {
+async function sendWebhook(url: string, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
   try {
     await fetch(url, {
       method: 'POST',
@@ -171,7 +172,7 @@ async function sendWebhook(url: string, event: NotifyEvent, payload: NotifyPaylo
  * a team's alerts never leak to another team. Fire-and-forget: failures are
  * swallowed and never block the caller.
  */
-export async function notifyTeam(teamId: string, event: NotifyEvent, payload: NotifyPayload): Promise<void> {
+export async function notifyTeam(teamId: string, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
   if (!teamId) return;
   try {
     const [channel, prefs] = await Promise.all([getTeamChannel(teamId), getTeamPreferences(teamId)]);
@@ -184,6 +185,46 @@ export async function notifyTeam(teamId: string, event: NotifyEvent, payload: No
     await Promise.all(sends);
   } catch (err) {
     console.error('[notify] notifyTeam failed', err instanceof Error ? err.message : 'unknown');
+  }
+}
+
+/** What a tenant alert is about. The first field present decides the owning team. */
+export interface AlertSubject {
+  teamId?: string | null;
+  workspaceId?: string | null;
+  missionId?: string | null;
+  taskId?: string | null;
+}
+
+async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null> {
+  if (subject.teamId) return subject.teamId;
+  if (subject.workspaceId) {
+    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, subject.workspaceId), columns: { teamId: true } });
+    return ws?.teamId ?? null;
+  }
+  if (subject.missionId) {
+    const m = await db.query.missions.findFirst({ where: eq(missions.id, subject.missionId), columns: { teamId: true } });
+    return m?.teamId ?? null;
+  }
+  if (subject.taskId) {
+    const t = await db.query.tasks.findFirst({ where: eq(tasks.id, subject.taskId), columns: { workspaceId: true } });
+    return t?.workspaceId ? resolveSubjectTeam({ workspaceId: t.workspaceId }) : null;
+  }
+  return null;
+}
+
+/**
+ * Notify the team that owns a workspace, mission or task, on that team's own
+ * channel. An owner that cannot be resolved sends nothing: there is no
+ * fallback to the platform's app. Fire-and-forget, never throws.
+ */
+export async function notifyTeamOf(subject: AlertSubject, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
+  try {
+    const teamId = await resolveSubjectTeam(subject);
+    if (!teamId) return;
+    await notifyTeam(teamId, event, payload);
+  } catch (err) {
+    console.error('[notify] notifyTeamOf failed', err instanceof Error ? err.message : 'unknown');
   }
 }
 

@@ -113,7 +113,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
-mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
+mock.module('@/lib/pushover', () => ({ notifyOperator: mockNotify }));
 
 // stale_criteria_escalation resolves through this single writer rather than
 // filing — stubbed here so the route test can assert the call shape without

@@ -11,7 +11,7 @@ import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import { notify } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -716,8 +716,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -790,8 +789,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -875,8 +873,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  notify({
-    app: 'tasks',
+  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

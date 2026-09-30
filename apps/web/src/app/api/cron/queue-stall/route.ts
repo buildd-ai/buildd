@@ -58,7 +58,7 @@ import { eq, and, lt, inArray, isNull, isNotNull, asc } from 'drizzle-orm';
 // notifyTeam() only accepts the five NotifyEvent values that have columns in
 // notification_preferences — routing this through it would mean a schema change
 // or mislabelling the alert as taskFailed.
-import { notify } from '@/lib/pushover';
+import { notifyOperator } from '@/lib/pushover';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
 import { checkMissionHeld, checkMissionLocal, TASK_HOLD_KEY } from '@/app/api/workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '@/app/api/workers/claim/mission-budget-gate';
@@ -735,7 +735,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         ? `[buildd] Task stalled ${stalled[0].ageHours}h — ${stalled[0].gate}`
         : `[buildd] ${stalled.length} tasks stalled in queue`;
 
-    notify({
+    notifyOperator({
       app: 'alerts',
       title,
       message: lines.join('\n'),

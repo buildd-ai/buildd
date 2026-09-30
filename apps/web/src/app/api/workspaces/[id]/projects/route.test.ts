@@ -18,7 +18,7 @@ mock.module('@/lib/auth-helpers', () => ({
 
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
-  hashApiKey: (key: string) => `hashed_${key}`,
+  authenticateApiKey: (key: string | null) => (key ? mockAccountsFindFirst() : Promise.resolve(null)),
 }));
 
 // Mock team-access

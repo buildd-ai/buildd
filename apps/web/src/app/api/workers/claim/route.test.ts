@@ -241,7 +241,7 @@ mock.module('@/lib/storage', () => ({
   generateDownloadUrl: mock(() => ''),
 }));
 mock.module('@/lib/pushover', () => ({
-  notify: mock(() => Promise.resolve()),
+  notifyOperator: mock(() => Promise.resolve()),
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
