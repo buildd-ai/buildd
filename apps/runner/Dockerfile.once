@@ -1,0 +1,103 @@
+# buildd runner image for one-task-per-container execution (`buildd --once`).
+# Design: docs/design/cloudflare-sandbox-runner.md, Components 2.
+# Env contract: docs/runner-container.md. Smoke: apps/runner/scripts/once-smoke.sh.
+#
+# Build from the repo root (the context needs the lockfile and workspace deps):
+#   docker buildx build --platform linux/amd64 -f apps/runner/Dockerfile.once -t buildd-runner-once --load .
+#
+# The container idles on `sleep infinity`; the caller (the Cloudflare
+# WorkerAgent, or `docker exec` locally) starts a run with
+#   buildd-once --task <task-id>
+#
+# The runner source is baked in and never updates itself: --once returns before
+# the self-updater is constructed, and BUILDD_DISABLE_AUTO_UPDATE=1 is set too.
+
+FROM oven/bun:1.4.2-slim
+
+# Cloudflare Containers only run linux/amd64. Refuse other arches unless asked
+# (ALLOW_ANY_ARCH=1 gives a native arm64 build for quick local iteration).
+ARG ALLOW_ANY_ARCH=0
+RUN arch="$(dpkg --print-architecture)"; \
+    if [ "$arch" != amd64 ] && [ "$ALLOW_ANY_ARCH" != 1 ]; then \
+      echo "Dockerfile.once targets linux/amd64 (got $arch); build with --platform linux/amd64" >&2; exit 1; \
+    fi
+
+# gh: pinned release tarball, verified against its published checksum. The
+# Debian package lags, and GitHub's apt repo only offers the latest version.
+ARG GH_VERSION=2.101.0
+ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl git ripgrep tini; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" -o /tmp/gh.tgz; \
+    if [ "$arch" = amd64 ]; then echo "${GH_SHA256_AMD64}  /tmp/gh.tgz" | sha256sum -c; fi; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${arch}"; \
+    gh --version; git --version; rg --version
+
+WORKDIR /opt/buildd
+
+# Dependencies first so a source-only change reuses this layer. Every
+# workspace manifest is copied because --frozen-lockfile checks the lockfile
+# against all of them; --filter then installs only the runner's dependency
+# tree (the runner, @buildd/core, @buildd/shared, @builddai/ai-kit), not the
+# web app's.
+COPY package.json bun.lock bunfig.toml ./
+COPY patches ./patches
+COPY apps/runner/package.json apps/runner/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/responder/package.json apps/responder/package.json
+COPY packages/core/package.json packages/core/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ai-kit/package.json packages/ai-kit/package.json
+COPY packages/openclaw-skill/package.json packages/openclaw-skill/package.json
+# The image is glibc (Debian), so the musl variants of native packages are dead
+# weight (the Claude Code one alone is ~200MB). The loaders prefer the glibc
+# build when it is present (sdk-binary-path.ts checks the musl linker first).
+RUN set -eux; \
+    bun install --frozen-lockfile --production --filter @buildd/runner; \
+    rm -rf node_modules/.bun/*-linux-x64-musl@* node_modules/.bun/*-linux-arm64-musl@*; \
+    rm -rf /home/bun/.bun/install/cache /root/.bun/install/cache
+
+# Claude Code: the runner spawns the native binary that ships inside
+# @anthropic-ai/claude-agent-sdk's platform package (sdk-binary-path.ts), so the
+# CLI version is pinned by bun.lock through the SDK version, not installed
+# separately. Fail the build if that binary is missing, and expose it as
+# `claude` for debugging.
+RUN set -eux; \
+    bin="$(ls -d node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-x64@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude 2>/dev/null | head -1 || true)"; \
+    if [ -z "$bin" ]; then bin="$(find / -path /proc -prune -o -type f -path '*claude-agent-sdk-linux-*/claude' -print 2>/dev/null | head -1)"; fi; \
+    test -n "$bin"; \
+    ln -s "$(readlink -f "$bin")" /usr/local/bin/claude; \
+    claude --version
+
+# Runner source and the workspace packages it imports. Only what the runner
+# needs at runtime: no tests, no migrations, no web app.
+COPY scripts/stub-server-only.ts scripts/stub-server-only.ts
+COPY packages/shared packages/shared
+COPY packages/ai-kit packages/ai-kit
+COPY packages/core packages/core
+COPY apps/runner apps/runner
+COPY --chmod=0755 apps/runner/scripts/buildd-once.sh /usr/local/bin/buildd-once
+
+# Non-root: Claude Code refuses --dangerously-skip-permissions (the SDK's
+# bypassPermissions mode) as root unless IS_SANDBOX=1, and IS_SANDBOX is not on
+# the runner's agent env allowlist (agent-env.ts), so root would silently lose
+# bypass mode. The base image's `bun` user (uid 1000) avoids the question.
+# /opt/buildd stays root-owned, so the agent cannot rewrite the runner.
+ENV HOME=/home/bun \
+    BUILDD_HOME=/home/bun/.buildd \
+    BUILDD_REPO_ROOT=/opt/buildd \
+    BUILDD_DISABLE_AUTO_UPDATE=1 \
+    BUILDD_DISABLE_SANDBOX=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+RUN mkdir -p /home/bun/.buildd /home/bun/work && chown -R bun:bun /home/bun
+USER bun
+WORKDIR /home/bun/work
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sleep", "infinity"]
