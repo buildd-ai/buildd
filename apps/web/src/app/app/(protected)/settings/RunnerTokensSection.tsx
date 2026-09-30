@@ -19,6 +19,7 @@ interface Account {
   type: string;
   authType: string;
   apiKeyPrefix: string | null;
+  level?: string;
   scopes?: string[] | null;
   workspaceIds?: string[] | null;
   lastUsedAt?: string | Date | null;
