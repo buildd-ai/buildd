@@ -3969,8 +3969,10 @@ export async function PATCH(
   //     fire once both sides have already edited the file.
   //
   // Leasing the touch converts §6d's after-the-fact report into a lock the next
-  // claim is deferred on. `claimObservedPaths` drops regenerable paths (a
-  // generated file is not a mutex) and the sentinel; release is already keyed to
+  // claim is deferred on. `claimObservedPaths` goes through the same locked
+  // acquisition as check_path_claim, so it never leases a path another live
+  // task holds, nor anything for a task that has closed. It drops regenerable
+  // paths (a generated file is not a mutex) and the sentinel; release is keyed to
   // taskId, so every terminal signal frees these with the correct reason —
   // merged / pending_merge / abandoned — with no new plumbing.
   //

@@ -51,11 +51,25 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The real acquisition is one locked statement (packages/core, covered by
+// path-claim-ownership.test.ts). This fake composes it from per-step mocks so
+// the route cases below can script a conflict, the leases and the manifest.
+const mockAcquirePathClaims = mock(async ({ workspaceId, taskId, paths }: any) => {
+  const conflict = await mockCheckPathClaimConflict(workspaceId, taskId, paths);
+  if (conflict) return { kind: 'conflict', conflict, blocked: [] };
+  const inserted = await mockInsertClaims(workspaceId, taskId, paths);
+  const pathManifest = await mockAppendPathManifest(taskId, paths);
+  return { kind: 'acquired', inserted, blocked: [], pathManifest, revision: 1 };
+});
+const mockNarrowPathClaims = mock(async (_input: any) => ({ kind: 'not_found' }) as any);
 mock.module('@buildd/core/path-claim', () => ({
-  appendPathManifest: mockAppendPathManifest,
-  checkPathClaimConflict: mockCheckPathClaimConflict,
-  insertClaims: mockInsertClaims,
+  acquirePathClaims: mockAcquirePathClaims,
+  narrowPathClaims: mockNarrowPathClaims,
   registerWaiter: mockRegisterWaiter,
+}));
+const mockDeliverPathReleased = mock(async (..._args: any[]) => {});
+mock.module('@/lib/path-claim-release', () => ({
+  deliverPathReleased: mockDeliverPathReleased,
 }));
 
 const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
@@ -67,7 +81,7 @@ mock.module('@/lib/gate-ledger', () => ({
     i.workerId ? 'worker' : i.apiAccount ? 'api' : i.user ? 'dashboard' : 'system',
 }));
 
-import { POST } from './route';
+import { POST, DELETE } from './route';
 
 function makeRequest(taskId: string, body: unknown, apiKey = 'bld_test') {
   return new NextRequest(`http://localhost/api/tasks/${taskId}/path-claim`, {
@@ -103,6 +117,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     mockInsert.mockReset();
     mockCheckPathClaimConflict.mockReset();
     mockInsertClaims.mockReset();
+    mockAcquirePathClaims.mockClear();
     mockRegisterWaiter.mockReset();
     mockFireGateEvent.mockReset();
 
@@ -215,8 +230,11 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     expect(mockInsertClaims).toHaveBeenCalledWith(WORKSPACE_ID, TASK_ID, ['src/new.ts']);
   });
 
-  it('does not add duplicate paths already in manifest', async () => {
+  // Regression: a path already in the manifest used to short-circuit to
+  // claimed:true without a lease, so the claim-route backstop never saw it.
+  it('still leases a path already in the manifest, without duplicating it', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/foo.ts'] }));
+    mockAppendPathManifest.mockResolvedValue(['src/foo.ts']);
 
     const req = makeRequest(TASK_ID, { paths: ['src/foo.ts'] });
     const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
@@ -224,8 +242,8 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     const body = await res.json();
     expect(body.claimed).toBe(true);
     expect(body.pathManifest).toEqual(['src/foo.ts']);
-    // No DB update needed for already-claimed paths
-    expect(mockInsertClaims).not.toHaveBeenCalled();
+    expect(body.revision).toBe(1);
+    expect(mockAcquirePathClaims).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID, taskId: TASK_ID, paths: ['src/foo.ts'], declare: true });
   });
 
   it('initialises pathManifest from null when no existing manifest', async () => {
@@ -244,9 +262,9 @@ describe('POST /api/tasks/[id]/path-claim', () => {
   // could exhaust those retries and return a bare "Concurrent update
   // conflict" 409 — indistinguishable from a real blocker to the caller, and
   // with no blockingTaskId to act on. appendPathManifest replaced the CAS
-  // with a single atomic statement, so there is no retry loop left to test:
-  // this asserts the route calls it exactly once and trusts its result.
-  it('extends the manifest via a single call with no CAS retry loop', async () => {
+  // with a single atomic statement, and acquirePathClaims folded the lease
+  // into the same locked write: this asserts one call, trusted as returned.
+  it('acquires via a single call with no CAS retry loop', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: null }));
     mockAppendPathManifest.mockResolvedValue(['src/new.ts']);
 
@@ -257,8 +275,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     const body = await res.json();
     expect(body.claimed).toBe(true);
     expect(body.pathManifest).toEqual(['src/new.ts']);
-    expect(mockAppendPathManifest).toHaveBeenCalledTimes(1);
-    expect(mockAppendPathManifest).toHaveBeenCalledWith(TASK_ID, ['src/new.ts']);
+    expect(mockAcquirePathClaims).toHaveBeenCalledTimes(1);
     // Only one read of the task — no re-read-and-retry cycle.
     expect(mockTasksFindFirst).toHaveBeenCalledTimes(1);
   });
@@ -391,5 +408,76 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     const ev: any = mockFireGateEvent.mock.calls[0][0];
     expect(ev.outcome).toBe('rejected');
     expect(ev.surface).toBe('POST /api/tasks/[id]/path-claim');
+  });
+});
+
+// ── DELETE: selective narrowing ──────────────────────────────────────────────
+
+function makeDeleteRequest(taskId: string, body: unknown, apiKey = 'bld_test') {
+  return new NextRequest(`http://localhost/api/tasks/${taskId}/path-claim`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+}
+
+describe('DELETE /api/tasks/[id]/path-claim', () => {
+  const ctx = { params: Promise.resolve({ id: TASK_ID }) };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockNarrowPathClaims.mockReset();
+    mockDeliverPathReleased.mockReset();
+    mockFireGateEvent.mockReset();
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acc-1' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask());
+    mockNarrowPathClaims.mockResolvedValue({
+      kind: 'narrowed', workspaceId: WORKSPACE_ID, pathManifest: ['src/keep.ts'], revision: 3,
+      releasedPaths: ['src/drop.ts'], notifiedWaiters: [SIBLING_ID],
+      waiters: [{ waitingTaskId: SIBLING_ID, blockedPath: 'src/drop.ts' }],
+    });
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    mockAccountsFindFirst.mockResolvedValue(null);
+    const res = await DELETE(makeDeleteRequest(TASK_ID, { paths: ['src/drop.ts'] }, ''), ctx);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 when the caller cannot reach the task workspace', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
+    const res = await DELETE(makeDeleteRequest(TASK_ID, { paths: ['src/drop.ts'] }), ctx);
+    expect(res.status).toBe(404);
+    expect(mockNarrowPathClaims).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a wildcard', async () => {
+    const res = await DELETE(makeDeleteRequest(TASK_ID, { paths: ['**'] }), ctx);
+    expect(res.status).toBe(400);
+  });
+
+  it('narrows, notifies freed waiters and returns the new revision', async () => {
+    const res = await DELETE(makeDeleteRequest(TASK_ID, { paths: ['src/drop.ts'], reason: 'retry scope', expectedRevision: 2 }), ctx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      narrowed: true, pathManifest: ['src/keep.ts'], releasedPaths: ['src/drop.ts'],
+      notifiedWaiters: [SIBLING_ID], revision: 3,
+    });
+    expect(mockNarrowPathClaims).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: WORKSPACE_ID, taskId: TASK_ID, expectedRevision: 2, reason: 'retry scope',
+      surface: 'DELETE /api/tasks/[id]/path-claim',
+    }));
+    expect(mockDeliverPathReleased).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a retryable 409 on a stale expectedRevision', async () => {
+    mockNarrowPathClaims.mockResolvedValue({ kind: 'revision_conflict', currentRevision: 7 });
+    const res = await DELETE(makeDeleteRequest(TASK_ID, { paths: ['src/drop.ts'], expectedRevision: 2 }), ctx);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ currentRevision: 7, retryable: true });
   });
 });
