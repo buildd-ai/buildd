@@ -25,6 +25,7 @@ import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, unmetDependencyIds } from '@/lib/mission-helpers';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
@@ -190,12 +191,17 @@ function iso(d: Date | string | null | undefined): string | null {
   return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
 }
 
-function prStateOf(w: LoadedTask['workers'][number] | undefined): HistoryNode['prState'] {
+/** A history node's PR state: `derivePrDisplayState`, projected onto `HistoryNode['prState']`. */
+export function historyPrStateOf(
+  w: Pick<LoadedTask['workers'][number], 'prNumber' | 'prLifecycleStatus' | 'mergedAt'> | undefined,
+): HistoryNode['prState'] {
   if (!w?.prNumber) return 'none';
-  if (w.mergedAt) return 'merged';
-  if (w.prLifecycleStatus === 'conflict') return 'conflict';
-  if (w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'unresolvable') return 'closed';
-  return 'open';
+  const state = derivePrDisplayState(w.prLifecycleStatus, w.mergedAt);
+  switch (state) {
+    case 'merged': case 'closed': case 'conflict': case 'ci_failed': return state;
+    case 'unresolvable': return 'closed';
+    default: return 'open';
+  }
 }
 
 /**
@@ -212,7 +218,7 @@ function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
       status: t.status,
       taskClass: t.taskClass,
       prNumber: w?.prNumber ?? null,
-      prState: prStateOf(w),
+      prState: historyPrStateOf(w),
       createdAt: iso(t.createdAt),
       attempts,
     };

@@ -1605,6 +1605,40 @@ describe('POST /api/github/pr', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
+  // TERMINAL_PR_LIFECYCLE: an `unresolvable` PR is as dead as a closed one —
+  // echoing it back as the worker's open PR repeats a PR nothing can resolve.
+  it('does not deduplicate a stored PR whose lifecycle is unresolvable', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: 'https://github.com/owner/repo/pull/99',
+      prNumber: 99,
+      prLifecycleStatus: 'unresolvable',
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 100,
+      html_url: 'https://github.com/owner/repo/pull/100',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.deduplicated).toBeUndefined();
+    expect(mockGithubApi).toHaveBeenCalled();
+  });
+
   // Regression: a worker whose earlier PR (#3070) had already merged called
   // create_pr again with a new head branch. The dedup fast path used to
   // return the stored prUrl/prNumber unconditionally, echoing the merged PR

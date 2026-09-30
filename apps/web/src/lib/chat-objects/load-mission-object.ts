@@ -10,9 +10,10 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaceSkills, missionNotes } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
-import { deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
+import { deriveCriteriaGatePresentation, deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
-import { deriveMissionDisplayState, deriveTaskHealthSignal, getMissionStateChip } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal } from '@/lib/mission-helpers';
+import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -100,26 +101,39 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
   });
 
-  // The page's fallback chain for the header chip (it prefers `explain`'s
-  // answer when that read succeeds; a pane skips the extra accessor).
+  // The header chip from the one mission-state accessor (the page prefers
+  // `explain`'s fuller answer when that read succeeds; a pane skips the extra
+  // reads — completion, wait classification — and asks the accessor directly).
   const live = new Set<string>(LIVE_WORKER_STATUSES);
   const activeAgents = (mission.tasks ?? []).flatMap(t => t.workers || []).filter(w => live.has(w.status)).length;
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
-  const criteriaUnverified = goalCriteria.length > 0 && goalCriteriaState?.overall !== 'pass';
-  const heartbeatWaitingUntil = (m.schedule as any)?.lastDeferralReason === 'heartbeat_waiting' ? (m.schedule as any)?.nextRunAt ?? null : null;
-  const displayState = deriveMissionDisplayState({
+  const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
+  const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | string | null } | null | undefined;
+  const heartbeatWaitingUntil = schedule?.lastDeferralReason === 'heartbeat_waiting' ? schedule?.nextRunAt ?? null : null;
+  const criteriaGate = ['completed', 'cancelled', 'archived'].includes(mission.status)
+    ? null
+    : deriveCriteriaGatePresentation({
+        criteriaCount: goalCriteria.length,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        overall: (goalCriteriaState?.overall as any) ?? null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        items: (goalCriteriaState?.criteria ?? []) as any,
+        completionAttempted: progress !== undefined && progress >= 100,
+      });
+  const { chip } = deriveMissionStateView({
     status: mission.status,
     isHeld: m.isHeld === true,
     executor: m.executor ?? null,
     orchestrationMode: (mission.orchestrationMode as string | null) ?? 'auto',
     activeAgents,
-    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil } as any, (mission.tasks || []) as any),
-    progress: progressMetric.kind === 'value' ? progressMetric.value : undefined,
-    criteriaUnverified,
+    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || []),
+    progress,
+    dependsOnMissionId: mission.dependsOnMissionId ?? null,
+    criteriaGate,
     criteriaEscalatedAt: m.criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork: computeHasPendingDeliverableWork(mission.tasks || []),
   });
-  const stateLabel = getMissionStateChip(displayState)?.label ?? mission.status;
+  const stateLabel = chip?.label ?? mission.status;
 
   return {
     kind: 'mission',

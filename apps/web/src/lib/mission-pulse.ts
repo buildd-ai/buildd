@@ -12,6 +12,7 @@ import { isAttempt, isDeliverableTask, stripTaskTypePrefix } from '@buildd/core/
 import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { isGreenAutoMergePending } from './auto-merge-grace';
+import { derivePrDisplayState } from './pr-presentation';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -216,18 +217,13 @@ export const PR_STATE_TOKEN: Record<FeedPrState, 'info' | 'success' | 'error'> =
 export function deriveFeedPrState(worker: MissionFeedWorkerInput | null | undefined): { number: number; state: FeedPrState } | null {
   if (!worker?.prNumber) return null;
   if (worker.mergedAt) return { number: worker.prNumber, state: 'merged' };
-  const state: FeedPrState = (() => {
-    switch (worker.prLifecycleStatus) {
-      case 'merged': return 'merged';
-      case 'closed': return 'closed';
-      case 'unresolvable': return 'unresolvable';
-      case 'conflict': return 'conflict';
-      case 'ci_failed': return 'ci_failed';
-      case 'pr_open':
-      case 'ci_running': return 'checks_running';
-      default: return 'open'; // ci_green, or unknown
-    }
-  })();
+  // `derivePrDisplayState` (lib/pr-presentation.ts), projected: CI not yet
+  // reported or still running both mean the platform owns the next step.
+  const display = derivePrDisplayState(worker.prLifecycleStatus, worker.mergedAt);
+  const state: FeedPrState =
+    display === 'awaiting_ci' || display === 'ci_running' ? 'checks_running'
+      : display === 'ci_passed' ? 'open'
+      : display;
   return { number: worker.prNumber, state };
 }
 

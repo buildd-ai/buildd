@@ -1,5 +1,6 @@
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
+import { isGateSatisfied } from './task-presentation';
 
 /**
  * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
@@ -138,23 +139,35 @@ type DependencyRow = {
   id?: string;
   status: string;
   updatedAt?: Date | string | null;
-  workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: Date | string | null }> | null;
+  workers?: Array<{
+    status: string;
+    prUrl?: string | null;
+    mergedAt?: Date | string | null;
+    prLifecycleStatus?: string | null;
+  }> | null;
 };
 
 /**
- * The same "satisfied" rule the claim route's `dependenciesSatisfied()` gate
- * applies: a dependency is met when it is cancelled, or completed with its PR
- * (if any) merged. A dependency that is not in `byId` is unknown here and is
- * treated as met — this is a display read, and it must never invent a block.
+ * The claim gate's own predicate (`isGateSatisfied`, which mirrors the SQL in
+ * `api/workers/claim/deps-gate.ts`): cancelled, or completed with no open PR on
+ * ANY of its workers — a closed PR releases the guard. Normalised to null so a
+ * caller that did not select a column is never read as "PR open".
  */
 function dependencyMet(dep: DependencyRow): boolean {
-  if (dep.status === 'cancelled') return true;
-  if (dep.status !== 'completed') return false;
-  const latest = dep.workers?.[0];
-  return !latest?.prUrl || !!latest.mergedAt;
+  return isGateSatisfied(dep, (dep.workers ?? []).map(w => ({
+    prUrl: w.prUrl ?? null,
+    mergedAt: w.mergedAt ?? null,
+    prLifecycleStatus: w.prLifecycleStatus ?? null,
+  })));
 }
 
-/** Ids of `task.dependsOn` entries that would still keep it out of the claim query. */
+/**
+ * Ids of `task.dependsOn` entries that would still keep it out of the claim
+ * query. A dependency absent from `byId` counts as unmet, as it does in the
+ * claim SQL (`EXISTS (... t2.id = dep_id ...)`): callers pass every row the
+ * task can depend on (the mission's tasks), so a missing row is a deleted or
+ * foreign dependency the claim route will not see past either.
+ */
 export function unmetDependencyIds(
   task: { dependsOn?: string[] | null },
   byId: ReadonlyMap<string, DependencyRow>,
@@ -162,7 +175,7 @@ export function unmetDependencyIds(
   const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
   return deps.filter(id => {
     const dep = byId.get(id);
-    return dep !== undefined && !dependencyMet(dep);
+    return dep === undefined || !dependencyMet(dep);
   });
 }
 
@@ -189,7 +202,8 @@ function claimableSince(
   for (const id of Array.isArray(task.dependsOn) ? task.dependsOn : []) {
     const dep = byId.get(id);
     if (!dep) continue;
-    const t = ms(dep.workers?.[0]?.mergedAt) ?? ms(dep.updatedAt);
+    const merged = (dep.workers ?? []).map(w => ms(w.mergedAt)).filter((m): m is number => m !== null);
+    const t = merged.length > 0 ? Math.max(...merged) : ms(dep.updatedAt);
     if (t !== null) times.push(t);
   }
   return times.length > 0 ? Math.max(...times) : null;
@@ -296,56 +310,14 @@ export function deriveTaskHealthSignal(
 // ─── Single derived display state ─────────────────────────────────────────────
 
 /**
- * Collapses isHeld + orchestrationMode + activeAgents + health into ONE label
- * for the mission detail page header chip and state-driven CTA.
- * Priority: complete > held > running > failed > manual > active.
- */
-/**
  * `blocked` and `stalled` close the two gaps the mission-state audit found
  * (`docs/design/mission-state-ownership.md` §3, Bugs A and B): an unmet
  * dependency and a mission whose open tasks have no live worker both used to
  * fall through to `active`, so the header chip read AUTO for a mission that
- * could not move. Only `deriveMissionStateView` produces them —
- * `deriveMissionDisplayState` keeps its historical chain, so nothing that reads
- * it changes behaviour until it adopts the accessor.
+ * could not move. `deriveMissionStateView` (`lib/mission-state-view.ts`) is
+ * the only producer of a `MissionDisplayState`.
  */
 export type MissionDisplayState = 'held' | 'local' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
-
-export function deriveMissionDisplayState(opts: {
-  status: string;
-  isHeld: boolean;
-  /** `missions.executor`: a 'local' mission reads LOCAL (active work), never HELD. */
-  executor?: string | null;
-  orchestrationMode?: string | null;
-  activeAgents: number;
-  health: Health;
-  /** Pass the computed 0-100 progress to unlock the 'review' state. */
-  progress?: number;
-  /**
-   * True when the mission states goal criteria whose stored verdict is not
-   * `pass`. The work may be finished, but the mission is not complete and will
-   * not close — it is awaiting verification.
-   */
-  criteriaUnverified?: boolean;
-  /** `missions.criteriaEscalatedAt` — set when goal-criteria gate has escalated to owner. */
-  criteriaEscalatedAt?: Date | string | null;
-  /** True when a deliverable task is still open. */
-  hasPendingDeliverableWork?: boolean;
-}): MissionDisplayState {
-  if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
-  if (opts.isHeld) return 'held';
-  if (opts.activeAgents > 0) return opts.executor === 'local' ? 'local' : 'running';
-  if (opts.health === 'FAILING') return 'failed';
-  if (opts.executor === 'local' && opts.hasPendingDeliverableWork !== false) return 'local';
-  // Escalated + no pending work: mission awaiting owner decision on criteria
-  if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'waiting_decision';
-  // Work done + verdict missing outranks 'review': "READY FOR REVIEW" would
-  // invite a human to close a mission the platform is refusing to close.
-  if (opts.criteriaUnverified && opts.progress !== undefined && opts.progress >= 100) return 'awaiting_verification';
-  if (opts.progress !== undefined && opts.progress >= 100) return 'review';
-  if (opts.orchestrationMode === 'manual') return 'manual';
-  return 'active';
-}
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   held: 'HELD',

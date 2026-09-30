@@ -90,7 +90,7 @@ const mockEvaluateMissionWorkState = mock(async () => workStateResult);
 mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateMissionWorkState }));
 
 // Imported AFTER the mocks.
-import { explainMission, explainTask, explainPr, explainWorkspace } from './explain';
+import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -153,6 +153,27 @@ beforeEach(() => {
 });
 
 // ─── Mission scope ────────────────────────────────────────────────────────────
+
+// History nodes read the shared derivePrDisplayState (lib/pr-presentation.ts).
+describe('historyPrStateOf', () => {
+  const w = (prLifecycleStatus: string | null, mergedAt: Date | null = null) =>
+    ({ prNumber: 7, prLifecycleStatus, mergedAt }) as Parameters<typeof historyPrStateOf>[0];
+  it('no PR reads none', () => {
+    expect(historyPrStateOf(undefined)).toBe('none');
+  });
+  it('a merged lifecycle reads merged even before mergedAt is stamped', () => {
+    expect(historyPrStateOf(w('merged'))).toBe('merged');
+  });
+  it('red CI is reported, not folded into open', () => {
+    expect(historyPrStateOf(w('ci_failed'))).toBe('ci_failed');
+  });
+  it('conflict, closed and unresolvable keep their meaning', () => {
+    expect(historyPrStateOf(w('conflict'))).toBe('conflict');
+    expect(historyPrStateOf(w('closed'))).toBe('closed');
+    expect(historyPrStateOf(w('unresolvable'))).toBe('closed');
+    expect(historyPrStateOf(w('ci_green'))).toBe('open');
+  });
+});
 
 describe('explainMission', () => {
   it('never spends a token: the completion gate is asked read-only', async () => {
