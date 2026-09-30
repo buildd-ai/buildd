@@ -16,6 +16,9 @@ assertions:
     type: "symbol"
     name: "EgressHandler"
     path: "apps/cloud-runner/src/egress.ts"
+  - id: "cloud-canary-script"
+    type: "test_file"
+    path: "apps/cloud-runner/scripts/canary.sh"
 ---
 # Cloudflare Agents Runner
 
