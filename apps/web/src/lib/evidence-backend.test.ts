@@ -451,3 +451,39 @@ describe('verifyEvidenceBackend', () => {
     expect(all).not.toContain('AKIAEXAMPLE');
   });
 });
+
+describe('generateEvidenceUploadUrl', () => {
+  const KEY = 'team-evidence/ws-1/root-1/task-1/worker-1/command_output/1700000000000-0.log.gz';
+
+  async function resolvedByo(over: Record<string, unknown> = {}) {
+    state.backends = [backend({ endpoint: null, region: 'us-east-1', ...over })];
+    return mod.resolveEvidenceBackend(WS);
+  }
+
+  it('signs a 15 minute PUT for the exact key with content-length bound in', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 4242));
+    expect(url.pathname).toContain(`/customer-bucket/${KEY}`);
+    expect(mod.EVIDENCE_UPLOAD_EXPIRY_SECONDS).toBe(900);
+    expect(url.searchParams.get('X-Amz-Expires')).toBe('900');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length');
+  });
+
+  it('never carries the secret access key in the URL', async () => {
+    const url = await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10);
+    expect(url).not.toContain('shh-secret');
+  });
+
+  it('signs SSE into the request when the backend asks for it', async () => {
+    const url = await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'AES256' }), KEY, 10);
+    expect(url.toLowerCase()).toContain('x-amz-server-side-encryption');
+  });
+
+  it('refuses an unusable backend', async () => {
+    state.secrets = {};
+    await expect(mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10)).rejects.toThrow();
+  });
+
+  it('refuses a non-positive size', async () => {
+    await expect(mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 0)).rejects.toThrow();
+  });
+});
