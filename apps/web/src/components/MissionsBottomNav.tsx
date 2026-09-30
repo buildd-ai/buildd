@@ -32,7 +32,7 @@ export default function MissionsBottomNav({ nav = OPERATOR_NAV }: { nav?: NavCon
               key={tab.href}
               href={tab.href}
               aria-current={active ? 'page' : undefined}
-              className={`relative flex min-h-11 min-w-11 flex-1 items-center justify-center gap-1 text-[11px] tracking-[.08em] transition-colors duration-200 ${
+              className={`relative flex min-h-11 min-w-11 flex-1 items-center justify-center gap-1 px-0.5 text-[10px] tracking-[.02em] min-[390px]:text-[11px] min-[390px]:tracking-[.04em] transition-colors duration-200 ${
                 active ? 'text-accent-text' : 'text-text-muted hover:text-text-primary'
               }`}
             >
