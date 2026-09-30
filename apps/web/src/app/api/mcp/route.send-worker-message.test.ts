@@ -3,6 +3,10 @@
  *
  * Covers: auth level enforcement, workspace scope, terminal recipient,
  * rate limit, hop cap, body size cap, and successful delivery.
+ *
+ * Both writes are asserted as rendered SQL (PgDialect): with a mocked db the
+ * resulting context is unobservable, and a whole-object `context: {...}` write
+ * is exactly the lost-update bug this handler used to have.
  */
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
@@ -84,7 +88,12 @@ mock.module('@buildd/core/mcp-tools', () => ({
   buildMemoryDescription: () => 'memory',
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { SQL } from 'drizzle-orm';
 import { POST } from './route';
+
+const dialect = new PgDialect();
+const rendered = (v: unknown) => dialect.sqlToQuery(v as any);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -172,7 +181,8 @@ describe('send_worker_message MCP handler', () => {
 
     mockDbUpdate.mockReturnValue({ set: mockTasksUpdateSet });
     mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
-    mockTasksUpdateWhere.mockResolvedValue([{ id: SENDER_TASK_ID }]);
+    mockTasksUpdateWhere.mockReturnValue({ returning: mockTasksUpdateReturning });
+    mockTasksUpdateReturning.mockResolvedValue([{ id: SENDER_TASK_ID }]);
   });
 
   it('refuses a ?worker= id that belongs to another account and team', async () => {
@@ -272,92 +282,105 @@ describe('send_worker_message MCP handler', () => {
     expect(typeof result.messageId).toBe('string');
   });
 
-  it('appends message to existing pendingWorkerMessages', async () => {
-    const existing = [{ id: 'old-msg', type: 'question', fromTaskId: 'other', body: { text: 'hi' } }];
-    mockTasksFindFirst
-      .mockReset()
-      .mockResolvedValueOnce(makeSenderTask())
-      .mockResolvedValueOnce(makeRecipientTask({ context: { pendingWorkerMessages: existing } }));
-
-    const body: any = await callTool(VALID_ARGS);
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.delivered).toBe(true);
-
-    // Verify db.update was called for the recipient task with 2 messages
-    const updateCalls = mockDbUpdate.mock.calls;
-    expect(updateCalls.length).toBeGreaterThanOrEqual(2);
-  });
-
-  // Messages now survive until the recipient acks them by id, so an uncapped
-  // queue would grow without bound on a task nobody is checking in for.
-  it('caps the recipient queue at WORKER_MESSAGE_CAP, dropping the oldest', async () => {
-    const existing = [1, 2, 3].map(n => ({
-      id: `old-${n}`,
-      type: 'question',
-      fromTaskId: 'other',
-      sentAt: new Date().toISOString(),
-      hopCount: 1,
-      body: { text: `q${n}` },
-    }));
-    mockTasksFindFirst
-      .mockReset()
-      .mockResolvedValueOnce(makeSenderTask())
-      .mockResolvedValueOnce(makeRecipientTask({ context: { pendingWorkerMessages: existing } }));
-
-    const contexts: any[] = [];
+  // Regression: the handler read tasks.context and wrote the whole object back
+  // for BOTH the sender's rate-limit counter and the recipient's queue. Two
+  // concurrent sends (or a send racing the recipient's own check-in) lost
+  // messages and clobbered unrelated context keys.
+  it('never writes a whole context object — both writes are jsonb expressions', async () => {
+    const sets: any[] = [];
     mockTasksUpdateSet.mockImplementation((data: any) => {
-      contexts.push(data.context);
+      sets.push(data);
       return { where: mockTasksUpdateWhere };
     });
 
     const body: any = await callTool(VALID_ARGS);
     expect(JSON.parse(body.result.content[0].text).delivered).toBe(true);
 
-    const recipientWrite = contexts.find(c => Array.isArray(c?.pendingWorkerMessages));
-    expect(recipientWrite).toBeDefined();
-    const ids = recipientWrite.pendingWorkerMessages.map((m: any) => m.id);
-    expect(ids).toHaveLength(3);
-    expect(ids[0]).toBe('old-2');
-    expect(ids[1]).toBe('old-3');
-    expect(ids[2]).not.toBe('old-1');
+    expect(sets).toHaveLength(2);
+    for (const s of sets) {
+      expect(s.context).toBeInstanceOf(SQL);
+      expect(rendered(s.context).sql).toContain('jsonb_set(');
+    }
+    const [rateWrite, queueWrite] = sets.map(s => rendered(s.context));
+    expect(rateWrite.sql).toContain("'{workerMsgRateLimit}'");
+    expect(rateWrite.sql).not.toContain('pendingWorkerMessages');
+    expect(queueWrite.sql).toContain("'{pendingWorkerMessages}'");
+    expect(queueWrite.sql).not.toContain('workerMsgRateLimit');
   });
 
-  it('enforces rate limit: blocks after 5 messages in the same window', async () => {
+  it('enqueues the message atomically with an incremented hopCount, capped', async () => {
+    let queueSet: any = null;
+    mockTasksUpdateSet.mockImplementation((data: any) => {
+      if (rendered(data.context).sql.includes('pendingWorkerMessages')) queueSet = data;
+      return { where: mockTasksUpdateWhere };
+    });
+
+    await callTool({ ...VALID_ARGS, hopCount: 2 });
+
+    expect(queueSet).not.toBeNull();
+    const q = rendered(queueSet.context);
+    // appended from the column itself, not from a copy read earlier
+    expect(q.sql).toContain(`COALESCE("tasks"."context" -> 'pendingWorkerMessages', '[]'::jsonb) ||`);
+    const payload = q.params.find((p: unknown) => typeof p === 'string' && p.includes('"hopCount"')) as string;
+    const [msg] = JSON.parse(payload);
+    expect(msg.hopCount).toBe(3);
+    expect(msg.fromTaskId).toBe(SENDER_TASK_ID);
+    expect(msg.type).toBe('question');
+    expect(q.params).toContain(3); // WORKER_MESSAGE_CAP
+  });
+
+  it('rate limit is enforced in the UPDATE itself (check + increment in one statement)', async () => {
+    const wheres: any[] = [];
+    const sets: any[] = [];
+    mockTasksUpdateSet.mockImplementation((data: any) => {
+      sets.push(data);
+      return { where: mockTasksUpdateWhere };
+    });
+    mockTasksUpdateWhere.mockImplementation((w: any) => {
+      wheres.push(w);
+      return { returning: mockTasksUpdateReturning };
+    });
+
+    await callTool(VALID_ARGS);
+
+    const set = rendered(sets[0].context);
+    expect(set.sql).toContain(`COALESCE("tasks"."context" -> 'workerMsgRateLimit', '{}'::jsonb)`);
+    expect(set.params).toContain(RECIPIENT_TASK_ID);
+    const where = rendered(wheres[0]);
+    expect(where.sql).toContain('"tasks"."id" =');
+    expect(where.sql).toMatch(/< \$\d+/);
+    expect(where.params).toContain(5);
+    expect(where.params).toContain(SENDER_TASK_ID);
+  });
+
+  it('returns rate_limited and does not enqueue when the guarded UPDATE matches no row', async () => {
     const now = Date.now();
-    // Simulate sender task with 5 messages already sent in this window
-    const rateCtx = {
-      workerMsgRateLimit: {
-        windowStart: now - 10_000, // 10s ago (within 60s window)
-        counts: { [RECIPIENT_TASK_ID]: 5 },
-      },
-    };
     mockTasksFindFirst
       .mockReset()
-      .mockResolvedValueOnce(makeSenderTask({ context: rateCtx }))
+      .mockResolvedValueOnce(makeSenderTask({
+        context: { workerMsgRateLimit: { windowStart: now - 10_000, counts: { [RECIPIENT_TASK_ID]: 5 } } },
+      }))
       .mockResolvedValueOnce(makeRecipientTask());
+    mockTasksUpdateReturning.mockReset().mockResolvedValueOnce([]);
 
     const body: any = await callTool(VALID_ARGS);
     expect(body.result.isError).toBe(true);
-    const text = body.result.content[0].text;
-    expect(text).toContain('rate_limited');
+    const result = JSON.parse(body.result.content[0].text);
+    expect(result.error).toBe('rate_limited');
+    expect(result.retryAfter).toBeGreaterThan(0);
+    expect(result.retryAfter).toBeLessThanOrEqual(60);
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it('resets rate limit after window expires', async () => {
-    const oldWindow = Date.now() - 70_000; // 70s ago — expired
-    const rateCtx = {
-      workerMsgRateLimit: {
-        windowStart: oldWindow,
-        counts: { [RECIPIENT_TASK_ID]: 5 }, // maxed out but in old window
-      },
-    };
-    mockTasksFindFirst
+  it('reports not found when the recipient row vanishes before the enqueue', async () => {
+    mockTasksUpdateReturning
       .mockReset()
-      .mockResolvedValueOnce(makeSenderTask({ context: rateCtx }))
-      .mockResolvedValueOnce(makeRecipientTask());
+      .mockResolvedValueOnce([{ id: SENDER_TASK_ID }])
+      .mockResolvedValueOnce([]);
 
     const body: any = await callTool(VALID_ARGS);
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.delivered).toBe(true); // window reset, message delivered
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toContain('not found');
   });
 
   it('accepts admin token level (admin can also send worker messages)', async () => {
@@ -369,23 +392,6 @@ describe('send_worker_message MCP handler', () => {
     expect(body.result.isError).toBeFalsy();
     const result = JSON.parse(body.result.content[0].text);
     expect(result.delivered).toBe(true);
-  });
-
-  it('increments hopCount in stored message envelope', async () => {
-    // Capture what is passed to db.update for the recipient task
-    let capturedContext: any = null;
-    mockTasksUpdateSet.mockImplementation((data: any) => {
-      capturedContext = data.context;
-      return { where: mockTasksUpdateWhere };
-    });
-
-    await callTool({ ...VALID_ARGS, hopCount: 2 });
-
-    // The recipient update should contain the message with hopCount incremented
-    if (capturedContext?.pendingWorkerMessages) {
-      const msg = capturedContext.pendingWorkerMessages[0];
-      expect(msg.hopCount).toBe(3); // 2 + 1
-    }
   });
 
   it('path_blocked_on_you type is accepted', async () => {
