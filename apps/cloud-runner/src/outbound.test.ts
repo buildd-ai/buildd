@@ -6,13 +6,23 @@ import {
   GITHUB_TOKEN_REFRESH_MARGIN_MS,
   GithubTokenCache,
   INTERCEPTED_HOSTS,
+  MODEL_ENDPOINT_FAILURE_BACKOFF_MS,
+  ModelEndpointCache,
+  NoModelEndpointError,
+  modelEndpointRequest,
+  needsServerModelEndpoint,
+  parseServerModelEndpoint,
+  type ServerModelEndpoint,
   classifyEgressHost,
   describeForwardForDebug,
   fingerprint,
   githubTokenRequest,
   parseGithubGrant,
+  parseModelProxyUrl,
   resolveModelRoute,
   rewriteOutbound,
+  MODEL_API_ROUTES,
+  modelApiPathAllowed,
   type GithubGrant,
   type ModelRoute,
 } from './outbound';
@@ -61,12 +71,30 @@ describe('classifyEgressHost', () => {
     ['anthropic.com.evil.example', 'passthrough'],
     ['github.com.evil.example', 'passthrough'],
     ['gist.github.com', 'passthrough'],
+    ['buildd-snapshots.invalid', 'snapshot'],
+    ['BUILDD-SNAPSHOTS.invalid.', 'snapshot'],
+    ['buildd-snapshots.invalid.evil.example', 'passthrough'],
   ] as const)('%s -> %s', (host, kind) => {
     expect(classifyEgressHost(host)).toBe(kind);
   });
 
   test('every intercepted host is one the rewrite handles', () => {
     for (const host of INTERCEPTED_HOSTS) expect(classifyEgressHost(host)).not.toBe('passthrough');
+  });
+
+  test('SNAPSHOT_HOST_NAME mirrors snapshots.ts', async () => {
+    const { SNAPSHOT_HOST } = await import('./snapshots');
+    const { SNAPSHOT_HOST_NAME } = await import('./outbound');
+    expect(SNAPSHOT_HOST_NAME).toBe(SNAPSHOT_HOST);
+  });
+
+  test('the snapshot host is never in the always-on list (it is intercepted only with warm repos on)', () => {
+    expect(INTERCEPTED_HOSTS).not.toContain('buildd-snapshots.invalid');
+  });
+
+  test('rewriteOutbound never forwards the snapshot host anywhere', () => {
+    const d = rewriteOutbound({ url: 'https://buildd-snapshots.invalid/warm', headers: {} }, { model: gateway });
+    expect(d.action).toBe('reject');
   });
 });
 
@@ -96,10 +124,95 @@ describe('resolveModelRoute', () => {
   });
 });
 
+const PROXY_ENV = { MODEL_PROXY_URL: 'https://litellm.example.com', MODEL_PROXY_KEY: 'proxy-secret-key' };
+
+describe('parseModelProxyUrl', () => {
+  test.each([
+    ['https://litellm.example.com', 'https://litellm.example.com'],
+    ['https://litellm.example.com/', 'https://litellm.example.com'],
+    ['https://litellm.example.com/anthropic', 'https://litellm.example.com/anthropic'],
+    ['https://litellm.example.com/anthropic//', 'https://litellm.example.com/anthropic'],
+    ['https://LiteLLM.example.com:8443/x', 'https://litellm.example.com:8443/x'],
+    ['http://localhost:4000', 'http://localhost:4000'],
+    ['http://127.0.0.1:4000/anthropic', 'http://127.0.0.1:4000/anthropic'],
+    ['http://host.docker.internal:4000', 'http://host.docker.internal:4000'],
+  ])('accepts %s -> %s', (raw, base) => {
+    expect(parseModelProxyUrl(raw)).toEqual({ ok: true, baseUrl: base });
+  });
+
+  test.each([
+    ['not a url'],
+    ['http://litellm.example.com'],
+    ['http://localhost.example.com'],
+    ['ftp://litellm.example.com'],
+    ['https://user:pass@litellm.example.com'],
+    ['https://user@litellm.example.com'],
+    ['https://litellm.example.com/?team=a'],
+    ['https://litellm.example.com/?'],
+    ['https://litellm.example.com/#frag'],
+    ['https://litellm.example.com/#'],
+  ])('rejects %s', (raw) => {
+    expect(parseModelProxyUrl(raw).ok).toBe(false);
+  });
+});
+
+describe('resolveModelRoute: proxy', () => {
+  test('proxy when MODEL_PROXY_URL and MODEL_PROXY_KEY are set; authorization is the default header', () => {
+    expect(resolveModelRoute(PROXY_ENV)).toEqual({
+      kind: 'proxy', baseUrl: 'https://litellm.example.com', key: 'proxy-secret-key', authHeader: 'authorization',
+    });
+  });
+
+  test('MODEL_PROXY_AUTH_HEADER=x-api-key is honoured (case and whitespace tolerated)', () => {
+    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'x-api-key' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
+    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: ' X-Api-Key ' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
+    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'Authorization' })).toMatchObject({ kind: 'proxy', authHeader: 'authorization' });
+  });
+
+  test('an unknown MODEL_PROXY_AUTH_HEADER is refused, not guessed', () => {
+    const r = resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'cookie' });
+    expect(r.kind).toBe('unconfigured');
+    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_AUTH_HEADER');
+  });
+
+  test('MODEL_PROXY_URL without MODEL_PROXY_KEY is unconfigured, even with a working gateway', () => {
+    const r = resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: 'https://litellm.example.com' });
+    expect(r.kind).toBe('unconfigured');
+    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_KEY');
+  });
+
+  test('an invalid MODEL_PROXY_URL is unconfigured, never a silent fall back to the gateway', () => {
+    const r = resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: 'http://litellm.example.com', MODEL_PROXY_KEY: 'k' });
+    expect(r.kind).toBe('unconfigured');
+    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_URL');
+  });
+
+  test('a key alone (no URL) changes nothing', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_KEY: 'k' }).kind).toBe('gateway');
+    expect(resolveModelRoute({ MODEL_PROXY_KEY: 'k' }).kind).toBe('unconfigured');
+  });
+
+  test('an empty MODEL_PROXY_URL counts as unset', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: '', MODEL_PROXY_KEY: 'k' }).kind).toBe('gateway');
+  });
+
+  test('precedence: direct > proxy > gateway', () => {
+    const direct = { ALLOW_DIRECT_ANTHROPIC: '1', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' };
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY_ENV, ...direct }).kind).toBe('direct');
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY_ENV }).kind).toBe('proxy');
+    expect(resolveModelRoute({ ...GATEWAY_ENV }).kind).toBe('gateway');
+  });
+
+  test('the error message never contains the key', () => {
+    const r = resolveModelRoute({ MODEL_PROXY_URL: 'nope', MODEL_PROXY_KEY: 'proxy-secret-key' });
+    expect(JSON.stringify(r)).not.toContain('proxy-secret-key');
+  });
+});
+
 describe('rewriteOutbound: api.anthropic.com', () => {
   test('rewrites to AI Gateway, keeps path and query, sets only the gateway credential', () => {
     const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages?beta=true', headers: hostileHeaders() },
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', method: 'POST', headers: hostileHeaders() },
       { model: gateway },
     ));
     expect(d.url).toBe('https://gateway.ai.cloudflare.com/v1/acct123/gw-1/anthropic/v1/messages?beta=true');
@@ -114,7 +227,7 @@ describe('rewriteOutbound: api.anthropic.com', () => {
 
   test('direct mode forwards to Anthropic with the Worker key, never the container one', () => {
     const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
       { model: { kind: 'direct', apiKey: 'sk-ant-worker-held' } },
     ));
     expect(d.url).toBe('https://api.anthropic.com/v1/messages');
@@ -124,9 +237,60 @@ describe('rewriteOutbound: api.anthropic.com', () => {
     expectNoContainerCredential(d.headers);
   });
 
+  test('proxy mode: appends path and query, sends Authorization: Bearer <proxy key> only', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute(PROXY_ENV) },
+    ));
+    expect(d.url).toBe('https://litellm.example.com/v1/messages?beta=true');
+    expect(d.injected).toBe('proxy');
+    expect(d.headers.get('authorization')).toBe('Bearer proxy-secret-key');
+    expect(d.headers.get('x-api-key')).toBeNull();
+    expect(d.headers.get('cf-aig-authorization')).toBeNull();
+    expect(d.headers.get('anthropic-version')).toBe('2023-06-01');
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('proxy mode with x-api-key sends the raw key and no authorization', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages/count_tokens', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_URL: 'https://litellm.example.com/anthropic/', MODEL_PROXY_AUTH_HEADER: 'x-api-key' }) },
+    ));
+    expect(d.url).toBe('https://litellm.example.com/anthropic/v1/messages/count_tokens');
+    expect(d.headers.get('x-api-key')).toBe('proxy-secret-key');
+    expect(d.headers.get('authorization')).toBeNull();
+    expectNoContainerCredential(d.headers);
+  });
+
+  test('proxy mode: plaintext and odd ports to api.anthropic.com are still refused', () => {
+    const model = resolveModelRoute(PROXY_ENV);
+    expect(rewriteOutbound({ url: 'http://api.anthropic.com/v1/messages', method: 'POST', headers: {} }, { model }).action).toBe('reject');
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com:8443/v1/messages', method: 'POST', headers: {} }, { model }).action).toBe('reject');
+  });
+
+  test('proxy mode: URL userinfo from the container does not reach the proxy', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://user:container-supplied@api.anthropic.com/v1/messages', method: 'POST', headers: {} },
+      { model: resolveModelRoute(PROXY_ENV) },
+    ));
+    expect(d.url).toBe('https://litellm.example.com/v1/messages');
+  });
+
+  test('proxy configured without a key is refused with 503', () => {
+    const d = rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute({ MODEL_PROXY_URL: 'https://litellm.example.com' }) },
+    );
+    expect(d.action).toBe('reject');
+    if (d.action === 'reject') {
+      expect(d.status).toBe(503);
+      expect(d.message).toContain('MODEL_PROXY_KEY');
+    }
+  });
+
   test('unconfigured is refused, not forwarded with the placeholder', () => {
     const d = rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
       { model: resolveModelRoute({}) },
     );
     expect(d.action).toBe('reject');
@@ -134,13 +298,13 @@ describe('rewriteOutbound: api.anthropic.com', () => {
   });
 
   test('plaintext and odd ports are refused', () => {
-    expect(rewriteOutbound({ url: 'http://api.anthropic.com/v1/messages', headers: {} }, { model: gateway }).action).toBe('reject');
-    expect(rewriteOutbound({ url: 'https://api.anthropic.com:8443/v1/messages', headers: {} }, { model: gateway }).action).toBe('reject');
+    expect(rewriteOutbound({ url: 'http://api.anthropic.com/v1/messages', method: 'POST', headers: {} }, { model: gateway }).action).toBe('reject');
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com:8443/v1/messages', method: 'POST', headers: {} }, { model: gateway }).action).toBe('reject');
   });
 
   test('URL userinfo from the container is dropped', () => {
     const d = forwarded(rewriteOutbound(
-      { url: 'https://user:container-supplied@api.anthropic.com/v1/messages', headers: {} },
+      { url: 'https://user:container-supplied@api.anthropic.com/v1/messages', method: 'POST', headers: {} },
       { model: { kind: 'direct', apiKey: 'k' } },
     ));
     expect(d.url).not.toContain('container-supplied');
@@ -224,7 +388,12 @@ describe('rewriteOutbound: everything else', () => {
 describe('security: container-supplied credentials never reach a credentialed host', () => {
   // Every intercepted host, every model route, with and without a grant: the
   // forwarded request carries no header value the container supplied.
-  const routes: ModelRoute[] = [gateway, { kind: 'direct', apiKey: 'sk-ant-worker-held' }];
+  const routes: ModelRoute[] = [
+    gateway,
+    { kind: 'direct', apiKey: 'sk-ant-worker-held' },
+    resolveModelRoute(PROXY_ENV),
+    resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'x-api-key' }),
+  ];
   const urls = [
     'https://api.anthropic.com/v1/messages',
     'https://github.com/acme/widget.git/git-upload-pack',
@@ -238,8 +407,8 @@ describe('security: container-supplied credentials never reach a credentialed ho
   for (const model of routes) {
     for (const github of [GRANT, null]) {
       for (const url of urls) {
-        test(`${model.kind} ${github ? 'grant' : 'no grant'} ${url}`, () => {
-          const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, { model, github, now: NOW }));
+        test(`${model.kind}${model.kind === 'proxy' ? `(${model.authHeader})` : ''} ${github ? 'grant' : 'no grant'} ${url}`, () => {
+          const d = forwarded(rewriteOutbound({ url, method: 'POST', headers: hostileHeaders() }, { model, github, now: NOW }));
           expectNoContainerCredential(d.headers);
           for (const name of CONTAINER_CREDENTIAL_HEADERS) {
             const v = d.headers.get(name);
@@ -311,6 +480,14 @@ describe('parseGithubGrant', () => {
     })).toEqual({ token: 'ghs_x', expiresAt: NOW, owner: 'acme', repo: 'widget' });
   });
 
+  test('keeps the workspace id buildd returns, and drops one that is not an id', () => {
+    const base = { token: 'ghs_x', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'acme', name: 'widget' } };
+    expect(parseGithubGrant({ ...base, workspaceId: 'ws-123' }).workspaceId).toBe('ws-123');
+    expect(parseGithubGrant({ ...base, workspaceId: '../ws' }).workspaceId).toBeUndefined();
+    expect(parseGithubGrant({ ...base, workspaceId: 7 }).workspaceId).toBeUndefined();
+    expect('workspaceId' in parseGithubGrant(base)).toBe(false);
+  });
+
   test.each([
     [null],
     [{}],
@@ -341,7 +518,7 @@ describe('githubTokenRequest', () => {
 describe('describeForwardForDebug', () => {
   test('fingerprints every header value and never prints one', async () => {
     const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
       { model: gateway },
     ));
     const echo = await describeForwardForDebug(d);
@@ -350,5 +527,265 @@ describe('describeForwardForDebug', () => {
     expect(echo.headers['x-api-key']).toBeUndefined();
     expect(JSON.stringify(echo)).not.toContain('gw-secret-token');
     expect(JSON.stringify(echo)).not.toContain('container-supplied');
+  });
+
+  test('proxy mode: fingerprints the proxy credential', async () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute(PROXY_ENV) },
+    ));
+    const echo = await describeForwardForDebug(d);
+    expect(echo).toMatchObject({ url: 'https://litellm.example.com/v1/messages', injected: 'proxy' });
+    expect(echo.headers.authorization).toBe(await fingerprint('Bearer proxy-secret-key'));
+    expect(JSON.stringify(echo)).not.toContain('proxy-secret-key');
+  });
+});
+
+
+// ── Server model endpoint (docs/design/agent-model-endpoint.md §3) ────────────
+
+const SERVER: ServerModelEndpoint = { baseUrl: 'https://litellm.example.com', key: 'sk-team-endpoint', authHeader: 'authorization' };
+const PROXY = { MODEL_PROXY_URL: 'https://litellm.example.com/override', MODEL_PROXY_KEY: 'proxy-secret-key' };
+const DIRECT = { ALLOW_DIRECT_ANTHROPIC: '1', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' };
+
+describe('resolveModelRoute: server endpoint precedence', () => {
+  test('direct > Worker MODEL_PROXY_URL > server endpoint > AI Gateway > refuse', () => {
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY, ...DIRECT }, SERVER).kind).toBe('direct');
+    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY }, SERVER)).toMatchObject({ kind: 'proxy', baseUrl: 'https://litellm.example.com/override', key: 'proxy-secret-key' });
+    expect(resolveModelRoute({ ...GATEWAY_ENV }, SERVER)).toEqual({ kind: 'proxy', baseUrl: SERVER.baseUrl, key: SERVER.key, authHeader: 'authorization' });
+    expect(resolveModelRoute({}, SERVER)).toEqual({ kind: 'proxy', baseUrl: SERVER.baseUrl, key: SERVER.key, authHeader: 'authorization' });
+    expect(resolveModelRoute({ ...GATEWAY_ENV }, null).kind).toBe('gateway');
+    expect(resolveModelRoute({}, null).kind).toBe('unconfigured');
+  });
+
+  test('the x-api-key header choice is kept', () => {
+    expect(resolveModelRoute({}, { ...SERVER, authHeader: 'x-api-key' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
+  });
+
+  test("'unavailable' refuses rather than silently spending on the gateway", () => {
+    const r = resolveModelRoute({ ...GATEWAY_ENV }, 'unavailable');
+    expect(r.kind).toBe('unconfigured');
+    // ...but never overrides the operator override or the local direct route.
+    expect(resolveModelRoute({ ...PROXY }, 'unavailable').kind).toBe('proxy');
+    expect(resolveModelRoute({ ...DIRECT }, 'unavailable').kind).toBe('direct');
+  });
+
+  test('default no-op: omitted and null are byte-identical to the pre-endpoint result', () => {
+    const envs = [
+      {}, GATEWAY_ENV, PROXY, DIRECT, { ...GATEWAY_ENV, ...PROXY }, { ...GATEWAY_ENV, ...PROXY, ...DIRECT },
+      { ...PROXY, MODEL_PROXY_AUTH_HEADER: 'x-api-key' }, { ...PROXY, MODEL_PROXY_AUTH_HEADER: 'cookie' },
+      { MODEL_PROXY_URL: 'nope', MODEL_PROXY_KEY: 'k' }, { MODEL_PROXY_URL: 'https://litellm.example.com' },
+      { ...GATEWAY_ENV, AI_GATEWAY_ID: '../x' }, { ANTHROPIC_DIRECT_API_KEY: 'sk' }, { ALLOW_DIRECT_ANTHROPIC: '1' },
+    ];
+    for (const env of envs) {
+      expect(resolveModelRoute(env, null)).toEqual(resolveModelRoute(env));
+      expect(resolveModelRoute(env, undefined)).toEqual(resolveModelRoute(env));
+    }
+  });
+
+  test('a server-endpoint route strips container credentials and sets only its own header', () => {
+    const d = rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute({}, SERVER) },
+    );
+    expect(d.action).toBe('forward');
+    if (d.action !== 'forward') return;
+    expect(d.url).toBe('https://litellm.example.com/v1/messages?beta=true');
+    expect(d.headers.get('authorization')).toBe('Bearer sk-team-endpoint');
+    expect(d.headers.get('x-api-key')).toBeNull();
+  });
+});
+
+describe('needsServerModelEndpoint', () => {
+  test('false when direct or MODEL_PROXY_URL wins, true otherwise', () => {
+    expect(needsServerModelEndpoint({})).toBe(true);
+    expect(needsServerModelEndpoint(GATEWAY_ENV)).toBe(true);
+    expect(needsServerModelEndpoint({ ANTHROPIC_DIRECT_API_KEY: 'sk' })).toBe(true);
+    expect(needsServerModelEndpoint(PROXY)).toBe(false);
+    expect(needsServerModelEndpoint(DIRECT)).toBe(false);
+  });
+});
+
+describe('parseServerModelEndpoint', () => {
+  test('accepts the route shape and defaults the header', () => {
+    expect(parseServerModelEndpoint({ kind: 'gateway', baseUrl: 'https://litellm.example.com/', key: 'k', authHeader: 'authorization', models: {} }))
+      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).authHeader).toBe('authorization');
+  });
+  test('throws on anything unexpected', () => {
+    for (const b of [null, {}, { baseUrl: 'http://litellm.example.com', key: 'k' }, { baseUrl: 'https://u:p@litellm.example.com', key: 'k' },
+      { baseUrl: 'https://litellm.example.com', key: '' }, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'cookie' },
+      { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 5 }]) {
+      expect(() => parseServerModelEndpoint(b)).toThrow();
+    }
+  });
+});
+
+describe('modelEndpointRequest', () => {
+  test('carries both credentials, the task and the worker', () => {
+    const { url, init } = modelEndpointRequest({ BUILDD_SERVER: 'https://buildd.example/', BUILDD_API_KEY: 'bld_x', DISPATCH_TOKEN: 'd' }, 'task-1', 'worker-1');
+    expect(url).toBe('https://buildd.example/api/runner/model-endpoint');
+    const h = init.headers as Record<string, string>;
+    expect(h.Authorization).toBe('Bearer bld_x');
+    expect(h[DISPATCH_TOKEN_HEADER]).toBe('d');
+    expect(JSON.parse(String(init.body))).toEqual({ taskId: 'task-1', workerId: 'worker-1' });
+  });
+  test('refuses without the dispatch token', () => {
+    expect(() => modelEndpointRequest({ BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_x' }, 't')).toThrow();
+  });
+});
+
+describe('ModelEndpointCache', () => {
+  function make(fetchEndpoint: () => Promise<ServerModelEndpoint>) {
+    let now = NOW;
+    let calls = 0;
+    const cache = new ModelEndpointCache({ fetchEndpoint: () => { calls++; return fetchEndpoint(); }, now: () => now, log: () => {} });
+    return { cache, advance: (ms: number) => { now += ms; }, calls: () => calls };
+  }
+
+  test('lazy, cached for the run, one in-flight fetch for concurrent callers', async () => {
+    const c = make(async () => SERVER);
+    expect(c.calls()).toBe(0);
+    const [a, b] = await Promise.all([c.cache.get(), c.cache.get()]);
+    expect(a).toEqual(SERVER);
+    expect(b).toEqual(SERVER);
+    await c.cache.get();
+    expect(c.calls()).toBe(1);
+  });
+
+  test('a 404 is cached as none for the run', async () => {
+    const c = make(async () => { throw new NoModelEndpointError(); });
+    expect(await c.cache.get()).toBeNull();
+    c.advance(60 * 60 * 1000);
+    expect(await c.cache.get()).toBeNull();
+    expect(c.calls()).toBe(1);
+  });
+
+  test('other failures are unavailable for the backoff, then refetched', async () => {
+    let fail = true;
+    const c = make(async () => { if (fail) throw new Error('HTTP 502'); return SERVER; });
+    expect(await c.cache.get()).toBe('unavailable');
+    fail = false;
+    expect(await c.cache.get()).toBe('unavailable');
+    expect(c.calls()).toBe(1);
+    c.advance(MODEL_ENDPOINT_FAILURE_BACKOFF_MS);
+    expect(await c.cache.get()).toEqual(SERVER);
+    expect(c.calls()).toBe(2);
+  });
+
+  test('invalidate after a 401 drops the key and refetches only after the backoff', async () => {
+    const c = make(async () => SERVER);
+    await c.cache.get();
+    c.cache.invalidate();
+    expect(await c.cache.get()).toBe('unavailable');
+    expect(c.calls()).toBe(1);
+    c.advance(MODEL_ENDPOINT_FAILURE_BACKOFF_MS);
+    expect(await c.cache.get()).toEqual(SERVER);
+    expect(c.calls()).toBe(2);
+  });
+
+  test('reset forgets everything, and a fetch from the previous run is discarded', async () => {
+    let resolve!: (e: ServerModelEndpoint) => void;
+    const c = make(() => new Promise<ServerModelEndpoint>((r) => { resolve = r; }));
+    const stale = c.cache.get();
+    c.cache.reset();
+    resolve(SERVER);
+    expect(await stale).toBe('unavailable');
+    const fresh = c.cache.get();
+    resolve({ ...SERVER, key: 'next-run' });
+    expect(await fresh).toMatchObject({ key: 'next-run' });
+  });
+});
+
+describe('api.anthropic.com: only the model API paths are forwarded', () => {
+  const routes: Array<[string, ModelRoute]> = [
+    ['gateway', gateway],
+    ['proxy', resolveModelRoute(PROXY_ENV)],
+    ['server endpoint', resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'sk-team-endpoint', authHeader: 'authorization' })],
+    ['direct', { kind: 'direct', apiKey: 'sk-ant-worker-held' }],
+  ];
+
+  const allowed: Array<[string, string]> = [
+    ['POST', '/v1/messages'],
+    ['POST', '/v1/messages?beta=true'],
+    ['POST', '/v1/messages/count_tokens'],
+    ['POST', '/v1/messages/count_tokens?beta=true'],
+    ['GET', '/v1/models'],
+    ['GET', '/v1/models?limit=1000'],
+    ['GET', '/v1/models/claude-sonnet-5'],
+  ];
+
+  const refused: Array<[string, string]> = [
+    ['GET', '/'],
+    ['POST', '/v1/complete'],
+    ['POST', '/v1/messages/batches'],
+    ['GET', '/v1/messages/batches/abc'],
+    ['POST', '/v1/files'],
+    ['POST', '/key/generate'],
+    ['GET', '/user/info'],
+    ['POST', '/v1/messages/../key/generate'],
+    ['POST', '/v1/messages/%2e%2e/key/generate'],
+    ['POST', '/v1/messages/%2E%2E/%2E%2E/key/generate'],
+    ['POST', '/v1/messages/.%2e/key/generate'],
+    ['POST', '/v1/messages/./count_tokens'],
+    ['POST', '//v1/messages'],
+    ['POST', '/v1//messages'],
+    ['POST', '/v1/messages/'],
+    ['POST', '/v1/messages/count_tokens/extra'],
+    ['POST', '/v1/messages%2fcount_tokens'],
+    ['POST', '/v1/messages%2F..%2Fkey'],
+    ['POST', '/v1/messages;x=1'],
+    ['POST', '/V1/Messages'],
+    ['POST', '/v1/messages\\..\\key'],
+    ['GET', '/v1/models/..'],
+    ['GET', '/v1/models/%2e%2e'],
+    ['GET', '/v1/models/a/b'],
+    ['GET', '/v1/messages'],
+    ['DELETE', '/v1/messages'],
+    ['POST', '/v1/models'],
+  ];
+
+  for (const [name, model] of routes) {
+    for (const [method, path] of allowed) {
+      test(`${name}: ${method} ${path} is forwarded with its query`, () => {
+        const d = forwarded(rewriteOutbound({ url: `https://api.anthropic.com${path}`, method, headers: hostileHeaders() }, { model }));
+        expect(d.url.endsWith(path)).toBe(true);
+        expectNoContainerCredential(d.headers);
+      });
+    }
+    for (const [method, path] of refused) {
+      test(`${name}: ${method} ${path} is refused with 403 before any credential is added`, () => {
+        const d = rewriteOutbound({ url: `https://api.anthropic.com${path}`, method, headers: hostileHeaders() }, { model });
+        expect(d.action).toBe('reject');
+        if (d.action !== 'reject') return;
+        expect(d.status).toBe(403);
+        expect(d.message.length).toBeLessThan(120);
+        expect(JSON.stringify(d)).not.toContain('sk-');
+        expect(JSON.stringify(d)).not.toContain('gw-secret-token');
+      });
+    }
+  }
+
+  test('an unconfigured route still refuses a disallowed path with 403, not 503', () => {
+    const d = rewriteOutbound({ url: 'https://api.anthropic.com/key/generate', method: 'POST', headers: {} }, { model: resolveModelRoute({}) });
+    expect(d).toMatchObject({ action: 'reject', status: 403 });
+  });
+
+  test('the allowlist is exactly the paths Claude Code needs', () => {
+    expect(MODEL_API_ROUTES.map(r => `${r.method} ${r.path}`)).toEqual([
+      'POST /v1/messages', 'POST /v1/messages/count_tokens', 'GET /v1/models', 'GET /v1/models/:id',
+    ]);
+  });
+
+  test('modelApiPathAllowed judges the raw path, not only the normalised one', () => {
+    expect(modelApiPathAllowed('POST', 'https://api.anthropic.com/v1/messages')).toBe(true);
+    expect(modelApiPathAllowed('post', 'https://api.anthropic.com/v1/messages')).toBe(true);
+    expect(modelApiPathAllowed('POST', 'https://api.anthropic.com/v1/x/../messages')).toBe(false);
+    expect(modelApiPathAllowed('POST', 'https://api.anthropic.com/v1/%6dessages')).toBe(false);
+  });
+
+  test('the egress handler passes the request method', async () => {
+    const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
+    expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
   });
 });

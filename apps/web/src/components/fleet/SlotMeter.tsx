@@ -1,11 +1,11 @@
 /**
  * One square per concurrent-worker slot, filled for each slot in use.
- * Past `MAX_SQUARES` the meter stops drawing squares and the number carries it.
+ * Past `maxSquares` (default `MAX_SQUARES`) the meter stops drawing squares and the number carries it.
  */
 const MAX_SQUARES = 16;
 
-export function SlotMeter({ live, max, size = 'sm', className = '' }: { live: number; max: number; size?: 'sm' | 'lg'; className?: string }) {
-  const n = Math.min(Math.max(max, 0), MAX_SQUARES);
+export function SlotMeter({ live, max, size = 'sm', maxSquares = MAX_SQUARES, className = '' }: { live: number; max: number; size?: 'sm' | 'lg'; maxSquares?: number; className?: string }) {
+  const n = Math.min(Math.max(max, 0), maxSquares);
   const box = size === 'lg' ? 'h-[14px] w-[14px]' : 'h-2.5 w-2.5';
   return (
     <span
@@ -17,7 +17,7 @@ export function SlotMeter({ live, max, size = 'sm', className = '' }: { live: nu
       {Array.from({ length: n }, (_, i) => (
         <i
           key={i}
-          className={`inline-block ${box} border ${i < live ? 'border-accent bg-accent' : 'border-border-strong'}`}
+          className={`inline-block ${box} border ${i < live ? 'border-accent bg-accent' : 'border-border-default'}`}
         />
       ))}
     </span>

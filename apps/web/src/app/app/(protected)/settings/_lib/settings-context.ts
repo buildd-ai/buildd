@@ -1,7 +1,7 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
-import { accounts, workspaces } from '@buildd/core/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import { accounts, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { desc, inArray, sql } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -70,16 +70,89 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   };
 });
 
+/**
+ * The account columns the Runners section (RunnerTokensSection) renders, and
+ * nothing else: this goes to a client component, so a column not listed here
+ * never leaves the server.
+ */
+export const RUNNER_ACCOUNT_COLUMNS = {
+  id: true,
+  name: true,
+  type: true,
+  authType: true,
+  apiKeyPrefix: true,
+  maxConcurrentWorkers: true,
+  totalCost: true,
+  activeSessions: true,
+  maxConcurrentSessions: true,
+  budgetExhaustedAt: true,
+  budgetResetsAt: true,
+  createdAt: true,
+} as const;
+
+/** A runner account (token) as the Runners section receives it. */
+export interface RunnerAccountDto {
+  id: string;
+  name: string;
+  type: string;
+  authType: string;
+  apiKeyPrefix: string | null;
+  maxConcurrentWorkers: number;
+  totalCost: string | null;
+  activeSessions: number | null;
+  maxConcurrentSessions: number | null;
+  budgetExhaustedAt: Date | string | null;
+  budgetResetsAt: Date | string | null;
+  createdAt: Date | string | null;
+  team: { name: string } | null;
+  accountWorkspaces: { workspaceId: string }[];
+}
+
 /** Runner accounts (tokens) across the user's teams, for the Runners section. */
-export async function loadRunnerAccounts(teamIds: string[]) {
+export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccountDto[]> {
   if (teamIds.length === 0) return [];
   const rows = await db.query.accounts.findMany({
     where: inArray(accounts.teamId, teamIds),
     orderBy: desc(accounts.createdAt),
+    columns: RUNNER_ACCOUNT_COLUMNS,
     with: {
       team: { columns: { name: true } },
       accountWorkspaces: { columns: { workspaceId: true } },
     },
-  }).catch(() => [] as any[]);
-  return rows.map((a: any) => ({ ...a, hasOauthToken: !!a.oauthToken }));
+  }).catch(() => [] as never[]);
+  // Mapped field by field as well, so the DTO holds even if the query shape changes.
+  return rows.map((a): RunnerAccountDto => ({
+    id: a.id,
+    name: a.name,
+    type: a.type,
+    authType: a.authType,
+    apiKeyPrefix: a.apiKeyPrefix ?? null,
+    maxConcurrentWorkers: a.maxConcurrentWorkers,
+    totalCost: a.totalCost ?? null,
+    activeSessions: a.activeSessions ?? null,
+    maxConcurrentSessions: a.maxConcurrentSessions ?? null,
+    budgetExhaustedAt: a.budgetExhaustedAt ?? null,
+    budgetResetsAt: a.budgetResetsAt ?? null,
+    createdAt: a.createdAt ?? null,
+    team: a.team ? { name: a.team.name } : null,
+    accountWorkspaces: (a.accountWorkspaces ?? []).map((w: { workspaceId: string }) => ({ workspaceId: w.workspaceId })),
+  }));
+}
+
+/**
+ * When each runner token last had a runner heartbeat, ISO. Heartbeat rows are
+ * swept once they go stale, so a token missing here has not been seen
+ * recently, which is not the same as never. Degrades to empty on failure.
+ */
+export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<string, string>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({ accountId: workerHeartbeats.accountId, at: sql<Date | string>`max(${workerHeartbeats.lastHeartbeatAt})` })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .groupBy(workerHeartbeats.accountId)
+    .catch(() => [] as Array<{ accountId: string; at: Date | string }>);
+  const out: Record<string, string> = {};
+  for (const r of rows) if (r.at) out[r.accountId] = new Date(r.at).toISOString();
+  return out;
 }

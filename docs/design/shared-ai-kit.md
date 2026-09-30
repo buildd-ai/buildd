@@ -1,6 +1,6 @@
 # Shared AI kit: chat, Jev decisions and the model economy for sibling apps
 
-**Status:** Accepted. P0 (#2968), the P1 client (#2974) and P2 (#2977) have shipped; the package publishes as `@builddai/ai-kit` (#2991). The kit half of P3 (`/chat/server` `createChatTurn` and the `/chat/react` components) ships in 0.2.0; app adoption (money P3, store P4, Cue P5, buildd P6) is per app. 0.5.0 lifts the generic half of buildd's chat into the kit (P6 slice 1, listed under P6).
+**Status:** Accepted. P0 (#2968), the P1 client (#2974) and P2 (#2977) have shipped; the package publishes as `@builddai/ai-kit` (#2991). The kit half of P3 (`/chat/server` `createChatTurn` and the `/chat/react` components) ships in 0.2.0; app adoption (money P3, store P4, Cue P5, buildd P6) is per app. Money P3 and store P4 have shipped in the moa apps (kit 0.2.0, AI SDK v7); both apps now pin a later kit. 0.5.0 lifts the generic half of buildd's chat into the kit (P6 slice 1, listed under P6).
 **Related:** `packages/core/model-tier-registry.ts` (`resolveTierEntry`, `resolveAllTiers`), `packages/core/model-tier-defaults.ts`, `packages/core/tier-pool-source.ts` (`drawChatPoolArm`), `packages/core/decision-client.ts` (`decisionCall`, `gateChoice`), `packages/core/inference-client.ts`, `packages/core/inference-keys.ts`, `packages/shared/src/chat.ts`, `apps/web/src/lib/chat/turn.ts`, `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/chat/routing.ts`, `apps/web/src/lib/chat/permissions.ts`, `apps/web/src/components/chat/`, `apps/web/src/app/api/model-tiers/route.ts`, `apps/web/src/lib/api-auth.ts`, `docs/SPEC.md` §3a, `docs/design/agent-chat.md`, `docs/design/chat-canvas.md`, `docs/design/decision-calls.md`, `docs/design/inference-calls-primitive.md`, `docs/design/model-tiers.md`, `docs/design/tier-model-pools.md`, `docs/design/tier-weights.md`, `docs/design/model-quality-signals.md`, `docs/design/cross-app-assertion-grant.md`
 
 External consumers (private repos, cited as `app:path`): Cue (`cue:`), and the two moa apps (`nextjs-app`, the store ops app; `money-app`, personal finance).
@@ -498,7 +498,7 @@ Each phase ships on its own and leaves the others working.
   - A "never" group's tools are absent from the model's tool list.
 
 **P4: store chat.**
-- A new store chat route and page on the kit, with store-only tool groups. It is blocked on invariant 4 in §4.
+- **Shipped** in `nextjs-app` after invariant 4 in §4 landed: a `/chat` page and route on the kit, with store-only tool groups (`nextjs-app:src/lib/chat/tool-groups.ts`). The finance exclusion is `nextjs-app:src/lib/chat/finance-boundary.guard.test.ts`, which walks the chat's import graph as well as comparing tool names.
 - AC:
   - The finance-exclusion test in §4 passes.
   - Every write tool defaults to Ask first.
@@ -544,6 +544,7 @@ Each phase ships on its own and leaves the others working.
 
 **P7: surfaces.**
 - `defineSurface` for empty-state chips and one optional card, first in shadow on Cue and the moa dashboards, then gated after an eval.
+- **Kit side (kit 0.14.0):** `defineSurface` with `rank` and `choice` slots in one call, every slot shadow by default with `onPick` logging Jev's would-be pick; `runSurfaceEval` and `gateFromEval`, which refuses below `MIN_GATE_EVAL_ROWS` (700) held-out rows and binds the gate to the slot's fingerprint. The Cue and moa wiring lives in those repos.
 - AC:
   - In shadow, the rendered chips are always `default` and the Jev pick is logged.
   - Gating a slot requires an eval of at least ~700 labelled rows, not a round number.

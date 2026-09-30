@@ -210,6 +210,11 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
 }));
 
+// Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
+// Default null: no endpoint, so every other test sees today's claim.
+const mockResolveAgentModelRoute = mock(async (_o: any) => null as any);
+mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute, AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint' }));
+
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
     get: mockSecretsProviderGet,
@@ -2597,6 +2602,99 @@ describe('POST /api/workers/claim', () => {
         expect(JSON.stringify(data)).not.toContain('decrypted-secret-value');
         // And nothing was decrypted in the first place.
         expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('agent model endpoint (one ranking, only the winner attached)', () => {
+      const endpoint = {
+        kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-endpoint-example',
+        authHeader: 'authorization', models: {}, secretId: 'ep-1', scope: 'team',
+      };
+      afterEach(() => { mockResolveAgentModelRoute.mockReset(); mockResolveAgentModelRoute.mockImplementation(async () => null); });
+
+      // A runner built with endpoint support declares it; see the old-runner case below.
+      const claimWith = async (body: Record<string, unknown> = {}) => {
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', runnerFeatures: ['cbm_withhold', 'agent_endpoint'], ...body },
+        }));
+        return res.json();
+      };
+
+      it('no endpoint: today\'s claim, byte for byte (no new fields)', async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          const data = await claimWith();
+          expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
+          expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+          expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
+          expect('modelEndpoint' in data.workers[0]).toBe(false);
+          expect('modelEndpointIgnored' in data.workers[0]).toBe(false);
+        });
+      });
+
+      it('endpoint wins: modelEndpoint only; no Anthropic key, seat, Claude token or refresh list; MCP secrets still delivered', async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          const data = await claimWith();
+          const w = data.workers[0];
+          expect(w.modelEndpoint).toEqual({ kind: 'gateway', baseUrl: 'https://litellm.example.com', authToken: 'sk-endpoint-example', authHeader: 'authorization', models: {} });
+          for (const f of ['serverApiKey', 'serverOauthToken', 'claudeAccessToken', 'claudeTokenExpiresAt', 'pendingCredentialRefreshes']) {
+            expect(w[f]).toBeUndefined();
+          }
+          expect(w.mcpSecrets).toEqual({ SOME_MCP_KEY: 'decrypted-secret-value' });
+        });
+      });
+
+      it('endpoint loses (a more specific Anthropic credential): today\'s delivery, no modelEndpoint', async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'anthropic', endpoint, beatenBy: 'workspace' }));
+          const data = await claimWith();
+          expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it('runner with a per-machine provider: no key sent, only the ignored marker, and no Anthropic credential', async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          const data = await claimWith({ llmProviderOverride: true });
+          expect(data.workers[0].modelEndpointIgnored).toBe(true);
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(data.workers[0].serverApiKey).toBeUndefined();
+          expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it('a runner that does not declare endpoint support keeps today\'s credentials and gets no endpoint', async () => {
+        await withEncryptionKey(async () => {
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          for (const runnerFeatures of [undefined, ['cbm_withhold'], 'agent_endpoint']) {
+            setupTeamWithEveryCredential();
+            const data = await claimWith({ runnerFeatures });
+            const w = data.workers[0];
+            expect(w.serverApiKey).toBe('decrypted-secret-value');
+            expect(w.serverOauthToken).toBe('decrypted-secret-value');
+            expect(w.modelEndpoint).toBeUndefined();
+            expect(w.modelEndpointIgnored).toBeUndefined();
+            expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+          }
+        });
+      });
+
+      it("executor 'cloud': the endpoint is never resolved or attached", async () => {
+        await withEncryptionKey(async () => {
+          setupTeamWithEveryCredential();
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          const data = await claimWith({ executor: 'cloud' });
+          expect(mockResolveAgentModelRoute).not.toHaveBeenCalled();
+          expect(data.workers[0].modelEndpoint).toBeUndefined();
+          expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
       });
     });
 

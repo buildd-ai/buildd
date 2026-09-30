@@ -12,7 +12,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
 import { dispatchNewTask } from '@/lib/task-dispatch';
-import { notifyOperator } from '@/lib/pushover';
+import { notifyTeamOf } from '@/lib/notify';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
 import { getSecretsProvider } from '@buildd/core/secrets';
@@ -277,8 +277,7 @@ Diagnose the failure, push a fix to \`main\`, and confirm the next deploy goes R
     );
   }
 
-  notifyOperator({
-    app: project.pushoverApp,
+  void notifyTeamOf({ workspaceId: project.workspaceId }, 'needsAttention', {
     title,
     message: health.reason,
     priority: 1,
@@ -503,8 +502,7 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
     );
   }
 
-  notifyOperator({
-    app: project.pushoverApp,
+  void notifyTeamOf({ workspaceId: project.workspaceId }, 'needsAttention', {
     title: `CI failing on ${project.repo} #${pr.number}`,
     message: `${failing.length} check(s) red\n${pr.title}`,
     priority: 0,

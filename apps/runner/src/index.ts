@@ -97,12 +97,14 @@ if (ONCE_ARGS.once && 'error' in ONCE_ARGS) {
   console.error(`${ONCE_ARGS.error}\n\n${ONCE_USAGE}`);
   process.exit(EXIT_USAGE);
 }
-const ONCE_TASK_ID = ONCE_ARGS.once && 'taskId' in ONCE_ARGS ? ONCE_ARGS.taskId : null;
+const ONCE_RUN = ONCE_ARGS.once && 'taskId' in ONCE_ARGS ? ONCE_ARGS : null;
+// Non-null (possibly '') in every --once mode: a resume may not name its task.
+const ONCE_TASK_ID = ONCE_RUN ? ONCE_RUN.taskId : null;
 
 // --debug flag: opt-in to HTTP server + debug UI (default: headless)
 // Also enabled when PORT env var is explicitly set, since headless mode never uses a port.
 // Never in --once mode: there is no UI server to point at.
-const DEBUG_MODE = !ONCE_TASK_ID && (process.argv.includes('--debug') || !!process.env.PORT);
+const DEBUG_MODE = ONCE_TASK_ID === null && (process.argv.includes('--debug') || !!process.env.PORT);
 
 // The local UI server listens on loopback unless BUILDD_UI_BIND names another
 // interface (e.g. a Tailscale address for remote viewing).
@@ -188,7 +190,7 @@ function setUpdating(on: boolean): void {
 const projectRoots = parseProjectRoots(process.env.PROJECTS_ROOT);
 
 // --once can run with no local checkouts: it clones on demand (run-once.ts).
-if (projectRoots.length === 0 && !ONCE_TASK_ID) {
+if (projectRoots.length === 0 && ONCE_TASK_ID === null) {
   console.error('No valid project roots found. Set PROJECTS_ROOT env var (e.g., ~/projects,~/work)');
   process.exit(1);
 }
@@ -505,9 +507,11 @@ const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolation
 // --once: everything below this point is the long-running runner (UI server,
 // claim loop, Pusher assignment, self-updater, update canary/drain, worktree
 // sweeps). Hand off before any of it starts.
-if (ONCE_TASK_ID) {
+if (ONCE_RUN) {
   const code = await runOnceFromCli({
-    taskId: ONCE_TASK_ID,
+    taskId: ONCE_RUN.taskId,
+    resumeWorkerId: ONCE_RUN.resumeWorkerId,
+    parkOrphanWorkerId: ONCE_RUN.parkOrphanWorkerId,
     config,
     resolver,
     builddHome: BUILDD_DIR,

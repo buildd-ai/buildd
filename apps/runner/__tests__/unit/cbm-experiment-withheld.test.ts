@@ -294,7 +294,7 @@ describe('claim request declares the withhold feature', () => {
     // client module is mocked above, so read the real one's source instead.
     const src = await Bun.file(new URL('../../src/buildd.ts', import.meta.url)).text();
     const claim = src.slice(src.indexOf('async claimTask('), src.indexOf("this.fetch('/api/workers/claim'"));
-    expect(claim).toContain('runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE]');
+    expect(claim).toMatch(/runnerFeatures: \[CBM_WITHHOLD_RUNNER_FEATURE[,\]]/);
     const { CBM_WITHHOLD_RUNNER_FEATURE } = await import('@buildd/core/cbm-access-experiment');
     expect(CBM_WITHHOLD_RUNNER_FEATURE).toBe('cbm_withhold');
   });

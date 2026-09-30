@@ -106,6 +106,8 @@ mock.module('drizzle-orm', () => ({
   gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
+  or: (...args: any[]) => ({ or: args }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   lte: (field: any, value: any) => ({ field, value, type: 'lte' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
   sql: Object.assign(
@@ -1626,7 +1628,7 @@ describe('GET /api/cron/schedules', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
       app: 'alerts',
-      title: expect.stringContaining('My Mission'),
+      title: expect.stringContaining('mission-1'),
       message: expect.stringContaining('overdue'),
     }));
 
@@ -1648,7 +1650,7 @@ describe('GET /api/cron/schedules', () => {
 
     expect(body.overdueHeartbeatAlerts).toBe(1);
     expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({
-      title: expect.stringContaining('Finance Heartbeat'),
+      title: expect.stringContaining('schedule sched-overdue'),
     }));
   });
 

@@ -38,15 +38,15 @@ export async function runOverdueHeartbeatAlerts(now: Date): Promise<number> {
 
       const linkedMission = await db.query.missions.findFirst({
         where: eq(missions.scheduleId, schedule.id),
-        columns: { id: true, title: true },
+        columns: { id: true },
       });
 
-      const missionTitle = linkedMission?.title ?? schedule.name;
+      const subject = linkedMission ? `mission ${linkedMission.id}` : `schedule ${schedule.id}`;
       const overdueMin = Math.round((now.getTime() - new Date(schedule.nextRunAt).getTime()) / 60_000);
 
       notifyOperator({
         app: 'alerts',
-        title: `Check-in overdue: ${missionTitle}`,
+        title: `Check-in overdue: ${subject}`,
         message: `Mission check-in is ${overdueMin}m overdue. The cron may have stalled.`,
         priority: 0,
       });
