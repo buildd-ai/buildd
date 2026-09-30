@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.13.0
+npm i -E @builddai/ai-kit@0.14.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -29,7 +29,7 @@ to npm with provenance and is tagged `ai-kit-v<version>`. See
 | `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
-| `@builddai/ai-kit/surfaces` | Jev orders the app's own chips (`defineRankSurface`), with a code fallback and a confidence gate. Multi-slot `defineSurface` is types only | Rank slot ready |
+| `@builddai/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
 
 ## Model plans
 
@@ -512,7 +512,7 @@ export const CHIPS = defineRankSurface({
   levels: LEVELS,                                   // optional; lowest first
   fallback: state => codeOrder(state),              // always computed: the order when Jev is off or unsure, and the tie-break
   max: 4,
-  mode: 'gated', minConfidence: 0.6,                // or 'shadow' to log only
+  mode: 'shadow',                                   // 'gated' needs gate: gateFromEval(…), below
 });
 
 const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // never throws
@@ -520,7 +520,11 @@ const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // nev
 const chips = CHIPS.resolve(pick.ids);
 ```
 
-- Scores count only when applied (at or above `minConfidence` in `gated`). If
+- Modes are `shadow` and `gated` only (0.14.0): `live` and a hand-typed
+  `minConfidence` are refused. `gated` needs `gate`, from
+  `gateFromEval(await runSurfaceEval({ surface: CHIPS, slot: RANK_SLOT, … }))`,
+  exactly as for `defineSurface` below.
+- Scores count only when applied (at or above the gate's threshold in `gated`). If
   fewer than `minAppliedShare` (default half) of the candidates are applied,
   or the call fails or times out (default 3s), or there is no key, or the
   mode is `shadow`, the fallback order stands, and `reason` says why.
@@ -528,7 +532,71 @@ const chips = CHIPS.resolve(pick.ids);
   fallback order. `rank(state, run)` is the same combination, pure, for tests
   and for replaying logged runs.
 - `CHIPS.decision` is the `/decide` definition: pin it with
-  `expectDecisionPinned` and eval it with `runDecisionEval` before gating.
+  `expectDecisionPinned`.
+
+### Several slots, shadow first: `defineSurface` (0.14.0)
+
+`defineSurface` picks several slots in one Jev call: a `rank` slot (chips, one
+`score` question per candidate) and a `choice` slot (one optional card, a
+`choice` over your labels).
+
+```ts
+import { defineSurface, runSurfaceEval, gateFromEval } from '@builddai/ai-kit/surfaces';
+
+export const EMPTY = defineSurface({
+  id: 'cue.chat_empty',
+  promptVersion: '2026-09-30.a',
+  slots: {
+    chips: { type: 'rank', candidates: CHIPS, question: c => `Offer "${c.label}" now?`, max: 4,
+             default: ['what_needs_me', 'plan_today', 'recap_week', 'start_new'] },
+    card:  { type: 'choice', question: 'Which card belongs above the chips?',
+             labels: { none: 'Nothing is pressing', overdue_items: 'Items are overdue', unread_bills: 'Bills are unread' },
+             default: 'none' },
+  },
+});
+
+const pick = await EMPTY.pick(counts, { apiKey, onUsage, onPick: log => saveShadowRow(log) });
+// pick.slots.chips.ids, pick.slots.card.label: always registered ids and labels
+```
+
+- **Shadow is the default for every slot.** A shadow slot renders its
+  `default`, whatever Jev says. `onPick` receives a `SurfaceLog` on every
+  attempted call: per slot, what rendered, what Jev would have shown, the
+  confidences and whether they agreed. It holds no state. Save it with what
+  the person then tapped; those rows become the eval's labels.
+- No key means no call, the defaults and no log. A failed call renders the
+  defaults and logs `ok: false`. A throwing `onPick` never fails the render.
+- **Gating a slot needs an eval.** `mode: 'gated'` is refused without a
+  `gate`, and a gate comes from `gateFromEval`, which throws below
+  `MIN_GATE_EVAL_ROWS` (700) held-out labelled rows. At 700 the 95% interval
+  on a ~90% accuracy is about ±2.2 points. Rows split by id parity: the
+  threshold is tuned on the even half (the lowest confidence Jev actually
+  produced there at which the answers reach your target accuracy, so never a
+  round number someone typed), then must hold on the odd half, which it never
+  saw. A report holding one half (`split: 'even'` or `'odd'`) is refused:
+
+  ```ts
+  const report = await runSurfaceEval({
+    surface: EMPTY, slot: 'card', rows: labelled, split: 'even-odd',
+    stateOf: r => r.counts, labelOf: r => r.tapped, idOf: r => r.id, run: { apiKey },
+  });
+  const CARD_GATE = gateFromEval(report, { targetAccuracy: 0.95 });   // commit this constant
+  // then: card: { ...card, mode: 'gated', gate: CARD_GATE }
+  ```
+
+  For a rank slot, `labelOf(row, candidateId)` returns the level index the
+  candidate deserved, or `undefined` to leave it unlabelled.
+- **Review the gate constant like code.** A `SlotGate` is a plain object, so
+  one can be typed by hand; the check is the reviewed diff that adds it, with
+  the eval output it came from. Never commit the labelled rows to a public repo.
+- The gate is bound to `slotFingerprint(slot)`: the slot's questions,
+  candidates, levels, labels and the model, not its mode. Change any of them
+  and the gated surface no longer defines until you re-run the eval. Slots
+  gate independently: the card can be gated while the chips stay in shadow.
+- A gated choice applies Jev's label at or above the gate; a gated rank slot
+  sorts by the applied scores if at least `minAppliedShare` (default half) of
+  the candidates are applied, filling from `default`. Otherwise `default`, and
+  `reason` says why.
 
 ## Theming
 

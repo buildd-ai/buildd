@@ -544,6 +544,7 @@ Each phase ships on its own and leaves the others working.
 
 **P7: surfaces.**
 - `defineSurface` for empty-state chips and one optional card, first in shadow on Cue and the moa dashboards, then gated after an eval.
+- **Kit side (kit 0.14.0):** `defineSurface` with `rank` and `choice` slots in one call, every slot shadow by default with `onPick` logging Jev's would-be pick; `runSurfaceEval` and `gateFromEval`, which refuses below `MIN_GATE_EVAL_ROWS` (700) held-out rows and binds the gate to the slot's fingerprint. The Cue and moa wiring lives in those repos.
 - AC:
   - In shadow, the rendered chips are always `default` and the Jev pick is logged.
   - Gating a slot requires an eval of at least ~700 labelled rows, not a round number.
