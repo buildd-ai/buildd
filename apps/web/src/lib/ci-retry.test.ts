@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildCIRetryTask } from './ci-retry';
+import { buildCIRetryTask, summarizePrFixAttempts } from './ci-retry';
 
 const baseParams = {
   originalTask: {
@@ -297,5 +297,40 @@ describe('green means the PR\'s checks, not the local run', () => {
 
   it('does not let a passing local check stand in for the PR\'s checks', () => {
     expect(make(0).description).toMatch(/local run[\s\S]*is not enough/i);
+  });
+});
+
+describe('summarizePrFixAttempts', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: 'r', status: 'completed', creationSource: 'webhook', outputRequirement: null,
+    ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T00:00:00Z', ...over,
+  });
+
+  it('reports a pending or running fix attempt as in flight', () => {
+    expect(summarizePrFixAttempts([row({ id: 'a', status: 'pending' })], 42).inFlight?.id).toBe('a');
+    expect(summarizePrFixAttempts([row({ id: 'b', status: 'in_progress', ciRetryPrNumber: null })], 42).inFlight?.id).toBe('b');
+    expect(summarizePrFixAttempts([row({ status: 'completed' }), row({ status: 'failed' })], 42).inFlight).toBeNull();
+  });
+
+  it('counts only agent-authored automatic CI retries', () => {
+    const { ciRetriesUsed } = summarizePrFixAttempts([
+      row({ id: '1' }),
+      row({ id: '2', status: 'failed' }),
+      row({ id: 'foreign', context: { foreign_head_sha: true } }),
+      row({ id: 'drift', outputRequirement: 'artifact_required' }),
+      row({ id: 'review-fix', ciRetryPrNumber: null }),
+      row({ id: 'other-pr', ciRetryPrNumber: 7 }),
+    ], 42);
+    expect(ciRetriesUsed).toBe(2);
+  });
+
+  it('a manual Fix CI click starts a fresh budget', () => {
+    const { ciRetriesUsed } = summarizePrFixAttempts([
+      row({ id: '1', createdAt: '2026-01-01T00:00:00Z' }),
+      row({ id: '2', createdAt: '2026-01-01T01:00:00Z' }),
+      row({ id: 'manual', creationSource: 'dashboard', createdAt: '2026-01-01T02:00:00Z' }),
+      row({ id: '3', createdAt: '2026-01-01T03:00:00Z' }),
+    ], 42);
+    expect(ciRetriesUsed).toBe(1);
   });
 });
