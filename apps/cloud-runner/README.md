@@ -202,6 +202,7 @@ accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
 | `--remove` | `webhookConfig = null`: clears the dispatch keys (`url`, `token`, `enabled`, `runnerPreference`, `events`); the workspace goes back to Pusher-notified runners (Coder, local). The Worker stays deployed |
 | `--print-token` | Print the `DISPATCH_TOKEN` it set |
 | `--url` | Worker base URL, for a custom domain |
+| `--model-proxy-url <url>` | Route model traffic through your Anthropic-compatible proxy (see Model routes). Also read from `MODEL_PROXY_URL`; the key comes from `MODEL_PROXY_KEY` (required the first time, never printed) and the header from `MODEL_PROXY_AUTH_HEADER`. All three are put as Worker secrets so a later deploy keeps them. A re-run without the flag leaves an existing proxy in place; `bunx wrangler secret delete MODEL_PROXY_URL` goes back to AI Gateway |
 
 A second workspace on an existing Worker needs the current token
 (`DISPATCH_TOKEN=… deploy.ts --workspace other`) or `--rotate`: the token
@@ -226,7 +227,7 @@ registers `ctx.container.interceptOutboundHttps(host, ctx.exports.EgressHandler(
 
 | Host | What the handler does |
 |---|---|
-| `api.anthropic.com` | Rewrites to `https://gateway.ai.cloudflare.com/v1/<AI_GATEWAY_ACCOUNT_ID>/<AI_GATEWAY_ID>/anthropic/...` and sets `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`. The Anthropic key lives in AI Gateway (BYOK) or Unified Billing. Unconfigured: `503`, never forwarded with the placeholder |
+| `api.anthropic.com` | Forwarded per the model route below (AI Gateway, your proxy, or local-only direct), with that route's credential. Unconfigured: `503`, never forwarded with the placeholder |
 | `github.com` | `/<owner>/<repo>[.git]/...` of the task's repo: `Authorization: Basic base64(x-access-token:<token>)` (git over HTTPS) |
 | `api.github.com`, `uploads.github.com` | `/repos/<owner>/<repo>/...` of the task's repo, and `api.github.com/graphql`: `Authorization: Bearer <token>` |
 | `codeload.github.com`, and any other path on the hosts above | Nothing added |
@@ -238,6 +239,37 @@ container sent in `authorization`, `proxy-authorization`, `x-api-key`,
 only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
+
+### Model routes
+
+`resolveModelRoute` in `src/outbound.ts` picks one, in this order:
+
+| Route | Selected when | Forwarded to | Credential added |
+|---|---|---|---|
+| `direct` | `ALLOW_DIRECT_ANTHROPIC=1` and `ANTHROPIC_DIRECT_API_KEY` (**local development only**) | `https://api.anthropic.com/...` unchanged | `x-api-key: <ANTHROPIC_DIRECT_API_KEY>` |
+| `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
+| `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
+
+If none applies, model requests get `503`.
+
+**Proxy** is any service that speaks the Anthropic Messages API, such as a
+LiteLLM proxy. The handler appends the container's path, so point
+`MODEL_PROXY_URL` at the base Claude Code would use as `ANTHROPIC_BASE_URL`:
+`https://litellm.example.com` for LiteLLM's unified `/v1/messages`, or
+`https://litellm.example.com/anthropic` if you use its Anthropic pass-through
+route. LiteLLM accepts its virtual or master key in either header. Rules:
+
+- Setting `MODEL_PROXY_URL` commits to the proxy. It wins over a fully
+  configured gateway, and if it is invalid or `MODEL_PROXY_KEY` is missing the
+  request is refused with `503`; it never falls back to the gateway.
+- `MODEL_PROXY_URL` must be `https:` (plain `http:` only for `localhost`,
+  `127.0.0.1` and `host.docker.internal`), with no userinfo, query or
+  fragment. A trailing slash is dropped. Any port is allowed.
+- The container's `authorization`, `x-api-key` and the other credential
+  headers are deleted first, as for every route. The proxy key and URL stay in
+  the Worker; the container never receives `MODEL_PROXY_*`.
+- `MODEL` (a Worker var passed to the container) picks the model. With a
+  proxy, set it to a model name or alias your proxy serves.
 
 **GitHub token.** Minted by buildd, not the Worker: the App key stays in one
 place. On the container's first GitHub request (after the claim; the clone
@@ -265,8 +297,11 @@ be path-scoped and relies on the token's own scope.
 
 | Name | Kind | Required | Notes |
 |---|---|---|---|
-| `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` | var | yes, for model calls | Cloudflare account and gateway ids |
-| `AI_GATEWAY_TOKEN` | secret | yes, for model calls | AI Gateway authentication token |
+| `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` | var | for the gateway route | Cloudflare account and gateway ids |
+| `AI_GATEWAY_TOKEN` | secret | for the gateway route | AI Gateway authentication token |
+| `MODEL_PROXY_URL` | var (or secret) | no | Anthropic-compatible proxy base URL. Set: the proxy route, over the gateway |
+| `MODEL_PROXY_KEY` | secret | with `MODEL_PROXY_URL` | The proxy's key |
+| `MODEL_PROXY_AUTH_HEADER` | var (or secret) | no | `authorization` (default, Bearer) or `x-api-key` |
 | `ALLOW_DIRECT_ANTHROPIC` | var | no | **Local development only.** `1` together with `ANTHROPIC_DIRECT_API_KEY` sends model traffic straight to Anthropic with that key instead of the gateway. Default off. Never set it on a deployed Worker |
 | `ANTHROPIC_DIRECT_API_KEY` | secret | no | **Local development only**, see above. Ignored unless `ALLOW_DIRECT_ANTHROPIC=1` |
 | `DISPATCH_TOKEN` | secret | yes | Also authenticates the GitHub token request |
@@ -279,4 +314,5 @@ for phase 1: roles that need MCP connectors or role env secrets run without
 them on the cloud runner.
 
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
-"egress rewrite" step.
+"egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy
+configured alongside the gateway and checks that the proxy wins.

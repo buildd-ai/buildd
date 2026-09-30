@@ -3,8 +3,8 @@ import type { WorkerAgent } from './worker-agent';
 
 /**
  * Worker bindings, vars and secrets. See README.md for which is which.
- * Secrets: DISPATCH_TOKEN, BUILDD_API_KEY, AI_GATEWAY_TOKEN and (local only)
- * ANTHROPIC_DIRECT_API_KEY. Everything else is a plain var. The egress
+ * Secrets: DISPATCH_TOKEN, BUILDD_API_KEY, AI_GATEWAY_TOKEN or MODEL_PROXY_KEY,
+ * and (local only) ANTHROPIC_DIRECT_API_KEY. Everything else is a plain var. The egress
  * settings are in EgressEnv (outbound.ts).
  */
 export interface Env extends EgressEnv {
@@ -19,6 +19,7 @@ export interface Env extends EgressEnv {
   BUILDD_API_KEY?: string;
   /** buildd base URL. Required: the runner would otherwise default to production. */
   BUILDD_SERVER?: string;
+  /** Model passed to the container's runner. With a proxy, a model name or alias the proxy serves. */
   MODEL?: string;
   PUSHER_KEY?: string;
   PUSHER_CLUSTER?: string;

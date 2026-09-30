@@ -4,7 +4,7 @@
  *
  *   bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…]
  *       [--rotate] [--remove] [--dry-run] [--server <buildd url>] [--worker-server <url>]
- *       [--url <worker base url>] [--print-token]
+ *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>]
  *
  * Env:
  *   BUILDD_API_KEY         admin-level buildd API key (reads the workspace, sets its webhook,
@@ -17,6 +17,10 @@
  *                          is fetched with the admin key
  *   DISPATCH_TOKEN         optional; the existing token, to point another workspace at a
  *                          Worker that is already deployed
+ *   MODEL_PROXY_URL        optional (--model-proxy-url wins); route model traffic through an
+ *                          Anthropic-compatible proxy such as LiteLLM instead of AI Gateway
+ *   MODEL_PROXY_KEY        the proxy's key; required with a new proxy URL. Never printed
+ *   MODEL_PROXY_AUTH_HEADER  optional; authorization (default, Bearer) or x-api-key
  *
  * The decisions live in src/deploy-plan.ts (tested); this file only observes
  * and executes. Re-running is safe: see planDeploy for what changes when.
@@ -39,11 +43,12 @@ interface Args {
   server?: string;
   workerServer?: string;
   url?: string;
+  modelProxyUrl?: string;
 }
 
 function parseArgs(argv: string[]): Args {
   const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false };
-  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url']);
+  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url']);
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (takesValue.has(k)) {
@@ -54,6 +59,7 @@ function parseArgs(argv: string[]): Args {
       if (k === '--server') a.server = v;
       if (k === '--worker-server') a.workerServer = v;
       if (k === '--url') a.url = v;
+      if (k === '--model-proxy-url') a.modelProxyUrl = v;
     } else if (k === '--rotate') a.rotate = true;
     else if (k === '--remove') a.remove = true;
     else if (k === '--dry-run') a.dryRun = true;
@@ -69,7 +75,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 function readUsage(): string {
-  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token]';
+  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>]';
 }
 
 function die(msg: string): never {
@@ -128,6 +134,7 @@ function wranglerEnv(cf: { apiToken: string; accountId: string }): Record<string
   // The runner key and admin key are for this script, not wrangler.
   delete env.BUILDD_API_KEY;
   delete env.BUILDD_RUNNER_API_KEY;
+  delete env.MODEL_PROXY_KEY;
   return env;
 }
 
@@ -196,6 +203,11 @@ async function main() {
     runnerApiKey: runnerKey,
     providedDispatchToken: process.env.DISPATCH_TOKEN || undefined,
     generatedDispatchToken: randomBytes(32).toString('base64url'),
+    modelProxy: {
+      url: args.modelProxyUrl ?? process.env.MODEL_PROXY_URL,
+      key: process.env.MODEL_PROXY_KEY,
+      authHeader: process.env.MODEL_PROXY_AUTH_HEADER,
+    },
   });
 
   console.log(`${args.dryRun ? 'plan (dry run, nothing changed)' : 'plan'}:`);

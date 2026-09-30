@@ -2,6 +2,11 @@
 # Local smoke for the dispatcher Worker + WorkerAgent on local Docker.
 #
 #   bash apps/cloud-runner/scripts/local-smoke.sh
+#   SMOKE_MODEL_ROUTE=proxy bash apps/cloud-runner/scripts/local-smoke.sh
+#
+# SMOKE_MODEL_ROUTE=proxy also sets MODEL_PROXY_URL/MODEL_PROXY_KEY (to a
+# dummy https://litellm.example.com/anthropic) alongside the gateway vars, and
+# checks that model traffic goes to the proxy instead: the proxy route wins.
 #
 # Runs `wrangler dev` (which builds apps/runner/Dockerfile.once for
 # linux/amd64 and runs the container on local Docker), dispatches a random
@@ -31,6 +36,15 @@ HOST_ADDR="${SMOKE_HOST_ADDR:-host.docker.internal}"
 EGRESS_TASK="$TASK-egress"
 EGRESS_HOLD_S="${EGRESS_HOLD_S:-90}"
 GW_TOKEN="smoke-gateway-token-$RANDOM$RANDOM"
+MODEL_ROUTE="${SMOKE_MODEL_ROUTE:-gateway}"
+PROXY_BASE="https://litellm.example.com/anthropic"
+PROXY_KEY="smoke-proxy-key-$RANDOM$RANDOM"
+proxy_vars=()
+case "$MODEL_ROUTE" in
+  gateway) ;;
+  proxy) proxy_vars=(--var "MODEL_PROXY_URL:$PROXY_BASE/" --var "MODEL_PROXY_KEY:$PROXY_KEY") ;;
+  *) echo "SMOKE_MODEL_ROUTE must be gateway or proxy"; exit 2 ;;
+esac
 fail=0
 
 cd "$DIR"
@@ -44,7 +58,7 @@ EGRESS_TASK="$EGRESS_TASK" EGRESS_HOLD_S="$EGRESS_HOLD_S" FAKE_PORT="$FAKE_PORT"
 ' >"$LOG.fake" 2>&1 &
 FAKE_PID=$!
 
-echo "== wrangler dev on :$PORT (log: $LOG)"
+echo "== wrangler dev on :$PORT, model route $MODEL_ROUTE (log: $LOG)"
 bunx wrangler dev --port "$PORT" --ip 127.0.0.1 \
   --var "DISPATCH_TOKEN:$TOKEN" \
   --var "BUILDD_API_KEY:bld_smoke_not_a_real_key" \
@@ -54,6 +68,7 @@ bunx wrangler dev --port "$PORT" --ip 127.0.0.1 \
   --var "AI_GATEWAY_ID:smokegw" \
   --var "AI_GATEWAY_TOKEN:$GW_TOKEN" \
   --var "EGRESS_DEBUG_ECHO:1" \
+  ${proxy_vars[@]+"${proxy_vars[@]}"} \
   >"$LOG" 2>&1 &
 WRANGLER_PID=$!
 # The Worker's containers and wrangler's egress proxy sidecar are named
@@ -154,6 +169,7 @@ else
   cenv="$(docker exec "$c" cat /proc/1/environ | tr '\0' '\n')"
   check "container env has the cloud marker" cloud "$(printf '%s\n' "$cenv" | sed -n 's/^BUILDD_EXECUTOR=//p')"
   check "container env holds no gateway token" 0 "$(printf '%s\n' "$cenv" | grep -c -F "$GW_TOKEN" || true)"
+  check "container env holds no proxy key or proxy settings" 0 "$(printf '%s\n' "$cenv" | grep -c -e "$PROXY_KEY" -e '^MODEL_PROXY_' || true)"
   check "container env holds no GitHub token" 0 "$(printf '%s\n' "$cenv" | grep -c -E '^(GH_TOKEN|GITHUB_TOKEN)=' || true)"
   check "CA bundle built by buildd-once" yes "$(docker exec "$c" sh -c 'test -s /tmp/buildd-ca-bundle.pem && echo yes || echo no')"
 
@@ -162,15 +178,25 @@ else
         -H 'x-api-key: sk-ant-container-supplied' -H 'authorization: Bearer container-supplied' \
         -H 'content-type: application/json' https://api.anthropic.com/v1/messages?beta=true -d '{}' 2>&1)"
   echo "   anthropic echo: $a"
-  check "anthropic -> AI Gateway URL" "https://gateway.ai.cloudflare.com/v1/smokeacct/smokegw/anthropic/v1/messages?beta=true" "$(echo_field "$a" url)"
-  check "gateway credential set (by fingerprint)" "$(fp "Bearer $GW_TOKEN")" "$(echo_field "$a" headers.cf-aig-authorization)"
-  check "container x-api-key stripped" "" "$(echo_field "$a" headers.x-api-key)"
-  check "container authorization stripped" "" "$(echo_field "$a" headers.authorization)"
+  if [ "$MODEL_ROUTE" = proxy ]; then
+    MODEL_URL="$PROXY_BASE/v1/messages"
+    check "anthropic -> proxy URL (proxy wins over the gateway)" "$MODEL_URL?beta=true" "$(echo_field "$a" url)"
+    check "injected" proxy "$(echo_field "$a" injected)"
+    check "proxy credential set as Authorization: Bearer (by fingerprint)" "$(fp "Bearer $PROXY_KEY")" "$(echo_field "$a" headers.authorization)"
+    check "no gateway credential sent to the proxy" "" "$(echo_field "$a" headers.cf-aig-authorization)"
+    check "container x-api-key stripped" "" "$(echo_field "$a" headers.x-api-key)"
+  else
+    MODEL_URL="https://gateway.ai.cloudflare.com/v1/smokeacct/smokegw/anthropic/v1/messages"
+    check "anthropic -> AI Gateway URL" "$MODEL_URL?beta=true" "$(echo_field "$a" url)"
+    check "gateway credential set (by fingerprint)" "$(fp "Bearer $GW_TOKEN")" "$(echo_field "$a" headers.cf-aig-authorization)"
+    check "container x-api-key stripped" "" "$(echo_field "$a" headers.x-api-key)"
+    check "container authorization stripped" "" "$(echo_field "$a" headers.authorization)"
+  fi
 
   # Bun (the runner, and Claude Code) trusting the CA through NODE_EXTRA_CA_CERTS.
   b="$(docker exec -e NODE_EXTRA_CA_CERTS=/etc/cloudflare/certs/cloudflare-containers-ca.crt "$c" \
         bun -e 'const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"x-api-key":"sk-ant-container-supplied"},body:"{}"}); console.log(await r.text())' 2>&1)"
-  check "bun fetch reaches the handler via NODE_EXTRA_CA_CERTS" "https://gateway.ai.cloudflare.com/v1/smokeacct/smokegw/anthropic/v1/messages" "$(echo_field "$b" url)"
+  check "bun fetch reaches the handler via NODE_EXTRA_CA_CERTS" "$MODEL_URL" "$(echo_field "$b" url)"
 
   # GitHub: no grant (the fake buildd refuses the token request), so container
   # auth is stripped and nothing is added.
