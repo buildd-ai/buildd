@@ -6,6 +6,7 @@ const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockSecretsFindFirst = mock(() => null as any);
 const mockVerifyClaudeCredential = mock(() => Promise.resolve({ ok: true }) as any);
 const mockVerifyCodexCredential = mock(() => Promise.resolve({ ok: true }) as any);
+const mockVerifyCloudflareCredential = mock(() => Promise.resolve({ verified: true, error: null }) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
@@ -14,6 +15,7 @@ mock.module('@/lib/codex-credential', () => ({
   getCodexSecretId: mock(() => Promise.resolve(null)),
   verifyCodexCredential: mockVerifyCodexCredential,
 }));
+mock.module('@/lib/cloudflare-credential', () => ({ verifyCloudflareCredential: mockVerifyCloudflareCredential }));
 mock.module('@buildd/core/db', () => ({
   db: { query: { secrets: { findFirst: mockSecretsFindFirst } } },
 }));
@@ -67,5 +69,21 @@ describe('POST /api/secrets/[id]/verify', () => {
     const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
     expect(res.status).toBe(200);
     expect(mockVerifyClaudeCredential).toHaveBeenCalledWith(SECRET_ID);
+  });
+
+  it('verifies a cloudflare_token credential', async () => {
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'cloudflare_token' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(200);
+    expect(mockVerifyCloudflareCredential).toHaveBeenCalledWith(SECRET_ID);
+    expect(await res.json()).toEqual({ verified: true, error: null });
+  });
+
+  it('refuses to verify another team\'s cloudflare_token', async () => {
+    mockVerifyCloudflareCredential.mockClear();
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-2', purpose: 'cloudflare_token' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(403);
+    expect(mockVerifyCloudflareCredential).not.toHaveBeenCalled();
   });
 });

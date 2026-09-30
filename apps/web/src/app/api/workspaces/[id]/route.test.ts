@@ -639,6 +639,8 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['accessMode', { accessMode: 'restricted' }],
     ['dataClass', { dataClass: 'standard' }],
     ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
+    ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
+    ['webhookConfig (clear)', { webhookConfig: null }],
   ];
 
   let updateCalled = false;
@@ -738,6 +740,75 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     expect(res.status).toBe(200);
     expect(capturedUpdates.accessMode).toBe('restricted');
   });
+});
+
+// The cloud runner's deploy script (apps/cloud-runner/scripts/deploy.ts) points
+// a workspace at its dispatcher Worker with an admin API key, and --remove sets
+// it back to null. The session-only POST /webhook form route stays as it is.
+describe('PATCH /api/workspaces/[id] — webhookConfig', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkspacesUpdate.mockReset();
+    capturedUpdates = {};
+    process.env.NODE_ENV = 'production';
+    mockWorkspacesUpdate.mockReturnValue({
+      set: mock((updates: Record<string, unknown>) => {
+        capturedUpdates = updates;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  const patch = (body: unknown) =>
+    PATCH(createMockRequest({ method: 'PATCH', body, headers: { authorization: 'Bearer bld_k' } }), { params: mockParams });
+
+  it('sets a dispatch webhook', async () => {
+    const res = await patch({ webhookConfig: { url: 'https://runner.example/dispatch', token: 'tok', enabled: true } });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.webhookConfig).toEqual({ url: 'https://runner.example/dispatch', token: 'tok', enabled: true });
+  });
+
+  it('keeps runnerPreference when valid', async () => {
+    await patch({ webhookConfig: { url: 'https://r.example/dispatch', token: 't', enabled: true, runnerPreference: 'service' } });
+    expect(capturedUpdates.webhookConfig).toMatchObject({ runnerPreference: 'service' });
+  });
+
+  it('clears it with null', async () => {
+    const res = await patch({ webhookConfig: null });
+    expect(res.status).toBe(200);
+    expect(capturedUpdates).toHaveProperty('webhookConfig', null);
+  });
+
+  it('never echoes the token back', async () => {
+    const res = await patch({ webhookConfig: { url: 'https://r.example/dispatch', token: 'secret-token', enabled: true } });
+    expect(JSON.stringify(await res.json())).not.toContain('secret-token');
+  });
+
+  const BAD: Array<[string, unknown]> = [
+    ['a string', 'https://r.example'],
+    ['no url', { token: 't', enabled: true }],
+    ['a non-http url', { url: 'ftp://r.example/x', token: 't', enabled: true }],
+    ['an unparseable url', { url: 'not a url', token: 't', enabled: true }],
+    ['a non-boolean enabled', { url: 'https://r.example/d', token: 't', enabled: 'true' }],
+    ['enabled with no token', { url: 'https://r.example/d', enabled: true }],
+    ['an unknown runnerPreference', { url: 'https://r.example/d', token: 't', enabled: true, runnerPreference: 'cloud' }],
+  ];
+  for (const [label, webhookConfig] of BAD) {
+    it(`rejects ${label} (400, nothing written)`, async () => {
+      const res = await patch({ webhookConfig });
+      expect(res.status).toBe(400);
+      expect(capturedUpdates).not.toHaveProperty('webhookConfig');
+    });
+  }
 });
 
 describe('PATCH /api/workspaces/[id] — moving a workspace to another team', () => {

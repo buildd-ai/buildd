@@ -387,3 +387,99 @@ describe('POST /api/secrets never creates a personal row', () => {
     expect(meta.userId ?? null).toBeNull();
   });
 });
+
+// Cloudflare API token for the cloud runner: a JSON blob, validated before it
+// is encrypted, stored team-wide, and only by a team owner/admin (it can deploy
+// code to the team's Cloudflare account).
+describe('POST /api/secrets (cloudflare_token)', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const TOKEN = 'cf_test_token_not_real_000000000000000000';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    mockSecretsReplaceScoped.mockResolvedValue('secret-cf');
+  });
+
+  it('stores a normalized JSON value team-wide', async () => {
+    const value = JSON.stringify({ apiToken: ` "${TOKEN}" `, accountId: ACCOUNT, aiGatewayId: 'buildd', junk: 1 });
+    const res = await POST(createPostRequest({ value, purpose: 'cloudflare_token' }));
+    expect(res.status).toBe(200);
+    const [stored, meta] = mockSecretsReplaceScoped.mock.calls[0] as any[];
+    expect(JSON.parse(stored)).toEqual({ apiToken: TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' });
+    expect(meta).toMatchObject({ teamId: 'team-1', purpose: 'cloudflare_token' });
+    expect(meta.accountId ?? null).toBeNull();
+    expect(meta.workspaceId ?? null).toBeNull();
+  });
+
+  it('does not echo the token in the response', async () => {
+    const res = await POST(createPostRequest({ value: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }), purpose: 'cloudflare_token' }));
+    expect(JSON.stringify(await res.json())).not.toContain(TOKEN);
+  });
+
+  it('rejects an invalid value without storing it', async () => {
+    const res = await POST(createPostRequest({ value: JSON.stringify({ apiToken: TOKEN, accountId: 'nope' }), purpose: 'cloudflare_token' }));
+    expect(res.status).toBe(400);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('refuses a workspace-scoped row', async () => {
+    const res = await POST(createPostRequest({ value: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }), purpose: 'cloudflare_token', workspaceId: 'ws-1' }));
+    expect(res.status).toBe(400);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-admin team member', async () => {
+    mockGetUserAdminTeamIds.mockResolvedValue([]);
+    const res = await POST(createPostRequest({ value: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }), purpose: 'cloudflare_token' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker-level API key', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-w', teamId: 'team-1', level: 'worker' });
+    const req = new NextRequest('http://localhost:3000/api/secrets', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_x' }),
+      body: JSON.stringify({ value: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT }), purpose: 'cloudflare_token' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('DELETE /api/secrets (cloudflare_token)', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockGetUserAdminTeamIds.mockReset();
+    mockSecretsList.mockReset();
+    mockSecretsDelete.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockSecretsList.mockResolvedValue([{ id: 'sec-cf', purpose: 'cloudflare_token' }]);
+  });
+
+  it('refuses a non-admin member', async () => {
+    mockGetUserAdminTeamIds.mockResolvedValue([]);
+    const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-cf', { method: 'DELETE' }));
+    expect(res.status).toBe(403);
+    expect(mockSecretsDelete).not.toHaveBeenCalled();
+  });
+
+  it('lets a team admin delete it', async () => {
+    mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
+    const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-cf', { method: 'DELETE' }));
+    expect(res.status).toBe(200);
+    expect(mockSecretsDelete).toHaveBeenCalledWith('sec-cf');
+  });
+});

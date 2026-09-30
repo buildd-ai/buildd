@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, githubRepos } from '@buildd/core/db/schema';
+import { workspaces, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -11,6 +11,41 @@ import { mergePolicySchema } from '@/lib/merge-policy';
 import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
+
+const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
+
+/**
+ * Validate a `webhookConfig` PATCH value: `null` clears it (the workspace goes
+ * back to Pusher-notified runners), an object sets it whole. Only the known
+ * keys are kept.
+ */
+function parseWebhookConfigInput(raw: unknown): { ok: true; value: WorkspaceWebhookConfig | null } | { ok: false; error: string } {
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'webhookConfig must be an object or null' };
+  const c = raw as Record<string, unknown>;
+  if (typeof c.url !== 'string') return { ok: false, error: 'webhookConfig.url is required' };
+  let url: URL;
+  try {
+    url = new URL(c.url);
+  } catch {
+    return { ok: false, error: 'webhookConfig.url must be a valid URL' };
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { ok: false, error: 'webhookConfig.url must be http(s)' };
+  }
+  if (typeof c.enabled !== 'boolean') return { ok: false, error: 'webhookConfig.enabled must be a boolean' };
+  if (c.token !== undefined && typeof c.token !== 'string') return { ok: false, error: 'webhookConfig.token must be a string' };
+  const token = (c.token as string | undefined) ?? '';
+  if (c.enabled && !token) return { ok: false, error: 'webhookConfig.token is required when enabled' };
+  const value: WorkspaceWebhookConfig = { url: c.url, token, enabled: c.enabled };
+  if (c.runnerPreference !== undefined) {
+    if (typeof c.runnerPreference !== 'string' || !RUNNER_PREFERENCES.has(c.runnerPreference)) {
+      return { ok: false, error: `webhookConfig.runnerPreference must be one of: ${[...RUNNER_PREFERENCES].join(', ')}` };
+    }
+    value.runnerPreference = c.runnerPreference as WorkspaceWebhookConfig['runnerPreference'];
+  }
+  return { ok: true, value };
+}
 
 /** Where a team change goes instead of PATCH: the checked move's dry run. */
 const MOVE_PRECHECK_ENDPOINT = '/api/workspaces/[id]/migrate/precheck';
@@ -108,7 +143,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass,
-      gitConfig, maxConcurrentTasks, connectorAdvisoryMode,
+      gitConfig, maxConcurrentTasks, connectorAdvisoryMode, webhookConfig,
     } = body;
 
     // A workspace changes team only through the checked move: POST
@@ -131,7 +166,9 @@ export async function PATCH(
     // workspace's team for a session (the bar POST /config sets for
     // sessions), plus an admin-level API key. Checked before any write so a
     // mixed body is all-or-nothing.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode]
+    // webhookConfig decides where the workspace's tasks are sent (and carries
+    // the bearer token for it), so it is an admin setting too.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -145,6 +182,12 @@ export async function PATCH(
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
     };
+
+    if (webhookConfig !== undefined) {
+      const parsed = parseWebhookConfigInput(webhookConfig);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      updates.webhookConfig = parsed.value;
+    }
 
     if (name !== undefined) updates.name = name;
     // Accept both "repo" and "repoUrl" for convenience

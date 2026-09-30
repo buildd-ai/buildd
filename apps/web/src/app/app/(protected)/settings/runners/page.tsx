@@ -1,6 +1,7 @@
 import SettingsPage from '../_components/SettingsPage';
 import AgentBackendsSection from '../AgentBackendsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
+import CloudflareSection from '../CloudflareSection';
 import { loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,7 @@ export default async function RunnersSettingsPage() {
     >
       <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
       <RunnerTokensSection accounts={accounts} workspaces={workspaces} />
+      <CloudflareSection teams={teams.map((t) => ({ id: t.id, name: t.name }))} />
     </SettingsPage>
   );
 }
