@@ -331,6 +331,15 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   A team **LiteLLM gateway** (`packages/core/litellm-gateway.ts`) is the fallback
   after the provider's own key (and, for chat, OpenRouter): the same model as
   `provider/model` on the proxy's OpenAI-compatible API.
+- **Agent model endpoint** — one `secrets` row, purpose `agent_endpoint`
+  (`packages/core/agent-endpoint.ts`, team-wide or one workspace): where
+  runner-spawned agents send model traffic (the team gateway, OpenRouter, or any
+  Anthropic-compatible URL). Ranked against the Anthropic key, OAuth seat and
+  Claude credential in one precedence: the most specific scope wins, a tie goes
+  to the endpoint, and only the winner is delivered. Host runners get it on the
+  claim (`modelEndpoint`, stripped from cloud claims); the cloud dispatcher
+  fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
+  `LLM_PROVIDER` still wins. Endpoint runs are metered.
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).

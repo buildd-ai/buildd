@@ -319,6 +319,7 @@ hosts are refused (`403`). Upstream redirects are returned to the container
 |---|---|---|---|
 | `direct` | `ALLOW_DIRECT_ANTHROPIC=1` and `ANTHROPIC_DIRECT_API_KEY` (**local development only**) | `https://api.anthropic.com/...` unchanged | `x-api-key: <ANTHROPIC_DIRECT_API_KEY>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
+| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's agent model endpoint for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
@@ -341,6 +342,20 @@ route. LiteLLM accepts its virtual or master key in either header. Rules:
   the Worker; the container never receives `MODEL_PROXY_*`.
 - `MODEL` (a Worker var passed to the container) picks the model. With a
   proxy, set it to a model name or alias your proxy serves.
+
+**Team endpoint.** The Worker asks buildd (`POST /api/runner/model-endpoint`,
+runner API key plus `DISPATCH_TOKEN`, like the GitHub token) on the task's
+first model request, only when neither `direct` nor `MODEL_PROXY_URL`
+applies. It is held in the `WorkerAgent`'s memory for the run: never in agent
+storage and never in the container env. A `404` means the team has none (or
+the task's own Anthropic credential outranks it) and egress falls through to
+AI Gateway. Any other failure, or a `401`/`403` from the endpoint, refuses
+model requests (`503`) for a short backoff and then asks again, so a rotated
+key takes effect mid-run and a buildd outage never silently moves spend to the
+gateway. `MODEL_PROXY_URL` stays the operator override: it pins the Worker to
+one proxy whatever team claims through it. Model aliases are not applied on
+this route: the container sends the claim's native model ids (design open
+question 2).
 
 **GitHub token.** Minted by buildd, not the Worker: the App key stays in one
 place. On the container's first GitHub request (after the claim; the clone

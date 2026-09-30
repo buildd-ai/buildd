@@ -10,6 +10,7 @@ import { useSearchParams } from 'next/navigation';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
 import GatewayAndDecisionModel from './GatewayAndDecisionModel';
+import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
 
 export interface ChatAvailabilityProp {
   available: boolean;
@@ -21,10 +22,12 @@ export interface ChatAvailabilityProp {
  * keys live: status, scope, last check, Test / Replace / Remove, and whose key
  * server-side AI spends. Keys never come back beyond last4.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, availability }: {
+export default function ModelProvidersClient({ teamId, isAdmin, availability, workspaces = [] }: {
   teamId: string;
   isAdmin: boolean;
   availability: ChatAvailabilityProp;
+  /** The team's workspaces, for the agent endpoint's scope selector. */
+  workspaces?: EndpointWorkspace[];
 }) {
   const [view, setView] = useState<ProviderKeysView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +101,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability }: 
       )}
 
       <GatewayAndDecisionModel teamId={teamId} canManage={canManage} />
+
+      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} />
 
     </div>
   );

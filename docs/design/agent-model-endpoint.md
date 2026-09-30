@@ -1,6 +1,6 @@
 # One agent model endpoint for host and cloud runners
 
-**Status:** Proposed
+**Status:** Implemented (task `6da66631`)
 **Related:** `docs/credentials-architecture.md`, `packages/core/litellm-gateway.ts`, `packages/core/secrets/types.ts`, `packages/core/db/schema.ts` (`secrets`), `packages/shared/src/executor.ts` (`CLAIM_CREDENTIAL_FIELDS`), `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`, `apps/web/src/app/api/runner/github-token/route.ts`, `apps/web/src/lib/credential-health.ts`, `apps/web/src/lib/chat/models.ts`, `apps/web/src/lib/chat/openrouter-id.ts`, `packages/ai-kit/src/models/call-config.ts` (`gatewayModel`), `packages/core/model-tier-defaults.ts`, `apps/runner/src/index.ts` (`buildProviderConfig`), `apps/runner/src/workers.ts`, `apps/runner/src/prompt-builder.ts` (`resolveSessionModel`), `apps/cloud-runner/src/outbound.ts` (`resolveModelRoute`), `apps/cloud-runner/src/egress.ts`, `apps/web/src/app/app/(protected)/settings/providers/`, `docs/design/cloudflare-sandbox-runner.md`
 
 ---
