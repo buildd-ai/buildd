@@ -215,6 +215,88 @@ describe('command_output evidence (AC-2)', () => {
   });
 });
 
+describe('confirming an upload', () => {
+  function confirmDeps(over: Record<string, any> = {}) {
+    const confirms: Array<{ workerId: string; evidenceId: string }> = [];
+    const { deps, puts } = makeDeps({
+      requestEvidenceUploadUrl: async (_w: string, req: { kind: string; seq: number }) =>
+        ({ uploadUrl: `https://bucket.example/put/${req.seq}`, key: `k/${req.seq}`, evidenceId: `ev-${req.seq}` }),
+      confirmEvidenceUpload: async (workerId: string, evidenceId: string) => { confirms.push({ workerId, evidenceId }); return true; },
+      ...over,
+    });
+    return { deps, puts, confirms };
+  }
+
+  test('confirms the evidence id after a 2xx PUT', async () => {
+    const order: string[] = [];
+    const { deps, confirms } = confirmDeps({
+      put: async () => { order.push('put'); return true; },
+      confirmEvidenceUpload: async (workerId: string, evidenceId: string) => { order.push('confirm'); confirms.push({ workerId, evidenceId }); return true; },
+    });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['uploaded']);
+    expect(confirms).toEqual([{ workerId: WORKER_ID, evidenceId: 'ev-0' }]);
+    expect(order).toEqual(['put', 'confirm']);
+  });
+
+  test('confirms the session-end test report too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evidence-confirm-'));
+    try {
+      writeFileSync(join(dir, TEST_REPORT_PATHS[0]), '(fail) a > b\n');
+      const { deps, confirms } = confirmDeps();
+      expect(await makeWriter(deps).writeTestReport(dir)).toBe('uploaded');
+      expect(confirms.map(c => c.evidenceId)).toEqual(['ev-0']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not confirm after a rejected or throwing PUT', async () => {
+    for (const put of [async () => false, async () => { throw new Error('reset'); }]) {
+      const { deps, confirms } = confirmDeps({ put });
+      const writer = makeWriter(deps);
+      writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+      expect(await writer.drain()).toEqual(['failed']);
+      expect(confirms).toEqual([]);
+    }
+  });
+
+  test('does not confirm when the server declined to sign', async () => {
+    const { deps, confirms } = confirmDeps({ requestEvidenceUploadUrl: async () => null });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['skipped']);
+    expect(confirms).toEqual([]);
+  });
+
+  test('a failed or throwing confirm is best-effort: the upload still counts, nothing throws', async () => {
+    for (const confirmEvidenceUpload of [
+      async () => false,
+      async () => { throw new Error('network down'); },
+      () => { throw new Error('sync throw'); },
+    ]) {
+      const { deps } = confirmDeps({ confirmEvidenceUpload });
+      const writer = makeWriter(deps);
+      expect(() => writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' })).not.toThrow();
+      expect(await writer.drain()).toEqual(['uploaded']);
+    }
+  });
+
+  test('an older server with no evidence id, or a client with no confirm method, still uploads', async () => {
+    const noId = confirmDeps({ requestEvidenceUploadUrl: async () => ({ uploadUrl: 'https://bucket.example/put', key: 'k' }) });
+    const w1 = makeWriter(noId.deps);
+    w1.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await w1.drain()).toEqual(['uploaded']);
+    expect(noId.confirms).toEqual([]);
+
+    const noMethod = confirmDeps({ confirmEvidenceUpload: undefined });
+    const w2 = makeWriter(noMethod.deps);
+    w2.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await w2.drain()).toEqual(['uploaded']);
+  });
+});
+
 describe('test_report evidence', () => {
   test('.test-report.log is the report path', () => {
     expect(TEST_REPORT_PATHS).toContain('.test-report.log');

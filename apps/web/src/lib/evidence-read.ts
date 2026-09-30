@@ -424,39 +424,40 @@ export class EvidenceReadError extends Error {
 export interface OpenDeps {
   client?: Pick<S3Client, 'send'>;
   bucket?: string;
-  /**
-   * Also open a row still marked `pending`. Nothing confirms a runner's PUT, so
-   * the evidence indexer probes the bucket itself; read routes keep the default.
-   */
-  acceptPending?: boolean;
 }
 
 /**
- * The decoded body of one stored object. The backend is the one the row was
- * written to (its `backend_id`), not whatever the workspace resolves to now:
- * a later backend change must not send a read to the wrong bucket.
+ * The client and bucket of the backend the row was written to (its
+ * `backend_id`), not whatever the workspace resolves to now: a later backend
+ * change must not send a read or a HEAD to the wrong bucket.
+ */
+export async function evidenceObjectLocation(row: Pick<EvidenceObjectRow, 'backendId'>):
+  Promise<{ client: Pick<S3Client, 'send'>; bucket: string }> {
+  if (!row.backendId) return { client: getDefaultStorageClient(), bucket: config.storageBucket };
+  const backend = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, row.backendId) });
+  if (!backend) throw new EvidenceReadError('the storage backend this object was written to no longer exists', 410);
+  let client: Pick<S3Client, 'send'>;
+  try {
+    client = await getEvidenceS3Client(backend);
+  } catch (err) {
+    throw new EvidenceReadError(`the storage backend cannot be reached: ${err instanceof Error ? err.message : 'unknown error'}`.slice(0, 300), 502);
+  }
+  return { client, bucket: backend.provider === 'buildd_default' ? config.storageBucket : backend.bucket };
+}
+
+/**
+ * The decoded body of one stored object. Only `stored` rows are opened: a
+ * runner upload is `pending` until it is confirmed (evidence-confirm.ts).
  */
 export async function openEvidenceObject(row: EvidenceObjectRow, deps: OpenDeps = {}): Promise<AsyncGenerator<Uint8Array>> {
-  if (row.uploadState !== 'stored' && !(deps.acceptPending && row.uploadState === 'pending')) {
+  if (row.uploadState !== 'stored') {
     throw new EvidenceReadError(`this evidence object is not readable (upload state: ${row.uploadState})`, 409);
   }
 
   let client = deps.client;
   let bucket = deps.bucket;
   if (!client || !bucket) {
-    if (row.backendId) {
-      const backend = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, row.backendId) });
-      if (!backend) throw new EvidenceReadError('the storage backend this object was written to no longer exists', 410);
-      try {
-        client = await getEvidenceS3Client(backend);
-      } catch (err) {
-        throw new EvidenceReadError(`the storage backend cannot be reached: ${err instanceof Error ? err.message : 'unknown error'}`.slice(0, 300), 502);
-      }
-      bucket = backend.provider === 'buildd_default' ? config.storageBucket : backend.bucket;
-    } else {
-      client = getDefaultStorageClient();
-      bucket = config.storageBucket;
-    }
+    ({ client, bucket } = await evidenceObjectLocation(row));
   }
 
   let body: unknown;

@@ -21,20 +21,24 @@
  *
  * Nothing here changes a task or worker status (invariant 5).
  */
-import { and, asc, eq, inArray, lt, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, lt, or, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, tasks, workspaces } from '@buildd/core/db/schema';
 import { chunkEvidenceLog, type EvidenceChunk } from '@buildd/core/evidence-chunker';
 import { createSecretRedactor } from '@buildd/core/redaction';
 import type { KnowledgeStore, UpsertChunk } from '@buildd/core/knowledge-store';
 import { openEvidenceObject, type EvidenceObjectRow } from './evidence-read';
+import { confirmEvidenceUpload, type EvidenceConfirmResult } from './evidence-confirm';
 import { extractFailureDigest } from './ci-failure-digest';
 
 /** A `failed` row is retried once this long has passed since its last attempt. */
 export const EVIDENCE_INDEX_RETRY_AFTER_MS = 60 * 60 * 1000;
 /**
- * A runner's presigned PUT is valid for 15 minutes and nothing confirms it, so a
- * `pending` row whose object is still missing after this long never arrived.
+ * Reaper grace. A runner confirms its own upload right after the PUT
+ * (`POST /api/workers/[id]/evidence/[evidenceId]/confirm`), and the presigned
+ * PUT expires after 15 minutes. A row still `pending` after this long lost its
+ * confirm (an older runner, a crash, a network error), so the sweep settles it
+ * with the same check the confirm route runs.
  */
 export const PENDING_UPLOAD_GRACE_MS = 60 * 60 * 1000;
 /** Rows per sweep run; the rest wait for the next tick. */
@@ -54,11 +58,12 @@ export interface EvidenceIndexCandidate {
 export type EvidenceRowUpdate = {
   /** `queued` only re-stamps updated_at, so a deferred row goes to the back of the line. */
   indexState: 'indexed' | 'skipped' | 'failed' | 'queued';
-  uploadState?: 'stored' | 'failed';
 };
 
 export interface EvidenceIndexerDeps {
   loadCandidates(limit: number, now: Date): Promise<EvidenceIndexCandidate[]>;
+  /** Settle a stale `pending` row (HEAD on its backend); see evidence-confirm.ts. */
+  confirmUpload(row: EvidenceObjectRow): Promise<EvidenceConfirmResult>;
   openObject(row: EvidenceObjectRow): Promise<AsyncIterable<Uint8Array>>;
   store: Pick<KnowledgeStore, 'upsert'> & Partial<Pick<KnowledgeStore, 'deleteBySource'>>;
   updateRow(id: string, fields: EvidenceRowUpdate): Promise<void>;
@@ -84,14 +89,21 @@ export interface EvidenceIndexSweepResult {
 
 /** Rows the sweep picks up. Exported so the predicate can be asserted as rendered SQL. */
 export function evidenceIndexCandidateWhere(now: Date): SQL {
-  return and(
-    inArray(evidenceObjects.uploadState, ['pending', 'stored']),
-    or(
-      eq(evidenceObjects.indexState, 'queued'),
-      and(
-        eq(evidenceObjects.indexState, 'failed'),
-        lt(evidenceObjects.updatedAt, new Date(now.getTime() - EVIDENCE_INDEX_RETRY_AFTER_MS)),
+  return or(
+    and(
+      eq(evidenceObjects.uploadState, 'stored'),
+      or(
+        eq(evidenceObjects.indexState, 'queued'),
+        and(
+          eq(evidenceObjects.indexState, 'failed'),
+          lt(evidenceObjects.updatedAt, new Date(now.getTime() - EVIDENCE_INDEX_RETRY_AFTER_MS)),
+        ),
       ),
+    ),
+    // Reaper: any index state, so a sensitive (skipped) row is settled too.
+    and(
+      eq(evidenceObjects.uploadState, 'pending'),
+      lt(evidenceObjects.createdAt, new Date(now.getTime() - PENDING_UPLOAD_GRACE_MS)),
     ),
   )!;
 }
@@ -99,11 +111,6 @@ export function evidenceIndexCandidateWhere(now: Date): SQL {
 export const evidenceNamespace = (workspaceId: string) => `${workspaceId}:evidence`;
 export const evidenceSourcePath = (evidenceId: string) => `evidence/${evidenceId}`;
 const short = (id: string) => id.slice(0, 8);
-
-function statusOf(err: unknown): number | undefined {
-  const s = (err as { status?: unknown } | null)?.status;
-  return typeof s === 'number' ? s : undefined;
-}
 
 function message(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 300);
@@ -171,7 +178,7 @@ export async function indexEvidenceObject(
   c: EvidenceIndexCandidate,
   deps: EvidenceIndexerDeps,
 ): Promise<EvidenceIndexResult> {
-  const { row } = c;
+  let { row } = c;
   const ns = evidenceNamespace(row.workspaceId);
   const clearOld = () => deps.store.deleteBySource?.(ns, { sourcePath: evidenceSourcePath(row.id), sourceType: EVIDENCE_SOURCE_TYPE });
   const record = async (fields: EvidenceRowUpdate) => {
@@ -179,6 +186,25 @@ export async function indexEvidenceObject(
       console.warn(`[evidence-index] could not record ${fields.indexState} for ${row.id}: ${message(err)}`);
     }
   };
+
+  if (row.uploadState === 'pending') {
+    let confirmed: EvidenceConfirmResult;
+    try {
+      confirmed = await deps.confirmUpload(row);
+    } catch (err) {
+      confirmed = { uploadState: 'pending', bytes: row.bytes, changed: false, reason: message(err) };
+    }
+    if (confirmed.uploadState === 'pending') {
+      // Re-stamp so it moves to the back of the line; the index state is kept.
+      await record({ indexState: row.indexState === 'skipped' ? 'skipped' : 'queued' });
+      return { outcome: 'deferred', chunks: 0, ...(confirmed.reason ? { error: confirmed.reason } : {}) };
+    }
+    if (confirmed.uploadState !== 'stored') {
+      // confirmEvidenceUpload already wrote the row (failed/unreadable, index skipped).
+      return { outcome: 'skipped', chunks: 0, error: confirmed.reason ?? `upload ${confirmed.uploadState}` };
+    }
+    row = { ...row, uploadState: 'stored', bytes: confirmed.bytes };
+  }
 
   if (c.dataClass === 'sensitive') {
     // Nothing is sent to the embedder; purge whatever was indexed before.
@@ -191,17 +217,6 @@ export async function indexEvidenceObject(
   try {
     text = await readText(await deps.openObject(row));
   } catch (err) {
-    if (row.uploadState === 'pending' && statusOf(err) === 410) {
-      const age = deps.now().getTime() - new Date(row.createdAt).getTime();
-      if (age < PENDING_UPLOAD_GRACE_MS) {
-        // Still in flight, maybe. Re-stamp it so a burst of these cannot hold
-        // the front of the batch and starve rows that are ready.
-        await record({ indexState: 'queued' });
-        return { outcome: 'deferred', chunks: 0 };
-      }
-      await record({ indexState: 'skipped', uploadState: 'failed' });
-      return { outcome: 'skipped', chunks: 0, error: 'upload never arrived' };
-    }
     const error = message(err);
     await record({ indexState: 'failed' });
     return { outcome: 'failed', chunks: 0, error };
@@ -217,9 +232,7 @@ export async function indexEvidenceObject(
     const upserts = toUpsertChunks(c, chunks);
     await clearOld();
     if (upserts.length > 0) await deps.store.upsert(ns, upserts);
-    await record(row.uploadState === 'pending'
-      ? { indexState: 'indexed', uploadState: 'stored' }
-      : { indexState: 'indexed' });
+    await record({ indexState: 'indexed' });
     return { outcome: 'indexed', chunks: upserts.length };
   } catch (err) {
     const error = message(err);
@@ -284,7 +297,8 @@ export function defaultEvidenceIndexerDeps(store?: EvidenceIndexerDeps['store'])
         taskSummary: summaryOf(r.taskResult),
       }));
     },
-    openObject: row => openEvidenceObject(row, { acceptPending: true }),
+    confirmUpload: row => confirmEvidenceUpload(row),
+    openObject: row => openEvidenceObject(row),
     store: {
       upsert: async (ns, chunks) => (await getStore()).upsert(ns, chunks),
       deleteBySource: async (ns, sel) => (await getStore()).deleteBySource?.(ns, sel),

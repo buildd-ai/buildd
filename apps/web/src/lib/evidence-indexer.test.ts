@@ -201,31 +201,61 @@ describe('sweep durability', () => {
     expect(updates.map(u => u.fields.indexState)).toEqual(['indexed']);
   });
 
-  it('confirms a pending runner upload it can read, and indexes it', async () => {
-    const { d, updates } = deps({ rows: [candidate({ uploadState: 'pending', kind: 'command_output' })] });
+  // Reaper: a runner confirms its own upload; the sweep only settles rows whose
+  // confirm never came, through the same check the confirm route uses.
+  const stale = { uploadState: 'pending' as const, kind: 'command_output' as const, createdAt: new Date(NOW.getTime() - PENDING_UPLOAD_GRACE_MS - 1) };
+
+  it('reaps a stale pending row through confirm, then indexes it as stored', async () => {
+    const confirmed: string[] = [];
+    const opened: string[] = [];
+    const { d, updates } = deps({
+      rows: [candidate(stale)],
+      confirmUpload: async row => { confirmed.push(row.id); return { uploadState: 'stored', bytes: 100, changed: true }; },
+      openObject: async row => { opened.push(row.uploadState); return body(FAILING_LOG); },
+    });
     const res = await runEvidenceIndexSweep(d);
     expect(res.indexed).toBe(1);
-    expect(updates).toEqual([{ id: 'ev-0001', fields: { indexState: 'indexed', uploadState: 'stored' } }]);
+    expect(confirmed).toEqual(['ev-0001']);
+    // The object is opened only as a stored row; the indexer never reads a pending one.
+    expect(opened).toEqual(['stored']);
+    expect(updates).toEqual([{ id: 'ev-0001', fields: { indexState: 'indexed' } }]);
   });
 
-  it('leaves a pending row whose object is not there yet queued, inside the grace window', async () => {
+  it('leaves a reaped row the confirm check settled as failed alone', async () => {
+    let opened = false;
     const { d, updates } = deps({
-      rows: [candidate({ uploadState: 'pending', createdAt: new Date(NOW.getTime() - 60_000) })],
-      openObject: async () => { throw Object.assign(new Error('missing'), { status: 410 }); },
+      rows: [candidate(stale)],
+      confirmUpload: async () => ({ uploadState: 'failed', bytes: 100, changed: true, reason: 'the object was never uploaded' }),
+      openObject: async () => { opened = true; return body(FAILING_LOG); },
+    });
+    const res = await runEvidenceIndexSweep(d);
+    expect(res.skipped).toBe(1);
+    expect(opened).toBe(false);
+    // confirmEvidenceUpload already wrote failed + skipped; nothing more here.
+    expect(updates).toEqual([]);
+  });
+
+  it('defers a reaped row whose bucket cannot be checked, keeping its index state', async () => {
+    const { d, updates } = deps({
+      rows: [candidate(stale)],
+      confirmUpload: async () => ({ uploadState: 'pending', bytes: 100, changed: false, reason: 'unreachable' }),
     });
     const res = await runEvidenceIndexSweep(d);
     expect(res.deferred).toBe(1);
-    // Re-stamped (still queued) so it moves to the back of the next batch.
     expect(updates).toEqual([{ id: 'ev-0001', fields: { indexState: 'queued' } }]);
   });
 
-  it('gives up on a pending row whose object never arrived', async () => {
-    const { d, updates } = deps({
-      rows: [candidate({ uploadState: 'pending', createdAt: new Date(NOW.getTime() - PENDING_UPLOAD_GRACE_MS - 1) })],
-      openObject: async () => { throw Object.assign(new Error('missing'), { status: 410 }); },
+  it('reaps a sensitive workspace pending row too, then skips indexing it', async () => {
+    const confirmed: string[] = [];
+    const { d, updates, store } = deps({
+      rows: [candidate({ ...stale, indexState: 'skipped' }, { dataClass: 'sensitive' })],
+      confirmUpload: async row => { confirmed.push(row.id); return { uploadState: 'stored', bytes: 100, changed: true }; },
     });
-    await runEvidenceIndexSweep(d);
-    expect(updates).toEqual([{ id: 'ev-0001', fields: { indexState: 'skipped', uploadState: 'failed' } }]);
+    const res = await runEvidenceIndexSweep(d);
+    expect(confirmed).toEqual(['ev-0001']);
+    expect(res.skipped).toBe(1);
+    expect(updates).toEqual([{ id: 'ev-0001', fields: { indexState: 'skipped' } }]);
+    expect(store.chunks.size).toBe(0);
   });
 
   it('a store failure marks the row failed and never throws', async () => {
@@ -281,10 +311,24 @@ describe('evidenceIndexCandidateWhere (rendered SQL)', () => {
     expect(new Date(cutoff as string).getTime()).toBe(NOW.getTime() - EVIDENCE_INDEX_RETRY_AFTER_MS);
   });
 
-  it('only considers objects that are, or may be, in the bucket', () => {
-    expect(sql).toContain('"evidence_objects"."upload_state" in ($?, $?)');
+  it('indexes stored rows, and picks up a pending row only once it is past the confirm grace', () => {
+    expect(sql).toContain('"evidence_objects"."upload_state" = $?');
+    expect(sql).toContain('"evidence_objects"."created_at" < $?');
     expect(q.params).toContain('pending');
     expect(q.params).toContain('stored');
+    const dates = q.params.filter(p => p instanceof Date || (typeof p === 'string' && /^\d{4}-/.test(p)))
+      .map(p => new Date(p as string).getTime());
+    expect(dates).toContain(NOW.getTime() - PENDING_UPLOAD_GRACE_MS);
+  });
+
+  it('pairs the grace cutoff with pending and the index state with stored', () => {
+    // Shape: (stored AND (queued OR failed-past-backoff)) OR (pending AND created_at < cutoff)
+    const storedAt = sql.indexOf('"evidence_objects"."upload_state" = $?');
+    const pendingAt = sql.lastIndexOf('"evidence_objects"."upload_state" = $?');
+    expect(pendingAt).toBeGreaterThan(storedAt);
+    expect(sql.indexOf('"evidence_objects"."index_state"')).toBeLessThan(pendingAt);
+    expect(sql.indexOf('"evidence_objects"."created_at" < $?')).toBeGreaterThan(pendingAt);
+    expect(q.params.indexOf('stored')).toBeLessThan(q.params.indexOf('pending'));
   });
 
   it('never selects a skipped or already-indexed row', () => {

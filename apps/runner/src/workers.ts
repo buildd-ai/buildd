@@ -2694,6 +2694,8 @@ export class WorkerManager {
       deps: {
         requestEvidenceUploadUrl: async (workerId, req) =>
           (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
+        confirmEvidenceUpload: async (workerId, evidenceId) =>
+          (await (this.buildd as any).confirmEvidenceUpload?.(workerId, evidenceId)) ?? false,
       },
     }));
 

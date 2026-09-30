@@ -153,6 +153,13 @@ backend, enforces `max_bytes_per_task` across the task's `evidence_objects`,
 and signs against that backend's client (a per-backend client factory replaces
 the single env-configured client in `storage.ts`).
 
+**Confirm:** the row starts `upload_state = pending` and read routes refuse it.
+After a 2xx PUT the runner calls `POST /api/workers/[id]/evidence/[evidenceId]/confirm`
+(same authorization; the row must be that worker's). The server HEADs the key
+on the row's own backend: present with the signed size → `stored`, missing or a
+different size → `failed`. Idempotent, never a 5xx. A row whose confirm never
+arrives is settled the same way by the evidence index sweep after one hour.
+
 ## Redaction
 
 - **Runner-side channels:** `createSecretRedactor` is built in `startSession`
