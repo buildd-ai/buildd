@@ -339,7 +339,12 @@ runs and the user is shown the new state. You approve what you saw.
 
 **Steering a docked mission.** "Ask about this mission" docks the mission.
 While it's docked, the turn's context block lists the mission's tasks as data.
-Without a dock, the mission this conversation filed is used. A steering tool
+Without a dock, the mission this conversation filed is used. That default
+is for a `create_task` about that mission only: the card always states where
+the task lands ("New task in: <mission>", or a `Mission: none` row), and the
+model passes `missionId: null` to file a standalone task that beats both the
+dock and the filed mission. When it is unclear whether a request is about the
+mission, the model asks instead of attaching. A steering tool
 takes the user's words as `taskId` ("checkout"), and the server matches them
 against those tasks. One match resolves. None, or several, returns a question
 ("checkout" matches two tasks: …) with no card and no write. The model asks the
