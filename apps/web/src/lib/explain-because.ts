@@ -267,6 +267,24 @@ function causeLinksFor(
         ),
       );
 
+    case 'ci_red':
+      return (extra.unmergedPrs ?? [])
+        .filter(p => w.taskIds.includes(p.taskId))
+        .slice(0, 10)
+        .map(p =>
+          link(
+            `Task "${p.title}" is completed but its PR's CI is still red after ${w.attempts} fix attempt${w.attempts === 1 ? '' : 's'}`
+              + `${w.failing.length ? `: ${w.failing.join(', ')}` : ''}.`,
+            'workers.prLifecycleStatus + tasks.parentTaskId',
+            {
+              ...base,
+              taskId: p.taskId,
+              ...(p.prNumber != null ? { prNumber: p.prNumber } : {}),
+              ...(p.prUrl ? { prUrl: p.prUrl } : {}),
+            },
+          ),
+        );
+
     case 'pr_closed_unmerged':
       return (extra.unmergedPrs ?? [])
         .filter(p => p.closedUnsuperseded)

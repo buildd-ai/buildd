@@ -77,6 +77,13 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+// CI failure excerpts (opt-in `includeCiFailures`) — the lib has its own tests.
+const mockFetchCiFailureExcerpts = mock(async (_i: number, _repo: string, failed: any[]) =>
+  failed.map(f => ({ ...f, step: 'Type check', excerpt: 'error TS2322' })) as any);
+mock.module('@/lib/ci-failure-excerpts', () => ({
+  fetchCiFailureExcerpts: mockFetchCiFailureExcerpts,
+}));
+
 // Mock github
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
@@ -4781,6 +4788,78 @@ describe('GET /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(data.comments).toEqual({ items: [], total: 0, omitted: 0 });
+    });
+  });
+
+  describe('includeCiFailures opt-in', () => {
+    const RED_RUNS = { check_runs: [
+      { name: 'build', status: 'completed', conclusion: 'failure', html_url: 'https://github.com/owner/repo/actions/runs/1/job/9' },
+      { name: 'lint', status: 'completed', conclusion: 'success', html_url: 'https://github.com/owner/repo/actions/runs/1/job/10' },
+    ] };
+    const arrange = (checks: unknown) => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce(checks);
+      mockGithubApi.mockResolvedValueOnce([]);
+    };
+    const get = (flag?: string) => {
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      if (flag) url.searchParams.set('includeCiFailures', flag);
+      return GET(new NextRequest(url.toString(), { method: 'GET', headers: new Headers({ Authorization: 'Bearer bld_test' }) }));
+    };
+
+    it('reads no job logs unless asked', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange(RED_RUNS);
+      const data = await (await get()).json();
+      expect(data.ciFailures).toBeUndefined();
+      expect(mockFetchCiFailureExcerpts).not.toHaveBeenCalled();
+    });
+
+    it('returns an excerpt for each failing check when includeCiFailures=true', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange(RED_RUNS);
+      const res = await get('true');
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(mockFetchCiFailureExcerpts).toHaveBeenCalledTimes(1);
+      const [, repo, failed] = mockFetchCiFailureExcerpts.mock.calls[0] as any[];
+      expect(repo).toBe('owner/repo');
+      expect(failed.map((f: any) => f.name)).toEqual(['build']);
+      expect(data.ciFailures).toEqual([expect.objectContaining({ name: 'build', step: 'Type check', excerpt: 'error TS2322' })]);
+    });
+
+    it('is an empty list, with no fetch, when nothing is failing', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      arrange({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+      const data = await (await get('true')).json();
+      expect(data.ciFailures).toEqual([]);
+      expect(mockFetchCiFailureExcerpts).not.toHaveBeenCalled();
+    });
+
+    it('a failure reading logs degrades to the failing checks by name and URL, not a failed GET', async () => {
+      mockFetchCiFailureExcerpts.mockClear();
+      mockFetchCiFailureExcerpts.mockImplementationOnce(async () => { throw new Error('boom'); });
+      arrange(RED_RUNS);
+      const res = await get('true');
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.ciFailures).toEqual([{
+        name: 'build', conclusion: 'failure', url: 'https://github.com/owner/repo/actions/runs/1/job/9', step: null, excerpt: null,
+      }]);
     });
   });
 });
