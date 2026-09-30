@@ -76,9 +76,42 @@ export const WORKER_LEASE_MISSED_BEATS_TOLERATED = Math.floor(
   WORKER_LEASE_TTL_MS / WORKER_LEASE_RENEW_INTERVAL_MS,
 ) - 1;
 
-// Runner is "online" when its last beat arrived within 1.5× the interval.
+// ─── "Is this runner up?" windows ───────────────────────────────────────────
+//
+// A runner writes `worker_heartbeats.last_heartbeat_at` on two timers: the 60s
+// liveness ping (LIVENESS_PING_INTERVAL_MS) and the poll cycle
+// (RUNNER_HEARTBEAT_INTERVAL_MS). "How recent must the last beat be" has a
+// different right answer depending on what the caller does with a wrong
+// answer, so there are several windows — but every one of them is named here
+// and derived from the cadence that makes it true. Do not hand-type a window
+// at a call site; pick the question below.
+//
+//   RUNNER_LIVE_WINDOW_MS      "online NOW"      presence UI, "browser runner
+//                                                available", steer presence.
+//   RUNNER_RECENTLY_SEEN_MS    "demonstrably up" alarms that must only fire
+//                                                against a runner that is up,
+//                                                pickup-likelihood feedback.
+//   RUNNER_ONLINE_THRESHOLD_MS "online" at poll  runner lists / fleet capacity.
+//                              cadence
+//   RUNNER_STALE_CUTOFF_MS     "NOT DEAD"        the only window allowed to
+//                                                fail workers or delete rows.
+//
+// Anything destructive keys off RUNNER_STALE_CUTOFF_MS: being wrong there kills
+// in-flight work, so it tolerates a runner build that only beats on the poll
+// cycle dropping a beat. Using a presence window to kill workers is the bug
+// that failed live workers from a 10-minute cutoff (task 5c0ea9bc).
+
+/** "Online now": last liveness ping within 3 pings. A wrong answer only mislabels a dot. */
+export const RUNNER_LIVE_WINDOW_MS = 3 * LIVENESS_PING_INTERVAL_MS;
+
+/** "Demonstrably up": last liveness ping within 10 pings. Gates alarms that presume a live runner. */
+export const RUNNER_RECENTLY_SEEN_MS = 10 * LIVENESS_PING_INTERVAL_MS;
+
+// Runner is "online" when its last beat arrived within 1.5× the poll interval.
 // Between 1.5× and 2.5× it shows as "stale" (beat is overdue but runner may recover).
-// Beyond 2.5× the interval the record is excluded from queries entirely.
+// Beyond 2.5× the interval the runner is presumed dead: the record is excluded
+// from queries, its heartbeat row may be deleted, and — only if NO runner on the
+// account is inside this window — its workers are failed.
 export const RUNNER_ONLINE_THRESHOLD_MS = 1.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 

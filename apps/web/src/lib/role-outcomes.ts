@@ -43,6 +43,7 @@ import {
 } from '@buildd/core/role-outcomes-feed';
 import { classifyFailure } from './failure-classifier';
 import { FAILED_WORKER_STATUSES } from './failure-analytics';
+import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
 
 /** Recent window. Matches the hourly cadence of the feed, so windows tile with no gap. */
 export const RECENT_MINUTES = 60;
@@ -52,8 +53,8 @@ export const BASELINE_HOURS = 24;
 export const MAX_ROLES = 50;
 /** Signatures kept per role. Only the dominant one decides anything. */
 export const MAX_SIGNATURES_PER_ROLE = 3;
-/** Heartbeats fresher than this count as a live runner (same bound as fleet-idle). */
-export const HEARTBEAT_FRESH_MINUTES = 10;
+/** Heartbeats fresher than this count as a live runner ("demonstrably up", same bound as fleet-idle). */
+export const HEARTBEAT_FRESH_MINUTES = RUNNER_RECENTLY_SEEN_MS / 60_000;
 
 export interface RoleOutcomeRow {
   status: string;
