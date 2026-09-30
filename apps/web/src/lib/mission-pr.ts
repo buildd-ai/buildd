@@ -42,6 +42,7 @@ import {
 import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -494,14 +495,25 @@ export async function openMissionIntegrationPr(
     return { ok: false, reason: 'work_incomplete', detail: work.reason };
   }
 
-  const workspace = mission.workspaceId
+  // Same rule the branch ensurer uses: a mission created without a workspace
+  // resolves to the one workspace its tasks share, instead of answering
+  // `no_repo` on every sweep for a branch that lives in a perfectly good repo.
+  const repoWorkspace = await resolveMissionRepoWorkspaceId({
+    missionId,
+    missionWorkspaceId: mission.workspaceId,
+  });
+  const workspace = repoWorkspace.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: eq(workspaces.id, repoWorkspace.workspaceId),
         columns: { id: true, githubRepoId: true, githubInstallationId: true, gitConfig: true },
       })
     : null;
   if (!workspace?.githubRepoId || !workspace.githubInstallationId) {
-    return { ok: false, reason: 'no_repo', detail: 'workspace not linked to a GitHub repo' };
+    return {
+      ok: false,
+      reason: 'no_repo',
+      detail: repoWorkspace.detail ?? 'workspace not linked to a GitHub repo',
+    };
   }
 
   const repo = await db.query.githubRepos.findFirst({
