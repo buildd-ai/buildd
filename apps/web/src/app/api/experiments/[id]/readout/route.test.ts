@@ -13,10 +13,13 @@ const mockGet = mock(async () => stored);
 const mockRun = mock(async (..._a: any[]) => ({ verdict: 'insufficient_n' }) as any);
 
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: mockResolveViewer }));
-mock.module('@/lib/experiments-store', () => ({ getTeamExperiment: mockGet }));
+mock.module('@/lib/experiments-store', () => ({ getTeamExperimentForReadout: mockGet }));
 mock.module('@buildd/core/experiment-readout-source', () => ({ runExperimentReadout: mockRun }));
 const mockTriageRun = mock(async (..._a: any[]) => ({ status: 'underpowered' }) as any);
 mock.module('@buildd/core/heartbeat-triage-readout-source', () => ({ runHeartbeatTriageReadout: mockTriageRun }));
+
+const mockPoolRun = mock(async (..._a: any[]) => ({ kind: 'tier_pool', verdict: 'insufficient_n', arms: [] }) as any);
+mock.module('@buildd/core/tier-pool-admin', () => ({ runTierPoolReadout: mockPoolRun }));
 
 import { GET } from './route';
 
@@ -34,6 +37,7 @@ const get = (qs = '') => GET(new NextRequest(`http://localhost/api/experiments/$
 
 beforeEach(() => {
   mockRun.mockClear();
+  mockPoolRun.mockClear();
   mockGet.mockClear();
   stored = row();
 });
@@ -60,6 +64,33 @@ describe('GET /api/experiments/[id]/readout', () => {
     expect(body.readout.status).toBe('underpowered');
     expect(mockTriageRun).toHaveBeenCalledWith({ id: ID, policyVersion: 3 }, { minSamplePerArm: 7, waitMinConfidence: 0.95 });
     expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('a tier_pool experiment reads its own chat/agent assignment rows, never the task readout (which would be all zeros)', async () => {
+    as('admin');
+    stored = row({ kind: 'tier_pool', key: 'tier-pool:chat:budget', config: {} });
+    const res = await get();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.readout.kind).toBe('tier_pool');
+    expect(mockPoolRun).toHaveBeenCalledWith({ id: ID, policyVersion: 3 });
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('a kind with no readout is refused out loud, not read as a task experiment', async () => {
+    as('admin');
+    stored = row({ kind: 'something_new' });
+    const res = await get();
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toContain('something_new');
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('cbm_access still uses the task readout', async () => {
+    as('admin');
+    stored = row({ kind: 'cbm_access' });
+    expect((await get()).status).toBe(200);
+    expect(mockRun).toHaveBeenCalled();
   });
 
   it('reads the current policy version with the configured minimum sample', async () => {

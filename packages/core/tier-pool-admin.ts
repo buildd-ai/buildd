@@ -10,12 +10,13 @@
  * P1 is manual only: an admin adds or removes arms, types shares, and pins or
  * unpins. Nothing here runs on a schedule or moves traffic on its own.
  */
-import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from './db/client';
 import { experiments, tierPoolArms, tierPoolChanges, tierPools } from './db/schema';
 import { INFRA_EXIT_CAUSES } from './experiment-readout';
 import {
   MAX_POOL_ARMS,
+  MIN_GRADED_UNITS,
   TIER_POOL_EXPERIMENT_KIND,
   agentUnitSeverity,
   chatTurnSeverity,
@@ -357,6 +358,57 @@ export const STATS_WINDOW_DAYS = 30;
 interface AgentStatRow { arm_id: string; outcome: string | null; exit_cause: string | null; total_cost_usd: string | null; duration_ms: number | null }
 interface ChatStatRow { arm_id: string; usage: { costUsd?: number | null; latencyMs?: number } | null; signal: string | null; reason: string | null }
 
+const AGENT_UNITS_SELECT = sql`
+  SELECT a.arm_id, o.outcome, o.exit_cause, o.total_cost_usd, o.duration_ms
+  FROM experiment_assignments a`;
+const AGENT_OUTCOME_JOIN = sql`
+  LEFT JOIN LATERAL (
+    SELECT outcome, exit_cause, total_cost_usd, duration_ms FROM task_outcomes
+    WHERE task_id = a.task_id ORDER BY created_at DESC LIMIT 1
+  ) o ON true`;
+const CHAT_UNITS_SELECT = sql`
+  SELECT a.arm_id, m.usage, f.signal, f.reason
+  FROM experiment_assignments a`;
+const CHAT_OUTCOME_JOIN = sql`
+  JOIN conversation_messages m ON m.id = a.message_id
+  LEFT JOIN user_feedback f ON f.entity_type = 'conversation_message' AND f.entity_id = a.message_id::text`;
+
+/**
+ * One surface's graded units, for the pools `poolJoin` selects and the
+ * assignments `where` keeps. Agent units come from the task's latest outcome;
+ * chat units from the turn's usage and thumbs. A chat assignment has no task,
+ * so the two can never share a query.
+ */
+function surfaceUnitsQuery(surface: PoolSurface, poolJoin: SQL, where: SQL) {
+  return surface === 'agent'
+    ? sql`${AGENT_UNITS_SELECT} ${poolJoin} ${AGENT_OUTCOME_JOIN}
+      WHERE a.arm_id IS NOT NULL AND a.task_id IS NOT NULL AND ${where}`
+    : sql`${CHAT_UNITS_SELECT} ${poolJoin} ${CHAT_OUTCOME_JOIN}
+      WHERE a.arm_id IS NOT NULL AND a.message_id IS NOT NULL AND ${where}`;
+}
+
+function pushUnits(surface: PoolSurface, rows: unknown[], into: Map<string, ArmUnit[]>): void {
+  const push = (armId: string, u: ArmUnit) => { const l = into.get(armId) ?? []; l.push(u); into.set(armId, l); };
+  if (surface === 'agent') {
+    for (const r of rows as AgentStatRow[]) {
+      const cost = r.total_cost_usd != null ? Number(r.total_cost_usd) : null;
+      push(r.arm_id, {
+        severity: agentUnitSeverity(r.outcome ? { outcome: r.outcome, exitCause: r.exit_cause } : null, INFRA_EXIT_CAUSES),
+        costUsd: cost != null && Number.isFinite(cost) ? cost : null,
+        latencyMs: r.duration_ms ?? null,
+      });
+    }
+    return;
+  }
+  for (const r of rows as ChatStatRow[]) {
+    push(r.arm_id, {
+      severity: chatTurnSeverity(r.signal, r.reason),
+      costUsd: typeof r.usage?.costUsd === 'number' ? r.usage.costUsd : null,
+      latencyMs: typeof r.usage?.latencyMs === 'number' ? r.usage.latencyMs : null,
+    });
+  }
+}
+
 /**
  * Per-arm stats for every pool of a team, from outcome data that already
  * exists: `task_outcomes` for agent runs (latest outcome per task), and
@@ -365,44 +417,87 @@ interface ChatStatRow { arm_id: string; usage: { costUsd?: number | null; latenc
  */
 export async function loadArmStats(teamId: string, now = new Date()): Promise<Map<string, ArmStats>> {
   const since = new Date(now.getTime() - STATS_WINDOW_DAYS * 86_400_000).toISOString();
+  const window = sql`a.assigned_at >= ${since}::timestamptz`;
+  const poolJoin = (surface: PoolSurface) =>
+    sql`JOIN tier_pools p ON p.experiment_id = a.experiment_id AND p.team_id = ${teamId} AND p.surface = ${sql.raw(`'${surface}'`)}`;
   const [agent, chat] = await Promise.all([
-    db.execute(sql`
-      SELECT a.arm_id, o.outcome, o.exit_cause, o.total_cost_usd, o.duration_ms
-      FROM experiment_assignments a
-      JOIN tier_pools p ON p.experiment_id = a.experiment_id AND p.team_id = ${teamId} AND p.surface = 'agent'
-      LEFT JOIN LATERAL (
-        SELECT outcome, exit_cause, total_cost_usd, duration_ms FROM task_outcomes
-        WHERE task_id = a.task_id ORDER BY created_at DESC LIMIT 1
-      ) o ON true
-      WHERE a.arm_id IS NOT NULL AND a.task_id IS NOT NULL AND a.assigned_at >= ${since}::timestamptz
-    `),
-    db.execute(sql`
-      SELECT a.arm_id, m.usage, f.signal, f.reason
-      FROM experiment_assignments a
-      JOIN tier_pools p ON p.experiment_id = a.experiment_id AND p.team_id = ${teamId} AND p.surface = 'chat'
-      JOIN conversation_messages m ON m.id = a.message_id
-      LEFT JOIN user_feedback f ON f.entity_type = 'conversation_message' AND f.entity_id = a.message_id::text
-      WHERE a.arm_id IS NOT NULL AND a.message_id IS NOT NULL AND a.assigned_at >= ${since}::timestamptz
-    `),
+    db.execute(surfaceUnitsQuery('agent', poolJoin('agent'), window)),
+    db.execute(surfaceUnitsQuery('chat', poolJoin('chat'), window)),
   ]);
   const units = new Map<string, ArmUnit[]>();
-  const push = (armId: string, u: ArmUnit) => { const l = units.get(armId) ?? []; l.push(u); units.set(armId, l); };
-  for (const r of agent.rows as unknown as AgentStatRow[]) {
-    const cost = r.total_cost_usd != null ? Number(r.total_cost_usd) : null;
-    push(r.arm_id, {
-      severity: agentUnitSeverity(r.outcome ? { outcome: r.outcome, exitCause: r.exit_cause } : null, INFRA_EXIT_CAUSES),
-      costUsd: cost != null && Number.isFinite(cost) ? cost : null,
-      latencyMs: r.duration_ms ?? null,
-    });
-  }
-  for (const r of chat.rows as unknown as ChatStatRow[]) {
-    push(r.arm_id, {
-      severity: chatTurnSeverity(r.signal, r.reason),
-      costUsd: typeof r.usage?.costUsd === 'number' ? r.usage.costUsd : null,
-      latencyMs: typeof r.usage?.latencyMs === 'number' ? r.usage.latencyMs : null,
-    });
-  }
+  pushUnits('agent', agent.rows, units);
+  pushUnits('chat', chat.rows, units);
   const out = new Map<string, ArmStats>();
   for (const [armId, list] of units) out.set(armId, summarizeArm(list));
   return out;
+}
+
+// ── Readout ─────────────────────────────────────────────────────────────────
+
+export interface TierPoolReadoutArm extends ArmStats {
+  armId: string;
+  route: string;
+  model: string;
+  role: 'incumbent' | 'challenger';
+  status: 'active' | 'paused' | 'removed';
+}
+
+export interface TierPoolReadout {
+  kind: typeof TIER_POOL_EXPERIMENT_KIND;
+  surface: PoolSurface | null;
+  /** Graded units each live arm needs before its numbers mean much (design §5e). */
+  minGradedPerArm: number | null;
+  /**
+   * `no_pool`: no pool points at this experiment. `insufficient_n`: a live arm
+   * is under `minGradedPerArm`. `ready`: every live arm has reached it. Never a
+   * significance verdict: pools compare up to four arms on graded severity,
+   * not two arms on clean completion.
+   */
+  verdict: 'no_pool' | 'insufficient_n' | 'ready';
+  totals: { units: number; graded: number };
+  arms: TierPoolReadoutArm[];
+}
+
+interface ReadoutArmRow { id: string; route: string; model: string; role: 'incumbent' | 'challenger'; status: 'active' | 'paused' | 'removed'; surface: PoolSurface }
+
+/**
+ * The readout for a tier-pool experiment, from its own assignment rows under
+ * one policy version: chat turns graded by thumbs, agent tasks by their latest
+ * outcome. The two-arm task readout joins on tasks, which a chat assignment
+ * does not have, so it would report every chat pool as all zeros.
+ */
+export async function runTierPoolReadout(experiment: { id: string; policyVersion: number }): Promise<TierPoolReadout> {
+  const armsRes = await db.execute(sql`
+    SELECT a.id, a.route, a.model, a.role, a.status, p.surface
+    FROM tier_pool_arms a
+    JOIN tier_pools p ON p.id = a.pool_id
+    WHERE p.experiment_id = ${experiment.id}
+    ORDER BY (a.role = 'incumbent') DESC, a.added_at, a.id
+  `);
+  const arms = armsRes.rows as unknown as ReadoutArmRow[];
+  if (arms.length === 0) {
+    return { kind: TIER_POOL_EXPERIMENT_KIND, surface: null, minGradedPerArm: null, verdict: 'no_pool', totals: { units: 0, graded: 0 }, arms: [] };
+  }
+  const surface = arms[0].surface;
+  const res = await db.execute(surfaceUnitsQuery(
+    surface,
+    sql`JOIN tier_pools p ON p.experiment_id = a.experiment_id`,
+    sql`p.experiment_id = ${experiment.id} AND a.policy_version = ${experiment.policyVersion}`,
+  ));
+  const units = new Map<string, ArmUnit[]>();
+  pushUnits(surface, res.rows, units);
+  const minGradedPerArm = MIN_GRADED_UNITS[surface];
+  const out = arms.map(a => ({
+    armId: a.id, route: a.route, model: a.model, role: a.role, status: a.status,
+    ...summarizeArm(units.get(a.id) ?? []),
+  }));
+  const live = out.filter(a => a.status !== 'removed');
+  return {
+    kind: TIER_POOL_EXPERIMENT_KIND,
+    surface,
+    minGradedPerArm,
+    verdict: live.length > 0 && live.every(a => a.graded >= minGradedPerArm) ? 'ready' : 'insufficient_n',
+    totals: { units: out.reduce((s, a) => s + a.units, 0), graded: out.reduce((s, a) => s + a.graded, 0) },
+    arms: out,
+  };
 }
