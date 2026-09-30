@@ -97,6 +97,41 @@ export async function loadFleetCapacity(input: { teamId: string | null; wsIds: s
   return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS });
 }
 
+/**
+ * The fleet alone: fresh heartbeats × the workers live on them, no history.
+ * Settings → Runners leads with this; Home's full loader adds the lanes,
+ * ticker and counts on top of the same two reads.
+ */
+export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetSnapshot> {
+  const { wsIds, now } = input;
+  if (wsIds.length === 0) return EMPTY.fleet;
+  const [heartbeatRows, liveRows] = await Promise.all([
+    loadFleetHeartbeats(input),
+    db
+      .select({
+        id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
+        prNumber: workers.prNumber,
+        taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+        roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+      })
+      .from(workers)
+      .leftJoin(tasks, eq(workers.taskId, tasks.id))
+      .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.status, [...LIVE_WORKER_STATUSES])))
+      .orderBy(desc(workers.startedAt))
+      .limit(FLEET_WORKER_ROW_CAP),
+  ]);
+  const rows: FleetWorkerRow[] = liveRows.map(r => ({
+    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    task: r.taskId ? {
+      id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
+      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
+    } : null,
+  }));
+  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS, maxWindowMs: FLEET_WINDOW_MS });
+}
+
 export async function loadHomeFleet(input: {
   teamId: string | null;
   wsIds: string[];
