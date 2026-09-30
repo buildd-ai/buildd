@@ -427,6 +427,12 @@ export interface ChatUsage {
   costUsd: number | null;
   /** Assistant turns: request start to stream end, in ms. Absent on older rows. */
   latencyMs?: number;
+  /**
+   * User turns of an unpinned conversation: the workspace routing scoped the
+   * turn to. The next turn's routing carries it over (sticky) unless the
+   * message names another.
+   */
+  routedWorkspaceId?: string;
 }
 
 export interface ConversationMessageDTO {

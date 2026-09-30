@@ -105,12 +105,69 @@ export const AREA_MIN_CONFIDENCE = 0.8;
 export const WORKSPACE_MIN_CONFIDENCE = 0.85;
 /** A choice takes at most 255 labels (decision-client MAX_CHOICE_OPTIONS). */
 const MAX_WORKSPACE_LABELS = 255;
+/**
+ * The workspace question lists at most this many (recently active) workspaces.
+ * Every label carries its hint, so an uncapped list grows with the team and
+ * becomes the call's largest question; a workspace past the cap is still
+ * reached by naming it (`namedWorkspace`) or from a docked object.
+ */
+export const MAX_ASKED_WORKSPACES = 15;
+/** Shorter names and terms match too much prose to decide a workspace alone. */
+const MIN_TERM_LENGTH = 3;
 
 /** A workspace the turn may be routed to, with what it's about (repo, projects). */
 export interface RoutableWorkspace {
   id: string; name: string; hint?: string | null;
+  /** Names that mean this workspace in a message: its name, repo name, project names. Absent ⇒ the name. */
+  terms?: readonly string[];
   /** Latest task activity (ISO), null = none in the lookback; spanning reads skip idle ones. */
   lastActiveAt?: string | null;
+}
+
+function repoName(repo?: string | null): string | undefined {
+  return repo?.trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).pop() || undefined;
+}
+
+/** The names a message may use for a workspace: its name, repo name and project names. Pure. */
+export function workspaceTerms(ws: { name: string; repo?: string | null; projects?: ReadonlyArray<{ name: string }> | null }): string[] {
+  const terms = [ws.name, repoName(ws.repo), ...(ws.projects ?? []).map(p => p.name)]
+    .map(t => t?.trim()).filter((t): t is string => !!t);
+  return [...new Set(terms)];
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The one workspace the message names by name, repo or project, else null.
+ * Whole-word, case-insensitive. A match inside a longer match of another
+ * workspace doesn't count ("buildd" inside "buildd-docs"); two workspaces
+ * named is no match. Pure.
+ */
+export function namedWorkspace(message: string, workspaces: readonly RoutableWorkspace[]): string | null {
+  const hits: { id: string; start: number; end: number }[] = [];
+  for (const w of workspaces) {
+    for (const term of w.terms ?? [w.name]) {
+      if (term.length < MIN_TERM_LENGTH) continue;
+      const re = new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(term)}(?![\\p{L}\\p{N}_-])`, 'giu');
+      for (const m of message.matchAll(re)) hits.push({ id: w.id, start: m.index!, end: m.index! + m[0].length });
+    }
+  }
+  const kept = hits.filter(h => !hits.some(o => o.id !== h.id && o.start <= h.start && o.end >= h.end && o.end - o.start > h.end - h.start));
+  const ids = new Set(kept.map(h => h.id));
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+/**
+ * The workspaces the workspace question lists: recently active ones, most
+ * recent first, at most MAX_ASKED_WORKSPACES. Unknown activity (the lookup
+ * failed) keeps the list's order. Pure.
+ */
+export function workspacesToAsk(workspaces: readonly RoutableWorkspace[]): RoutableWorkspace[] {
+  if (workspaces.every(w => w.lastActiveAt === undefined)) return workspaces.slice(0, MAX_ASKED_WORKSPACES);
+  return workspaces
+    .filter(w => !!w.lastActiveAt)
+    .sort((a, b) => b.lastActiveAt!.localeCompare(a.lastActiveAt!))
+    .slice(0, MAX_ASKED_WORKSPACES);
 }
 
 /**
@@ -120,8 +177,8 @@ export interface RoutableWorkspace {
  */
 export function workspaceHint(ws: { repo?: string | null; projects?: ReadonlyArray<{ name: string; description?: string | null }> | null }): string | null {
   const parts: string[] = [];
-  const repoName = ws.repo?.trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).pop();
-  if (repoName) parts.push(`repo ${repoName}`);
+  const repo = repoName(ws.repo);
+  if (repo) parts.push(`repo ${repo}`);
   const projects = (ws.projects ?? []).map(p => (p.description ? `${p.name} (${p.description})` : p.name)).filter(Boolean);
   if (projects.length) parts.push(`projects: ${projects.join('; ')}`);
   const hint = parts.join(' · ').slice(0, 240);
@@ -171,6 +228,11 @@ export interface TurnRoute {
   usage?: DecisionUsage;
   /** The workspace routing picked for an unpinned conversation, when confident. */
   workspaceId?: string;
+  /**
+   * How `workspaceId` was settled: the docked object's workspace, one the
+   * message names, the previous turn's (sticky), or the workspace question.
+   */
+  workspaceSource?: 'docked' | 'named' | 'sticky' | 'decision';
   /** What routing did, for the record (`RoutingRecord`). Absent on turns routing didn't run for. */
   routing?: RoutingRecord;
 }
@@ -299,6 +361,10 @@ export async function routeTurn(
     teamId: string; workspaceId: string | null; userId: string; message: string; previous?: string;
     /** Unpinned conversations: the in-reach workspaces to pick the turn's scope from. */
     workspaces?: readonly RoutableWorkspace[];
+    /** The docked object's (entry.about / linked mission) workspace: it decides, no question. */
+    impliedWorkspaceId?: string | null;
+    /** The previous turn's routed workspace: the default unless the message names another. */
+    previousWorkspaceId?: string | null;
     /** The conversation pins its tier: the complexity answer would be overwritten, so it isn't asked. */
     tierPinned?: boolean;
     /**
@@ -315,15 +381,17 @@ export async function routeTurn(
     now?: () => number;
   } = {},
 ): Promise<TurnRoute> {
+  const settled = input.workspaces ? settleWorkspace(input, input.workspaces) : null;
   // An acknowledgement or greeting needs no reasoning and no tools beyond the
   // fallback set: the cheap tier, without a routing call. Writes stay offered
   // only when the previous turn offered something ("Shall I file it?" → "ok").
   if (isAcknowledgement(input.message)) {
-    return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback' };
+    return { tier: 'budget', allowWrites: offeredAction(input.previous), source: 'fallback', ...settled };
   }
   const decide = deps.decide ?? decisionCall<RoutingQuestions>;
   const now = deps.now ?? (() => Date.now());
-  const ws = input.workspaces ? workspaceQuestion(input.workspaces) : null;
+  // Asked only when nothing above settled it, and only over a bounded list.
+  const ws = input.workspaces && !settled ? workspaceQuestion(workspacesToAsk(input.workspaces)) : null;
   const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
   const questions: RoutingQuestions = {
     ...(input.tierPinned ? {} : { complexity }),
@@ -334,7 +402,7 @@ export async function routeTurn(
     questionCount: Object.keys(questions).length,
     workspaceCount: ws ? ws.idFor.size : 0,
   };
-  const fallback = (routing: RoutingRecord): TurnRoute => ({ tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', routing });
+  const fallback = (routing: RoutingRecord): TurnRoute => ({ tier: FALLBACK_TIER, allowWrites: true, source: 'fallback', ...settled, routing });
   const started = now();
   let res: DecisionResult<RoutingQuestions>;
   try {
@@ -383,7 +451,24 @@ export async function routeTurn(
     ...(area ? { area } : {}),
     source,
     ...(res.usage ? { usage: res.usage } : {}),
-    ...(workspaceId ? { workspaceId } : {}),
+    ...(settled ?? (workspaceId ? { workspaceId, workspaceSource: 'decision' as const } : {})),
     routing: { outcome: source === 'decision' ? 'decision' : 'low_confidence', ...timing, ...shape, answers },
   };
+}
+
+/**
+ * The turn's workspace without the decision call, in order: the docked
+ * object's, the one the message names, the previous turn's. Each must be one
+ * of the offered (in-reach) workspaces. Null ⇒ ask.
+ */
+function settleWorkspace(
+  input: { message: string; impliedWorkspaceId?: string | null; previousWorkspaceId?: string | null },
+  workspaces: readonly RoutableWorkspace[],
+): Pick<TurnRoute, 'workspaceId' | 'workspaceSource'> | null {
+  const offered = (id?: string | null) => !!id && workspaces.some(w => w.id === id);
+  if (offered(input.impliedWorkspaceId)) return { workspaceId: input.impliedWorkspaceId!, workspaceSource: 'docked' };
+  const named = namedWorkspace(input.message, workspaces);
+  if (named) return { workspaceId: named, workspaceSource: 'named' };
+  if (offered(input.previousWorkspaceId)) return { workspaceId: input.previousWorkspaceId!, workspaceSource: 'sticky' };
+  return null;
 }

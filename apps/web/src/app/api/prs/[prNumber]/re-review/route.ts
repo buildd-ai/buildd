@@ -198,6 +198,8 @@ export async function POST(
         description: null,
         workspaceId: worker.workspaceId,
         missionId: originalTask.missionId,
+        backend: originalTask.backend ?? 'claude',
+        roleSlug: picked.role,
       },
       workspace as never,
     );

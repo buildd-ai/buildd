@@ -6,8 +6,11 @@
  */
 import { useId, useState, type ReactNode } from 'react';
 import {
+  approvalChanges,
   approvalHeadline,
+  isSystemDenied,
   parseApprovalPreview,
+  systemDeniedNote,
   type ChatToolPart,
   type ChatUnavailableReason,
   type HandoffData,
@@ -90,7 +93,11 @@ export interface ApprovalCardProps {
    * Default `card`.
    */
   settled?: 'card' | 'row';
-  /** What a discard means (0.8.0). Default "Nothing changed." (a row: "nothing changed"). */
+  /**
+   * What a discard means (0.8.0). Default "Nothing changed." (a row: "nothing changed").
+   * Only the person's Discard: a write the server refused before showing a
+   * card reads "not proposed" instead (0.12.0).
+   */
   deniedNote?: string;
 }
 
@@ -134,6 +141,25 @@ export function ApprovalCard({
     ));
 
   const done = part.state === 'output-available' || part.state === 'output-error';
+  // The server refused it before any card was shown (the one-card cap): the
+  // person never saw it, so it is never "discarded".
+  if (isSystemDenied(part)) {
+    const why = systemDeniedNote(part);
+    return settled === 'row'
+      ? (
+        <div className={`${cls} kit-approval-row`} data-state="skipped" data-testid="kit-approval">
+          <span className="kit-card-title">{headline}</span>
+          <span className="kit-note">{`not proposed · ${why}`}</span>
+        </div>
+      )
+      : (
+        <div className={cls} data-state="skipped" data-testid="kit-approval">
+          {head('Not proposed')}
+          <p className="kit-card-title">{headline}</p>
+          <p className="kit-note">{`${why.charAt(0).toUpperCase()}${why.slice(1)}. Nothing changed.`}</p>
+        </div>
+      );
+  }
   const denied = part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false);
   if ((done || denied) && settled === 'row') {
     const note = denied
@@ -169,7 +195,7 @@ export function ApprovalCard({
   const confirmText = preview?.confirmText ?? null;
   const typedOk = !confirmText || typed.trim() === confirmText.trim();
   const fields = details == null && !preview && part.input && typeof part.input === 'object' ? Object.entries(part.input as Record<string, unknown>) : [];
-  const changes = details == null && preview ? preview.changes : [];
+  const changes = details == null && preview ? approvalChanges(preview) : [];
 
   const detail = details != null ? details : (
     <>

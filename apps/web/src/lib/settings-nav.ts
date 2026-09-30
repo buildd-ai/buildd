@@ -74,7 +74,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'runners',
         label: 'Runners',
         href: '/app/settings/runners',
-        description: 'The Claude or Codex sign-in your runners use, and runner tokens.',
+        description: 'The Claude or Codex sign-in your runners use, runner tokens, and Cloudflare.',
       },
       {
         id: 'providers',

@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -178,6 +179,15 @@ export async function POST(req: NextRequest) {
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
+  // Cloud executor (packages/shared/src/executor.ts): a runner inside a cloud
+  // container declares `executor: 'cloud'` and gets NO credential material in
+  // this response. Explicit, never inferred: an unrecognised value is refused
+  // here instead of being treated as a host runner and handed credentials.
+  if (body.executor !== undefined && !isRunnerExecutor(body.executor)) {
+    return NextResponse.json({ error: "executor must be 'host' or 'cloud'" }, { status: 400 });
+  }
+  const cloudExecutor = body.executor === CLOUD_EXECUTOR;
+
   // A person's interactive MCP session, proven by the marker the MCP routes
   // sign server-side (lib/interactive-session.ts). `runner: 'mcp'` alone is
   // client-supplied and proves nothing, so without the marker it is recorded
@@ -313,7 +323,8 @@ export async function POST(req: NextRequest) {
         }))
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
-    const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
+    // A cloud container has no credential broker and must not learn secret ids.
+    const pendingCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
     return NextResponse.json({
       workers: [],
       ...payload,
@@ -2270,7 +2281,7 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
-  await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
+  if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
   // CBM-access experiment: after role config (eligibility reads the role's CBM
   // opt-out) and before the prompt-context blocks (the task-area hint drops its
   // graph mention for a withheld task). No-op without a running experiment.
@@ -2358,7 +2369,11 @@ export async function POST(req: NextRequest) {
 
   // Attach inline decrypted server-managed credentials (API key and/or OAuth
   // token), team-scoped to prevent cross-team leakage. See ./credential-injection.
-  await attachServerManagedSecrets(claimedWorkers, account.id);
+  //
+  // Every credential attach below is skipped for a cloud executor, so nothing
+  // is even decrypted; stripClaimCredentials after them is the backstop that
+  // makes the omission hold even if a new attach forgets the check.
+  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id);
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
   // enablement ∩ team visibility, and owner-team credential keying) live in
@@ -2366,22 +2381,31 @@ export async function POST(req: NextRequest) {
   //
   // Separate block from the credential decryption above so connector injection is
   // not gated on workspace anthropic/oauth secrets being present.
-  if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
+  if (!cloudExecutor && claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
     await attachMcpConnectors(claimedWorkers, now, getSecretsProvider());
   }
 
   // Attach agent-backend credentials and the runner's pre-refresh list.
   // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
   // read-only (refresh is runner-side). See ./credential-injection.
-  await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
-  await attachClaudeCredentials(claimedWorkers, filteredTasks);
-  await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
+  if (!cloudExecutor) {
+    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
+    await attachClaudeCredentials(claimedWorkers, filteredTasks);
+    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
+  } else {
+    for (const cw of claimedWorkers) {
+      const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);
+      if (removed.length > 0) {
+        console.error(`[claim] cloud executor: stripped credential field(s) an attach step added anyway for worker ${cw.id}: ${removed.join(', ')}`);
+      }
+    }
+  }
   // Also announce at the top level so the runner has ONE field to read on every
   // poll, claim or no claim. This one is account-team-scoped; the per-worker
   // lists above stay because a claim may serve a workspace outside the
   // authenticated account's own team, and the runner reads the claude_credential
   // secretId off the per-worker entry when wiring that worker to its broker.
-  const accountCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
+  const accountCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { isSystemDenied, ONE_CARD_PER_TURN_REASON } from '@builddai/ai-kit/chat/contract';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 
 /**
@@ -345,6 +346,12 @@ describe('"make this a mission"', () => {
     await turn(userMsg('file two missions'));
     expect(lastAssistant().parts.filter(p => p.state === 'approval-requested')).toHaveLength(1);
     expect(apiCalls).toEqual([]);
+    // The refused call was never shown: it carries the server's mark and the
+    // kit's reason, so the card reads "not proposed", never "discarded".
+    const capped = lastAssistant().parts.find(p => p.toolCallId === 'c2');
+    expect(capped.state).toBe('output-denied');
+    expect(capped.approval).toMatchObject({ isAutomatic: true, reason: ONE_CARD_PER_TURN_REASON });
+    expect(isSystemDenied(capped)).toBe(true);
   });
 
   it('confirming files exactly one mission, links it to the conversation, and replay files nothing', async () => {
@@ -378,6 +385,8 @@ describe('"make this a mission"', () => {
     expect(linked).toEqual([]);
     expect(approvals[0].status).toBe('denied');
     expect(lastAssistant().parts.find(p => p.type === 'tool-manage_missions').state).toBe('output-denied');
+    // The person's Discard: still reads "discarded".
+    expect(isSystemDenied(lastAssistant().parts.find(p => p.type === 'tool-manage_missions'))).toBe(false);
   });
 
   it('an edited approval (different input) decides and files nothing', async () => {
@@ -1041,6 +1050,39 @@ describe('workspace scope: all workspaces by default, routed per turn', () => {
     } as any);
     await turn(userMsg('hi'));
     expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain('all workspaces in reach');
+  });
+
+  it('the docked object\'s workspace is handed to routing', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      api: (_m, path) => path.startsWith('/api/missions/') ? { id: 'm-1', title: 'Docs refresh', workspaceId: 'ws-2', tasks: [] } : {},
+      route: async (i: any) => { asked.push(i); return { tier: 'standard', allowWrites: true, source: 'fallback' }; },
+    } as any);
+    await turn(userMsg('how is this going?'), { entry: { about: { kind: 'mission', id: '00000000-0000-4000-8000-000000000001' } } });
+    expect(asked[0].impliedWorkspaceId).toBe('ws-2');
+  });
+
+  it('sticky: the routed workspace is saved on the user turn and offered to the next turn', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const asked: any[] = [];
+    const picks = ['ws-2', undefined];
+    const { turn } = harness({
+      model, workspace: null, workspaces: both,
+      route: async (i: any) => {
+        asked.push(i);
+        const workspaceId = picks.shift();
+        return { tier: 'standard', allowWrites: true, source: 'fallback', ...(workspaceId ? { workspaceId, workspaceSource: 'named' } : {}) };
+      },
+    } as any);
+    await turn(userMsg('what changed in docs-site?'));
+    expect(asked[0].previousWorkspaceId).toBeUndefined();
+    expect(messages.find(m => m.role === 'user')!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, routedWorkspaceId: 'ws-2' });
+    await turn(userMsg('and last week?'));
+    expect(asked[1].previousWorkspaceId).toBe('ws-2');
+    // An unrouted turn saves nothing, so stickiness ends there.
+    expect(messages.filter(m => m.role === 'user').at(-1)!.usage).toBeNull();
   });
 });
 

@@ -72,6 +72,8 @@ export interface VisualEvidenceVerdict {
   notUploaded: string[];
   /** Artifact ids with verdict `issue` and no linked fix task. */
   unlinkedIssues: string[];
+  /** Artifact ids with unknown verdict values (not in QA_VERDICTS). */
+  invalidVerdicts: Array<{ id: string; verdict: unknown }>;
 }
 
 /** Rows read per check; comfortably above one run's 40-shot bound plus re-shoots. */
@@ -161,9 +163,18 @@ export function evaluateVisualAuditEvidence(input: {
   const emptyFindings: string[] = [];
   const notUploaded: string[] = [];
   const unlinkedIssues: string[] = [];
+  const invalidVerdicts: Array<{ id: string; verdict: unknown }> = [];
   const counting: QaMeta[] = [];
 
   for (const s of shots) {
+    // Check for invalid verdict first, before parseQaMeta drops it
+    if (isRecord(s.metadata) && isRecord(s.metadata.qa)) {
+      const verdict = s.metadata.qa.verdict;
+      if (typeof verdict !== 'undefined' && !QA_VERDICTS.includes(verdict as QaVerdict)) {
+        invalidVerdicts.push({ id: s.id, verdict });
+      }
+    }
+
     const qa = parseQaMeta(s.metadata);
     if (!qa) continue;
     const uploaded = uploadedIds.has(s.id);
@@ -195,12 +206,13 @@ export function evaluateVisualAuditEvidence(input: {
   }
 
   return {
-    ok: missing.length === 0 && unlinkedIssues.length === 0,
+    ok: missing.length === 0 && unlinkedIssues.length === 0 && invalidVerdicts.length === 0,
     requiredRoutes,
     missing,
     emptyFindings,
     notUploaded,
     unlinkedIssues,
+    invalidVerdicts,
   };
 }
 
@@ -216,8 +228,15 @@ export function formatVisualEvidenceRejection(v: VisualEvidenceVerdict): string 
   if (v.missing.length > 0) {
     parts.push(
       `Missing screenshots (route @ viewport): ${list(v.missing)}. Upload each with upload_artifact ` +
-        `(type: 'screenshot', metadata.qa = { runKey, route, viewport: 'mobile' | 'desktop', finding, verdict }) ` +
+        `(type: 'screenshot', metadata.qa = { runKey, route, viewport: 'mobile' | 'desktop', finding, verdict: 'ok' | 'issue' | 'unsure' }) ` +
         'and PUT the bytes.',
+    );
+  }
+  if (v.invalidVerdicts.length > 0) {
+    const items = v.invalidVerdicts.map(iv => `${iv.id} (verdict: "${iv.verdict}")`);
+    parts.push(
+      `Shots with invalid verdict values: ${list(items)}. Allowed verdicts are 'ok', 'issue', 'unsure'. ` +
+        'Update metadata.qa.verdict via update_artifact.',
     );
   }
   if (v.emptyFindings.length > 0) {

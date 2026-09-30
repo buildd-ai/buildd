@@ -578,7 +578,20 @@ export async function openMissionIntegrationPr(
   // caller reporting `api_error` and leaving a PR nobody can merge from the
   // dashboard — which is what the insert-before-POST ordering below was
   // supposed to make recoverable and did not.
-  const adoptable = await findOpenPrForBranch(installationId, repo.fullName, branch, base);
+  let adoptable = await findOpenPrForBranch(installationId, repo.fullName, branch, base);
+
+  // If no open PR and buildd has no record of creating one, check whether a
+  // manually-merged PR exists. This handles the case where a squash-merge was done
+  // outside buildd, the branch still exists (ahead_by > 0), but the PR is merged.
+  // Without this check, we would try to create a duplicate PR via POST /pulls.
+  if (!adoptable && !owner) {
+    const merged = await findMergedPrForBranch(installationId, repo.fullName, branch, base);
+    if (merged) {
+      return adoptMergedMissionPr({
+        missionId, mission, workspaceId: workspace.id, branch, base, trunk, pr: merged,
+      });
+    }
+  }
 
   const ownerWorker = await ensureMissionPrOwnerRows({
     missionId, missionTitle: mission.title, workspaceId: workspace.id, branch, base,
