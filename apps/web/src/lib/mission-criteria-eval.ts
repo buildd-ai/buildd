@@ -274,21 +274,20 @@ export async function evaluateCriteriaNow(
   const priorState = (mission.goalCriteriaState ?? null) as GoalCriteriaState | null;
   const priorAgeMs = priorState?.evaluatedAt ? Date.now() - Date.parse(priorState.evaluatedAt) : Infinity;
 
-  // Adopt any merged mission PRs that were opened outside buildd before evaluating
-  // criteria. This ensures the mission PR is in the workers table so the all_prs_merged
-  // criterion can detect it (even if it was opened manually with gh and has no
-  // buildd-created task/worker row yet).
+  // Ensure the mission PR is recognized in the workers table. This handles three cases:
+  // 1. A previously-recorded open PR (return immediately)
+  // 2. A mission PR merged outside buildd (adopt it)
+  // 3. Completed work with no existing PR (create one)
+  // This ensures the all_prs_merged criterion can detect manually-opened mission PRs.
   if (mission.integrationBranchEnabled) {
     try {
-      await openMissionIntegrationPr(missionId).catch(err => {
-        // Log but do not throw — a failure to adopt should not block criterion evaluation.
-        // The criterion will just report what it can find.
-        console.log(
-          `[criteria-eval] could not adopt merged mission PR for ${missionId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    } catch {
-      // Safety net for any uncaught error
+      await openMissionIntegrationPr(missionId);
+    } catch (err) {
+      // Log but do not throw — a failure to open/adopt should not block criterion evaluation.
+      // The criterion will report what it can find in the current state.
+      console.debug(
+        `[criteria-eval] could not ensure mission PR for ${missionId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
