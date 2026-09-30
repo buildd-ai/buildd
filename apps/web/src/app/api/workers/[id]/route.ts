@@ -11,7 +11,6 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
-import { notifyOperator } from '@/lib/pushover';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
@@ -3264,8 +3263,7 @@ export async function PATCH(
 
             // Alert: release failure needs immediate human attention.
             const prLink = releaseResult.releasePrUrl ? ` ${releaseResult.releasePrUrl}` : '';
-            notifyOperator({
-              app: 'alerts',
+            void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
               title: 'Release failed',
               message: `${releaseResult.error ?? releaseResult.message}${prLink}`,
               priority: 1,

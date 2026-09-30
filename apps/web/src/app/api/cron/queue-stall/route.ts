@@ -53,11 +53,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray, isNull, isNotNull, asc } from 'drizzle-orm';
-// Env-based ops Pushover (same channel /api/cron/stall-notify uses), NOT
-// lib/notify's per-team routing: a queue stall is a platform-health signal, and
-// notifyTeam() only accepts the five NotifyEvent values that have columns in
-// notification_preferences — routing this through it would mean a schema change
-// or mislabelling the alert as taskFailed.
+// Operator page, NOT lib/notify's per-team routing: this is a cross-tenant
+// platform-health watchdog. Because the recipient is the operator, the page
+// names ids and the gate only — never a tenant's task title, workspace name or
+// gate detail (those stay in the cron response and the task's own context).
 import { notifyOperator } from '@/lib/pushover';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
 import { checkMissionHeld, checkMissionLocal, TASK_HOLD_KEY } from '@/app/api/workers/claim/held-gate';
@@ -724,7 +723,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       .slice(0, DIGEST_LINES)
       .map(
         s =>
-          `• "${s.title}" (${s.workspaceName ?? s.workspaceId}) pending ${s.ageHours}h — ${s.gate}: ${s.detail}`,
+          `• task ${s.taskId} (workspace ${s.workspaceId}) pending ${s.ageHours}h — ${s.gate}`,
       );
     if (stalled.length > DIGEST_LINES) {
       lines.push(`• +${stalled.length - DIGEST_LINES} more (see /api/cron/queue-stall response)`);
