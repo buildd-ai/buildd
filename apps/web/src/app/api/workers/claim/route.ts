@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
@@ -2446,7 +2447,10 @@ export async function POST(req: NextRequest) {
   }
 
   return jsonResponse({
-    workers: claimedWorkers,
+    // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
+    workers: claimedWorkers.map((cw) => (cw.task
+      ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
+      : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
       budgetResetsAt: earliestFutureReset(),

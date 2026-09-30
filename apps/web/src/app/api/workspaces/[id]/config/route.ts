@@ -5,6 +5,7 @@ import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-st
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
@@ -170,9 +171,13 @@ export async function GET(
             // check as PATCH /api/workspaces/[id]), or of a workspace it has an
             // explicit accountWorkspaces link to — a runner account linked to
             // run workers there. `accessMode: 'open'` does not widen this.
-            const apiAccount = await authenticateApiKey(authHeader!.replace('Bearer ', ''));
+            // A per-task token (cloud container) reads only its task's workspace.
+            const apiAccount = await authenticateTaskScopedCaller(authHeader!.replace('Bearer ', ''));
             if (!apiAccount) {
                 return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+            }
+            if (!taskScopeAllowsWorkspace(apiAccount, id)) {
+                return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
             const ws = await db.query.workspaces.findFirst({
                 where: eq(workspaces.id, id),

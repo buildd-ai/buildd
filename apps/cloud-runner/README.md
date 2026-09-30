@@ -245,9 +245,11 @@ Prereqs:
     (or pass `--url`)
   - **AI Gateway: Edit**, only if you set an AI Gateway ID
 - A buildd **admin** API key (`BUILDD_API_KEY`), and a **worker**-level runner
-  key for the containers, ideally scoped to the workspace
-  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: containers run
-  task code.
+  key for the dispatcher, ideally scoped to the workspace
+  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: the Worker
+  keeps the runner key and uses it to mint each container's per-task token.
+  The dispatcher's key does not need the host-runner flag (Settings → Runners →
+  Runner tokens); leave it off.
 
 Save the token once in buildd: **Settings → Runners → Cloudflare** (API token,
 account ID, optional AI Gateway ID). It is stored encrypted as the team-wide

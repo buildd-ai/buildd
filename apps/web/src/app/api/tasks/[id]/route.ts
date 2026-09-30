@@ -19,6 +19,7 @@ function validateTaskId(id: string): NextResponse | null {
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsTask } from '@/lib/task-token-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
@@ -182,7 +183,7 @@ export async function GET(
       }));
     }
 
-    const response: Record<string, unknown> = { ...task };
+    const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
 

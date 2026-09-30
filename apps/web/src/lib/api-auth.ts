@@ -117,6 +117,16 @@ async function authenticateOauthJwt(jwt: string) {
 }
 
 /**
+ * A cached account record written before a column that auth decisions read
+ * existed lacks that field, and reading it as "absent" would refuse a runner
+ * the DB now allows (credential custody reads `hostRunner`). Such a record is
+ * treated as a miss and re-fetched.
+ */
+function isCurrentShape(account: CachedAccount): boolean {
+  return typeof (account as { hostRunner?: unknown }).hostRunner === 'boolean';
+}
+
+/**
  * Authenticate an incoming API key by hashing it and looking up the hash.
  * Returns the account if found, null otherwise.
  *
@@ -169,13 +179,13 @@ export async function authenticateApiKey(apiKey: string | null) {
 
   // Check positive cache (L1)
   const cached = accountCache.get(hashed);
-  if (cached) {
+  if (cached && isCurrentShape(cached)) {
     return cached;
   }
 
   // L1 miss — check Redis (L2) before hitting the DB
   const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
-  if (redisAccount) {
+  if (redisAccount && isCurrentShape(redisAccount)) {
     accountCache.set(hashed, redisAccount);
     return redisAccount;
   }

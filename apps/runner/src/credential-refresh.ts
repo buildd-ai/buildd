@@ -14,6 +14,7 @@
  *                      credential needs reconnecting and MUST NOT be retried.
  */
 
+import { hostRunnerRefusalHint } from './host-runner-refusal';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 
 const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
@@ -99,7 +100,7 @@ export async function runnerRefreshCredential(
   }
 
   if (!lockRes.ok) {
-    console.warn(`[runner-refresh] Lock request failed for ${secretId}: HTTP ${lockRes.status}`);
+    console.warn(`[runner-refresh] Lock request failed for ${secretId}: HTTP ${lockRes.status}${await hostRunnerRefusalHint(lockRes, baseUrl)}`);
     return 'error';
   }
 

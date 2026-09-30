@@ -1,4 +1,4 @@
-import { createHmac, hkdfSync, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, hkdfSync, timingSafeEqual } from 'crypto';
 
 /**
  * Per-task runner token for a cloud container.
@@ -13,8 +13,14 @@ import { createHmac, hkdfSync, timingSafeEqual } from 'crypto';
  * `authenticateApiKey` never accepts a task token, so every route refuses it
  * unless it opts in through `authenticateTaskScopedCaller`
  * (lib/task-token-auth.ts) and checks the scope. Those routes are the task's
- * own claim, a read of its own task, and its own worker's read, PATCH,
- * heartbeat, MCP, artifacts and PR calls.
+ * own claim, a read of its own task, its own worker's read, PATCH, heartbeat,
+ * MCP, artifacts, PR, park/re-attach and session-upload calls, and a read of
+ * its task's workspace config, and that workspace's memory. The set is pinned by
+ * task-token-routes.test.ts.
+ *
+ * The token also carries the task's workspace (so routes can confine it to
+ * that workspace without another lookup) and a binding to the minting key:
+ * regenerating or deleting that key ends every token it minted.
  *
  * Fails closed: with no signing secret nothing is minted and nothing verifies.
  */
@@ -30,6 +36,10 @@ export interface TaskTokenClaims {
   accountId: string;
   /** The one task this token may claim and work. */
   taskId: string;
+  /** That task's workspace; the only workspace the token may touch. */
+  workspaceId: string;
+  /** taskTokenKeyBinding(minting key's stored hash); stale once the key is regenerated. */
+  keyBinding: string;
   /** Expiry, epoch ms. */
   expiresAt: number;
 }
@@ -57,15 +67,29 @@ export function resolveTaskTokenTtlMs(requested: unknown): number {
   return Math.min(n, TASK_TOKEN_MAX_TTL_MS);
 }
 
+/**
+ * A one-way tag of the minting key's stored hash. The token carries this, not
+ * the hash, and authentication compares it to the account's current key.
+ */
+export function taskTokenKeyBinding(keyHash: string): string {
+  return createHash('sha256').update(`task-token-key:${keyHash}`).digest('base64url').slice(0, 22);
+}
+
 /** Null when no signing secret is configured. */
 export function mintTaskToken(
-  input: { accountId: string; taskId: string; ttlMs?: number },
+  input: { accountId: string; taskId: string; workspaceId: string; keyHash: string; ttlMs?: number },
   now: number = Date.now(),
 ): { token: string; expiresAt: number } | null {
   const key = signingKey();
   if (!key) return null;
   const expiresAt = now + resolveTaskTokenTtlMs(input.ttlMs);
-  const payload = Buffer.from(JSON.stringify({ a: input.accountId, t: input.taskId, e: expiresAt })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    a: input.accountId,
+    t: input.taskId,
+    w: input.workspaceId,
+    k: taskTokenKeyBinding(input.keyHash),
+    e: expiresAt,
+  })).toString('base64url');
   return { token: `${TASK_TOKEN_PREFIX}${payload}.${mac(key, payload)}`, expiresAt };
 }
 
@@ -81,13 +105,16 @@ export function verifyTaskToken(token: string | null | undefined, now: number = 
   const given = Buffer.from(body.slice(dot + 1));
   const expected = Buffer.from(mac(key, payload));
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-  let parsed: { a?: unknown; t?: unknown; e?: unknown };
+  let parsed: { a?: unknown; t?: unknown; w?: unknown; k?: unknown; e?: unknown };
   try {
     parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
   } catch {
     return null;
   }
-  if (typeof parsed.a !== 'string' || typeof parsed.t !== 'string' || typeof parsed.e !== 'number') return null;
+  if (
+    typeof parsed.a !== 'string' || typeof parsed.t !== 'string' || typeof parsed.w !== 'string'
+    || typeof parsed.k !== 'string' || typeof parsed.e !== 'number'
+  ) return null;
   if (parsed.e <= now) return null;
-  return { accountId: parsed.a, taskId: parsed.t, expiresAt: parsed.e };
+  return { accountId: parsed.a, taskId: parsed.t, workspaceId: parsed.w, keyBinding: parsed.k, expiresAt: parsed.e };
 }

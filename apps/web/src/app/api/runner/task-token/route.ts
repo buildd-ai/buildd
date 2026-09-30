@@ -49,6 +49,8 @@ export async function POST(req: NextRequest) {
   const minted = mintTaskToken({
     accountId: account.id,
     taskId,
+    workspaceId: task.workspaceId,
+    keyHash: account.apiKey,
     ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined,
   });
   if (!minted) {

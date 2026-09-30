@@ -1410,6 +1410,27 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers.length).toBe(1);
   });
 
+  it('never returns the workspace dispatch token in a claimed task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1', workspaceId: 'ws-1', title: 'T', requiredCapabilities: [],
+        workspace: { id: 'ws-1', gitConfig: null, webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
+      },
+    ]);
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text).workers.length).toBe(1);
+    expect(text).not.toContain('dispatch-secret');
+  });
+
   // --- Model-routing experiment wiring ---
 
   describe('model-routing experiment', () => {

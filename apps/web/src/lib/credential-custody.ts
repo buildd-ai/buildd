@@ -18,8 +18,10 @@ import { isTaskToken } from './task-token';
 
 export const TASK_TOKEN_REFUSED = 'A per-task token cannot use team credential routes.';
 export const NOT_HOST_RUNNER_REFUSED =
-  'This key is not flagged as a host runner key, so it cannot use team credential routes. ' +
-  'A team owner or admin can flag a runner they host: PUT /api/accounts/<accountId>/host-runner { "hostRunner": true }.';
+  'This runner key is not trusted as a host runner, so it cannot use team credential routes. ' +
+  'A team owner or admin can enable it under Settings > Runners > Runner tokens (/app/settings/runners).';
+/** Machine-readable `code` on that refusal, so a runner can say what to do. */
+export const NOT_HOST_RUNNER_CODE = 'not_host_runner';
 
 export interface CustodyCaller {
   hostRunner?: boolean | null;
@@ -40,7 +42,7 @@ export function refuseCredentialCustody(
   }
   if (opts.allowPersonSession && account.sessionUserId) return null;
   if (account.hostRunner !== true) {
-    return NextResponse.json({ error: NOT_HOST_RUNNER_REFUSED }, { status: 403 });
+    return NextResponse.json({ error: NOT_HOST_RUNNER_REFUSED, code: NOT_HOST_RUNNER_CODE }, { status: 403 });
   }
   return null;
 }

@@ -810,7 +810,17 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const repoParam = url.searchParams.get("repo");
   let workspaceId: string | undefined;
 
-  if (workspaceParam) {
+  if (account.taskScope) {
+    // A per-task token acts only in its task's workspace: a different
+    // `?workspace=` is refused and `?repo=` is ignored.
+    if (workspaceParam && workspaceParam !== account.taskScope.workspaceId) {
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    workspaceId = account.taskScope.workspaceId;
+  } else if (workspaceParam) {
     // Same generic refusal for an unknown workspace and another team's, so the
     // response cannot be used to probe which workspaces exist.
     if (!(await isWorkspaceInCallerScope(workspaceParam, account))) {

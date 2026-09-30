@@ -14,7 +14,7 @@ mock.module('@buildd/core/db/schema', () => ({ tasks: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 
 import { POST } from './route';
-import { verifyTaskToken } from '@/lib/task-token';
+import { verifyTaskToken, taskTokenKeyBinding } from '@/lib/task-token';
 
 const savedSecret = process.env.AUTH_SECRET;
 afterAll(() => {
@@ -24,7 +24,7 @@ afterAll(() => {
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const WORKSPACE_ID = '22222222-2222-4222-8222-222222222222';
-const ACCOUNT = { id: 'acct-1', teamId: 'team-1', level: 'worker' };
+const ACCOUNT = { id: 'acct-1', teamId: 'team-1', level: 'worker', apiKey: 'hash-1' };
 
 function req(body: Record<string, unknown>, key = 'bld_dispatcher'): NextRequest {
   return new NextRequest('http://localhost/api/runner/task-token', {
@@ -50,7 +50,9 @@ describe('POST /api/runner/task-token', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.token.startsWith('bldt_')).toBe(true);
-    expect(verifyTaskToken(data.token)).toMatchObject({ accountId: 'acct-1', taskId: TASK_ID });
+    expect(verifyTaskToken(data.token)).toMatchObject({
+      accountId: 'acct-1', taskId: TASK_ID, workspaceId: WORKSPACE_ID, keyBinding: taskTokenKeyBinding('hash-1'),
+    });
     expect(mockVerifyAccess).toHaveBeenCalledWith('acct-1', WORKSPACE_ID, 'canClaim');
   });
 

@@ -220,6 +220,29 @@ describe('GET /api/tasks/[id]', () => {
     expect(served.status).toBe(200);
   });
 
+  it('never returns the workspace dispatch token, to a per-task token or an account key', async () => {
+    const mockTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    for (const caller of [
+      { id: 'account-123', level: 'worker', taskScope: { taskId: TASK_ID, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } },
+      { id: 'account-123', level: 'worker' },
+    ]) {
+      mockTasksFindFirst.mockResolvedValue(mockTask);
+      mockAccountsFindFirst.mockResolvedValue(caller);
+      const res = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain('dispatch-secret');
+      expect(JSON.parse(text).workspace.webhookConfig.url).toBe('https://dispatch.example.invalid/dispatch');
+    }
+  });
+
   it('returns task for session auth when user owns workspace', async () => {
     const mockTask = {
       id: TASK_ID,

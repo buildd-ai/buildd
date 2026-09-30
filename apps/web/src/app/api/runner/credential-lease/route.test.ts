@@ -270,6 +270,8 @@ describe('POST /api/runner/credential-lease — host runner keys only', () => {
     for (const action of ['acquire', 'heartbeat', 'release']) {
       const res = await POST(requestWithKey('bld_test', action));
       expect(res.status).toBe(403);
+      // The runner keys its "how to fix" log line on this code.
+      expect((await res.json()).code).toBe('not_host_runner');
     }
     expect(mockSecretsQueryFindFirst).not.toHaveBeenCalled();
     expect(mockDbExecute).not.toHaveBeenCalled();

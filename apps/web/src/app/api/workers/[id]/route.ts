@@ -6,6 +6,7 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -557,12 +558,7 @@ export async function GET(
 
   // The workspace row carries the webhook dispatch bearer token; neither a
   // team member reading a worker nor a cloud container has any use for it.
-  const withoutDispatchToken = () => {
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return { ...worker, workspace };
-  };
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
 
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
@@ -571,14 +567,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    return NextResponse.json(withoutDispatchToken());
+    return NextResponse.json(redacted());
   }
 
   if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(account.taskScope ? withoutDispatchToken() : worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status

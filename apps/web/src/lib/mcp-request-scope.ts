@@ -7,7 +7,7 @@ import { accountWorkspaces, workspaces, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 
-type McpAccount = { id: string; teamId: string; taskScope?: { taskId: string } };
+type McpAccount = { id: string; teamId: string; taskScope?: { taskId: string; workspaceId: string } };
 
 // Ids are compared against uuid columns; a malformed one would make Postgres
 // throw instead of simply matching nothing, so it is out of scope up front.
@@ -16,10 +16,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * A `?workspace=` id pins the workspace this MCP session acts in. It must
  * belong to the calling account's team, or the account must hold an explicit
- * accountWorkspaces link to it. An unknown id is simply not in scope.
+ * accountWorkspaces link to it. An unknown id is simply not in scope. A
+ * per-task token's only workspace is its task's.
  */
 export async function isWorkspaceInCallerScope(workspaceId: string, account: McpAccount): Promise<boolean> {
   if (!UUID_RE.test(workspaceId)) return false;
+  if (account.taskScope) return workspaceId === account.taskScope.workspaceId;
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true },

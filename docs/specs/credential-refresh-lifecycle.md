@@ -92,9 +92,14 @@ forever. The system therefore needs to *detect* a lost rotation, not retry it.
   verify the credential belongs to the caller's team before acting on it or
   returning any part of it.
 - **INV-7a — only a host runner holds credentials.** The lease and refresh
-  routes MUST refuse any key an owner/admin has not flagged as a long-lived
-  host runner (`accounts.hostRunner`), and MUST always refuse a per-task token.
-  A runner key cannot read team credentials it was not handed at claim time.
+  routes and the secrets list MUST refuse any key an owner/admin has not
+  flagged as a long-lived host runner (`accounts.hostRunner`), and MUST always
+  refuse a per-task token. A worker-level runner key cannot read team
+  credentials it was not handed at claim time. One route sits outside the flag:
+  the Cloudflare deploy-token reveal serves an operator's deploy script, so it
+  takes only an admin-level `bld_` key of the team (never a worker or trigger
+  key, never a per-task token) and does not ask for the flag, which would also
+  grant that deploy key lease and refresh.
 - **INV-8 — refresh is never delegated to an agent.** The system MUST NOT create
   a task whose body instructs a worker to perform a token exchange. An LLM
   driving the exchange can acquire the lock and lose the rotation, which by
