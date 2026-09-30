@@ -155,12 +155,16 @@ the single env-configured client in `storage.ts`).
 
 ## Redaction
 
-- **Runner-side channels, today:** `createSecretRedactor` is built in
-  `startSession` (`apps/runner/src/workers.ts`) from exactly three sources:
-  `BUILDD_API_KEY`, `worker.mcpSecrets`, and `worker.roleEnvSecrets`. It does
-  exact-value matching (including JSON-escaped forms) plus the generic
-  credential patterns on free text. Evidence MUST use the same list, and a test
-  MUST fail when a new claim-delivered secret channel exists that is not in it.
+- **Runner-side channels:** `createSecretRedactor` is built in `startSession`
+  (`apps/runner/src/workers.ts`) from `buildWorkerSecretValues`
+  (`apps/runner/src/evidence-writer.ts`): `BUILDD_API_KEY`, `worker.mcpSecrets`,
+  `worker.roleEnvSecrets`, and the agent-backend credentials the claim delivers
+  (`serverApiKey`, `serverOauthToken`, `claudeAccessToken`, `codexCredential`
+  tokens). It does exact-value matching (including JSON-escaped forms) plus the
+  generic credential patterns on free text. Evidence uses the same instance.
+  `evidence-writer.test.ts` parses the claim payload type and fails when a field
+  is not classified in `CLAIM_FIELD_SECRET_CLASSIFICATION`, or when a field
+  classified `secret` does not reach the list.
 - **Raw log bodies MUST go through `createSecretRedactor(...)` on the whole
   text.** `redactSecretsInBody` only runs generic patterns on the
   `SECRET_SCAN_FIELDS` allowlist, which is right for structured transcript
