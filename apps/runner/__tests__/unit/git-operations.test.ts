@@ -206,6 +206,38 @@ describe('setupWorktree', () => {
     });
   });
 
+  test('in a cloud container, brackets the install with install_start / install_end phase lines', async () => {
+    const prev = process.env.BUILDD_EXECUTOR;
+    const origLog = console.log;
+    const lines: string[] = [];
+    process.env.BUILDD_EXECUTOR = 'cloud';
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    try {
+      failBunInstall = { frozen: true, unfrozen: true }; // emitted even when the install fails
+      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+    } finally {
+      console.log = origLog;
+      if (prev === undefined) delete process.env.BUILDD_EXECUTOR; else process.env.BUILDD_EXECUTOR = prev;
+    }
+    const phases = lines.filter(l => l.startsWith('BUILDD_PHASE=')).map(l => l.split(' ')[0]);
+    expect(phases).toEqual(['BUILDD_PHASE=install_start', 'BUILDD_PHASE=install_end']);
+  });
+
+  test('outside a cloud container no phase lines are printed', async () => {
+    const prev = process.env.BUILDD_EXECUTOR;
+    const origLog = console.log;
+    const lines: string[] = [];
+    delete process.env.BUILDD_EXECUTOR;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    try {
+      await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+    } finally {
+      console.log = origLog;
+      if (prev !== undefined) process.env.BUILDD_EXECUTOR = prev;
+    }
+    expect(lines.some(l => l.startsWith('BUILDD_PHASE='))).toBe(false);
+  });
+
   test('runs bun install in the worktree after git worktree add', async () => {
     await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
 

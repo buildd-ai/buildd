@@ -76,6 +76,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
+import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
@@ -2373,7 +2374,18 @@ export async function POST(req: NextRequest) {
   // Every credential attach below is skipped for a cloud executor, so nothing
   // is even decrypted; stripClaimCredentials after them is the backstop that
   // makes the omission hold even if a new attach forgets the check.
-  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id);
+  //
+  // The team's agent model endpoint is ranked against the Anthropic key, the
+  // seat and the Claude credential first (./agent-endpoint-injection): where
+  // it wins, it is the only model credential attached, so the blocks below
+  // skip the Anthropic ones for those workers.
+  const endpointWorkers: ReadonlySet<string> = cloudExecutor
+    ? new Set()
+    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
+        llmProviderOverride: body.llmProviderOverride === true,
+        runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+      });
+  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
   // enablement ∩ team visibility, and owner-team credential keying) live in
@@ -2390,8 +2402,8 @@ export async function POST(req: NextRequest) {
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
     await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks);
-    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
+    await attachClaudeCredentials(claimedWorkers, filteredTasks, endpointWorkers);
+    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
   } else {
     for (const cw of claimedWorkers) {
       const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);

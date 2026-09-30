@@ -16,6 +16,8 @@ mock.module('@/lib/codex-credential', () => ({
   verifyCodexCredential: mockVerifyCodexCredential,
 }));
 mock.module('@/lib/cloudflare-credential', () => ({ verifyCloudflareCredential: mockVerifyCloudflareCredential }));
+const mockVerifyAgentEndpointSecret = mock(() => Promise.resolve({ health: 'healthy', error: null }) as any);
+mock.module('@/lib/agent-endpoint-settings', () => ({ verifyAgentEndpointSecret: mockVerifyAgentEndpointSecret }));
 mock.module('@buildd/core/db', () => ({
   db: { query: { secrets: { findFirst: mockSecretsFindFirst } } },
 }));
@@ -85,5 +87,22 @@ describe('POST /api/secrets/[id]/verify', () => {
     const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
     expect(res.status).toBe(403);
     expect(mockVerifyCloudflareCredential).not.toHaveBeenCalled();
+  });
+
+  it('verifies an agent_endpoint with one call through the endpoint (health only, no key)', async () => {
+    mockVerifyAgentEndpointSecret.mockClear();
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'agent_endpoint' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(200);
+    expect(mockVerifyAgentEndpointSecret).toHaveBeenCalledWith(SECRET_ID);
+    expect(await res.json()).toEqual({ health: 'healthy', error: null });
+  });
+
+  it('refuses to verify another team\'s agent_endpoint', async () => {
+    mockVerifyAgentEndpointSecret.mockClear();
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-2', purpose: 'agent_endpoint' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(403);
+    expect(mockVerifyAgentEndpointSecret).not.toHaveBeenCalled();
   });
 });

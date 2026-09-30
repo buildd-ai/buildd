@@ -8,6 +8,7 @@
  * Worker has one token and every workspace pointed at it holds a copy, so
  * rotating silently would break the other workspaces.
  */
+import { parseModelProxyAuthHeader, parseModelProxyUrl } from './outbound';
 
 /** Non-secret webhook view, as GET /api/workspaces returns it (token masked). */
 export interface ObservedWebhook {
@@ -24,7 +25,7 @@ export interface ObservedWebhook {
  * before the list existed), so the Worker must opt in to hear about retries,
  * approved-plan children and deferred-start re-dispatches.
  */
-export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry'] as const;
+export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] as const;
 export type DispatchEvent = (typeof DISPATCH_EVENTS)[number];
 
 export interface DeployInputs {
@@ -47,11 +48,38 @@ export interface DeployInputs {
   providedDispatchToken?: string;
   /** A fresh random token, used only if the plan needs a new one. */
   generatedDispatchToken: string;
+  /**
+   * Route model traffic through an Anthropic-compatible proxy (LiteLLM and
+   * similar). Each field is optional; an empty string counts as not supplied.
+   */
+  modelProxy?: { url?: string; key?: string; authHeader?: string };
 }
 
+export type SecretName =
+  | 'DISPATCH_TOKEN' | 'BUILDD_SERVER' | 'BUILDD_API_KEY'
+  | 'MODEL_PROXY_URL' | 'MODEL_PROXY_KEY' | 'MODEL_PROXY_AUTH_HEADER';
+
+/** Put with `wrangler secret put` so a later deploy keeps them, but not secret in substance: printed in the plan. */
+const PLAIN_SECRET_NAMES: ReadonlySet<SecretName> = new Set(['BUILDD_SERVER', 'MODEL_PROXY_URL', 'MODEL_PROXY_AUTH_HEADER']);
+
+/**
+ * The R2 bucket bound as SNAPSHOTS in wrangler.jsonc (warm repos), and the
+ * lifecycle rule that backstops the refresher's two-generation pruning.
+ * `wrangler deploy` fails on a binding to a bucket that does not exist, so
+ * the bucket is created (idempotently) before every deploy.
+ */
+export const SNAPSHOT_BUCKET = {
+  name: 'buildd-cloud-runner-snapshots',
+  lifecycle: [
+    { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
+    { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
+  ],
+} as const;
+
 export type DeployStep =
+  | { kind: 'ensure_snapshot_bucket' }
   | { kind: 'wrangler_deploy' }
-  | { kind: 'put_secret'; name: 'DISPATCH_TOKEN' | 'BUILDD_SERVER' | 'BUILDD_API_KEY'; value: string; reason: string }
+  | { kind: 'put_secret'; name: SecretName; value: string; reason: string }
   | {
       kind: 'set_webhook';
       workspaceId: string;
@@ -101,7 +129,7 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   }
 
   const secrets = new Set(i.workerSecretNames ?? []);
-  const steps: DeployStep[] = [{ kind: 'wrangler_deploy' }];
+  const steps: DeployStep[] = [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
   const notes: string[] = [];
 
   // BUILDD_SERVER: not a secret in substance, but kept with the others so a
@@ -120,6 +148,14 @@ export function planDeploy(i: DeployInputs): DeployPlan {
       error: 'The Worker has no BUILDD_API_KEY yet. Pass a runner key (worker level, ideally scoped to this workspace) with --runner-key or BUILDD_RUNNER_API_KEY.',
     };
   }
+
+  // Model proxy. Put as secrets, like BUILDD_SERVER: a plain var would be
+  // dropped by the next `wrangler deploy` that does not repeat it, silently
+  // switching the route back to the gateway.
+  const proxy = planModelProxy(i.modelProxy ?? {}, secrets);
+  if (!proxy.ok) return proxy;
+  steps.push(...proxy.steps);
+  notes.push(...proxy.notes);
 
   // DISPATCH_TOKEN.
   const hasToken = secrets.has('DISPATCH_TOKEN');
@@ -167,15 +203,58 @@ export function planDeploy(i: DeployInputs): DeployPlan {
   return { ok: true, steps, notes };
 }
 
+function planModelProxy(
+  m: NonNullable<DeployInputs['modelProxy']>,
+  secrets: Set<string>,
+): { ok: true; steps: DeployStep[]; notes: string[] } | { ok: false; error: string } {
+  const url = m.url || undefined;
+  const key = m.key || undefined;
+  const header = m.authHeader || undefined;
+  const steps: DeployStep[] = [];
+  if (!url && !key && !header) {
+    const notes = secrets.has('MODEL_PROXY_URL')
+      ? ['Model traffic goes to the proxy already set on the Worker (MODEL_PROXY_URL); `wrangler secret delete MODEL_PROXY_URL` returns it to the gateway.']
+      : [];
+    return { ok: true, steps, notes };
+  }
+  if (url) {
+    const parsed = parseModelProxyUrl(url);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    steps.push({ kind: 'put_secret', name: 'MODEL_PROXY_URL', value: parsed.baseUrl, reason: 'model proxy base URL' });
+  } else if (!secrets.has('MODEL_PROXY_URL')) {
+    return { ok: false, error: 'MODEL_PROXY_KEY / MODEL_PROXY_AUTH_HEADER need a proxy: pass --model-proxy-url or set MODEL_PROXY_URL.' };
+  }
+  if (key) {
+    steps.push({
+      kind: 'put_secret', name: 'MODEL_PROXY_KEY', value: key,
+      reason: secrets.has('MODEL_PROXY_KEY') ? 'replace model proxy key (supplied)' : 'model proxy key',
+    });
+  } else if (!secrets.has('MODEL_PROXY_KEY')) {
+    return { ok: false, error: 'The Worker has no MODEL_PROXY_KEY yet, and model traffic is never forwarded to the proxy without one. Set MODEL_PROXY_KEY.' };
+  }
+  if (header) {
+    const parsed = parseModelProxyAuthHeader(header);
+    if (!parsed) return { ok: false, error: 'MODEL_PROXY_AUTH_HEADER must be authorization or x-api-key.' };
+    steps.push({ kind: 'put_secret', name: 'MODEL_PROXY_AUTH_HEADER', value: parsed, reason: 'model proxy auth header' });
+  }
+  return {
+    ok: true,
+    steps,
+    notes: ['Model traffic goes to the proxy (MODEL_PROXY_URL), which takes precedence over any AI Gateway settings.'],
+  };
+}
+
 /** One line per step, secrets redacted, for --dry-run and the run log. */
 export function describePlan(plan: DeployPlan): string[] {
   if (!plan.ok) return [`error: ${plan.error}`];
   const lines = plan.steps.map((s) => {
     switch (s.kind) {
+      case 'ensure_snapshot_bucket':
+        return `wrangler r2 bucket create ${SNAPSHOT_BUCKET.name} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
       case 'wrangler_deploy':
         return 'wrangler deploy (apps/cloud-runner)';
       case 'put_secret':
-        return `wrangler secret put ${s.name} = ${s.name === 'BUILDD_SERVER' ? s.value : redact(s.value)} (${s.reason})`;
+        return `wrangler secret put ${s.name} = ${PLAIN_SECRET_NAMES.has(s.name) ? s.value : redact(s.value)} (${s.reason})`;
       case 'set_webhook':
         return `PATCH workspace ${s.workspaceId} webhookConfig = { url: ${s.config.url}, token: ${s.config.token === undefined ? '(unchanged)' : redact(s.config.token)}, enabled: true, events: ${s.config.events.join(',')} } (${s.reason})`;
       case 'clear_webhook':
