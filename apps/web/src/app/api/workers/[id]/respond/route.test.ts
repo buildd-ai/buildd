@@ -106,7 +106,7 @@ mock.module('@/lib/path-claim-release', () => ({
 
 // The cold path inserts a Continue: task and must wake runners for it the way
 // every other new task does, or a webhook-only workspace never runs it.
-const mockDispatchNewTask = mock(async (_task: any, _workspace: any) => {});
+const mockDispatchNewTask = mock(async (_task: any, _workspace: any, _options?: any) => {});
 // A worker a cloud runner parked has no container: the answer must wake one.
 const mockDispatchResumedTask = mock(async (_task: any, _workspace: any, _workerId: string) => true);
 mock.module('@/lib/task-dispatch', () => ({
@@ -1176,6 +1176,18 @@ describe('POST /api/workers/[id]/respond', () => {
       const [task, ws] = mockDispatchNewTask.mock.calls[0] as any[];
       expect(task.id).toBe('new-task-1');
       expect(ws).toBe(workspace);
+    });
+
+    it("the continuation keeps the parent's runner preference, and dispatch honours it", async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace, task: { ...baseWorker.task, runnerPreference: 'user' } });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((mockInsertValues.mock.calls.at(-1) as any[])[0].runnerPreference).toBe('user');
+      const [, , options] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(options).toEqual({ runnerPreference: 'user' });
     });
 
     it('does not dispatch anything on the warm resume path', async () => {

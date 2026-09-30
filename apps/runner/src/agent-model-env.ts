@@ -93,6 +93,20 @@ export function endpointSessionModels(
   };
 }
 
+/**
+ * Whether the runner writes the claim's Claude credential (the seat's access
+ * token, or the broker-held one) into the session. Never under the team's
+ * agent model endpoint: a Claude seat token must not ride along to a
+ * third-party host.
+ */
+export function shouldUseClaudeCredential(
+  modelEnv: Pick<ModelEnvResult, 'endpoint'>,
+  worker: { claudeAccessToken?: string | null; claudeCredentialId?: string | null },
+): boolean {
+  if (modelEnv.endpoint === 'team') return false;
+  return !!(worker.claudeAccessToken || worker.claudeCredentialId);
+}
+
 export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput): ModelEnvResult {
   const { llmProvider, serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
 

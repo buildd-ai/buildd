@@ -24,14 +24,16 @@ const activeCalls: Array<[string, string | null | undefined]> = [];
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'user-1', email: 'a@example.com' }) }));
 mock.module('next/headers', () => ({ cookies: async () => ({ get: (n: string) => (n === 'buildd-team' && cookie ? { value: cookie } : undefined) }) }));
 mock.module('next/navigation', () => ({ redirect: (to: string) => { throw new Error(`redirect ${to}`); } }));
-mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: async () => [] }, accounts: { findMany: async () => [] } } } }));
+let accountRows: any[] = [];
+let accountQuery: any = null;
+mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamsWithDetails: async () => TEAMS,
   getUserWorkspaceIds: async () => [],
   resolveActiveTeamId: async (userId: string, c: string | null | undefined) => { activeCalls.push([userId, c]); return active; },
 }));
 
-const { loadSettingsContext } = await import('./settings-context');
+const { loadSettingsContext, loadRunnerAccounts, RUNNER_ACCOUNT_COLUMNS } = await import('./settings-context');
 
 beforeEach(() => {
   cookie = undefined;
@@ -63,5 +65,46 @@ describe('loadSettingsContext — active team', () => {
     expect(ctx.currentTeamId).toBeNull();
     expect(ctx.currentTeam).toBeNull();
     expect(ctx.isTeamAdmin).toBe(false);
+  });
+});
+
+describe('loadRunnerAccounts: only the fields the runner tokens section renders', () => {
+  // A full accounts row as the DB would return it without a column list.
+  const fullRow = {
+    id: 'acc-1', type: 'service', level: 'worker', name: 'ci-runner', apiKey: 'hash-value-example', apiKeyPrefix: 'bld_ab12',
+    githubId: 'gh-1', authType: 'oauth', maxCostPerDay: '10.00', totalCost: '1.23', oauthToken: 'legacy-token-example', seatId: 'seat-1',
+    maxConcurrentSessions: 2, activeSessions: 1, budgetExhaustedAt: null, budgetResetsAt: null, monthlyBudgetUsd: '100',
+    monthlyCostUsd: '5', monthlyCostMonth: '2026-01', budgetAlertsSent: [50], aiDailyBudgetUsd: '3', maxConcurrentWorkers: 3,
+    totalTasks: 9, createdAt: new Date('2026-01-01'), teamId: 'team-acme',
+    team: { name: 'Acme' }, accountWorkspaces: [{ workspaceId: 'ws-1' }],
+  };
+
+  it('the DTO carries no key hash, legacy token or budget internals', async () => {
+    accountRows = [fullRow];
+    const [dto] = await loadRunnerAccounts(['team-acme']);
+    expect(Object.keys(dto).sort()).toEqual([
+      'accountWorkspaces', 'activeSessions', 'apiKeyPrefix', 'authType', 'budgetExhaustedAt', 'budgetResetsAt', 'createdAt',
+      'id', 'maxConcurrentSessions', 'maxConcurrentWorkers', 'name', 'team', 'totalCost', 'type',
+    ]);
+    for (const k of ['apiKey', 'apiKeyHash', 'oauthToken', 'hasOauthToken', 'seatId', 'githubId', 'maxCostPerDay', 'monthlyBudgetUsd', 'monthlyCostUsd', 'budgetAlertsSent', 'aiDailyBudgetUsd']) {
+      expect(k in dto).toBe(false);
+    }
+    const json = JSON.stringify(dto);
+    expect(json).not.toContain('hash-value-example');
+    expect(json).not.toContain('legacy-token-example');
+    expect(dto).toMatchObject({ id: 'acc-1', name: 'ci-runner', apiKeyPrefix: 'bld_ab12', team: { name: 'Acme' }, accountWorkspaces: [{ workspaceId: 'ws-1' }] });
+  });
+
+  it('asks the DB for only those columns', async () => {
+    accountRows = [];
+    await loadRunnerAccounts(['team-acme']);
+    expect(accountQuery.columns).toEqual(RUNNER_ACCOUNT_COLUMNS);
+    for (const k of ['apiKey', 'oauthToken', 'seatId', 'monthlyBudgetUsd']) expect(k in accountQuery.columns).toBe(false);
+  });
+
+  it('no teams: no query', async () => {
+    accountQuery = null;
+    expect(await loadRunnerAccounts([])).toEqual([]);
+    expect(accountQuery).toBeNull();
   });
 });

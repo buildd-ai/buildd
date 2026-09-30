@@ -57,7 +57,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const server = kind === 'anthropic' && needsServerModelEndpoint(this.env) ? await this.modelEndpoint() : null;
     const viaServer = !!server && server !== 'unavailable';
     const decision = rewriteOutbound(
-      { url: request.url, headers: request.headers },
+      { url: request.url, method: request.method, headers: request.headers },
       { model: resolveModelRoute(this.env, server), github },
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));

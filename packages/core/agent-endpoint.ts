@@ -36,8 +36,17 @@
  */
 import { gatewayUrlProblem, normalizeGatewayUrl, resolveLiteLLMGateway, type LiteLLMGateway } from './litellm-gateway';
 import { openRouterModelId } from './openrouter-id';
+import { verifyByFetch, type LookupAll, type VerifyOutcome } from './net/public-address';
 
 export const AGENT_ENDPOINT_PURPOSE = 'agent_endpoint' as const;
+
+/**
+ * The claim-request `runnerFeatures` entry a runner sends when it applies
+ * `modelEndpoint`. The claim delivers an endpoint (and withholds the Anthropic
+ * credentials it replaces) only to a runner that declares it; any other runner
+ * gets the claim it got before endpoints existed.
+ */
+export const AGENT_ENDPOINT_RUNNER_FEATURE = 'agent_endpoint' as const;
 export const OPENROUTER_AGENT_BASE_URL = 'https://openrouter.ai/api';
 
 export const AGENT_ENDPOINT_KINDS = ['gateway', 'openrouter', 'anthropic-compatible'] as const;
@@ -360,33 +369,22 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
  * One real Messages call through the endpoint: the budget model after mapping,
  * `max_tokens: 1`, with the configured header. 2xx ⇒ healthy, 401/403 ⇒
  * revoked, anything else (an outage, an unknown alias) ⇒ unknown, so an outage
- * never marks it dead. The error text never contains the key.
+ * never marks it dead. Through net/public-address verifyByFetch: public hosts
+ * only, no redirects, and the error is fixed text plus a status code, never
+ * the reply. `blocked`: the URL itself may not be used.
  */
 export async function verifyAgentEndpoint(
   route: AgentEndpointRoute,
   model: string,
-  opts: { fetcher?: Fetcher; timeoutMs?: number } = {},
-): Promise<{ health: 'healthy' | 'revoked' | 'unknown'; error: string | null }> {
-  const fetcher = opts.fetcher ?? ((u, i) => fetch(u, i));
-  const scrub = (s: string) => s.split(route.apiKey).join('[key]').slice(0, 200);
+  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll } = {},
+): Promise<VerifyOutcome> {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (route.authHeader === 'x-api-key') headers['x-api-key'] = route.apiKey;
   else headers.authorization = `Bearer ${route.apiKey}`;
-  const wireModel = mapAgentModel(route, model);
-  try {
-    const res = await fetcher(`${route.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: wireModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
-    });
-    if (res.ok) return { health: 'healthy', error: null };
-    const detail = scrub((await res.text().catch(() => '')).slice(0, 160));
-    if (res.status === 401 || res.status === 403) {
-      return { health: 'revoked', error: scrub(`endpoint rejected the key (HTTP ${res.status})${detail ? `: ${detail}` : ''}`) };
-    }
-    return { health: 'unknown', error: scrub(`endpoint returned HTTP ${res.status} for ${wireModel}${detail ? `: ${detail}` : ''}`) };
-  } catch (e) {
-    return { health: 'unknown', error: scrub(`could not reach the endpoint: ${e instanceof Error ? e.message : String(e)}`) };
-  }
+  return verifyByFetch('endpoint', `${route.baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ model: mapAgentModel(route, model), max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+  }, { fetcher: opts.fetcher, lookup: opts.lookup });
 }
