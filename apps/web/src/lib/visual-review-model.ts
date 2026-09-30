@@ -12,6 +12,7 @@
  * Human decisions come in as `visual_shot_reviews` rows and are joined per
  * shot. They never live in `artifacts.metadata.qa`.
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type {
   HumanShotReview,
   VisualQaVerdict,
@@ -110,7 +111,7 @@ export interface BuildVisualReviewInput {
 /** A claimable audit pending this long with no browser runner is `no_browser_runner`. */
 export const NO_BROWSER_RUNNER_AFTER_MS = 10 * 60 * 1000;
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
 // Status half of the dependency contract only: this model loads workers for
 // audit and fix tasks, not for the builder tasks an audit depends on, so the
 // claim gate's open-PR guard cannot be applied here. An audit whose builder
@@ -205,7 +206,7 @@ function auditWhy(t: VisualReviewTaskInput): string | null {
   return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
 }
 
-const TERMINAL_AUDIT = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_AUDIT = new Set<string>(TERMINAL_TASK_STATUSES);
 
 function auditView(t: VisualReviewTaskInput): VisualReviewAuditTask {
   return {

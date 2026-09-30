@@ -19,6 +19,7 @@
  *   counts as live, on Home and the list alike.
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import {
   deriveCriteriaGatePresentation,
   hasPendingDeliverableWork,
@@ -198,7 +199,7 @@ export interface MissionCardSummary {
 }
 
 const TERMINAL_MISSION = new Set(['completed', 'archived', 'cancelled']);
-const OPEN_TASK = new Set(['pending', 'assigned', 'in_progress']);
+const OPEN_TASK = new Set<string>(OPEN_TASK_STATUSES);
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const iso = (d: DateLike) => (d == null ? null : new Date(d).toISOString());
 

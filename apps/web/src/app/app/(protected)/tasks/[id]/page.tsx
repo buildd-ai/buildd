@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { displayWorkspaceName } from '@buildd/shared';
+import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
 import Spinner from '@/components/Spinner';
@@ -272,7 +272,6 @@ export default async function TaskDetailPage({
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
-  const LIVE_WORKER_STATUSES = ['running', 'starting', 'waiting_input'];
   const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
@@ -515,7 +514,7 @@ export default async function TaskDetailPage({
   // prompt left on an ended worker (its hook was denied when the session
   // stopped) is dropped rather than offered as a live "Allow once".
   const activeWorkerRow =
-    taskWorkers.find(w => ['running', 'starting', 'waiting_input'].includes(w.status)) ||
+    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ||
     taskWorkers.find(w => isAnswerableWaitingFor(w.status, w.waitingFor as { type?: string } | null));
   const activeWorker = activeWorkerRow?.waitingFor
     && !isAnswerableWaitingFor(activeWorkerRow.status, activeWorkerRow.waitingFor as { type?: string } | null)
@@ -524,7 +523,7 @@ export default async function TaskDetailPage({
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
-  const isTerminal = task.status === 'completed' || task.status === 'failed';
+  const isTerminal = isTerminalTaskStatus(task.status);
   const baseDisplayStatus = isTerminal
     ? task.status
     : deriveDisplayStatus(task.status, activeWorker?.status);
@@ -1339,7 +1338,8 @@ export default async function TaskDetailPage({
             );
           }
 
-          if (task.status === 'running') {
+          // task.status is never 'running' — liveness is the worker's.
+          if (baseDisplayStatus === 'running') {
             return (
               <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">

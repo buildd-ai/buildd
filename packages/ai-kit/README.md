@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.11.0
+npm i -E @builddai/ai-kit@0.12.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -188,7 +188,8 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 
 - `read`: runs.
 - a write the person set to Allow runs without a card only if `canSkipCard` holds (first skip of the turn, no tool output anywhere in the stored conversation or earlier in this turn, nothing docked, not `startsUnattendedWork`, not `spends`, only `skippableFields`) **and** your `preview` resolves. Its output gets `allowed: true`.
-- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one.
+- anything else gets an approval card carrying your preview. **At most one card per turn**: a second write is denied with `ONE_CARD_PER_TURN_REASON` and the model is told to ask after this one. The card renders that denial as "not proposed · one change per turn", never as a Discard (`isSystemDenied`).
+- a preview may return `input`, what actually runs; each field it rewrote is listed on the card (`key (runs as): proposed → runs`), so the card never reads narrower than the call.
 - a preview that can't resolve the target (`ok: false`) shows no card; the tool answers `Needs clarification: <question>`.
 - on approval, the write runs only if this request won the store's compare-and-set, the input hash matches, and the preview rebuilt now has the same target and fingerprint as the approved one ("changed since the card was shown" otherwise). `execute` re-checks all of this, so nothing a tool result says can make a write run.
 

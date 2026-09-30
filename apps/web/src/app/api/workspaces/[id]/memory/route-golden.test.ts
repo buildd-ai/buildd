@@ -200,7 +200,9 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
     attributionVerdict = { task_ok: true, worker_ok: true };
     try {
       await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
-      await new Promise(r => setTimeout(r, 10));
+      // The ledger write runs after the response; under a loaded runner a fixed
+      // 10ms is not enough, so wait for the row rather than a fixed delay.
+      for (let i = 0; i < 100 && inserts.length === 0; i++) await new Promise(r => setTimeout(r, 10));
       expect(inserts).toHaveLength(1);
       // Ranked by the search's order (mem-1 first), not the batch's.
       expect(ledgerRows()).toEqual([
@@ -222,7 +224,7 @@ describe('golden: GET /api/workspaces/[id]/memory search', () => {
     attributionVerdict = { task_ok: false, worker_ok: true };
     try {
       await GET(req(`query=fix&limit=5&taskId=${TASK}&workerId=${WORKER}`), { params: wsParams });
-      await new Promise(r => setTimeout(r, 10));
+      for (let i = 0; i < 100 && inserts.length === 0; i++) await new Promise(r => setTimeout(r, 10));
       expect(ledgerRows().map(r => [r[4], r[5]])).toEqual([[null, null], [null, null]]);
     } finally {
       teamIdForTest = 'team-1';

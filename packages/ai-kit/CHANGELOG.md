@@ -12,6 +12,37 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.12.0 — 2026-09-30
+
+Minor: a write the server refused never reads as the person's Discard, and a
+card lists every field the app rewrote before running.
+
+- `ApprovalCard`: a write denied by the server before any card was shown
+  (`approval.isAutomatic`, e.g. the one-card cap) renders "not proposed · one
+  change per turn" (`data-state="skipped"`) instead of "discarded · nothing
+  changed". The person's own Discard is unchanged. New contract helpers
+  `isSystemDenied(part)` and `systemDeniedNote(part)`; `ToolApproval` gains the
+  SDK's `isAutomatic`.
+- `ONE_CARD_PER_TURN_REASON` moves to `/chat/contract` (still re-exported from
+  `/chat/server`) and now tells the model the call was never shown: don't
+  report it as done or discarded, drop it if it duplicates the card that is up,
+  otherwise ask after the person answers.
+- A preview that returns `input` (what actually runs) different from the
+  model's input gets `ApprovalPreview.resolved`: one entry per rewritten field,
+  shown on the card as `key (runs as): proposed → runs`. A rewrite to
+  `target.id` is left out. `previewMatches` also requires the same rewrites at
+  execution, so the call that runs is the one the card showed. New helpers
+  `approvalChanges(preview)` and `withResolvedFields(preview, proposed, runs)`.
+
+## 0.11.1 — 2026-09-29
+
+Patch: the approval card fits a 320px column.
+
+- `.kit-card` pins its grid to one `minmax(0, 1fr)` column. The implicit
+  `auto` column grew to its widest child's min-content, so a long head-row
+  meta, fold summary or unwrapped action row pushed the card (and the page)
+  past a narrow viewport instead of truncating or wrapping inside it.
+
 ## 0.11.0 — 2026-09-29
 
 Rich tool rows, lifted from buildd's chat. Minor: opt-in; without it the

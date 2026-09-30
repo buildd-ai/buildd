@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
@@ -179,8 +180,8 @@ const WORKER_WITH = {
   orderBy: [desc(workers.startedAt)],
 };
 
-const LIVE_WORKER_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
-const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
+const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
 
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {

@@ -55,6 +55,7 @@
  * Auth: Bearer CRON_SECRET.
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { cronRuns, tasks } from '@buildd/core/db/schema';
@@ -75,9 +76,6 @@ import { systemActor } from '@/lib/mission-feed';
 export const maxDuration = 60;
 
 const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev';
-
-/** Task statuses that mean an existing friction report is still live. */
-const CLOSED_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /** Lines in the Pushover digest before it collapses into "+N more". */
 const DIGEST_LINES = 5;
@@ -123,7 +121,7 @@ async function fileViolation(
       eq(tasks.workspaceId, violation.workspaceId),
       like(tasks.title, '[friction] %'),
       sql`${tasks.context}->>'frictionSignature' = ${signature}`,
-      notInArray(tasks.status, CLOSED_TASK_STATUSES),
+      notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
     ),
     columns: { id: true },
   });

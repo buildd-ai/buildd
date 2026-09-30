@@ -8,6 +8,7 @@
  * agent, so every field is validated here and a malformed shot is dropped
  * rather than rendered half-empty.
  */
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import type { DeliveryVisual } from './mission-delivery';
 import { buildVisualReviewModel, type VisualReviewTaskInput } from './visual-review-model';
@@ -20,9 +21,6 @@ import { buildVisualReviewModel, type VisualReviewTaskInput } from './visual-rev
  * visibility rule below, the role seed and the evidence check read one value.
  */
 export { VISUAL_AUDITOR_ROLE_SLUG };
-
-/** Task states after which an auditor will write no more shots. */
-const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /**
  * The `metadata.qa` vocabulary. The completion evidence check
@@ -365,7 +363,7 @@ export function missionVisualReview<T extends TaskLike>(
   // The task that wrote the newest current shot, else the one open audit, so
   // the Board can put the shots under that task's tile.
   const newest = run[run.length - 1];
-  const openAudit = tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !TERMINAL_TASK_STATUSES.includes(t.status));
+  const openAudit = tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !isTerminalTaskStatus(t.status));
   const taskId = (newest && 'auditTaskId' in newest ? (newest as { auditTaskId: string | null }).auditTaskId : null)
     ?? (run.length === 0 ? openAudit?.id ?? null : null);
   return { run, summary, taskId, model };

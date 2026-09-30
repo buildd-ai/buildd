@@ -5,8 +5,9 @@
  * so: the header status and Worker history both read across the lineage.
  */
 
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 /** Task statuses of a retry that is still going to touch the PR. */
-const LIVE_ATTEMPT_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_ATTEMPT_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
 /**
  * The header status for a task given its CI-retry attempts. A completed task

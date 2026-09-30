@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
@@ -274,7 +275,6 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 }
 
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
-const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 // PR lifecycle statuses that must not be overwritten by any later CI event:
 // TERMINAL_PR_LIFECYCLE (merged, closed, unresolvable) via isTerminalPrLifecycle.
 
@@ -1694,7 +1694,7 @@ async function handleCheckSuiteFailure(
       // ALWAYS stamped 'completed' as bookkeeping (the PR already exists, so it
       // must not be claimable as pending work) — that stamp says nothing about
       // whether an agent is "done" with it, so this guard does not apply.
-      if (TERMINAL_TASK_STATUSES.includes(task.status) && !isAdoptedPrTask(task)) {
+      if (isTerminalTaskStatus(task.status) && !isAdoptedPrTask(task)) {
         if (task.missionId) {
           await notifyMissionPrReady(task.missionId, {
             title: 'CI failing on completed task PR',

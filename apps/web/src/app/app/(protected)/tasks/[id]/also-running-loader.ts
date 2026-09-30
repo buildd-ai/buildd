@@ -7,13 +7,14 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { isInTaskLineage, unresolvedParentIds } from './also-running';
+import type { WorkerStatusValue } from '@buildd/shared';
 
 /** Parent-chain lookups past this depth are not worth a render round trip. */
 const MAX_LINEAGE_ROUNDS = 6;
 
 export async function loadAlsoRunningWorkers(opts: {
   task: { id: string; workspaceId: string; parentTaskId: string | null; parentTask?: { parentTaskId: string | null } | null };
-  liveStatuses: string[];
+  liveStatuses: readonly WorkerStatusValue[];
 }) {
   const { task } = opts;
   const rows = await db.query.workers.findMany({

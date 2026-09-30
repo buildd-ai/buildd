@@ -25,6 +25,7 @@
  * would be strictly worse than the original bug.
  */
 
+import { type TaskStatusValue } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, taskSubjectReports, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
@@ -39,7 +40,7 @@ export interface SubjectSweepResult {
 }
 
 const DEAD_LIFECYCLE_STATUSES = new Set(['closed', 'merged']);
-const CLAIMABLE_STATUSES = new Set(['pending', 'assigned']);
+const CLAIMABLE_STATUSES = new Set<string>(['pending', 'assigned'] satisfies TaskStatusValue[]);
 
 /**
  * Sweep all tasks anchored to the given PR. When no live worker PR remains in
@@ -170,7 +171,7 @@ export async function sweepSubjectAnchoredTasks(
     updatedAt: new Date(),
   }).where(and(
     inArray(tasks.id, toReconcile.map(t => t.id)),
-    inArray(tasks.status, [...CLAIMABLE_STATUSES]),
+    inArray(tasks.status, [...CLAIMABLE_STATUSES] as TaskStatusValue[]),
   )).returning({ id: tasks.id });
 
   console.log(

@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'bun:test';
-import { appendInstructionHistory, messageDeliveryStatus } from './worker-instructions';
+import { appendInstructionHistory, messageDeliveryStatus, isUnreachableWorkerStatus } from './worker-instructions';
+import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
+
+describe('isUnreachableWorkerStatus', () => {
+  // The check-in route 409s every terminal status, superseded included, so an
+  // instruction queued for one can never be collected.
+  it('matches the check-in route terminal set, superseded included', () => {
+    for (const s of TERMINAL_WORKER_STATUSES) expect(isUnreachableWorkerStatus(s)).toBe(true);
+    expect(isUnreachableWorkerStatus('superseded')).toBe(true);
+    expect(isUnreachableWorkerStatus('running')).toBe(false);
+    expect(isUnreachableWorkerStatus('paused')).toBe(false);
+  });
+});
 
 describe('appendInstructionHistory — turnAtSend', () => {
   it('records the worker\'s turn count at send time', () => {

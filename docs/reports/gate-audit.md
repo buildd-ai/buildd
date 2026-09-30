@@ -238,3 +238,14 @@ twice. A merge that lands writes no row; `workers.mergedAt` already records it.
 | 62 | `auto-merge.ts:tryAutoMergeWorkerPr` (safety rails) | `auto_merge` | rejected / deferred | `evaluateAutoMergeSafety` refused; `detail.reasonClass` + `detail.tier` |
 | 63 | `auto-merge.ts:tryAutoMergeWorkerPr` (mission-PR gate) | `mission_pr_lifecycle` | deferred | mission PR waits on sibling task work, same rule as `merge_pr` |
 | 64 | `auto-merge.ts:tryAutoMergeWorkerPr` (merge call) | `auto_merge` | rejected | GitHub merge API refused; `detail.mergeFailureClass` from `classifyMergeFailure` |
+
+### Chat retro proposals (`lib/chat-retro/run.ts`, experiment)
+
+The daily chat retro pass files suggested improvements for teams that opted
+in to proposals. A pattern it declined to file is recorded, so the backlog is
+visible without being filed. Removal: `lib/chat-retro/REMOVAL.md`.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 65 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | deferred | eligible pattern over the per-team daily proposal cap |
+| 66 | `chat-retro/run.ts:proposeForTeam` | `chat_retro_proposal` | rejected | signature muted until its evidence doubles, or no workspace to file into |

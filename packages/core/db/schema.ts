@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -111,6 +111,11 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
+  // team: NULL or a missing key = off. `lessons` records content-free lesson
+  // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
+  // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
+  chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -877,7 +882,7 @@ export const missions = pgTable('missions', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').default('active').notNull().$type<'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted'>(),
+  status: text('status').default('active').notNull().$type<MissionStatusValue>(),
   costBudgetUsd: decimal('cost_budget_usd', { precision: 10, scale: 2 }),
   priority: integer('priority').default(0).notNull(),
   defaultOutputRequirement: text('default_output_requirement').$type<'pr_required' | 'artifact_required' | 'none' | 'auto'>(),
@@ -1145,7 +1150,7 @@ export const tasks = pgTable('tasks', {
   label: varchar('label', { length: 48 }),
   description: text('description'),
   context: jsonb('context').default({}).$type<Record<string, unknown>>(),
-  status: text('status').default('pending').notNull(),
+  status: text('status').default('pending').notNull().$type<TaskStatusValue>(),
   priority: integer('priority').default(0).notNull(),
   mode: text('mode').default('execution').notNull().$type<'execution' | 'planning'>(),
   runnerPreference: text('runner_preference').default('any').notNull().$type<'any' | 'user' | 'service' | 'action'>(),
@@ -1538,7 +1543,7 @@ export const workers = pgTable('workers', {
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
-  status: text('status').default('idle').notNull(),
+  status: text('status').default('idle').notNull().$type<WorkerStatusValue>(),
   waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
@@ -2770,12 +2775,62 @@ export const conversationMessages = pgTable('conversation_messages', {
   surface: text('surface').default('web').notNull().$type<'web' | 'slack' | 'discord' | 'teams'>(),
   tier: text('tier'),
   model: text('model'),
-  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null; latencyMs?: number }>(),
+  usage: jsonb('usage').$type<{ inputTokens: number; outputTokens: number; costUsd: number | null; latencyMs?: number; routedWorkspaceId?: string }>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
   // Recent messages by author (turn admission itself lives in chat_turn_windows).
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
+}));
+
+// Chat session retro lessons (experiment; docs/design/chat-session-retro.md,
+// code in apps/web/src/lib/chat-retro/, removal in its REMOVAL.md). One row per
+// conversation window the daily pass looked at. Content-free by construction:
+// every text column holds a label from a fixed vocabulary, a buildd tool name,
+// a signature built from those, or a version string. No column can hold
+// message, tool or model text. Written only for teams that opted in
+// (teams.chatRetro.lessons); turning it off deletes the team's rows.
+export const chatRetros = pgTable('chat_retros', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  /** The window: first and last message it covered. */
+  fromMessageId: uuid('from_message_id'),
+  toMessageId: uuid('to_message_id'),
+  /** Watermark: createdAt of toMessageId. The next window starts after it. */
+  toMessageAt: timestamp('to_message_at', { withTimezone: true }).notNull(),
+  status: text('status').notNull().$type<'skipped' | 'judged' | 'failed'>(),
+  skipReason: text('skip_reason').$type<'trivial' | 'team_cap' | 'state_budget' | 'sensitive' | null>(),
+  userTurns: integer('user_turns').notNull().default(0),
+  turns: integer('turns').notNull().default(0),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  costUsd: real('cost_usd'),
+  intent: text('intent'),
+  intentConf: real('intent_conf'),
+  satisfied: text('satisfied'),
+  satisfiedConf: real('satisfied_conf'),
+  wastedTurns: integer('wasted_turns').notNull().default(0),
+  wastedTokens: integer('wasted_tokens').notNull().default(0),
+  primaryCause: text('primary_cause'),
+  fixClass: text('fix_class'),
+  fixClassConf: real('fix_class_conf'),
+  toolName: text('tool_name'),
+  signature: text('signature'),
+  /** Refs and labels only: { turn, messageId, kind, tokens, label, conf }. */
+  evidence: jsonb('evidence').$type<Array<{ turn: number; messageId: string; kind: string; tokens: number; label: string | null; conf: number | null }>>().notNull().default([]),
+  stateTokens: integer('state_tokens'),
+  version: text('version').notNull(),
+  latencyMs: integer('latency_ms'),
+  jevCostUsd: real('jev_cost_usd'),
+  /** Decision error kind when status = failed (timeout, provider_error, ...). */
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamCreatedIdx: index('chat_retros_team_created_idx').on(t.teamId, t.createdAt),
+  conversationWatermarkIdx: index('chat_retros_conversation_watermark_idx').on(t.conversationId, t.toMessageAt),
+  teamSignatureIdx: index('chat_retros_team_signature_idx').on(t.teamId, t.signature),
 }));
 
 // A write the agent proposed, awaiting the user's tap. Decided with an atomic

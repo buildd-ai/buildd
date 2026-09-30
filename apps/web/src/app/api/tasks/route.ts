@@ -1,3 +1,4 @@
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
@@ -132,10 +133,10 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
-    const terminalStatuses = ['completed', 'failed', 'cancelled'];
+    const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
-    const isTerminalAudit = statusFilter !== null && terminalStatuses.includes(statusFilter);
+    const isTerminalAudit = isTerminalTaskStatus(statusFilter);
 
     // ── Paginated lean path (OPT-IN when ?limit=N is present) ──────────────
     // Returns only the columns list consumers need, sorted pending-first /
@@ -156,7 +157,7 @@ export async function GET(req: NextRequest) {
           : isTerminalAudit
             // Audit mode: exact status, no 24h cutoff — the whole terminal history,
             // paginated by the caller instead of silently windowed.
-            ? eq(tasks.status, statusFilter as string)
+            ? eq(tasks.status, statusFilter as TaskStatusValue)
             : or(
                 notInArray(tasks.status, terminalStatuses),
                 and(

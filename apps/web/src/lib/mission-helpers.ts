@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
 import { isGateSatisfied } from './task-presentation';
@@ -101,8 +102,8 @@ export function deriveDriveState(mission: {
  */
 export type Health = 'NOMINAL' | 'BLOCKED' | 'FAILING' | 'STALLED';
 
-const LIVE_STATUSES = new Set(['idle', 'running', 'starting', 'waiting_input']);
-const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_STATUSES = new Set<string>(LIVE_WORKER_STATUSES);
+const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
 
 /**
  * The legacy, family-scoped predicate: everything except coordination/planning

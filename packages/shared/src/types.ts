@@ -1,3 +1,5 @@
+import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
+
 // ============================================================================
 // UTILS
 // ============================================================================
@@ -24,9 +26,14 @@ export const WorkerStatus = {
   WAITING_INPUT: 'waiting_input',
   PAUSED: 'paused',
   COMPLETED: 'completed',
+  FAILED: 'failed',
   ERROR: 'error',
-} as const;
+  SUPERSEDED: 'superseded',
+  /** Legacy: old rows only. */
+  DONE: 'done',
+} as const satisfies Record<string, WorkerStatusValue>;
 
+/** Same union as `WorkerStatusValue` (./status). */
 export type WorkerStatusType = typeof WorkerStatus[keyof typeof WorkerStatus];
 
 export const TaskMode = {
@@ -40,10 +47,12 @@ export const TaskStatus = {
   PENDING: 'pending',
   ASSIGNED: 'assigned',
   IN_PROGRESS: 'in_progress',
+  /** Legacy: never written today. */
   REVIEW: 'review',
   COMPLETED: 'completed',
   FAILED: 'failed',
-} as const;
+  CANCELLED: 'cancelled',
+} as const satisfies Record<string, TaskStatusValue>;
 
 export type TaskStatusType = typeof TaskStatus[keyof typeof TaskStatus];
 
@@ -167,9 +176,8 @@ export const MissionStatus = {
   PAUSED: 'paused',
   COMPLETED: 'completed',
   ARCHIVED: 'archived',
-} as const;
-
-export type MissionStatusValue = typeof MissionStatus[keyof typeof MissionStatus];
+  BUDGET_EXHAUSTED: 'budget_exhausted',
+} as const satisfies Record<string, MissionStatusValue>;
 
 export type AgentBackend = 'claude' | 'codex';
 

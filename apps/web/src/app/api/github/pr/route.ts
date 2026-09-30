@@ -390,6 +390,11 @@ export async function POST(req: NextRequest) {
     // This covers refires/retries where a new worker is created for the same task —
     // ONE task = ONE branch = ONE PR, even across worker instances.
     // Checked before workspace/repo lookup to short-circuit without hitting GitHub.
+    // Only for the SAME head: a task that legitimately ships a second PR from a
+    // different branch (e.g. a change to a different base) must not be handed
+    // the first PR back as if it were the new one. A sibling whose branch is
+    // unrecorded falls through to the head-based GitHub lookup below, which is
+    // authoritative either way.
     if (worker.taskId) {
       const siblingWorkerWithPr = await db.query.workers.findFirst({
         where: and(
@@ -397,9 +402,14 @@ export async function POST(req: NextRequest) {
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         ),
-        columns: { prUrl: true, prNumber: true, id: true, prBaseRef: true, mergedAt: true, prLifecycleStatus: true },
+        columns: { prUrl: true, prNumber: true, id: true, branch: true, prBaseRef: true, mergedAt: true, prLifecycleStatus: true },
       });
-      if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber && !isStoredPrStale(siblingWorkerWithPr)) {
+      if (
+        siblingWorkerWithPr?.prUrl &&
+        siblingWorkerWithPr.prNumber &&
+        siblingWorkerWithPr.branch === head &&
+        !isStoredPrStale(siblingWorkerWithPr)
+      ) {
         // Mirror the PR onto this worker too so future calls hit the fast path.
         // The base ref is copied from the sibling because it is literally the same
         // PR — but only when the sibling actually has one recorded. A sibling from
@@ -867,6 +877,7 @@ export async function POST(req: NextRequest) {
       supersededPrs = await closeAncestorRetryPrs({
         parentTaskId: worker.task.parentTaskId,
         successorPrNumber: prData.number,
+        successorBaseBranch: prData.base?.ref ?? null,
         installationId: repo.installation.installationId,
         repoFullName: repo.fullName,
         successorWorkerId: worker.id,

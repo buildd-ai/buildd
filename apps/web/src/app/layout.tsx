@@ -19,7 +19,6 @@ const ibmPlexMono = IBM_Plex_Mono({
 // Conversation prose in chat (the canvas): the same family as the Mono voice, friendlier to read.
 const ibmPlexSans = IBM_Plex_Sans({
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
   variable: '--font-plex-sans',
   display: 'swap',
 });

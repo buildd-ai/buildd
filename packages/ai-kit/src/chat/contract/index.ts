@@ -44,6 +44,34 @@ export interface ToolApproval {
   reason?: string;
   /** Why the server asked: for writes, the encoded before → after preview (APPROVAL_PREVIEW_PREFIX). */
   requestReason?: string;
+  /**
+   * The server decided, not the person (AI SDK: the `toolApproval` hook
+   * returned `denied` or `approved`). A denial with this set was never shown
+   * to anyone, so it must not read as "discarded".
+   */
+  isAutomatic?: boolean;
+}
+
+/**
+ * What `denied` tells the model when a second write would need a card in one
+ * turn. The call was never shown to the person: the model must not report it
+ * as done or discarded, and must not fire a twin of the card already shown.
+ */
+export const ONE_CARD_PER_TURN_REASON =
+  'Not shown to the person: only one approval card per turn, and one is already up. Nothing ran and nothing was discarded; do not say either. '
+  + 'If this call was another way of doing what that card does, drop it. If it is a separate change, ask about it after the person answers the card.';
+
+/**
+ * A write the server refused before any card was shown (the one-card cap,
+ * an unknown tool): never a person's Discard.
+ */
+export function isSystemDenied(part: Pick<ChatToolPart, 'state' | 'approval'>): boolean {
+  return part.state === 'output-denied' && part.approval?.isAutomatic === true && part.approval.approved !== true;
+}
+
+/** "one change per turn": why a system-denied write never got its card. */
+export function systemDeniedNote(part: Pick<ChatToolPart, 'approval'>): string {
+  return part.approval?.reason === ONE_CARD_PER_TURN_REASON ? 'one change per turn' : 'not allowed here';
 }
 
 export interface ChatToolPart {
@@ -322,6 +350,44 @@ export interface ApprovalPreview {
   /** Admin writes: the user must type this (the target's name) to confirm. */
   confirmText?: string;
   fingerprint: string;
+  /**
+   * Fields the app's preview rewrote before running (its `input`), where what
+   * runs differs from what the model proposed: the card shows each, so it
+   * never reads narrower than the call that executes. Set by the kit server
+   * (0.12.0); a rewrite to `target.id` is left out (the target already names it).
+   */
+  resolved?: Array<{ key: string; proposed: string | null; runs: string }>;
+}
+
+/** The card's change lines: the preview's changes, then each rewritten field as "key (runs as): proposed → runs". */
+export function approvalChanges(p: ApprovalPreview): ApprovalPreview['changes'] {
+  return [
+    ...p.changes,
+    ...(p.resolved ?? []).map(r => ({ label: `${r.key} (runs as)`, before: r.proposed, after: r.runs })),
+  ];
+}
+
+const fieldText = (v: unknown): string | null => {
+  if (v === undefined || v === null) return null;
+  const t = typeof v === 'string' ? v.trim() : JSON.stringify(v);
+  return t ? t : null;
+};
+
+/**
+ * The preview with `resolved` filled in: every field of `runs` (what executes)
+ * whose value differs from `proposed` (the model's input).
+ */
+export function withResolvedFields(p: ApprovalPreview, proposed: Record<string, unknown>, runs: Record<string, unknown> | undefined): ApprovalPreview {
+  const { resolved: _drop, ...base } = p;
+  if (!runs) return base;
+  const resolved: NonNullable<ApprovalPreview['resolved']> = [];
+  for (const [key, v] of Object.entries(runs)) {
+    const r = fieldText(v);
+    const was = fieldText(proposed[key]);
+    if (r === null || r === was || r === p.target.id) continue;
+    resolved.push({ key, proposed: was, runs: r });
+  }
+  return resolved.length ? { ...base, resolved } : base;
 }
 
 /** Wire prefix of an encoded preview. A stable wire value: changing it is a major bump. */
