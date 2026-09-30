@@ -61,6 +61,7 @@ import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-c
 import { claimsHaltedForUpdate } from './update-drain';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import { IdlePollTracker } from './idle-poll-tracker';
 import type { ClaimLogEntry } from './session-logger';
 import {
   SessionStderrCollector,
@@ -681,6 +682,8 @@ export class WorkerManager {
   // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
   // the affected account or tenant so other contexts keep claiming.
   private contextBreaker = new ContextBreaker();
+  /** Idle-poll counter + last-poll time (claims.log `claim_idle`, debug internals). */
+  private claimPolls = new IdlePollTracker();
   // workerId → auth context the worker was started under, for breaker routing on error.
   private workerAuthContexts = new Map<string, string>();
   // workerId → team cache key, so an auth failure can invalidate the right
@@ -928,6 +931,8 @@ export class WorkerManager {
       // that only shows the global flag answers "healthy" with false authority.
       // snapshot() prunes expired keys, so anything listed here is live.
       contextBreaker: this.contextBreaker.snapshot(),
+      // Last claim poll + current idle streak: "idle" vs "stopped polling".
+      claimPolls: this.claimPolls.snapshot(),
       adaptiveTimeout: {
         currentMs: this.adaptiveStaleTimeout,
         recentCycleTimes: cycleTimes,
@@ -1315,6 +1320,7 @@ export class WorkerManager {
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
+        this.claimPolls.recordPoll('rejected');
         this.emit({ type: 'claim_rejected', status, reason });
         this.onClaimServerErrorStreak(status);
         throw err;
@@ -1360,7 +1366,15 @@ export class WorkerManager {
       }
 
       if (claimed.length === 0) {
-        // Skip logging no_pending_tasks during polling — that's the normal idle state
+        // no_pending_tasks is the normal idle state: count it, and write one
+        // claim_idle summary on entering idle then at most hourly, so an idle
+        // runner is distinguishable from one that stopped polling.
+        if (!diagnostics || diagnostics.reason === 'no_pending_tasks') {
+          const idle = this.claimPolls.recordIdle();
+          if (idle) claimLog({ event: 'claim_idle', slotsRequested: slots, workersClaimed: 0, ...idle });
+        } else {
+          this.claimPolls.recordPoll('empty');
+        }
         if (diagnostics && diagnostics.reason !== 'no_pending_tasks' && diagnostics.reason !== 'budget_exhausted_partial') {
           claimLog({
             event: 'claim_empty',
@@ -1374,6 +1388,7 @@ export class WorkerManager {
       }
 
       claimLog({ event: 'claim_success', slotsRequested: slots, workersClaimed: claimed.length });
+      this.claimPolls.recordPoll('claimed');
 
       const started: LocalWorker[] = [];
       for (const claimedWorker of claimed) {
@@ -1659,7 +1674,7 @@ export class WorkerManager {
       console.log(`No tasks claimed (reason: ${reason})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
-        { claimError: 'server_rejected' as const },
+        { claimError: 'server_rejected' as const, claimReason: reason },
       );
     }
 
