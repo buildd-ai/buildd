@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 
 /** Resolved per call so a test runtime without a temp BUILDD_HOME fails closed (see buildd-home.ts). */
@@ -40,14 +40,21 @@ export class Outbox {
   private flushInterval = 30_000; // Start at 30s
   private maxInterval = 300_000;  // Max 5 min
   private onFlush: ((entry: OutboxEntry) => Promise<boolean>) | null = null;
+  /** Explicit file path; defaults to `<BUILDD_HOME>/outbox.json`, resolved per call. */
+  private readonly filePath?: string;
 
-  constructor() {
+  constructor(filePath?: string) {
+    this.filePath = filePath;
     this.load();
+  }
+
+  private file(): string {
+    return this.filePath ?? outboxFile();
   }
 
   private load() {
     try {
-      const file = outboxFile();
+      const file = this.file();
       if (existsSync(file)) {
         const data = JSON.parse(readFileSync(file, 'utf-8'));
         this.entries = Array.isArray(data.entries) ? data.entries : [];
@@ -59,9 +66,10 @@ export class Outbox {
 
   private save() {
     try {
-      const dir = resolveBuilddHome();
+      const file = this.file();
+      const dir = dirname(file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'outbox.json'), JSON.stringify({ entries: this.entries, updatedAt: Date.now() }, null, 2));
+      writeFileSync(file, JSON.stringify({ entries: this.entries, updatedAt: Date.now() }, null, 2));
     } catch (err) {
       console.error('Failed to save outbox:', err);
     }
@@ -189,4 +197,31 @@ export class Outbox {
     this.save();
     this.stopFlushTimer();
   }
+}
+
+/**
+ * Flush handler that replays a queued mutation against the buildd server with
+ * a plain fetch. 2xx, or 409 (the mutation already landed), counts as delivered.
+ */
+export function createReplayHandler(
+  /** Read at replay time, so a key set after attach (setup UI) is used. */
+  target: () => { builddServer: string; apiKey?: string },
+  fetchImpl: typeof fetch = fetch,
+): (entry: OutboxEntry) => Promise<boolean> {
+  return async (entry) => {
+    const { builddServer, apiKey } = target();
+    try {
+      const res = await fetchImpl(`${builddServer}${entry.endpoint}`, {
+        method: entry.method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: entry.body,
+      });
+      return res.ok || res.status === 409;
+    } catch {
+      return false;
+    }
+  };
 }
