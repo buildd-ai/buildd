@@ -22,8 +22,8 @@ describe('token scopes', () => {
     expect(requiredScopeForAction('trigger_release')).toBe('releases');
     expect(requiredScopeForAction('manage_missions')).toBe('missions:admin');
     expect(requiredScopeForAction('manage_secrets')).toBe('secrets');
-    expect(requiredScopeForAction('send_agent_message')).toBe('workers:write');
-    expect(requiredScopeForAction('approve_plan')).toBe('tasks:write');
+    expect(requiredScopeForAction('send_agent_message')).toBe('workers:admin');
+    expect(requiredScopeForAction('approve_plan')).toBe('tasks:admin');
     expect(requiredScopeForAction('get_usage_stats')).toBe('analytics:read');
     expect(requiredScopeForAction('manage_experiments', { action: 'list' })).toBe('analytics:read');
     expect(requiredScopeForAction('manage_experiments', { action: 'create' })).toBe('admin');
@@ -47,4 +47,23 @@ test('mission reads use task reading and mutations require mission administratio
 
 test('legacy levels map to displayed presets without migrating permissions', () => {
   expect(LEGACY_LEVEL_PRESET).toEqual({ worker: 'runner', trigger: 'ci', admin: 'admin' });
+});
+
+test('runner and CI presets exclude administrative mutation capabilities', () => {
+  expect(requiredScopeForAction('memory_delete')).toBe('knowledge:admin');
+  expect(requiredScopeForAction('consolidate_knowledge')).toBe('knowledge:admin');
+  expect(requiredScopeForAction('correct_task_result')).toBe('tasks:admin');
+  expect(requiredScopeForAction('create_pr')).toBe('tasks:write');
+  expect(TOKEN_PRESETS.runner.scopes.some(scope => scope.endsWith(':admin'))).toBe(false);
+  expect(TOKEN_PRESETS.ci.scopes.some(scope => scope.endsWith(':admin'))).toBe(false);
+  expect(hasTokenScope(['knowledge:write'], 'knowledge:admin')).toBe(false);
+  expect(hasTokenScope(['workers:write'], 'workers:admin')).toBe(false);
+});
+
+test('administrative capabilities include the corresponding base operations', () => {
+  expect(hasTokenScope(['tasks:admin'], 'tasks:write')).toBe(true);
+  expect(hasTokenScope(['tasks:admin'], 'tasks:read')).toBe(true);
+  expect(hasTokenScope(['workers:admin'], 'workers:write')).toBe(true);
+  expect(hasTokenScope(['knowledge:admin'], 'knowledge:write')).toBe(true);
+  expect(hasTokenScope(['workers:admin'], 'tasks:read')).toBe(false);
 });

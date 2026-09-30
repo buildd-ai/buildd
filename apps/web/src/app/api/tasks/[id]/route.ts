@@ -1,3 +1,4 @@
+import { hasTokenScope } from '@buildd/core/token-scopes';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
@@ -414,8 +415,8 @@ export async function PATCH(
     // ordinary workspace API key (bld_xxx, level 'worker'/'trigger') must not be able
     // to rewrite a completed task's audit trail just because it has workspace access.
     if (resultSummary !== undefined) {
-      if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
-        return NextResponse.json({ error: 'Correcting a task result requires an admin-level token' }, { status: 403 });
+      if (apiAccount && !(apiAccount.scopes != null ? hasTokenScope(apiAccount.scopes, 'tasks:admin') : hasTokenRouteAdminAccess(apiAccount, req))) {
+        return NextResponse.json({ error: 'Correcting a task result requires tasks:admin scope or an admin-level legacy token' }, { status: 403 });
       }
       if (typeof resultSummary !== 'string' || resultSummary.trim() === '') {
         return NextResponse.json({ error: 'resultSummary must be a non-empty string' }, { status: 400 });

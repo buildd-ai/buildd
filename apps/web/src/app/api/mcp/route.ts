@@ -45,7 +45,7 @@ import {
 } from "@buildd/core/mcp-tools";
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
 import { memoryDeciderFor } from '@/lib/memory-decisions';
-import { listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall, type McpToolSurface } from "./tools";
+import { listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall, requiredScopeForMcpTool, type McpToolSurface } from "./tools";
 import { mcpGroupOfToolName } from "@buildd/core/mcp-tool-groups";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
@@ -362,16 +362,6 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     let args = request.params.arguments;
 
     try {
-      if (tokenScopes != null) {
-        const p = (args?.params || {}) as Record<string, unknown>;
-        const action = args?.action as string;
-        const required = name === 'recall' ? 'tasks:read' : name === 'learn' ? 'knowledge:write' : name === 'buildd_memory' ? (['context', 'search', 'get', 'query_knowledge'].includes(action) ? 'tasks:read' : 'knowledge:write') : ['check_path_claim', 'send_worker_message'].includes(name) ? 'workers:write' : requiredScopeForAction(action, p);
-        if (action !== 'help' && (!required || !hasTokenScope(tokenScopes, required))) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
-        if (tokenWorkspaceIds != null) {
-          const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
-          if (!tokenWorkspaceAllowed(tokenWorkspaceIds, target)) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Workspace outside token restriction'})}],isError:true};
-        }
-      }
       // buildd_<group> tools: help and wrong-group errors answer here; an
       // action of the group then runs exactly as it does on `buildd`.
       const group = mcpGroupOfToolName(name);
@@ -381,6 +371,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           return { content: [{ type: "text" as const, text: routed.text }], ...(routed.isError ? { isError: true } : {}) };
         }
         args = { action: routed.action, params: routed.params };
+      }
+
+      if (tokenScopes != null) {
+        const p = (args?.params || {}) as Record<string, unknown>;
+        const action = args?.action as string;
+        const required = requiredScopeForMcpTool(name, args as Record<string, unknown>);
+        if (!required || !hasTokenScope(tokenScopes, required)) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
+        if (tokenWorkspaceIds != null) {
+          const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
+          if (!tokenWorkspaceAllowed(tokenWorkspaceIds, target)) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Workspace outside token restriction'})}],isError:true};
+        }
       }
 
       if (name === "buildd" || group) {

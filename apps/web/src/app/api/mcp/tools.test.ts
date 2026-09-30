@@ -10,7 +10,7 @@ import { describe, it, expect, test } from 'bun:test';
 import { allActions } from '@buildd/core/mcp-tools';
 import { actionHelp, MCP_TOOL_GROUPS, mcpGroupOf, mcpGroupToolName } from '@buildd/core/mcp-tool-groups';
 import {
-  actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
+  requiredScopeForMcpTool, actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
   type McpAccountLevel,
 } from './tools';
 
@@ -405,4 +405,11 @@ test('scoped group dispatch advertises and helps on mission reads', () => {
   const reply = routeGroupToolCall('analytics', { action: 'help', params: { action: 'get_usage_stats' } }, 'trigger', ['analytics:read']);
   expect(reply.kind).toBe('reply');
   if (reply.kind === 'reply') expect(reply.isError).toBe(false);
+});
+
+test('standalone knowledge scopes cannot be bypassed with a help action', () => {
+  expect(requiredScopeForMcpTool('recall', { action: 'help' })).toBe('tasks:read');
+  expect(requiredScopeForMcpTool('learn', { action: 'help' })).toBe('knowledge:write');
+  expect(requiredScopeForMcpTool('buildd_missions', { action: 'manage_missions', params: { action: 'list' } })).toBe('tasks:read');
+  expect(requiredScopeForMcpTool('buildd', { action: 'manage_secrets', params: { action: 'list' } })).toBe('secrets');
 });

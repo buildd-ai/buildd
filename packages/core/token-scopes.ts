@@ -3,8 +3,10 @@ import type { BuilddAction } from './mcp-tools';
 /** Shared permission vocabulary for REST, MCP and the token editor. */
 export const TOKEN_SCOPE_DEFINITIONS = [
   { scope: 'tasks:read', label: 'Read tasks', description: 'Read tasks, artifacts, schedules, skills and workspace knowledge.' },
-  { scope: 'tasks:write', label: 'Manage tasks', description: 'Create, edit, cancel and approve tasks; write artifacts and review pull requests.' },
-  { scope: 'workers:write', label: 'Run workers', description: 'Claim tasks, report progress, complete work and message agents.' },
+  { scope: 'tasks:write', label: 'Manage tasks', description: 'Create, edit and cancel tasks; write artifacts and review pull requests.' },
+  { scope: 'tasks:admin', label: 'Approve and correct tasks', description: 'Read and manage tasks, approve or reject plans and correct completed task results.' },
+  { scope: 'workers:write', label: 'Run workers', description: 'Claim tasks, report progress, complete work and exchange worker messages.' },
+  { scope: 'workers:admin', label: 'Steer agents', description: 'Run workers and send administrative instructions to running agents.' },
   { scope: 'missions:admin', label: 'Manage missions', description: 'Create and manage missions, initiatives and spec discrepancies.' },
   { scope: 'analytics:read', label: 'Read analytics', description: 'Read usage, budgets, runner health, failures and delivery analytics.' },
   { scope: 'releases', label: 'Manage releases', description: 'Read release status and trigger releases.' },
@@ -12,7 +14,8 @@ export const TOKEN_SCOPE_DEFINITIONS = [
   { scope: 'skills:admin', label: 'Manage skills', description: 'Create, edit and delete skills and agent roles.' },
   { scope: 'workspaces:admin', label: 'Manage workspaces', description: 'Create and configure workspaces and watched projects.' },
   { scope: 'schedules:write', label: 'Manage schedules', description: 'Create, edit, pause and delete schedules.' },
-  { scope: 'knowledge:write', label: 'Manage knowledge', description: 'Write memories and consolidate or delete knowledge.' },
+  { scope: 'knowledge:write', label: 'Write knowledge', description: 'Create and update workspace memories and ingest knowledge.' },
+  { scope: 'knowledge:admin', label: 'Maintain knowledge', description: 'Write and consolidate knowledge and permanently delete memories.' },
   { scope: 'admin', label: 'Full administration', description: 'All capabilities, including token, account and model administration.' },
 ] as const;
 export type TokenScope = (typeof TOKEN_SCOPE_DEFINITIONS)[number]['scope'];
@@ -35,7 +38,12 @@ export function isTokenScope(value: unknown): value is TokenScope {
 
 /** Missing scopes are legacy tokens: callers must retain their existing level gates. */
 export function hasTokenScope(scopes: readonly string[] | null | undefined, required: TokenScope): boolean {
-  return !!scopes && (scopes.includes('admin') || scopes.includes(required));
+  if (!scopes) return false;
+  if (scopes.includes('admin') || scopes.includes(required)) return true;
+  if ((required === 'tasks:read' || required === 'tasks:write') && scopes.includes('tasks:admin')) return true;
+  if (required === 'workers:write' && scopes.includes('workers:admin')) return true;
+  if (required === 'knowledge:write' && scopes.includes('knowledge:admin')) return true;
+  return false;
 }
 
 /** Restrictions apply independently of scopes, including the admin scope. */
@@ -47,9 +55,9 @@ export function tokenWorkspaceAllowed(workspaceIds: readonly string[] | null | u
 export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   spec_compare: 'tasks:read', list_discrepancies: 'tasks:read', get_discrepancy: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
-  create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:write', approve_plan: 'tasks:write', reject_plan: 'tasks:write',
+  create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
   claim_task: 'workers:write', update_progress: 'workers:write', complete_task: 'workers:write',
-  create_pr: 'workers:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:write',
+  create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
   merge_pr: 'tasks:write', close_pr: 'tasks:write', request_pr_review: 'tasks:write',
@@ -63,7 +71,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
   manage_workspaces: 'workspaces:admin', manage_watched_projects: 'workspaces:admin',
   manage_secrets: 'secrets', manage_model_tiers: 'admin', manage_experiments: 'admin',
-  consolidate_knowledge: 'knowledge:write', memory_delete: 'knowledge:write',
+  consolidate_knowledge: 'knowledge:admin', memory_delete: 'knowledge:admin',
 };
 
 export function requiredScopeForAction(action: string, params: Record<string, unknown> = {}): TokenScope | null {

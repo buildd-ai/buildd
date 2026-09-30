@@ -59,6 +59,7 @@ export async function POST(req: NextRequest) {
     const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, scopes, workspaceIds, expiresAt } = body;
     if (scopes !== undefined && (!Array.isArray(scopes) || !scopes.every(isTokenScope))) return NextResponse.json({error: "Invalid token scopes"}, {status:400});
     if (workspaceIds != null && (!Array.isArray(workspaceIds) || !workspaceIds.every((id: unknown) => typeof id === "string"))) return NextResponse.json({error: "Invalid workspaces"}, {status:400});
+    if (workspaceIds != null && scopes === undefined) return NextResponse.json({error:"Workspace restrictions require explicit scopes"}, {status:400});
     const expiry = expiresAt == null ? null : new Date(expiresAt);
     if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) return NextResponse.json({error: "Expiry must be in the future"}, {status:400});
 
@@ -97,7 +98,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel) }, { status: 403 });
     }
 
-    if (role === 'member' && scopes?.some((scope: string) => ['admin', 'secrets', 'releases', 'skills:admin', 'workspaces:admin', 'missions:admin', 'schedules:write'].includes(scope))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
+    if (role === 'member' && scopes?.some((scope: string) => (scope.endsWith(':admin') || ['admin', 'secrets', 'releases', 'schedules:write'].includes(scope)))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
     let selectedWorkspaces: string[] = workspaceId ? [workspaceId] : [];
     if (scopes !== undefined || workspaceIds != null) {
       const teamWorkspaces = await db.query.workspaces.findMany({where: eq(workspaces.teamId, teamId), columns: {id:true}});

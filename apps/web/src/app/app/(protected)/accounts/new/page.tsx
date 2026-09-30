@@ -97,7 +97,7 @@ export default function NewAccountPage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <p role="alert" className="border border-status-error p-3 text-sm text-status-error">{error}</p>}
           <div className="card p-4 space-y-4">
-            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!['owner', 'admin'].includes(teams.find(team => team.id === id)?.role || '')) { setScopes(current => current.filter(scope => scope !== 'admin')); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
+            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!['owner', 'admin'].includes(teams.find(team => team.id === id)?.role || '')) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
             <div><label htmlFor="name" className="block text-sm mb-2">Token name</label><input id="name" name="name" required placeholder="release-ci" className={inputClass} /></div>
             <fieldset><legend className="section-label mb-3">Preset</legend><div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {(Object.keys(TOKEN_PRESETS) as Preset[]).map(key => <label key={key} className={`min-h-11 p-3 border cursor-pointer ${preset === key ? 'border-primary bg-surface-3' : 'border-border-default'} ${key === 'admin' && !canAdmin ? 'opacity-50' : ''}`}>
@@ -107,7 +107,7 @@ export default function NewAccountPage() {
             </div></fieldset>
             <details><summary className="min-h-11 flex items-center cursor-pointer text-sm">Adjust scopes</summary><div className="divide-y divide-border-default">
               {TOKEN_SCOPE_DEFINITIONS.map(def => <label key={def.scope} className="flex gap-3 py-3 text-sm cursor-pointer">
-                <input type="checkbox" className="mt-1" checked={scopes.includes(def.scope)} disabled={def.scope === 'admin' && !canAdmin} onChange={e => setScopes(current => e.target.checked ? [...current, def.scope] : current.filter(scope => scope !== def.scope))} />
+                <input type="checkbox" className="mt-1" checked={scopes.includes(def.scope)} disabled={(def.scope.endsWith(':admin') || ['admin','secrets','releases','schedules:write'].includes(def.scope)) && !canAdmin} onChange={e => setScopes(current => e.target.checked ? [...current, def.scope] : current.filter(scope => scope !== def.scope))} />
                 <span><span className="block">{def.label} <code className="text-xs text-text-muted">{def.scope}</code></span><span className="block text-xs text-text-secondary mt-1">{def.description}</span></span>
               </label>)}
             </div></details>

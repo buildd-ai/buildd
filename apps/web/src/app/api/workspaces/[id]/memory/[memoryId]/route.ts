@@ -77,7 +77,7 @@ async function isTeamAdmin(auth: NonNullable<Awaited<ReturnType<typeof authentic
   if (auth.type === 'session') {
     return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId, 'admin'));
   } else if (auth.type === 'api') {
-    return canCallerAdminTeam({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.level }, teamId);
+    return canCallerAdminTeam({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.scopes?.some(scope => scope === 'admin' || scope === 'knowledge:admin') ? 'admin' : auth.account.level }, teamId);
   }
   return true; // dev mode
 }

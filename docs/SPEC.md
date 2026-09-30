@@ -55,9 +55,9 @@ billing:
 
 `type`: `user | service | action`. `level`: `trigger | worker | admin`. A team
 typically has separate trigger vs. worker accounts. New API tokens carry explicit
-named capabilities (`tasks:read`, `tasks:write`, `workers:write`, `missions:admin`,
+named capabilities (`tasks:read`, `tasks:write`, `tasks:admin`, `workers:write`, `workers:admin`, `missions:admin`,
 `analytics:read`, `releases`, `secrets`, `skills:admin`, `workspaces:admin`,
-`schedules:write`, `knowledge:write`, `admin`) from runner, CI, analytics and admin
+`schedules:write`, `knowledge:write`, `knowledge:admin`, `admin`) from runner, CI, analytics and admin
 presets. REST authentication and MCP dispatch enforce the same vocabulary;
 optional workspace restrictions never widen team access. Expiry applies on cache
 hits, and successful authentication records last use at most once per minute.

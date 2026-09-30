@@ -4,6 +4,10 @@ import { hasTokenScope, type TokenScope } from '@buildd/core/token-scopes';
 export function requiredTokenScope(pathname: string, method: string): TokenScope | null {
   const path = pathname.replace(/\/$/, '');
   const read = method === 'GET' || method === 'HEAD';
+  if (/^\/api\/experiments(?:\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
+  if (/^\/api\/tasks\/[^/]+\/(approve-plan|reject-plan)$/.test(path)) return 'tasks:admin';
+  if (/^\/api\/workers\/[^/]+\/instruct$/.test(path)) return 'workers:admin';
+  if (/^\/api\/workspaces\/[^/]+\/memory(?:\/|$)/.test(path) && method === 'DELETE') return 'knowledge:admin';
   if (/^\/api\/(stats|health|cbm)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
   if (/^\/api\/releases(\/|$)/.test(path)) return 'releases';
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
@@ -40,6 +44,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
   if (url.pathname === '/api/mcp' || /^\/api\/mcp-oauth\//.test(url.pathname)) return true;
   if (token.workspaceIds != null) {
     if (requiredTokenScope(url.pathname, request.method) === 'secrets' || requiredTokenScope(url.pathname, request.method) === 'admin') return false;
+    if (/^\/api\/experiments(?:\/|$)/.test(url.pathname)) return false;
     if (/^\/api\/connectors(?:\/|$)/.test(url.pathname)) return false;
     if (/^\/api\/knowledge\/ingest-jobs$/.test(url.pathname) && !url.searchParams.get('workspaceId')) return false;
     if (/^\/api\/releases\/(status|trigger|readiness)$/.test(url.pathname) && !url.searchParams.get('workspaceId') && request.method === 'GET') return false;

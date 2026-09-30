@@ -109,12 +109,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                       {account.team?.name && (
                         <span className="text-[11px] text-text-muted truncate flex-shrink-0">{account.team.name}</span>
                       )}
-                      <div className="text-xs space-y-2">
-                        <p className="section-label">Capabilities</p>
-                        {account.scopes == null ? <p className="text-text-secondary">Legacy {account.level || 'worker'} permissions</p> : account.scopes.length === 0 ? <p className="text-text-muted">No capabilities</p> : <ul className="space-y-1">{account.scopes.map(scope => <li key={scope}>{TOKEN_SCOPE_DEFINITIONS.find(def => def.scope === scope)?.label || scope} <code className="text-text-muted">{scope}</code></li>)}</ul>}
-                        <p className="text-text-secondary">{account.workspaceIds == null ? 'All linked workspaces' : `Restricted to: ${account.workspaceIds.map(id => workspaces.find(ws => ws.id === id)?.name || 'Linked workspace').join(', ') || 'none'}`}</p>
-                        <p className="text-text-muted">{account.expiresAt ? `Expires: ${new Date(account.expiresAt).toLocaleString()}` : 'No expiry'}</p>
-                      </div>
+
 
                       {hasWarning && (
                         <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
@@ -125,7 +120,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                       {account.expiresAt && <span className={new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : ''}> · {new Date(account.expiresAt).getTime() <= Date.now() ? 'Expired' : 'Expires'} {new Date(account.expiresAt).toLocaleDateString()}</span>}
                     </p>
                   </div>
-                  <code className="text-xs text-text-muted font-mono flex-shrink-0">
+                  <code className="hidden sm:block text-xs text-text-muted font-mono flex-shrink-0">
                     {account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : 'no API key'}
                   </code>
                   <svg className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -164,6 +159,13 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                       {hasWarning && (
                         <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
                       )}
+
+                      <div className="text-xs space-y-2">
+                        <p className="section-label">Capabilities</p>
+                        {account.scopes == null ? <p className="text-text-secondary">Legacy {account.level || 'worker'} permissions</p> : account.scopes.length === 0 ? <p className="text-text-muted">No capabilities</p> : <ul className="space-y-1">{account.scopes.map(scope => <li key={scope}>{TOKEN_SCOPE_DEFINITIONS.find(def => def.scope === scope)?.label || scope} <code className="text-text-muted">{scope}</code></li>)}</ul>}
+                        <p className="text-text-secondary">{account.workspaceIds == null ? 'All linked workspaces' : `Restricted to: ${account.workspaceIds.map(id => workspaces.find(ws => ws.id === id)?.name || 'Linked workspace').join(', ') || 'none'}`}</p>
+                        <p className="text-text-muted">{account.expiresAt ? `Expires: ${new Date(account.expiresAt).toLocaleString()}` : 'No expiry'}</p>
+                      </div>
 
                       <div className="flex flex-wrap items-center gap-2">
                         <button

@@ -1,4 +1,4 @@
-import { hasTokenScope, requiredScopeForAction } from '@buildd/core/token-scopes';
+import { hasTokenScope, requiredScopeForAction, type TokenScope } from '@buildd/core/token-scopes';
 /**
  * Tool descriptors advertised by the remote MCP server (ListTools).
  *
@@ -45,6 +45,7 @@ import {
   actionsOfGroup,
   derivedSignature,
   mcpGroupOf,
+  mcpGroupOfToolName,
   mcpGroupToolName,
   mcpGroupParamsSchema,
   type McpToolGroup,
@@ -369,4 +370,19 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     }
     return [tool];
   });
+}
+
+
+/** Capability of the actual tool; unrelated arguments cannot change standalone permissions. */
+export function requiredScopeForMcpTool(name: string, args?: Record<string, unknown>): TokenScope | null {
+  if (name === 'recall') return 'tasks:read';
+  if (name === 'learn') return 'knowledge:write';
+  if (name === 'check_path_claim' || name === 'send_worker_message') return 'workers:write';
+  const action = typeof args?.action === 'string' ? args.action : '';
+  if (name === 'buildd_memory') return ['context', 'search', 'get', 'query_knowledge'].includes(action) ? 'tasks:read' : 'knowledge:write';
+  if (name !== 'buildd' && !mcpGroupOfToolName(name)) return null;
+  const params = args?.params && typeof args.params === 'object'
+    ? args.params as Record<string, unknown>
+    : Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => key !== 'action' && key !== 'params'));
+  return requiredScopeForAction(action, params);
 }

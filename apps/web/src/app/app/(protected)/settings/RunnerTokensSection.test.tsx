@@ -19,3 +19,9 @@ it('shows last-used time in the collapsed list', () => {
   expect(html).toContain(usedAt.toLocaleString());
   expect(html).not.toContain('Last used: Never');
 });
+
+it('keeps capability detail out of the compact token row', () => {
+  const html = renderToStaticMarkup(<RunnerTokensSection accounts={[{...account,scopes:['analytics:read']}]} />);
+  expect(html).toContain('Analytics client');
+  expect(html).not.toContain('Capabilities');
+});

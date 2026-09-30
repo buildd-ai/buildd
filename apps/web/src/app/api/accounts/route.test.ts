@@ -281,3 +281,12 @@ describe('POST scoped tokens', () => {
   it('rejects expired creation dates', async () => { expect((await POST(req({scopes:['analytics:read'],expiresAt:'2000-01-01'}))).status).toBe(400); });
   it('refuses admin scopes for members', async () => { mockGetUserTeamRole.mockResolvedValue('member'); expect((await POST(req({scopes:['secrets']}))).status).toBe(403); });
 });
+
+it('persists analytics scope without requiring admin level', async () => {
+  process.env.NODE_ENV='production'; mockGetCurrentUser.mockResolvedValue({id:'creator'}); mockGetUserDefaultTeamId.mockResolvedValue('team-1'); mockGetUserTeamRole.mockResolvedValue('member');
+  let inserted: any;
+  mockAccountsInsert.mockReturnValue({values:mock((values:any) => {inserted=values;return {returning:mock(() => [{id:'created',...values}])};})});
+  const expiry = new Date(Date.now()+86400000).toISOString();
+  const response = await POST(new NextRequest('http://localhost/api/accounts',{method:'POST',body:JSON.stringify({name:'Analytics',type:'service',authType:'api',scopes:['analytics:read'],expiresAt:expiry})}));
+  expect(response.status).toBe(200); expect(inserted.scopes).toEqual(['analytics:read']); expect(inserted.level).toBe('worker'); expect(inserted.expiresAt.toISOString()).toBe(expiry);
+});
