@@ -730,7 +730,9 @@ describe('decisionCall with a team decision model', () => {
       encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
     })];
     const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const callsSeen: string[] = [];
     const fetcher = mock(async (url: string, init?: RequestInit) => {
+      callsSeen.push(url);
       expect(init?.redirect).toBe('manual');
       return new Response('', { status: 302, headers: { Location: 'https://attacker.evil.test/' } });
     });
@@ -738,6 +740,10 @@ describe('decisionCall with a team decision model', () => {
     const res = await decisionCall(params({ gatewayFetcher, questions: NOUL }));
     expect(!res.ok && res.error.kind).toBe('transport');
     expect(res.error && 'message' in res.error ? (res.error as any).message : '').toContain('redirect');
+    // Verify the redirect Location target (attacker.evil.test) was never requested
+    expect(callsSeen.some(url => url.includes('attacker.evil.test'))).toBe(false);
+    // All calls were to the gateway
+    expect(callsSeen.every(url => url.includes('litellm.example.test'))).toBe(true);
   });
 
 });
