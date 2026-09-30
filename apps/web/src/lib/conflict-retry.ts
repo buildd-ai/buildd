@@ -610,9 +610,12 @@ export async function dispatchConflictRetry(
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
         isNotNull(tasks.pathManifest),
       ),
-      columns: { id: true, pathManifest: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true },
     });
     for (const t of inFlightTasks) {
+      // This attempt must run before its own PR can merge. Depending on that
+      // PR's task (or another attempt on it) makes the repair unclaimable.
+      if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) continue;
       if (shouldSerializeByManifest(retryTask.pathManifest, t.pathManifest as string[] | null)) {
         resolvedDependsOn.push(t.id);
       }
