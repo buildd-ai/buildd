@@ -64,6 +64,7 @@ import {
   noteMissionPrOpenFailure,
 } from '@/lib/mission-pr';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 /**
  * On-demand merge-state check for a single worker.
@@ -133,9 +134,7 @@ const RATE_LIMIT_MS = 200;
  * Lifecycle states that need no further GitHub call. `unresolvable` is terminal
  * for the same reason merged and closed are: re-asking cannot change the answer.
  */
-const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as (
-  'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null
-)[];
+const TERMINAL_STATUSES = [...TERMINAL_PR_LIFECYCLE];
 
 /** The timestamp we treat as "when this PR opened" — completedAt, else createdAt. */
 const PR_OPENED_AT_SQL = sql`COALESCE(${workers.completedAt}, ${workers.createdAt})`;

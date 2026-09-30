@@ -471,8 +471,9 @@ Today (post-PR #1948): header shows AUTO, above-fold banner shows "BLOCKED." The
 `apps/web/src/lib/mission-state-view.ts`, with `MissionDisplayState` extended by
 `'blocked'` and `'stalled'` per §3. The mission detail header chip and its
 state-driven CTAs now read `displayState` / `chip` off the same `explain`
-answer as the waiting-on panel; `deriveMissionDisplayState` is only the
-fallback for when the explain read fails. Home and Team cards still use
+answer as the waiting-on panel; when the explain read fails the page asks
+`deriveMissionStateView` directly. `deriveMissionDisplayState` has been deleted
+(the chat mission object was its last other caller). Home and Team cards still use
 `deriveMissionHealth` (with the same `hasPendingDeliverableWork` input as the
 list), not the state view — that remains a follow-up.
 

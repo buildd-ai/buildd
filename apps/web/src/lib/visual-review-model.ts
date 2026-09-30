@@ -28,6 +28,7 @@ import type {
   VisualReviewSummary,
 } from '@buildd/shared';
 import { isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { DEP_SATISFYING_STATUSES } from './dep-gate-contract';
 import {
   VISUAL_AUDITOR_ROLE_SLUG,
   auditBootFailed,
@@ -110,7 +111,11 @@ export interface BuildVisualReviewInput {
 export const NO_BROWSER_RUNNER_AFTER_MS = 10 * 60 * 1000;
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-const DEP_DONE = new Set(['completed', 'cancelled']);
+// Status half of the dependency contract only: this model loads workers for
+// audit and fix tasks, not for the builder tasks an audit depends on, so the
+// claim gate's open-PR guard cannot be applied here. An audit whose builder
+// dependency completed with an unmerged PR reads claimable early.
+const DEP_DONE: ReadonlySet<string> = new Set(DEP_SATISFYING_STATUSES);
 const RUNNING = new Set(['assigned', 'in_progress']);
 const RUNNING_WORKER = new Set(['running', 'starting', 'idle']);
 

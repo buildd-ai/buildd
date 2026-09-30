@@ -45,6 +45,7 @@ import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { closeAncestorRetryPrs, type SupersededPr } from '@/lib/retry-pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
+import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 
 /**
@@ -165,7 +166,7 @@ async function requestIntegrationBranchReview(params: {
 // task.
 function isStoredPrStale(pr: { mergedAt?: Date | string | null; prLifecycleStatus?: string | null } | null | undefined): boolean {
   if (!pr) return false;
-  return !!pr.mergedAt || pr.prLifecycleStatus === 'merged' || pr.prLifecycleStatus === 'closed';
+  return !!pr.mergedAt || isTerminalPrLifecycle(pr.prLifecycleStatus);
 }
 
 // POST /api/github/pr - Create a pull request

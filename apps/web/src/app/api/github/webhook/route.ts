@@ -82,6 +82,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
+import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -273,8 +274,8 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
 const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
-// PR lifecycle statuses that must not be overwritten by any later CI event.
-const TERMINAL_STATUSES = ['merged', 'closed'];
+// PR lifecycle statuses that must not be overwritten by any later CI event:
+// TERMINAL_PR_LIFECYCLE (merged, closed, unresolvable) via isTerminalPrLifecycle.
 
 /**
  * True for the bookkeeping task `resolveOrAdoptPrOwner` creates for a PR
@@ -427,7 +428,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_running', updatedAt: new Date() })
@@ -456,7 +457,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+      if (worker && !isTerminalPrLifecycle(worker.prLifecycleStatus)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_failed', updatedAt: new Date() })
@@ -514,7 +515,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).
-        if (!TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+        if (!isTerminalPrLifecycle(worker.prLifecycleStatus)) {
           await db
             .update(workers)
             .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })

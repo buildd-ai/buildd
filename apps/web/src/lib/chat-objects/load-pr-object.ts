@@ -11,20 +11,15 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, isNotNull, like } from 'drizzle-orm';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import type { PrObjectView } from '@/components/chat/objects/object-views';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
 
-/** The PR's display state from stored facts. A merge stamp wins over any lifecycle value. Pure. */
+/** The PR's display state: `derivePrDisplayState`, projected onto the chat object's vocabulary. Pure. */
 export function prStateOf(prLifecycleStatus: string | null | undefined, mergedAt: unknown): PrObjectView['state'] {
-  if (mergedAt) return 'merged';
-  switch (prLifecycleStatus) {
-    case 'merged': return 'merged';
-    case 'ci_failed': return 'ci_failed';
-    case 'ci_running': return 'ci_running';
-    case 'ci_green': return 'ci_passed';
-    case 'closed':
-    case 'unresolvable':
-      return 'closed';
-    default:
-      return 'open';
+  const state = derivePrDisplayState(prLifecycleStatus, mergedAt);
+  switch (state) {
+    case 'unresolvable': return 'closed';
+    case 'awaiting_ci': return 'open';
+    default: return state;
   }
 }
 

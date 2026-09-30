@@ -88,8 +88,8 @@ export interface PrObjectView {
   number: number;
   url: string | null;
   title: string;
-  /** open · ci_running · ci_failed · merged · closed */
-  state: 'open' | 'ci_running' | 'ci_failed' | 'ci_passed' | 'merged' | 'closed';
+  /** `derivePrDisplayState` (lib/pr-presentation.ts), projected: open · ci_running · ci_failed · ci_passed · conflict · merged · closed */
+  state: 'open' | 'ci_running' | 'ci_failed' | 'ci_passed' | 'conflict' | 'merged' | 'closed';
   linesAdded: number | null;
   linesRemoved: number | null;
   mergedAt: number | null;

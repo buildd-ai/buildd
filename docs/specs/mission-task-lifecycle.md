@@ -1361,8 +1361,8 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `apps/web/src/app/api/workers/[id]/route.ts`
 - Archive guard: `apps/web/src/lib/mission-archive.ts` —
   `selectMissionsToArchive()`
-- Display: `apps/web/src/lib/mission-helpers.ts` —
-  `deriveMissionDisplayState()` (`awaiting_verification`)
+- Display: `apps/web/src/lib/mission-state-view.ts` —
+  `deriveMissionStateView()` (`awaiting_verification`)
 
 **Out of scope**: The `metric` criterion evaluator (no metric-query registry
 exists yet, so `metric` criteria stay `UNVERIFIED` and block completion by

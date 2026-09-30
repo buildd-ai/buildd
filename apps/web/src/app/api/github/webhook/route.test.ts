@@ -1483,6 +1483,29 @@ describe('POST /api/github/webhook', () => {
       const ciFailedWrite = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
       expect(ciFailedWrite).toBeUndefined();
     });
+
+    it('does not stamp ci_failed over an unresolvable lifecycle (TERMINAL_PR_LIFECYCLE)', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-unres',
+        workspaceId: 'ws1',
+        taskId: 't-unres',
+        prNumber: 42,
+        prLifecycleStatus: 'unresolvable',
+        branch: 'buildd/unres',
+        task: {
+          id: 't-unres', title: 'Unresolvable', description: 'x',
+          workspaceId: 'ws1', missionId: null,
+          context: {},
+          status: 'completed',
+        },
+      });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      const ciFailedWrite = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
+      expect(ciFailedWrite).toBeUndefined();
+    });
   });
 
   // ── unowned-PR adoption + schema-drift classification ───────────────────────
