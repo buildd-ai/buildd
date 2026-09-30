@@ -13,7 +13,7 @@ import { requireSessionUser, type CurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserTeamRole, resolveActiveTeamId } from '@/lib/team-access';
 import type { TurnUser } from './turn';
 import { isStandardWorkspace } from './reach';
-import { workspaceHint, type RoutableWorkspace } from './routing';
+import { workspaceHint, workspaceTerms, type RoutableWorkspace } from './routing';
 
 export type ChatCaller = { user: CurrentUser; teamIds: string[] };
 
@@ -124,7 +124,7 @@ export async function loadRoutableWorkspaces(teamId: string, inReach: ReadonlySe
     .then(r => new Map(r.map(a => [a.workspaceId, a.at])))
     .catch(() => null);
   return rows.map(w => ({
-    id: w.id, name: w.name, hint: workspaceHint(w),
+    id: w.id, name: w.name, hint: workspaceHint(w), terms: workspaceTerms(w),
     ...(activity ? { lastActiveAt: activity.get(w.id)?.toISOString() ?? null } : {}),
   }));
 }
