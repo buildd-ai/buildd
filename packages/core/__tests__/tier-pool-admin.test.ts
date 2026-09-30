@@ -151,11 +151,14 @@ describe('loadArmStats', () => {
     executeRows = [];
     await admin.loadArmStats('team-1', new Date('2026-09-26T00:00:00Z'));
     const [agent, chat] = executed.map(render);
-    expect(agent.sql).toContain("p.team_id = $1 AND p.surface = 'agent'");
+    // surface is a bound parameter, never spliced into the SQL text.
+    expect(agent.sql).toContain('p.team_id = $1 AND p.surface = $2');
     expect(agent.sql).toContain('ORDER BY created_at DESC LIMIT 1');
-    expect(chat.sql).toContain("p.team_id = $1 AND p.surface = 'chat'");
+    expect(chat.sql).toContain('p.team_id = $1 AND p.surface = $2');
+    expect(chat.sql).not.toContain("'chat'");
+    expect(chat.params).toEqual(['team-1', 'chat', '2026-08-27T00:00:00.000Z']);
     expect(chat.sql).toContain("f.entity_type = 'conversation_message'");
-    expect(agent.params).toEqual(['team-1', '2026-08-27T00:00:00.000Z']);
+    expect(agent.params).toEqual(['team-1', 'agent', '2026-08-27T00:00:00.000Z']);
   });
 
   it('summarises per arm: failures from infra are not graded, thumbs set chat severity', async () => {
@@ -175,5 +178,72 @@ describe('loadArmStats', () => {
     expect(stats.get('a')!.costPer1k).toBeCloseTo(300);
     expect(stats.get('c')).toMatchObject({ units: 3, graded: 2, wins: 1, severity: { none: 1, major: 1 }, latencyP50Ms: 1000 });
     expect(stats.get('c')!.costPer1k).toBeCloseTo(20);
+  });
+});
+
+describe('runTierPoolReadout', () => {
+  const armRows = [
+    { id: 'inc', route: 'openrouter', model: 'm-inc', role: 'incumbent', status: 'active', surface: 'chat' },
+    { id: 'ch', route: 'openrouter', model: 'm-ch', role: 'challenger', status: 'active', surface: 'chat' },
+    { id: 'gone', route: 'openrouter', model: 'm-gone', role: 'challenger', status: 'removed', surface: 'chat' },
+  ];
+
+  it('reads its own chat-turn assignments by experiment and policy version, with no team window', async () => {
+    queue = [armRows, []];
+    await admin.runTierPoolReadout({ id: 'exp-1', policyVersion: 2 });
+    expect(executed).toHaveLength(2);
+    const [arms, chat] = executed.map(render);
+    expect(arms.sql).toContain('p.experiment_id = $1');
+    expect(chat.sql).toContain('p.experiment_id = $1');
+    expect(chat.sql).toContain('a.policy_version = $2');
+    expect(chat.sql).toContain('a.message_id IS NOT NULL');
+    expect(chat.sql).not.toContain('assigned_at >=');
+    expect(chat.params).toEqual(['exp-1', 2]);
+    expect(chat.sql).not.toContain('task_outcomes');
+  });
+
+  it('an agent pool reads task outcomes for its own assignments', async () => {
+    queue = [[{ id: 'inc', route: 'runner:claude', model: 'm', role: 'incumbent', status: 'active', surface: 'agent' }], [
+      { arm_id: 'inc', outcome: 'completed', exit_cause: null, total_cost_usd: '0.10', duration_ms: 10 },
+    ]];
+    const r = await admin.runTierPoolReadout({ id: 'exp-1', policyVersion: 1 });
+    const agent = render(executed[1]);
+    expect(agent.sql).toContain('a.task_id IS NOT NULL');
+    expect(agent.sql).toContain('a.policy_version = $2');
+    expect(r.arms[0]).toMatchObject({ units: 1, graded: 1, wins: 1 });
+    expect(r.minGradedPerArm).toBe(30);
+  });
+
+  it('per-arm numbers from chat thumbs, never task outcomes; insufficient until every live arm has enough graded turns', async () => {
+    queue = [armRows, [
+      { arm_id: 'inc', usage: { costUsd: 0.01, latencyMs: 800 }, signal: null, reason: null },
+      { arm_id: 'inc', usage: { costUsd: 0.01, latencyMs: 900 }, signal: 'down', reason: null },
+      { arm_id: 'ch', usage: { costUsd: 0.02, latencyMs: 700 }, signal: null, reason: null },
+    ]];
+    const r = await admin.runTierPoolReadout({ id: 'exp-1', policyVersion: 1 });
+    expect(r.kind).toBe('tier_pool');
+    expect(r.surface).toBe('chat');
+    expect(r.minGradedPerArm).toBe(50);
+    expect(r.verdict).toBe('insufficient_n');
+    expect(r.arms.map(a => a.armId)).toEqual(['inc', 'ch', 'gone']);
+    expect(r.arms[0]).toMatchObject({ role: 'incumbent', model: 'm-inc', units: 2, graded: 1, wins: 0, severity: { minor: 1 } });
+    expect(r.arms[1]).toMatchObject({ units: 1, graded: 0, winRate: null });
+    expect(r.arms[2]).toMatchObject({ status: 'removed', units: 0, graded: 0 });
+    expect(r.totals).toEqual({ units: 3, graded: 1 });
+  });
+
+  it('ready once every live arm reaches the graded minimum', async () => {
+    const turns = (arm: string) => Array.from({ length: 50 }, () => ({ arm_id: arm, usage: null, signal: 'up', reason: null }));
+    queue = [armRows.slice(0, 2), [...turns('inc'), ...turns('ch')]];
+    const r = await admin.runTierPoolReadout({ id: 'exp-1', policyVersion: 1 });
+    expect(r.verdict).toBe('ready');
+  });
+
+  it('no pool behind the experiment: explicit, not zeros', async () => {
+    queue = [[]];
+    const r = await admin.runTierPoolReadout({ id: 'exp-1', policyVersion: 1 });
+    expect(r.verdict).toBe('no_pool');
+    expect(r.arms).toEqual([]);
+    expect(executed).toHaveLength(1);
   });
 });
