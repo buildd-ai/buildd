@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
-import { mergeShotlists, seamlessLoopFilter, siteFiles } from './render';
+import { mergeShotlists, publishDir, seamlessLoopFilter, siteFiles } from './render';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
 import { placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
@@ -19,6 +22,8 @@ const BOXES: Record<string, Rect[]> = {
   // Confirm sits low and left, where a bottom caption would land.
   'kit-approval-confirm': [R(0.16, 0.8, 0.07, 0.03)],
   'approval-card': [R(0.15, 0.55, 0.47, 0.29)],
+  'approval-draft-criteria': [R(0.25, 0.62, 0.35, 0.1)],
+  'kit-approval-edit': [R(0.24, 0.8, 0.05, 0.03)],
 };
 const fake: Stills = {
   img: (step, viewport = 'desktop', at = 0) => ({ src: `/shots/${step}-${viewport}.png`, at, width: viewport === 'phone' ? 1170 : 2880, height: viewport === 'phone' ? 2532 : 1620 }),
@@ -32,9 +37,9 @@ const fake: Stills = {
 
 describe('v6a', () => {
   const film = v6aFilm(fake);
-  test('keeps the pace: 44-50s, no shot under 4s, 0.8s crossfades, dark', () => {
-    expect(cutDuration(film)).toBeGreaterThanOrEqual(44);
-    expect(cutDuration(film)).toBeLessThanOrEqual(50);
+  test('keeps the pace: 50-58s, no shot under 4s, 0.8s crossfades, dark', () => {
+    expect(cutDuration(film)).toBeGreaterThanOrEqual(50);
+    expect(cutDuration(film)).toBeLessThanOrEqual(58);
     for (const s of film.shots) expect(s.dur).toBeGreaterThanOrEqual(4);
     expect(film.fade).toBe(0.8);
     expect(film.theme).toBe('dark');
@@ -47,7 +52,8 @@ describe('v6a', () => {
   });
   test('every crop leaves the caption band free: lit boxes end above the bottom caption', () => {
     // The Board fills the frame with tiles, so its caption goes up top instead.
-    for (const shot of film.shots.filter((x) => x.layout === 'screen' && x.caption && !x.burst)) expect(captionPlace(film, shot)).toBe('bottom');
+    // A shot that sets captionAt (the edit, typed in the composer at the foot of the screen) chose its side.
+    for (const shot of film.shots.filter((x) => x.layout === 'screen' && x.caption && !x.burst && !x.captionAt)) expect(captionPlace(film, shot)).toBe('bottom');
   });
   test('fan-out: the caption never covers a tile, landed or in flight', () => {
     const board = film.shots.find((x) => x.id === 'board')!;
@@ -75,6 +81,29 @@ describe('v6a', () => {
   });
   test('the soundtrack is soft: nothing below 150 Hz, and tiles tick instead of ringing', () => {
     expect(lowEnergyShare(synthesize(soundCues(film), cutDuration(film)))).toBeLessThan(0.005);
+  });
+  test('spec: the drafted criteria are lit, then the change is typed after the Edit prefill', () => {
+    const ids = film.shots.map((x) => x.id);
+    expect(ids.slice(0, 5)).toEqual(['ask', 'reads', 'criteria', 'edit', 'confirm']);
+    const criteria = film.shots.find((x) => x.id === 'criteria')!;
+    expect(criteria.spot!.some((k) => k.rects.includes(BOXES['approval-draft-criteria'][0]))).toBe(true);
+    const edit = film.shots.find((x) => x.id === 'edit')!;
+    expect(edit.images.length).toBeGreaterThan(2);
+    expect(edit.images[0].src).toContain('s03b-spec-edit-type-');
+  });
+  test('plan: you confirm before the Organizer fans the work out on the Board', () => {
+    const ids = film.shots.map((x) => x.id);
+    const confirm = film.shots.find((x) => x.id === 'confirm')!;
+    expect(confirm.taps?.length).toBe(1);
+    expect(ids.indexOf('confirm')).toBeLessThan(ids.indexOf('board'));
+  });
+  test('the reads shot stops at the thread: no card, no tap (the criteria shots carry it)', () => {
+    const reads = film.shots.find((x) => x.id === 'reads')!;
+    expect(reads.taps ?? []).toEqual([]);
+  });
+  test('done: the criteria band is lit, then the completion record', () => {
+    const done = film.shots.find((x) => x.id === 'done')!;
+    expect(done.spot!.some((k) => k.rects.includes(BOXES['goal-band'][0]))).toBe(true);
   });
   test('writes the review stills', () => {
     for (const k of ['fanout-mid', 'approval', 'visual-review', 'done']) expect(film.keyStills?.[k]).toBeGreaterThan(0);
@@ -136,13 +165,20 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     { name: 'mobile light', beats: v6aBeats(fake, { mobile: true, theme: 'light' }), frame: [720, 900], theme: 'light', minPx: 1.5 },
   ] as const;
   test('one cut per beat, in story order, named beat-<beat>[-mobile]', () => {
-    expect(BEATS).toEqual(['ask', 'remember', 'fanout', 'fleet', 'decide', 'proof', 'done']);
+    expect(BEATS).toEqual(['spec', 'plan', 'rules', 'fleet', 'decide', 'review', 'done']);
     expect(LOOKS[0].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}`));
     expect(LOOKS[1].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}-mobile`));
   });
-  test('every film shot lands in exactly one beat', () => {
+  test('no shot is in two beats; only the opening typing and thread stay film-only', () => {
     const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
-    expect(used.sort()).toEqual(film.shots.map((s) => s.id).sort());
+    expect(new Set(used).size).toBe(used.length);
+    expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'reads']);
+  });
+  test('spec is the criteria then the edit; plan is Confirm then the Board', () => {
+    const by = Object.fromEntries(LOOKS[0].beats.map((c) => [c.name, c.shots.map((s) => s.id)]));
+    expect(by['beat-spec']).toEqual(['criteria', 'edit']);
+    expect(by['beat-plan']).toEqual(['confirm', 'board']);
+    expect(by['beat-review']).toEqual(['screens', 'review']);
   });
   for (const look of LOOKS) describe(look.name, () => {
     test('frame, theme, silent and caption-free; the loop is closed at encode', () => {
@@ -198,9 +234,38 @@ describe('seamlessLoopFilter', () => {
 
 test('siteFiles: the exact names the site codes against', () => {
   const names = siteFiles().map(([, to]) => to).sort();
-  const clips = [...BEATS.flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]), 'hero', 'hero-light', 'full'];
-  const want = clips.flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]).sort();
+  const clips = [...BEATS.flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]), 'hero', 'hero-light'];
+  // The film with sound is one mp4 (the dialog needs one source) plus its poster.
+  const want = [...clips.flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]), 'full.mp4', 'full-poster.jpg'].sort();
   expect(names).toEqual(want);
+});
+
+describe('publishDir: the site set is swapped in whole, never half-written', () => {
+  const fresh = () => {
+    const root = mkdtempSync(join(tmpdir(), 'site-'));
+    const site = join(root, 'site');
+    mkdirSync(site);
+    writeFileSync(join(site, 'old.mp4'), 'old');
+    return { root, site };
+  };
+  test('a build that throws leaves the previous set untouched, and no temp dir behind', () => {
+    const { root, site } = fresh();
+    expect(() => publishDir(site, (tmp) => { writeFileSync(join(tmp, 'half.mp4'), 'x'); throw new Error('render died'); })).toThrow('render died');
+    expect(readdirSync(site)).toEqual(['old.mp4']);
+    expect(readdirSync(root)).toEqual(['site']);
+  });
+  test('a finished build replaces the set in one swap', () => {
+    const { root, site } = fresh();
+    publishDir(site, (tmp) => writeFileSync(join(tmp, 'new.mp4'), 'new'));
+    expect(readdirSync(site)).toEqual(['new.mp4']);
+    expect(readFileSync(join(site, 'new.mp4'), 'utf8')).toBe('new');
+    expect(readdirSync(root)).toEqual(['site']);
+  });
+  test('works when the site dir does not exist yet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'site-'));
+    publishDir(join(root, 'site'), (tmp) => writeFileSync(join(tmp, 'a'), 'a'));
+    expect(existsSync(join(root, 'site', 'a'))).toBe(true);
+  });
 });
 
 test('mergeShotlists: a beats-only run keeps the full cut', () => {

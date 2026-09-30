@@ -123,6 +123,15 @@ export function loginUser<U extends { key: string }>(users: U[] | undefined, as?
  * after a word where they can, so a frame never ends mid-word unless the word
  * is longer than a frame's share. Pure.
  */
+/**
+ * The field's value at each typing frame: `base` (what the page already holds,
+ * e.g. the prefix a draft card's Edit button writes) plus a growing prefix of
+ * `text`. Frame 0 is `base` alone, so the take starts before the first key.
+ */
+export function typedValues(base: string, text: string, frames: number): string[] {
+  return [0, ...typingPrefixes(text, frames)].map((n) => base + text.slice(0, n));
+}
+
 export function typingPrefixes(text: string, frames: number): number[] {
   const n = Math.max(1, Math.min(Math.floor(frames), text.length));
   const out: number[] = [];

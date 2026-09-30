@@ -105,18 +105,47 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
 
   const rows = s.boxes('s02-thread', 'tool-call-row');
   const group = s.box('s02-thread', 'tool-call-group');
-  const card = s.box('s02-thread', 'approval-card');
-  const confirm = s.box('s02-thread', 'kit-approval-confirm');
   const reads: Shot = {
-    id: 'reads', layout: 'screen', dur: 6, images: [s.img('s02-thread')],
-    // The pan to the card (2.9s to 3.8s) runs with no caption up: mid-pan the
-    // card and its Confirm slide up through the caption band.
-    caption: [{ at: 0, text: 'It checks first, and recalls a past decision.', to: 2.9 }, { at: 3.35, text: 'You confirm the mission.' }],
+    id: 'reads', layout: 'screen', dur: 4, images: [s.img('s02-thread')],
+    caption: 'It checks first, and recalls a past decision.',
     masks: rows.map((r, i): Mask => ({ rect: r, until: 0.35 + i * 0.3 })),
-    spot: [key(0.2, [group, ghost(group)]), key(1.4, [rows[1], ghost(rows[1])]), key(3.8, [card, confirm])],
-    camera: [at(f('s02-thread', group, 1.2), 0), at(f('s02-thread', group, 1.2), 2.9 / 6), at(f('s02-thread', card, 1.12), 3.8 / 6), at(f('s02-thread', card, 1.12), 1)],
-    taps: [{ at: 4.9, ...center(confirm) }],
-    controls: [confirm],
+    spot: [key(0.2, [group, ghost(group)]), key(1.4, [rows[1], ghost(rows[1])])],
+    camera: [at(f('s02-thread', group, 1.2), 0), at(f('s02-thread', group, 1.25), 1)],
+  };
+
+  // The spec: the draft's "Done when" list, opened. Edit writes a prefix into
+  // the composer and you type the change; Confirm files it, and only then does
+  // the Organizer start.
+  const card = s.box('s03-spec', 'approval-card');
+  const crit = s.box('s03-spec', 'approval-draft-criteria');
+  const edit = s.box('s03-spec', 'kit-approval-edit');
+  const confirm = s.box('s03-spec', 'kit-approval-confirm');
+  const criteria: Shot = {
+    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img('s03-spec')],
+    caption: 'It drafts the mission, and what done means.',
+    spot: [key(0.2, [card]), key(1.2, [crit]), { ...key(3.2, [edit]), cross: true }],
+    camera: [at(f('s03-spec', card, 1.1), 0), at(f('s03-spec', crit, 1.15), 1.2 / 4.5), at(f('s03-spec', crit, 1.15), 1)],
+    taps: [{ at: 3.9, ...center(edit) }],
+    controls: [edit, confirm],
+  };
+
+  const composerEdit = s.box('s03b-spec-edit', 'chat-composer');
+  const t2 = typed(s.typing('s03b-spec-edit'), 0.6, 3.4);
+  const editing: Shot = {
+    id: 'edit', layout: 'screen', dur: 4.5, images: t2.images, keys: t2.keys,
+    // The composer sits at the foot of the screen, so this caption goes up top.
+    caption: 'Change anything before it starts.', captionAt: 'top',
+    spot: [key(0.2, [composerEdit])],
+    camera: [at(f('s03b-spec-edit', composerEdit, 1.5), 0), at(f('s03b-spec-edit', composerEdit, 1.4), 1)],
+  };
+
+  const confirming: Shot = {
+    id: 'confirm', layout: 'screen', dur: 4, images: [s.img('s03-spec')],
+    caption: 'When it reads right, you confirm.',
+    spot: [key(0.2, [card]), { ...key(1.4, [confirm]), cross: true }],
+    camera: [at(f('s03-spec', card, 1.12), 0), at(f('s03-spec', card, 1.12), 1)],
+    taps: [{ at: 2.6, ...center(confirm) }],
+    controls: [confirm, edit],
   };
 
   const phrase = s.text('s04-rule-card', 'From now on, keep the public API backward compatible.');
@@ -147,7 +176,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s06-rules-settings', union(list), 1.15), 0), at(f('s06-rules-settings', list[0], 1.3), 1)],
   };
 
-  const board = boardShot(s, 'The work fans out across a board.', 5, o);
+  const board = boardShot(s, 'The Organizer plans it into tasks.', 5, o);
 
   const slots = s.boxAttrs('s08-home', 'fleet-slot');
   const fleetBox = s.box('s08-home', 'home-fleet');
@@ -217,15 +246,17 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   };
 
   const rec = s.box('s13-complete', 'mission-completion-record');
+  const band = s.box('s13-complete', 'goal-band');
   const done: Shot = {
     id: 'done', layout: 'screen', dur: 4.5, images: [s.img('s13-complete')],
-    caption: 'Done. Every PR merged, every criterion checked.',
-    spot: [key(0.4, [rec])],
-    camera: [at(f('s13-complete', rec, 1.2), 0), at(f('s13-complete', rec, 1.12), 1)],
+    caption: 'Done when all four criteria pass.',
+    spot: [key(0.3, [band]), key(2.3, [rec])],
+    // One held crop on both: a pan from the band down to the record drags the lit band through the caption.
+    camera: [at(f('s13-complete', union([band, rec]), 1.1), 0), at(f('s13-complete', union([band, rec]), 1.06), 1)],
     chime: 0.9,
   };
 
-  return [ask, reads, rule, rules, board, fleet, question, screens, review, done];
+  return [ask, reads, criteria, editing, confirming, rule, rules, board, fleet, question, screens, review, done];
 }
 
 /**
@@ -278,11 +309,14 @@ function keyStills(shots: Shot[], want: Record<string, [string, number]>): Recor
   return out;
 }
 
+/** Shots only the site's beats use: the film goes straight from the rule card to the Board. */
+const BEAT_ONLY = ['rules'];
+
 export function v6aFilm(s: Stills): Cut {
-  const shots = v6aShots(s);
+  const shots = v6aShots(s).filter((x) => !BEAT_ONLY.includes(x.id));
   const keys = keyStills(shots, {
-    'fanout-mid': ['board', 1.6], approval: ['reads', 4.4], 'visual-review': ['review', 2.2], done: ['done', 2.0],
-    'chat-read': ['reads', 2.8], 'rule-origin': ['rule', 1.6], 'fleet-mid': ['fleet', 2.2],
+    'fanout-mid': ['board', 1.6], approval: ['confirm', 2.9], 'visual-review': ['review', 2.2], done: ['done', 3.0],
+    'chat-read': ['reads', 2.8], criteria: ['criteria', 2.0], edit: ['edit', 3.8], 'rule-origin': ['rule', 1.6], 'fleet-mid': ['fleet', 2.2],
   });
   return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
 }
@@ -311,7 +345,8 @@ function v6xShots(s: Stills): Shot[] {
   return [
     m('ask', 5, { kind: 'type', label: '01 · Ask', text: SENTENCE, from: 0.6, to: 3.4 }),
     m('plan', 5.5, {
-      kind: 'split', label: '02 · Plan', text: SENTENCE, from: 0.5, stagger: 0.12, columnGap: 0.25, dur: 0.6,
+      // The mission, not the sentence, is what the Organizer splits: you confirmed its spec first.
+      kind: 'split', label: '02 · Plan', text: 'Multi-currency invoices', from: 0.5, stagger: 0.12, columnGap: 0.25, dur: 0.6,
       columns: [
         { title: 'Foundations', tiles: ['FX providers', 'currency columns', 'rates service', 'currency picker', 'formatMoney'] },
         { title: 'Through the product', tiles: ['currency on API', 'render in currency', 'Stripe in currency', 'dual-currency CSV', 'receipt currency'] },
@@ -321,7 +356,7 @@ function v6xShots(s: Stills): Shot[] {
     m('fleet', 5.5, { kind: 'fleet', label: '03 · Work', runners: RUNNERS, from: 0.6, stagger: 0.5, grow: 1.1, total: 8 }),
     m('question', 5, { kind: 'phone', label: '04 · Ask you', question: 'Round per line, or only the total?', options: ['Per line', 'Total only'], tapAt: 2.6 }, { taps: [{ at: 2.6, x: (360 + 215) / 1920, y: 0.4 }] }),
     m('review', 5, { kind: 'screens', label: '05 · Review', images: [phone, desk], checks: [1.6, 2.4] }),
-    m('done', 5, { kind: 'done', label: '06 · Done', title: 'Done.', sub: '11 PRs merged · 4 of 4 criteria checked · 1 answer from you', from: 0.3 }),
+    m('done', 5, { kind: 'done', label: '06 · Done', title: 'Done.', sub: '4 of 4 criteria passed · 11 PRs merged · 1 answer from you', from: 0.3 }),
   ];
 }
 
@@ -385,15 +420,15 @@ export function askButtonShots(manifest: any): string[] {
 }
 
 /** The site's feature beats, in story order: one short silent loop each. */
-export const BEATS = ['ask', 'remember', 'fanout', 'fleet', 'decide', 'proof', 'done'] as const;
+export const BEATS = ['spec', 'plan', 'rules', 'fleet', 'decide', 'review', 'done'] as const;
 export type Beat = (typeof BEATS)[number];
 const BEAT_SHOTS: Record<Beat, string[]> = {
-  ask: ['ask', 'reads'],
-  remember: ['rule', 'rules'],
-  fanout: ['board'],
+  spec: ['criteria', 'edit'],
+  plan: ['confirm', 'board'],
+  rules: ['rule', 'rules'],
   fleet: ['fleet'],
   decide: ['question'],
-  proof: ['screens', 'review'],
+  review: ['screens', 'review'],
   done: ['done'],
 };
 

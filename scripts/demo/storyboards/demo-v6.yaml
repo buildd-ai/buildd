@@ -15,6 +15,9 @@ highlight:
   - tool-call-group
   - tool-call-row
   - approval-card
+  - approval-draft-criteria
+  - kit-approval-fold
+  - kit-approval-edit
   - kit-approval-confirm
   - canvas-ask
   - visual-review-route
@@ -50,6 +53,25 @@ steps:
     fullPage: true
     highlightText: ["Nothing in flight touches currency."]
     hold: 900
+
+  # 2b. The spec: the draft's "Done when" list, opened. You confirm this before
+  # any agent starts (a mission's plan then self-approves; see
+  # shouldAutoApprovePlan), so this card is the human gate the film shows.
+  - id: s03-spec
+    goto: /app/chat/{C1}
+    waitFor: [approval-card, kit-approval-fold]
+    click: kit-approval-fold
+    fullPage: true
+    hold: 900
+
+  # 2c. Edit pre-fills the composer with 'Change the draft "…": '; the change
+  # is typed after it (append), never sent.
+  - id: s03b-spec-edit
+    goto: /app/chat/{C1}
+    waitFor: [approval-card, kit-approval-fold]
+    click: [kit-approval-fold, kit-approval-edit]
+    type: { into: '[data-testid="chat-composer"] textarea', text: "also done when a EUR invoice pays end to end.", frames: 14, append: true }
+    hold: 600
 
   # 3. Confirmed (t=0). Unclipped too: the rule is Maya's own words, so the
   # renderer marks them in her bubble before the card comes in below.

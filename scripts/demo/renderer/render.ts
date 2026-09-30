@@ -23,8 +23,9 @@
  *   shotlist.json                              shots, timings, captions
  *   <prefix>-beat-<beat>.mp4 / .webm / -poster.jpg   (--only beats, v6a) one silent
  *                                              1280w seamless loop per feature beat
- * `--site <dir>` then copies the site set there under fixed names: <beat>.*,
- * hero.* (v6x loop), full.* (v6a with sound), and manifest.json.
+ * `--site <dir>` then publishes the site set there under fixed names: <beat>[-mobile][-light].*,
+ * hero[-light].* (v6x loop), full.mp4 (v6a with sound, capped at 8MB), and manifest.json.
+ * It builds a sibling dir and swaps it in (publishDir), so a killed run never wipes the last set.
  * `--stills t1,t2` writes still-<cut>-<t>.png at those times instead of encoding.
  */
 import { chromium } from 'playwright';
@@ -33,7 +34,7 @@ import { join, resolve } from 'path';
 import { fullCut, heroLoop, type Stills } from './cuts';
 import { v5Film, v5Hero, type V5 } from './cuts-v5';
 import { askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { copyFileSync, statSync } from 'fs';
+import { copyFileSync, renameSync, statSync } from 'fs';
 import { cutDuration, frameCount, shotStarts, soundCues, type Cut, type Rect, type ShotImage } from './timeline';
 import { synthesize, wav } from './audio';
 
@@ -332,23 +333,66 @@ export function siteFiles(): Array<[from: string, to: string]> {
       ...set('v6a', `-beat-${b}`, b), ...set('v6a', `-beat-${b}-mobile`, `${b}-mobile`),
       ...set('v6l', `-beat-${b}`, `${b}-light`), ...set('v6l', `-beat-${b}-mobile`, `${b}-light-mobile`),
     ]),
-    ...set('v6x', '-hero', 'hero'), ...set('v6l', '-hero', 'hero-light'), ...set('v6a', '', 'full'),
+    ...set('v6x', '-hero', 'hero'), ...set('v6l', '-hero', 'hero-light'),
+    // The film with sound: one mp4 (the dialog plays one source), capped at FULL_MAX_BYTES by assembleSite.
+    [in_('v6a', '.mp4'), 'full.mp4'], [in_('v6a', '-poster.jpg'), 'full-poster.jpg'],
   ];
 }
 
+/** The site's film with sound stays under this; assembleSite re-encodes it down if the render is bigger. */
+export const FULL_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Build a directory next to `site`, then swap it in with renames, so a render
+ * that dies part way (or is killed) leaves the previous set whole. The old set
+ * is only removed after the new one is in place.
+ */
+export function publishDir(site: string, build: (tmp: string) => void): void {
+  const tmp = `${site}.next-${process.pid}`;
+  const old = `${site}.old-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  try {
+    build(tmp);
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
+  const had = existsSync(site);
+  if (had) renameSync(site, old);
+  renameSync(tmp, site);
+  if (had) rmSync(old, { recursive: true, force: true });
+}
+
+/** Re-encode an mp4 in place, stepping CRF up until it fits `max` bytes (same size, same audio). */
+function capMp4(file: string, max: number) {
+  for (let crf = 24; statSync(file).size > max && crf <= 36; crf += 2) {
+    const out = `${file}.crf${crf}.mp4`;
+    const r = Bun.spawnSync(['ffmpeg', '-y', '-v', 'error', '-i', file, '-c:v', 'libx264', '-preset', 'slow', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', out]);
+    if (r.exitCode !== 0) throw new Error(`[render] ffmpeg re-encode failed: ${r.stderr.toString()}`);
+    renameSync(out, file);
+  }
+  if (statSync(file).size > max) throw new Error(`[render] ${file} is still over ${max} bytes at crf 36`);
+}
+
 function assembleSite(outRoot: string, site: string) {
-  mkdirSync(site, { recursive: true });
   const missing = siteFiles().filter(([from]) => !existsSync(join(outRoot, from))).map(([from]) => from);
   if (missing.length) throw new Error(`[render] --site: not rendered yet:\n  ${missing.join('\n  ')}`);
-  for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(site, to));
   const probe = (f: string) => +Bun.spawnSync(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).stdout.toString().trim();
-  const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
   const size = (f: string) => Bun.spawnSync(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim().split(',').map(Number);
-  const manifest = clips.map((beat) => ({
-    beat, durationSec: +probe(join(site, `${beat}.mp4`)).toFixed(2), size: size(join(site, `${beat}.mp4`)),
-    bytes: statSync(join(site, `${beat}.mp4`)).size, webmBytes: statSync(join(site, `${beat}.webm`)).size,
-  }));
-  writeFileSync(join(site, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  publishDir(site, (tmp) => {
+    for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(tmp, to));
+    capMp4(join(tmp, 'full.mp4'), FULL_MAX_BYTES);
+    const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
+    const manifest = clips.map((beat) => {
+      const webm = join(tmp, `${beat}.webm`);
+      return {
+        beat, durationSec: +probe(join(tmp, `${beat}.mp4`)).toFixed(2), size: size(join(tmp, `${beat}.mp4`)),
+        bytes: statSync(join(tmp, `${beat}.mp4`)).size, ...(existsSync(webm) ? { webmBytes: statSync(webm).size } : {}),
+      };
+    });
+    writeFileSync(join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  });
   console.log(`[render] site set → ${site}`);
 }
 
