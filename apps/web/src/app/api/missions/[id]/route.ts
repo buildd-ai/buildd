@@ -13,7 +13,11 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
-import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import {
+  ensureMissionIntegrationBranch,
+  missionBranchRemedy,
+  reportMissionBranchUnresolved,
+} from '@/lib/mission-integration-branch';
 import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
@@ -696,13 +700,23 @@ export async function PATCH(
         detail: err instanceof Error ? err.message : String(err),
       }));
       if (!ensured.ok && ensured.reason !== 'no_working_branch') {
+        await reportMissionBranchUnresolved({
+          missionId: id,
+          branch: updated?.workingBranch ?? existing.workingBranch ?? '(unnamed)',
+          where: 'mission_update',
+          surface: 'PATCH /api/missions/[id]',
+          cause: ensured.reason === 'not_opted_in' ? 'missing' : ensured.reason,
+          fallback: 'none',
+          detail: ensured.detail ?? null,
+          workspaceId: updated?.workspaceId ?? existing.workspaceId ?? null,
+        });
         // Do not fail the PATCH — the flag is set and correct. Say so where an
         // operator will see it rather than only in the server log.
         await postMissionFeedEvent({
           missionId: id,
           type: 'update',
           title: 'Integration branch could not be created',
-          body: `Option A′ is enabled for this mission, but its integration branch could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs will fail to open until this is resolved.`,
+          body: `Option A′ is enabled for this mission, but its integration branch could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs fall back to trunk until this is resolved.\n\n**To fix:** ${missionBranchRemedy(ensured.reason)}`,
           actor,
         }).catch(e => console.error('[missions/patch] Failed to emit integration-branch note:', e));
       }

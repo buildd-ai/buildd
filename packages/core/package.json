@@ -103,6 +103,7 @@
     "./flight-strip-store": "./flight-strip-store.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
+    "./mission-branch-trace": "./mission-branch-trace.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
