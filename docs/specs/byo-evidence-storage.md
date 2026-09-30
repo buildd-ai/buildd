@@ -370,3 +370,149 @@ never raw URLs.
 - Replacing the compact `result.evidence` record (task 0c635dfe).
 - General file hosting; artifacts keep their own store.
 - A per-owner private namespace (waits on `tasks.visibility`).
+
+## Build breakdown
+
+Ordered; each item is one PR against the mission integration branch. Every
+schema change follows `.claude/skills/schema-change` (compare the newest
+`packages/core/drizzle/` index against `origin/dev` immediately before
+generating, and again before pushing). None of this is built yet. Task
+`0c635dfe` (the compact `result.evidence` record) has not landed on `dev`;
+tasks 2, 3 and 4 define the pointer side as an extension of it, and wire
+`result.evidence.links[]` only if it exists when they start.
+
+Two decisions here differ from the original brief and are deliberate: chat and
+MCP read evidence through the server proxy (Invariant 6), so the presigned GET
+exists in the UI download path only; and the `evidence` corpus is fed by a
+direct best-effort upsert, not `knowledge_ingest_jobs` (see "The `evidence`
+corpus").
+
+### 1. Backend config, credential purpose, S3 client factory, connection test
+
+- **Scope:** `evidence_backends` table; `evidence_storage_credential` secret
+  purpose (never delivered to a runner); per-backend `S3Client` factory next to
+  the env-configured client; endpoint SSRF validation; PUT/GET/DELETE probe on
+  save and daily; `manage_evidence_backends` (admin MCP) and its API routes;
+  resolution order workspace → team → `buildd_default`.
+- **Paths:** `packages/core/db/schema.ts`, `packages/core/drizzle/*`,
+  `packages/core/secrets/types.ts`, `apps/web/src/lib/storage.ts`,
+  `apps/web/src/lib/evidence-backends.ts` (new),
+  `apps/web/src/app/api/evidence-backends/**` (new),
+  `packages/core/mcp-tools.ts`, `packages/core/mcp-tool-groups.ts`,
+  `apps/web/src/lib/chat/registry.ts` (list/get reads, writes deferred).
+- **Depends on:** none.
+- **Acceptance:** AC-1, AC-9 and AC-10 as route/unit tests against a stubbed S3
+  server; a test that no claim response, chat result or log line contains the
+  credential value; with no backend configured, resolution returns
+  `buildd_default` and nothing else changes.
+
+### 2. Evidence pointers and the upload path for `command_output` and `test_report`
+
+- **Scope:** `evidence_objects` table; `buildEvidenceObjectKey` in
+  `storage-keys.ts` (guard test extended); `POST /api/workers/[id]/evidence-upload-url`
+  with backend resolution, `max_bytes_per_task`, and presign against the
+  backend's client; runner writers hooked on the Bash `tool_result` error branch
+  and on the session-end test report; whole-text redaction through
+  `createSecretRedactor` with the same secret list as the transcript; sensitive
+  workspace rule (BYO only, `index_state = skipped`); failure semantics
+  (`upload_state`, one retry, task status untouched).
+- **Paths:** `packages/core/db/schema.ts`, `packages/core/drizzle/*`,
+  `apps/web/src/lib/storage-keys.ts`,
+  `apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts` (new),
+  `apps/runner/src/workers.ts`, `apps/runner/src/buildd.ts`,
+  `apps/runner/src/evidence-writer.ts` (new), `packages/shared/src/types.ts`.
+- **Depends on:** 1.
+- **Acceptance:** AC-2 (runner unit test with a seeded secret, asserting the
+  stored bytes never contain it); AC-7; a test that a failed upload leaves
+  `tasks.status` and `workers.status` unchanged; a test that fails when a new
+  claim-delivered secret channel is missing from the redactor list.
+
+### 3. CI job log capture
+
+- **Scope:** on a CI-failure event for a buildd-owned PR, fetch the failing job
+  logs with the GitHub App token, strip ANSI, redact with installation-token
+  exact values plus generic patterns, write a `ci_job_log` object, and insert
+  pointer rows for the retry task and its root task.
+- **Paths:** `apps/web/src/lib/ci-failure-inspect.ts`,
+  `apps/web/src/lib/ci-failure-digest.ts`, `apps/web/src/lib/evidence-writer.ts`
+  (new, server-side counterpart of the runner writer), the CI-failure webhook
+  handler that calls the inspector.
+- **Depends on:** 2.
+- **Acceptance:** AC-3; a fixture log with ANSI codes and a masked token
+  round-trips clean; with no backend and a sensitive workspace, nothing is
+  written and CI handling still succeeds.
+
+### 4. Read paths: task and PR evidence, `read_evidence`, chat tool
+
+- **Scope:** `GET /api/tasks/:id/evidence` and `GET /api/evidence` (tail, grep,
+  range; 64 KB cap with `truncated` and cursor; object must belong to `:id`);
+  MCP `read_evidence` at worker level; chat registry and `CHAT_ROUTES` entries
+  (reach `byTask`; `requireQuery: ['workspaceId']` for the PR lookup); object
+  list inlined into `get_task`, `get_pr` and `explain`.
+- **Paths:** `apps/web/src/app/api/tasks/[id]/evidence/route.ts` (new),
+  `apps/web/src/app/api/evidence/route.ts` (new), `packages/core/mcp-tools.ts`,
+  `packages/core/mcp-tool-groups.ts`, `apps/web/src/lib/chat/registry.ts`,
+  `apps/web/src/lib/chat/in-process-api.ts`, `apps/web/src/lib/chat/reach-rules.ts`.
+- **Depends on:** 2 (3 adds `ci_job_log` fixtures but is not required).
+- **Acceptance:** AC-5 and AC-11; the chat registry test and route-reach test
+  pass with the new entries; a request for an object whose task is outside the
+  caller's reach is refused; an `unreadable` object returns a clear error, not
+  a 500.
+
+### 5. `evidence` corpus, indexer and search
+
+- **Scope:** add `'evidence'` to `Corpus`, `ALL_CORPORA` and `CORPORA`; log-aware
+  chunker (error blocks, failing tests, non-zero command tails, CI failure
+  digests, final summary; default 40 chunks per object); a second redaction pass
+  on the chunk text before it reaches the embedder; direct `knowledgeStore.upsert`
+  with `source_id = evidence_objects.id#chunk` and lineage metadata; sweep that
+  re-drives `index_state` `queued` or `failed`; `query_knowledge` and
+  `recall scope=evidence`; sensitive workspaces and private tasks return nothing.
+- **Paths:** `packages/core/knowledge-store/types.ts`,
+  `packages/core/knowledge-store/health.ts`, `packages/core/mcp-tools.ts`,
+  `packages/core/evidence-chunker.ts` (new),
+  `apps/web/src/lib/evidence-indexer.ts` (new), the cron route that hosts the
+  sweep, `apps/web/src/lib/chat/registry.ts` if `recall` scopes are enumerated
+  there.
+- **Depends on:** 2 (3 for CI-log chunks).
+- **Acceptance:** AC-6; AC-7 for the indexing half; a chunker test on a
+  representative fixture log asserting the chunk cap and that a seeded secret
+  absent from the stored object is also absent from every chunk; a sweep test
+  that a row stuck in `queued` is indexed on the next run.
+
+### 6. Settings UI and Evidence tab
+
+- **Scope:** Settings → Storage (add, edit, verify, remove a backend; status and
+  last error; lifecycle-rule snippet) and the task-page Evidence tab (object
+  list, tail viewer with grep, short-lived presigned GET for download, UI only).
+- **Paths:** `apps/web/src/app/app/(protected)/settings/storage/**` (new),
+  `apps/web/src/app/app/(protected)/tasks/[id]/**` (Evidence tab), the presign
+  route for downloads under `apps/web/src/app/api/evidence/`.
+- **Depends on:** 1 for the settings page; 4 for the Evidence tab.
+- **Acceptance:** phone- and desktop-width screenshots per `/visual-review`; a
+  component test that the credential form never echoes a stored secret back; the
+  download URL is minted per click and expires in minutes.
+
+### 7. Segmented transcripts (P2)
+
+- **Scope:** flush transcript segments before the ring buffers evict, keep
+  `tool_result` bodies, write a per-worker `manifest.json` with `complete`;
+  `transcript` kind uses the new key layout and replaces the write-once
+  `sessions/...` layout for BYO backends.
+- **Paths:** `apps/runner/src/workers.ts`, `apps/runner/src/session-diagnostics.ts`,
+  `apps/runner/src/evidence-writer.ts`, `apps/web/src/lib/session-artifact-keys.ts`.
+- **Depends on:** 2.
+- **Acceptance:** AC-4; a runner that dies mid-session leaves earlier segments
+  readable with `complete = false`.
+
+### 8. Retention, deletion and re-scan (P4)
+
+- **Scope:** daily job deleting expired objects, pointers and chunks; task and
+  workspace `forget` deletion; re-scan objects older than the current
+  `redactionVersion` on demand; health alert for a `failing` backend.
+- **Paths:** a new cron route under `apps/web/src/app/api/cron/`,
+  `apps/web/src/lib/evidence-retention.ts` (new), `apps/web/src/lib/storage.ts`.
+- **Depends on:** 2 and 5.
+- **Acceptance:** AC-8; deleting a task removes its objects, pointer rows and
+  chunks; a bucket that rejects DELETE leaves the pointer row marked for retry
+  rather than dropping it.
