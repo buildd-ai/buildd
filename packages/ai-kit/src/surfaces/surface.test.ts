@@ -8,6 +8,8 @@ import {
   type SlotGate,
   type Surface,
   type SurfaceLog,
+  defineRankSurface,
+  RANK_SLOT,
 } from './index';
 
 const chips = [
@@ -185,11 +187,11 @@ describe('runSurfaceEval + gateFromEval', () => {
     return reply({ card: choiceA(wrong ? (truth === 'none' ? 'unread_bills' : 'none') : truth, wrong ? 0.61 : 0.97) })();
   };
 
-  const evalRows = async (n: number) => runSurfaceEval({
-    surface: s0() as unknown as Surface<{ t: string; n: number }>, slot: 'card', rows: makeRows(n),
-    stateOf: r => ({ t: r.truth, n: Number(r.id.slice(4)) }),
+  const evalRows = async (n: number, split: 'even-odd' | 'all' | 'odd' = 'even-odd', fetch: unknown = evalFetch) => runSurfaceEval({
+    surface: s0(), slot: 'card', rows: makeRows(n),
+    stateOf: r => ({ t: r.truth, n: Number(r.id.slice(4)) }) as never,
     labelOf: r => r.truth, idOf: r => r.id,
-    split: 'even-odd', run: { apiKey: 'k', sleep: noSleep, fetch: evalFetch as never },
+    split, run: { apiKey: 'k', sleep: noSleep, fetch: fetch as never },
   });
 
   it('scores every question of the slot in one call per row and reports both halves', async () => {
@@ -216,6 +218,41 @@ describe('runSurfaceEval + gateFromEval', () => {
     // …and the gate defines a gated slot.
     const s = surface({ slots: { ...slots, card: { ...slots.card, mode: 'gated', gate } } });
     expect(s.decision.policyOf('card')).toEqual({ mode: 'gated', minConfidence: 0.97 });
+  });
+
+  it('refuses a report holding one half: the threshold must be tuned on rows it is not judged on', async () => {
+    const odd = await evalRows(1600, 'odd');
+    expect(() => gateFromEval(odd, { targetAccuracy: 0.95 })).toThrow(/only the odd half/);
+    // A single pool (split 'all') is split by parity too: same gate as even-odd.
+    const all = await evalRows(1600, 'all');
+    expect(gateFromEval(all, { targetAccuracy: 0.95 })).toEqual(gateFromEval(await evalRows(1600), { targetAccuracy: 0.95 }));
+  });
+
+  it('a threshold tuned on the even half that misses on the held-out half does not gate', async () => {
+    // Confidently right on even rows, confidently wrong on a third of odd rows.
+    const leaky = async (_u: unknown, init?: { body?: string }) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      const st = (typeof body.state === 'string' ? JSON.parse(body.state) : body.state) as { t: string; n: number };
+      const wrong = idParity(`row-${st.n}`) === 'odd' && st.n % 3 === 1;
+      return reply({ card: choiceA(wrong ? (st.t === 'none' ? 'unread_bills' : 'none') : st.t, 0.97) })();
+    };
+    const report = await evalRows(1600, 'even-odd', leaky);
+    expect(() => gateFromEval(report, { targetAccuracy: 0.95 })).toThrow(/held-out half, short of the target/);
+  });
+
+  it('a rank-only defineRankSurface evaluates and gates the same way', async () => {
+    const rank = defineRankSurface({
+      id: 'cue.chips', promptVersion: 'v1', candidates: chips, question: c => `Offer "${c.label}"?`,
+      fallback: () => [], max: 4, mode: 'shadow',
+    });
+    const report = await runSurfaceEval({
+      surface: rank, slot: RANK_SLOT, rows: makeRows(4), stateOf: r => ({ n: r.id }), idOf: r => r.id,
+      labelOf: (_r, id) => (id === 'bills' ? 2 : id === 'plan_today' ? 0 : undefined),
+      run: { apiKey: 'k', sleep: noSleep, fetch: reply(Object.fromEntries(chips.map(c => [c.id, scoreA(c.id === 'bills' ? 1.9 : 0.1)]))) as never },
+    });
+    expect(report.fingerprint).toBe(rank.slotFingerprint(RANK_SLOT));
+    expect([...new Set(report.predictions.map(p => p.question))]).toEqual(['plan_today', 'bills']);
+    expect(report.summary.accuracy.rate).toBe(1);
   });
 
   it('no threshold reaches the target ⇒ throws rather than inventing one', async () => {

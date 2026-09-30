@@ -9,9 +9,9 @@
  * - Shadow (every slot's default): the slot renders its `default`, always, and
  *   Jev's would-be pick goes to `onPick` so the app can log it next to what
  *   the person then tapped. Those rows are the eval's labels.
- * - Gated: only with a `SlotGate` from `gateFromEval`, which needs at least
- *   `MIN_GATE_EVAL_ROWS` held-out labelled rows and takes the threshold from
- *   them. The gate is bound to the slot's fingerprint, so changing a question,
+ * - Gated: only with a `SlotGate` from `gateFromEval`, which tunes the
+ *   threshold on the even half of the labelled rows and checks it on the odd
+ *   half, of at least `MIN_GATE_EVAL_ROWS`. The gate is bound to the slot's fingerprint, so changing a question,
  *   a candidate, a level, a label or the model invalidates it.
  *
  * The output space is closed: registered ids and labels only. Chip text, card
@@ -62,14 +62,18 @@ export const SURFACE_RANK_LEVELS = [
   'Clearly useful now: the state shows this needs attention',
 ] as const;
 
-/** What `gateFromEval` returns. Commit it as a constant next to the surface. */
+/**
+ * What `gateFromEval` returns. Commit it as a constant next to the surface and
+ * review it like code: it is a plain object, so nothing stops someone typing
+ * one; the review of the diff (and the eval output it came from) is the check.
+ */
 export interface SlotGate {
   slot: string;
   /** `surface.slotFingerprint(slot)` the eval ran against. */
   fingerprint: string;
-  /** From the held-out rows: the lowest observed confidence that met the target. */
+  /** Tuned on the even half: the lowest confidence Jev produced there that met the target. */
   minConfidence: number;
-  /** Held-out labelled rows (distinct ids). At least `MIN_GATE_EVAL_ROWS`. */
+  /** Held-out (odd) labelled rows, distinct ids. At least `MIN_GATE_EVAL_ROWS`. */
   evalRows: number;
   /** Held-out accuracy at `minConfidence`. */
   heldOutAccuracy: number;
@@ -191,7 +195,18 @@ export type SurfacePickOptions = Omit<RunOptions<DecisionQuestions>, 'state'> & 
   onPick?: (log: SurfaceLog) => void | Promise<void>;
 };
 
-export interface Surface<S extends SurfaceState = SurfaceState, Slots extends SurfaceSlots<S> = SurfaceSlots<S>> {
+/** What `runSurfaceEval` needs: `defineSurface` and `defineRankSurface` both provide it. */
+export interface EvaluableSurface {
+  readonly id: string;
+  readonly version: string;
+  slotFingerprint(slot: string): string;
+  slotDecision(slot: string): Decision<DecisionQuestions>;
+  slotQuestions(slot: string): string[];
+  /** The candidate id a rank question scores; undefined for a choice question. */
+  candidateOf(slot: string, question: string): string | undefined;
+}
+
+export interface Surface<S extends SurfaceState = SurfaceState, Slots extends SurfaceSlots<S> = SurfaceSlots<S>> extends EvaluableSurface {
   readonly id: string;
   readonly version: string;
   /** All slots' questions in one `/decide` definition. Pin it with `expectDecisionPinned`. */
@@ -212,6 +227,11 @@ export interface Surface<S extends SurfaceState = SurfaceState, Slots extends Su
 }
 
 const SEP = '__';
+
+/** A slot's fingerprint: its questions and the model, never its mode or gate. Shared by `defineSurface` and `defineRankSurface`. */
+export function slotFingerprintOf(surfaceId: string, slot: string, questions: Record<string, DecisionQuestion>, model: string): string {
+  return shortHash(canonicalJson({ surface: surfaceId, slot, questions, model, engine: DECIDE_ENGINE_VERSION }));
+}
 
 interface CompiledSlot {
   name: string;
@@ -280,7 +300,7 @@ export function defineSurface<S extends SurfaceState = SurfaceState, const Slots
       }
       questions[name] = choiceQuestion(slot.question, criteria);
     }
-    const fingerprint = shortHash(canonicalJson({ surface: config.id, slot: name, questions, model, engine: DECIDE_ENGINE_VERSION }));
+    const fingerprint = slotFingerprintOf(config.id, name, questions, model);
     const mode: SlotMode = slot.mode ?? 'shadow';
     if (mode !== 'shadow' && mode !== 'gated') throw new Error(`${where}: slot '${name}' mode must be 'shadow' or 'gated'`);
     if (mode === 'gated') checkGate(where, name, fingerprint, slot.gate);
@@ -409,6 +429,7 @@ export function defineSurface<S extends SurfaceState = SurfaceState, const Slots
     slotNames: names as (keyof Slots & string)[],
     slotFingerprint: name => slotOf(name).fingerprint,
     slotQuestions: name => Object.keys(slotOf(name).questions),
+    candidateOf: (name, q) => slotOf(name).byQuestion.get(q),
     slotDecision(name) {
       const s = slotOf(name);
       let d = slotDecisions.get(name);
@@ -452,7 +473,8 @@ export function defineSurface<S extends SurfaceState = SurfaceState, const Slots
   };
 }
 
-function checkGate(where: string, name: string, fingerprint: string, gate: SlotGate | undefined): void {
+/** Throws unless `gate` came from an eval of this slot as it is now, over enough rows. */
+export function checkGate(where: string, name: string, fingerprint: string, gate: SlotGate | undefined): void {
   if (!gate) {
     throw new Error(`${where}: gated slot '${name}' needs a gate from gateFromEval (a held-out eval of at least ${MIN_GATE_EVAL_ROWS} labelled rows)`);
   }
@@ -493,7 +515,7 @@ export interface SurfaceEvalReport {
 }
 
 export interface RunSurfaceEvalParams<T, S extends SurfaceState> {
-  surface: Surface<S, SurfaceSlots<S>>;
+  surface: EvaluableSurface;
   slot: string;
   rows: readonly T[];
   stateOf: (row: T) => S;
@@ -518,18 +540,17 @@ export async function runSurfaceEval<T, S extends SurfaceState>(params: RunSurfa
   const { surface, slot } = params;
   const decision = surface.slotDecision(slot);
   const questions = surface.slotQuestions(slot);
-  const isRank = !(questions.length === 1 && questions[0] === slot);
   const split = params.split ?? 'all';
   const scored = params.rows.filter(r => split === 'all' || split === 'even-odd' || idParity(params.idOf(r)) === split);
   const each = await decision.runEach(scored, {
     ...params.run,
-    stateOf: r => ({ ...params.stateOf(r) }),
+    stateOf: r => ({ ...(params.stateOf(r) as S) }),
     concurrency: params.concurrency,
     budgetMs: params.budgetMs,
   });
 
   const predictions: SurfaceEvalPrediction[] = [];
-  const candidateOf = (q: string) => (isRank ? q.slice(slot.length + SEP.length) : undefined);
+  const candidateOf = (q: string) => surface.candidateOf(slot, q);
   for (const { item, run, pool } of each.items) {
     const id = params.idOf(item);
     let costCounted = false;
@@ -569,61 +590,65 @@ export async function runSurfaceEval<T, S extends SurfaceState>(params: RunSurfa
 }
 
 export interface GateFromEvalOptions {
-  /** Held-out accuracy the applied answers must reach, e.g. 0.95. Scale it with the cost of a wrong pick. */
+  /** Accuracy the applied answers must reach on both halves, e.g. 0.95. Scale it with the cost of a wrong pick. */
   targetAccuracy: number;
-  /** Least share of held-out answers the gate must still apply. Default 0 (any). */
+  /** Least share of answers the gate must still apply, on both halves. Default 0 (any). */
   minCoverage?: number;
-  /** Which half to read. Default `odd` for an `even-odd` report, else every row. */
-  heldOut?: 'even' | 'odd' | 'all';
+}
+
+interface Scored { id: string | number; pred: string | null; truth: string; confidence: number | null; error?: string }
+
+/** Accuracy and coverage of the answers at or above `t`. */
+function at(rows: readonly Scored[], t: number): { acc: number; cov: number; n: number } {
+  const hi = rows.filter(r => r.confidence! >= t);
+  return { n: hi.length, acc: hi.length ? hi.filter(r => r.pred === r.truth).length / hi.length : 0, cov: rows.length ? hi.length / rows.length : 0 };
 }
 
 /**
- * A slot's gate from its eval: the lowest confidence observed on the held-out
- * rows at which the answers at or above it reach `targetAccuracy` (and
- * `minCoverage`). Throws with fewer than `MIN_GATE_EVAL_ROWS` held-out labelled
- * rows, or when no threshold meets the target: then the slot stays in shadow.
- * The threshold is a confidence the model actually produced, never a round
- * number someone typed.
+ * A slot's gate from its eval. The rows split by id parity: the threshold is
+ * tuned on the even half (the lowest confidence Jev produced there at which
+ * the answers at or above it reach `targetAccuracy` and `minCoverage`), then
+ * checked on the odd half, which it never saw. Accuracy and coverage are the
+ * odd half's.
+ *
+ * Throws, and the slot stays in shadow, when the report holds only one half
+ * (`split: 'even'` or `'odd'`), when the odd half has fewer than
+ * `MIN_GATE_EVAL_ROWS` labelled rows, when no threshold meets the target on
+ * the even half, or when the odd half misses it. The threshold is a
+ * confidence the model actually produced, never a round number someone typed.
  */
 export function gateFromEval(report: SurfaceEvalReport, opts: GateFromEvalOptions): SlotGate {
-  const heldOut = opts.heldOut ?? (report.split === 'even-odd' ? 'odd' : 'all');
-  const rows = report.predictions.filter(p => !p.error && p.pred !== null && p.confidence !== null)
-    .filter(p => heldOut === 'all' || idParity(p.id) === heldOut);
-  const evalRows = new Set(rows.map(p => String(p.id))).size;
-  if (evalRows < MIN_GATE_EVAL_ROWS) {
-    throw new Error(
-      `gateFromEval '${report.surfaceId}' slot '${report.slot}': ${evalRows} held-out labelled rows (${heldOut}); ` +
-      `gating needs at least ${MIN_GATE_EVAL_ROWS}. Keep the slot in shadow and collect more.`,
-    );
+  const where = `gateFromEval '${report.surfaceId}' slot '${report.slot}'`;
+  if (report.split === 'even' || report.split === 'odd') {
+    throw new Error(`${where}: the report holds only the ${report.split} half; run the eval with split 'even-odd' (tune on even, gate on odd)`);
   }
   if (!(opts.targetAccuracy > 0 && opts.targetAccuracy <= 1)) throw new Error('gateFromEval: targetAccuracy must be in (0, 1]');
   const minCoverage = opts.minCoverage ?? 0;
-  const byConfidence = [...rows].sort((a, b) => b.confidence! - a.confidence!);
-  let best: { t: number; acc: number; cov: number } | null = null;
-  let correct = 0;
-  for (let i = 0; i < byConfidence.length; i++) {
-    if (byConfidence[i].pred === byConfidence[i].truth) correct++;
-    const t = byConfidence[i].confidence!;
-    // Only at the last row of a run of equal confidences: a threshold takes all of them.
-    if (i + 1 < byConfidence.length && byConfidence[i + 1].confidence === t) continue;
-    const n = i + 1;
-    const acc = correct / n;
-    const cov = n / byConfidence.length;
-    if (acc >= opts.targetAccuracy && cov >= minCoverage) best = { t, acc, cov };
-  }
-  if (!best) {
+  const answered = report.predictions.filter(p => !p.error && p.pred !== null && p.confidence !== null);
+  const tune = answered.filter(p => idParity(p.id) === 'even');
+  const heldOut = answered.filter(p => idParity(p.id) === 'odd');
+  const evalRows = new Set(heldOut.map(p => String(p.id))).size;
+  if (evalRows < MIN_GATE_EVAL_ROWS) {
     throw new Error(
-      `gateFromEval '${report.surfaceId}' slot '${report.slot}': no threshold reaches the target ` +
-      `${opts.targetAccuracy} accuracy at ${minCoverage} coverage on ${evalRows} held-out rows. Keep the slot in shadow.`,
+      `${where}: ${evalRows} held-out (odd) labelled rows; gating needs at least ${MIN_GATE_EVAL_ROWS}. ` +
+      'Keep the slot in shadow and collect more.',
     );
   }
-  return {
-    slot: report.slot,
-    fingerprint: report.fingerprint,
-    minConfidence: best.t,
-    evalRows,
-    heldOutAccuracy: best.acc,
-    coverage: best.cov,
-  };
+  // Candidate thresholds: every confidence seen on the tuning half, lowest first (most coverage).
+  const thresholds = [...new Set(tune.map(p => p.confidence!))].sort((a, b) => a - b);
+  const t = thresholds.find(c => { const r = at(tune, c); return r.n > 0 && r.acc >= opts.targetAccuracy && r.cov >= minCoverage; });
+  if (t === undefined) {
+    throw new Error(
+      `${where}: no threshold reaches the target ${opts.targetAccuracy} accuracy at ${minCoverage} coverage ` +
+      `on the tuning (even) half. Keep the slot in shadow.`,
+    );
+  }
+  const held = at(heldOut, t);
+  if (held.acc < opts.targetAccuracy || held.cov < minCoverage) {
+    throw new Error(
+      `${where}: threshold ${t} from the tuning half reaches ${held.acc.toFixed(3)} accuracy at ` +
+      `${held.cov.toFixed(3)} coverage on the held-out half, short of the target. Keep the slot in shadow.`,
+    );
+  }
+  return { slot: report.slot, fingerprint: report.fingerprint, minConfidence: t, evalRows, heldOutAccuracy: held.acc, coverage: held.cov };
 }
-

@@ -512,7 +512,7 @@ export const CHIPS = defineRankSurface({
   levels: LEVELS,                                   // optional; lowest first
   fallback: state => codeOrder(state),              // always computed: the order when Jev is off or unsure, and the tie-break
   max: 4,
-  mode: 'gated', minConfidence: 0.6,                // or 'shadow' to log only
+  mode: 'shadow',                                   // 'gated' needs gate: gateFromEval(…), below
 });
 
 const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // never throws
@@ -520,7 +520,11 @@ const pick = await CHIPS.pick(counts, { apiKey, onUsage, onDecision });   // nev
 const chips = CHIPS.resolve(pick.ids);
 ```
 
-- Scores count only when applied (at or above `minConfidence` in `gated`). If
+- Modes are `shadow` and `gated` only (0.14.0): `live` and a hand-typed
+  `minConfidence` are refused. `gated` needs `gate`, from
+  `gateFromEval(await runSurfaceEval({ surface: CHIPS, slot: RANK_SLOT, … }))`,
+  exactly as for `defineSurface` below.
+- Scores count only when applied (at or above the gate's threshold in `gated`). If
   fewer than `minAppliedShare` (default half) of the candidates are applied,
   or the call fails or times out (default 3s), or there is no key, or the
   mode is `shadow`, the fallback order stands, and `reason` says why.
@@ -528,7 +532,7 @@ const chips = CHIPS.resolve(pick.ids);
   fallback order. `rank(state, run)` is the same combination, pure, for tests
   and for replaying logged runs.
 - `CHIPS.decision` is the `/decide` definition: pin it with
-  `expectDecisionPinned` and eval it with `runDecisionEval` before gating.
+  `expectDecisionPinned`.
 
 ### Several slots, shadow first: `defineSurface` (0.14.0)
 
@@ -565,9 +569,11 @@ const pick = await EMPTY.pick(counts, { apiKey, onUsage, onPick: log => saveShad
 - **Gating a slot needs an eval.** `mode: 'gated'` is refused without a
   `gate`, and a gate comes from `gateFromEval`, which throws below
   `MIN_GATE_EVAL_ROWS` (700) held-out labelled rows. At 700 the 95% interval
-  on a ~90% accuracy is about ±2.2 points. The threshold is the lowest
-  confidence Jev actually produced at which the held-out answers reach your
-  target accuracy, so it is never a round number someone typed:
+  on a ~90% accuracy is about ±2.2 points. Rows split by id parity: the
+  threshold is tuned on the even half (the lowest confidence Jev actually
+  produced there at which the answers reach your target accuracy, so never a
+  round number someone typed), then must hold on the odd half, which it never
+  saw. A report holding one half (`split: 'even'` or `'odd'`) is refused:
 
   ```ts
   const report = await runSurfaceEval({
@@ -580,6 +586,9 @@ const pick = await EMPTY.pick(counts, { apiKey, onUsage, onPick: log => saveShad
 
   For a rank slot, `labelOf(row, candidateId)` returns the level index the
   candidate deserved, or `undefined` to leave it unlabelled.
+- **Review the gate constant like code.** A `SlotGate` is a plain object, so
+  one can be typed by hand; the check is the reviewed diff that adds it, with
+  the eval output it came from. Never commit the labelled rows to a public repo.
 - The gate is bound to `slotFingerprint(slot)`: the slot's questions,
   candidates, levels, labels and the model, not its mode. Change any of them
   and the gated surface no longer defines until you re-run the eval. Slots

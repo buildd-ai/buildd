@@ -16,8 +16,9 @@
 import {
   defineDecision,
   score,
+  JEV_MODEL,
   type Decision,
-  type DecisionMode,
+  type DecisionQuestions,
   type DecisionRun,
   type DecisionText,
   type RunOptions,
@@ -25,7 +26,10 @@ import {
 } from '@builddai/ai-kit/decide';
 
 export * from './surface';
-import type { SurfaceCandidate } from './surface';
+import { checkGate, MIN_GATE_EVAL_ROWS, slotFingerprintOf, type EvaluableSurface, type SlotGate, type SurfaceCandidate } from './surface';
+
+/** The one slot of a rank surface, for `runSurfaceEval` / `gateFromEval`. */
+export const RANK_SLOT = 'rank';
 
 // ── Rank surface ──────────────────────────────────────────────────────────────
 
@@ -58,10 +62,17 @@ export interface RankSurfaceConfig<C extends SurfaceCandidate, S extends RankSta
   fallback: (state: S) => readonly string[];
   /** How many ids `pick` returns (e.g. 4 chips). Default: all. */
   max?: number;
-  /** `shadow` logs Jev's order and shows the fallback; `gated` applies scores at or above `minConfidence`. */
-  mode: DecisionMode;
-  /** Required for `gated`: from a held-out eval. */
-  minConfidence?: number;
+  /**
+   * `shadow` logs Jev's order and shows the fallback; `gated` applies scores
+   * at or above the gate's threshold. There is no `live` (0.14.0).
+   */
+  mode: 'shadow' | 'gated';
+  /**
+   * Required for `gated`: `gateFromEval` over `runSurfaceEval({ surface, slot: RANK_SLOT })`,
+   * at least `MIN_GATE_EVAL_ROWS` held-out rows. A hand-typed `minConfidence`
+   * is refused (0.14.0).
+   */
+  gate?: SlotGate;
   /**
    * Fraction of candidates whose score must be applied for Jev's order to be
    * used at all; below it the fallback stands. Default 0.5.
@@ -87,7 +98,7 @@ export interface RankPick {
   scores: Record<string, number>;
 }
 
-export interface RankSurface<C extends SurfaceCandidate, S extends RankState = RankState> {
+export interface RankSurface<C extends SurfaceCandidate, S extends RankState = RankState> extends EvaluableSurface {
   readonly id: string;
   readonly candidates: readonly C[];
   /** The `/decide` definition: pin it with `expectDecisionPinned`, eval it with `runDecisionEval`. */
@@ -113,7 +124,7 @@ export interface RankSurface<C extends SurfaceCandidate, S extends RankState = R
  *   id: 'money.chat_chips', promptVersion: '2026-09-28.a',
  *   candidates: CHIP_CATALOGUE,
  *   question: c => `Offer "${c.label}" (${c.purpose})? Judge by the counts.`,
- *   fallback: codeOrder, max: 4, mode: 'gated', minConfidence: 0.6,
+ *   fallback: codeOrder, max: 4, mode: 'shadow',   // 'gated' needs gate: gateFromEval(…)
  * });
  * const { ids, source } = await chips.pick(stateCounts, { apiKey, onUsage });
  * ```
@@ -128,15 +139,30 @@ export function defineRankSurface<const C extends SurfaceCandidate, S extends Ra
   if (!(share >= 0 && share <= 1)) throw new Error(`surface '${config.id}': minAppliedShare must be in [0, 1]`);
   const levels = config.levels ?? DEFAULT_RANK_LEVELS;
   const questions = Object.fromEntries(config.candidates.map(c => [c.id, score(config.question(c), levels)])) as Record<string, ScoreQuestion>;
+  const where = `surface '${config.id}'`;
+  if (config.mode !== 'shadow' && config.mode !== 'gated') {
+    throw new Error(`${where}: mode must be 'shadow' or 'gated' (got '${String(config.mode)}'); a surface never applies Jev without an eval gate`);
+  }
+  if ((config as { minConfidence?: unknown }).minConfidence !== undefined) {
+    throw new Error(`${where}: a hand-typed minConfidence is not accepted; gate the surface with gateFromEval (at least ${MIN_GATE_EVAL_ROWS} held-out rows)`);
+  }
+  const model = config.model ?? JEV_MODEL;
+  const fingerprint = slotFingerprintOf(config.id, RANK_SLOT, questions, model);
+  if (config.mode === 'gated') checkGate(where, RANK_SLOT, fingerprint, config.gate);
+  const timeoutMs = config.timeoutMs ?? 3_000;
   const decision = defineDecision({
     id: config.id,
     promptVersion: config.promptVersion,
     questions,
     mode: config.mode,
-    ...(config.minConfidence !== undefined ? { minConfidence: config.minConfidence } : {}),
+    ...(config.mode === 'gated' ? { minConfidence: config.gate!.minConfidence } : {}),
     ...(config.model ? { model: config.model } : {}),
-    timeoutMs: config.timeoutMs ?? 3_000,
+    timeoutMs,
   });
+  let shadowDecision: Decision<DecisionQuestions> | null = null;
+  const slotOnly = (slot: string) => {
+    if (slot !== RANK_SLOT) throw new Error(`${where}: a rank surface has one slot, '${RANK_SLOT}' (got '${slot}')`);
+  };
   const known = new Set(ids);
   const byId = new Map(config.candidates.map(c => [c.id, c]));
   const max = config.max ?? ids.length;
@@ -179,6 +205,17 @@ export function defineRankSurface<const C extends SurfaceCandidate, S extends Ra
     decision,
     version: decision.version,
     rank,
+    slotFingerprint(slot) { slotOnly(slot); return fingerprint; },
+    slotQuestions(slot) { slotOnly(slot); return [...ids]; },
+    candidateOf(slot, q) { slotOnly(slot); return known.has(q) ? q : undefined; },
+    slotDecision(slot) {
+      slotOnly(slot);
+      shadowDecision ??= defineDecision({
+        id: config.id, promptVersion: config.promptVersion, questions, mode: 'shadow',
+        ...(config.model ? { model: config.model } : {}), timeoutMs,
+      }) as Decision<DecisionQuestions>;
+      return shadowDecision;
+    },
     async pick(state, opts = {} as Omit<RunOptions<Record<string, ScoreQuestion>>, 'state'>) {
       if (!opts.apiKey) return rank(state, null);
       let run: DecisionRun<Record<string, ScoreQuestion>> | null = null;
