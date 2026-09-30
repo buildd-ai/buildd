@@ -820,11 +820,43 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(githubCalls.some(c => c.path.includes('state=closed'))).toBe(false);
   });
 
-  it('refuses while the mission’s work is incomplete', async () => {
-    taskRowsForMission = [workTask('t-1', 'in_progress')];
+  it("refuses while the mission’s work is incomplete", async () => {
+    taskRowsForMission = [workTask("t-1", "in_progress")];
     const r = await openMissionIntegrationPr(MISSION_ID);
-    expect((r as { reason: string }).reason).toBe('work_incomplete');
+    expect((r as { reason: string }).reason).toBe("work_incomplete");
     expect(inserts).toEqual([]);
+  });
+
+  it("adopts a manually-merged mission PR when the branch is ahead", async () => {
+    // Case: squash-merged PR outside buildd (e.g., via gh), branch recreated with new work.
+    // The branch is ahead_by > 0, no open PR exists, no owner is recorded,
+    // but a merged PR exists from the previous work. Should adopt it without POSTing.
+    landedWork();
+    githubResponses["/compare/"] = { ahead_by: 2 };
+    githubResponses["/pulls?state=open"] = [];
+    githubResponses["/pulls?state=closed"] = [
+      { number: 73, html_url: "pr-73", merged_at: "2026-09-27T10:00:00Z", base: { ref: "dev" } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 73, prUrl: "pr-73", created: false, merged: true });
+    expect(githubCalls.some(c => c.method === "POST")).toBe(false);
+  });
+
+  it("does not look for merged PR when owner is already recorded", async () => {
+    // Case: when an owner worker exists (even if merged), do not look for old
+    // merged PRs to adopt. The new code path (if (!adoptable && !owner)) is skipped.
+    // This verifies the condition properly gates the fallback adoption logic.
+    landedWork();
+    taskRowsForMission.push(ownerTask());
+    workerRowsByTask["t-own"] = [worker({ taskId: "t-own", id: "w-own", prUrl: "pr-42", prNumber: 42, mergedAt: T0 })];
+    githubResponses["/compare/"] = { ahead_by: 0 };
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe("no_commits");
+    expect(githubCalls.some(c => c.path.includes("state=closed"))).toBe(false);
   });
 });
 
