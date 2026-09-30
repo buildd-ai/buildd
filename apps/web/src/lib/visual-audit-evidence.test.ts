@@ -97,6 +97,17 @@ describe('evaluateVisualAuditEvidence', () => {
     expect(v.missing).toEqual(['/app/missions @ mobile']);
   });
 
+  it('a shot with an invalid verdict is tracked separately', () => {
+    const shots = [
+      shot('a', qa('/app/missions', 'mobile', { verdict: 'pass' })),
+      shot('b', qa('/app/missions', 'desktop', { verdict: 'fail' })),
+    ];
+    const v = evaluateVisualAuditEvidence({ requiredRoutes: ['/app/missions'], shots, uploadedIds: all(['a', 'b']), linkedFixTaskIds: new Set() });
+    expect(v.ok).toBe(false);
+    expect(v.invalidVerdicts).toEqual([{ id: 'a', verdict: 'pass' }, { id: 'b', verdict: 'fail' }]);
+    expect(v.missing).toEqual(['/app/missions @ mobile', '/app/missions @ desktop']);
+  });
+
   it('every issue needs a linked fix task', () => {
     const shots = [
       shot('a', qa('/app/missions', 'mobile', { verdict: 'issue' })),
@@ -158,6 +169,7 @@ describe('formatVisualEvidenceRejection', () => {
       emptyFindings: ['a'],
       notUploaded: ['b'],
       unlinkedIssues: ['c'],
+      invalidVerdicts: [],
     });
     expect(msg).toContain('/app/tasks @ mobile');
     expect(msg).toContain('upload_artifact');
@@ -167,9 +179,41 @@ describe('formatVisualEvidenceRejection', () => {
     expect(msg).toContain('c');
   });
 
+  it('reports shots with invalid verdicts', () => {
+    const msg = formatVisualEvidenceRejection({
+      ok: false,
+      requiredRoutes: ['/app/tasks'],
+      missing: [],
+      emptyFindings: [],
+      notUploaded: [],
+      unlinkedIssues: [],
+      invalidVerdicts: [{ id: 'shot-1', verdict: 'pass' }, { id: 'shot-2', verdict: 'fail' }],
+    });
+    expect(msg).toContain('invalid verdict');
+    expect(msg).toContain('pass');
+    expect(msg).toContain('fail');
+    expect(msg).toContain('ok');
+    expect(msg).toContain('issue');
+    expect(msg).toContain('unsure');
+    expect(msg).toContain('update_artifact');
+  });
+
+  it('mentions allowed verdicts in the missing screenshots section', () => {
+    const msg = formatVisualEvidenceRejection({
+      ok: false,
+      requiredRoutes: ['/app/tasks'],
+      missing: ['/app/tasks @ mobile'],
+      emptyFindings: [],
+      notUploaded: [],
+      unlinkedIssues: [],
+      invalidVerdicts: [],
+    });
+    expect(msg).toContain("verdict: 'ok' | 'issue' | 'unsure'");
+  });
+
   it('caps a long list', () => {
     const missing = Array.from({ length: 60 }, (_, i) => `/r${i} @ mobile`);
-    const msg = formatVisualEvidenceRejection({ ok: false, requiredRoutes: [], missing, emptyFindings: [], notUploaded: [], unlinkedIssues: [] });
+    const msg = formatVisualEvidenceRejection({ ok: false, requiredRoutes: [], missing, emptyFindings: [], notUploaded: [], unlinkedIssues: [], invalidVerdicts: [] });
     expect(msg).toContain('/r0 @ mobile');
     expect(msg).not.toContain('/r59 @ mobile');
     expect(msg).toContain('more');
@@ -216,6 +260,7 @@ describe('loadVisualAuditEvidence', () => {
     expect(v.missing).toEqual(['/app/home @ desktop']);
     expect(v.notUploaded).toEqual(['d']);
     expect(v.unlinkedIssues).toEqual([]);
+    expect(v.invalidVerdicts).toEqual([]);
   });
 
   it('counts only screenshots written by THIS worker', async () => {
@@ -245,6 +290,7 @@ describe('loadVisualAuditEvidence', () => {
     expect(mockObjectExists).toHaveBeenCalledTimes(3);
     expect(v.notUploaded.sort()).toEqual(['a', 'd']);
     expect(v.missing).toContain('/app/missions @ mobile');
+    expect(v.invalidVerdicts).toEqual([]);
   });
 
   // Reusing one stored object: create_artifact accepts any storageKey under the
@@ -261,6 +307,7 @@ describe('loadVisualAuditEvidence', () => {
     expect(mockObjectExists).toHaveBeenCalledTimes(1);
     expect(v.notUploaded).toEqual(['b']);
     expect(v.missing).toEqual(['/app/home @ desktop']);
+    expect(v.invalidVerdicts).toEqual([]);
     expect(v.ok).toBe(false);
   });
 
@@ -280,6 +327,7 @@ describe('loadVisualAuditEvidence', () => {
       workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1', workerStartedAt: new Date(1_000),
     });
     expect(v.unlinkedIssues.sort()).toEqual(['a', 'b']);
+    expect(v.invalidVerdicts).toEqual([]);
     expect(v.ok).toBe(false);
   });
 
@@ -289,6 +337,7 @@ describe('loadVisualAuditEvidence', () => {
     const v = await loadVisualAuditEvidence({ workerId: WORKER, taskId: TASK, missionId: MISSION, workspaceId: 'ws-1' });
     expect(mockTasksFindMany).not.toHaveBeenCalled();
     expect(v.unlinkedIssues).toEqual(['a']);
+    expect(v.invalidVerdicts).toEqual([]);
   });
 });
 
