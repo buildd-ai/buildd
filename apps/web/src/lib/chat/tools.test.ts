@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { allActions } from '@buildd/core/mcp-tools';
+import { allActions, handleBuilddAction } from '@buildd/core/mcp-tools';
 import { buildChatTools, CHAT_TOOL_ACTIONS } from './tools';
 
 function setup(opts: { allowWrites?: boolean; authorized?: string[]; respond?: (endpoint: string, init?: RequestInit) => unknown } = {}) {
@@ -295,5 +295,87 @@ describe('get_pr in a pinned conversation', () => {
     await (tools.get_pr as any).execute({ prNumber: 12 }, { toolCallId: 'c1', messages: [] });
     await (tools.get_pr as any).execute({ prNumber: 13, workspaceId: 'ws-other' }, { toolCallId: 'c2', messages: [] });
     expect(seen.map(s => s.input.workspaceId)).toEqual(['ws-pinned', 'ws-other']);
+  });
+});
+
+describe('advertised params reach the real handler', () => {
+  // In one prod chat turn list_tasks was called with seven different
+  // workspaceIds and returned the team-wide list each time: the chat schema
+  // advertised workspaceId and the action dropped it. The chat test above used
+  // a mocked handler, so the join between the two was never exercised.
+  const A = '11111111-2222-4333-8444-555555555555';
+  const B = '66666666-7777-4888-8999-000000000000';
+  function real() {
+    const calls: string[] = [];
+    const tools = buildChatTools({
+      ctx: { getWorkspaceId: async () => null, getLevel: async () => 'admin', surface: 'chat', authType: 'oauth' } as any,
+      allowWrites: false, authorizedToolCallIds: new Set(),
+      handle: handleBuilddAction,
+      makeApi: () => async (endpoint: string) => {
+        calls.push(endpoint);
+        return { tasks: [], prs: [], artifacts: [], workspaces: [{ id: A, name: 'web' }, { id: B, name: 'docs' }] };
+      },
+    });
+    const run = (name: string, input: unknown) => (tools[name] as any).execute(input, { toolCallId: 'c', messages: [] });
+    return { tools, run, calls };
+  }
+
+  it('list_tasks asks for the workspace it was given, a different one each call', async () => {
+    const { run, calls } = real();
+    await run('list_tasks', { workspaceId: A, status: 'completed' });
+    await run('list_tasks', { workspaceId: B, status: 'completed' });
+    const listed = calls.filter(c => c.startsWith('/api/tasks?'));
+    expect(listed).toHaveLength(2);
+    expect(listed[0]).toContain(`workspaceId=${A}`);
+    expect(listed[1]).toContain(`workspaceId=${B}`);
+  });
+
+  it('a workspace named by name is resolved, not dropped', async () => {
+    const { run, calls } = real();
+    await run('list_tasks', { workspaceId: 'docs' });
+    expect(calls.find(c => c.startsWith('/api/tasks?'))).toContain(`workspaceId=${B}`);
+  });
+
+  it('every typed read that advertises workspaceId sends it', async () => {
+    const { tools, run, calls } = real();
+    const extra: Record<string, Record<string, unknown>> = { get_pr: { prNumber: 5 } };
+    const scoped = Object.entries(tools)
+      .filter(([name, t]) => name !== 'trace_schedule' && name !== 'recall' && name !== 'learn')
+      .filter(([, t]) => { const s = (t as any).inputSchema?.shape; return s && 'workspaceId' in s && !('action' in s); })
+      .map(([name]) => name);
+    expect(scoped).toEqual(expect.arrayContaining(['list_tasks', 'list_prs', 'list_schedules', 'list_runners', 'list_artifacts']));
+    for (const name of scoped) {
+      calls.length = 0;
+      await run(name, { workspaceId: A, ...extra[name] }).catch(() => null);
+      expect({ name, sent: calls.some(c => c.includes(A)) }).toEqual({ name, sent: true });
+    }
+  });
+});
+
+describe('typed schemas reject params they do not declare', () => {
+  // A zod object strips unknown keys by default: list_tasks { missionId } used
+  // to run as an unfiltered list the model then read as the mission's tasks.
+  // An undeclared key is now a tool error the model sees and can correct.
+  it('list_tasks refuses a filter it has no field for', () => {
+    const schema = (setup().tools.list_tasks as any).inputSchema;
+    expect(schema.safeParse({ status: 'active' }).success).toBe(true);
+    const bad = schema.safeParse({ status: 'active', missionId: 'm1' });
+    expect(bad.success).toBe(false);
+    expect(bad.error.issues[0].message).toBe('Unknown parameter(s): missionId. This tool takes only: status, limit, offset, workspaceId.');
+  });
+
+  it('holds for every typed schema without an open catchall', () => {
+    const { tools } = setup();
+    const OPEN = ['manage_missions', 'create_task'];
+    const typed = Object.entries(tools).filter(([name, t]) => {
+      const s = (t as any).inputSchema;
+      return !OPEN.includes(name) && s?.shape && Object.keys(s.shape).length > 0 && !('action' in s.shape);
+    });
+    expect(typed.length).toBeGreaterThan(10);
+    for (const [name, t] of typed) {
+      const r = (t as any).inputSchema.safeParse({ notAParam: 1 });
+      expect({ name, accepted: r.success && 'notAParam' in (r.data ?? {}) ? 'passed-through' : r.success ? 'silently-stripped' : 'rejected' })
+        .toEqual({ name, accepted: 'rejected' });
+    }
   });
 });

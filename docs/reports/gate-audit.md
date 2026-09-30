@@ -102,12 +102,14 @@ regression without a human noticing nine dead runs.
 | 27 | `pr/route.ts:1214` | `merge_policy` | rejected | `evaluateAutoMergeSafety` refused |
 | 28 | `pr/route.ts:1236` | `mission_pr_lifecycle` | deferred | sibling task PRs still open against the integration branch |
 
-### check_path_claim — `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`
+### check_path_claim — `apps/web/src/lib/path-claim-check.ts` (shared by the MCP tool and `POST /api/tasks/[id]/path-claim`)
+
+Both entry points call `checkPathClaim`; `surface` is `mcp:check_path_claim` or `POST /api/tasks/[id]/path-claim`. Before the extraction the MCP copy fired neither row.
 
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
-| 29 | `path-claim/route.ts:96` | `path_claim` | rejected | wildcard claim |
-| 30 | `path-claim/route.ts:193` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
+| 29 | `path-claim-check.ts:98` | `path_claim` | rejected | wildcard claim |
+| 30 | `path-claim-check.ts:176` | `path_claim` | deferred | real overlap; caller registered as a waiter. `detail.deadlock` separates a circular wait from an ordinary one — the distinction a bare 409 could not carry |
 
 ### request_pr_review — `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`
 
@@ -209,6 +211,17 @@ reviews one, but nothing buildd runs may push to its branch.
 | 58 | `workers/[id]/route.ts` (reviewer request-changes) | `dependency_bot_pr` | rejected | no `[builder · after review]` follow-up on a bot branch |
 | 59 | `pr/review/route.ts` | `dependency_bot_pr` | bypassed | explicit `request_pr_review` adopted a bot PR — reviewed, never pushed to |
 
+### Retry-lineage PR supersession (`lib/retry-pr-supersession.ts`)
+
+When a retry attempt opens a fresh PR instead of updating its parent's, the
+parent's PR is closed so only one PR per fix can merge. A close that did not
+happen is recorded rather than logged, and the hourly pr-reconcile sweep retries it.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
+| 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
+
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
 Every reason the unattended path did not merge a PR, so "why didn't this green
@@ -222,6 +235,6 @@ twice. A merge that lands writes no row; `workers.mergedAt` already records it.
 
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
-| 60 | `auto-merge.ts:tryAutoMergeWorkerPr` (safety rails) | `auto_merge` | rejected / deferred | `evaluateAutoMergeSafety` refused; `detail.reasonClass` + `detail.tier` |
-| 61 | `auto-merge.ts:tryAutoMergeWorkerPr` (mission-PR gate) | `mission_pr_lifecycle` | deferred | mission PR waits on sibling task work, same rule as `merge_pr` |
-| 62 | `auto-merge.ts:tryAutoMergeWorkerPr` (merge call) | `auto_merge` | rejected | GitHub merge API refused; `detail.mergeFailureClass` from `classifyMergeFailure` |
+| 62 | `auto-merge.ts:tryAutoMergeWorkerPr` (safety rails) | `auto_merge` | rejected / deferred | `evaluateAutoMergeSafety` refused; `detail.reasonClass` + `detail.tier` |
+| 63 | `auto-merge.ts:tryAutoMergeWorkerPr` (mission-PR gate) | `mission_pr_lifecycle` | deferred | mission PR waits on sibling task work, same rule as `merge_pr` |
+| 64 | `auto-merge.ts:tryAutoMergeWorkerPr` (merge call) | `auto_merge` | rejected | GitHub merge API refused; `detail.mergeFailureClass` from `classifyMergeFailure` |

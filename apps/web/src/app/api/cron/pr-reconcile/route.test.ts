@@ -18,6 +18,12 @@ mock.module('@/lib/dead-zone-sweep', () => ({
   sweepDeadZonePrs: mockDeadZone,
 }));
 
+const LINEAGE_ZERO = { candidates: 0, closed: 0, stranded: 0, skipped: 0 };
+const mockLineageSweep = mock(() => Promise.resolve(LINEAGE_ZERO));
+mock.module('@/lib/retry-pr-supersession', () => ({
+  sweepDuplicateLineagePrs: mockLineageSweep,
+}));
+
 // The two sweeps below were unmocked too, so they queried the live database.
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
@@ -59,6 +65,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockMissionPrSweep.mockReset();
     mockMissionPrSweep.mockResolvedValue(MISSION_ZERO);
     mockDeadZone.mockReset();
+    mockLineageSweep.mockReset();
+    mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
     mockReconcile.mockResolvedValue(ZERO);
     mockDeadZone.mockResolvedValue({ total: 0, sparked: 0, exhausted: 0, skipped: 0 });
     process.env.CRON_SECRET = 'test-secret';
@@ -206,5 +214,29 @@ describe('GET /api/cron/pr-reconcile', () => {
     const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
     const body = await res.json();
     expect(body.reconcile.errors).toBe(1);
+  });
+
+  // ── Retry-lineage duplicate PRs ────────────────────────────────────────────
+  //
+  // create_pr closes the parent's PR when a retry opens a fresh one; when that
+  // close does not happen, this hourly sweep is what finds the two open PRs.
+
+  it('runs the duplicate-lineage sweep hourly and reports its closes as changes', async () => {
+    mockLineageSweep.mockResolvedValue({ candidates: 3, closed: 1, stranded: 1, skipped: 1 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockLineageSweep).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.lineagePrs).toEqual({ candidates: 3, closed: 1, stranded: 1, skipped: 1 });
+  });
+
+  it('a duplicate-lineage sweep failure does not fail the run', async () => {
+    mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+    mockLineageSweep.mockRejectedValue(new Error('lineage query failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reconcile.stamped).toBe(2);
+    expect(body.lineagePrs.error).toContain('lineage query failed');
   });
 });

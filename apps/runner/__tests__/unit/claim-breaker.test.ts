@@ -491,3 +491,23 @@ describe('pausedContextFor (nudge path)', () => {
     expect(pausedContextFor(b, task, now)!.key).toBe('tenant:tnt_x:codex');
   });
 });
+
+// The runner's auth check is built on core's classifier — it used to be a
+// separate list that lacked the revocation family, so a revoked OAuth token on
+// the claim path/early-exit path burn-looped instead of pausing.
+describe('isAuthError shares core auth-error classification', () => {
+  const { isAuthError: runnerIsAuthError } = require('../../src/claim-breaker');
+  test.each([
+    'invalid_grant: refresh token expired',
+    'your token has been revoked',
+    'not logged in · please run /login',
+    'oauth token could not be refreshed',
+    'please sign in again',
+  ])('%s', (msg: string) => {
+    expect(runnerIsAuthError(msg.toLowerCase())).toBe(true);
+  });
+  test('non-auth text stays false', () => {
+    expect(runnerIsAuthError("you've hit your session limit")).toBe(false);
+    expect(runnerIsAuthError('econnreset')).toBe(false);
+  });
+});

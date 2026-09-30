@@ -306,6 +306,33 @@ describe('reconcileLocalWorkers', () => {
     expect(updated?.error).toContain('remote');
   });
 
+  // A cancelled task (or a worker the server closed as cancelled/error) never
+  // reconciled: only completed/failed counted as terminal, so the local worker
+  // and its session outlived the cancel indefinitely.
+  test('cleans up local worker when remote task is cancelled', async () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-task-cancelled', status: 'working' }));
+
+    mockGetWorkerRemote.mockResolvedValue({ status: 'running', task: { status: 'cancelled' } });
+
+    const result = await manager.reconcileLocalWorkers();
+
+    expect(result.cleaned).toBe(1);
+    expect(manager.getWorker('w-task-cancelled')?.status).toBe('error');
+  });
+
+  test('cleans up local worker when remote worker status is cancelled', async () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-worker-cancelled', status: 'waiting' }));
+
+    mockGetWorkerRemote.mockResolvedValue({ status: 'cancelled', task: { status: 'pending' } });
+
+    const result = await manager.reconcileLocalWorkers();
+
+    expect(result.cleaned).toBe(1);
+    expect(manager.getWorker('w-worker-cancelled')?.status).toBe('error');
+  });
+
   test('cleans up local worker when remote worker status is completed', async () => {
     const manager = new WorkerManager(testConfig);
     const worker = makeWorker({ id: 'w-remote-done', status: 'working' });

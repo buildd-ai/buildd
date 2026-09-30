@@ -106,7 +106,8 @@ const mockCleanupWorktree = mock(async () => {});
 beforeAll(() => {
   __setGitOpsDeps({
     cleanupSpy: mockCleanupWorktree,
-    execSync: (() => '') as any,
+    // rev-list count '0' = the worktree's branch is fully pushed (unpushed-commits guard passes).
+    execSync: ((cmd: string) => (String(cmd).includes('rev-list --count') ? '0' : '')) as any,
     execFile: ((_f: any, _a: any, _o: any, cb: any) => cb(null, '', '')) as any,
     existsSync: (p: string) => mockExistsSync(p),
     mkdirSync: (() => {}) as any,

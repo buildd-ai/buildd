@@ -95,6 +95,14 @@ export const GATE_SLUGS = {
    * verdicts keep their own slugs and are not double-recorded here.
    */
   AUTO_MERGE: 'auto_merge',
+  /**
+   * Retry-lineage supersession (`lib/retry-pr-supersession.ts`). `stranded`: an
+   * ancestor PR that should have been closed when a retry opened a fresh PR was
+   * left open (state unreadable, close failed). `warned`: the pr-reconcile
+   * sweep found two open PRs in one retry lineage and closed the older — the
+   * create_pr door missed it.
+   */
+  RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

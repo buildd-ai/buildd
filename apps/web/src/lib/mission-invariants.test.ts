@@ -1365,4 +1365,13 @@ describe('formatInvariantReport', () => {
     });
     expect(text).toContain('EMPTY SCAN');
   });
+
+  it('says so when mission base refs went unchecked, so orphaned_integration_base is not read as clean', () => {
+    const scanned = { missions: 3, tasks: 9, workers: 4, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 2 };
+    expect(formatInvariantReport(evaluateInvariants(emptySnapshot(), NOW), { scanned })).not.toContain('REMOTE REFS UNCHECKED');
+    const text = formatInvariantReport(evaluateInvariants(emptySnapshot(), NOW), {
+      scanned: { ...scanned, remoteRefsSkipped: 2 },
+    });
+    expect(text).toContain('REMOTE REFS UNCHECKED: 2');
+  });
 });

@@ -43,6 +43,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   taskId: true,
   taskTitle: true,
   taskDescription: true,
+  parentTaskId: true,
   taskMode: true,
   taskBackend: true,
   workspaceId: true,
