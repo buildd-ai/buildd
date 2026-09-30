@@ -1,7 +1,7 @@
 # Chat session retros and a daily improvement pass
 
-**Status:** Proposed
-**Related:** `apps/web/src/lib/chat/routing.ts` (per-turn `RoutingRecord`, PR #3121),
+**Status:** Accepted
+**Related:** `apps/web/src/lib/chat-retro/` (the build), `apps/web/src/lib/chat/routing.ts` (per-turn `RoutingRecord`, PR #3121),
 `apps/web/src/lib/chat/turn-deadline.ts` (turn budget and stopped note, PR #3154),
 `apps/web/src/lib/chat/turn-feedback.ts` (thumbs with reason labels),
 `apps/web/src/lib/chat/directives.ts`, `packages/core/chat-directives.ts`,
@@ -52,6 +52,32 @@ Chat traffic is low. That shapes the whole design: the loop has to be cheap
 enough to leave running while traffic grows, and honest that for a while its
 output is qualitative.
 
+## Decisions
+
+Phases 1 and 2 are built as a removable experiment
+(`apps/web/src/lib/chat-retro/`, removal steps in its `REMOVAL.md`). Phase 3
+(tool-description draft PRs) and cross-team aggregation are not built.
+These were settled before the build and override anything below that reads
+otherwise:
+
+1. **Own table.** Lessons live in `chat_retros`, not in a column on
+   `conversations`, so the experiment drops cleanly.
+2. **Per-team opt-in, off by default for every team.** Two team settings in
+   `teams.chat_retro` (next to the team's other settings columns):
+   `lessons` (record lessons, shadow) and `proposals` (the daily pass may file
+   proposal tasks). Proposals require lessons. Turning lessons off turns
+   proposals off and deletes the team's existing lessons.
+3. **No cross-team or platform aggregation** in this experiment. It is a
+   possible future opt-in, not a default.
+4. **A closed proposal stays muted until its evidence doubles**, not for a
+   fixed number of days.
+5. **Removable.** One module directory, one cron route, one settings API
+   route, one migration, and a short list of touch points, all listed in
+   `apps/web/src/lib/chat-retro/REMOVAL.md`. `CHAT_RETRO_ENABLED=0` is a global
+   kill switch; unset means opted-in teams run.
+6. **Tool-description draft PRs are out of scope** for this build (the next
+   phase, section 3).
+
 ## Proposal
 
 There are two stages, both in one cron route that rides an existing wake window:
@@ -64,7 +90,7 @@ There are two stages, both in one cron route that rides an existing wake window:
    waste times frequency, and propose at most a few changes per day, deduped by
    signature the way friction is. Most proposals are guidance. Only
    tool-description text may later be drafted as a PR, and nothing is ever
-   merged automatically.
+   merged automatically. (This build files guidance tasks only.)
 
 ### The crux
 
@@ -112,6 +138,8 @@ means a new wake window, which Neon sleep-first forbids
 ([cron-wake-windows.md](cron-wake-windows.md)). The daily route already has a
 clock, so the retro runs there:
 
+- **Teams.** Only teams with `teams.chat_retro.lessons = true`. Nothing is
+  read, and nothing is written, for any other team.
 - **Window.** For each conversation, the messages after its retro watermark
   (the last message the previous retro covered) whose `lastMessageAt` is at
   least `RETRO_IDLE_MIN` old at pass time. Proposed value: 30. A conversation
@@ -140,6 +168,9 @@ and nothing else. Jev is not used for eligibility. A decision call to decide
 whether to make a decision call spends the money it is meant to save, and the
 signals that make a session interesting are all already structured.
 
+A conversation in a workspace whose data class is `sensitive` is skipped
+(`reason = 'sensitive'`) and never sent to the decision model.
+
 **Cost bound.** Each team gets at most `RETRO_MAX_PER_TEAM_DAY` judged
 retros per day (proposed 20). The rest are skipped with
 `reason = 'team_cap'`, newest first, so the backlog never grows. Each pass
@@ -147,7 +178,8 @@ stops at `RETRO_MAX_PER_RUN` (proposed 100) and at the route's deadline, and a
 window it didn't reach is picked up the next day. Every Jev call writes an
 `ai_usage` receipt (surface `decision`, kind `chat_retro`) through the existing
 `insertDecisionReceipts`, so retro spend shows up wherever decision spend is
-already reported.
+already reported. The call spends under the `chat` capability, the same
+policy chat routing uses; whether it runs at all is the team's opt-in.
 
 **Estimate.** One decision call per judged window, with a state capped at
 about 4K tokens (below). That is roughly four times a routing call's input and
@@ -227,17 +259,23 @@ chat_retros
   id, team_id (FK cascade), conversation_id (FK cascade), workspace_id (nullable)
   from_message_id, to_message_id        -- the window; to_message_id is the watermark
   status        'skipped' | 'judged' | 'failed'
-  skip_reason   'trivial' | 'team_cap' | 'state_budget' | 'opted_out' | null
+  skip_reason   'trivial' | 'team_cap' | 'state_budget' | 'sensitive' | null
   user_turns, turns, input_tokens, output_tokens, cost_usd
   intent, intent_conf, satisfied, satisfied_conf
   wasted_turns, wasted_tokens           -- code: sum over candidates Jev labelled waste above the gate
   primary_cause, fix_class, fix_class_conf
   tool_name                             -- the implicated tool, from code (tool parts), or null
   signature                             -- chat-retro:<cause>-<fix_class>-<tool|none>-<hash6>
-  evidence jsonb  [{ messageId, toolCallId?, kind, tokens, label, conf }]
+  evidence jsonb  [{ turn, messageId, kind, tokens, label, conf }]
   state_tokens, version, latency_ms, jev_cost_usd, error
   created_at
 ```
+
+The window's watermark is `to_message_at`. There is no `opted_out` row: a
+team that has not opted in leaves no trace at all. Every text column has a
+fixed vocabulary or pattern (`vocab.ts` `LESSON_TEXT_COLUMNS`), a test pins
+that list against the table, and every row is checked against it before it
+is written.
 
 - **Primary cause.** The cause with the most wasted tokens. A tie goes to the
   cause code detected.
@@ -251,7 +289,7 @@ chat_retros
 
 ## 2. Where lessons live
 
-Four existing homes were considered. The lean is a new narrow table.
+Four existing homes were considered. Decided: a new narrow table.
 
 | Option | Why not |
 |---|---|
@@ -268,14 +306,13 @@ Four existing homes were considered. The lean is a new narrow table.
 - the friction dedupe for filings;
 - `withCronRun` for run health.
 
-**Scope.** Rows are team-scoped. Reads go through the same team scope as
-`conversations`, so a member sees lessons only for conversations they could
-open. `conversation_id` cascades, so deleting a conversation deletes its
-lessons.
+**Scope.** Rows are team-scoped, and only the team's owners and admins can
+read them (`GET /api/teams/[id]/chat-retro`, or an admin-level API key of the
+team). `conversation_id` cascades, so deleting a conversation deletes its
+lessons, and turning the team's lessons off deletes all of them.
 
-**Retention.** 90 days, pruned by the `memory-digest-guardrail` cron next to
-`MEMORY_DECISIONS_RETENTION_DAYS`. That pass already has the same job, so
-there is no new cron.
+**Retention.** 90 days, pruned by the chat-retro cron itself at the start of
+each pass, so removing the experiment removes its retention too.
 
 ## 3. Daily proposal pass
 
@@ -294,7 +331,8 @@ call.
    `context.frictionSignature = <signature>`. If an open task already carries
    that signature, the new evidence (counts, window refs) is **appended** to it
    and no task is created. That is exactly friction's dedupe. A signature whose
-   task was closed as won't-fix is muted for 30 days (Open question 4).
+   task was closed stays muted until the cluster's session count reaches
+   twice what the closed task carried (Open question 4, decided).
 4. **Record.** Filings, appends and mutes are counted in the run's `withCronRun`
    report. A signature that is eligible but capped is recorded as `deferred`,
    so the backlog is visible without being filed.
@@ -320,12 +358,13 @@ own access, then writes the actual proposal. Most classes end there:
 | `directive_or_memory` | a suggested standing rule for that person | never auto-written. Surfaces as the existing directive confirm card (`CHAT_DIRECTIVE_PART_TYPE`) the next time they chat; they tap or ignore it |
 | `ui` | the friction and the screen | no |
 
-**The narrow safe class: tool-description text (Phase 3 only).** A
+**The narrow safe class: tool-description text (Phase 3 only, not built).** A
 tool-description proposal may carry a flag telling its worker to open a PR
 limited to description strings in the chat tool registry
 (`apps/web/src/lib/chat/registry.ts`) and the MCP tool definitions
-(`packages/core/mcp-tools.ts`). The flag is only set for platform-level
-proposals filed into the operator's workspace (section 4). Its bounds:
+(`packages/core/mcp-tools.ts`). The flag was to be set only for platform-level
+proposals filed into the operator's workspace; with no platform rollup in
+this experiment (section 4), that needs its own decision first. Its bounds:
 
 - **Scope.** The filed task's `pathManifest` names only those files.
 - **Draft, never auto-merged.** The PR is opened as a draft, and
@@ -367,28 +406,20 @@ pass, not by convention:
    carry labels, counts, buildd tool names and refs. User text reaches Jev
    only, the same provider path routing already uses, and is never stored by
    the retro.
-2. **Team-scoped by default.** Clustering and proposals run per team. A team's
+2. **Team-scoped.** Clustering and proposals run per team. A team's
    proposals file only into that team's own workspaces, and only when that
-   team is in `propose` mode. The default filing target is the conversation's
+   team turned `proposals` on. The default filing target is the conversation's
    workspace. If the conversation has none (team-wide), the proposal isn't
    filed; it only shows in the retro readout.
-3. **Cross-tenant aggregation only for platform classes, only from lessons.**
-   `tool_description`, `tool_or_param`, `system_prompt` (buildd's own
-   instructions), `routing_tier` and `ui` are about buildd's code. A
-   cross-team rollup may count them by `(signature, sessions, wasted_tokens,
-   distinct teams)`. It never reads `conversation_messages`, never includes
-   refs to another team's conversations, and a signature needs at least 3
-   distinct teams before it counts as cross-team. Below that, only the
-   operator's own team's lessons drive platform proposals. The platform
-   rollup files into a workspace named by env
-   (`CHAT_RETRO_PLATFORM_WORKSPACE_ID`). Unset means no platform filings, and
-   that is the default.
-4. **Opt-out per team.** A new server feature `chat_retro` in
-   `INFERENCE_CAPABILITIES`, with a switch on the AI settings page. When it is
-   off, no retro runs (windows are recorded as `opted_out`, with no call), no
-   proposals, and no participation in the platform rollup. Existing
-   `FeatureMode` has only `server | runner` and no "off". This needs an `off`
-   value or a separate column (Open question 3).
+3. **No cross-tenant aggregation.** Not built in this experiment. A label-only
+   platform rollup across teams remains a possible future opt-in; it would
+   need its own consent, separate from the settings below.
+4. **Opt-in per team, default off.** `teams.chat_retro = { lessons, proposals }`,
+   NULL for every team until an admin turns it on (Settings, AI features, or
+   `PATCH /api/teams/[id]/chat-retro` with a session or an admin-level API key
+   of the team). The settings copy says what is analysed, what is stored, who
+   sees it, what it produces and how to turn it off. Turning lessons off
+   deletes the team's lessons.
 5. **Per-person conversations.** A lesson's evidence refs point at a
    conversation owned by one person. A proposal worker in that team reads the
    window only if the team's existing conversation access allows it. The retro
@@ -434,20 +465,20 @@ separate from noise, and they will stay that way for a while. So:
 
 ## 6. Rollout
 
-Controlled by `CHAT_RETRO_MODE = off | shadow | propose | draft`, per
-deployment, with the team opt-out on top. The default is `off`: the route
-reads one flag and returns, so merging changes nothing.
+Controlled per team by the two settings (`lessons` = shadow, `proposals` =
+propose), with `CHAT_RETRO_ENABLED=0` as a deployment-wide kill switch. Every
+team starts off, so merging changes nothing until an admin opts a team in.
 
-1. **Shadow.** Retro rows are written and no tasks are filed. A readout script
-   (next to `memory-decision-readout.ts`) prints clusters, label distributions
-   and the hand-grading sample. At first it runs only for the operator's team.
+1. **Shadow.** Retro rows are written and no tasks are filed. The admin
+   lesson list (Settings, AI features) is the readout for now; a readout
+   script next to `memory-decision-readout.ts` for clusters, label
+   distributions and the hand-grading sample is not built yet. At first it runs only for the operator's team.
    Exit when hand-graded precision clears the gates for the labels kept, and at
    least a few clusters exist that a person agrees are worth acting on.
 2. **Propose.** Filing turns on: at most 2 per team per day, deduped by
-   signature, guidance only; platform rollup filings into the configured
-   workspace, at most 1 per day. Exit when filed proposals are accepted more
+   signature, guidance only. (No platform rollup filings.) Exit when filed proposals are accepted more
    often than closed as won't-fix over a few weeks.
-3. **Draft.** The tool-description PR path turns on, with the auto-merge deny
+3. **Draft (next phase, not built).** The tool-description PR path turns on, with the auto-merge deny
    rule in place first. At most 1 per day.
 
 **Implementation sketch (load-bearing first):**
@@ -455,8 +486,8 @@ reads one flag and returns, so merging changes nothing.
 1. The skeleton builder and candidate detector. Pure functions over messages,
    tested on fixtures with no DB: one test per candidate kind, plus the state
    budget and collapse behaviour.
-2. `chat_retros` table and migration. The retention hook in
-   `memory-digest-guardrail`.
+2. `chat_retros` table, `teams.chat_retro`, one migration. Retention runs in
+   the chat-retro cron.
 3. The retro decision questions, the gates and the code that maps answers back
    to wasted turns and tokens. The `ai_usage` receipts go through
    `insertDecisionReceipts`.
@@ -464,7 +495,8 @@ reads one flag and returns, so merging changes nothing.
    manifest entry is daily at the top of an hour (`0 10 * * *`), inside the
    window the hourly schedules tick already opens, like `experiment-health`.
    `scripts/cron-coverage.test.ts` will require the entry.
-5. The `chat_retro` capability and the settings switch.
+5. The team settings (API route and Settings section). No new inference
+   capability: the call spends under `chat`.
 6. The proposal pass and the template (Phase 2), then the auto-merge deny rule
    and the draft path (Phase 3).
 
@@ -475,16 +507,15 @@ reads one flag and returns, so merging changes nothing.
    I lean toward 30 minutes and a split every 20 user turns. The state budget
    collapses long windows anyway, and a split keeps each lesson about one
    stretch of work.
-2. **New table or a column on `conversations`.** I lean toward the table:
+2. **Decided: new table.** I leaned toward the table:
    multiple windows per conversation, 90-day retention independent of the
    conversation, and a plain `GROUP BY signature` for clustering. A column
    avoids a migration and cascades for free. At today's volume either works.
    The table is the one that still works once volume grows.
-3. **Opt-out mechanics.** Extend `FeatureMode` with `off`, or add a boolean
-   team column? I lean toward `off` in `FeatureMode`, since the AI page
-   already renders these features. That makes it a small change to a shared
-   type, which is why I'm not making it alone.
-4. **Muting won't-fix signatures.** Is 30 days right, or should a closed
+3. **Decided: opt-in, not opt-out.** A jsonb team column
+   `teams.chat_retro = { lessons, proposals }`, default NULL (off). No change
+   to `FeatureMode`.
+4. **Decided: muted until evidence doubles.** The question was: is 30 days right, or should a closed
    proposal mute its signature until its evidence doubles? I lean toward "until
    evidence doubles": a time mute re-files the same rejected idea on a
    schedule.
@@ -493,7 +524,8 @@ reads one flag and returns, so merging changes nothing.
    the person then asked to act". I lean yes, but only after Phase 1 measures
    the retro label's own precision. Grading one model's label against another
    ungraded one proves nothing.
-6. **Default for other teams' platform participation.** The ask is opt-out. I
+6. **Decided: no platform participation in this experiment,** and team
+   proposals are opt-in. The original question follows: the ask was opt-out. I
    lean toward opt-out for the label-only platform rollup, since it carries no
    text and no refs, but the team-level `propose` mode (tasks filed into a
    customer's workspace) should be opt-in. Filing work into someone's queue

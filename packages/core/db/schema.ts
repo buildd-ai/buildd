@@ -111,6 +111,11 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
+  // team: NULL or a missing key = off. `lessons` records content-free lesson
+  // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
+  // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
+  chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
 }));
@@ -2767,6 +2772,56 @@ export const conversationMessages = pgTable('conversation_messages', {
   conversationCreatedIdx: index('conversation_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
   // Recent messages by author (turn admission itself lives in chat_turn_windows).
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
+}));
+
+// Chat session retro lessons (experiment; docs/design/chat-session-retro.md,
+// code in apps/web/src/lib/chat-retro/, removal in its REMOVAL.md). One row per
+// conversation window the daily pass looked at. Content-free by construction:
+// every text column holds a label from a fixed vocabulary, a buildd tool name,
+// a signature built from those, or a version string. No column can hold
+// message, tool or model text. Written only for teams that opted in
+// (teams.chatRetro.lessons); turning it off deletes the team's rows.
+export const chatRetros = pgTable('chat_retros', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  /** The window: first and last message it covered. */
+  fromMessageId: uuid('from_message_id'),
+  toMessageId: uuid('to_message_id'),
+  /** Watermark: createdAt of toMessageId. The next window starts after it. */
+  toMessageAt: timestamp('to_message_at', { withTimezone: true }).notNull(),
+  status: text('status').notNull().$type<'skipped' | 'judged' | 'failed'>(),
+  skipReason: text('skip_reason').$type<'trivial' | 'team_cap' | 'state_budget' | 'sensitive' | null>(),
+  userTurns: integer('user_turns').notNull().default(0),
+  turns: integer('turns').notNull().default(0),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  costUsd: real('cost_usd'),
+  intent: text('intent'),
+  intentConf: real('intent_conf'),
+  satisfied: text('satisfied'),
+  satisfiedConf: real('satisfied_conf'),
+  wastedTurns: integer('wasted_turns').notNull().default(0),
+  wastedTokens: integer('wasted_tokens').notNull().default(0),
+  primaryCause: text('primary_cause'),
+  fixClass: text('fix_class'),
+  fixClassConf: real('fix_class_conf'),
+  toolName: text('tool_name'),
+  signature: text('signature'),
+  /** Refs and labels only: { turn, messageId, kind, tokens, label, conf }. */
+  evidence: jsonb('evidence').$type<Array<{ turn: number; messageId: string; kind: string; tokens: number; label: string | null; conf: number | null }>>().notNull().default([]),
+  stateTokens: integer('state_tokens'),
+  version: text('version').notNull(),
+  latencyMs: integer('latency_ms'),
+  jevCostUsd: real('jev_cost_usd'),
+  /** Decision error kind when status = failed (timeout, provider_error, ...). */
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamCreatedIdx: index('chat_retros_team_created_idx').on(t.teamId, t.createdAt),
+  conversationWatermarkIdx: index('chat_retros_conversation_watermark_idx').on(t.conversationId, t.toMessageAt),
+  teamSignatureIdx: index('chat_retros_team_signature_idx').on(t.teamId, t.signature),
 }));
 
 // A write the agent proposed, awaiting the user's tap. Decided with an atomic
