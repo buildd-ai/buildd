@@ -278,6 +278,7 @@ describe('GET /api/workspaces — no secrets in the listing', () => {
       token: 'tok-SHOULD-NOT-LEAK',
       enabled: true,
       runnerPreference: 'any',
+      events: ['task.created', 'task.retry'],
       webhookSecret: 'whsec-SHOULD-NOT-LEAK',
       callbackToken: 'cb-SHOULD-NOT-LEAK',
     },
@@ -321,8 +322,10 @@ describe('GET /api/workspaces — no secrets in the listing', () => {
     // Non-secret fields consumers read survive.
     expect(ws).toMatchObject({ id: 'ws-1', name: 'Secretive', repo: 'owner/repo', accessMode: 'open', teamId: 'team-a' });
     expect(ws.gitConfig).toEqual({ defaultBranch: 'main' });
+    // `events` is listed so the cloud runner's deploy can see whether it opted in.
     expect(ws.webhookConfig).toEqual({
       url: 'https://hooks.example.test/agent', enabled: true, runnerPreference: 'any', hasToken: true,
+      events: ['task.created', 'task.retry'],
     });
     expect(ws.connectedAccounts).toHaveLength(1);
     expect(ws.runners.user).toBe(true);

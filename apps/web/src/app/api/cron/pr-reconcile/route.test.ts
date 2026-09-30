@@ -28,6 +28,10 @@ mock.module('@/lib/retry-pr-supersession', () => ({
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
 }));
+const mockDeferredDispatch = mock(() => Promise.resolve({ dispatched: 0, failed: 0 }));
+mock.module('@/lib/deferred-dispatch-sweep', () => ({
+  sweepDeferredDispatch: mockDeferredDispatch,
+}));
 mock.module('@/lib/spec-recheck', () => ({
   sweepSpecDiscrepancyRechecks: async () => ({
     candidates: 0, rechecksDispatched: 0, rechecksCovered: 0, rechecksFailed: 0,
@@ -67,6 +71,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockDeadZone.mockReset();
     mockLineageSweep.mockReset();
     mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
+    mockDeferredDispatch.mockReset();
+    mockDeferredDispatch.mockResolvedValue({ dispatched: 0, failed: 0 });
     mockReconcile.mockResolvedValue(ZERO);
     mockDeadZone.mockResolvedValue({ total: 0, sparked: 0, exhausted: 0, skipped: 0 });
     process.env.CRON_SECRET = 'test-secret';
@@ -238,5 +244,29 @@ describe('GET /api/cron/pr-reconcile', () => {
     const body = await res.json();
     expect(body.reconcile.stamped).toBe(2);
     expect(body.lineagePrs.error).toContain('lineage query failed');
+  });
+
+  // ── Deferred-start dispatch ────────────────────────────────────────────────
+  //
+  // A requeue with a future startAt is not nudged until it passes; this hourly
+  // sweep is the nudge, so a push-only consumer sees the task.
+
+  it('runs the deferred-dispatch sweep on the hourly scope and reports it', async () => {
+    mockDeferredDispatch.mockResolvedValue({ dispatched: 2, failed: 0 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockDeferredDispatch).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.deferredDispatch).toEqual({ dispatched: 2, failed: 0 });
+  });
+
+  it('a deferred-dispatch sweep failure does not fail the run', async () => {
+    mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+    mockDeferredDispatch.mockRejectedValue(new Error('dispatch query failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reconcile.stamped).toBe(2);
+    expect(body.deferredDispatch.error).toContain('dispatch query failed');
   });
 });

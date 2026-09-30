@@ -3,20 +3,81 @@ import { githubInstallations, githubRepos, type WorkspaceWebhookConfig } from '@
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
+import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 
 /**
- * Dispatch task to external webhook (e.g., OpenClaw)
+ * Why the webhook fired. A consumer that runs tasks (the Cloudflare
+ * dispatcher, docs/design/cloudflare-sandbox-runner.md) keys on `taskId`; the
+ * event only says which path made the task claimable.
  */
-async function dispatchToWebhook(
-  webhookConfig: WorkspaceWebhookConfig,
-  task: { id: string; title: string; description: string | null; workspaceId: string }
-): Promise<boolean> {
-  if (!webhookConfig.enabled || !webhookConfig.url) {
-    return false;
-  }
+export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry';
 
-  try {
-    const message = `Work on Buildd task: ${task.title}
+/** How long a webhook POST may take before it counts as not dispatched. */
+export const WEBHOOK_DISPATCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether this webhook receives `event`.
+ *
+ * `webhookConfig.events` is an opt-in. A config that lists events gets exactly
+ * those. A config without it (every webhook configured before the list
+ * existed) keeps what it always received: `legacyDefault` is true only for the
+ * two paths that reached webhooks before, new tasks (dispatchNewTask) and
+ * dispatchUnblockedTask. Retries, approved-plan children and the deferred-start
+ * sweep reach a webhook only when it lists the event.
+ */
+function webhookSubscribes(
+  webhookConfig: WorkspaceWebhookConfig,
+  event: TaskDispatchEvent,
+  legacyDefault: boolean,
+): boolean {
+  return Array.isArray(webhookConfig.events) ? webhookConfig.events.includes(event) : legacyDefault;
+}
+
+/**
+ * Body POSTed to `workspace.webhookConfig.url`.
+ *
+ * `message` / `sessionKey` / `name` are the original chat-shaped fields and
+ * stay exactly as they were, so an existing chat-agent consumer is unaffected.
+ * Everything after them is additive and structured, so a task-running consumer
+ * never has to parse the task ID out of `message`.
+ */
+export interface TaskWebhookPayload {
+  message: string;
+  sessionKey: string;
+  name: 'buildd';
+  event: TaskDispatchEvent;
+  taskId: string;
+  workspaceId: string;
+  missionId: string | null;
+  backend: string | null;
+  roleSlug: string | null;
+}
+
+/** The task fields the dispatch chain reads. Full task rows satisfy it. */
+export interface DispatchTask {
+  id: string;
+  title: string;
+  description: string | null;
+  workspaceId: string;
+  mode?: string;
+  priority?: number;
+  missionId?: string | null;
+  backend?: string | null;
+  roleSlug?: string | null;
+  runnerPreference?: string | null;
+}
+
+export type DispatchWorkspace = {
+  id?: string;
+  name?: string;
+  repo?: string | null;
+  webhookConfig?: WorkspaceWebhookConfig | null;
+  githubInstallationId?: string | null;
+  githubRepoId?: string | null;
+};
+
+export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent): TaskWebhookPayload {
+  const message = `Work on Buildd task: ${task.title}
 
 ${task.description || 'No description provided.'}
 
@@ -24,17 +85,55 @@ ${task.description || 'No description provided.'}
 Task ID: ${task.id}
 Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/api/workers/{workerId}`;
 
+  return {
+    message,
+    sessionKey: `buildd-${task.id}`,
+    name: 'buildd',
+    event,
+    taskId: task.id,
+    workspaceId: task.workspaceId,
+    missionId: task.missionId ?? null,
+    backend: task.backend ?? null,
+    roleSlug: task.roleSlug ?? null,
+  };
+}
+
+/**
+ * Whether a webhook restricted to one runner type takes a task with this
+ * runner preference. An unrestricted webhook ('any' or unset) takes everything.
+ */
+function webhookAcceptsRunnerPreference(
+  webhookConfig: WorkspaceWebhookConfig,
+  runnerPreference: string | null | undefined,
+): boolean {
+  return !webhookConfig.runnerPreference ||
+    webhookConfig.runnerPreference === 'any' ||
+    webhookConfig.runnerPreference === (runnerPreference || 'any');
+}
+
+/**
+ * Dispatch task to external webhook (e.g., OpenClaw). False on any failure,
+ * including no answer within `timeoutMs`, so the caller's Pusher fallback runs.
+ */
+export async function dispatchToWebhook(
+  webhookConfig: WorkspaceWebhookConfig,
+  task: DispatchTask,
+  event: TaskDispatchEvent,
+  timeoutMs: number = WEBHOOK_DISPATCH_TIMEOUT_MS,
+): Promise<boolean> {
+  if (!webhookConfig.enabled || !webhookConfig.url) {
+    return false;
+  }
+
+  try {
     const response = await fetch(webhookConfig.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${webhookConfig.token}`,
       },
-      body: JSON.stringify({
-        message,
-        sessionKey: `buildd-${task.id}`,
-        name: 'buildd',
-      }),
+      body: JSON.stringify(buildWebhookPayload(task, event)),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -42,7 +141,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
       return false;
     }
 
-    console.log(`Task ${task.id} dispatched to webhook: ${webhookConfig.url}`);
+    console.log(`Task ${task.id} dispatched to webhook (${event}): ${webhookConfig.url}`);
     return true;
   } catch (error) {
     console.error('Webhook dispatch error:', error);
@@ -61,15 +160,8 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
  * 5. Fallback: Pusher TASK_ASSIGNED (connected local workers)
  */
 export async function dispatchNewTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null; backend?: string | null },
-  workspace: {
-    id?: string;
-    name?: string;
-    repo?: string | null;
-    webhookConfig?: WorkspaceWebhookConfig | null;
-    githubInstallationId?: string | null;
-    githubRepoId?: string | null;
-  },
+  task: DispatchTask,
+  workspace: DispatchWorkspace,
   options?: {
     assignToLocalUiUrl?: string;
     runnerPreference?: string;
@@ -98,12 +190,11 @@ export async function dispatchNewTask(
   let dispatched = false;
   if (workspace?.webhookConfig) {
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    const shouldDispatch = !webhookConfig.runnerPreference ||
-      webhookConfig.runnerPreference === 'any' ||
-      webhookConfig.runnerPreference === (options?.runnerPreference || 'any');
-
-    if (shouldDispatch) {
-      dispatched = await dispatchToWebhook(webhookConfig, task);
+    if (
+      webhookSubscribes(webhookConfig, 'task.created', true) &&
+      webhookAcceptsRunnerPreference(webhookConfig, options?.runnerPreference)
+    ) {
+      dispatched = await dispatchToWebhook(webhookConfig, task, 'task.created');
     }
   }
 
@@ -129,25 +220,32 @@ export async function dispatchNewTask(
  * Wake runners for a task whose dependsOn list just became fully resolved.
  * Runs the same dispatch chain as dispatchNewTask but skips TASK_CREATED —
  * the task already exists in the dashboard and re-emitting that event is noisy.
+ *
+ * `event` defaults to 'task.unblocked'; callers reusing this chain for another
+ * reason (a manual reset to pending, a freshly approved plan's children) say so.
  */
 export async function dispatchUnblockedTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null; backend?: string | null },
-  workspace: {
-    id?: string;
-    name?: string;
-    repo?: string | null;
-    webhookConfig?: WorkspaceWebhookConfig | null;
-    githubInstallationId?: string | null;
-    githubRepoId?: string | null;
-  }
+  task: DispatchTask,
+  workspace: DispatchWorkspace,
+  options?: { event?: TaskDispatchEvent },
 ): Promise<void> {
   const taskPayload = buildTaskPayload(task, workspace);
 
-  // Check webhook dispatch
+  // Check webhook dispatch. A webhook without `events` receives every call
+  // here, whatever the event, with no runnerPreference filter: that is what
+  // this path always did. One that lists events gets only those, filtered by
+  // runnerPreference the way the new-task and retry paths are.
   let dispatched = false;
   if (workspace?.webhookConfig) {
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    dispatched = await dispatchToWebhook(webhookConfig, task);
+    const event = options?.event ?? 'task.unblocked';
+    const optedIn = Array.isArray(webhookConfig.events);
+    if (
+      webhookSubscribes(webhookConfig, event, true) &&
+      (!optedIn || webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference))
+    ) {
+      dispatched = await dispatchToWebhook(webhookConfig, task, event);
+    }
   }
 
   // Try GitHub Actions dispatch
@@ -163,6 +261,79 @@ export async function dispatchUnblockedTask(
       { task: taskPayload, targetLocalUiUrl: null }
     );
   }
+}
+
+/**
+ * The wake-up for paths that, before webhook `events` existed, sent only a
+ * bare TASK_ASSIGNED broadcast (retries) or nothing at all (approved-plan
+ * children, the deferred-start sweep). The webhook is tried only when the
+ * config lists `event`, so an existing webhook consumer sees none of these;
+ * everything else falls back to the broadcast, as before.
+ *
+ * When the webhook is tried:
+ *  - It honours the task's runnerPreference, the filter dispatchNewTask
+ *    applies, so a wake never reaches a webhook creation was kept away from.
+ *  - A task deferred to a future `startAt` is not sent: the claim would
+ *    refuse it until then, and a push consumer would spend a cold start
+ *    learning that. The sweep re-sends it once `startAt` passes.
+ *  - A held task, or one in a held or local-executor mission, is not sent
+ *    (the claim route's notHeldOrLocal gate). A gate that cannot answer keeps
+ *    the task off the webhook too.
+ *  - No GitHub Actions dispatch: these paths never started an Actions run.
+ */
+async function wakeOptInWebhookOrBroadcast(
+  task: DispatchTask & { startAt?: Date | string | null },
+  workspace: DispatchWorkspace,
+  event: TaskDispatchEvent,
+): Promise<void> {
+  const taskPayload = buildTaskPayload(task, workspace);
+
+  let dispatched = false;
+  const webhookConfig = workspace?.webhookConfig as WorkspaceWebhookConfig | null | undefined;
+  const deferred = task.startAt != null && new Date(task.startAt).getTime() > Date.now();
+  if (
+    webhookConfig?.enabled &&
+    webhookConfig.url &&
+    !deferred &&
+    webhookSubscribes(webhookConfig, event, false) &&
+    webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference) &&
+    (await isTaskNotHeldOrLocal(task.id).catch(() => false))
+  ) {
+    dispatched = await dispatchToWebhook(webhookConfig, task, event);
+  }
+
+  if (!dispatched) {
+    await triggerEvent(
+      channels.workspace(task.workspaceId),
+      events.TASK_ASSIGNED,
+      { task: taskPayload, targetLocalUiUrl: null }
+    );
+  }
+}
+
+/**
+ * Wake runners for a task an automatic or manual retry just put back to
+ * `pending` (worker auto-retry / loop requeue, the reassign route) or whose
+ * deferred `startAt` has passed (deferred-dispatch-sweep). Webhook only when
+ * it lists 'task.retry'; see wakeOptInWebhookOrBroadcast.
+ */
+export async function dispatchRetriedTask(
+  task: DispatchTask & { startAt?: Date | string | null },
+  workspace: DispatchWorkspace,
+): Promise<void> {
+  await wakeOptInWebhookOrBroadcast(task, workspace, 'task.retry');
+}
+
+/**
+ * Wake runners for a child an approved plan just created with nothing left to
+ * wait on. Sent as 'task.created', to a webhook only when it lists that event
+ * explicitly; see wakeOptInWebhookOrBroadcast.
+ */
+export async function dispatchPlanChildTask(
+  task: DispatchTask,
+  workspace: DispatchWorkspace,
+): Promise<void> {
+  await wakeOptInWebhookOrBroadcast(task, workspace, 'task.created');
 }
 
 /** Build minimal task payload for Pusher events (10KB limit).

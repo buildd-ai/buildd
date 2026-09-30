@@ -1,0 +1,22 @@
+{
+  "name": "@buildd/cloud-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare dispatcher Worker: one container per buildd task, running `buildd --once`.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "bunx tsc --noEmit",
+    "smoke": "bash scripts/local-smoke.sh",
+    "e2e:local": "bash scripts/local-e2e.sh",
+    "deploy:buildd": "bun scripts/deploy.ts"
+  },
+  "dependencies": {
+    "agents": "0.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260930.1",
+    "wrangler": "4.144.0"
+  }
+}
