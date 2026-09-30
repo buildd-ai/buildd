@@ -473,9 +473,33 @@ describe('generateEvidenceUploadUrl', () => {
     expect(url).not.toContain('shh-secret');
   });
 
-  it('signs SSE into the request when the backend asks for it', async () => {
-    const url = await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'AES256' }), KEY, 10);
-    expect(url.toLowerCase()).toContain('x-amz-server-side-encryption');
+  // The PUT contract is "send the body with its Content-Length, nothing else":
+  // SSE rides in the signed query string, never as a header the runner must send.
+  it('hoists AES256 SSE into the query, so the PUT needs no SSE header', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'AES256' }), KEY, 10));
+    expect(url.searchParams.get('x-amz-server-side-encryption')).toBe('AES256');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+  });
+
+  it('hoists aws:kms SSE and its key id into the query', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo({ sse: 'aws:kms', kmsKeyId: 'kms-key-1' }), KEY, 10));
+    expect(url.searchParams.get('x-amz-server-side-encryption')).toBe('aws:kms');
+    expect(url.searchParams.get('x-amz-server-side-encryption-aws-kms-key-id')).toBe('kms-key-1');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+  });
+
+  it('signs only content-length and host when SSE is off', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10));
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host');
+    expect(url.searchParams.has('x-amz-server-side-encryption')).toBe(false);
+  });
+
+  // With the SDK's default checksum mode, a presigned PutObject carries the
+  // CRC32 of an EMPTY body in the query, and S3 rejects the real body against it.
+  it('carries no precomputed body checksum', async () => {
+    const url = new URL(await mod.generateEvidenceUploadUrl(await resolvedByo(), KEY, 10));
+    expect([...url.searchParams.keys()].filter(k => k.toLowerCase().startsWith('x-amz-checksum'))).toEqual([]);
+    expect(url.searchParams.has('x-amz-sdk-checksum-algorithm')).toBe(false);
   });
 
   it('refuses an unusable backend', async () => {

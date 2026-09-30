@@ -257,6 +257,23 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
     expect(json.key).toMatch(/\/\d+-0\.jsonl\.gz$/);
   });
 
+  it('accepts a runner-written test_report and keys it as .log.gz under test_report/', async () => {
+    const res = await POST(req({ kind: 'test_report', seq: 1, sizeBytes: 10 }), { params: mockParams });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.key.startsWith(`evidence/${WORKSPACE}/${ROOT_TASK}/${TASK}/${WORKER}/test_report/`)).toBe(true);
+    expect(json.key).toMatch(/\/test_report\/\d+-1\.log\.gz$/);
+    expect(inserted[0].kind).toBe('test_report');
+  });
+
+  it('looks the worker up by the path worker id, once', async () => {
+    await POST(req(ok), { params: mockParams });
+    expect(mockWorkersFindFirst).toHaveBeenCalledTimes(1);
+    const arg = (mockWorkersFindFirst.mock.calls[0] as any[])[0];
+    expect(arg.where).toEqual({ field: 'workers.id', value: WORKER, type: 'eq' });
+    expect(arg.with?.workspace).toBeDefined();
+  });
+
   it('uses the task itself as root when it has no parent', async () => {
     mockTasksFindFirst.mockResolvedValue({ id: TASK, parentTaskId: null });
     const json = await (await POST(req(ok), { params: mockParams })).json();

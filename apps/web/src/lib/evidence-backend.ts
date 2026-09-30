@@ -403,11 +403,36 @@ export async function generateEvidenceUploadUrl(
     ContentLength: sizeBytes,
     ...evidenceSseParams(backend),
   });
+  // The SDK's default checksum mode adds x-amz-checksum-crc32 to a presigned
+  // PutObject, computed over the EMPTY body at signing time; S3 then rejects
+  // the real body against it. The body is unknown here, so no checksum.
+  // The checksum middleware (build step) is attached only when the command
+  // resolves, so it cannot be removed up front. Strip its output later in the
+  // build step; the presigner intercepts in finalizeRequest and never calls on.
+  command.middlewareStack.add(
+    (next) => async (args) => {
+      const headers = (args.request as { headers?: Record<string, string> }).headers;
+      if (headers) {
+        for (const name of Object.keys(headers)) {
+          const lower = name.toLowerCase();
+          if (lower.startsWith('x-amz-checksum-') || lower === 'x-amz-sdk-checksum-algorithm') delete headers[name];
+        }
+      }
+      return next(args);
+    },
+    { step: 'build', priority: 'low', name: 'evidenceStripPresignChecksum' },
+  );
   return getSignedUrl(client, command, {
     expiresIn: EVIDENCE_UPLOAD_EXPIRY_SECONDS,
     signableHeaders: new Set(['content-length']),
+    // SSE rides in the signed query string, so the runner's PUT needs no
+    // header beyond Content-Length. Left to the default, the presigner makes
+    // these SIGNED HEADERS, and a PUT without them fails the signature.
+    hoistableHeaders: EVIDENCE_SSE_HEADERS,
   });
 }
+
+const EVIDENCE_SSE_HEADERS = new Set(['x-amz-server-side-encryption', 'x-amz-server-side-encryption-aws-kms-key-id']);
 
 // ── Verification ───────────────────────────────────────────────────────────
 

@@ -30,6 +30,11 @@ import { buildEvidenceObjectKey } from '@/lib/storage-keys';
  *    runner skips quietly and the task carries on.
  *
  * On success an evidence_objects row is inserted with upload_state = pending.
+ *
+ * PUT contract for the caller: `PUT uploadUrl` with a body of exactly
+ * `sizeBytes` bytes. Content-Length is the only signed header; SSE, when the
+ * backend uses it, is carried in the URL's query string, so no other header
+ * is required. Content-Type is not signed and may be anything.
  */
 
 /** Kinds a runner may write. `ci_job_log` and `pr_diff` are server-written. */
