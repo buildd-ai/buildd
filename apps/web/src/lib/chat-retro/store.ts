@@ -8,6 +8,7 @@ import {
   tasks, teams, userFeedback, workspaces,
 } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, notInArray, sql, type SQL } from 'drizzle-orm';
+import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import type { LessonRow } from './lesson';
 import { assertContentFree } from './lesson';
 import type { Cluster, PriorFiling } from './proposals';
@@ -25,7 +26,8 @@ export const RETRO_LOOKBACK_DAYS = 7;
 export const PROPOSAL_ORIGIN = 'chat-retro';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const CLOSED = ['completed', 'failed', 'cancelled'];
+// A proposal task in any terminal state is closed: a new filing starts fresh.
+const CLOSED = [...TERMINAL_TASK_STATUSES];
 
 export const utcDayStart = (now: Date): Date => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
@@ -184,7 +186,7 @@ export async function priorFiling(workspaceId: string, signature: string): Promi
   });
   if (!row) return null;
   const sessions = Number((row.context as Record<string, unknown> | null)?.chatRetroSessions ?? 0);
-  return { taskId: row.id, open: !CLOSED.includes(row.status), sessions: Number.isFinite(sessions) ? sessions : 0 };
+  return { taskId: row.id, open: !isTerminalTaskStatus(row.status), sessions: Number.isFinite(sessions) ? sessions : 0 };
 }
 
 /** The newest lessons for a team, for its admins. Labels and counts only. */
