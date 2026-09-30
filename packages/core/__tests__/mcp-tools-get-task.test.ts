@@ -145,6 +145,37 @@ describe('get_task', () => {
     expect(text).toContain('https://buildd.dev/share/abc');
   });
 
+  it('marks a shortened description and explains how to retrieve all instructions', async () => {
+    const description = 'x'.repeat(400) + '\n## Doctrine\nReview all policy sections.';
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+    const text = result.content[0].text;
+    expect(text).toContain('x'.repeat(400) + `\n\n…[truncated ${description.length - 400} chars]`);
+    expect(text).toContain('fullDescription:true');
+    expect(text).not.toContain('## Doctrine');
+  });
+
+  it('returns the complete description when fullDescription is true', async () => {
+    const description = 'x'.repeat(400) + '\n## Doctrine\n## Workspace Policy\n## Escalation Rules\n## Proposed Policy Additions\nFinal instruction.';
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID, fullDescription: true }, ctx());
+    expect(result.content[0].text).toContain(description);
+    expect(result.content[0].text).not.toContain('[truncated');
+  });
+
+  it.each([0, 399, 400])('preserves descriptions of %i chars without a truncation warning', async (length) => {
+    const description = 'x'.repeat(length);
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+    expect(result.content[0].text).not.toContain('[truncated');
+    expect(result.content[0].text).not.toContain('fullDescription:true');
+    if (length) expect(result.content[0].text).toContain(description);
+    else expect(result.content[0].text).not.toContain('## Description');
+  });
+
   it('handles task with no workers or artifacts', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,
