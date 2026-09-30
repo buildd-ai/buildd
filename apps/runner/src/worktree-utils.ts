@@ -265,9 +265,10 @@ export function isWorktreePathOwnedByOtherLiveWorker(
 }
 
 /**
- * Env flag for M1 of docs/design/pr-merge-reliability.md. Off (the default) is
- * SHADOW: setupWorktree diverts exactly as before and only logs what it would
- * have done. `1`/`true`/`on` lets it release a lineage-held resume branch.
+ * Env flag for M1 of docs/design/pr-merge-reliability.md. On by default: a
+ * retry releases a resume branch held by its finished in-lineage prior attempt.
+ * `0`/`false`/`off` is the kill switch back to SHADOW, where setupWorktree
+ * diverts exactly as before and only logs what it would have done.
  */
 export const RELEASE_LINEAGE_HELD_BRANCH_FLAG = 'BUILDD_RELEASE_LINEAGE_HELD_BRANCH';
 
@@ -277,7 +278,7 @@ export function resolveReleaseHeldBranchMode(
   env: Record<string, string | undefined> = process.env,
 ): ReleaseHeldBranchMode {
   const v = (env[RELEASE_LINEAGE_HELD_BRANCH_FLAG] ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'on' ? 'release' : 'shadow';
+  return v === '0' || v === 'false' || v === 'off' ? 'shadow' : 'release';
 }
 
 /** Registry shape the lineage check needs: the ownership record plus task identity. */

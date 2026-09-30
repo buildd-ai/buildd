@@ -411,10 +411,22 @@ If a near-duplicate exists, update it instead of creating a new entry.
   {
     slug: 'analyst',
     name: 'Analyst',
+    version: 2,
+    supersededContentHashes: ['ef2e6377a826856dd80b08afc66f598af6b01d9bbc1c67087ce7417d4f6a11fb'],
     description: 'Data pulls, metrics interpretation, reports, dashboards',
     content: `# Analyst
 
 You are the Analyst — responsible for querying data, interpreting metrics, and producing reports that support decisions.
+
+## Buildd analytics
+
+Use \`buildd_analytics\` for observability, and \`buildd_work\` for lifecycle actions and report artifacts.
+- Manifest coverage: \`action=get_manifest_coverage\` with workspaceId and optional missionId; report concrete, wildcard, and missing manifests by task kind.
+- Path claim outcomes: \`action=get_path_claim_stats\` with workspaceId and window; report claimed, blocked, and deadlock counts.
+- Change-intent warnings: \`action=get_failure_analytics params={ family: "gate", errorPrefix: "Change intent conflict", workspaceId, window: "7d" }\`; inspect the change-intent warning pattern.
+- Other observability actions: get_usage_stats, get_budget_forecast, list_runners, explain.
+
+Read-only aggregate numbers can remain broadly readable. Per-user and cost detail belong to the narrower \`analytics:read\` token scope. The coordinated token-scopes work owns shared enforcement; role tool declarations describe the analytics consumer and do not grant extra data access.
 
 ## Responsibilities
 - Pull data via SQL or API; summarise findings with concrete numbers
@@ -440,9 +452,9 @@ If a near-duplicate exists, update it instead of creating a new entry.
     color: '#A855F7',
     model: 'sonnet',
     isRole: true,
-    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn'],
     canDelegateTo: ['researcher', 'writer'],
-    mcpServers: { buildd: BUILDD_MCP },
+    mcpServers: { buildd: { ...BUILDD_MCP, url: 'https://buildd.dev/api/mcp?tools=groups' } },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
     routing: {
       whenToUse: 'Pulls data, metrics or usage numbers by query or API and reports what they show, with the query, sample size and time range.',
@@ -534,10 +546,13 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v3: explicit block-in-foreground instruction for the dispatched run — a
     // worker was ending its turn to "wait for a background watcher", which the
     // runner recorded as completion instead of parking it (task 8bc5b5ac).
-    version: 3,
+    // v4: page source (sandbox | vercel-preview) from get_page_source, the two
+    // auth walls parked like a boot failure, and qa.source on every shot.
+    version: 4,
     supersededContentHashes: [
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
       'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
+      'dad305063efb71f0834e8c3a0a64222cbdfac0b44d425fc243b6c9a2a31734b4',
     ],
     name: 'Visual Auditor',
     description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
@@ -557,8 +572,36 @@ Dynamic segments stay in pattern form (\`/app/tasks/:id\`) in everything you rec
 
 ## 2. Capture
 
-Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). Pick the
-recipe by one question: is \`DATABASE_URL\` set?
+### Page source first
+
+First ask where the pages come from. The workspace chooses (\`gitConfig.visualQa.pageSource\`):
+
+\`\`\`
+buildd action=get_page_source params={ waitSeconds: 45 }
+\`\`\`
+
+Pass \`sha\` (the trunk commit you checked out) or \`prNumber\` (a merged builder PR, when trunk
+deploys to Production and has no preview). Then:
+
+- \`decision.ok\` with \`source: "sandbox"\`: capture as below.
+- \`decision.ok\` with \`source: "vercel-preview"\`: capture from \`decision.baseUrl\` instead. Run
+  \`scripts/qa/capture.ts\` with \`QA_BASE_URL=<baseUrl>\`, \`QA_PAGE_SOURCE=vercel-preview\`,
+  \`QA_ROUTES=<your routes>\` and \`QA_SIGN_IN_PATHS=<auth.signInPaths joined by commas>\`, once
+  with \`QA_VIEWPORT=mobile\` and once without. The bypass and storage-state env vars reach you
+  from the workspace's secrets; never print them. Outside buildd's own repo there is no
+  \`scripts/qa/capture.ts\`: \`git clone --depth 1 https://github.com/buildd-ai/buildd /tmp/qa-kit/src
+  && cd /tmp/qa-kit && bun add playwright\`, then, with
+  \`PLAYWRIGHT_BROWSERS_PATH=/tmp/qa-kit/browsers\` set for both commands (a shared install would
+  delete the runner's own browser), \`bunx playwright install chromium\` and
+  \`bun src/scripts/qa/capture.ts\`. Shots land in
+  \`/tmp/qa/screenshots/\`, and \`/tmp/qa/captures.json\` says which source each came from.
+- \`decision.error: "pending"\`: the preview is still building. Call again, in this turn.
+- \`decision.error: "preview_unavailable"\`: you have no pages. Park it as in "Boot failure".
+
+### Sandbox
+
+Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). For the
+sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
 - **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` on the trunk
   branch with your routes, once with \`viewport=mobile\` and once for desktop, then download
@@ -595,7 +638,7 @@ buildd action=upload_artifact params={
   type: "screenshot", missionId: "<this task's missionId>",
   metadata: { qa: { runKey: "<one id for this whole run>", route: "/app/tasks/:id",
     viewport: "mobile" | "desktop", finding: "<what you saw, one or two sentences>",
-    verdict: "ok" | "issue" | "unsure" } }
+    verdict: "ok" | "issue" | "unsure", source: "sandbox" | "vercel-preview" } }
 }
 \`\`\`
 
@@ -653,7 +696,11 @@ exactly that and complete again.
 ## Boot failure
 
 If the app did not boot, or the workflow could not produce screenshots, you have seen nothing,
-and that must never pass. Do not mark the task failed and do not complete it: a failed task
+and that must never pass. The same holds for a preview: \`preview_unavailable\` from
+get_page_source, or capture.ts exiting 3 with \`protection_bypass_missing\` (Vercel's login
+wall) or \`app_auth_not_configured\` (the app's sign-in page). A wall is a config problem,
+never a visual finding: do not upload it as a shot. Put the error name and the fix capture.ts
+printed in the question. Do not mark the task failed and do not complete it: a failed task
 releases the mission. Instead call the \`AskUserQuestion\` tool with the question "App did not
 boot: <one-line reason>" and the error output, and stop there. That parks this task in
 waiting_input, and the open task holds the mission until a human answers. Do NOT use
@@ -841,6 +888,58 @@ export async function resyncDefaultRolesForTeam(teamId: string): Promise<number>
       .where(and(eq(workspaceSkills.id, p.id), eq(workspaceSkills.contentHash, row.contentHash!)));
   }
   return plan.length;
+}
+
+
+export interface DefaultRoleRoutingBackfill {
+  id: string;
+  slug: string;
+  routing: Record<string, unknown>;
+}
+
+/**
+ * Which seeded role rows get the default routing text (role-routing.md §2):
+ * system rows of a default slug whose metadata has no `routing` key at all.
+ * Seeding is onConflictDoNothing, so teams seeded before the text existed never
+ * got it. A row with any routing block — text a team wrote, or an opt-out — is
+ * never touched. Pure; `backfillDefaultRoleRouting` applies it.
+ */
+export function planDefaultRoleRoutingBackfill(rows: readonly SeededRoleRow[], now: Date): DefaultRoleRoutingBackfill[] {
+  const bySlug = new Map(DEFAULT_ROLES.map(r => [r.slug, r]));
+  const out: DefaultRoleRoutingBackfill[] = [];
+  for (const row of rows) {
+    const role = bySlug.get(row.slug);
+    if (!role || row.source !== 'system') continue;
+    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (meta.routing !== undefined && meta.routing !== null) continue;
+    out.push({ id: row.id, slug: row.slug, routing: { ...role.routing, updatedAt: now.toISOString() } });
+  }
+  return out;
+}
+
+/**
+ * Write the default routing text onto every team's seeded role rows that lack
+ * it. Run deliberately (scripts/backfill-role-routing.ts), never on deploy.
+ * Each write re-checks `metadata->'routing' IS NULL`, so an edit landing in
+ * between is never overwritten and a re-run changes nothing.
+ */
+export async function backfillDefaultRoleRouting(opts: { dryRun?: boolean } = {}): Promise<DefaultRoleRoutingBackfill[]> {
+  const { sql } = await import('drizzle-orm');
+  const rows = await db.query.workspaceSkills.findMany({
+    where: eq(workspaceSkills.source, 'system'),
+    columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
+  }) as SeededRoleRow[];
+  const plan = planDefaultRoleRoutingBackfill(rows, new Date());
+  if (opts.dryRun) return plan;
+  const done: DefaultRoleRoutingBackfill[] = [];
+  for (const p of plan) {
+    const updated = await db.update(workspaceSkills)
+      .set({ metadata: sql`jsonb_set(coalesce(${workspaceSkills.metadata}, '{}'::jsonb), '{routing}', ${JSON.stringify(p.routing)}::jsonb)` })
+      .where(and(eq(workspaceSkills.id, p.id), sql`(${workspaceSkills.metadata} -> 'routing') IS NULL`))
+      .returning({ id: workspaceSkills.id });
+    if (updated.length > 0) done.push(p);
+  }
+  return done;
 }
 
 

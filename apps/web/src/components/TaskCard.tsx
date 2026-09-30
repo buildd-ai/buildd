@@ -99,6 +99,9 @@ export interface TaskCardProps {
    */
   missionBudgetExhausted?: boolean;
 
+  /** Claims in the task's summary its own record contradicts (`result.mismatch`); shows a warning chip. */
+  mismatchCount?: number;
+
   /**
    * Override the internally derived stage. Callers with policy/reviewer context
    * (e.g. CondensedTimeline) use this to show REVIEWING instead of OPEN when an
@@ -264,6 +267,7 @@ export function TaskCard({
   intensity,
   attemptCurrent,
   attemptTotal,
+  mismatchCount = 0,
   runnerName,
   prUrl,
   prNumber,
@@ -478,6 +482,15 @@ export function TaskCard({
             {showAttempt && (
               <span className="font-mono text-[11px] md:text-[10px] text-text-muted tabular-nums">
                 {attemptCurrent}/{attemptTotal}
+              </span>
+            )}
+            {mismatchCount > 0 && (
+              <span
+                data-testid="task-mismatch-chip"
+                title="The summary and the recorded result disagree"
+                className="font-mono text-[11px] md:text-[10px] text-status-warning"
+              >
+                ⚠ mismatch
               </span>
             )}
           </div>

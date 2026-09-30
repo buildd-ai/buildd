@@ -8,6 +8,9 @@ import CopyBlock from '@/components/CopyBlock';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
+import { StatusChip } from './_components/ConnectionRow';
+import { groupRunnerTokens } from './_lib/runner-token-groups';
+import { shortAgo } from '@/lib/mission-list-card';
 
 interface Account {
   id: string;
@@ -16,14 +19,23 @@ interface Account {
   authType: string;
   apiKeyPrefix: string | null;
   maxConcurrentWorkers: number;
-  totalTasks: number;
   totalCost: string | null;
   activeSessions: number | null;
   maxConcurrentSessions: number | null;
-  budgetExhaustedAt: string | null;
-  budgetResetsAt: string | null;
+  budgetExhaustedAt: string | Date | null;
+  budgetResetsAt: string | Date | null;
   team: { name: string } | null;
   accountWorkspaces?: { workspaceId: string }[];
+  createdAt?: string | Date | null;
+  /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
+  lastSeenAt?: string | null;
+}
+
+/** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
+function seenLabel(iso: string | null | undefined): string | null {
+  const ago = shortAgo(iso ?? null);
+  if (!ago) return null;
+  return ago === 'now' ? 'seen now' : `seen ${ago} ago`;
 }
 
 interface Workspace {
@@ -35,6 +47,14 @@ interface Workspace {
 export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Teams start folded: the header row already says how many tokens and when one was last seen.
+  const [openTeams, setOpenTeams] = useState<Set<string>>(() => new Set());
+  const groups = groupRunnerTokens(accounts);
+  const toggleTeam = (team: string) => setOpenTeams((cur) => {
+    const next = new Set(cur);
+    if (next.has(team)) next.delete(team); else next.add(team);
+    return next;
+  });
   const [regenerateTarget, setRegenerateTarget] = useState<Account | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
@@ -70,11 +90,10 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
     <SettingsSection
       title="Runner tokens"
       bare
-      action={<Link href="/app/accounts/new" className="btn btn-quiet">+ New token</Link>}
+      action={<Link href="/app/accounts/new" className="btn btn-primary">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        A runner token signs your runner in to buildd. It holds no model credentials. Those go in
-        Agent backends above.
+        A runner token signs a runner in to buildd. It holds no model credentials; those are under Connections.
       </p>
 
       {accounts.length === 0 ? (
@@ -85,72 +104,101 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
           </Link>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
-          {accounts.map((account) => {
-            const isExpanded = expandedId === account.id;
-            const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
-
+        <div className="card divide-y divide-border-default p-0">
+          {groups.map((group) => {
+            const teamOpen = openTeams.has(group.team);
+            const seen = seenLabel(group.lastSeenAt);
+            const unlinked = group.tokens.filter((a) => a.accountWorkspaces && a.accountWorkspaces.length === 0).length;
             return (
-              <div key={account.id}>
-                {/* Compact row */}
+              <div key={group.team} data-testid="token-group" data-open={teamOpen ? 'true' : 'false'}>
                 <button
-                  onClick={() => setExpandedId(isExpanded ? null : account.id)}
-                  className="w-full flex items-center gap-3 p-3 hover:bg-surface-3 transition-colors text-left"
+                  onClick={() => toggleTeam(group.team)}
+                  aria-expanded={teamOpen}
+                  className="w-full flex min-h-14 items-center gap-3 px-4 py-2.5 hover:bg-surface-3 transition-colors text-left"
                 >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium truncate">{account.name}</span>
-                      {account.team?.name && (
-                        <span className="text-[11px] text-text-muted truncate flex-shrink-0">{account.team.name}</span>
-                      )}
-                      {hasWarning && (
-                        <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
-                      )}
-                    </div>
-                  </div>
-                  <code className="text-xs text-text-muted font-mono flex-shrink-0">
-                    {account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : 'no API key'}
-                  </code>
-                  <svg className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                      <span className="font-mono text-[13px] font-semibold text-text-primary truncate">{group.team}</span>
+                      {unlinked > 0 && <StatusChip tone="warn">{unlinked} unlinked</StatusChip>}
+                    </span>
+                    <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">
+                      {group.tokens.length} token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
+                    </span>
+                  </span>
+                  <span aria-hidden="true" className={`shrink-0 font-mono text-[12px] text-text-muted transition-transform ${teamOpen ? 'rotate-180' : ''}`}>▾</span>
                 </button>
+                {teamOpen && (
+                  <div className="divide-y divide-border-default border-t border-border-default">
+                    {group.tokens.map((account) => {
+                      const isExpanded = expandedId === account.id;
+                      const hasWarning = account.accountWorkspaces && account.accountWorkspaces.length === 0;
 
-                {/* Expanded detail */}
-                {isExpanded && (
-                  <div className="px-3 pb-3 space-y-3">
-                    <div className="inset-panel space-y-2">
-                      <div className="flex items-center gap-2 text-xs text-text-muted">
-                        <span>Auth: {account.authType}</span>
-                        <span>·</span>
-                        <span>Type: {account.type}</span>
-                        <span>·</span>
-                        <span>Workers: {account.maxConcurrentWorkers}</span>
-                        {account.authType === 'api' && (
-                          <><span>·</span><span>Cost: ${account.totalCost}</span></>
-                        )}
-                        {account.authType === 'oauth' && (
-                          <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '∞'}</span></>
-                        )}
-                        {account.budgetExhaustedAt && (
-                          <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
-                        )}
-                      </div>
+                      return (
+                        <div key={account.id}>
+                          {/* Compact row */}
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : account.id)}
+                            className="w-full flex min-h-12 items-center gap-3 py-2.5 pl-6 pr-4 hover:bg-surface-3 transition-colors text-left"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[13px] font-medium text-text-primary truncate">{account.name}</span>
+                                {hasWarning && (
+                                  <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
+                                )}
+                              </div>
+                              {seenLabel(account.lastSeenAt) && (
+                                <div data-testid="token-last-seen" className="mt-0.5 font-mono text-[11px] text-text-muted">{seenLabel(account.lastSeenAt)}</div>
+                              )}
+                            </div>
+                            <code className="text-xs text-text-muted font-mono flex-shrink-0">
+                              {account.apiKeyPrefix ? `${account.apiKeyPrefix}...` : 'no API key'}
+                            </code>
+                            <svg className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
 
-                      {hasWarning && (
-                        <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
-                      )}
+                          {/* Expanded detail */}
+                          {isExpanded && (
+                            <div className="pl-6 pr-4 pb-3 space-y-3">
+                              <div className="inset-panel space-y-2">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
+                                  <span>Auth: {account.authType}</span>
+                                  <span>·</span>
+                                  <span>Type: {account.type}</span>
+                                  <span>·</span>
+                                  <span>Workers: {account.maxConcurrentWorkers}</span>
+                                  {account.authType === 'api' && (
+                                    <><span>·</span><span>Cost: ${account.totalCost}</span></>
+                                  )}
+                                  {account.authType === 'oauth' && (
+                                    <><span>·</span><span>Sessions: {account.activeSessions}/{account.maxConcurrentSessions || '∞'}</span></>
+                                  )}
+                                  {account.budgetExhaustedAt && (
+                                    <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
+                                  )}
+                                </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
-                          className="btn"
-                        >
-                          Regenerate key
-                        </button>
-                        <DeleteAccountButton accountId={account.id} accountName={account.name} />
-                      </div>
-                    </div>
+                                {hasWarning && (
+                                  <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
+                                )}
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <button
+                                    onClick={() => { setRegenerateError(null); setRegenerateTarget(account); }}
+                                    className="btn"
+                                  >
+                                    Regenerate key
+                                  </button>
+                                  <DeleteAccountButton accountId={account.id} accountName={account.name} />
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

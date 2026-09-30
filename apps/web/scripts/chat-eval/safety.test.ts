@@ -56,7 +56,7 @@ describe('isWrite (mcp surface)', () => {
 describe('isWrite (mcp surface): actions chat does not expose', () => {
   const both = (action: string, params: Record<string, unknown> = {}) => [
     isWrite('mcp', 'buildd', { action, params }),
-    isWrite('mcp', 'buildd_runners', { action, params }),
+    isWrite('mcp', 'buildd_analytics', { action, params }),
   ];
 
   it('runs MCP reads that chat defers (list_runners, get_usage_stats)', () => {
@@ -93,7 +93,7 @@ describe('groupRouterReply (mcp group tools)', () => {
     expect(r?.isError).toBe(true);
     // The server names the right call for a sub-action instead of "Unknown action".
     expect(r?.text).toContain('"list" is a sub-action');
-    expect(groupRouterReply('buildd_missions', { action: 'list_runners', params: {} })?.text).toContain('buildd_runners');
+    expect(groupRouterReply('buildd_missions', { action: 'list_runners', params: {} })?.text).toContain('buildd_analytics');
     expect(groupRouterReply('buildd_work', { action: 'help', params: {} })?.isError).toBe(false);
   });
 

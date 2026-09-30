@@ -114,3 +114,59 @@ describe('GET /api/tasks/[id]/error-traces — id prefixes', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('GET /api/tasks/[id]/error-traces — evidence', () => {
+  const evidence = { errorClass: 'type_error', keyLines: ['a.ts(1,1): error TS2322'], diff: { files: 1, added: 2, removed: 0 }, links: {} };
+  const mismatch = [{ kind: 'last_command_failed', detail: 'tsc exited 2' }];
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockImplementation(async (_u: string, ws: string) =>
+      ws === 'ws-mine' ? { teamId: 't', role: 'member' } : null);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
+    mockTaskFindFirst.mockReset();
+    mockTracesFindMany.mockReset();
+    mockTracesFindMany.mockResolvedValue([]);
+    mockPrefixRows.mockReset();
+    mockPrefixRows.mockResolvedValue([]);
+  });
+
+  it('returns the task\'s evidence and mismatch alongside the traces', async () => {
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-mine', status: 'failed', result: { evidence, mismatch } });
+    const body = await (await GET(req(FULL), params(FULL))).json();
+    expect(body.status).toBe('failed');
+    expect(body.evidence).toEqual(evidence);
+    expect(body.mismatch).toEqual(mismatch);
+  });
+
+  it('returns null evidence and no mismatch for a task that recorded none', async () => {
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-mine', status: 'completed', result: { summary: 'ok' } });
+    const body = await (await GET(req(FULL), params(FULL))).json();
+    expect(body.evidence).toBeNull();
+    expect(body.mismatch).toEqual([]);
+  });
+
+  it('refuses evidence for a task outside the caller\'s teams', async () => {
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: { evidence, mismatch } });
+    const res = await GET(req(FULL), params(FULL));
+    expect(res.status).toBe(404);
+    const text = JSON.stringify(await res.json());
+    expect(text).not.toContain('TS2322');
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses an API key whose account cannot reach the task\'s workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 't' });
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: { evidence } });
+    const res = await GET(req(FULL), params(FULL));
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain('TS2322');
+  });
+});
+

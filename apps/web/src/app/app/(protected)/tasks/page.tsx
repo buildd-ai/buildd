@@ -341,6 +341,9 @@ export default async function TasksPage({
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,
+              mismatchCount: Array.isArray((t.result as { mismatch?: unknown[] } | null)?.mismatch)
+                ? (t.result as { mismatch: unknown[] }).mismatch.length
+                : 0,
               waitingPrompt: waitingFor ? (waitingFor.prompt || 'Needs input') : null,
               missionId: t.missionId || null,
               missionTitle: t.missionId ? (missionTitleMap.get(t.missionId) || null) : null,

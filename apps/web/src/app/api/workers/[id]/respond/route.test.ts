@@ -104,6 +104,16 @@ mock.module('@/lib/path-claim-release', () => ({
   releaseAndNotify: mockReleaseAndNotify,
 }));
 
+// The cold path inserts a Continue: task and must wake runners for it the way
+// every other new task does, or a webhook-only workspace never runs it.
+const mockDispatchNewTask = mock(async (_task: any, _workspace: any, _options?: any) => {});
+// A worker a cloud runner parked has no container: the answer must wake one.
+const mockDispatchResumedTask = mock(async (_task: any, _workspace: any, _workerId: string) => true);
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+  dispatchResumedTask: mockDispatchResumedTask,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(body?: any): NextRequest {
@@ -201,6 +211,8 @@ describe('POST /api/workers/[id]/respond', () => {
     mockTriggerEvent.mockClear();
     mockReleaseAndNotify.mockClear();
     mockPreflight.mockClear();
+    mockDispatchNewTask.mockReset();
+    mockDispatchNewTask.mockImplementation(async () => {});
     mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
     tasksUpdated.length = 0;
     notesInserted.length = 0;
@@ -733,6 +745,64 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockInsertValues).not.toHaveBeenCalled();
     });
 
+    describe('a worker parked by the cloud runner', () => {
+      const PARKED_UNTIL = () => new Date(Date.now() + 60 * 60 * 1000);
+
+      it('resumes although its last sync is hours old, and fires task.resume for the SAME worker', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({
+          updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+          parkedUntil: PARKED_UNTIL(),
+        }));
+
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.path).toBe('resume');
+        expect(data.resumeDispatched).toBe(true);
+        expect(mockInsertValues).not.toHaveBeenCalled();
+        expect(mockDispatchResumedTask).toHaveBeenCalledTimes(1);
+        const [task, , workerId] = mockDispatchResumedTask.mock.calls[0]!;
+        expect(task.id).toBe('task-1');
+        expect(workerId).toBe(WORKER_ID);
+        // The answer is queued first: the container that wakes drains it.
+        expect((mockWorkersUpdateSet.mock.calls.at(-1)![0] as any).pendingInstructions).toBe('Use JWT tokens');
+      });
+
+      it('an unparked (host runner) resume fires no task.resume', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({ parkedUntil: null }));
+        const data = await (await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).json();
+        expect(data.path).toBe('resume');
+        expect(mockDispatchResumedTask).not.toHaveBeenCalled();
+      });
+
+      it('an expired park with a stale sync goes cold, as before', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({
+          updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+          parkedUntil: new Date(Date.now() - 1000),
+        }));
+        const data = await (await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).json();
+        expect(data.path).toBe('cold_continuation');
+        expect(mockDispatchResumedTask).not.toHaveBeenCalled();
+      });
+
+      it('a failed task.resume still answers resume: the ack deadline sweep covers it', async () => {
+        authorize();
+        mockDispatchResumedTask.mockClear();
+        mockDispatchResumedTask.mockImplementationOnce(async () => { throw new Error('webhook down'); });
+        mockWorkersFindFirst.mockResolvedValue(parkedWorker({ updatedAt: new Date(0), parkedUntil: PARKED_UNTIL() }));
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect((await res.json()).resumeDispatched).toBe(false);
+      });
+    });
+
     // AC-AQR-10 — the answer rides the acknowledged instruction queue, which is
     // the wiring the runner already drains into resumeSession.
     it('queues the answer on the same worker with an unconfirmed delivery state', async () => {
@@ -1074,6 +1144,96 @@ describe('POST /api/workers/[id]/respond', () => {
       // happen.
       expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
       expect(mockWorkersUpdateSet.mock.calls[0][0].continuationTaskId).toBeUndefined();
+    });
+  });
+
+  // The Continue: task the cold path inserts is a new task: nothing else wakes a
+  // runner for it, and a webhook-only workspace (no polling) never finds it.
+  describe('continuation dispatch', () => {
+    function authorize() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    const workspace = {
+      id: 'workspace-1',
+      teamId: 'team-1',
+      name: 'Example',
+      repo: 'https://github.com/example/repo',
+      webhookConfig: { enabled: true, url: 'https://hooks.example.test/buildd', token: 't', events: ['task.created'] },
+    };
+
+    it('dispatches the new continuation task once, with its workspace', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('cold_continuation');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      const [task, ws] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(task.id).toBe('new-task-1');
+      expect(ws).toBe(workspace);
+    });
+
+    it("the continuation keeps the parent's runner preference, and dispatch honours it", async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace, task: { ...baseWorker.task, runnerPreference: 'user' } });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((mockInsertValues.mock.calls.at(-1) as any[])[0].runnerPreference).toBe('user');
+      const [, , options] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(options).toEqual({ runnerPreference: 'user' });
+    });
+
+    it('does not dispatch anything on the warm resume path', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({
+        ...baseWorker,
+        workspace,
+        status: 'waiting_input',
+        updatedAt: new Date(),
+        turns: 42,
+        supportsInstructionAck: true,
+        pendingInstructions: null,
+        instructionHistory: [],
+        account: { teamId: 'team-1' },
+      });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).path).toBe('resume');
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('still records the answer when dispatch throws', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+      mockDispatchNewTask.mockImplementation(async () => { throw new Error('webhook exploded'); });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('cold_continuation');
+      expect(data.taskId).toBe('new-task-1');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dispatch when the continuation insert fails', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
+      mockInsertReturning.mockImplementation(() => { throw new Error('insert failed'); });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(500);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
   });
 

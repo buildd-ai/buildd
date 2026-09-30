@@ -38,9 +38,9 @@ describe('no action is lost', () => {
     }
   });
 
-  it('fleet-health reads are in the runners group', () => {
-    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats']) {
-      expect(mcpGroupOf(a)).toBe('runners');
+  it('observability reads are in the analytics group', () => {
+    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats', 'get_budget_forecast', 'get_manifest_coverage', 'get_path_claim_stats']) {
+      expect(mcpGroupOf(a)).toBe('analytics');
     }
   });
 
@@ -82,7 +82,7 @@ describe('short text', () => {
   });
 
   it('derived signatures keep required markers and sub-action values', () => {
-    expect(actionSignature('get_task')).toBe('{taskId, include?}');
+    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?}');
     expect(actionSignature('manage_secrets')).toContain('action: list|set|delete');
     expect(actionSignature('explain')).toContain('taskId?|missionId?');
   });
@@ -170,11 +170,13 @@ describe('typed params', () => {
   });
 
   it('runners, tasks: the common fields', () => {
-    const r = props('runners', actionsOfGroup('runners'));
+    const r = props('analytics', actionsOfGroup('analytics'));
     expect(r.workspaceId.description!.toLowerCase()).toContain('browser');
     const t = props('tasks', actionsOfGroup('tasks'));
     for (const n of ['taskId', 'workspaceId', 'status', 'limit', 'include', 'title', 'priority']) expect(t[n], n).toBeDefined();
     expect(t.include?.type).toBe('array');
+    expect(t.fullDescription?.type).toBe('boolean');
+    expect(t.fullDescription.description).toContain('Full text');
     expect(t.status.description).toContain('cancelled');
   });
 

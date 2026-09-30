@@ -96,7 +96,8 @@ describe('setupWorktree — lineage-held resume branch', () => {
     expect(heldLog()).toEqual([expect.objectContaining({ mode: 'release', decision: 'released', released: true, holderWorkerId: 'w-prior-00' })]);
   }, 60_000);
 
-  test('flag off (default, shadow): diverts as today and logs would_release', async () => {
+  test('flag off (kill switch, shadow): diverts as today and logs would_release', async () => {
+    process.env[FLAG] = '0';
     const { repoPath, holderPath } = makeFixture();
     const released: string[] = [];
     const r = await run(repoPath, registry(holderPath), released);

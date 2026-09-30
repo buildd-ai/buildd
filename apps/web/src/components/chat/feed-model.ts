@@ -203,6 +203,39 @@ export function feedSegments(parts: readonly ChatPart[], opts: { hideEventRefs?:
   return out;
 }
 
+// ── A finished turn, folded ──────────────────────────────────────────────────
+
+const FILED_NOUN: Record<string, [string, string]> = {
+  task: ['task', 'tasks'], mission: ['mission', 'missions'], pr: ['pull request', 'pull requests'], question: ['question', 'questions'],
+};
+
+/**
+ * The one line a finished turn folds to: "Did 6 steps · filed 2 tasks".
+ * Steps are the server's `data-step` count, else the turn's calls; what it
+ * filed is every object a write returned (approvals included), each once.
+ * Null when the turn did nothing to fold (a plain answer).
+ */
+export function turnFoldSummary(parts: readonly ChatPart[], steps: number): string | null {
+  const calls = parts.filter(isToolPart).filter(p => !isApprovalPart(p));
+  const n = steps > 0 ? steps : calls.length;
+  if (n === 0) return null;
+  const seen = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const p of parts) {
+    if (!isToolPart(p) || isReadTool(p)) continue;
+    for (const r of objectsOf(p)) {
+      const k = refKey(r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+    }
+  }
+  const filed = [...counts.entries()]
+    .map(([kind, c]) => `${c} ${(FILED_NOUN[kind] ?? [kind, `${kind}s`])[c === 1 ? 0 : 1]}`)
+    .join(', ');
+  return `Did ${n} step${n === 1 ? '' : 's'}${filed ? ` · filed ${filed}` : ''}`;
+}
+
 export type { ToolGroupSummary };
 
 export function toolGroupSummary(calls: readonly ChatToolPart[]): ToolGroupSummary {

@@ -26,6 +26,7 @@ import {
   dispatchNewTask,
   dispatchUnblockedTask,
   dispatchRetriedTask,
+  dispatchResumedTask,
   dispatchPlanChildTask,
   dispatchToWebhook,
   WEBHOOK_DISPATCH_TIMEOUT_MS,
@@ -267,6 +268,39 @@ describe('dispatchRetriedTask', () => {
     await dispatchRetriedTask(TASK, { webhookConfig: WEBHOOK, githubInstallationId: 'i', githubRepoId: 'r' });
     expect(mockGitHubDispatch).not.toHaveBeenCalled();
     expect(assignedCalls()).toHaveLength(1);
+  });
+});
+
+describe('dispatchResumedTask (cloud runner park → answer)', () => {
+  const RESUME_WEBHOOK = { ...LEGACY_WEBHOOK, events: ['task.retry', 'task.resume'] as Array<'task.retry' | 'task.resume'> };
+
+  it("POSTs event 'task.resume' with the parked worker's id", async () => {
+    expect(await dispatchResumedTask(TASK, { webhookConfig: RESUME_WEBHOOK }, 'worker-parked-1')).toBe(true);
+    expect(fetchCalls).toHaveLength(1);
+    expect(sentBody()).toMatchObject({ event: 'task.resume', taskId: 'task-w1', workspaceId: 'ws-w1', workerId: 'worker-parked-1' });
+  });
+
+  it('only when the webhook lists task.resume: legacy and retry-only configs are not woken', async () => {
+    expect(await dispatchResumedTask(TASK, { webhookConfig: LEGACY_WEBHOOK }, 'w')).toBe(false);
+    expect(await dispatchResumedTask(TASK, { webhookConfig: WEBHOOK }, 'w')).toBe(false);
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('never broadcasts TASK_ASSIGNED: no runner can claim a task whose worker is still live', async () => {
+    fetchStatus = 500;
+    expect(await dispatchResumedTask(TASK, { webhookConfig: RESUME_WEBHOOK }, 'w')).toBe(false);
+    expect(await dispatchResumedTask(TASK, {}, 'w')).toBe(false);
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it('a disabled webhook or a runnerPreference mismatch sends nothing', async () => {
+    await dispatchResumedTask(TASK, { webhookConfig: { ...RESUME_WEBHOOK, enabled: false } }, 'w');
+    await dispatchResumedTask({ ...TASK, runnerPreference: 'user' }, { webhookConfig: { ...RESUME_WEBHOOK, runnerPreference: 'service' as const } }, 'w');
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('other events carry no workerId', () => {
+    expect('workerId' in buildWebhookPayload(TASK, 'task.retry')).toBe(false);
   });
 });
 

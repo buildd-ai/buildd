@@ -45,6 +45,7 @@ import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { resolveLiteLLMGateway } from './litellm-gateway';
 import { gatewayModel } from '@builddai/ai-kit/models';
+import { createPublicGatewayFetcher } from './net/fetch-public-gateway';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -129,9 +130,9 @@ async function teamAllowsCapability(teamId: string, capability: InferenceCapabil
   try {
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceFeatureModes: true },
+      columns: { inferenceFeatureModes: true, enabledDecisionShadows: true },
     });
-    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes } : null);
+    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null);
   } catch (e) {
     console.warn(`[inference] capability lookup failed for team ${teamId}:`, e);
     return false;
@@ -343,6 +344,8 @@ export interface InferenceCallParams<T> {
   /** Test seams. */
   fetcher?: Fetcher;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seams for gateway validation. */
+  gatewayFetcher?: Fetcher;
 }
 
 /**
@@ -392,16 +395,17 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
     try {
       const common = {
         system: params.system, user: params.user,
-        imageB64: params.imageB64, maxTokens, fetcher,
+        imageB64: params.imageB64, maxTokens,
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       };
       if (gateway) {
+        const gatewayFetcher = params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher });
         return await callOpenRouter({
           ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
-          url: `${gateway.baseURL}/chat/completions`,
+          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher as typeof fetch,
         });
       }
-      const args = { ...common, apiKey: apiKey!, model: entry.model };
+      const args = { ...common, apiKey: apiKey!, model: entry.model, fetcher };
       return provider === 'anthropic' ? await callAnthropic(args) : await callOpenRouter(args);
     } catch (e) {
       return { ok: false, error: { kind: 'transport', message: e instanceof Error ? e.message : String(e) } };

@@ -18,8 +18,9 @@ import type { CSSProperties } from 'react';
 import type { FleetRunner, FleetSlot, FleetSnapshot } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import { SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from '@/components/fleet/slot-lanes-layout';
-import { fleetDisplayRows, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
+import { fleetDisplayRows, fleetLabel, fleetSummary, type FleetDisplayRow } from '@/lib/fleet-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
+import { roleDisplayName } from '@/lib/task-eyebrow';
 import { shortDuration } from '@/lib/mission-list-card';
 import { FleetLanes } from './FleetLanes';
 
@@ -31,14 +32,24 @@ function ago(ms: number, now: number): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
-function RoleSquare({ name, color }: { name: string | null; color: string | null }) {
+/**
+ * The worker's role initial. A task with no role gets an empty outlined square
+ * — never a "?" (lib/task-eyebrow.ts: a missing role is not a word), and the
+ * square still holds the row's alignment.
+ */
+function RoleSquare({ slug, name, color }: { slug: string | null; name: string | null; color: string | null }) {
+  const label = roleDisplayName(slug, name);
+  if (!label) {
+    return <span aria-hidden="true" data-testid="fleet-role-square-empty" className="h-[18px] w-[18px] shrink-0 border border-border-default" />;
+  }
   return (
     <span
       aria-hidden="true"
+      title={label}
       className={`grid h-[18px] w-[18px] shrink-0 place-items-center font-mono text-[11px] font-bold text-white ${color ? '' : 'bg-text-muted'}`}
       style={color ? { backgroundColor: color } : undefined}
     >
-      {(name ?? '?')[0]?.toUpperCase()}
+      {label[0]?.toUpperCase()}
     </span>
   );
 }
@@ -111,7 +122,7 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
   );
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2.5">
-      <RoleSquare name={w.roleName ?? w.roleSlug} color={w.roleColor} />
+      <RoleSquare slug={w.roleSlug} name={w.roleName} color={w.roleColor} />
       {href ? <Link href={href} className="block min-w-0 flex-1 hover:underline">{body}</Link> : <div className="min-w-0 flex-1">{body}</div>}
       {/* Waiting on you already has its own answer path; steering it is the question hero's job, not this one. */}
       {w.taskId && !w.question && <SteerButton taskId={w.taskId} />}
@@ -255,15 +266,9 @@ export function FleetStrip({
   /** Always start as the one-line summary (a member's Home). */
   compact?: boolean;
 }) {
-  const slotsPerRunner = new Set(fleet.runners.map(r => r.maxSlots));
   const busy = fleet.runners.some(r => r.slots.some(s => s.worker));
   const collapsed = compact || !busy;
-  const label = (
-    <span className="section-label text-text-muted">
-      Fleet · {fleet.runners.length} runner{fleet.runners.length === 1 ? '' : 's'}
-      {slotsPerRunner.size === 1 && fleet.runners.length > 0 ? ` × ${[...slotsPerRunner][0]} slots` : ''}
-    </span>
-  );
+  const label = <span className="section-label text-text-muted">{fleetLabel(fleet)}</span>;
 
   if (fleet.runners.length === 0) {
     return (
