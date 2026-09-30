@@ -477,6 +477,8 @@ export async function checkDependsOnResolved(
       mode: tasks.mode,
       priority: tasks.priority,
       missionId: tasks.missionId,
+      backend: tasks.backend,
+      roleSlug: tasks.roleSlug,
     })
     .from(tasks)
     .where(
@@ -658,6 +660,8 @@ export async function checkDependsOnResolved(
         mode: task.mode ?? undefined,
         priority: task.priority ?? undefined,
         missionId: task.missionId,
+        backend: task.backend,
+        roleSlug: task.roleSlug,
       },
       workspace
     ).catch((err) =>

@@ -2277,6 +2277,8 @@ async function maybeDispatchReviewer(
         description: null as null,
         workspaceId: openWorker.workspaceId,
         missionId: task.missionId ?? null,
+        backend: originalTask.backend,
+        roleSlug: reviewerRole,
       };
       await dispatchNewTask(reviewerTaskFull, workspace);
       console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
@@ -2454,6 +2456,8 @@ async function maybeReDispatchReviewer(
       description: null as null,
       workspaceId: openWorker.workspaceId,
       missionId: task.missionId ?? null,
+      backend: originalTask.backend,
+      roleSlug: reviewerRole,
     };
     await dispatchNewTask(reviewerTaskFull, workspace);
     console.log(`[reviewer] Re-dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName} (was ${status.state} at ${priorHeadSha.slice(0, 7)})`);

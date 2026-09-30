@@ -756,4 +756,88 @@ describe('POST /api/tasks/[id]/reassign', () => {
     // canTakeover is also falsy (isWorkspaceOwner=false || isStale=null = null)
     expect(data.canTakeover).toBeFalsy(); // Not owner and not stale
   });
+
+  // A push-dispatched workspace (webhookConfig set) has no Pusher subscriber:
+  // before this, a retry from the dashboard broadcast TASK_ASSIGNED only, so the
+  // webhook consumer never heard the task was claimable again.
+  describe('workspace webhook', () => {
+    const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
+    let fetchCalls: Array<{ url: string; body: any }>;
+    const originalFetch = globalThis.fetch;
+
+    beforeEach(() => {
+      fetchCalls = [];
+      globalThis.fetch = (async (url: string, init: RequestInit) => {
+        fetchCalls.push({ url, body: JSON.parse(init.body as string) });
+        return new Response('ok', { status: 200 });
+      }) as unknown as typeof fetch;
+    });
+    const restore = () => { globalThis.fetch = originalFetch; };
+
+    it('a failed-task retry reaches the webhook with event task.retry and skips the broadcast', async () => {
+      try {
+        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-123',
+          title: 'Test Task',
+          description: 'desc',
+          status: 'failed',
+          workspaceId: 'ws-1',
+          missionId: 'mission-1',
+          backend: 'claude',
+          roleSlug: 'builder',
+          runnerPreference: 'any',
+          startAt: null,
+          expiresAt: null,
+          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig },
+        });
+
+        const response = await callHandler(createMockRequest(), 'task-123');
+        expect(response.status).toBe(200);
+
+        expect(fetchCalls).toHaveLength(1);
+        expect(fetchCalls[0].url).toBe(webhookConfig.url);
+        expect(fetchCalls[0].body).toMatchObject({
+          event: 'task.retry',
+          taskId: 'task-123',
+          workspaceId: 'ws-1',
+          missionId: 'mission-1',
+          backend: 'claude',
+          roleSlug: 'builder',
+          sessionKey: 'buildd-task-123',
+        });
+        // Webhook dispatch is exclusive, same as at creation.
+        expect(mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'task:assigned')).toHaveLength(0);
+      } finally {
+        restore();
+      }
+    });
+
+    it('a backend switch is what the webhook is told', async () => {
+      try {
+        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-123',
+          title: 'Test Task',
+          description: null,
+          status: 'failed',
+          workspaceId: 'ws-1',
+          backend: 'claude',
+          startAt: new Date(Date.now() + 3_600_000),
+          context: { budgetExhausted: true },
+          expiresAt: null,
+          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig },
+        });
+
+        await callHandler(createMockRequest({ body: { backend: 'codex' } }), 'task-123');
+
+        // The switch lifted the old provider's deferral, so the task is
+        // claimable now and the webhook fires with the new backend.
+        expect(fetchCalls).toHaveLength(1);
+        expect(fetchCalls[0].body.backend).toBe('codex');
+      } finally {
+        restore();
+      }
+    });
+  });
 });
