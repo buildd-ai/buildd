@@ -57,6 +57,11 @@ export class WorkerAgent extends Agent<Env, RunState> {
         BUILDD_ONCE_MAX_WAIT_MS: env.BUILDD_ONCE_MAX_WAIT_MS,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
+        instanceType: env.CONTAINER_INSTANCE_TYPE,
+        // No instance ID on ctx.container; the container is bound to this
+        // Durable Object and Cloudflare identifies the instance by its ID
+        // (run-report.ts, RunReport.containerInstanceId).
+        containerInstanceId: this.ctx.id.toString(),
       },
       keepAliveWhile: (fn) => this.keepAliveWhile(fn),
       waitUntil: (p) => this.ctx.waitUntil(p),
@@ -83,6 +88,16 @@ export class WorkerAgent extends Agent<Env, RunState> {
   /** RPC from the dispatcher Worker, for `GET /tasks/:taskId`. */
   async getRunState(): Promise<RunState> {
     return this.supervisor.status();
+  }
+
+  /**
+   * RPC from EgressHandler: one request seen, or one response body's size.
+   * Counts only; no URL or header ever crosses this call (run-report.ts
+   * EgressEvent). Ignored unless a run is live.
+   */
+  async recordEgress(event: unknown): Promise<void> {
+    if (!this.ctx.container) return;
+    this.supervisor.recordEgress(event);
   }
 
   /**
