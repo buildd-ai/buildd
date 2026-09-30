@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.14.0
+npm i -E @builddai/ai-kit@0.15.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
