@@ -16,13 +16,16 @@
  */
 import {
   appendTail,
+  assertContainerConfig,
   buildContainerEnv,
   crashReportAction,
   decideDispatch,
   isOrphanedRun,
   outcomeForExitCode,
+  parseTaskToken,
   parseWorkerIdLine,
   runnerCommand,
+  taskTokenRequest,
   type ContainerEnvSource,
   type CrashReport,
   type RunOutcome,
@@ -76,6 +79,7 @@ export type DispatchResult =
 const READY_POLL_MS = 250;
 const OUTPUT_DRAIN_MS = 5_000;
 const CRASH_REPORT_TIMEOUT_MS = 10_000;
+const TASK_TOKEN_TIMEOUT_MS = 10_000;
 
 type Settled =
   | { kind: 'exit'; code: number }
@@ -152,13 +156,14 @@ export class TaskSupervisor {
     let error: string | undefined;
     let configError = false;
     try {
-      let env: Record<string, string>;
       try {
-        env = buildContainerEnv(this.d.config);
+        assertContainerConfig(this.d.config);
       } catch (err) {
         configError = true;
         throw err;
       }
+      // The container gets a token for this task only; the runner key stays here.
+      const env = buildContainerEnv(this.d.config, await this.mintTaskToken());
       if (c.running) await c.destroy('leftover container from a previous attempt');
       await this.d.installEgress();
       c.start({ env, enableInternet: true });
@@ -214,6 +219,17 @@ export class TaskSupervisor {
       ...(crashReport ? { crashReport } : {}),
       outputTail: [...this.tail],
     });
+  }
+
+  /** A fresh per-task token for this attempt, minted with the Worker's runner key. */
+  private async mintTaskToken(): Promise<string> {
+    const { url, init } = taskTokenRequest(this.d.config, this.d.taskId);
+    const res = await this.d.fetch(url, { ...init, signal: AbortSignal.timeout(TASK_TOKEN_TIMEOUT_MS) });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 200);
+      throw new Error(`could not mint a task token: POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+    return parseTaskToken(await res.json());
   }
 
   private async waitUntilRunning(): Promise<void> {

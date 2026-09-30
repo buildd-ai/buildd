@@ -85,7 +85,7 @@ Everything else stays in the runner process.
 
 | Variable | Secret | Required | Reaches agent | Notes |
 |---|---|---|---|---|
-| `BUILDD_API_KEY` | **yes** | yes | no | Runner API key, ideally scoped to one workspace. Missing: exit 64. |
+| `BUILDD_API_KEY` | **yes** | yes | no | On Cloudflare, a per-task token (`bldt_…`) the `WorkerAgent` mints at dispatch (`POST /api/runner/task-token`, with the dispatcher's runner key); the runner key itself never enters the container. The token expires after a few hours and works only for this task's claim, a read of this task, and its own worker's read, PATCH, heartbeat, MCP, artifact and PR calls. Every other route refuses it, including the credential and secrets routes. Elsewhere, a runner API key, ideally scoped to one workspace. Missing: exit 64. |
 | `BUILDD_SERVER` | no | yes | no | buildd base URL. Defaults to `https://buildd.dev` if unset, so always set it outside production. |
 | `ANTHROPIC_API_KEY` | placeholder on Cloudflare; **yes** locally | yes | yes | On Cloudflare this is a dummy value. Claude Code needs *some* key to start, and the egress handler strips it and adds the real gateway credential. Setting it also stops the runner from injecting the server-managed API key (it only fills an unset variable). Locally, a real key works. |
 | `ANTHROPIC_BASE_URL` | no | no | yes | Gateway endpoint. The `WorkerAgent` never passes it: on Cloudflare model traffic must go to `api.anthropic.com`, where the egress handler rewrites it to AI Gateway. Elsewhere, set it to talk to a gateway directly. |
@@ -97,7 +97,7 @@ Everything else stays in the runner process.
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never
 put in the container env. The only real secret in the env is
-`BUILDD_API_KEY`.
+`BUILDD_API_KEY`, and there it is a token scoped to this task's own worker.
 
 ### Baked into the image
 

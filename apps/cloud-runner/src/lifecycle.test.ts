@@ -16,9 +16,11 @@ import {
   isOrphanedRun,
   isValidTaskId,
   outcomeForExitCode,
+  parseTaskToken,
   parseWorkerIdLine,
   resolveInactivityTimeoutMs,
   runnerCommand,
+  taskTokenRequest,
   type RunState,
 } from './lifecycle';
 
@@ -120,10 +122,10 @@ describe('isValidTaskId', () => {
 
 describe('container env', () => {
   test('minimal env with a placeholder model key, the cloud marker and no GitHub token', () => {
-    const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' });
+    const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' }, 'bldt_task.sig');
     expect(env).toEqual({
       BUILDD_SERVER: 'http://127.0.0.1:9',
-      BUILDD_API_KEY: 'bld_test',
+      BUILDD_API_KEY: 'bldt_task.sig',
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
       BUILDD_DISABLE_AUTO_UPDATE: '1',
       BUILDD_EXECUTOR: 'cloud',
@@ -144,7 +146,7 @@ describe('container env', () => {
       GH_TOKEN: 'ghs_real', GITHUB_TOKEN: 'ghs_real', ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic',
       MODEL: 'm', PUSHER_KEY: 'pk',
     };
-    const env = buildContainerEnv(workerEnv as never);
+    const env = buildContainerEnv(workerEnv as never, 'bldt_task.sig');
     const values = Object.values(env).join('\n');
     for (const secret of ['dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
       expect(values).not.toContain(secret);
@@ -159,14 +161,31 @@ describe('container env', () => {
   test('passes optional settings through only when set', () => {
     const env = buildContainerEnv({
       BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', MODEL: '', PUSHER_KEY: 'pk',
-    });
+    }, 'bldt_task.sig');
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
   });
 
   test('refuses to build without a server or key (the runner would default to production)', () => {
-    expect(() => buildContainerEnv({ BUILDD_API_KEY: 'k' })).toThrow(/BUILDD_SERVER/);
-    expect(() => buildContainerEnv({ BUILDD_SERVER: 's' })).toThrow(/BUILDD_API_KEY/);
+    expect(() => buildContainerEnv({ BUILDD_API_KEY: 'k' }, 'bldt_t')).toThrow(/BUILDD_SERVER/);
+    expect(() => buildContainerEnv({ BUILDD_SERVER: 's' }, 'bldt_t')).toThrow(/BUILDD_API_KEY/);
+  });
+
+  test('security: the runner key never becomes the container key', () => {
+    const workerEnv = { BUILDD_SERVER: 's', BUILDD_API_KEY: 'bld_runner_secret' };
+    expect(() => buildContainerEnv(workerEnv, 'bld_runner_secret')).toThrow(/per-task token/);
+    const env = buildContainerEnv(workerEnv, 'bldt_task.sig');
+    expect(Object.values(env).join('\n')).not.toContain('bld_runner_secret');
+  });
+
+  test('task-token request is sent with the runner key, for this task', () => {
+    const { url, init } = taskTokenRequest({ BUILDD_SERVER: 'https://b.example/', BUILDD_API_KEY: 'bld_k' }, 't-1');
+    expect(url).toBe('https://b.example/api/runner/task-token');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer bld_k');
+    expect(JSON.parse(String(init.body))).toEqual({ taskId: 't-1' });
+    expect(parseTaskToken({ token: 'bldt_x.y' })).toBe('bldt_x.y');
+    expect(() => parseTaskToken({ token: 'bld_x' })).toThrow();
+    expect(() => parseTaskToken({})).toThrow();
   });
 
   test('command runs the image helper for exactly this task', () => {

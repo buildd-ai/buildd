@@ -70,14 +70,15 @@ it as above).
 | Name | Kind | Required | Notes |
 |---|---|---|---|
 | `DISPATCH_TOKEN` | secret | yes | Must equal the workspace's `webhookConfig.token` |
-| `BUILDD_API_KEY` | secret | yes | Runner API key passed to the container; also used for the crash report |
+| `BUILDD_API_KEY` | secret | yes | Runner API key. Stays in the Worker: it mints each container's per-task token (`POST /api/runner/task-token`), fetches GitHub tokens and sends the crash report. The container only ever gets the per-task token |
 | `BUILDD_SERVER` | var | yes | No default: the Worker refuses to dispatch without it, because the runner would fall back to production |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 
-The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
-real credentials are added to its outbound requests (see Egress credentials).
+The container gets a per-task buildd token, a placeholder `ANTHROPIC_API_KEY`
+and no GitHub token; the real credentials are added to its outbound requests
+(see Egress credentials).
 
 ## Local development
 
@@ -152,9 +153,10 @@ Prereqs:
     (or pass `--url`)
   - **AI Gateway: Edit**, only if you set an AI Gateway ID
 - A buildd **admin** API key (`BUILDD_API_KEY`), and a **worker**-level runner
-  key for the containers, ideally scoped to the workspace
-  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: containers run
-  task code.
+  key for the dispatcher, ideally scoped to the workspace
+  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: the Worker
+  keeps the runner key and uses it to mint each container's per-task token. It
+  does not need the host-runner flag.
 
 Save the token once in buildd: **Settings → Runners → Cloudflare** (API token,
 account ID, optional AI Gateway ID). It is stored encrypted as the team-wide

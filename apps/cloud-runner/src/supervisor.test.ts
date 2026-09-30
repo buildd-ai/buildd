@@ -59,10 +59,14 @@ function fakeContainer() {
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean } = {}) {
+const TASK_TOKEN = 'bldt_payload.sig';
+
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintStatus?: number } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const fc = fakeContainer();
+  // Calls to buildd other than the task-token mint (i.e. crash reports).
   const fetches: Array<{ url: string; init: RequestInit }> = [];
+  const mints: Array<{ url: string; init: RequestInit }> = [];
   const logs: string[] = [];
   let keepAliveHeld = 0;
   const pending: Promise<unknown>[] = [];
@@ -85,6 +89,11 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
       if (opts.egressFails) throw new Error('interceptOutboundHttps failed');
     },
     fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/runner/task-token')) {
+        mints.push({ url, init });
+        const status = opts.mintStatus ?? 200;
+        return new Response(status === 200 ? JSON.stringify({ token: TASK_TOKEN }) : 'nope', { status });
+      }
       fetches.push({ url, init });
       if (opts.fetchThrows) throw new Error('network down');
       return new Response('{}', { status: opts.fetchStatus ?? 200 });
@@ -95,7 +104,7 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
   };
   const sup = new TaskSupervisor(deps);
   return {
-    sup, fc, fetches, logs,
+    sup, fc, fetches, mints, logs,
     get state() { return state; },
     get keepAliveHeld() { return keepAliveHeld; },
     /** Wait for the run started by the last dispatch to settle. */
@@ -278,6 +287,31 @@ describe('crash handling', () => {
     await h.settle();
     expect(h.state).toMatchObject({ status: 'exited', outcome: 'usage' });
     expect(h.fc.starts).toHaveLength(0);
+  });
+});
+
+describe('per-task token', () => {
+  test('the container gets a token minted for this task, never the runner key', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(h.mints).toHaveLength(1);
+    expect(JSON.parse(String(h.mints[0]!.init.body))).toEqual({ taskId: TASK_ID });
+    expect((h.mints[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
+    const env = h.fc.starts[0]!.env;
+    expect(env.BUILDD_API_KEY).toBe(TASK_TOKEN);
+    expect(Object.values(env).join('\n')).not.toContain('bld_test_key');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+  });
+
+  test('a refused mint starts no container', async () => {
+    const h = harness({ mintStatus: 403 });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.starts).toHaveLength(0);
+    expect(h.state).toMatchObject({ status: 'exited' });
+    expect(h.state.error).toMatch(/task token.*403/);
   });
 });
 

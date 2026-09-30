@@ -327,8 +327,9 @@ export const GITHUB_TOKEN_PATH = '/api/runner/github-token';
 /**
  * The agent's request for a repo-scoped installation token. Two credentials:
  * the runner API key (the account that claimed the task) and DISPATCH_TOKEN,
- * which the container never has. Without the second, the container could
- * call this endpoint with its own BUILDD_API_KEY and get the token directly.
+ * which the container never has. The container does not hold the runner key
+ * either (it gets a per-task token, which buildd's account routes refuse), so
+ * DISPATCH_TOKEN is the second, independent proof the call is the dispatcher's.
  */
 export function githubTokenRequest(cfg: {
   BUILDD_SERVER?: string;
