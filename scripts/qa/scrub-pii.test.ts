@@ -91,7 +91,8 @@ const SAFE: Record<string, string[]> = {
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
   accounts: ['monthly_cost_month', 'budget_alerts_sent'],
-  missions: ['context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+  missions: ['status', // MissionStatusValue (@buildd/shared)
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',

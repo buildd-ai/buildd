@@ -13,6 +13,7 @@
  * declares, so a read op can't reach a write route even if its handler tried.
  */
 
+import { isLiveWorkerStatus } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import {
@@ -622,7 +623,7 @@ async function holdTask(api: ApiFn, input: Record<string, unknown>) {
   const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 280) : '';
   const task = await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ held: hold, ...(hold && reason ? { heldReason: reason } : {}) }) });
   const fresh = await api(`/api/tasks/${taskId}?include=workers`);
-  const live = (Array.isArray(fresh?.workers) ? fresh.workers : []).find((w: { status: string }) => !['completed', 'failed', 'error'].includes(w.status));
+  const live = (Array.isArray(fresh?.workers) ? fresh.workers : []).find((w: { status: string }) => isLiveWorkerStatus(w.status));
   let told = '';
   if (live) {
     const message = hold

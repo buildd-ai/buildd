@@ -1,3 +1,4 @@
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import {
   watchedProjects,
@@ -22,7 +23,6 @@ import {
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
-const ACTIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress', 'review'];
 
 export interface RunResult {
   checked: number;
@@ -188,7 +188,7 @@ async function isProdSuppressed(project: WatchedProject): Promise<boolean> {
     .where(
       and(
         eq(tasks.workspaceId, project.workspaceId),
-        inArray(tasks.status, ACTIVE_TASK_STATUSES),
+        inArray(tasks.status, OPEN_TASK_STATUSES),
         sql`${tasks.context}->>'watchedProjectId' = ${project.id}`,
         sql`${tasks.context}->>'watcherKind' = 'prod_unhealthy'`,
       ),
@@ -379,7 +379,7 @@ async function isPrSuppressed(project: WatchedProject, pr: OpenPR): Promise<bool
     .where(
       and(
         eq(tasks.workspaceId, project.workspaceId),
-        inArray(tasks.status, ACTIVE_TASK_STATUSES),
+        inArray(tasks.status, OPEN_TASK_STATUSES),
         sql`${tasks.context}->>'watchedProjectId' = ${project.id}`,
         sql`(${tasks.context}->>'pr')::int = ${pr.number}`,
       ),

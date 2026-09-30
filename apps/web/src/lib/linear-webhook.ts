@@ -12,6 +12,7 @@
  * is Phase 3b — see docs/plans/linear-phase-3.md.
  */
 
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { and, eq, notInArray, sql } from 'drizzle-orm';
 import type { db as realDb } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
@@ -21,9 +22,6 @@ import {
 } from '@buildd/core/external-links';
 
 type Db = typeof realDb;
-
-/** Terminal task states — a close event must never re-cancel one of these. */
-const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 
 /** Linear issue state `type` values that mean the issue is closed. */
 const CLOSED_STATE_TYPES = new Set(['completed', 'canceled']);
@@ -165,7 +163,7 @@ export async function handleLinearIssueEvent(
     const updated = await db
       .update(tasks)
       .set({ status: 'cancelled', updatedAt: sql`NOW()` })
-      .where(and(eq(tasks.id, link.builddEntityId), notInArray(tasks.status, TERMINAL_TASK_STATUSES)))
+      .where(and(eq(tasks.id, link.builddEntityId), notInArray(tasks.status, [...TERMINAL_TASK_STATUSES])))
       .returning({ id: tasks.id });
     return { action: updated.length ? 'cancelled' : 'noop', taskId: link.builddEntityId };
   }

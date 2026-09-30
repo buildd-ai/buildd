@@ -11,10 +11,11 @@
  * right now" instead of re-deriving it from raw task rows.
  */
 
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { findReviewTaskForPr } from './pr-review-request';
 import { resolvePriorVerdict, type PriorVerdict } from './reviewer';
 
-const LIVE_REVIEW_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+const LIVE_REVIEW_STATUSES = new Set<string>(OPEN_TASK_STATUSES);
 
 export type ReReviewPlan =
   /** A reviewer is already working this PR — do not stack a second one. */

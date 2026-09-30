@@ -39,6 +39,7 @@
  * healthy one.
  */
 
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES } from '@buildd/shared';
 import { MISSION_BRANCH_PREFIX, isMissionPrTask } from '@buildd/core/mission-integration';
 
 // ── Thresholds ──────────────────────────────────────────────────────────────
@@ -211,8 +212,8 @@ export const PR_OUTPACED_DRIFT = 15;
 
 // ── Shared vocabulary ───────────────────────────────────────────────────────
 
-/** Task statuses that mean "this task is still owed". */
-export const OPEN_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress', 'review']);
+/** Task statuses that mean "this task is still owed" (@buildd/shared; `review` is never written). */
+export const OPEN_TASK_STATUSES: ReadonlySet<string> = new Set(SHARED_OPEN_TASK_STATUSES);
 
 /** Worker PR lifecycle states that mean the PR is no longer open. */
 const SETTLED_PR_LIFECYCLE = new Set(['merged', 'closed']);

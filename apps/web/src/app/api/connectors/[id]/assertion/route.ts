@@ -7,6 +7,7 @@
 // Rate limit: 12 mint requests per worker per connector per minute.
 // Spec: docs/design/cross-app-assertion-grant.md §C
 
+import { isTerminalWorkerStatus } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, connectors, connectorWorkspaces } from '@buildd/core/db/schema';
@@ -87,8 +88,9 @@ export async function POST(
     return NextResponse.json({ error: 'Unauthorized', error_description: 'Worker not found or does not belong to this account' }, { status: 401 });
   }
 
-  // Worker must be active (not completed/errored/cancelled)
-  if (worker.status === 'completed' || worker.status === 'error' || worker.status === 'cancelled') {
+  // Worker must not have ended. Workers are never 'cancelled'; this used to
+  // test that and miss failed/superseded, so an ended worker's token still worked.
+  if (isTerminalWorkerStatus(worker.status)) {
     return NextResponse.json({ error: 'Unauthorized', error_description: 'Worker token has been revoked' }, { status: 401 });
   }
 

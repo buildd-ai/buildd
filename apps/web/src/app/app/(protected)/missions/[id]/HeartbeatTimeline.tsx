@@ -1,5 +1,6 @@
 'use client';
 
+import { isOpenTaskStatus } from '@buildd/shared';
 import { useState } from 'react';
 import { timeAgo } from '@/lib/mission-helpers';
 import type { OrganizerRun } from '@/lib/mission-checkins';
@@ -18,8 +19,6 @@ interface HeartbeatTimelineProps {
 
 type RunOutcome = 'ok' | 'action_taken' | 'error';
 
-const OPEN_STATUSES = new Set(['pending', 'assigned', 'in_progress', 'waiting_input']);
-
 function getRunOutcome(run: HeartbeatTimelineProps['runs'][0]): RunOutcome | null {
   if (run.status === 'failed') return 'error';
   const status = run.result?.structuredOutput?.status;
@@ -30,7 +29,7 @@ function getRunOutcome(run: HeartbeatTimelineProps['runs'][0]): RunOutcome | nul
 function getSummary(run: HeartbeatTimelineProps['runs'][0]): string {
   const summary = run.result?.structuredOutput?.summary || run.result?.summary;
   if (summary) return summary;
-  if (OPEN_STATUSES.has(run.status)) return 'Running';
+  if (isOpenTaskStatus(run.status)) return 'Running';
   const outcome = getRunOutcome(run);
   if (outcome === 'ok') return 'Nothing to do';
   if (outcome === 'action_taken') return 'Planned the next step';
