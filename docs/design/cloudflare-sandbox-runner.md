@@ -165,10 +165,6 @@ the container API, which is the Sandbox SDK pattern.
 - `api.anthropic.com` → rewritten to AI Gateway. The handler strips the
   placeholder `x-api-key` and sets `cf-aig-authorization`. The Anthropic key
   lives in AI Gateway (BYOK) or Unified Billing, never in the container.
-  As built, an Anthropic-compatible proxy (LiteLLM and similar) can take the
-  gateway's place: `MODEL_PROXY_URL` + `MODEL_PROXY_KEY` send model traffic
-  there with `Authorization: Bearer` or `x-api-key`, and win over the gateway
-  when set (README "Model routes").
 - `github.com`, `api.github.com` → adds `Authorization` with a short-lived
   GitHub App installation token scoped to the task's repo.
 - Everything else passes through (open egress in phase 1). Allowlisting is a

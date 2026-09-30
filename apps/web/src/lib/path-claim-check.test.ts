@@ -98,7 +98,7 @@ describe('checkPathClaim', () => {
     expect(mockAppendPathManifest).toHaveBeenCalledTimes(1);
     expect(mockAppendPathManifest).toHaveBeenCalledWith(TASK_ID, ['new.ts']);
     expect(mockInsertClaims).toHaveBeenCalledWith(WORKSPACE_ID, TASK_ID, ['new.ts']);
-    expect(mockFireGateEvent).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'accepted', detail: { claimResult: 'claimed', pathCount: 2 } }));
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 
   it('is a no-op when every path is already in the manifest', async () => {
@@ -107,7 +107,6 @@ describe('checkPathClaim', () => {
     expect(r).toEqual({ kind: 'claimed', pathManifest: ['a.ts'] });
     expect(mockAppendPathManifest).not.toHaveBeenCalled();
     expect(mockInsertClaims).not.toHaveBeenCalled();
-    expect(mockFireGateEvent).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'accepted', detail: { claimResult: 'claimed', pathCount: 1 } }));
   });
 
   it('on conflict: registers a waiter, points at the path_released message, records a deferred gate event', async () => {

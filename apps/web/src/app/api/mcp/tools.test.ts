@@ -198,7 +198,7 @@ describe('listMcpTools — group tools', () => {
     const m = params('buildd_missions');
     expect(m.autoSurfaceAudit?.type).toBe('boolean');
     expect(m.workspaceId?.description).toMatch(/awaiting your review/);
-    expect(params('buildd_analytics').workspaceId?.description?.toLowerCase()).toContain('browser');
+    expect(params('buildd_runners').workspaceId?.description?.toLowerCase()).toContain('browser');
     for (const n of ['taskId', 'status', 'workspaceId']) expect(params('buildd_tasks')[n], n).toBeDefined();
     // Worker level sees only the discrepancy ledger, so no mission fields.
     const w = (groupTools('worker').find(t => t.name === 'buildd_missions')!.inputSchema.properties.params as unknown as { properties?: P }).properties ?? {};
@@ -308,7 +308,7 @@ describe('routeGroupToolCall', () => {
   });
 
   it('help without an action lists the group', () => {
-    const r = routeGroupToolCall('analytics', { action: 'help' }, 'worker');
+    const r = routeGroupToolCall('runners', { action: 'help' }, 'worker');
     expect(r.kind === 'reply' && !r.isError && r.text.includes('explain')).toBe(true);
   });
 

@@ -12,6 +12,7 @@
  *   viewports: { phone: { width: 390, height: 844, scale: 3 } }   # optional; phone is built in
  *   themes: [dark, light]
  *   as: u_member                          # optional: sign in as this story user (default: the first); env DEMO_AS overrides
+ *   hide: [canvas-ask]                  # optional: testids/selectors hidden (display:none) on every shot
  *   highlight: [goal-band, board-tile]  # optional: boxes recorded on EVERY shot where present (silent when absent)
  *   steps:
  *     - id: mission-mid-flight
@@ -52,7 +53,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typingPrefixes, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typingPrefixes, hideCss, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -83,6 +84,7 @@ type Storyboard = {
   themes?: Array<'dark' | 'light'>;
   as?: string;
   highlight?: string[];
+  hide?: string[];
   /** Default for every step's `reducedMotion`. */
   reducedMotion?: boolean;
   steps: Step[];
@@ -182,7 +184,7 @@ async function main() {
     await page.emulateMedia({ reducedMotion: reducedMotionFor(step, board) });
     const url = DEMO.baseUrl + fill(step.goto ?? new URL(page.url()).pathname, state.ids);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
-    await page.addStyleTag({ content: HIDE_CSS });
+    await page.addStyleTag({ content: HIDE_CSS + hideCss(board.hide) });
     const missing: string[] = [];
     for (const w of [step.waitFor ?? []].flat()) {
       try {

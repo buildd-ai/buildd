@@ -26,12 +26,12 @@ import { gateEvents } from './db/schema';
 import { normalizeErrorSignature } from './error-signature';
 
 /** What the gate decided. */
-export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded' | 'accepted';
+export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded';
 
 /** Which door the call came in. */
 export type GateCallerOrigin = 'api' | 'dashboard' | 'worker' | 'system';
 
-export const GATE_OUTCOMES: readonly GateOutcome[] = ['rejected', 'deferred', 'bypassed', 'warned', 'stranded', 'accepted'];
+export const GATE_OUTCOMES: readonly GateOutcome[] = ['rejected', 'deferred', 'bypassed', 'warned', 'stranded'];
 
 // The slug catalogue lives in a dependency-free sibling so the runner can
 // import it too (this module pulls in the `server-only` DB client). Re-exported

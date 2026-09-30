@@ -178,11 +178,9 @@ export const CLOUD_EXECUTOR = 'cloud';
  * Worker's env is copied.
  *
  * ANTHROPIC_BASE_URL is deliberately not passed: model traffic must go to
- * api.anthropic.com, where the egress handler rewrites it to the configured
- * model route (AI Gateway or an Anthropic-compatible proxy) and adds that
- * route's credential. A base URL pointing anywhere else would bypass the
- * handler and arrive with only the placeholder key. For the same reason the
- * proxy settings (MODEL_PROXY_*) stay in the Worker.
+ * api.anthropic.com, where the egress handler rewrites it to AI Gateway and
+ * adds the gateway credential. A base URL pointing anywhere else would bypass
+ * the handler and arrive with only the placeholder key.
  */
 export function buildContainerEnv(env: ContainerEnvSource): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');

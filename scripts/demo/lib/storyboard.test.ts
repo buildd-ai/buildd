@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes, hideCss } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -135,5 +135,12 @@ describe('typingPrefixes', () => {
   });
   test('more frames than characters is one frame per character', () => {
     expect(typingPrefixes('abc', 10)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('hideCss', () => {
+  test('a bare word is a testid, anything else a selector; nothing to hide is no CSS', () => {
+    expect(hideCss(['canvas-ask', '.x > y'])).toBe('[data-testid="canvas-ask"] { display: none !important; }\n.x > y { display: none !important; }');
+    expect(hideCss(undefined)).toBe('');
   });
 });

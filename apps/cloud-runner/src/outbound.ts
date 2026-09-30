@@ -9,9 +9,7 @@
  * `authorization` and friends are deleted first and only then is the real
  * credential (held by the Worker, never by the container) added.
  *
- *   api.anthropic.com        -> per resolveModelRoute: an Anthropic-compatible proxy such as
- *                               LiteLLM (`Authorization: Bearer <proxy key>` or `x-api-key`),
- *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`)
+ *   api.anthropic.com        -> AI Gateway, `cf-aig-authorization: Bearer <gateway token>`
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
  *   api.github.com, uploads  -> `Authorization: Bearer <installation token>`
  *   codeload.github.com      -> container auth stripped, nothing added
@@ -53,97 +51,24 @@ export interface EgressEnv {
   ANTHROPIC_DIRECT_API_KEY?: string;
   /** Var, local development only. `1` sends model traffic straight to Anthropic. Default off. */
   ALLOW_DIRECT_ANTHROPIC?: string;
-  /**
-   * Base URL of an Anthropic-compatible proxy (LiteLLM and similar). The
-   * container's path and query are appended, so `https://litellm.example.com`
-   * receives `/v1/messages`. Setting it selects the proxy route over AI Gateway.
-   */
-  MODEL_PROXY_URL?: string;
-  /** Secret. The proxy's key (for LiteLLM, a virtual key or the master key). */
-  MODEL_PROXY_KEY?: string;
-  /** `authorization` (default, `Authorization: Bearer <key>`) or `x-api-key` (the raw key). */
-  MODEL_PROXY_AUTH_HEADER?: string;
 }
-
-export type ModelProxyAuthHeader = 'authorization' | 'x-api-key';
 
 export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
-  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader }
   | { kind: 'direct'; apiKey: string }
   | { kind: 'unconfigured'; reason: string };
 
 const GATEWAY_SEGMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
- * Plain http is accepted only for a proxy on the same machine or the docker
- * host (local testing). Same rule, duplicated on purpose so the Worker pulls
- * in no web code, as the webhookConfig PATCH in
- * apps/web/src/app/api/workspaces/[id]/route.ts (LOCAL_HTTP_HOSTS).
- */
-export const LOCAL_HTTP_HOSTS: readonly string[] = ['localhost', '127.0.0.1', 'host.docker.internal'];
-
-/**
- * Validate MODEL_PROXY_URL and normalise it to a base the request path is
- * appended to: https only (http only for LOCAL_HTTP_HOSTS), no userinfo, no
- * query or fragment, trailing slashes dropped.
- */
-export function parseModelProxyUrl(raw: string): { ok: true; baseUrl: string } | { ok: false; error: string } {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { ok: false, error: 'MODEL_PROXY_URL is not a valid URL' };
-  }
-  if (url.protocol === 'http:') {
-    if (!LOCAL_HTTP_HOSTS.includes(url.hostname)) {
-      return { ok: false, error: `MODEL_PROXY_URL must be https (plain http only for ${LOCAL_HTTP_HOSTS.join(', ')})` };
-    }
-  } else if (url.protocol !== 'https:') {
-    return { ok: false, error: 'MODEL_PROXY_URL must be https' };
-  }
-  if (url.username || url.password || raw.includes('@')) {
-    return { ok: false, error: 'MODEL_PROXY_URL must not carry credentials; set MODEL_PROXY_KEY instead' };
-  }
-  // `new URL` drops a bare `?` or `#`, so check the raw string too.
-  if (url.search || url.hash || raw.includes('?') || raw.includes('#')) {
-    return { ok: false, error: 'MODEL_PROXY_URL must not have a query or fragment' };
-  }
-  return { ok: true, baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, '')}` };
-}
-
-/** `authorization` (the default) or `x-api-key`; null for anything else. */
-export function parseModelProxyAuthHeader(raw: string | undefined): ModelProxyAuthHeader | null {
-  const v = (raw ?? '').trim().toLowerCase();
-  if (v === '' || v === 'authorization') return 'authorization';
-  if (v === 'x-api-key') return 'x-api-key';
-  return null;
-}
-
-/**
- * Where model traffic goes. Precedence: direct (local only) > proxy (when
- * MODEL_PROXY_URL is set) > gateway. The direct escape hatch needs both the
- * opt-in var and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes
- * nothing. A set MODEL_PROXY_URL commits to the proxy: if it is invalid or has
- * no key the request is refused, never quietly sent to the gateway instead.
- * With no route configured the request is refused rather than forwarded with
- * the container's placeholder key.
+ * Where model traffic goes. The direct escape hatch needs both the opt-in var
+ * and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing.
+ * With neither route configured the request is refused rather than forwarded
+ * with the container's placeholder key.
  */
 export function resolveModelRoute(env: EgressEnv): ModelRoute {
   if (env.ALLOW_DIRECT_ANTHROPIC === '1' && env.ANTHROPIC_DIRECT_API_KEY) {
     return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY };
-  }
-  if (env.MODEL_PROXY_URL) {
-    const parsed = parseModelProxyUrl(env.MODEL_PROXY_URL);
-    if (!parsed.ok) return { kind: 'unconfigured', reason: parsed.error };
-    if (!env.MODEL_PROXY_KEY) {
-      return { kind: 'unconfigured', reason: 'MODEL_PROXY_URL is set but MODEL_PROXY_KEY is not' };
-    }
-    const authHeader = parseModelProxyAuthHeader(env.MODEL_PROXY_AUTH_HEADER);
-    if (!authHeader) {
-      return { kind: 'unconfigured', reason: 'MODEL_PROXY_AUTH_HEADER must be authorization or x-api-key' };
-    }
-    return { kind: 'proxy', baseUrl: parsed.baseUrl, key: env.MODEL_PROXY_KEY, authHeader };
   }
   const account = env.AI_GATEWAY_ACCOUNT_ID;
   const gateway = env.AI_GATEWAY_ID;
@@ -188,7 +113,7 @@ export interface OutboundRequestLike {
 
 export type EgressDecision =
   | { action: 'passthrough' }
-  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
+  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
   | { action: 'reject'; status: number; message: string };
 
 export interface RewriteContext {
@@ -295,11 +220,6 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
     if (route.kind === 'direct') {
       headers.set('x-api-key', route.apiKey);
       return { action: 'forward', url: url.toString(), headers, injected: 'direct' };
-    }
-    if (route.kind === 'proxy') {
-      // Container credentials are already stripped; this is the only one added.
-      headers.set(route.authHeader, route.authHeader === 'authorization' ? `Bearer ${route.key}` : route.key);
-      return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'proxy' };
     }
     headers.set('cf-aig-authorization', `Bearer ${route.token}`);
     return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'gateway' };

@@ -192,24 +192,15 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
     return { kind: 'conflict', body };
   }
 
-  const recordSuccess = () => fireGateEvent({
-    gate: GATE_SLUGS.PATH_CLAIM, surface, outcome: 'accepted',
-    reason: 'paths successfully claimed', workspaceId: task.workspaceId,
-    missionId: task.missionId, taskId: task.id, callerOrigin,
-    detail: { claimResult: 'claimed', pathCount: paths.length },
-  });
-
   const existingManifest = (task.pathManifest as string[] | null) ?? [];
   const existingSet = new Set(existingManifest);
   const newPaths = paths.filter((p) => !existingSet.has(p));
 
   if (newPaths.length === 0) {
-    recordSuccess();
     return { kind: 'claimed', pathManifest: existingManifest };
   }
 
   const updatedManifest = await appendPathManifest(taskId, newPaths);
   await insertClaims(task.workspaceId, taskId, newPaths);
-  recordSuccess();
   return { kind: 'claimed', pathManifest: updatedManifest };
 }

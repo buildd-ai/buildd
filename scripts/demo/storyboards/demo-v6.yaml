@@ -1,0 +1,133 @@
+# The v6 product demo (scripts/demo/renderer/cuts-v6.ts): v5a (warm dark)
+# polished. Dark only; the floating canvas Ask button is hidden on every shot
+# (and recorded as a highlight target, so the renderer can prove it is absent).
+#
+#   bun run demo:shoot scripts/demo/storyboards/demo-v6.yaml --out <dir>
+#   bun run demo:render --shots <dir>/demo-v6 --out <video dir>     # v6a + v6x
+story: ../stories/multi-currency.json
+name: demo-v6
+viewport: { width: 1440, height: 810, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark]
+hide: [canvas-ask]
+highlight:
+  - chat-composer
+  - tool-call-group
+  - tool-call-row
+  - approval-card
+  - kit-approval-confirm
+  - canvas-ask
+  - visual-review-route
+  - object-card
+  - directive-card
+  - directive-save
+  - standing-rules
+  - standing-rule
+  - mission-board
+  - board-tile
+  - goal-band
+  - home-fleet
+  - fleet-slot
+  - fleet-runner
+  - home-stat-strip
+  - question-option
+  - visual-review-thumb
+  - visual-review-deck
+  - deck-looks-right
+  - mission-completion-record
+steps:
+  # 1. The goal, asked in one sentence (typed, never sent).
+  - id: s01-ask
+    goto: /app/chat
+    waitFor: canvas-empty
+    type: { into: '[data-testid="chat-composer"] textarea', text: "What would it take to bill customers in their own currency?", frames: 16 }
+    hold: 600
+
+  # 2. The thread, unclipped: tool rows tick in, the recall row, the approval.
+  - id: s02-thread
+    goto: /app/chat/{C1}
+    waitFor: [tool-call-group, approval-card]
+    fullPage: true
+    highlightText: ["Nothing in flight touches currency."]
+    hold: 900
+
+  # 3. Confirmed (t=0). Unclipped too: the rule is Maya's own words, so the
+  # renderer marks them in her bubble before the card comes in below.
+  - id: s04-rule-card
+    advance: "1:00"
+    goto: /app/chat/{C1}
+    waitFor: directive-card
+    fullPage: true
+    highlightText: ["Keep the public API backward compatible."]
+    hold: 900
+
+  - id: s05-rule-saved
+    goto: /app/chat/{C1}
+    waitFor: directive-save
+    click: directive-save
+    fullPage: true
+    reseedPerTheme: true
+    hold: 900
+
+  - id: s06-rules-settings
+    goto: /app/settings/account
+    waitFor: standing-rule
+    scrollTo: standing-rules
+    scrollOffset: -120
+
+  # 4. Fan-out: the Board in phase 1, then the fleet at peak.
+  - id: s07-board
+    advance: "4:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-board
+
+  - id: s08-home
+    advance: "11:50"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+
+  # 5. The question, on the phone (w8 waits on Maya 14:28 -> 16:54).
+  - id: s09-question
+    advance: "14:35"
+    goto: /app/tasks/{T8}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    hold: 700
+
+  # 6. Visual review: the shots on the Board, then the deck a person agrees in.
+  - id: s10-screens
+    advance: "25:40"
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    fullPage: true
+    hold: 900
+
+  - id: s11-deck
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: mission-screens-row
+    hold: 1200
+
+  - id: s12-deck-agreed
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: [mission-screens-row, deck-looks-right]
+    reseedPerTheme: true
+    hold: 1500
+
+  # 7. Done: the completion record.
+  - id: s13-complete
+    advance: end
+    goto: /app/missions/{M1}
+    waitFor: mission-completion-record
+
+  # Last: answering is a real write that files a "Continue:" task.
+  - id: s14-answered
+    advance: "14:35"
+    goto: /app/tasks/{T8}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    click: '[data-testid="chat-object-sheet"] [data-testid="question-option"]'
+    reseedPerTheme: true
+    hold: 6000

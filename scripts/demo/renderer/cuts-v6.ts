@@ -1,0 +1,321 @@
+/**
+ * The v6 cuts over `storyboards/demo-v6.yaml`.
+ *
+ *   v6a  v5a (warm dark) polished: the rest dims to ~25%, crops sit tight on
+ *        the lit element, spotlight holes are padded in screen pixels after
+ *        the zoom, captions move out of the way of any lit element or
+ *        control (timeline.captionPlace), and the Board fans out one column
+ *        at a time, each tile sliding straight down inside its own column.
+ *   v6x  an abstract brand-motion piece (~31s): type, shapes and two real
+ *        screenshots; no dashboard crops (motion-model.ts / motion.ts).
+ *
+ * Both keep the 4s minimum shot and 0.8s crossfades.
+ */
+import type { Stills } from './cuts';
+import type { Motion } from './motion-model';
+import { burstColumns, burstPose, captionReserve, cutDuration, captionBox, captionPlace, captionWindows, focus, keepClear, overlap, shotStarts, type CamKey, type Cut, type Mask, type Rect, type Shot } from './timeline';
+
+const FRAME = { width: 1920, height: 1080, fps: 30 };
+const FADE = 0.8;
+const DIM = 0.75;
+const PAD = 14;
+
+const union = (rs: Rect[]): Rect => {
+  const x = Math.min(...rs.map((r) => r.x)), y = Math.min(...rs.map((r) => r.y));
+  return { x, y, w: Math.max(...rs.map((r) => r.x + r.w)) - x, h: Math.max(...rs.map((r) => r.y + r.h)) - y };
+};
+const center = (r: Rect) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+const ghost = (r: Rect): Rect => ({ ...center(r), w: 0, h: 0 });
+const at = (k: CamKey, t: number): CamKey => ({ ...k, at: t });
+const key = (t: number, rects: Rect[], dim = DIM) => ({ at: t, rects, dim, padPx: PAD });
+
+function typed(frames: Array<{ src: string; width: number; height: number; at: number }>, from: number, to: number) {
+  const step = (to - from) / Math.max(1, frames.length - 1);
+  const images = frames.map((f, i) => ({ ...f, at: i === 0 ? 0 : from + i * step }));
+  const keys: number[] = [];
+  for (let i = 1; i < frames.length; i++) keys.push(images[i].at - step / 2, images[i].at);
+  return { images, keys };
+}
+
+function v6aShots(s: Stills): Shot[] {
+  // Every crop leaves the caption band free, so a lit element never sits under the caption.
+  const f = (step: string, rect: Rect, padding: number, t = 0) => focus(rect, s.img(step), FRAME, padding, t, captionReserve());
+
+  const composer = s.box('s01-ask', 'chat-composer');
+  const t1 = typed(s.typing('s01-ask'), 0.9, 3.2);
+  const ask: Shot = {
+    id: 'ask', layout: 'screen', dur: 4, images: t1.images, keys: t1.keys, caption: 'Start with one sentence.',
+    spot: [key(0.35, [composer])],
+    camera: [at(f('s01-ask', composer, 1.9), 0), at(f('s01-ask', composer, 1.6), 1)],
+  };
+
+  const rows = s.boxes('s02-thread', 'tool-call-row');
+  const group = s.box('s02-thread', 'tool-call-group');
+  const card = s.box('s02-thread', 'approval-card');
+  const confirm = s.box('s02-thread', 'kit-approval-confirm');
+  const reads: Shot = {
+    id: 'reads', layout: 'screen', dur: 6, images: [s.img('s02-thread')],
+    // The pan to the card (2.9s to 3.8s) runs with no caption up: mid-pan the
+    // card and its Confirm slide up through the caption band.
+    caption: [{ at: 0, text: 'It checks first, and recalls a past decision.', to: 2.9 }, { at: 3.35, text: 'You confirm the mission.' }],
+    masks: rows.map((r, i): Mask => ({ rect: r, until: 0.35 + i * 0.3 })),
+    spot: [key(0.2, [group, ghost(group)]), key(1.4, [rows[1], ghost(rows[1])]), key(3.8, [card, confirm])],
+    camera: [at(f('s02-thread', group, 1.2), 0), at(f('s02-thread', group, 1.2), 2.9 / 6), at(f('s02-thread', card, 1.12), 3.8 / 6), at(f('s02-thread', card, 1.12), 1)],
+    taps: [{ at: 4.9, ...center(confirm) }],
+    controls: [confirm],
+  };
+
+  const phrase = s.text('s04-rule-card', 'Keep the public API backward compatible.');
+  const rcard = s.box('s04-rule-card', 'directive-card');
+  const saved = s.box('s05-rule-saved', 'directive-card');
+  const save = s.box('s04-rule-card', 'directive-save');
+  const rule: Shot = {
+    id: 'rule', layout: 'screen', dur: 6,
+    images: [s.img('s04-rule-card'), { ...s.img('s05-rule-saved', 'desktop', 4.5), fade: 0 }],
+    caption: [{ at: 0, text: 'It notices a rule in what you said.' }, { at: 2.9, text: 'Tap once to keep it.' }],
+    marks: [{ rect: phrase.rects[0], from: 0.6, to: 3.0 }],
+    masks: [{ rect: { x: rcard.x - 0.01, y: rcard.y - 0.01, w: rcard.w + 0.02, h: rcard.h + 0.02 }, until: 2.5, fill: 'auto', sample: { x: rcard.x - 0.012, y: rcard.y + rcard.h / 2 } }],
+    spot: [key(0.3, [phrase.block]), key(2.6, [rcard]), key(4.5, [saved])],
+    camera: [at(f('s04-rule-card', phrase.block, 2.0), 0), at(f('s04-rule-card', phrase.block, 2.0), 0.33), at(f('s04-rule-card', union([phrase.block, rcard]), 1.12), 0.55), at(f('s04-rule-card', rcard, 1.25), 1)],
+    taps: [{ at: 4.3, ...center(save) }],
+    controls: [save],
+  };
+
+  const list = s.boxes('s06-rules-settings', 'standing-rule');
+  const rules: Shot = {
+    id: 'rules', layout: 'screen', dur: 4, images: [s.img('s06-rules-settings')],
+    caption: 'It applies in billing-web from now on.',
+    spot: [key(0.2, [union(list)]), key(1.8, [list[0]])],
+    camera: [at(f('s06-rules-settings', union(list), 1.15), 0), at(f('s06-rules-settings', list[0], 1.3), 1)],
+  };
+
+  const board = boardShot(s, 'The work fans out across a board.', 5);
+
+  const slots = s.boxAttrs('s08-home', 'fleet-slot');
+  const fleetBox = s.box('s08-home', 'home-fleet');
+  const strip = s.box('s08-home', 'home-stat-strip');
+  const agents: Rect = { x: strip.x, y: strip.y, w: strip.w / 4, h: strip.h };
+  const right = fleetBox.x + fleetBox.w;
+  const row = (r: Rect): Rect => ({ x: r.x, y: r.y, w: right - r.x, h: r.h });
+  const live = slots.filter((x) => x.status === 'running');
+  const idle = slots.filter((x) => x.status !== 'running');
+  const fleet: Shot = {
+    id: 'fleet', layout: 'screen', dur: 5.5, images: [s.img('s08-home')], caption: 'Six agents work at once.',
+    masks: [
+      ...live.map((x, i): Mask => ({ rect: row(x.rect), until: 0.5 + i * 0.42, wipe: 0.7, fill: 'dim' })),
+      ...idle.map((x): Mask => ({ rect: row(x.rect), fill: 'dim' })),
+    ],
+    // Rows are all lit by 3.3s; the light moves to "6/8" as the camera starts to follow it.
+    spot: [key(0, [fleetBox]), key(3.4, [agents])],
+    camera: [at(f('s08-home', fleetBox, 1.1), 0), at(f('s08-home', fleetBox, 1.1), 3.4 / 5.5), at(f('s08-home', agents, 2.2), 1)],
+    plucks: live.map((_, i) => ({ at: 0.5 + i * 0.42, note: i })),
+  };
+
+  const opt = s.box('s09-question', 'question-option', 0, 'phone');
+  const question: Shot = {
+    id: 'question', layout: 'phone', dur: 5.5,
+    images: [s.img('s09-question', 'phone'), { ...s.img('s14-answered', 'phone', 3.3), fade: 0 }],
+    caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.8, text: 'You answer from your phone.' }],
+    camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 1 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 1.04 }],
+    taps: [{ at: 3.1, ...center(opt) }],
+  };
+
+  const routes = s.boxes('s10-screens', 'visual-review-route');
+  const screens: Shot = {
+    id: 'screens', layout: 'screen', dur: 4, images: [s.img('s10-screens')],
+    caption: 'It screenshots its own change, phone and desktop.',
+    spot: [key(0.3, [routes[0], ghost(routes[0])]), key(2.0, [routes[0], routes[1]])],
+    // A held frame on both routes; only the light moves.
+    camera: [at(f('s10-screens', union(routes.slice(0, 2)), 1.3), 0), at(f('s10-screens', union(routes.slice(0, 2)), 1.2), 1)],
+  };
+
+  const btn = s.box('s11-deck', 'deck-looks-right');
+  const review: Shot = {
+    id: 'review', layout: 'screen', dur: 4.5,
+    images: [s.img('s11-deck'), { ...s.img('s12-deck-agreed', 'desktop', 3.0), fade: 0 }],
+    caption: 'You look, and approve.',
+    spot: [key(0.3, [s.box('s11-deck', 'visual-review-deck')], DIM * 0.8), key(1.8, [btn], DIM * 0.8), key(3.2, [btn], 0)],
+    camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 0.8 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 0.815 }],
+    taps: [{ at: 2.8, ...center(btn) }],
+    controls: [btn],
+  };
+
+  const rec = s.box('s13-complete', 'mission-completion-record');
+  const done: Shot = {
+    id: 'done', layout: 'screen', dur: 4.5, images: [s.img('s13-complete')],
+    caption: 'Done. Every PR merged, every criterion checked.',
+    spot: [key(0.4, [rec])],
+    camera: [at(f('s13-complete', rec, 1.2), 0), at(f('s13-complete', rec, 1.12), 1)],
+    chime: 0.9,
+  };
+
+  return [ask, reads, rule, rules, board, fleet, question, screens, review, done];
+}
+
+/**
+ * The Board fan-out: column 1, then 2, then 3. Each tile appears at the top
+ * slot of its own column (below the stat strip) at 0.92 of its size and
+ * slides straight down to its place, while the rest of the Board fades in
+ * under it.
+ */
+function boardShot(s: Stills, caption: string, dur: number): Shot {
+  const tiles = s.boxes('s07-board', 'board-tile');
+  const boardBox = s.box('s07-board', 'mission-board');
+  const strip = s.box('s07-board', 'goal-band');
+  const cols = burstColumns(tiles);
+  const starts: number[] = new Array(tiles.length);
+  cols.forEach((col, c) => col.forEach((i, r) => { starts[i] = 0.45 + c * 0.85 + r * 0.14; }));
+  return {
+    id: 'board', layout: 'screen', dur, images: [s.img('s07-board')], caption,
+    burst: { origin: center(boardBox), tiles, from: 0.45, stagger: 0.14, dur: 0.7, mode: 'column', scaleFrom: 0.92, starts, sample: 'left', drop: 0.35, ceiling: strip.y + strip.h + 0.01 },
+    masks: [{ rect: { x: boardBox.x - 0.01, y: boardBox.y - 0.01, w: boardBox.w + 0.02, h: boardBox.h + 0.02 }, until: 0.15, fill: 'auto', sample: { x: boardBox.x - 0.012, y: boardBox.y + 0.02 } }],
+    camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 1 }, { at: 1, cx: 0.5, cy: 0.52, zoom: 1.05 }],
+  };
+}
+
+function keyStills(shots: Shot[], want: Record<string, [string, number]>): Record<string, number> {
+  const starts = shotStarts({ shots });
+  const out: Record<string, number> = {};
+  for (const [name, [id, t]] of Object.entries(want)) {
+    const i = shots.findIndex((x) => x.id === id);
+    if (i >= 0) out[name] = +(starts[i] + t).toFixed(2);
+  }
+  return out;
+}
+
+export function v6aFilm(s: Stills): Cut {
+  const shots = v6aShots(s);
+  const keys = keyStills(shots, {
+    'fanout-mid': ['board', 1.6], approval: ['reads', 4.4], 'visual-review': ['review', 2.2], done: ['done', 2.0],
+    'chat-read': ['reads', 2.8], 'rule-origin': ['rule', 1.6], 'fleet-mid': ['fleet', 2.2],
+  });
+  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
+}
+
+export function v6aHero(s: Stills): Cut {
+  const all = v6aShots(s);
+  const pick = (id: string, dur = 4) => ({ ...all.find((x) => x.id === id)!, dur, caption: undefined, chime: undefined, taps: undefined, plucks: undefined });
+  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme: 'dark', shots: [boardShot(s, '', 4), pick('fleet'), pick('review'), pick('done')].map((x) => ({ ...x, caption: undefined })) };
+}
+
+// ── v6x: abstract ───────────────────────────────────────────────────────────
+
+const B = '#0C72CB', R = '#B24C9C';
+const RUNNERS = [
+  { name: 'atlas', sub: 'Mac Studio', slots: [{ label: 'builder · export', color: B }, null] },
+  { name: 'birch', sub: 'Linux box', slots: [{ label: 'researcher · FX providers', color: R }, { label: 'builder · currency API', color: B }] },
+  { name: 'cedar', sub: 'cloud VM', slots: [null, { label: 'builder · invoices', color: B }] },
+  { name: 'dune', sub: 'cloud VM', slots: [{ label: 'builder · currency picker', color: B }, { label: 'builder · checkout', color: B }] },
+];
+const SENTENCE = 'What would it take to bill customers in their own currency?';
+
+function v6xShots(s: Stills): Shot[] {
+  const m = (id: string, dur: number, motion: Motion, extra: Partial<Shot> = {}): Shot => ({ id, layout: 'motion', dur, images: [], motion, ...extra });
+  const phone = s.file('scripts/demo/stories/shots/invoices-eur-mobile.png');
+  const desk = s.file('scripts/demo/stories/shots/invoices-eur-desktop.png');
+  return [
+    m('ask', 5, { kind: 'type', label: '01 · Ask', text: SENTENCE, from: 0.6, to: 3.4 }),
+    m('plan', 5.5, {
+      kind: 'split', label: '02 · Plan', text: SENTENCE, from: 0.5, stagger: 0.12, columnGap: 0.25, dur: 0.6,
+      columns: [
+        { title: 'Foundations', tiles: ['FX providers', 'currency columns', 'rates service', 'currency picker', 'formatMoney'] },
+        { title: 'Through the product', tiles: ['currency on API', 'render in currency', 'Stripe in currency', 'dual-currency CSV', 'receipt currency'] },
+        { title: 'Prove it', tiles: ['pay a EUR invoice', 'admin guide'] },
+      ],
+    }),
+    m('fleet', 5.5, { kind: 'fleet', label: '03 · Work', runners: RUNNERS, from: 0.6, stagger: 0.5, grow: 1.1, total: 8 }),
+    m('question', 5, { kind: 'phone', label: '04 · Ask you', question: 'Round per line, or only the total?', options: ['Per line', 'Total only'], tapAt: 2.6 }, { taps: [{ at: 2.6, x: (360 + 215) / 1920, y: 0.4 }] }),
+    m('review', 5, { kind: 'screens', label: '05 · Review', images: [phone, desk], checks: [1.6, 2.4] }),
+    m('done', 5, { kind: 'done', label: '06 · Done', title: 'Done.', sub: '11 PRs merged · 4 of 4 criteria checked · 1 answer from you', from: 0.3 }),
+  ];
+}
+
+export function v6xFilm(s: Stills): Cut {
+  const shots = v6xShots(s);
+  const keys = keyStills(shots, { 'fanout-mid': ['plan', 1.9], approval: ['question', 3.4], 'visual-review': ['review', 3.2], done: ['done', 2.0], 'fleet-mid': ['fleet', 2.2] });
+  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: false, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
+}
+
+export function v6xHero(s: Stills): Cut {
+  const all = v6xShots(s);
+  const pick = (id: string) => ({ ...all.find((x) => x.id === id)!, dur: 4, taps: undefined });
+  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme: 'dark', shots: [pick('plan'), pick('fleet'), pick('review'), pick('done')] };
+}
+
+// ── Checks run by render.ts before a frame is drawn (and by the tests) ─────
+
+/** Every moment a caption is up, it covers no lit element and no control. Returns the collisions. */
+export function captionCollisions(cut: Cut): Array<{ shot: string; t: number; text: string }> {
+  if (cut.captions === false) return [];
+  const out: Array<{ shot: string; t: number; text: string }> = [];
+  for (const shot of cut.shots) {
+    const place = captionPlace(cut, shot);
+    for (const w of captionWindows(shot)) {
+      const box = captionBox(cut, w.text, place);
+      for (let t = w.from; t <= w.to; t += 0.1) {
+        if (keepClear(cut, shot, t).some((k) => overlap(box, k) > 0)) { out.push({ shot: shot.id, t: +t.toFixed(1), text: w.text }); break; }
+      }
+    }
+  }
+  return out;
+}
+
+/** During a column fan-out, every tile stays inside its column's x-range, below the ceiling (the stat strip), at 0.9 scale or more. */
+export function fanoutEscapes(cut: Cut): string[] {
+  const out: string[] = [];
+  for (const shot of cut.shots) {
+    const b = shot.burst;
+    if (!b || b.mode !== 'column') continue;
+    const cols = burstColumns(b.tiles);
+    for (let t = 0; t <= shot.dur; t += 0.05) {
+      cols.forEach((col, c) => {
+        const x0 = Math.min(...col.map((i) => b.tiles[i].x)), x1 = Math.max(...col.map((i) => b.tiles[i].x + b.tiles[i].w));
+        for (const i of col) {
+          const q = burstPose(b, i, t);
+          if (q.opacity <= 0) continue;
+          if (q.x < x0 - 1e-6 || q.x + q.w > x1 + 1e-6) out.push(`${shot.id} col ${c + 1} tile ${i} left its column at ${t.toFixed(2)}s`);
+          if (b.ceiling !== undefined && q.y < b.ceiling - 1e-6) out.push(`${shot.id} tile ${i} crossed the ceiling at ${t.toFixed(2)}s`);
+          if (q.scale < 0.9) out.push(`${shot.id} tile ${i} shrank to ${q.scale.toFixed(2)}`);
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** The storyboard recorded no visible canvas Ask button anywhere. */
+export function askButtonShots(manifest: any): string[] {
+  return (manifest.steps ?? []).flatMap((st: any) => Object.entries(st.highlights ?? {}).flatMap(([k, hs]: [string, any]) =>
+    (hs as any[]).some((h) => h.target === 'canvas-ask' && h.boxes?.length) ? [`${st.id} (${k})`] : []));
+}
+
+/** The site's feature beats, in story order: one short silent loop each. */
+export const BEATS = ['ask', 'remember', 'fanout', 'fleet', 'decide', 'proof', 'done'] as const;
+export type Beat = (typeof BEATS)[number];
+const BEAT_SHOTS: Record<Beat, string[]> = {
+  ask: ['ask', 'reads'],
+  remember: ['rule', 'rules'],
+  fanout: ['board'],
+  fleet: ['fleet'],
+  decide: ['question'],
+  proof: ['screens', 'review'],
+  done: ['done'],
+};
+
+/**
+ * One cut per beat, from the v6a shots with captions and sound stripped (the
+ * page sets the words). Each runs one crossfade past its last shot; render.ts
+ * folds that tail onto the start (seamlessLoopFilter), so the clip loops
+ * without a jump and is beatLoopSeconds long.
+ */
+export function v6aBeats(s: Stills): Cut[] {
+  const all = v6aShots(s);
+  // Taps stay: they are also the on-screen tap ring. Beats are encoded silent.
+  const quiet = (x: Shot): Shot => ({ ...x, caption: undefined, chime: undefined });
+  return BEATS.map((beat) => ({
+    name: `beat-${beat}`, ...FRAME, fade: FADE, captions: false, theme: 'dark' as const,
+    shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
+  }));
+}
+
+export const beatLoopSeconds = (c: Cut) => cutDuration(c) - c.fade;

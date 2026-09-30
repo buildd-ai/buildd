@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { burstAt, burstEnd, fleetAt, focus, maskAt, spotAt, fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
+import { captionPlace, captionBox, captionReserve, burstAt, burstEnd, fleetAt, focus, maskAt, spotAt, fadeOutAt, cameraAt, captionOpacity, captionsAt, cutDuration, ease, frameCount, layersAt, placeScreen, soundCues, stillAt, tapAt, type Cut, type Shot } from './timeline';
 
 const img = (src: string, at = 0) => ({ src, at, width: 2880, height: 1620 });
 const shot = (id: string, dur: number, extra: Partial<Shot> = {}): Shot => ({ id, layout: 'screen', dur, images: [img(`${id}.png`)], ...extra });
@@ -193,4 +193,26 @@ test('focus frames a rect and never zooms out past fit-width', () => {
   expect(k.cx).toBeCloseTo(0.5, 6);
   expect(k.zoom).toBeCloseTo(2, 6);
   expect(focus(R(0, 0, 1, 1), { width: 2880, height: 1620 }, { width: 1920, height: 1080 }).zoom).toBe(1);
+});
+
+describe('captionPlace', () => {
+  const frame = { width: 1920, height: 1080, captionSize: 32 };
+  const base = { id: 's', layout: 'screen' as const, dur: 5, images: [{ src: 'a', at: 0, width: 2880, height: 1620 }], caption: 'You confirm the mission.' };
+  test('bottom when nothing is under it; top when a control sits where the bottom caption lands', () => {
+    expect(captionPlace(frame, base)).toBe('bottom');
+    const b = captionBox(frame, base.caption, 'bottom');
+    const control = { x: (b.x + 10) / 1920, y: (b.y + 10) / 1080, w: 0.05, h: 0.02 };
+    expect(captionPlace(frame, { ...base, controls: [control] })).toBe('top');
+  });
+  test('a forced placement wins', () => {
+    expect(captionPlace(frame, { ...base, captionAt: 'top' })).toBe('top');
+  });
+  test('focus with a reserve keeps the rect above the caption band', () => {
+    const img = { width: 2880, height: 1620 };
+    const r = { x: 0.3, y: 0.6, w: 0.3, h: 0.3 };
+    const k = focus(r, img, frame, 1.1, 0, captionReserve());
+    const p = placeScreen(img, frame, k);
+    const bottom = p.y + (r.y + r.h) * img.height * p.scale;
+    expect(bottom).toBeLessThanOrEqual(1080 - captionReserve() + 1);
+  });
 });

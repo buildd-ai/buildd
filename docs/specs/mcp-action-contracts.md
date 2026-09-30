@@ -2,7 +2,7 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-09-30
+last_verified: 2026-09-03
 summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
@@ -74,28 +74,8 @@ every supported action.
   are exactly `buildd_tasks`, `buildd_work`, `buildd_artifacts`,
   `buildd_schedules`.
 - AC-22: WHEN `buildd_missions` is called with `action: "list_runners"` THEN the
-  result is `isError: true` naming `buildd_analytics`.
+  result is `isError: true` naming `buildd_runners`.
 - AC-23: WHEN `buildd` is called with any action THEN it dispatches as before.
-
-**Analytics contract**:
-- `buildd_analytics` groups explain, errors, failure/gate analytics, budget,
-  usage, runners, manifest coverage and path-claim statistics. The existing
-  Analyst role declares it; aggregate reads remain available at worker level.
-- `get_manifest_coverage {workspaceId?, missionId?, window?}` reports tasks
-  created in the window as concrete, advisory wildcard or missing manifests,
-  with a fractional concrete share and workspace/mission/kind breakdowns.
-- `get_path_claim_stats` takes the same filters and counts ledger decisions:
-  claimed, blocked, deadlock and rejected, split by transport surface. Successful
-  calls start at instrumentation rollout; older ledger rows only recorded
-  refusals. Invalid and unauthorized requests are excluded.
-- Change-intent conflict warnings enter `family=gate` as `change_intent` /
-  `warned`, once per delivered warning note (both sides of a conflict).
-- Accepted path claims are telemetry, excluded from friction ranking and bypass
-  rates. Shared dispatch calls REST; it MUST stay DB-free for every transport.
-- The coordinated scope name is `analytics:read` for per-user/cost detail.
-  The token-scopes task owns scope enforcement at both REST and MCP layers;
-  role declarations alone do not enforce access. Existing level behavior remains
-  compatible until that shared scope model lands.
 
 **Code surface**:
 - Registry: `packages/core/mcp-tool-groups.ts` — `ACTION_AREA`, `mcpGroupOf`

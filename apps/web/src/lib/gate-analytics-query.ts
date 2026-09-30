@@ -12,7 +12,7 @@
  */
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray, ne } from 'drizzle-orm';
+import { and, desc, gte, inArray } from 'drizzle-orm';
 import {
   buildGateReasonFamily,
   computeGateAnalytics,
@@ -48,9 +48,6 @@ export async function fetchGateEventRows(
     .where(and(
       inArray(gateEvents.workspaceId, scopedWsIds),
       gte(gateEvents.occurredAt, windowStart),
-      // Accepted checks are call telemetry. Exclude them before the row cap
-      // so frequent successful claims cannot crowd actual friction out.
-      ne(gateEvents.outcome, 'accepted'),
     ))
     // Newest first, so a truncated window keeps the most recent slice.
     .orderBy(desc(gateEvents.occurredAt))

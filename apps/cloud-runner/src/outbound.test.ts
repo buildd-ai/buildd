@@ -11,7 +11,6 @@ import {
   fingerprint,
   githubTokenRequest,
   parseGithubGrant,
-  parseModelProxyUrl,
   resolveModelRoute,
   rewriteOutbound,
   type GithubGrant,
@@ -97,91 +96,6 @@ describe('resolveModelRoute', () => {
   });
 });
 
-const PROXY_ENV = { MODEL_PROXY_URL: 'https://litellm.example.com', MODEL_PROXY_KEY: 'proxy-secret-key' };
-
-describe('parseModelProxyUrl', () => {
-  test.each([
-    ['https://litellm.example.com', 'https://litellm.example.com'],
-    ['https://litellm.example.com/', 'https://litellm.example.com'],
-    ['https://litellm.example.com/anthropic', 'https://litellm.example.com/anthropic'],
-    ['https://litellm.example.com/anthropic//', 'https://litellm.example.com/anthropic'],
-    ['https://LiteLLM.example.com:8443/x', 'https://litellm.example.com:8443/x'],
-    ['http://localhost:4000', 'http://localhost:4000'],
-    ['http://127.0.0.1:4000/anthropic', 'http://127.0.0.1:4000/anthropic'],
-    ['http://host.docker.internal:4000', 'http://host.docker.internal:4000'],
-  ])('accepts %s -> %s', (raw, base) => {
-    expect(parseModelProxyUrl(raw)).toEqual({ ok: true, baseUrl: base });
-  });
-
-  test.each([
-    ['not a url'],
-    ['http://litellm.example.com'],
-    ['http://localhost.example.com'],
-    ['ftp://litellm.example.com'],
-    ['https://user:pass@litellm.example.com'],
-    ['https://user@litellm.example.com'],
-    ['https://litellm.example.com/?team=a'],
-    ['https://litellm.example.com/?'],
-    ['https://litellm.example.com/#frag'],
-    ['https://litellm.example.com/#'],
-  ])('rejects %s', (raw) => {
-    expect(parseModelProxyUrl(raw).ok).toBe(false);
-  });
-});
-
-describe('resolveModelRoute: proxy', () => {
-  test('proxy when MODEL_PROXY_URL and MODEL_PROXY_KEY are set; authorization is the default header', () => {
-    expect(resolveModelRoute(PROXY_ENV)).toEqual({
-      kind: 'proxy', baseUrl: 'https://litellm.example.com', key: 'proxy-secret-key', authHeader: 'authorization',
-    });
-  });
-
-  test('MODEL_PROXY_AUTH_HEADER=x-api-key is honoured (case and whitespace tolerated)', () => {
-    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'x-api-key' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
-    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: ' X-Api-Key ' })).toMatchObject({ kind: 'proxy', authHeader: 'x-api-key' });
-    expect(resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'Authorization' })).toMatchObject({ kind: 'proxy', authHeader: 'authorization' });
-  });
-
-  test('an unknown MODEL_PROXY_AUTH_HEADER is refused, not guessed', () => {
-    const r = resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'cookie' });
-    expect(r.kind).toBe('unconfigured');
-    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_AUTH_HEADER');
-  });
-
-  test('MODEL_PROXY_URL without MODEL_PROXY_KEY is unconfigured, even with a working gateway', () => {
-    const r = resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: 'https://litellm.example.com' });
-    expect(r.kind).toBe('unconfigured');
-    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_KEY');
-  });
-
-  test('an invalid MODEL_PROXY_URL is unconfigured, never a silent fall back to the gateway', () => {
-    const r = resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: 'http://litellm.example.com', MODEL_PROXY_KEY: 'k' });
-    expect(r.kind).toBe('unconfigured');
-    if (r.kind === 'unconfigured') expect(r.reason).toContain('MODEL_PROXY_URL');
-  });
-
-  test('a key alone (no URL) changes nothing', () => {
-    expect(resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_KEY: 'k' }).kind).toBe('gateway');
-    expect(resolveModelRoute({ MODEL_PROXY_KEY: 'k' }).kind).toBe('unconfigured');
-  });
-
-  test('an empty MODEL_PROXY_URL counts as unset', () => {
-    expect(resolveModelRoute({ ...GATEWAY_ENV, MODEL_PROXY_URL: '', MODEL_PROXY_KEY: 'k' }).kind).toBe('gateway');
-  });
-
-  test('precedence: direct > proxy > gateway', () => {
-    const direct = { ALLOW_DIRECT_ANTHROPIC: '1', ANTHROPIC_DIRECT_API_KEY: 'sk-ant-dev' };
-    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY_ENV, ...direct }).kind).toBe('direct');
-    expect(resolveModelRoute({ ...GATEWAY_ENV, ...PROXY_ENV }).kind).toBe('proxy');
-    expect(resolveModelRoute({ ...GATEWAY_ENV }).kind).toBe('gateway');
-  });
-
-  test('the error message never contains the key', () => {
-    const r = resolveModelRoute({ MODEL_PROXY_URL: 'nope', MODEL_PROXY_KEY: 'proxy-secret-key' });
-    expect(JSON.stringify(r)).not.toContain('proxy-secret-key');
-  });
-});
-
 describe('rewriteOutbound: api.anthropic.com', () => {
   test('rewrites to AI Gateway, keeps path and query, sets only the gateway credential', () => {
     const d = forwarded(rewriteOutbound(
@@ -208,57 +122,6 @@ describe('rewriteOutbound: api.anthropic.com', () => {
     expect(d.headers.get('authorization')).toBeNull();
     expect(d.headers.get('cf-aig-authorization')).toBeNull();
     expectNoContainerCredential(d.headers);
-  });
-
-  test('proxy mode: appends path and query, sends Authorization: Bearer <proxy key> only', () => {
-    const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages?beta=true', headers: hostileHeaders() },
-      { model: resolveModelRoute(PROXY_ENV) },
-    ));
-    expect(d.url).toBe('https://litellm.example.com/v1/messages?beta=true');
-    expect(d.injected).toBe('proxy');
-    expect(d.headers.get('authorization')).toBe('Bearer proxy-secret-key');
-    expect(d.headers.get('x-api-key')).toBeNull();
-    expect(d.headers.get('cf-aig-authorization')).toBeNull();
-    expect(d.headers.get('anthropic-version')).toBe('2023-06-01');
-    expectNoContainerCredential(d.headers);
-  });
-
-  test('proxy mode with x-api-key sends the raw key and no authorization', () => {
-    const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages/count_tokens', headers: hostileHeaders() },
-      { model: resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_URL: 'https://litellm.example.com/anthropic/', MODEL_PROXY_AUTH_HEADER: 'x-api-key' }) },
-    ));
-    expect(d.url).toBe('https://litellm.example.com/anthropic/v1/messages/count_tokens');
-    expect(d.headers.get('x-api-key')).toBe('proxy-secret-key');
-    expect(d.headers.get('authorization')).toBeNull();
-    expectNoContainerCredential(d.headers);
-  });
-
-  test('proxy mode: plaintext and odd ports to api.anthropic.com are still refused', () => {
-    const model = resolveModelRoute(PROXY_ENV);
-    expect(rewriteOutbound({ url: 'http://api.anthropic.com/v1/messages', headers: {} }, { model }).action).toBe('reject');
-    expect(rewriteOutbound({ url: 'https://api.anthropic.com:8443/v1/messages', headers: {} }, { model }).action).toBe('reject');
-  });
-
-  test('proxy mode: URL userinfo from the container does not reach the proxy', () => {
-    const d = forwarded(rewriteOutbound(
-      { url: 'https://user:container-supplied@api.anthropic.com/v1/messages', headers: {} },
-      { model: resolveModelRoute(PROXY_ENV) },
-    ));
-    expect(d.url).toBe('https://litellm.example.com/v1/messages');
-  });
-
-  test('proxy configured without a key is refused with 503', () => {
-    const d = rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
-      { model: resolveModelRoute({ MODEL_PROXY_URL: 'https://litellm.example.com' }) },
-    );
-    expect(d.action).toBe('reject');
-    if (d.action === 'reject') {
-      expect(d.status).toBe(503);
-      expect(d.message).toContain('MODEL_PROXY_KEY');
-    }
   });
 
   test('unconfigured is refused, not forwarded with the placeholder', () => {
@@ -361,12 +224,7 @@ describe('rewriteOutbound: everything else', () => {
 describe('security: container-supplied credentials never reach a credentialed host', () => {
   // Every intercepted host, every model route, with and without a grant: the
   // forwarded request carries no header value the container supplied.
-  const routes: ModelRoute[] = [
-    gateway,
-    { kind: 'direct', apiKey: 'sk-ant-worker-held' },
-    resolveModelRoute(PROXY_ENV),
-    resolveModelRoute({ ...PROXY_ENV, MODEL_PROXY_AUTH_HEADER: 'x-api-key' }),
-  ];
+  const routes: ModelRoute[] = [gateway, { kind: 'direct', apiKey: 'sk-ant-worker-held' }];
   const urls = [
     'https://api.anthropic.com/v1/messages',
     'https://github.com/acme/widget.git/git-upload-pack',
@@ -380,7 +238,7 @@ describe('security: container-supplied credentials never reach a credentialed ho
   for (const model of routes) {
     for (const github of [GRANT, null]) {
       for (const url of urls) {
-        test(`${model.kind}${model.kind === 'proxy' ? `(${model.authHeader})` : ''} ${github ? 'grant' : 'no grant'} ${url}`, () => {
+        test(`${model.kind} ${github ? 'grant' : 'no grant'} ${url}`, () => {
           const d = forwarded(rewriteOutbound({ url, headers: hostileHeaders() }, { model, github, now: NOW }));
           expectNoContainerCredential(d.headers);
           for (const name of CONTAINER_CREDENTIAL_HEADERS) {
@@ -492,16 +350,5 @@ describe('describeForwardForDebug', () => {
     expect(echo.headers['x-api-key']).toBeUndefined();
     expect(JSON.stringify(echo)).not.toContain('gw-secret-token');
     expect(JSON.stringify(echo)).not.toContain('container-supplied');
-  });
-
-  test('proxy mode: fingerprints the proxy credential', async () => {
-    const d = forwarded(rewriteOutbound(
-      { url: 'https://api.anthropic.com/v1/messages', headers: hostileHeaders() },
-      { model: resolveModelRoute(PROXY_ENV) },
-    ));
-    const echo = await describeForwardForDebug(d);
-    expect(echo).toMatchObject({ url: 'https://litellm.example.com/v1/messages', injected: 'proxy' });
-    expect(echo.headers.authorization).toBe(await fingerprint('Bearer proxy-secret-key'));
-    expect(JSON.stringify(echo)).not.toContain('proxy-secret-key');
   });
 });

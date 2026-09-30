@@ -52,8 +52,6 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_failure_analytics: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
-  get_manifest_coverage: 'workers',
-  get_path_claim_stats: 'workers',
   list_connectors: 'workers',
   list_runners: 'workers',
   // PRs, reviews, releases
@@ -107,7 +105,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   suggest_schedule_update: 'work',
 };
 
-export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
+export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'artifacts', 'schedules', 'admin'] as const;
 export type McpToolGroup = (typeof MCP_TOOL_GROUPS)[number];
 
 const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
@@ -125,14 +123,6 @@ const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
 
 /** MCP homes that differ from the chat area. */
 const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
-  explain: 'analytics',
-  get_error_traces: 'analytics',
-  get_failure_analytics: 'analytics',
-  get_budget_forecast: 'analytics',
-  get_usage_stats: 'analytics',
-  list_runners: 'analytics',
-  get_manifest_coverage: 'analytics',
-  get_path_claim_stats: 'analytics',
   create_artifact: 'work',
   query_events: 'work',
   spec_compare: 'missions',
@@ -203,18 +193,12 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
   },
-  analytics: {
+  runners: {
     parts: [
-      { text: 'manifest coverage and path-claim outcomes', actions: ['get_manifest_coverage', 'get_path_claim_stats'] },
       { text: 'why something is stuck', actions: ['explain'] },
       { text: 'errors and failure patterns', actions: ['get_error_traces', 'get_failure_analytics'] },
       { text: 'budget and usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
-      { text: 'runner health', actions: ['list_runners'] },
-    ],
-  },
-  runners: {
-    parts: [
-      { text: 'connector health', actions: ['list_connectors'] },
+      { text: 'runners and connectors', actions: ['list_runners', 'list_connectors'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -277,8 +261,6 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_failure_analytics: 'worker failure patterns; error= finds a known one',
   get_budget_forecast: 'session pressure and budget burn',
   get_usage_stats: 'token, cost and turn stats',
-  get_manifest_coverage: 'concrete vs wildcard or missing manifests, by workspace, mission and kind',
-  get_path_claim_stats: 'check_path_claim call counts and claimed, blocked or deadlock outcomes',
   list_connectors: 'mounted connectors and their health',
   list_runners: 'runners: slots, branch, build, heartbeat',
   get_pr: 'PR state, CI, reviews, body',
@@ -486,20 +468,12 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
   ],
-  analytics: [
+  runners: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'list_connectors', 'get_failure_analytics'] },
       { text: 'list_runners with it: leads with whether a browser-capable runner is online', actions: ['list_runners'] },
     ]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces'] }]),
-    param('missionId', str, [{ text: 'Mission UUID', actions: ['explain', 'get_manifest_coverage', 'get_path_claim_stats'] }]),
-    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Observation window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats'] }]),
-    param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
-    param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
-  ],
-  runners: [
-    param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces', 'send_agent_message'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),

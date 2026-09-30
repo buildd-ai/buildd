@@ -161,3 +161,13 @@ export function textBoxes(phrases: string[]) {
     return { text, rects: [], block: null };
   });
 }
+
+/**
+ * A board's `hide:` targets (testids or selectors) as a stylesheet: gone from
+ * layout, so nothing floats over a shot (e.g. the canvas Ask button). Pure.
+ */
+export function hideCss(targets: string[] | undefined): string {
+  return (targets ?? [])
+    .map((t) => `${/^[a-z0-9][a-z0-9-_]*$/i.test(t) ? `[data-testid="${t}"]` : t} { display: none !important; }`)
+    .join('\n');
+}

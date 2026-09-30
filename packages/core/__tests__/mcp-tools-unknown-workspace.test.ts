@@ -37,8 +37,6 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['get_error_traces', {}],
   ['get_budget_forecast', {}],
   ['get_usage_stats', {}],
-  ['get_manifest_coverage', {}],
-  ['get_path_claim_stats', {}],
   ['get_failure_analytics', {}],
   ['list_connectors', {}],
   ['list_releases', {}],

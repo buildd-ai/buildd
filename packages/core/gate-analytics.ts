@@ -104,9 +104,7 @@ interface GateAccumulator {
  * the rule could drift.
  */
 export function computeGateAnalytics(input: GateAnalyticsInput): GateAnalytics {
-  const { window, now } = input;
-  // Successful coordination checks belong in call telemetry, not friction.
-  const events = input.events.filter(event => event.outcome !== 'accepted');
+  const { window, now, events } = input;
   const maxGates = input.maxGates ?? DEFAULT_MAX_GATES;
   const maxReasons = input.maxReasonsPerGate ?? DEFAULT_MAX_REASONS;
 
@@ -221,7 +219,6 @@ export function buildGateReasonFamily(events: GateEventRow[], prefix: string): G
   let exampleTaskId: string | null = null;
 
   for (const ev of events) {
-    if (ev.outcome === 'accepted') continue;
     if (!ev.reason.startsWith(prefix)) continue;
     count += 1;
     tally(counts, ev.outcome);
