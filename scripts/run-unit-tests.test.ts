@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   attributeStoreReaches,
   storeGuardPath,
+  getTestTimeoutMs,
   STORE_REACH_MARKER,
   diffStoreSnapshots,
   discoverHiddenDirTests,
@@ -159,6 +160,8 @@ describe('runTestFile', () => {
       'test',
       '--preload',
       storeGuardPath(),
+      '--timeout',
+      String(getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS)),
       'example.test.ts',
     ]);
     expect(result.exitCode).toBe(1);
@@ -620,5 +623,19 @@ describe('hidden dot-directory tests', () => {
     expect(report).toContain('::error file=apps/web/src/app/api/.well-known/jwks.json/route.test.ts::');
     expect(report).toContain('.well-known');
     expect(report).toContain('Move each file to a non-dot directory');
+  });
+});
+
+describe('getTestTimeoutMs', () => {
+  it('defaults well above Bun\'s 5s so CPU contention does not fail fast tests', () => {
+    expect(getTestTimeoutMs(undefined)).toBeGreaterThan(5_000);
+    expect(getTestTimeoutMs('')).toBe(getTestTimeoutMs(undefined));
+  });
+
+  it('honours a valid override and ignores garbage', () => {
+    expect(getTestTimeoutMs('60000')).toBe(60_000);
+    expect(getTestTimeoutMs('abc')).toBe(getTestTimeoutMs(undefined));
+    expect(getTestTimeoutMs('0')).toBe(getTestTimeoutMs(undefined));
+    expect(getTestTimeoutMs('-5')).toBe(getTestTimeoutMs(undefined));
   });
 });
