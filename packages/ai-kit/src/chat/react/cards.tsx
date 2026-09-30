@@ -32,26 +32,45 @@ export interface ThinkingPanelProps {
   streaming: boolean;
   /** The summary while streaming. Default "Thinking". A node since 0.9.0. */
   title?: ReactNode;
+  /**
+   * The folded line once the turn is done (0.13.0), e.g. "Did 6 steps · filed
+   * 2 tasks". Default "N steps". Given, the panel shows even with no steps (a
+   * turn of tool calls only), as the one line they fold under.
+   */
+  summary?: ReactNode;
+  /** Settled only: whether it is unfolded (0.13.0). Default: the `<details>` keeps its own. */
+  open?: boolean;
+  /** Settled only: the person folded or unfolded it (0.13.0). */
+  onToggle?(open: boolean): void;
   className?: string;
 }
 
 const MARK_LABEL: Record<StepData['state'], string> = { done: 'done', active: 'in progress', pending: 'waiting for you' };
 
-export function ThinkingPanel({ steps, streaming, title = 'Thinking', className }: ThinkingPanelProps) {
-  if (steps.length === 0) return null;
-  const summary = streaming ? title : `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+export function ThinkingPanel({ steps, streaming, title = 'Thinking', summary: settledSummary, open, onToggle, className }: ThinkingPanelProps) {
+  if (steps.length === 0 && (streaming || settledSummary == null)) return null;
+  const summary = streaming ? title : settledSummary ?? `${steps.length} step${steps.length === 1 ? '' : 's'}`;
   return (
-    <details className={`kit-thinking${className ? ` ${className}` : ''}`} open={streaming || undefined} data-streaming={streaming || undefined} data-testid="kit-thinking">
-      <summary>{summary}</summary>
-      <ol className="kit-steps" aria-live={streaming ? 'polite' : undefined}>
-        {steps.map(s => (
-          <li key={s.id} className="kit-step" data-state={s.state} data-step-id={s.id}>
-            <span className="kit-step-mark" aria-hidden="true" />
-            <span>{s.label}</span>
-            <span className="kit-sr-only">({MARK_LABEL[s.state]})</span>
-          </li>
-        ))}
-      </ol>
+    <details
+      className={`kit-thinking${className ? ` ${className}` : ''}`}
+      open={streaming || open || undefined}
+      data-streaming={streaming || undefined}
+      data-settled={!streaming || undefined}
+      data-testid="kit-thinking"
+      onToggle={streaming || !onToggle ? undefined : e => { const next = e.currentTarget.open; if (next !== !!open) onToggle(next); }}
+    >
+      <summary data-testid="kit-thinking-summary">{summary}</summary>
+      {steps.length > 0 && (
+        <ol className="kit-steps" aria-live={streaming ? 'polite' : undefined}>
+          {steps.map(s => (
+            <li key={s.id} className="kit-step" data-state={s.state} data-step-id={s.id}>
+              <span className="kit-step-mark" aria-hidden="true" />
+              <span>{s.label}</span>
+              <span className="kit-sr-only">({MARK_LABEL[s.state]})</span>
+            </li>
+          ))}
+        </ol>
+      )}
     </details>
   );
 }
