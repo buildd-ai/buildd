@@ -3,7 +3,7 @@
  * contract doc (docs/runner-container.md) and the agent env allowlist in step.
  */
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH } from '../../src/agent-env';
 
@@ -29,6 +29,17 @@ function envKeys(src: string): Record<string, string> {
 
 describe('runner --once container image', () => {
   const env = envKeys(dockerfile);
+
+  it('copies every workspace manifest, so --frozen-lockfile matches bun.lock', () => {
+    // bun checks the lockfile against all workspaces; a new apps/* or packages/*
+    // entry without a COPY here fails the image build, not this repo's CI.
+    const manifests = ['apps', 'packages'].flatMap(dir =>
+      readdirSync(join(ROOT, dir))
+        .map(name => `${dir}/${name}/package.json`)
+        .filter(p => existsSync(join(ROOT, p))));
+    expect(manifests).toContain('apps/cloud-runner/package.json');
+    for (const m of manifests) expect(dockerfile).toContain(`COPY ${m} ${m}`);
+  });
 
   it('turns off self-update and non-essential Claude Code traffic', () => {
     expect(env.BUILDD_DISABLE_AUTO_UPDATE).toBe('1');

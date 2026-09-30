@@ -20,7 +20,10 @@ docker rm -f once
 ```
 
 The container's main process is `sleep infinity` (under `tini`). The caller
-starts the run with `exec`, which is the Sandbox SDK pattern. `buildd-once`
+starts the run with `exec`, which is the Sandbox SDK pattern. On Cloudflare,
+`apps/cloud-runner`'s `WorkerAgent` does the same through
+`ctx.container.exec(['buildd-once', '--task', id])`, which returns the exit
+code directly. `buildd-once`
 changes to the repo root (`/opt/buildd`) and runs
 `bun run apps/runner/src/index.ts --once "$@"`.
 
@@ -62,6 +65,11 @@ From `apps/runner/src/run-once.ts`:
 | 1 | Failed: session error, input wait timed out, task fetch failed (server unreachable or key rejected), transient server error | none. buildd's retry path decides |
 | 3 | Claim refused: already taken, held, not eligible | do not retry |
 | 64 | Usage: no `--task`, or no API key | fix the invocation |
+
+Once the claim succeeds, the runner prints `BUILDD_WORKER_ID=<worker-id>` on
+its own stdout line. A supervisor that only knows the task ID reads it so it
+can mark the worker failed if the container dies before the runner reports
+(`apps/cloud-runner` does this). No line means no worker was created.
 
 A bad API key or an unreachable server exits **1**, not 64 or 3. The key is
 present, so it is not a usage error. The task fetch fails before any claim is

@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "buildd-cloud-runner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // One container application backing the WorkerAgent Durable Object. The
+  // image is the runner's --once image (apps/runner/Dockerfile.once), built
+  // from the repo root because it needs the lockfile and workspace packages.
+  // Paths are relative to this file.
+  "containers": [
+    {
+      "class_name": "WorkerAgent",
+      "image": "../runner/Dockerfile.once",
+      "image_build_context": "../..",
+      // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus a
+      // depth-limited clone; revisit with canary numbers (design, open question 2).
+      "instance_type": "standard-1",
+      "max_instances": 10
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "WorkerAgent", "class_name": "WorkerAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkerAgent"] }],
+
+  // Plain vars. Secrets (wrangler secret put): DISPATCH_TOKEN, BUILDD_API_KEY.
+  // BUILDD_SERVER has no default on purpose: set it per deployment
+  // (dashboard, `--var`, or an env block). The Worker refuses to dispatch
+  // without it, because the runner would otherwise fall back to production.
+  "vars": {
+    "CONTAINER_INACTIVITY_TIMEOUT_MS": "1800000",
+    "CONTAINER_START_TIMEOUT_MS": "300000"
+  }
+}

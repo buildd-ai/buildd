@@ -1,6 +1,8 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# Components 1-3 have shipped (run-once, the image, apps/cloud-runner).
+# `cloud-egress-handler` tracks Component 4, the outbound credential handler.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -10,10 +12,14 @@ assertions:
     type: "symbol"
     name: "WorkerAgent"
     path: "apps/cloud-runner/src/worker-agent.ts"
+  - id: "cloud-egress-handler"
+    type: "symbol"
+    name: "EgressHandler"
+    path: "apps/cloud-runner/src/egress.ts"
 ---
 # Cloudflare Agents Runner
 
-**Status:** Proposed
+**Status:** Partially implemented (Components 1-3; egress injection pending)
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
