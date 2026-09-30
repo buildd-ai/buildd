@@ -89,7 +89,7 @@ describe('Concurrency Control', () => {
   afterAll(async () => {
     await cleanup.runCleanup();
     cleanup.dispose();
-  });
+  }, TIMEOUT); // default 5s hook timeout is too short to delete ~100 workers/tasks
 
   test('should enforce maxConcurrentWorkers limit', async () => {
     console.log('\n=== Test: Max Concurrent Workers ===');
