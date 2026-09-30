@@ -471,39 +471,10 @@ export async function runOnceFromCli(opts: {
     tmpDir: join(opts.builddHome, 'park-tmp'),
   };
   /** Build, upload and mark. False (never a throw) when any step fails; the caller holds the container. */
-  const parkNow = async (
+  const parkNow = (
     worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string },
     kind: 'waiting' | 'orphan',
-  ): Promise<boolean> => {
-    const parks = park.readParkCount(opts.builddHome, worker.id);
-    if (parks >= park.MAX_PARKS) {
-      log(`[once] worker ${worker.id} has parked ${parks} times already (max ${park.MAX_PARKS}); holding the container`);
-      return false;
-    }
-    if (!worker.worktreePath) return false;
-    emitPhase('park_start');
-    let tarPath: string | null = null;
-    try {
-      const built = park.buildParkBundle({
-        worker: { id: worker.id, taskId: worker.taskId, workspaceId: worker.workspaceId, worktreePath: worker.worktreePath, sessionId: worker.sessionId ?? null },
-        paths: parkPaths, kind, parks, now: Date.now(),
-      });
-      tarPath = built.tarPath;
-      const up = snapshots.upload('/park', built.tarPath);
-      if (up.status !== 201) { log(`[once] park upload answered ${up.status || 'nothing'}`); return false; }
-      const marked = await client.parkWorker(worker.id);
-      if (!marked) { log('[once] the server did not accept the park'); return false; }
-      emitMetric('park_bytes', built.bytes);
-      log(`[once] worker ${worker.id} parked until ${marked.parkedUntil} (${built.bytes} bytes, park ${built.manifest.parks} of ${park.MAX_PARKS})`);
-      return true;
-    } catch (err) {
-      log(`[once] park failed: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    } finally {
-      if (tarPath) rmSync(tarPath, { force: true });
-      emitPhase('park_end');
-    }
-  };
+  ): Promise<boolean> => park.parkWorkerNow(worker, kind, { paths: parkPaths, uploader: snapshots, client, emitPhase, emitMetric, log });
 
   // ── --park-orphan: no WorkerManager, just stop the old runner and park from disk ──
   if (opts.parkOrphanWorkerId) {

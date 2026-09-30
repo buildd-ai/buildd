@@ -11,6 +11,7 @@
  */
 import { and, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
+import { PARKABLE_WORKER_STATUSES } from '@buildd/shared';
 
 /** Same as the standalone waiting_input timeout (stale-workers.ts cleanupStuckWaitingInput). */
 export const PARK_MAX_MS = 24 * 60 * 60 * 1000;
@@ -18,7 +19,7 @@ export const PARK_MAX_MS = 24 * 60 * 60 * 1000;
 export const PARK_MISSION_MAX_MS = 4 * 60 * 60 * 1000;
 
 /** Statuses a worker may be parked in: a question, or a run the agent parked after a restart. */
-export const PARKABLE_STATUSES = ['waiting_input', 'running'] as const;
+export const PARKABLE_STATUSES = PARKABLE_WORKER_STATUSES;
 
 /**
  * park time + min(24 h, the task's waiting_input timeout). Past it the

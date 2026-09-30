@@ -255,6 +255,58 @@ function parseManifest(text: string): ParkManifest {
 }
 
 /** List (refusing absolute or `..` members), extract into `stageDir`, read the manifest. */
+/** What parkWorkerNow needs from the runner: injected so tests need no network. */
+export interface ParkNowDeps {
+  paths: ParkPaths;
+  /** The snapshot pseudo-host (warm-repo.ts curlTransport). */
+  uploader: { upload(path: string, file: string): { status: number } };
+  client: { parkWorker(workerId: string): Promise<{ parkedUntil: string } | null> };
+  emitPhase(name: 'park_start' | 'park_end'): void;
+  emitMetric(name: 'park_bytes', value: number): void;
+  log(message: string): void;
+}
+
+/**
+ * Park one worker: enforce MAX_PARKS, build the bundle, upload it to `/park`,
+ * then mark the worker parked on the server. False (never a throw) when any
+ * step fails or the bound is reached; the caller then holds the container as
+ * before. The bundle only counts once the server has accepted the park.
+ */
+export async function parkWorkerNow(
+  worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string | null },
+  kind: ParkKind,
+  d: ParkNowDeps,
+): Promise<boolean> {
+  const parks = readParkCount(d.paths.builddHome, worker.id);
+  if (parks >= MAX_PARKS) {
+    d.log(`[once] worker ${worker.id} has parked ${parks} times already (max ${MAX_PARKS}); holding the container`);
+    return false;
+  }
+  if (!worker.worktreePath) return false;
+  d.emitPhase('park_start');
+  let tarPath: string | null = null;
+  try {
+    const built = buildParkBundle({
+      worker: { id: worker.id, taskId: worker.taskId, workspaceId: worker.workspaceId, worktreePath: worker.worktreePath, sessionId: worker.sessionId ?? null },
+      paths: d.paths, kind, parks, now: Date.now(),
+    });
+    tarPath = built.tarPath;
+    const up = d.uploader.upload('/park', built.tarPath);
+    if (up.status !== 201) { d.log(`[once] park upload answered ${up.status || 'nothing'}`); return false; }
+    const marked = await d.client.parkWorker(worker.id);
+    if (!marked) { d.log('[once] the server did not accept the park'); return false; }
+    d.emitMetric('park_bytes', built.bytes);
+    d.log(`[once] worker ${worker.id} parked until ${marked.parkedUntil} (${built.bytes} bytes, park ${built.manifest.parks} of ${MAX_PARKS})`);
+    return true;
+  } catch (err) {
+    d.log(`[once] park failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  } finally {
+    if (tarPath) rmSync(tarPath, { force: true });
+    d.emitPhase('park_end');
+  }
+}
+
 export function readParkBundle(tarPath: string, stageDir: string): OpenedPark {
   const list = spawnSync('tar', ['-tf', tarPath], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (list.status !== 0) throw new ParkRestoreError('park bundle is not a tarball');

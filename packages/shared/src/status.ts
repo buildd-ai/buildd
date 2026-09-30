@@ -66,6 +66,14 @@ export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_inp
 export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
 
 /**
+ * Live statuses a cloud --once runner may park a worker in (docs/design/
+ * cloudflare-sandbox-runner.md, Phase 2): a question (`waiting_input`), or a
+ * run the agent parked after its own restart (`running`). The park and
+ * re-attach routes both scope their UPDATE to these.
+ */
+export const PARKABLE_WORKER_STATUSES = ['waiting_input', 'running'] as const satisfies readonly LiveWorkerStatus[];
+
+/**
  * Worker statuses from which no further live update is legal. `superseded`
  * (an answered question whose work moved to a continuation task) is as final
  * as `completed`: the check-in route 409s it like the others.

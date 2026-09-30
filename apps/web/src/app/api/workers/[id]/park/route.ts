@@ -28,27 +28,29 @@ import { parkWhere, parkedUntilFor, unparkWhere } from '@/lib/worker-park';
 
 export const dynamic = 'force-dynamic';
 
-async function authorize(req: NextRequest, params: Promise<{ id: string }>) {
+async function authorize(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
   const account = await authenticateApiKey(apiKey);
   if (!account) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
   if (account.level === 'trigger') return { error: NextResponse.json({ error: 'Trigger tokens cannot park workers' }, { status: 403 }) };
-  const { id } = await params;
-  if (!isUuid(id)) return { error: NextResponse.json({ error: 'Worker not found' }, { status: 404 }) };
-  return { account, id };
+  return { account };
 }
 
+const notFound = () => NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authorize(req, params);
+  const auth = await authorize(req);
   if ('error' in auth) return auth.error;
-  const { account, id } = auth;
+  const { account } = auth;
+  const { id } = await params;
+  if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
     columns: { id: true, accountId: true, status: true },
     with: { task: { columns: { missionId: true } } },
   });
-  if (!worker || worker.accountId !== account.id) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  if (!worker || worker.accountId !== account.id) return notFound();
 
   const now = new Date();
   const until = parkedUntilFor(now, !!(worker as { task?: { missionId?: string | null } | null }).task?.missionId);
@@ -62,13 +64,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authorize(req, params);
+  const auth = await authorize(req);
   if ('error' in auth) return auth.error;
+  const { id } = await params;
+  if (!isUuid(id)) return notFound();
   const [cleared] = await db
     .update(workers)
     .set({ parkedUntil: null })
-    .where(unparkWhere(auth.id, auth.account.id))
+    .where(unparkWhere(id, auth.account.id))
     .returning({ id: workers.id });
-  if (!cleared) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+  if (!cleared) return notFound();
   return NextResponse.json({ ok: true });
 }

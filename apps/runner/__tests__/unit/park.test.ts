@@ -14,9 +14,11 @@ import {
   buildParkBundle,
   findTranscriptFiles,
   parkingEnabled,
+  parkWorkerNow,
   readParkBundle,
   readParkCount,
   restoreParkFiles,
+  parkCountPath,
   type ParkPaths,
 } from '../../src/park';
 
@@ -228,5 +230,67 @@ describe('restore refuses what it should', () => {
     const tarPath = join(dir, 'dotdot.tar');
     execFileSync('tar', ['-cf', tarPath, '-C', join(stage, 'a'), '../x.txt']);
     expect(() => readParkBundle(tarPath, join(dir, 'stage2'))).toThrow(ParkRestoreError);
+  });
+});
+
+describe('parkWorkerNow', () => {
+  const worker = () => ({ id: WORKER, taskId: TASK, workspaceId: 'ws-1', worktreePath: worktree, sessionId: SESSION });
+  function deps() {
+    const calls = { uploads: [] as string[], marks: [] as string[], phases: [] as string[], metrics: [] as string[] };
+    return {
+      calls,
+      d: {
+        paths,
+        uploader: { upload: (path: string, file: string) => { calls.uploads.push(`${path} ${existsSync(file)}`); return { status: 201, body: {} }; } },
+        client: { parkWorker: async (id: string) => { calls.marks.push(id); return { parkedUntil: '2030-01-01T00:00:00.000Z' }; } },
+        emitPhase: (p: string) => { calls.phases.push(p); },
+        emitMetric: (m: string) => { calls.metrics.push(m); },
+        log: () => {},
+      },
+    };
+  }
+
+  test('uploads the bundle to /park, marks the worker, and counts the park', async () => {
+    writeRunnerState(paths, worktree);
+    const { d, calls } = deps();
+    expect(await parkWorkerNow(worker(), 'waiting', d)).toBe(true);
+    expect(calls.uploads).toEqual(['/park true']);
+    expect(calls.marks).toEqual([WORKER]);
+    expect(calls.phases).toEqual(['park_start', 'park_end']);
+    expect(calls.metrics).toEqual(['park_bytes']);
+    expect(readParkCount(paths.builddHome, WORKER)).toBe(1);
+  });
+
+  test(`refuses a worker that has parked ${MAX_PARKS} times already, before building anything`, async () => {
+    writeRunnerState(paths, worktree);
+    mkdirSync(dirname(parkCountPath(paths.builddHome, WORKER)), { recursive: true });
+    writeFileSync(parkCountPath(paths.builddHome, WORKER), JSON.stringify({ parks: MAX_PARKS }));
+    const { d, calls } = deps();
+    expect(await parkWorkerNow(worker(), 'waiting', d)).toBe(false);
+    expect(calls.uploads).toEqual([]);
+    expect(calls.marks).toEqual([]);
+  });
+
+  test(`parks at ${MAX_PARKS - 1} earlier parks (the bound is inclusive of the ${MAX_PARKS}rd)`, async () => {
+    writeRunnerState(paths, worktree);
+    mkdirSync(dirname(parkCountPath(paths.builddHome, WORKER)), { recursive: true });
+    writeFileSync(parkCountPath(paths.builddHome, WORKER), JSON.stringify({ parks: MAX_PARKS - 1 }));
+    const { d } = deps();
+    expect(await parkWorkerNow(worker(), 'waiting', d)).toBe(true);
+    expect(readParkCount(paths.builddHome, WORKER)).toBe(MAX_PARKS);
+  });
+
+  test('a failed upload does not mark the worker parked', async () => {
+    writeRunnerState(paths, worktree);
+    const { d, calls } = deps();
+    d.uploader = { upload: () => ({ status: 503, body: null }) };
+    expect(await parkWorkerNow(worker(), 'waiting', d)).toBe(false);
+    expect(calls.marks).toEqual([]);
+  });
+
+  test('no worktree, no park', async () => {
+    const { d, calls } = deps();
+    expect(await parkWorkerNow({ ...worker(), worktreePath: undefined }, 'waiting', d)).toBe(false);
+    expect(calls.uploads).toEqual([]);
   });
 });
