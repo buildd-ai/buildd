@@ -195,6 +195,8 @@ export default async function HomePage({
     prLifecycleStatus: string | null;
     prOpenedAt: Date | null;
     prLifecycleVerifiedAt: Date | null;
+    /** Whether the PR is in draft status. */
+    prIsDraft: boolean | null;
   }[] = [];
 
   let resolvedEscalations: ResolvedEscalationItem[] = [];
@@ -761,6 +763,8 @@ export default async function HomePage({
               // headSha to decide whether "Re-review changes since approval" has
               // anything new to review.
               lastCommitSha: true,
+              // Whether the PR is in draft status.
+              prIsDraft: true,
             },
             with: {
               task: {
@@ -1233,6 +1237,7 @@ export default async function HomePage({
                   prLifecycleStatus: w.prLifecycleStatus ?? null,
                   prOpenedAt: w.completedAt ?? w.createdAt ?? null,
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
+                  prIsDraft: w.prIsDraft ?? null,
                   missionMergeBlockedReason: w.taskId ? missionPrGateMap.get(w.taskId) ?? null : null,
                 };
               })

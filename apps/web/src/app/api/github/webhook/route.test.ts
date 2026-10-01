@@ -3193,6 +3193,40 @@ describe('POST /api/github/webhook', () => {
 
       const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
       expect(openUpdate).toBeDefined();
+      expect((openUpdate!.setValues as any).prIsDraft).toBe(false);
+    });
+
+    it.each([
+      ['converted_to_draft', true],
+      ['ready_for_review', false],
+    ] as const)('records prIsDraft on %s', async (action, draft) => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-draft',
+        workspaceId: 'ws1',
+        taskId: 'task-draft',
+        prNumber: 43,
+      });
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const payload = {
+        action,
+        pull_request: {
+          number: 43,
+          merged: false,
+          draft,
+          head: { ref: 'buildd/abc-draft', sha: 'sha-43' },
+          html_url: 'https://github.com/test-org/test-repo/pull/43',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const lifecycleUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
+      expect(lifecycleUpdate).toBeDefined();
+      expect((lifecycleUpdate!.setValues as any).prIsDraft).toBe(draft);
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
