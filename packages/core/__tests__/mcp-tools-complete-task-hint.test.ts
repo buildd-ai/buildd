@@ -120,6 +120,43 @@ describe('MCP complete_task — self-reported usage', () => {
   });
 });
 
+describe('MCP complete_task — server overrode the completion', () => {
+  it('reports a worker the server wrote back as failed instead of "completed successfully"', async () => {
+    const api = mock(async (_path: string, init?: { method?: string }) =>
+      init?.method === 'PATCH'
+        ? { id: WORKER_ID, status: 'failed', error: 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped' }
+        : { id: WORKER_ID },
+    );
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'complete_task',
+      { summary: 'Verdict: approve' },
+      context,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).not.toContain('Task completed successfully');
+    expect(text).toContain('NOT recorded as completed');
+    expect(text).toContain('verdict was returned as prose and dropped');
+  });
+
+  it('still reports success when the PATCH echoes a completed worker', async () => {
+    const api = mock(async () => ({ status: 'completed', turns: 1 }));
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'complete_task',
+      { summary: 'done' },
+      context,
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('Task completed successfully');
+  });
+});
+
 describe('MCP update_progress — self-reported cost', () => {
   it('forwards costUsd to the worker PATCH alongside token counts', async () => {
     const api = mock(async () => ({ status: 'running' }));

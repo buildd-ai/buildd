@@ -775,10 +775,10 @@ async function handlePullRequestEvent(event: {
     }
   }
 
-  // Track PR lifecycle status on open/reopen/synchronize events
+  // Track PR lifecycle status and draft state on open/reopen/synchronize events
   if (
     !pr.merged &&
-    (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize')
+    (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize' || action === 'converted_to_draft')
   ) {
     // A PR under an active request-changes retry loop can have more than one
     // worker row stamped with the same (prNumber, prUrl) — the original
@@ -805,6 +805,8 @@ async function handlePullRequestEvent(event: {
       } else {
         lifecycleUpdate.prLifecycleStatus = 'pr_open';
       }
+      // Track PR draft status from webhook payload
+      lifecycleUpdate.prIsDraft = pr.draft ?? null;
 
       await db
         .update(workers)

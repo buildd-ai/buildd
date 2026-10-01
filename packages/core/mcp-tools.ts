@@ -2037,6 +2037,18 @@ export async function handleBuilddAction(
         throw err;
       }
 
+      // The route answers 200 with the row it actually wrote, which is not the
+      // `completed` this call asked for when a server-side guard (review or
+      // planning contract) overrode it. Report that, not a success: a caller
+      // that is told "completed" will not retry the verdict that was dropped.
+      if (result?.status === 'failed' || result?.status === 'error') {
+        return errorResult(
+          `**Task NOT recorded as completed.** The server marked this worker ${result.status}` +
+          `${result.error ? `: ${result.error}` : '.'}\n\n` +
+          'Nothing you reported was applied. Check the task with get_task — it may have been requeued for another attempt — and fix what the message above names before reporting again.',
+        );
+      }
+
       // Surface effort metrics from the completed worker
       const effortParts: string[] = [];
       if (result?.turns) effortParts.push(`${result.turns} turns`);
