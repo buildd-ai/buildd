@@ -58,6 +58,8 @@ import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import TaskEvidenceCard from './TaskEvidenceCard';
+import TaskEvidenceFiles from './TaskEvidenceFiles';
+import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
@@ -275,7 +277,15 @@ export default async function TaskDetailPage({
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual] = await Promise.all([
+  // Stored evidence objects (pointers only; the text is read on demand by the
+  // section). Best-effort: a failed lookup shows the empty list, never an error page.
+  const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
+    .then(rows => rows.map(toEvidenceObjectSummary))
+    .catch((err) => {
+      console.error('[task-page] evidence list failed:', err instanceof Error ? err.message : err);
+      return [];
+    });
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -353,6 +363,7 @@ export default async function TaskDetailPage({
           })
           .catch(() => null)
       : Promise.resolve(null),
+    evidenceFilesPromise,
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -1245,6 +1256,13 @@ export default async function TaskDetailPage({
         )}
 
         <TaskEvidenceCard status={task.status} result={task.result} />
+
+        <TaskEvidenceFiles
+          taskId={task.id}
+          objects={evidenceFiles}
+          sensitive={(task.workspace as { dataClass?: string } | null)?.dataClass === 'sensitive'}
+          defaultOpen={task.status === 'failed' && evidenceFiles.length > 0}
+        />
 
         {/* Agent error traces */}
         {errorTraces.length > 0 && (

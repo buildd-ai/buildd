@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { evidenceObjects, tasks } from '@buildd/core/db/schema';
+import { tasks } from '@buildd/core/db/schema';
 import type { EvidenceKind, TaskEvidenceListResponse, TaskEvidenceReadResponse } from '@buildd/shared';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveTaskIdForCaller } from '@/lib/resolve-task-id';
 import { isUuid } from '@/lib/uuid';
 import {
-  EVIDENCE_KINDS, EvidenceReadError, auditEvidenceRead, openEvidenceObject, parseEvidenceReadParams,
-  readEvidenceText, toEvidenceObjectSummary, type EvidenceObjectRow,
+  EVIDENCE_KINDS, EvidenceReadError, auditEvidenceRead, findTaskEvidenceObject, listTaskEvidenceObjects,
+  openEvidenceObject, parseEvidenceReadParams, readEvidenceText, toEvidenceObjectSummary,
 } from '@/lib/evidence-read';
 
 const LIST_LIMIT = 200;
@@ -69,23 +69,12 @@ export async function GET(
   }
 
   const actor = user ? { userId: user.id } : { accountId: apiAccount!.id };
-  const lineage = or(eq(evidenceObjects.taskId, id), eq(evidenceObjects.rootTaskId, id));
-  // Checked again on the row itself: the predicate is the scope, this is the proof.
-  const belongs = (r: EvidenceObjectRow) =>
-    r.workspaceId === task.workspaceId && (r.taskId === id || r.rootTaskId === id);
+  const scope = { id, workspaceId: task.workspaceId };
 
   const evidenceId = sp.get('evidenceId');
   if (!evidenceId) {
-    const rows = (await db.query.evidenceObjects.findMany({
-      where: and(
-        eq(evidenceObjects.workspaceId, task.workspaceId),
-        lineage,
-        ...(kind ? [eq(evidenceObjects.kind, kind as EvidenceKind)] : []),
-      ),
-      orderBy: [desc(evidenceObjects.createdAt)],
-      limit: LIST_LIMIT,
-    })) as EvidenceObjectRow[];
-    const objects = rows.filter(belongs).map(toEvidenceObjectSummary);
+    const rows = await listTaskEvidenceObjects(scope, { limit: LIST_LIMIT, ...(kind ? { kind: kind as EvidenceKind } : {}) });
+    const objects = rows.map(toEvidenceObjectSummary);
     auditEvidenceRead({
       surface: 'GET /api/tasks/:id/evidence', op: 'list', workspaceId: task.workspaceId, taskId: id,
       evidenceIds: objects.map(o => o.id), actor, ...(kind ? { query: { kind } } : {}),
@@ -105,14 +94,8 @@ export async function GET(
   const parsed = parseEvidenceReadParams(sp);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
-  const row = (await db.query.evidenceObjects.findFirst({
-    where: and(
-      eq(evidenceObjects.id, evidenceId),
-      eq(evidenceObjects.workspaceId, task.workspaceId),
-      lineage,
-    ),
-  })) as EvidenceObjectRow | undefined;
-  if (!row || row.id !== evidenceId || !belongs(row)) {
+  const row = await findTaskEvidenceObject(scope, evidenceId);
+  if (!row) {
     return NextResponse.json({ error: 'Evidence object not found for this task' }, { status: 404 });
   }
 

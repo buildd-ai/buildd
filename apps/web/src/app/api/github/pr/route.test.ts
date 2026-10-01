@@ -95,11 +95,19 @@ mock.module('@/lib/github', () => ({
 // Mock team-access
 const mockVerifyWorkspaceAccess = mock(async (_userId: string, _workspaceId: string) => null as { teamId: string; role: string } | null);
 const mockGetUserTeamIds = mock(async (_userId: string) => [] as string[]);
+const mockVerifyAccountWorkspaceAccess = mock(async (_accountId: string, _workspaceId: string) => true);
 mock.module('@/lib/team-access', () => ({
   getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
   getUserTeamIds: mockGetUserTeamIds,
 }));
+
+// Inline evidence list — the lib has its own tests; here only who gets it.
+const mockLoadInlineEvidence = mock(async (..._a: any[]) => [
+  { id: 'ev-1', taskId: 'task-1', kind: 'command_output', bytes: 1, uploadState: 'stored', createdAt: '2026-01-01T00:00:00.000Z' },
+] as any[]);
+mock.module('@/lib/evidence-inline', () => ({ loadInlineEvidence: mockLoadInlineEvidence }));
 
 // Dashboard session — GET only. Default: no session.
 const mockGetCurrentUser = mock(async () => null as { id: string } | null);
@@ -4567,6 +4575,50 @@ describe('GET /api/github/pr', () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.pr.number).toBe(149);
+  });
+
+  describe('inline evidence list — workspace reach', () => {
+    function resolvablePr() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
+      mockWorkersFindMany.mockResolvedValue([{
+        id: 'w-ev', taskId: 'task-1', workspaceId: 'workspace-1',
+        prUrl: 'https://github.com/owner/repo/pull/150', prNumber: 150,
+        prLifecycleStatus: null, lastCommitSha: null, error: null, status: 'completed',
+        workspace: WORKSPACE_OK,
+      }]);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 150, title: 'fix: x', body: null, state: 'open', mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/150', head: { sha: 'sha150' }, additions: 1, deletions: 1, changed_files: 1,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+
+    beforeEach(() => {
+      mockLoadInlineEvidence.mockClear();
+      mockVerifyAccountWorkspaceAccess.mockReset();
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    });
+
+    it('omits the list for a same-team key not linked to a restricted workspace', async () => {
+      resolvablePr();
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+      const res = await GET(createGetRequest(null, 150));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.evidenceObjects).toBeUndefined();
+      expect(mockLoadInlineEvidence).not.toHaveBeenCalled();
+      expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('account-1', 'workspace-1');
+    });
+
+    it('includes the list, audited as get_pr to the account, when the key reaches the workspace', async () => {
+      resolvablePr();
+      const data = await (await GET(createGetRequest(null, 150))).json();
+      expect(data.evidenceObjects.map((o: any) => o.id)).toEqual(['ev-1']);
+      expect(mockLoadInlineEvidence.mock.calls[0]).toEqual(['workspace-1', 'task-1', { surface: 'get_pr', actor: { accountId: 'account-1' } }]);
+    });
   });
 
   it('returns 200 when worker row has error set to a string (error column non-null)', async () => {

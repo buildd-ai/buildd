@@ -251,7 +251,7 @@ export function lifecycleSnippet(b: Pick<StorageBackend, 'provider' | 'bucket' |
     }],
   }, null, 2);
   const command = b.provider === 'r2'
-    ? `npx wrangler r2 bucket lifecycle add ${b.bucket} buildd-evidence-expiry ${prefix} --expire-days ${b.retentionDays}`
+    ? `npx wrangler r2 bucket lifecycle add ${b.bucket} buildd-evidence-expiry ${prefix} --expire-days ${b.retentionDays} --abort-multipart-days 1`
     : `aws s3api put-bucket-lifecycle-configuration --bucket ${b.bucket}${b.provider === 's3_compatible' && b.endpoint ? ` --endpoint-url ${b.endpoint}` : ''} --lifecycle-configuration file://lifecycle.json`;
   return { config, command };
 }

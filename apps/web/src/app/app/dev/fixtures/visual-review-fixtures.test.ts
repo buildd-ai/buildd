@@ -37,7 +37,7 @@ function expectValidModel(m: VisualReviewModel) {
 
 describe('visual review fixture', () => {
   it('is a fixture view alongside the worker states, without joining mockWorkers', () => {
-    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'evidence-storage']);
+    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'task-evidence', 'evidence-storage']);
     expect(VISUAL_REVIEW_FIXTURE_STATE in mockWorkers).toBe(false);
     expect(isFixtureView('visual-review')).toBe(true);
     expect(isFixtureView('waiting-input')).toBe(true);
