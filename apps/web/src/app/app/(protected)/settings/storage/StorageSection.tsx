@@ -54,15 +54,23 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
  * What the browser holds is the DTO from /api/evidence-backends, rendered
  * field by field. A credential is only ever "set" or "not set".
  */
-export default function StorageSection({ workspaces }: { workspaces: Workspace[] }) {
+export default function StorageSection({ workspaces, fixture }: {
+  workspaces: Workspace[];
+  /**
+   * Dev fixtures only (/app/dev/fixtures?state=evidence-storage): start from
+   * this data and UI state instead of loading, so a screenshot reaches an
+   * open row, the edit form and the add form.
+   */
+  fixture?: { backends: StorageBackend[]; canManage: boolean; openId?: string; editingId?: string; adding?: boolean };
+}) {
   const { confirm, confirmDialog } = useConfirm();
-  const [backends, setBackends] = useState<StorageBackend[]>([]);
-  const [canManage, setCanManage] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [backends, setBackends] = useState<StorageBackend[]>(fixture?.backends ?? []);
+  const [canManage, setCanManage] = useState(fixture?.canManage ?? false);
+  const [loading, setLoading] = useState(!fixture);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(fixture?.openId ?? null);
+  const [editingId, setEditingId] = useState<string | null>(fixture?.editingId ?? null);
+  const [adding, setAdding] = useState(fixture?.adding ?? false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
 
@@ -81,7 +89,8 @@ export default function StorageSection({ workspaces }: { workspaces: Workspace[]
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  const isFixture = !!fixture;
+  useEffect(() => { if (!isFixture) void load(); }, [load, isFixture]);
 
   const wsName = (id: string | null) => (id ? workspaces.find((w) => w.id === id)?.name ?? 'Workspace' : 'Team default');
   const sorted = [...backends].sort((a, b) =>
