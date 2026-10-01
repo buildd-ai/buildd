@@ -1,6 +1,6 @@
 # Conflict-aware orchestration
 
-**Status:** Implemented through §5b; §5a and §5b ship **shadow-only with a zero
+**Status:** Partially implemented. §1–§5b are built; §5a and §5b ship **shadow-only with a zero
 applying cohort**. Gated promotion is **blocked pending deployed evidence** (see
 "Rollout status" below). §5c remains deferred.
 **Related:** [Convergence layer](convergence-layer.md), [Change intents](change-intent.md),

@@ -9,6 +9,34 @@ surfaces: [packages/core/path-claim.ts, apps/web/src/lib/path-claim-check.ts, ap
 related: [orchestration-decisions-shadow, mission-task-lifecycle]
 keywords: [path_claims, check_path_claim, lease, narrow, pathManifest, path_declaration, path_claim_revision, waiter, retry scope]
 verified_by: [packages/core/__tests__/path-claim-ownership.test.ts, apps/web/src/lib/pr-scope-reconcile.test.ts, apps/web/src/app/api/tasks/[id]/path-claim/route.test.ts, apps/web/src/lib/approve-plan.test.ts]
+assertions:
+  - id: "acquire-path-claims"
+    type: "symbol"
+    name: "acquirePathClaims"
+    path: "packages/core/path-claim.ts"
+  - id: "narrow-path-claims"
+    type: "symbol"
+    name: "narrowPathClaims"
+    path: "packages/core/path-claim.ts"
+  - id: "release-claims"
+    type: "symbol"
+    name: "releaseClaims"
+    path: "packages/core/path-claim.ts"
+  - id: "reconcile-pr-scope"
+    type: "symbol"
+    name: "reconcilePrBackedScope"
+    path: "apps/web/src/lib/pr-scope-reconcile.ts"
+  - id: "release-notify-uses-release"
+    type: "symbol_reachable"
+    symbol: "releaseClaims"
+    entry: "apps/web/src/lib/path-claim-release.ts"
+    as: "call"
+  - id: "path-claim-ownership-test"
+    type: "test_file"
+    path: "packages/core/__tests__/path-claim-ownership.test.ts"
+  - id: "pr-scope-reconcile-test"
+    type: "test_file"
+    path: "apps/web/src/lib/pr-scope-reconcile.test.ts"
 supersedes: []
 ---
 # Path Claim Ownership

@@ -9,6 +9,43 @@ surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-
 related: [model-routing-and-tiers, mission-task-lifecycle]
 keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n]
 verified_by: [packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts]
+assertions:
+  - id: "run-orchestration-decision"
+    type: "symbol"
+    name: "runOrchestrationDecision"
+    path: "packages/core/orchestration-decision.ts"
+  - id: "resolve-applying-fraction"
+    type: "symbol"
+    name: "resolveApplyingFraction"
+    path: "packages/core/orchestration-promotion.ts"
+  - id: "promotions-record"
+    type: "symbol"
+    name: "ORCHESTRATION_PROMOTIONS"
+    path: "packages/core/orchestration-promotion.ts"
+  - id: "build-readout"
+    type: "symbol"
+    name: "buildOrchestrationReadout"
+    path: "packages/core/orchestration-readout.ts"
+  - id: "release-gated-start"
+    type: "symbol"
+    name: "releaseGatedStartPaths"
+    path: "apps/web/src/app/api/workers/claim/hold-start-shadow.ts"
+  - id: "claim-cohort-through-guard"
+    type: "symbol_reachable"
+    symbol: "resolveApplyingFraction"
+    entry: "apps/web/src/app/api/workers/claim/hold-start-shadow.ts"
+    as: "call"
+  - id: "manifest-cohort-through-guard"
+    type: "symbol_reachable"
+    symbol: "resolveApplyingFraction"
+    entry: "packages/core/manifest-prediction-source.ts"
+    as: "call"
+  - id: "promotion-test"
+    type: "test_file"
+    path: "packages/core/__tests__/orchestration-promotion.test.ts"
+  - id: "readout-test"
+    type: "test_file"
+    path: "packages/core/__tests__/orchestration-readout.test.ts"
 supersedes: []
 ---
 # Orchestration Decisions (Shadow and Promotion Guard)

@@ -9,6 +9,34 @@ surfaces: [apps/web/src/lib/surface-ordering.ts, apps/web/src/lib/surface-orderi
 related: [path-claim-ownership, db-migration-gates, pr-lifecycle-reconciliation]
 keywords: [surfaceOrdering, conflictSurfaces, sequenceNamespaces, serialize, change_intents, mergeAfter, reservation, migration namespace]
 verified_by: [apps/web/src/lib/surface-ordering.test.ts, apps/web/src/lib/surface-ordering-wake.test.ts, apps/web/src/lib/surface-ordering-door.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts]
+assertions:
+  - id: "guard-surface-ordering"
+    type: "symbol"
+    name: "guardSurfaceOrdering"
+    path: "apps/web/src/lib/surface-ordering.ts"
+  - id: "with-merge-slot"
+    type: "symbol"
+    name: "withMergeSlot"
+    path: "apps/web/src/lib/surface-ordering.ts"
+  - id: "check-surface-order"
+    type: "symbol"
+    name: "checkSurfaceOrder"
+    path: "apps/web/src/lib/surface-ordering-door.ts"
+  - id: "resolve-ordering-mode"
+    type: "symbol"
+    name: "resolveSurfaceOrderingMode"
+    path: "apps/web/src/lib/surface-ordering-config.ts"
+  - id: "auto-merge-checks-order"
+    type: "symbol_reachable"
+    symbol: "checkSurfaceOrder"
+    entry: "apps/web/src/lib/auto-merge.ts"
+    as: "call"
+  - id: "surface-ordering-test"
+    type: "test_file"
+    path: "apps/web/src/lib/surface-ordering.test.ts"
+  - id: "surface-ordering-door-test"
+    type: "test_file"
+    path: "apps/web/src/lib/surface-ordering-door.test.ts"
 supersedes: []
 ---
 # Serialized Surface Merge Ordering

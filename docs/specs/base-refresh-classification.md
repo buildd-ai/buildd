@@ -9,6 +9,29 @@ surfaces: [apps/web/src/lib/base-refresh.ts, apps/web/src/lib/pr-branch-update.t
 related: [surface-merge-ordering, pr-lifecycle-reconciliation]
 keywords: [update-branch, expected_head_sha, behind, conflict agent, semanticRefresh, same_symbol, unknown, single-flight]
 verified_by: [apps/web/src/lib/base-refresh.test.ts, apps/web/src/lib/semantic-refresh.test.ts, apps/web/src/lib/pr-branch-update.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+assertions:
+  - id: "refresh-behind-pr"
+    type: "symbol"
+    name: "refreshBehindPr"
+    path: "apps/web/src/lib/base-refresh.ts"
+  - id: "check-refresh-hold"
+    type: "symbol"
+    name: "checkBaseRefreshHold"
+    path: "apps/web/src/lib/base-refresh.ts"
+  - id: "classify-update-failure"
+    type: "symbol"
+    name: "classifyBranchUpdateFailure"
+    path: "apps/web/src/lib/pr-branch-update.ts"
+  - id: "unavailable-symbol-provider"
+    type: "symbol"
+    name: "UNAVAILABLE_SYMBOL_PROVIDER"
+    path: "apps/web/src/lib/semantic-refresh.ts"
+  - id: "base-refresh-test"
+    type: "test_file"
+    path: "apps/web/src/lib/base-refresh.test.ts"
+  - id: "pr-branch-update-test"
+    type: "test_file"
+    path: "apps/web/src/lib/pr-branch-update.test.ts"
 supersedes: []
 ---
 # Base Refresh Classification

@@ -9,6 +9,34 @@ surfaces: [apps/runner/src/path-claim-enforcement.ts, apps/runner/src/path-colli
 related: [path-claim-ownership, worker-sandbox-isolation]
 keywords: [pathClaimEnforcement, enforce, advisory, PreToolUse, checkpoint, sweep, untracked, Bash writes, codex, deferred]
 verified_by: [apps/runner/__tests__/unit/path-claim-enforcement.test.ts, apps/runner/__tests__/unit/path-claim-hook.test.ts, apps/runner/__tests__/unit/path-collision-defer.test.ts, apps/runner/__tests__/unit/worker-sync-path-sweep.test.ts]
+assertions:
+  - id: "sweep-worktree"
+    type: "symbol"
+    name: "sweepWorktreeChanges"
+    path: "apps/runner/src/path-claim-enforcement.ts"
+  - id: "resolve-pr-base-ref"
+    type: "symbol"
+    name: "resolvePrBaseRef"
+    path: "apps/runner/src/path-claim-enforcement.ts"
+  - id: "defer-on-collision"
+    type: "symbol"
+    name: "deferOnPathCollision"
+    path: "apps/runner/src/path-collision-defer.ts"
+  - id: "hook-deadline"
+    type: "symbol"
+    name: "PATH_CLAIM_HOOK_DEADLINE_MS"
+    path: "apps/runner/src/hook-factory.ts"
+  - id: "checkpoint-runs-sweep"
+    type: "symbol_reachable"
+    symbol: "sweepWorktreeChanges"
+    entry: "apps/runner/src/path-collision-defer.ts"
+    as: "call"
+  - id: "enforcement-test"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/path-claim-enforcement.test.ts"
+  - id: "collision-defer-test"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/path-collision-defer.test.ts"
 supersedes: []
 ---
 # Checkpoint Sweeps and Edit-Claim Enforcement
