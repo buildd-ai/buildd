@@ -79,6 +79,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
+import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
@@ -561,6 +562,33 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           continue;
         }
 
+        // The landing function (lib/pr-landing.ts) owns this decision once the
+        // workspace is in `enforce`: carry-forward, the verdict, the rails and
+        // "behind base" as a refresh with a marker, on the LIVE head. A green
+        // for a head that is no longer live is a no-op inside it. In `shadow`
+        // it only records what it would have done, before the legacy path
+        // below acts on the same state.
+        const landingMode = resolveLandingMode(workspace.gitConfig);
+        if (landingMode !== 'off') {
+          const outcome = await landPr({
+            workspaceId: workspace.id,
+            installationId: installation.id,
+            repoFullName: repository.full_name,
+            prNumber: pr.number,
+            eventHeadSha: headSha,
+            door: 'check_suite',
+            actor: { kind: 'system' },
+            mode: landingMode,
+            policy,
+            owner: { taskId: worker.taskId ?? null, workerId: worker.id },
+            releaseConfig: workspace.releaseConfig ?? null,
+          });
+          if (landingMode === 'enforce') {
+            console.log(`[pr-landing] check_suite ${repository.full_name}#${pr.number}@${headSha}: ${outcome.kind}`);
+            continue;
+          }
+        }
+
         if (policy.tier === 'agent-review') {
           // Reviewer was dispatched when the PR was opened; it normally merges
           // on approve. But that merge is bounded to quarantined branches (see
@@ -575,6 +603,8 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // An approval made before a rebase/base-merge still covers this head
           // when the PR diff is unchanged. The synchronize handler records that
           // too; repeating it here covers a lost push webhook.
+          // Legacy path only (shadow/off): under `enforce` landPr runs this
+          // carry-forward itself, before its verdict gate.
           if (pr.base?.ref) {
             await carryForwardApprovalIfUnchanged({
               installationId: installation.id,
