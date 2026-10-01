@@ -8565,6 +8565,91 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
     });
 
+    // An interactive (claim_task, runner = 'mcp') worker has no runner turns or
+    // spend to count: turns/tokens/cost stay 0 for its whole life. That zero is
+    // not evidence a session died, so a reviewer completing through complete_task
+    // must be judged like any other completion — here the prose verdict is
+    // extracted — and never booked as a silent start and requeued with a startAt.
+    describe('interactive (runner = mcp) worker is not judged by the silent-start shape', () => {
+      function setupInteractiveReviewer() {
+        setupReviewerTaskCompletion('approve');
+        // setup queued a one-shot first row; drop it so this worker is the one PATCHed.
+        mockWorkersFindFirst.mockReset();
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({
+            id: 'worker-1',
+            accountId: 'account-1',
+            status: 'running',
+            workspaceId: 'ws-1',
+            taskId: 'reviewer-task-1',
+            runner: 'mcp',
+            turns: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: '0',
+            pendingInstructions: null,
+          })
+          .mockResolvedValue({
+            id: 'original-worker',
+            workspaceId: 'ws-1',
+            taskId: 'original-task-1',
+            prNumber: 42,
+          });
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSetCalls.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('prose verdict with zero turns/spend is extracted and completes, not requeued as silent_start', async () => {
+        const { taskSetCalls, workerSetCalls } = setupInteractiveReviewer();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+        expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(true);
+        expect(workerSetCalls.some((u: any) => u.exitCause === 'silent_start')).toBe(false);
+        expect(workerSetCalls.some((u: any) => u.error === SILENT_START_ERROR)).toBe(false);
+      });
+
+      it('no verdict at all is a review-contract violation (code_failure), never silent_start', async () => {
+        const { taskSetCalls, workerSetCalls } = setupInteractiveReviewer();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'The code looks reasonable to me.' },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+        expect(overridden).toBeDefined();
+        expect(overridden.exitCause).toBe('code_failure');
+        expect(overridden.error).not.toBe(SILENT_START_ERROR);
+        // Requeued on the contract-retry budget, with the infra backoff untouched.
+        const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+        expect((requeue?.context as any)?.reviewContractRetryCount).toBe(1);
+        expect((requeue?.context as any)?.infraRetryCount).toBeUndefined();
+        expect(requeue?.startAt).toBeUndefined();
+      });
+    });
+
     it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
       setupReviewerTaskCompletion('approve');
       const taskSetCalls: any[] = [];
