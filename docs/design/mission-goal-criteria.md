@@ -46,6 +46,10 @@ assertions:
 > **Initiative KPIs were removed on 2026-09-26** (`docs/design/initiatives-as-containers.md`):
 > the evaluator, the evaluate route and the MCP actions are gone, and the
 > `kpis` / `kpi_state` / `auto_verify` columns are unread pending a drop.
+>
+> **Criteria quality (2026-10-01):** the goal shape (Outcome / Proof /
+> Bookkeeping) and the advisory verdict that grades criteria on write are
+> specified in `docs/specs/mission-goal-criteria-quality.md`.
 
 **Status:** Superseded (was: Proposed)
 **Related:**
