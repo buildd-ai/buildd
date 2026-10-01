@@ -82,7 +82,7 @@ function PoolTable({ title, note, unit, surface, rows, teamId, isAdmin, models, 
         {title} <span className="text-[12px] font-normal text-text-muted">{note}</span>
       </h2>
       <div className="card overflow-hidden">
-        <div className="hidden md:grid grid-cols-[150px_minmax(0,1fr)_150px_60px_130px_80px_104px] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
+        <div className="hidden md:grid grid-cols-[110px_minmax(0,1fr)_128px_52px_116px_76px_104px] gap-3 px-3 py-2 border-b-2 border-border-strong md:text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">
           <span>Tier</span><span>Model</span><span>Traffic</span><span className="text-right">Win</span><span>Mistakes</span><span className="text-right">/1k {unit}</span><span />
         </div>
         {!rows && <div className="px-3 py-4 text-xs text-text-muted">Loading…</div>}
@@ -142,13 +142,16 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
   const win = winLabel(arm.stats, minGraded);
   const cost = costLabel(arm.stats);
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_150px_60px_130px_80px] items-center gap-x-3 gap-y-1 py-1.5 border-b border-dashed border-border-default last:border-b-0"
+    <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_128px_52px_116px_76px] items-center gap-x-3 gap-y-1 py-1.5 border-b border-dashed border-border-default last:border-b-0"
       data-testid="pool-arm" data-role={arm.role} data-route={arm.route}>
-      <span className="flex min-w-0 items-center gap-2">
-        <RouteChip route={arm.route} />
-        <span className="truncate font-mono text-[13px] font-semibold text-text-primary">{arm.model}</span>
-        {arm.role === 'incumbent' && <span className="font-mono text-[11px] text-text-muted">base</span>}
-        {arm.status === 'paused' && <span className="font-mono text-[11px] text-status-warning">paused</span>}
+      {/* Chip and markers above the id, so the id gets the whole cell width. */}
+      <span className="flex min-w-0 flex-col gap-1">
+        <span className="flex items-center gap-2" data-testid="pool-arm-meta">
+          <RouteChip route={arm.route} />
+          {arm.role === 'incumbent' && <span className="font-mono text-[11px] text-text-muted">base</span>}
+          {arm.status === 'paused' && <span className="font-mono text-[11px] text-status-warning">paused</span>}
+        </span>
+        <span className="truncate font-mono text-[13px] font-semibold text-text-primary" title={arm.model} data-testid="pool-model">{arm.model}</span>
       </span>
       <span className="hidden md:block" data-testid="pool-share"><TrafficBar share={arm.share} base={arm.role === 'incumbent'} /></span>
       <span className={`hidden md:block text-right font-mono text-[12.5px] tabular-nums ${win.learning ? 'text-text-muted' : 'text-text-primary'}`} data-testid="pool-win">{win.text}</span>
@@ -205,7 +208,7 @@ function PoolRow({ row, teamId, isAdmin, models, keys, onChanged }: {
   const canAdd = isAdmin && !row.locked && row.arms.length < MAX_POOL_ARMS;
   return (
     <div className="border-b border-border-default last:border-b-0 px-3 py-3" data-testid={`pool-row-${row.surface}-${row.tier}`} data-mode={row.mode}>
-      <div className="grid grid-cols-1 md:grid-cols-[150px_minmax(0,1fr)_104px] gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-[110px_minmax(0,1fr)_104px] gap-3">
         <div className="flex md:flex-col items-center md:items-start gap-2">
           <span className="font-mono text-[14px] font-bold text-text-primary">{row.tier}</span>
           <ModeChip row={row} />
