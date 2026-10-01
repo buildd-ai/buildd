@@ -153,6 +153,7 @@ export async function maybeRetriggerMission(
       path: isHeartbeat ? 'heartbeat' : 'agent_signal',
       predicate: `task ${completedPlanningTaskId} result.missionComplete=true`,
       proposed: true,
+      authorTaskId: completedPlanningTaskId,
     });
 
     if (proposal.completed) return { action: 'completed' };

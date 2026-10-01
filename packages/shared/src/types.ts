@@ -2666,6 +2666,29 @@ export interface GateAnalytics {
 }
 
 /**
+ * How long approved-and-green PRs wait before they land, from the `pr_landing`
+ * gate events (docs/design/pr-landing-guarantee.md §J). A regression shows up
+ * here before anyone files a friction report.
+ */
+export interface LandingMetrics {
+  window: GateWindow;
+  /** PRs merged by the landing function in the window. */
+  landed: number;
+  /** Of those, how many had no measurable start (no approval or check time was readable). */
+  unmeasured: number;
+  /** Approved-and-green to merge, over the measured landings. Null when none were measured. */
+  timeToLand: { count: number; p50Ms: number; p90Ms: number; maxMs: number } | null;
+  stuck: {
+    /** A PR approved and green for longer than this without merging is stuck. */
+    thresholdMs: number;
+    /** Open PRs whose latest landing decision found them approved and green, past the threshold. */
+    count: number;
+    /** Age of the longest-waiting one, in ms; null when none are stuck. */
+    oldestMs: number | null;
+  };
+}
+
+/**
  * A rollup across every gate reason sharing a literal prefix — the gate-ledger
  * counterpart to `FailureSignatureFamily`, for a reason family whose surviving
  * free text makes each occurrence its own singleton.

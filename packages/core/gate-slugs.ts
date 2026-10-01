@@ -119,6 +119,16 @@ export const GATE_SLUGS = {
    * runner's error-trace pattern; see `@buildd/core/mission-branch-trace`.
    */
   MISSION_BRANCH_UNRESOLVED: 'mission_branch_unresolved',
+  /**
+   * The PR landing function (`lib/pr-landing.ts`) — every non-merged outcome
+   * writes exactly one row: `detail.landingOutcome` is the typed outcome and
+   * `detail.prNumber` / `detail.headSha` say which PR and head. In shadow mode
+   * the row is `warned` with `detail.shadowOutcome` and nothing was acted on.
+   * A merged outcome writes an `accepted` row carrying `detail.timeToLandMs`
+   * (or `timeToLandUnmeasured`); non-merged rows carry `detail.approvedGreenAt`
+   * once the PR is approved and green. See `lib/pr-landing-metrics.ts`.
+   */
+  PR_LANDING: 'pr_landing',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

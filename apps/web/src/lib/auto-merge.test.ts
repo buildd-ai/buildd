@@ -2001,6 +2001,39 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
     );
   });
 
+  it('passes the carry-forward hint so a diff-unchanged new head is not a stale approval', async () => {
+    greenPr();
+
+    await tryAutoMergeWorkerPr({
+      installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({
+        carryForward: { installationId: 7, repoFullName: 'buildd-ai/buildd', baseRef: 'dev' },
+      }),
+    );
+  });
+
+  it('omits the hint when the PR base ref is not known', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+
+    await tryAutoMergeWorkerPr({
+      installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ carryForward: null }),
+    );
+  });
+
   it('merges when the review approved — the approve path is unaffected', async () => {
     greenPr();
     mockGuardReviewVerdict.mockResolvedValue({ blocks: false, state: 'approved' });

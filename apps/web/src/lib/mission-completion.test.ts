@@ -113,6 +113,34 @@ let visualModel: any = null;
 const mockLoadVisualReview = mock(async (_m: any) => visualModel);
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
 
+// `after()` keeps a Vercel invocation alive past the response. Captured here so
+// a test can see the report scheduled on it rather than left floating; null
+// means "no request scope" (after() throws, as it does in a script).
+let afterQueue: Array<() => unknown> | null = null;
+const realNextServer = await import('next/server');
+mock.module('next/server', () => ({
+  ...realNextServer,
+  after: (task: () => unknown) => {
+    if (!afterQueue) throw new Error('`after` was called outside a request scope');
+    afterQueue.push(task);
+  },
+}));
+
+const shippedStoreCalls: Array<{ missionId: string; opts: any }> = [];
+mock.module('@/lib/mission-shipped-report', () => ({
+  storeMissionShippedReportSafely: (missionId: string, opts: any) => {
+    shippedStoreCalls.push({ missionId, opts });
+    return Promise.resolve();
+  },
+}));
+
+// The surface-audit gate has its own suite; here it is a controllable verdict.
+let surfaceGate: any = { required: false, why: 'no_ui_change' };
+const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGate);
+mock.module('@/lib/mission-surface-audit-gate', () => ({
+  evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
+}));
+
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
 }));
@@ -177,6 +205,8 @@ function reset() {
   mockFireMissionRelease.mockImplementation(() => Promise.resolve());
   visualModel = null;
   mockLoadVisualReview.mockClear();
+  surfaceGate = { required: false, why: 'no_ui_change' };
+  mockEvaluateSurfaceAuditGate.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
 }
 
@@ -1007,6 +1037,74 @@ describe('completeMissionIfVerified — allowed', () => {
   });
 });
 
+describe('completeMissionIfVerified — what shipped record', () => {
+  beforeEach(() => {
+    reset();
+    shippedStoreCalls.length = 0;
+    afterQueue = null;
+  });
+
+  it('inside a request, the record is scheduled with after() so the invocation outlives the response', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    afterQueue = [];
+
+    await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(afterQueue).toHaveLength(1);
+    expect(shippedStoreCalls).toHaveLength(0);
+    await afterQueue[0]();
+    expect(shippedStoreCalls).toHaveLength(1);
+    expect(shippedStoreCalls[0].opts).toMatchObject({ authorTaskId: 'author-1', origin: 'auto' });
+  });
+
+  it('the winner of the claim stores the record with the proposing task as author', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls).toHaveLength(1);
+    expect(shippedStoreCalls[0].missionId).toBe('m1');
+    expect(shippedStoreCalls[0].opts).toMatchObject({ authorTaskId: 'author-1', origin: 'auto' });
+    expect(shippedStoreCalls[0].opts.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('a completion with no proposing task stores the record with no author', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls[0].opts.authorTaskId).toBeNull();
+  });
+
+  it('a losing racer never stores a record', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    missionUpdateReturning = [];
+
+    await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(shippedStoreCalls).toHaveLength(0);
+  });
+
+  it('a refused completion never stores a record', async () => {
+    activeMission();
+    taskRows = [work('pending')];
+
+    const result = await completeMissionIfVerified('m1', { path: 'agent_signal', proposed: true, authorTaskId: 'author-1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(result.completed).toBe(false);
+    expect(shippedStoreCalls).toHaveLength(0);
+  });
+});
+
 describe('completeMissionIfVerified — refused', () => {
   beforeEach(reset);
 
@@ -1331,5 +1429,71 @@ describe('canCompleteMission — visual review hold', () => {
     mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(true);
+  });
+});
+
+describe('canCompleteMission — the surface-audit gate', () => {
+  beforeEach(reset);
+
+  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'] };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('surface_audit_missing');
+    expect(d.reason).toContain('apps/web/src/components/Card.tsx');
+    expect(d.reason).toContain('[surface audit]');
+    expect(d.reason).toContain('surfaceAuditWaiver');
+  });
+
+  it('completes a backend-only mission (gate not required)', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: false, why: 'no_ui_change' };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+  });
+
+  it('completes a mission the gate clears because it has an audit or a waiver', async () => {
+    for (const why of ['has_audit', 'waived', 'opted_out'] as const) {
+      reset();
+      activeMission();
+      taskRows = [work('completed')];
+      surfaceGate = { required: false, why };
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+    }
+  });
+
+  it('passes the mission and its task rows to the gate', async () => {
+    activeMission({ autoSurfaceAudit: false });
+    taskRows = [work('completed')];
+    await canCompleteMission('m1');
+    const [m, t] = mockEvaluateSurfaceAuditGate.mock.calls[0];
+    expect(m.autoSurfaceAudit).toBe(false);
+    expect(t).toHaveLength(1);
+  });
+
+  it('a gate that throws never blocks completion', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    mockEvaluateSurfaceAuditGate.mockImplementationOnce(async () => { throw new Error('github down'); });
+    const spy = mock(() => {});
+    const orig = console.error;
+    console.error = spy as any;
+    try {
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it('the automated path is refused identically and leaves a note for the owner', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'manifest', uiPaths: ['apps/web/src/app/app/page.tsx'] };
+    const r = await completeMissionIfVerified('m1', { path: 'heartbeat' } as any);
+    expect(r.completed).toBe(false);
+    expect(r.decision.code).toBe('surface_audit_missing');
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.258.0",
+  "version": "0.259.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -118,6 +118,7 @@
     "./risk-class-detect": "./risk-class-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
+    "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",
     "./spec-conformance-detect": "./spec-conformance-detect.ts",
     "./spec-conformance-schedule": "./spec-conformance-schedule.ts",

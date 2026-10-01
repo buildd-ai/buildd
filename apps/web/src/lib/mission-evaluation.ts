@@ -14,6 +14,7 @@ import { pickEffectiveRole } from '@/lib/effective-roles';
 import { workspaces } from '@buildd/core/db/schema';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
+import { shippedOutputSchema, shippedPromptText, taskOutcomeLine, type ShippedOutput } from '@buildd/shared';
 
 /** Structured output schema the evaluator must produce */
 export const EVALUATION_OUTPUT_SCHEMA = {
@@ -39,6 +40,7 @@ export const EVALUATION_OUTPUT_SCHEMA = {
       items: { type: 'string' },
       description: 'What is left to do, if verdict is incomplete',
     },
+    shipped: shippedOutputSchema,
   },
   required: ['verdict', 'confidence', 'rationale', 'taskDispositions'],
 } as const;
@@ -53,6 +55,18 @@ export interface EvaluationVerdict {
     reason?: string;
   }>;
   missingWork?: string[];
+  /** Owner-facing "what shipped" answer, filled when verdict is "complete". */
+  shipped?: ShippedOutput;
+}
+
+/** Loaded on demand so the screenshot query stays out of this module's import graph. */
+async function loadHeroPoolSafely(missionId: string) {
+  try {
+    const { loadShippedHeroPool } = await import('@/lib/mission-shipped-report');
+    return await loadShippedHeroPool(missionId);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -84,7 +98,9 @@ export async function buildEvaluationContext(missionId: string): Promise<{
     .filter(isDeliverableTask)
     .map(t => {
       const result = t.result as Record<string, unknown> | null;
-      const summary = result?.summary as string || null;
+      // The handoff's `delivered` line, else the summary; a runner-captured
+      // fallback summary is not an outcome and is left blank.
+      const summary = taskOutcomeLine(result)?.text ?? null;
       return {
         taskId: t.id,
         title: t.title,
@@ -157,6 +173,14 @@ export async function buildEvaluationContext(missionId: string): Promise<{
   descParts.push(`6. If critical tasks failed and were not retried, the mission is likely NOT complete.`);
   descParts.push(`7. Be conservative: when in doubt, verdict should be "incomplete". A running mission can always be completed later, but a prematurely completed mission stops monitoring.`);
   descParts.push(`8. Respond ONLY with the structured output — no sub-tasks, no tool calls.`);
+
+  descParts.push(`\n### What Shipped (only when verdict is "complete")`);
+  descParts.push(shippedPromptText('evaluation'));
+  const pool = await loadHeroPoolSafely(missionId);
+  if (pool.length > 0) {
+    descParts.push(`\nScreenshots you may nominate in \`shipped.heroShots\` (id — page, viewport):`);
+    for (const s of pool) descParts.push(`- ${s.artifactId} — ${s.route}, ${s.viewport}`);
+  }
 
   const contextData: Record<string, unknown> = {
     missionId: mission.id,
@@ -288,6 +312,7 @@ export async function handleEvaluationResult(
       path: 'evaluation_task',
       predicate: `evaluation task ${evaluationTaskId} verdict=complete confidence=${verdict.confidence}`,
       proposed: true,
+      authorTaskId: evaluationTaskId,
     });
 
     if (outcome.completed) return { action: 'completed', verdict };

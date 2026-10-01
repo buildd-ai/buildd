@@ -210,3 +210,45 @@ describe('manage_workspaces readiness', () => {
     expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/policy-init`);
   });
 });
+
+describe('manage_workspaces author_spec', () => {
+  const answers = { title: 'Checkout', description: 'Charges carts.', capabilities: [] };
+  const run = (mockApi: ReturnType<typeof mock>, params: Record<string, unknown> = {}) =>
+    handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_workspaces',
+      { action: 'author_spec', workspaceId: WORKSPACE_ID, answers, ...params },
+      createContext(),
+    );
+
+  it('posts the answers with confirm false by default and renders the draft', async () => {
+    const mockApi = mock().mockResolvedValue({
+      dryRun: true, path: 'docs/specs/checkout.md', format: 'default', warnings: ['domain defaulted'], markdown: '---\ntitle: Checkout\n---',
+    });
+    const result = await run(mockApi);
+
+    expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/onboarding/spec`);
+    const body = JSON.parse((mockApi.mock.calls[0] as any)[1].body);
+    expect(body).toEqual({ answers, confirm: false });
+    const out = result.content[0].text;
+    expect(out).toContain('Dry run: nothing created');
+    expect(out).toContain('docs/specs/checkout.md');
+    expect(out).toContain('- domain defaulted');
+    expect(out).toContain('title: Checkout');
+  });
+
+  it('forwards confirm and owner and reports the created task', async () => {
+    const mockApi = mock().mockResolvedValue({
+      dryRun: false, path: 'docs/specs/checkout.md', format: 'mirrored', markdown: 'x', task: { id: 'abc', baseBranch: 'main' },
+    });
+    const result = await run(mockApi, { confirm: true, owner: 'octocat' });
+    const body = JSON.parse((mockApi.mock.calls[0] as any)[1].body);
+    expect(body).toEqual({ answers, owner: 'octocat', confirm: true });
+    expect(result.content[0].text).toContain('Created task abc (PR base: main)');
+    expect(result.content[0].text).not.toContain('```markdown');
+  });
+
+  it('is named in the action docs', () => {
+    expect(buildParamsDescription(['manage_workspaces'])).toContain('action=author_spec');
+  });
+});

@@ -145,6 +145,20 @@ export async function evaluateAutoMergeSafety(
     workspaceId?: string | null;
     taskId?: string | null;
     workerId?: string | null;
+    /**
+     * Skip the base-freshness block below. The landing function (`pr-landing.ts`)
+     * owns "behind base" as work to do (update the branch, bounded by the
+     * treadmill rule), so it asks this check every question except that one and
+     * measures the gap itself.
+     */
+    skipBaseFreshness?: boolean;
+    /** Out-param: facts this check read from the live PR, so a caller does not re-read them. Filled as soon as the PR is read, before any rail can refuse. */
+    observed?: {
+      baseRef?: string | null;
+      headRef?: string | null;
+      mergeableState?: string | null;
+      checkRuns?: CheckRunState[];
+    };
   },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
@@ -156,6 +170,7 @@ export async function evaluateAutoMergeSafety(
       `/repos/${repoFullName}/commits/${headSha}/check-runs`,
     );
     checkRuns = latestRunPerName(checkRunsData?.check_runs ?? []);
+    if (opts?.observed) opts.observed.checkRuns = checkRuns;
 
     const pendingOrFailed = checkRuns.filter(
       (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
@@ -270,6 +285,11 @@ export async function evaluateAutoMergeSafety(
     prReadError = err;
     console.warn(`Could not read PR ${repoFullName}#${prNumber}:`, err);
   }
+  if (opts?.observed) {
+    opts.observed.baseRef = prData?.base?.ref ?? null;
+    opts.observed.headRef = prData?.head?.ref ?? null;
+    opts.observed.mergeableState = prData?.mergeable_state ?? null;
+  }
 
   // Aggregate line-count cap — auto-threshold tier ONLY (see the function
   // doc comment). `agent-review` and `human` never reach this block, so a
@@ -367,7 +387,7 @@ export async function evaluateAutoMergeSafety(
   // fast-forward here, same mechanics as a real conflict) and pushes, which
   // re-triggers CI on a head that is fresh — the PR converges on its own
   // instead of sitting refused for a human to notice.
-  if (prData?.base?.ref) {
+  if (prData?.base?.ref && !opts?.skipBaseFreshness) {
     let freshness: { behind_by?: number } | null = null;
     let freshnessError: unknown = null;
     try {
@@ -481,6 +501,7 @@ export async function tryAutoMergeWorkerPr(params: {
   // size-gate exemption and, when a model verdict authorised this merge, the
   // bound's base-ref test.
   const { mission, requiresReview } = await loadTaskMergeFields(worker.taskId);
+  const observed: { baseRef?: string | null } = {};
 
   // `tasks.requiresReview` is the explicit human-tier tag (resolvePolicy rule 1),
   // but the reviewer-approve and two webhook paths resolve policy without the
@@ -509,7 +530,7 @@ export async function tryAutoMergeWorkerPr(params: {
     prNumber,
     headSha,
     policy,
-    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id },
+    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id, observed },
   );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
@@ -604,6 +625,9 @@ export async function tryAutoMergeWorkerPr(params: {
       taskId: worker.taskId ?? null,
       workerId: worker.id ?? null,
       callerOrigin: 'system',
+      // A diff-unchanged new head (a base merge, a trivial rebase) must not
+      // read as a stale approval; a diff-changing push is never carried.
+      carryForward: observed.baseRef ? { installationId, repoFullName, baseRef: observed.baseRef } : null,
     });
     if (reviewGate.blocks) {
       const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
@@ -715,6 +739,12 @@ export async function tryAutoMergeWorkerPr(params: {
  * PR" — every gate then applies exactly as it did before Option A′, and a bound
  * merge is refused outright.
  */
+export async function loadMissionIntegrationFields(
+  taskId: string | null,
+): Promise<MissionIntegrationFields | null> {
+  return (await loadTaskMergeFields(taskId)).mission;
+}
+
 async function loadTaskMergeFields(
   taskId: string | null,
 ): Promise<{ mission: MissionIntegrationFields | null; requiresReview: boolean }> {

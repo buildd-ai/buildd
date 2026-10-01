@@ -61,6 +61,38 @@ export function touchesUiSurface(pathManifest: string[] | null | undefined): boo
   return pathManifest.some(isUiSurfacePath);
 }
 
+const NON_RENDERING_FILE_RE = /(\.(test|spec|stories)\.[a-z]+$|(^|\/)__(tests|mocks|snapshots)__\/|\.(md|json|snap)$)/i;
+
+/**
+ * True when a file in a merged diff changes something a person can see: a UI
+ * surface directory, minus tests, stories, fixtures and docs. The completion
+ * gate reads the ACTUAL diff with this, because the declared `pathManifest`
+ * that mints the audit is advisory (`['**']` when undeclared) and can omit or
+ * misname the files a builder really edited.
+ */
+export function isRenderedSurfaceChange(path: string): boolean {
+  return isUiSurfacePath(path) && !NON_RENDERING_FILE_RE.test(path);
+}
+
+/** Title of the mission note that records a human waiver of the surface audit. */
+export const SURFACE_AUDIT_WAIVER_NOTE_TITLE = 'Surface audit waived';
+
+/** A waiver is a recorded decision, not a flag: the reason must say something. */
+export const SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH = 10;
+
+/** The refusal text. Names the UI files and both ways out. */
+export function surfaceAuditMissingReason(uiPaths: string[], source: 'manifest' | 'diff'): string {
+  const shown = uiPaths.slice(0, 3).join(', ');
+  const more = uiPaths.length > 3 ? ` and ${uiPaths.length - 3} more` : '';
+  const evidence = source === 'diff' ? 'its merged PRs changed' : 'its tasks declare';
+  return (
+    `This mission changed UI but no surface audit has passed: ${evidence} ${shown}${more}, and no audit task has completed. ` +
+    `To clear it, run a visual audit (create a \`[surface audit]\` task in this mission with the visual auditor role and let it finish), ` +
+    `or waive it on purpose: PATCH the mission with surfaceAuditWaiver set to the reason (manage_missions update, surfaceAuditWaiver), ` +
+    `which records the reason on the mission.`
+  );
+}
+
 /** True when a task title is itself an auto-appended surface-audit task. */
 export function isSurfaceAuditTask(title: string): boolean {
   return title.startsWith(SURFACE_AUDIT_TITLE_PREFIX);
