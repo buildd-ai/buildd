@@ -2,7 +2,8 @@
  * The one implementation of "check_path_claim": a worker that discovers it
  * needs files outside its declared pathManifest asks whether they are free,
  * and either gets them (manifest extended, path_claims rows inserted) or is
- * told who holds them and registered as a waiter.
+ * told who holds them and registered as a waiter. Its inverse,
+ * `narrowPathClaim`, gives paths back.
  *
  * Two entry points call this — the MCP `check_path_claim` tool and
  * POST /api/tasks/[id]/path-claim. They used to carry separate copies, and the
@@ -11,22 +12,24 @@
  * different from the REST copy. Entry points now only authenticate and map the
  * returned outcome onto their own transport.
  *
- * Manifest bookkeeping goes through `appendPathManifest` — one atomic jsonb
- * dedup-append, no read-then-CAS retry loop (that loop starved under
- * concurrent calls and returned a bare "Concurrent update conflict").
+ * Ownership goes through `acquirePathClaims` / `narrowPathClaims` in
+ * packages/core/path-claim.ts: one locked statement decides, so two callers
+ * can never both acquire overlapping paths, and a path that is already in the
+ * manifest still gets its lease.
  */
 import { isOpenTaskStatus } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import {
-  appendPathManifest,
-  checkPathClaimConflict,
-  insertClaims,
+  acquirePathClaims,
+  narrowPathClaims,
   registerWaiter,
 } from '@buildd/core/path-claim';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-ledger';
+import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
+import { deliverPathReleased } from '@/lib/path-claim-release';
 
 export const PATH_CLAIM_WILDCARD_ERROR =
   'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
@@ -43,7 +46,7 @@ export type PathClaimCheckOutcome =
   | { kind: 'wildcard'; error: string }
   | { kind: 'not_found' }
   | { kind: 'bad_status'; error: string }
-  | { kind: 'claimed'; pathManifest: string[] }
+  | { kind: 'claimed'; pathManifest: string[]; revision: number | null }
   | { kind: 'conflict'; body: Record<string, unknown> };
 
 export interface PathClaimCheckInput {
@@ -72,18 +75,18 @@ function waiterMessage(
   return `Paths overlap with task ${who}${where}. You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
 }
 
+function validPaths(rawPaths: unknown): rawPaths is string[] {
+  return Array.isArray(rawPaths)
+    && rawPaths.length > 0
+    && rawPaths.every((p: unknown) => typeof p === 'string' && p.trim() !== '');
+}
+
+const INVALID_PATHS = { kind: 'invalid_paths', error: 'paths must be a non-empty array of non-empty strings' } as const;
+
 export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathClaimCheckOutcome> {
   const { taskId, surface, callerOrigin } = input;
-  const rawPaths = input.paths;
-
-  if (
-    !Array.isArray(rawPaths) ||
-    rawPaths.length === 0 ||
-    rawPaths.some((p: unknown) => typeof p !== 'string' || p.trim() === '')
-  ) {
-    return { kind: 'invalid_paths', error: 'paths must be a non-empty array of non-empty strings' };
-  }
-  const paths = rawPaths as string[];
+  if (!validPaths(input.paths)) return INVALID_PATHS;
+  const paths = input.paths;
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
@@ -116,10 +119,17 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
   }
 
   // Held locks live in path_claims (workspace-scoped), not inferred from
-  // tasks.pathManifest.
-  const conflict = await checkPathClaimConflict(task.workspaceId, taskId, paths);
+  // tasks.pathManifest — so a path already in the manifest is acquired too.
+  const acquired = await acquirePathClaims({ workspaceId: task.workspaceId, taskId, paths, declare: true });
 
-  if (conflict) {
+  // The task closed between the read above and the locked write (a cancel
+  // racing this call). Nothing was leased.
+  if (acquired.kind === 'task_closed') {
+    return { kind: 'bad_status', error: 'Cannot claim paths: the task is no longer open' };
+  }
+
+  if (acquired.kind === 'conflict') {
+    const { conflict } = acquired;
     const blocker = await db.query.tasks.findFirst({
       where: eq(tasks.id, conflict.blockingTaskId),
       columns: { id: true, title: true, missionId: true },
@@ -149,6 +159,12 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       blockingTaskId: conflict.blockingTaskId,
       blockingTaskTitle: blocker?.title ?? null,
       blockingMissionId: blocker?.missionId ?? null,
+      // The holder's lease (may be a directory) and every requested path that
+      // is held. A declaration is all-or-nothing, so nothing was granted; the
+      // list lets an enforcing runner deny the held paths by name and keep the
+      // free ones queued (conflict-aware-orchestration.md §2).
+      blockingPath: conflict.blockingPath,
+      blockedPaths: acquired.blocked.map(b => ({ path: b.path, blockingTaskId: b.blockingTaskId, blockingPath: b.blockingPath })),
       message,
     };
 
@@ -189,27 +205,117 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       },
     });
 
+    recordPathDeclaration({
+      result: 'denied', provenance: 'check_path_claim', surface, workspaceId: task.workspaceId,
+      missionId: task.missionId, taskId: task.id, callerOrigin, pathCount: paths.length,
+      detail: { blockedCount: acquired.blocked.length },
+    });
     return { kind: 'conflict', body };
   }
 
-  const recordSuccess = () => fireGateEvent({
+  fireGateEvent({
     gate: GATE_SLUGS.PATH_CLAIM, surface, outcome: 'accepted',
     reason: 'paths successfully claimed', workspaceId: task.workspaceId,
     missionId: task.missionId, taskId: task.id, callerOrigin,
-    detail: { claimResult: 'claimed', pathCount: paths.length },
+    detail: { claimResult: 'claimed', pathCount: paths.length, leased: acquired.inserted.length },
+  });
+  recordPathDeclaration({
+    result: 'succeeded', provenance: 'check_path_claim', surface, workspaceId: task.workspaceId,
+    missionId: task.missionId, taskId: task.id, callerOrigin, pathCount: paths.length,
+    detail: { leased: acquired.inserted.length },
+  });
+  return {
+    kind: 'claimed',
+    pathManifest: acquired.pathManifest ?? (task.pathManifest as string[] | null) ?? [],
+    revision: acquired.revision,
+  };
+}
+
+// ── Narrowing ────────────────────────────────────────────────────────────────
+
+export type PathClaimNarrowOutcome =
+  | { kind: 'invalid_paths'; error: string }
+  | { kind: 'wildcard'; error: string }
+  | { kind: 'not_found' }
+  | { kind: 'revision_conflict'; currentRevision: number }
+  | {
+    kind: 'narrowed';
+    pathManifest: string[] | null;
+    releasedPaths: string[];
+    notifiedWaiters: string[];
+    revision: number;
+  };
+
+export interface PathClaimNarrowInput {
+  taskId: string;
+  paths: unknown;
+  /** Why the scope shrank — recorded on the task's declaration history. */
+  reason?: unknown;
+  /** CAS token from a previous claim/narrow response; omit to narrow unconditionally. */
+  expectedRevision?: unknown;
+  surface: string;
+  callerOrigin: GateCallerOrigin;
+  authorize?: (task: PathClaimTask) => Promise<boolean>;
+}
+
+/**
+ * Give paths back: release only this task's leases on them (and under them),
+ * drop them from its effective pathManifest, keep the original declaration,
+ * and deliver `path_released` only to waiters blocked on a released path.
+ *
+ * Shared by DELETE /api/tasks/[id]/path-claim and check_path_claim with
+ * `release: true`. Scoped to the task's own workspace; the entry point's
+ * `authorize` decides who may act on the task.
+ */
+export async function narrowPathClaim(input: PathClaimNarrowInput): Promise<PathClaimNarrowOutcome> {
+  const { taskId, surface, callerOrigin } = input;
+  if (!validPaths(input.paths)) return INVALID_PATHS;
+  const paths = input.paths;
+  if (isAdvisoryManifest(paths)) return { kind: 'wildcard', error: PATH_CLAIM_WILDCARD_ERROR };
+
+  const expectedRevision = input.expectedRevision;
+  if (expectedRevision != null && (!Number.isInteger(expectedRevision) || (expectedRevision as number) < 0)) {
+    return { kind: 'invalid_paths', error: 'expectedRevision must be a non-negative integer' };
+  }
+  const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : null;
+
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, workspaceId: true, missionId: true, status: true },
+  });
+  if (!task) return { kind: 'not_found' };
+  if (input.authorize && !(await input.authorize(task))) return { kind: 'not_found' };
+
+  const result = await narrowPathClaims({
+    workspaceId: task.workspaceId,
+    taskId,
+    paths,
+    surface,
+    reason,
+    expectedRevision: (expectedRevision as number | null | undefined) ?? null,
+  });
+  if (result.kind === 'not_found') return result;
+  if (result.kind === 'revision_conflict') return result;
+
+  await deliverPathReleased(taskId, result, 'narrowed');
+
+  fireGateEvent({
+    gate: GATE_SLUGS.PATH_CLAIM, surface, outcome: 'accepted',
+    reason: 'paths narrowed', workspaceId: task.workspaceId,
+    missionId: task.missionId, taskId: task.id, callerOrigin,
+    detail: {
+      claimResult: 'narrowed',
+      pathCount: paths.length,
+      released: result.releasedPaths.length,
+      wokenWaiters: result.notifiedWaiters.length,
+    },
   });
 
-  const existingManifest = (task.pathManifest as string[] | null) ?? [];
-  const existingSet = new Set(existingManifest);
-  const newPaths = paths.filter((p) => !existingSet.has(p));
-
-  if (newPaths.length === 0) {
-    recordSuccess();
-    return { kind: 'claimed', pathManifest: existingManifest };
-  }
-
-  const updatedManifest = await appendPathManifest(taskId, newPaths);
-  await insertClaims(task.workspaceId, taskId, newPaths);
-  recordSuccess();
-  return { kind: 'claimed', pathManifest: updatedManifest };
+  return {
+    kind: 'narrowed',
+    pathManifest: result.pathManifest,
+    releasedPaths: result.releasedPaths,
+    notifiedWaiters: [...new Set(result.notifiedWaiters)],
+    revision: result.revision,
+  };
 }

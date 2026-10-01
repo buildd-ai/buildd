@@ -21,6 +21,22 @@ assertions:
   - id: path-overlap-tests
     type: test_file
     path: packages/core/__tests__/path-overlap.test.ts
+  - id: acquire-path-claims-symbol
+    type: symbol
+    name: acquirePathClaims
+    path: packages/core/path-claim.ts
+  - id: narrow-path-claims-symbol
+    type: symbol
+    name: narrowPathClaims
+    path: packages/core/path-claim.ts
+  - id: path-claim-narrow-route
+    type: route
+    method: DELETE
+    path: /api/tasks/[id]/path-claim
+    file: apps/web/src/app/api/tasks/[id]/path-claim/route.ts
+  - id: path-claim-ownership-tests
+    type: test_file
+    path: packages/core/__tests__/path-claim-ownership.test.ts
 ---
 # Path Claims as a Coordination Primitive
 
@@ -192,6 +208,43 @@ All four release signals already have hook points; no new cron is required.
 When a runner dies without posting a terminal status, its `path_claims` rows stay active. The worker reaper already identifies orphaned workers (stale heartbeat, no recent PATCH). The reaper cleanup block should release claims for those workers as part of the same sweep. No new mechanism is needed beyond wiring the release query into the existing reaper.
 
 ---
+
+#### 2f. Exclusive acquisition, narrowing and the ownership lock
+
+Added by [conflict-aware orchestration](conflict-aware-orchestration.md) §1.
+
+Acquisition (`acquirePathClaims`), selective narrowing (`narrowPathClaims`)
+and terminal release (`releaseClaims`) each run as one `db.batch` — a single
+non-interactive neon-http transaction — whose first statement takes
+`pg_advisory_xact_lock` keyed by workspace. The write statement that follows
+gets a fresh READ COMMITTED snapshot, so it sees every row the previous holder
+committed. A unique index cannot do this: `apps/web` and `apps/web/page.tsx`
+are different rows that overlap by prefix.
+
+- **Acquisition** re-checks prefix overlap and the owning task's open status
+  inside the locked statement. An unlocked pre-read only discounts stale
+  holders (terminal, parked past the TTL) and answers obvious conflicts; it
+  never grants. A path already in `pathManifest` without a lease is leased.
+  Observed touches (`claimObservedPaths`) use the same operation per path, so
+  they no longer lease a surface another live task holds.
+- **Late append vs cancel.** A cancel commits the status, then releases. The
+  release takes the same lock, and the acquisition checks status under it, so
+  whichever runs second sees the other: no lease on a cancelled task.
+- **Narrowing** releases only the named leases (a directory includes those
+  under it), removes them from the effective `pathManifest`, and wakes only
+  waiters whose blocked path was released (`path_released`, reason
+  `narrowed`). REST `DELETE /api/tasks/[id]/path-claim`; MCP
+  `check_path_claim` with `release: true`. `expectedRevision` CASes on
+  `tasks.path_claim_revision`, which every acquisition, narrowing and release
+  bumps; a stale one is a retryable 409.
+- **Declaration snapshot.** `tasks.path_declaration` keeps the manifest as
+  declared (at creation, or before the first runtime mutation), the dependsOn
+  edges inferred from manifest overlap at creation, and recent narrowings.
+  Narrowing never touches `dependsOn`.
+- **Waiters.** Re-registering the same (blocker, waiter, path) re-arms the row.
+  A terminal release wakes every pending waiter even with no lease left, and
+  the maintenance sweep also finds terminal blockers that only have pending
+  waiters — so a waiter re-armed after a failed delivery is retried.
 
 ### 3. Waiter Queue
 
@@ -552,6 +605,48 @@ The response includes `blockingManifest` so the worker can reason about whether 
 **Deadlock and latency risks of strict mode**:
 - Deadlock risk is the same as §5a, but triggered more frequently because the hook fires on every Edit rather than only on explicit `check_path_claim` calls. The cycle-check on waiter registration (§3d) must run on the hook path too.
 - Latency risk: in strict mode, a slow control plane stalls every Edit. The fail-open rule (§6c) applies here too — strict mode hard-blocks only when the claim succeeds with a 409, not when the endpoint is unreachable.
+
+**As built (conflict-aware orchestration, Step C).** "Strict mode" shipped as
+`gitConfig.pathClaimEnforcement: 'enforce'` (absent or `'advisory'` = today's
+behaviour; set it with `manage_workspaces action=update gitConfig={...}`).
+In enforce mode:
+
+- The hook (`apps/runner/src/hook-factory.ts`) makes paths worktree-relative,
+  refuses escapes, and denies Edit/Write/MultiEdit on a confirmed 409, naming
+  the holder task and path. The 409 body lists every held path (`blockedPaths`),
+  so queued paths flush in their own request and only answered paths leave the
+  queue. Timeout/network/5xx still fail open within a 300ms hook deadline and
+  are recorded as degraded enforcement.
+- §6d's committed-only `origin/HEAD`-or-`origin/dev` observation is replaced by
+  a sweep against the task's resolved PR base (the mission integration branch on
+  a mission task) unioned with NUL-delimited staged/unstaged/untracked status,
+  renames counted on both sides (`apps/runner/src/path-claim-enforcement.ts`).
+  The PR base is carried on the worker as `prBaseRef` and persisted. It is not
+  the ref the worktree was cut from: on a resume that is the prior attempt's
+  branch, and measuring against it would drop every file earlier attempts
+  committed. `resolvePrBaseRef` derives it from `resolveTaskPrBase`, the rule
+  the prompt and `create_pr` use, so a `baseBranch` equal to the task's own
+  branch (the marker CI, conflict and answer resumes and infra requeues write)
+  is never taken as a base. A mission task whose integration branch cannot be
+  named gets no base rather than trunk, so the sweep reports only uncommitted
+  changes. It runs on every sync, and before `git push`,
+  `gh pr create`, `create_pr` and a non-error `complete_task`. Observed paths
+  go through the same exclusive acquisition; one another live task holds comes
+  back on the PATCH response as `pathCollisions`. A sync offers only paths new
+  to `observedTouches`; the pre-push and completion sweeps re-offer the whole
+  list (`checkpointSweep`), so an earlier acquisition that failed is retried
+  before the change ships. Only paths recorded in `observedTouches` are leased;
+  paths past its 500 cap are dropped with a `path_claim` `warned` gate event.
+- A collision found there has already happened, so it is checkpoint
+  enforcement, not prevention: the runner refuses further edits and ships,
+  commits a checkpoint (pushed unless a PR already exists), reports a
+  `Deferred:` failure and ends the session. The server requeues it without
+  charging a retry, appends the collided path to the manifest so the claim
+  route holds it until the holder releases, records `path_declaration.collision`
+  and sets `resumeBranch` to the pushed checkpoint
+  (`apps/web/src/lib/path-collision-deferral.ts`). No agent waits for a lease.
+- Codex has no PreToolUse seam: it gets the sync sweep only, and the session
+  says so at start.
 
 ### 6f. Extracting the sibling-overlap query into a shared helper
 

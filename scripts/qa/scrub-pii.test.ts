@@ -151,6 +151,7 @@ const SAFE: Record<string, string[]> = {
   ai_usage: ['tier', 'surface', 'kind', 'provider', 'model', 'plan_source'],
   model_tier_registry: ['model'],
   change_intents: ['head_sha'],
+  surface_reservations: ['head_sha', 'base_sha'],
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
   release_tasks: ['commit_sha'],

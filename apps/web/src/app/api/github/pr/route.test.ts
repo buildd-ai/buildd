@@ -191,8 +191,29 @@ mock.module('@/lib/pr-landing', () => ({
   },
 }));
 
+// Surface merge ordering door. Default: ordering off (PASS, merge runs as-is),
+// which is what the real door does for a workspace that has not opted in.
+const SURFACE_PASS = { blocks: false as const, slot: null };
+const mockCheckSurfaceOrder = mock(async (_input: any) => SURFACE_PASS as any);
+const mockMergeInSurfaceSlot = mock(async (verdict: any, merge: () => Promise<any>) =>
+  verdict.blocks ? { refused: verdict.reason } : { result: await merge() },
+);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: mockCheckSurfaceOrder,
+  mergeInSurfaceSlot: mockMergeInSurfaceSlot,
+}));
+
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
+// The behind-base refresh (lib/base-refresh.ts) owns the lease, failure
+// classification and the semantic check; the route maps its outcome. The hold
+// passes through by default.
+const mockRefreshBehindPr = mock(async (_p: any) => ({ kind: 'updated' }) as any);
+const mockCheckBaseRefreshHold = mock(async (_p: any) => ({ blocks: false }) as any);
+mock.module('@/lib/base-refresh', () => ({
+  refreshBehindPr: (p: any) => mockRefreshBehindPr(p),
+  checkBaseRefreshHold: (p: any) => mockCheckBaseRefreshHold(p),
+}));
 mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
 
 import { POST, PATCH, PUT, GET } from './route';
@@ -3429,6 +3450,20 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
 
+    it('consults the post-refresh semantic hold with the workspace gitConfig and refuses while it holds', async () => {
+      workerOk();
+      mockCheckBaseRefreshHold.mockImplementationOnce(async () => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }));
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('semantic hold');
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0]).toMatchObject({ prNumber: 42, headSha: 'sha-42', taskId: 'task-1' });
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0]).toHaveProperty('gitConfig');
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0].gitConfig).not.toBeUndefined();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
     // The friction behind PR #2658: an agent's merge_pr under concurrent landing
     // hits "PR is N commits behind dev" and had no recourse but a manual
     // rebase. The route now brings the branch up to date itself — but must NOT
@@ -3452,8 +3487,14 @@ describe('PUT /api/github/pr', () => {
         return calls;
       }
 
-      it('updates the branch from base and asks for a retry once CI re-runs, without merging', async () => {
+      beforeEach(() => {
+        mockRefreshBehindPr.mockReset();
+        mockRefreshBehindPr.mockImplementation(async () => ({ kind: 'updated' }));
+      });
+
+      it('refreshes through base-refresh (lease, classification, semantic hold) and asks for a retry, without merging', async () => {
         workerOk();
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: false, missionId: 'm-1', context: {} });
         const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
 
         const res = await put();
@@ -3463,19 +3504,82 @@ describe('PUT /api/github/pr', () => {
         expect(data.branchUpdated).toBe(true);
         expect(data.error).toContain('behind');
         expect(data.hint).toContain('merge_pr');
-        expect(calls).toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+        expect(mockRefreshBehindPr).toHaveBeenCalledTimes(1);
+        expect(mockRefreshBehindPr.mock.calls[0][0]).toMatchObject({
+          installationId: expect.any(Number), repoFullName: 'owner/repo', prNumber: 42, headSha: 'sha-42',
+          taskId: 'task-1', workerId: 'w-1', missionId: 'm-1',
+        });
+        expect(mockRefreshBehindPr.mock.calls[0][0]).toHaveProperty('gitConfig');
+        // The route no longer calls update-branch itself.
+        expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
 
-      it('falls back to the 403 refusal when GitHub cannot update the branch', async () => {
+      it('a worker with no task keeps the old direct update when the semantic check is off', async () => {
         workerOk();
-        behindGithub(() => Promise.reject(new Error('422 merge conflict between base and head')));
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+        });
+        const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).branchUpdated).toBe(true);
+        expect(calls).toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+        expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+      });
+
+      it('a worker with no task is refused, not updated, when the semantic check is on', async () => {
+        workerOk();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42',
+          workspace: { ...WORKSPACE_OK, gitConfig: { ...(WORKSPACE_OK as any).gitConfig, semanticRefresh: 'enforce' } },
+        });
+        const calls = behindGithub(() => Promise.resolve({}));
+
+        const res = await put();
+
+        expect(res.status).toBe(403);
+        expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+      });
+
+      it.each([
+        [{ kind: 'in_flight' }, 'in_flight'],
+        [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, 'deferred'],
+        [{ kind: 'head_changed', reason: 'moved' }, 'head_changed'],
+        [{ kind: 'up_to_date', reason: '422 no new commits' }, 'up_to_date'],
+        [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, 'semantic_deferred'],
+      ])('%o is a wait (409), with no merge and no branchUpdated', async (outcome, kind) => {
+        workerOk();
+        behindGithub(() => Promise.resolve({}));
+        mockRefreshBehindPr.mockImplementation(async () => outcome);
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.refresh).toBe(kind);
+        expect(data.branchUpdated).toBeUndefined();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [{ kind: 'conflict', reason: '422 merge conflict' }, 'conflict'],
+        [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, 'exhausted'],
+        [{ kind: 'semantic_conflict', assessment: { verdict: 'same_symbol', reason: 'both edit f' } }, 'semantic_conflict'],
+        [{ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' }, 'semantic_unverified'],
+      ])('%o falls back to the 403 refusal naming the refresh outcome', async (outcome, kind) => {
+        workerOk();
+        behindGithub(() => Promise.resolve({}));
+        mockRefreshBehindPr.mockImplementation(async () => outcome);
 
         const res = await put();
 
         expect(res.status).toBe(403);
         const data = await res.json();
         expect(data.error).toContain('behind');
+        expect(data.refresh).toBe(kind);
         expect(data.branchUpdated).toBeUndefined();
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
@@ -4091,6 +4195,67 @@ describe('PUT /api/github/pr', () => {
 
       expect(res.status).toBe(409);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('surface merge ordering (merge_pr door)', () => {
+    function plainWorker(level?: string) {
+      mockAuthenticateApiKey.mockResolvedValue(level ? { ...ACCOUNT, level } : ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: null,
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+    const put = (body: Record<string, unknown> = {}) => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, ...body },
+    }));
+
+    beforeEach(() => {
+      mockCheckSurfaceOrder.mockReset();
+      mockCheckSurfaceOrder.mockResolvedValue(SURFACE_PASS as any);
+      mockMergeInSurfaceSlot.mockClear();
+    });
+
+    it('an ordering wait returns 409 naming the earlier PR, and never merges', async () => {
+      plainWorker();
+      mockCheckSurfaceOrder.mockResolvedValue({
+        blocks: true, kind: 'ordering', reason: 'waiting for PR #40 to close first: both change Drizzle migrations on dev',
+        counterpartPrNumber: 40, surface: 'Drizzle migrations',
+      } as any);
+      const res = await put();
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('PR #40');
+      expect(data.waitingOnPr).toBe(40);
+      expect(data.surface).toBe('Drizzle migrations');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'merge_pr', prNumber: 42, override: false });
+    });
+
+    it('a refused reservation returns 409 and never merges', async () => {
+      plainWorker();
+      mockCheckSurfaceOrder.mockResolvedValue({ blocks: false, slot: { surfaces: ['Drizzle migrations'] } } as any);
+      mockMergeInSurfaceSlot.mockImplementationOnce(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+      const res = await put();
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('merging on Drizzle migrations');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('admin force is passed to the guard as an explicit override and the merge goes through', async () => {
+      // The guard turns an override into a `bypassed` ledger row and a pass
+      // (surface-ordering.test.ts, "an explicit override proceeds but is
+      // ledgered as bypassed"); this door's job is to say so, not to skip it.
+      plainWorker('admin');
+      const res = await put({ force: true });
+      expect(res.status).toBe(200);
+      expect(mockCheckSurfaceOrder).toHaveBeenCalledTimes(1);
+      expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'merge_pr', override: true });
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
   });
 

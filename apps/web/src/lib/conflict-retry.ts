@@ -25,12 +25,15 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
-import { updateBehindPrBranch } from '@/lib/pr-branch-update';
+import { refreshBehindPr } from '@/lib/base-refresh';
+import type { SemanticAssessment } from '@/lib/semantic-refresh';
+import type { BranchUpdateFailure } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
@@ -165,6 +168,13 @@ export interface ConflictRetryInput {
    * dedup/cap/dispatch machinery as a conflict retry.
    */
   migrationCollision?: MigrationCollision;
+  /**
+   * When set, the base merges in cleanly but both sides verifiably edit the
+   * same symbol (conflict-aware-orchestration.md §4): the task is a semantic
+   * conflict review — merge the base, then reconcile the named symbols on the
+   * merits — reusing the same dedup/cap/dispatch machinery.
+   */
+  semanticConflict?: SemanticAssessment;
 }
 
 export interface ConflictRetryTask {
@@ -187,7 +197,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -213,12 +223,14 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, {
-      reason: migrationCollision ? 'migration collision' : 'after conflict',
+      reason: migrationCollision ? 'migration collision' : semanticConflict ? 'semantic overlap' : 'after conflict',
       iteration: nextIteration,
     }),
     description: migrationCollision
       ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision)
-      : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+      : semanticConflict
+        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
+        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -238,12 +250,29 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
             prNumber: worker.prNumber,
             headSha,
           }
-        : {
-            summary: `PR #${worker.prNumber} has merge conflicts with the base branch. Merge the base branch in and resolve on the merits.`,
-            errorType: 'merge_conflict' as const,
-            prNumber: worker.prNumber,
-            headSha,
-          },
+        : semanticConflict
+          ? {
+              summary: `PR #${worker.prNumber} and its base both edit ${semanticSymbols(semanticConflict).join(', ')}. Merge the base in and reconcile those symbols on the merits.`,
+              errorType: 'semantic_conflict' as const,
+              prNumber: worker.prNumber,
+              headSha,
+            }
+          : {
+              summary: `PR #${worker.prNumber} has merge conflicts with the base branch. Merge the base branch in and resolve on the merits.`,
+              errorType: 'merge_conflict' as const,
+              prNumber: worker.prNumber,
+              headSha,
+            },
+      ...(semanticConflict
+        ? {
+            semanticConflict: {
+              baseRef: semanticConflict.baseRef ?? null,
+              baseSha: semanticConflict.baseSha ?? null,
+              mergeBaseSha: semanticConflict.mergeBaseSha ?? null,
+              evidence: semanticConflict.evidence ?? [],
+            },
+          }
+        : {}),
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
       prNumber: worker.prNumber,
@@ -282,6 +311,49 @@ function buildConflictDescription(
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
 4. Run the test suite and verify correctness before pushing.
 5. Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.
+
+PR: ${prUrl}
+
+${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
+}
+
+function semanticSymbols(a: SemanticAssessment): string[] {
+  return (a.evidence ?? []).flatMap((e) => e.symbols);
+}
+
+function buildSemanticConflictDescription(
+  task: ConflictRetryInput['originalTask'],
+  worker: ConflictRetryInput['worker'],
+  repoFullName: string,
+  iteration: number,
+  maxIterations: number,
+  assessment: SemanticAssessment,
+): string {
+  const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  const base = assessment.baseRef ?? "the PR's base branch";
+  const evidence = (assessment.evidence ?? [])
+    .map((e) => `- \`${e.path}\`: ${e.symbols.map((s) => `\`${s}\``).join(', ')}`)
+    .join('\n');
+
+  return `PR #${worker.prNumber} for "${task.title}" is behind \`${base}\`, and while the base would merge in without a textual conflict, both sides edit the same symbols since their common ancestor${assessment.mergeBaseSha ? ` (\`${assessment.mergeBaseSha.slice(0, 12)}\`)` : ''}:
+
+${evidence}
+
+A clean git merge does not mean the two changes agree. This is a semantic conflict review.
+
+**Attempt ${iteration} of ${maxIterations}.**
+
+## Instructions
+
+1. You are on branch \`${worker.branch}\`. Your worktree is based on the previous attempt's work.
+2. Merge the PR's actual base in (a merge commit — the branch is shared, so do not rewrite its history):
+   \`\`\`bash
+   git fetch origin
+   git merge origin/${assessment.baseRef ?? '<the PR base branch>'}
+   \`\`\`
+3. Read each symbol above as it now stands and reconcile both intents on the merits. If they already agree, say so in your summary and change nothing else.
+4. Run the tests that cover those symbols before pushing.
+5. Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.
 
 PR: ${prUrl}
 
@@ -387,6 +459,26 @@ export interface DispatchConflictRetryResult {
   branchUpdated?: boolean;
   /** The PR belongs to a dependency bot — nothing was pushed or filed. */
   dependencyBot?: boolean;
+  /**
+   * Behind-only refresh outcomes that are NOT conflicts (base-refresh.ts). None
+   * spawns an agent. Deliberately distinct from `exhausted`, which callers
+   * escalate as an exhausted conflict-fix budget.
+   */
+  /** The PR head moved since it was evaluated — re-read on the new head's event. */
+  headChanged?: boolean;
+  /** Another refresh holds this PR's single-flight lease. */
+  refreshInFlight?: boolean;
+  /** update-branch failed operationally; a later event or sweep retries (bounded). */
+  refreshDeferred?: boolean;
+  /** Operational failures hit their bound; a diagnostic was posted. */
+  refreshExhausted?: boolean;
+  refreshFailure?: BranchUpdateFailure | null;
+  /** Semantic clearance unknown; a later event or sweep rechecks (bounded). */
+  semanticDeferred?: boolean;
+  /** Semantic clearance could not be verified within the bound; a diagnostic was posted. */
+  semanticUnverified?: boolean;
+  /** GitHub said there is nothing to merge in: the "behind" reading was stale. Re-read. */
+  alreadyUpToDate?: boolean;
 }
 
 /**
@@ -468,22 +560,52 @@ export async function dispatchConflictRetry(
   }
 
   // Behind but not conflicting: GitHub can merge the base in server-side —
-  // no agent needed. A PR approved before this push keeps its approval when
-  // the diff is unchanged (approval-carry-forward.ts), so this converges
-  // without a re-review. Any failure falls through to the agent retry.
+  // no agent needed. The new head must earn its own CI; a PR approved before
+  // this push keeps its approval only when the diff is unchanged
+  // (approval-carry-forward.ts). Only a verified textual conflict, or (opted
+  // in) a verified same-symbol edit, falls through to an agent; operational
+  // failures, a moved head and unknown symbol coverage never do.
   const behindInstallationId = workspace.githubInstallation?.installationId ?? null;
+  let semanticConflict: SemanticAssessment | undefined;
   if (params.behindOnly && behindInstallationId) {
-    const update = await updateBehindPrBranch({
+    const refresh = await refreshBehindPr({
       installationId: behindInstallationId,
       repoFullName,
       prNumber,
       headSha,
+      workspaceId,
+      taskId,
+      workerId,
+      missionId: task.missionId ?? null,
+      gitConfig: workspace.gitConfig as WorkspaceGitConfig | null,
     });
-    if (update.updated) {
-      console.log(`[conflict-retry] PR #${prNumber} was behind its base — updated via GitHub, no agent dispatched`);
-      return { dispatched: true, branchUpdated: true };
+    switch (refresh.kind) {
+      case 'updated':
+        console.log(`[conflict-retry] PR #${prNumber} was behind its base — updated via GitHub, no agent dispatched`);
+        return { dispatched: true, branchUpdated: true };
+      case 'conflict':
+        console.warn(`[conflict-retry] update-branch hit a merge conflict on PR #${prNumber}, dispatching an agent: ${refresh.reason}`);
+        break;
+      case 'semantic_conflict':
+        console.warn(`[conflict-retry] PR #${prNumber} and its base edit the same symbols, dispatching a semantic review: ${refresh.assessment.reason}`);
+        semanticConflict = refresh.assessment;
+        break;
+      case 'head_changed':
+        return { dispatched: false, headChanged: true };
+      case 'up_to_date':
+        return { dispatched: false, alreadyUpToDate: true };
+      case 'in_flight':
+        return { dispatched: false, refreshInFlight: true };
+      case 'deferred':
+        console.warn(`[conflict-retry] update-branch ${refresh.failure} on PR #${prNumber} (attempt ${refresh.attempts}) — deferred, no agent: ${refresh.reason}`);
+        return { dispatched: false, refreshDeferred: true, refreshFailure: refresh.failure };
+      case 'exhausted':
+        return { dispatched: false, refreshExhausted: true, refreshFailure: refresh.failure };
+      case 'semantic_deferred':
+        return { dispatched: false, semanticDeferred: true };
+      case 'semantic_unverified':
+        return { dispatched: false, semanticUnverified: true };
     }
-    console.warn(`[conflict-retry] update-branch failed for PR #${prNumber}, dispatching an agent: ${update.reason}`);
   }
 
   // Fetch the worker for branch info and recorded diff stats
@@ -594,6 +716,7 @@ export async function dispatchConflictRetry(
     repoFullName,
     prRepoUrl,
     migrationCollision,
+    semanticConflict,
     ...(params.humanInitiated
       ? {
           maxConflictIterations:
@@ -679,6 +802,13 @@ export async function dispatchConflictRetry(
   console.log(
     `[conflict-retry] dispatched task ${newTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${retryTask.context.conflictIteration}/${retryTask.context.maxConflictIterations})`,
   );
+  // The retry inherited the original's concrete manifest; narrow it to the PR's
+  // actual diff at this head so it does not defer on unrelated leases. A
+  // sentinel ('**') retry is left alone — planScopeNarrowing never touches '**'
+  // and never adds diff paths, so it stays scope-undeclared.
+  if (installationId) {
+    schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
+  }
 
   return { dispatched: true, taskId: newTask.id };
 }

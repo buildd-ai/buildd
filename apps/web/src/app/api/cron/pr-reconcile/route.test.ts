@@ -46,6 +46,12 @@ const LANDING_ZERO = {
 const mockLandingSweep = mock((_opts: { source: string }) => Promise.resolve<any>(LANDING_ZERO));
 mock.module('@/lib/pr-landing-sweep-deps', () => ({ sweepLandingPrs: mockLandingSweep }));
 
+const REDRIVE_ZERO = {
+  enumerated: 0, redriven: 0, merged: 0, exhausted: 0, raced: 0, notRedrivable: 0, errors: 0, deferred: 0, outcomes: {},
+};
+const mockRefreshRedrive = mock(() => Promise.resolve<any>(REDRIVE_ZERO));
+mock.module('@/lib/refresh-redrive', () => ({ redriveDeferredRefreshes: mockRefreshRedrive }));
+
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
   countDue: async () => dueCount,
@@ -93,6 +99,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockDeadZone.mockResolvedValue({ total: 0, sparked: 0, exhausted: 0, skipped: 0 });
     mockLandingSweep.mockReset();
     mockLandingSweep.mockResolvedValue(LANDING_ZERO);
+    mockRefreshRedrive.mockReset();
+    mockRefreshRedrive.mockResolvedValue(REDRIVE_ZERO);
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -287,6 +295,36 @@ describe('GET /api/cron/pr-reconcile', () => {
     const body = await res.json();
     expect(body.reconcile.stamped).toBe(2);
     expect(body.deferredDispatch.error).toContain('dispatch query failed');
+  });
+
+  // Deferred branch refreshes outside landing enforce have no event coming;
+  // the hourly pass re-drives them (lib/refresh-redrive.ts).
+
+  it('the hourly pass re-drives deferred refreshes and reports it', async () => {
+    mockRefreshRedrive.mockResolvedValue({ ...REDRIVE_ZERO, enumerated: 2, redriven: 2, merged: 1, exhausted: 1, errors: 1 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockRefreshRedrive).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.refreshRedrive).toMatchObject({ redriven: 2, merged: 1 });
+  });
+
+  it('a refresh re-drive failure does not discard merge-state healing', async () => {
+    mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+    mockRefreshRedrive.mockRejectedValue(new Error('redrive query failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reconcile.stamped).toBe(2);
+    expect(body.refreshRedrive.error).toContain('redrive query failed');
+  });
+
+  it('the gated landing tick never runs the refresh re-drive (no Postgres on an idle tick)', async () => {
+    dueCount = 0;
+    await GET(makeRequest('test-secret', '?scope=landing&gate=due'));
+    dueCount = 3;
+    await GET(makeRequest('test-secret', '?scope=landing&gate=due'));
+    expect(mockRefreshRedrive).not.toHaveBeenCalled();
   });
 
   // ── Landing backstop ───────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
 import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
-import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import {
   evaluateAutoMergeSafety,
@@ -53,6 +53,7 @@ import {
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { LandingAlertInput } from '@/lib/pr-landing-alert';
 import {
   readLandingMarker,
@@ -98,6 +99,10 @@ export type HumanCause =
   | 'migration'
   | 'unsafe_other'
   | 'refresh_exhausted'
+  /** update-branch kept failing for an operational reason (rate limit, auth, transient) — not a conflict. */
+  | 'refresh_failed'
+  /** Opted-in semantic check: the PR and base share files and symbol coverage stayed unknown. */
+  | 'semantic_unverified'
   | 'fix_exhausted'
   | 'superseded'
   | 'dependency_bot'
@@ -143,6 +148,11 @@ export interface LandPrInput {
   releaseConfig?: WorkspaceReleaseConfig | null;
   /** How GitHub combines the PR. Default squash; `merge_pr` lets the caller choose. */
   mergeMethod?: 'merge' | 'squash' | 'rebase';
+  /**
+   * The workspace gitConfig, for surface merge ordering (lib/surface-ordering.ts).
+   * Omitted, the ordering check loads it; with ordering off nothing is read.
+   */
+  gitConfig?: WorkspaceGitConfig | null;
 }
 
 export interface FixDispatchInput {
@@ -536,6 +546,31 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     return human('human_tier', 'this workspace merges by human decision; the PR is waiting in the review queue');
   }
 
+  // ── 2b. Surface merge ordering — before any rail that can mutate the branch ─
+  // A PR behind an earlier open PR on a serialized surface waits; that PR's
+  // close re-drives this one. Shadow asks without writing anything.
+  const surfaceOrder = await checkSurfaceOrder({
+    workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha: liveHead,
+    gitConfig: input.gitConfig,
+    taskId: owner.taskId,
+    workerId: owner.workerId,
+    door: input.door,
+    callerOrigin,
+    observeOnly: !act,
+  });
+  if (surfaceOrder.blocks) {
+    return waiting(surfaceOrder.reason, {
+      waitingOn: 'surface_order',
+      orderKind: surfaceOrder.kind,
+      counterpartPrNumber: surfaceOrder.counterpartPrNumber,
+      surface: surfaceOrder.surface,
+    });
+  }
+
   // ── 3. Safety rails (every one except base freshness, which is work below) ──
   const mission = input.mission !== undefined ? input.mission : await loadMissionIntegrationFields(owner.taskId);
   const effectivePolicy: MergePolicy = override.size
@@ -552,6 +587,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       workerId: owner.workerId,
       skipBaseFreshness: true,
       observed,
+      gitConfig: input.gitConfig,
     });
 
   let safety = await runSafety(input.bound);
@@ -586,6 +622,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         return conflictOutcome(reason);
       case 'blocked':
         return human('branch_protection', reason);
+      case 'semantic_hold':
+        // Base commits merged in after the semantic verdict are being re-verified
+        // (base-refresh.ts): a wait while rechecks remain, a person after.
+        return /^semantic hold \(needs a person\)/.test(reason) ? human('semantic_unverified', reason) : waiting(reason);
       default:
         return human('unsafe_other', reason);
     }
@@ -687,7 +727,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead),
+  );
+  if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
+  const result = slotted.result;
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';
@@ -791,6 +835,21 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   async function mapRetry(res: DispatchConflictRetryResult, reason: string): Promise<LandingOutcome> {
+    // Refresh outcomes that are not conflicts (lib/base-refresh.ts): no fix was
+    // filed and none is owed. A later event or the sweep re-drives the PR.
+    if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
+    if (res.refreshInFlight) return waiting(`another refresh of this PR is in flight (${reason})`, { refresh: 'in_flight' });
+    if (res.refreshDeferred) {
+      return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
+    if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted) {
+      return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticUnverified) {
+      return human('semantic_unverified', `the PR and the base change the same files and their symbol overlap could not be verified (${reason})`);
+    }
     if (res.superseded) return human('superseded', 'the change is already upstream; the PR is superseded');
     if (res.dependencyBot) return human('dependency_bot', 'this is a dependency-bot PR; its own rebase owns the branch');
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');
