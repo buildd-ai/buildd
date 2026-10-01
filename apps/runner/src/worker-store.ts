@@ -57,6 +57,9 @@ const PERSISTED_FIELDS = [
   // Read by history-store's backfill so an archived session keeps its usage,
   // model and PR URL. Not restored onto live workers by loadAllWorkers.
   'resultMeta', 'prUrl', 'reportedModel',
+  // Enforce-mode path claims: the collision a deferral was based on, kept with
+  // the record so the local history shows why the session ended.
+  'pathClaimMode', 'pathCollision',
 ] as const;
 
 // Bounds to keep files reasonable

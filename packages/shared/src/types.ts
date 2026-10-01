@@ -1784,6 +1784,38 @@ export interface PathDeclaration {
    * could not be trusted and nothing was narrowed; `reason` says why.
    */
   prScope?: PrScopeRecord;
+  /**
+   * The last enforce-mode checkpoint collision (lib/path-collision-deferral.ts):
+   * a path this task had already changed was held by another live task, so the
+   * runner checkpointed and deferred. `path` was appended to the effective
+   * manifest so the claim route holds the task until the holder releases.
+   */
+  collision?: PathCollisionRecord;
+}
+
+/** Enforce-mode path claims: why a task was deferred at a checkpoint. */
+export interface PathCollisionRecord {
+  path: string;
+  blockingTaskId: string;
+  blockingTaskTitle?: string | null;
+  blockingPath?: string | null;
+  source: 'hook_flush' | 'sync' | 'pre_push' | 'completion';
+  checkpoint?: { committed: boolean; sha?: string; pushed: boolean; reason?: string };
+  recordedAt: string;
+}
+
+/** Workspace opt-in for path-claim enforcement (gitConfig.pathClaimEnforcement). Absent = advisory. */
+export type PathClaimEnforcementMode = 'advisory' | 'enforce';
+
+/**
+ * A path a worker's sync reported as changed that another live task holds —
+ * returned on the worker PATCH response as `pathCollisions`.
+ */
+export interface PathCollisionNotice {
+  path: string;
+  blockingTaskId: string;
+  blockingTaskTitle: string | null;
+  blockingPath: string;
 }
 
 export interface PrScopeRecord {

@@ -580,6 +580,27 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.gitConfig).toMatchObject({ mergePolicy: null });
   });
 
+  // Path-claim enforcement is a workspace opt-in (conflict-aware-orchestration.md §2).
+  it('accepts gitConfig.pathClaimEnforcement enforce/advisory and null to clear', async () => {
+    for (const value of ['enforce', 'advisory', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { pathClaimEnforcement: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, pathClaimEnforcement: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { pathClaimEnforcement: true } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/pathClaimEnforcement/);
+  });
+
   it('rejects gitConfig.mergePolicy with unknown keys (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

@@ -253,6 +253,7 @@ mock.module('drizzle-orm', () => ({
 const {
   acquirePathClaims,
   claimObservedPaths,
+  acquireObservedPaths,
   narrowPathClaims,
   releaseClaims,
   findStaleClaimHolderTaskIds,
@@ -461,6 +462,43 @@ describe('claimObservedPaths — observed touches use the same acquisition', () 
     const leased = await claimObservedPaths(WS, A, ['src/x.ts']);
     expect(leased).toEqual([]);
     expect(active(A)).toEqual([]);
+  });
+});
+
+describe('acquireObservedPaths — a checkpoint sweep learns what it collided with', () => {
+  it('returns the leased paths and every observed path another live task holds, with the holder', async () => {
+    addTask(A);
+    addTask(B);
+    addClaim(B, 'packages/core/');
+    const r = await acquireObservedPaths(WS, A, ['packages/core/x.ts', 'apps/web/y.ts']);
+    expect(r.inserted).toEqual(['apps/web/y.ts']);
+    expect(r.blocked).toEqual([{ path: 'packages/core/x.ts', blockingTaskId: B, blockingPath: 'packages/core/' }]);
+    // The held path is never leased to the observer.
+    expect(active(A)).toEqual(['apps/web/y.ts']);
+  });
+
+  it('a terminal holder is not a collision', async () => {
+    addTask(A);
+    addTask(B, { status: 'cancelled' });
+    addClaim(B, 'src/x.ts');
+    const r = await acquireObservedPaths(WS, A, ['src/x.ts']);
+    expect(r.blocked).toEqual([]);
+    expect(r.inserted).toEqual(['src/x.ts']);
+  });
+
+  it('regenerable files and the sentinel are neither leased nor collisions', async () => {
+    addTask(A);
+    addTask(B);
+    addClaim(B, 'docs/specs/INDEX.md');
+    const r = await acquireObservedPaths(WS, A, ['docs/specs/INDEX.md', '**']);
+    expect(r).toEqual({ inserted: [], blocked: [] });
+  });
+
+  it('a closed observer leases nothing and reports nothing', async () => {
+    addTask(A, { status: 'cancelled' });
+    addTask(B);
+    addClaim(B, 'src/x.ts');
+    expect(await acquireObservedPaths(WS, A, ['src/x.ts'])).toEqual({ inserted: [], blocked: [] });
   });
 });
 

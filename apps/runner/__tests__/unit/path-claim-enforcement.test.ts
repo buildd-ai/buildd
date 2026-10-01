@@ -1,0 +1,270 @@
+/**
+ * Checkpoint sweep + path normalization for conflict-aware orchestration §2.
+ *
+ * The sweep tests run real git in throwaway repos: renames, deletes, untracked
+ * files and the mission-base case are exactly the shapes a mocked execSync
+ * would get wrong.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/path-claim-enforcement.test.ts
+ */
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { execSync } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  normalizeWorktreePath,
+  extractEditPaths,
+  isRuntimeExcluded,
+  parsePorcelainZ,
+  parseNameStatusZ,
+  sweepWorktreeChanges,
+  refreshBaseRef,
+  resolvePathClaimMode,
+  backendEnforcement,
+  describeEnforcement,
+  isShipCommand,
+  collisionDeferralError,
+  toCollision,
+} from '../../src/path-claim-enforcement';
+
+describe('resolvePathClaimMode — off by default', () => {
+  test('missing config, missing field, or any other value is advisory', () => {
+    expect(resolvePathClaimMode(undefined)).toBe('advisory');
+    expect(resolvePathClaimMode({})).toBe('advisory');
+    expect(resolvePathClaimMode({ pathClaimEnforcement: true })).toBe('advisory');
+    expect(resolvePathClaimMode({ pathClaimEnforcement: 'advisory' })).toBe('advisory');
+  });
+  test('only the explicit opt-in enforces', () => {
+    expect(resolvePathClaimMode({ pathClaimEnforcement: 'enforce' })).toBe('enforce');
+  });
+});
+
+describe('backend limitations are explicit', () => {
+  test('Claude has a pre-edit seam; Codex is checkpoint-only', () => {
+    expect(backendEnforcement('claude')).toEqual({ preEdit: true, checkpoint: true });
+    expect(backendEnforcement(undefined)).toEqual({ preEdit: true, checkpoint: true });
+    expect(backendEnforcement('codex')).toEqual({ preEdit: false, checkpoint: true });
+  });
+  test('the Codex description does not promise pre-write denial', () => {
+    const codex = describeEnforcement('codex', 'enforce');
+    expect(codex).toContain('checkpoints only');
+    expect(codex).toContain('no pre-write seam');
+    expect(describeEnforcement('claude', 'enforce')).toContain('acquire before writing');
+    expect(describeEnforcement('claude', 'advisory')).toContain('advisory');
+  });
+});
+
+describe('normalizeWorktreePath', () => {
+  const root = '/work/tree';
+  test('absolute path inside the worktree becomes relative', () => {
+    expect(normalizeWorktreePath('/work/tree/apps/web/a.ts', root)).toEqual({ ok: true, path: 'apps/web/a.ts' });
+  });
+  test('relative path resolves against the worktree', () => {
+    expect(normalizeWorktreePath('apps/./web/../web/a.ts', root)).toEqual({ ok: true, path: 'apps/web/a.ts' });
+  });
+  test('.. escape is rejected', () => {
+    const r = normalizeWorktreePath('../other/a.ts', root);
+    expect(r.ok).toBe(false);
+    expect((r as any).reason).toBe('escape');
+  });
+  test('absolute path in a sibling worktree is an escape', () => {
+    expect((normalizeWorktreePath('/work/tree-2/a.ts', root) as any).reason).toBe('escape');
+    expect((normalizeWorktreePath('/etc/passwd', root) as any).reason).toBe('escape');
+  });
+  test('home-relative and empty paths are rejected', () => {
+    expect((normalizeWorktreePath('~/x', root) as any).reason).toBe('escape');
+    expect((normalizeWorktreePath('  ', root) as any).reason).toBe('empty');
+    expect((normalizeWorktreePath('/work/tree', root) as any).reason).toBe('root');
+  });
+  test('a symlinked root (macOS /tmp) is not read as an escape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pce-root-'));
+    try {
+      const real = realpathSync(dir);
+      expect(normalizeWorktreePath(join(real, 'x.ts'), dir)).toEqual({ ok: true, path: 'x.ts' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('extractEditPaths', () => {
+  test('Edit/Write file_path', () => {
+    expect(extractEditPaths('Edit', { file_path: 'a.ts' })).toEqual(['a.ts']);
+    expect(extractEditPaths('Write', { file_path: 'b.ts' })).toEqual(['b.ts']);
+  });
+  test('MultiEdit top-level file_path (the real SDK shape) plus per-edit paths, deduped', () => {
+    expect(extractEditPaths('MultiEdit', { file_path: 'a.ts', edits: [{ old_string: 'x', new_string: 'y' }] })).toEqual(['a.ts']);
+    expect(extractEditPaths('MultiEdit', { edits: [{ file_path: 'a.ts' }, { file_path: 'b.ts' }, { file_path: 'a.ts' }] })).toEqual(['a.ts', 'b.ts']);
+  });
+  test('other tools write nothing', () => {
+    expect(extractEditPaths('Bash', { command: 'echo > a.ts' })).toEqual([]);
+    expect(extractEditPaths('Read', { file_path: 'a.ts' })).toEqual([]);
+  });
+});
+
+describe('runtime exclusions are explicit', () => {
+  test('runner scratch is excluded, source is not', () => {
+    expect(isRuntimeExcluded('.buildd/state.json')).toBe(true);
+    expect(isRuntimeExcluded('node_modules/x/index.js')).toBe(true);
+    expect(isRuntimeExcluded('apps/web/node_modules/x.js')).toBe(true);
+    expect(isRuntimeExcluded('.test-report.log')).toBe(true);
+    expect(isRuntimeExcluded('apps/web/src/a.ts')).toBe(false);
+    expect(isRuntimeExcluded('docs/buildd.md')).toBe(false);
+  });
+});
+
+describe('NUL-delimited parsers', () => {
+  test('porcelain -z: modified, untracked, rename carries both sides, spaces survive', () => {
+    const out = [' M src/a.ts', '?? new file.ts', 'R  dst/b.ts', 'src/b.ts', ' D gone.ts', ''].join('\0');
+    expect(parsePorcelainZ(out)).toEqual(['src/a.ts', 'new file.ts', 'dst/b.ts', 'src/b.ts', 'gone.ts']);
+  });
+  test('name-status -z: rename source and destination, delete, add', () => {
+    const out = ['R100', 'old/x.ts', 'new/x.ts', 'D', 'del.ts', 'A', 'added.ts', 'M', 'mod.ts', ''].join('\0');
+    expect(parseNameStatusZ(out)).toEqual(['old/x.ts', 'new/x.ts', 'del.ts', 'added.ts', 'mod.ts']);
+  });
+});
+
+describe('isShipCommand', () => {
+  test('push and PR creation are ship commands; reads are not', () => {
+    expect(isShipCommand('git push -u origin HEAD')).toBe(true);
+    expect(isShipCommand('cd x && git push')).toBe(true);
+    expect(isShipCommand('git -C /w push origin b')).toBe(true);
+    expect(isShipCommand('gh pr create --title t')).toBe(true);
+    expect(isShipCommand('git status')).toBe(false);
+    expect(isShipCommand('git log --grep push')).toBe(false);
+    expect(isShipCommand('gh pr view 1')).toBe(false);
+  });
+});
+
+describe('collision wording', () => {
+  test('the deferral error starts with Deferred: and names task and path by short id', () => {
+    const c = toCollision({ path: 'a.ts', blockingTaskId: '12345678-aaaa-bbbb-cccc-1234567890ab', blockingTaskTitle: 'other', blockingPath: 'a.ts' }, 'sync', 1)!;
+    const msg = collisionDeferralError(c);
+    expect(msg.startsWith('Deferred:')).toBe(true);
+    expect(msg).toContain('a.ts');
+    expect(msg).toContain('12345678');
+    expect(msg).not.toContain('1234567890ab');
+  });
+  test('malformed server entries are dropped', () => {
+    expect(toCollision({ path: 'a' }, 'sync')).toBeNull();
+    expect(toCollision(null, 'sync')).toBeNull();
+  });
+});
+
+// ── Real-git sweep ──────────────────────────────────────────────────────────
+
+function sh(cwd: string, cmd: string) {
+  return execSync(cmd, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+describe('sweepWorktreeChanges (real git)', () => {
+  let origin: string;
+  let work: string;
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'pce-sweep-'));
+    origin = join(tmp, 'origin.git');
+    work = join(tmp, 'work');
+    sh(tmp, `git init -q --bare -b dev ${origin}`);
+    sh(tmp, `git clone -q ${origin} ${work}`);
+    const cfg = '-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false';
+    sh(work, 'git checkout -q -b dev');
+    mkdirSync(join(work, 'src'), { recursive: true });
+    writeFileSync(join(work, 'src/keep.ts'), 'keep\n');
+    writeFileSync(join(work, 'src/rename-me.ts'), 'a\nb\nc\nd\ne\n');
+    writeFileSync(join(work, 'src/delete-me.ts'), 'del\n');
+    writeFileSync(join(work, '.gitignore'), 'ignored.log\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m base && git push -q origin dev`);
+
+    // A mission integration branch that moved ahead of trunk with someone else's file.
+    sh(work, 'git checkout -q -b mission/m-1');
+    writeFileSync(join(work, 'src/mission-sibling.ts'), 'sibling\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m sibling && git push -q origin mission/m-1`);
+
+    // This task's branch, cut from the mission branch.
+    sh(work, 'git checkout -q -b buildd/task-1');
+    sh(work, 'git mv src/rename-me.ts src/renamed.ts');
+    sh(work, 'git rm -q src/delete-me.ts');
+    writeFileSync(join(work, 'src/committed-new.ts'), 'new\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m task`);
+    // Uncommitted: unstaged edit, staged new file, untracked file (as a Bash write would leave), ignored file.
+    writeFileSync(join(work, 'src/keep.ts'), 'keep edited\n');
+    writeFileSync(join(work, 'src/staged.ts'), 'staged\n');
+    sh(work, 'git add src/staged.ts');
+    writeFileSync(join(work, 'src/bash wrote this.ts'), 'from bash\n');
+    writeFileSync(join(work, 'ignored.log'), 'noise\n');
+    mkdirSync(join(work, '.buildd'), { recursive: true });
+    writeFileSync(join(work, '.buildd/scratch.json'), '{}');
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('mission base: committed + staged + unstaged + untracked, renames both sides, deletes; no sibling history', () => {
+    const sweep = sweepWorktreeChanges(work, 'origin/mission/m-1');
+    expect(sweep.baseResolved).toBe(true);
+    expect(sweep.error).toBeUndefined();
+    expect(sweep.paths).toEqual([
+      'src/bash wrote this.ts',
+      'src/committed-new.ts',
+      'src/delete-me.ts',
+      'src/keep.ts',
+      'src/rename-me.ts',
+      'src/renamed.ts',
+      'src/staged.ts',
+    ]);
+    // The integration branch's own history is not this task's edit.
+    expect(sweep.paths).not.toContain('src/mission-sibling.ts');
+    // Ignored and runtime files never appear.
+    expect(sweep.paths).not.toContain('ignored.log');
+    expect(sweep.paths.some(p => p.startsWith('.buildd/'))).toBe(false);
+  });
+
+  test('measuring against trunk instead would wrongly include the mission sibling', () => {
+    // The regression this replaces: origin/HEAD-or-dev observation.
+    const trunk = sweepWorktreeChanges(work, 'origin/dev');
+    expect(trunk.paths).toContain('src/mission-sibling.ts');
+  });
+
+  test('unresolvable base: committed half is empty, never a silent trunk fallback', () => {
+    const sweep = sweepWorktreeChanges(work, 'origin/does-not-exist');
+    expect(sweep.baseResolved).toBe(false);
+    expect(sweep.committed).toEqual([]);
+    expect(sweep.paths).not.toContain('src/mission-sibling.ts');
+    expect(sweep.paths).not.toContain('src/committed-new.ts');
+    // Uncommitted work is still reported.
+    expect(sweep.paths).toContain('src/bash wrote this.ts');
+  });
+
+  test('no base at all behaves the same as an unresolvable one', () => {
+    const sweep = sweepWorktreeChanges(work, undefined);
+    expect(sweep.baseResolved).toBe(false);
+    expect(sweep.paths).toContain('src/keep.ts');
+    expect(sweep.paths).not.toContain('src/mission-sibling.ts');
+  });
+
+  test('a git failure is reported as incomplete, not as an empty sweep', () => {
+    const sweep = sweepWorktreeChanges(join(tmp, 'not-a-repo'), 'origin/dev');
+    expect(sweep.error).toBeDefined();
+    expect(sweep.paths).toEqual([]);
+  });
+
+  test('refreshBaseRef fetches the base so a moved mission branch is measured correctly', async () => {
+    // Another task lands on the mission branch after this worktree was cut.
+    const other = join(tmp, 'other');
+    sh(tmp, `git clone -q -b mission/m-1 ${origin} ${other}`);
+    writeFileSync(join(other, 'src/landed-later.ts'), 'x\n');
+    sh(other, 'git add -A && git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m later && git push -q origin mission/m-1');
+    // This task merges the updated base into its branch.
+    expect(await refreshBaseRef(work, 'origin/mission/m-1')).toBe(true);
+    sh(work, 'git reset -q'); // merge refuses a non-empty index
+    sh(work, 'git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false merge -q --no-edit origin/mission/m-1');
+    const sweep = sweepWorktreeChanges(work, 'origin/mission/m-1');
+    expect(sweep.paths).not.toContain('src/landed-later.ts');
+    expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
+    expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
+  });
+});

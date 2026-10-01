@@ -149,6 +149,28 @@ describe('checkPathClaim', () => {
     expect(ev.detail).toEqual({ blockingTaskId: SIBLING_ID, blockingPath: 'shared.ts', crossMission: true, deadlock: false });
   });
 
+  it('on conflict: the body names the held path and every requested path that is held, so a runner can deny per path', async () => {
+    mockAcquirePathClaims.mockResolvedValue({
+      kind: 'conflict',
+      conflict: { blockingTaskId: SIBLING_ID, blockingPath: 'apps/web' },
+      blocked: [
+        { path: 'apps/web/a.ts', blockingTaskId: SIBLING_ID, blockingPath: 'apps/web' },
+        { path: 'apps/web/b.ts', blockingTaskId: SIBLING_ID, blockingPath: 'apps/web' },
+      ],
+    } as any);
+    mockTasksFindFirst
+      .mockResolvedValueOnce(task())
+      .mockResolvedValueOnce({ id: SIBLING_ID, title: 'Sibling', missionId: null });
+
+    const r = await checkPathClaim({ ...base, paths: ['apps/web/a.ts', 'apps/web/b.ts', 'free.ts'] });
+    if (r.kind !== 'conflict') throw new Error('expected conflict');
+    expect(r.body.blockingPath).toBe('apps/web');
+    expect(r.body.blockedPaths).toEqual([
+      { path: 'apps/web/a.ts', blockingTaskId: SIBLING_ID, blockingPath: 'apps/web' },
+      { path: 'apps/web/b.ts', blockingTaskId: SIBLING_ID, blockingPath: 'apps/web' },
+    ]);
+  });
+
   it('on deadlock: flags it, posts a mission note, and the gate event says so', async () => {
     const cycle = [TASK_ID, SIBLING_ID, TASK_ID];
     mockAcquirePathClaims.mockResolvedValue(conflictResult(SIBLING_ID, 'x.ts'));

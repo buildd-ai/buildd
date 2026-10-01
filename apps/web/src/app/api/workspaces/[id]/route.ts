@@ -327,6 +327,17 @@ export async function PATCH(
           );
         }
       }
+      // Path-claim enforcement opt-in: exact values only, so a truthy typo can
+      // never quietly turn edit denial on (or appear to and not).
+      if ('pathClaimEnforcement' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).pathClaimEnforcement;
+        if (mode !== null && mode !== 'advisory' && mode !== 'enforce') {
+          return NextResponse.json(
+            { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
+            { status: 400 },
+          );
+        }
+      }
       const current = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, id),
         columns: { gitConfig: true },

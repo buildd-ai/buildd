@@ -12,6 +12,8 @@ import { sessionLog } from './session-logger';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
+import { sweepWorktreeChanges, refreshBaseRef, type PathCollision } from './path-claim-enforcement';
+import { firstCollision } from './path-collision-defer';
 
 /**
  * Grace period after a worker's own completion/failure before checkStale()
@@ -61,20 +63,28 @@ function repoPathFromWorktree(worktreePath: string): string {
   return idx > 0 ? worktreePath.substring(0, idx) : worktreePath;
 }
 
+/** How often the sync tick may fetch a base ref it could not resolve. */
+const BASE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+
 /**
- * Compute files touched on the current branch vs origin/HEAD (or origin/dev as fallback).
- * Uses git diff --name-only with a three-dot range so only branch-specific changes are counted.
- * Returns an empty array on any error — this is passive infrastructure; never throws.
+ * Files this task has changed, for observed-touch leasing: the checkpoint
+ * sweep (path-claim-enforcement.ts) against the worker's RESOLVED base — the
+ * ref its worktree was cut from, a mission integration branch on a mission
+ * task — unioned with staged, unstaged and untracked files, so Bash and Codex
+ * writes reach the manifest too.
+ *
+ * This replaced committed-only `origin/HEAD...HEAD || origin/dev...HEAD`
+ * observation, which missed every uncommitted write and, on a mission branch,
+ * reported the integration branch's own history as this task's edits.
+ * With no resolvable base the committed half is left out rather than guessed.
+ * Never throws — passive infrastructure.
  */
-function computeTouchedPaths(worktreePath: string): string[] {
+function computeTouchedPaths(worktreePath: string, baseRef: string | undefined): { paths: string[]; baseResolved: boolean } {
   try {
-    const output = execSync(
-      'git diff --name-only origin/HEAD...HEAD 2>/dev/null || git diff --name-only origin/dev...HEAD 2>/dev/null',
-      { cwd: worktreePath, timeout: 5000 },
-    ).toString().trim();
-    return output ? output.split('\n').filter(Boolean) : [];
+    const sweep = sweepWorktreeChanges(worktreePath, baseRef);
+    return { paths: sweep.paths, baseResolved: sweep.baseResolved };
   } catch {
-    return [];
+    return { paths: [], baseResolved: false };
   }
 }
 
@@ -158,6 +168,11 @@ export interface WorkerSyncContext {
   buildUserMessage: (content: string, opts?: { sessionId?: string }) => any;
   /** Tears down the worker's Pusher channel subscription, if any. Idempotent. */
   unsubscribeFromWorker: (workerId: string) => void;
+  /**
+   * Enforce-mode path claims: a collision the server reported on this sync's
+   * observed touches. WorkerManager checkpoints and defers the task. Optional.
+   */
+  onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
 }
 
 /**
@@ -383,9 +398,17 @@ export class WorkerSync {
 
       // Passive observed-touches: compute files touched on the branch for §6d.
       // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
-      const touchedPaths = worker.worktreePath && existsSync(worker.worktreePath)
-        ? computeTouchedPaths(worker.worktreePath)
+      const touched = worker.worktreePath && existsSync(worker.worktreePath)
+        ? computeTouchedPaths(worker.worktreePath, worker.worktreeBaseRef)
         : undefined;
+      const touchedPaths = touched?.paths;
+      // Refresh an unresolvable base ref outside the hot hook, throttled and
+      // async (never blocks this loop); the next tick measures against it.
+      if (touched && !touched.baseResolved && worker.worktreeBaseRef && worker.worktreePath
+        && Date.now() - (worker.pathSweepBaseFetchedAt ?? 0) > BASE_REFRESH_INTERVAL_MS) {
+        worker.pathSweepBaseFetchedAt = Date.now();
+        void refreshBaseRef(worker.worktreePath, worker.worktreeBaseRef);
+      }
       // Dirty-worktree signal for the complete_task gate — see computeDirtyWorktree.
       const dirtyWorktree = worker.worktreePath && existsSync(worker.worktreePath)
         ? computeDirtyWorktree(worker.worktreePath)
@@ -438,6 +461,19 @@ export class WorkerSync {
         if (drainedActionEvents) worker.pendingActionEvents = [...drainedActionEvents, ...(worker.pendingActionEvents ?? [])];
         if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [...drainedPromptCompositionEvents, ...(worker.pendingPromptCompositionEvents ?? [])];
         throw err;
+      }
+
+      // A path this sync reported is held by another live task. In enforce mode
+      // that stops the task (checkpoint + deferral, in WorkerManager); advisory
+      // mode leaves it to the §6d overlap message the server already sent.
+      const collision = firstCollision(response, 'sync');
+      if (collision) {
+        if (worker.pathClaimMode === 'enforce' && !worker.pathCollision) {
+          worker.pathCollision = collision;
+          this.ctx.onPathCollision?.(worker, collision);
+        } else if (worker.pathClaimMode !== 'enforce') {
+          console.log(`[Worker ${worker.id}] Path-claim advisory: ${collision.path} is held by ${collision.blockingTaskId}`);
+        }
       }
 
       // Server says worker was already terminated
