@@ -54,6 +54,7 @@ const POISONED = {
 
 let list: Record<string, unknown>[] = [];
 let canManage = true;
+let verifyFails = false;
 const requests: Array<{ url: string; method: string; body: unknown }> = [];
 
 let host: HTMLElement;
@@ -62,6 +63,7 @@ let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   list = [];
   canManage = true;
+  verifyFails = false;
   requests.length = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -72,6 +74,11 @@ beforeEach(() => {
       const created = { ...BACKEND, id: '44444444-4444-4444-8444-444444444444', status: 'ok', lastError: null };
       list = [created];
       return Response.json({ backend: created, verification: { status: 'ok', error: null, warnings: [] } }, { status: 201 });
+    }
+    if (url.endsWith('/verify') && method === 'POST' && verifyFails) {
+      // A failing check stores the same error as lastError, so the refreshed row carries it too.
+      list = list.map((b) => ({ ...b, status: 'failing', lastError: 'AccessDenied on PutObject' }));
+      return Response.json({ backendId: ID, status: 'failing', error: 'AccessDenied on PutObject', warnings: [], verifiedAt: '2026-10-01T00:00:00.000Z' });
     }
     if (url.endsWith('/verify') && method === 'POST') {
       list = list.map((b) => ({ ...b, status: 'ok', lastError: null }));
@@ -237,6 +244,18 @@ describe('add, verify, remove', () => {
     // not below the card where a phone would have to scroll to find it.
     expect(document.body.querySelector(`[data-testid="storage-row-${ID}"] [data-testid="storage-message"]`)).not.toBeNull();
     expect(document.body.querySelectorAll('[data-testid="storage-message"]').length).toBe(1);
+  });
+
+  it('a failed verify shows its error once in the open row, not twice', async () => {
+    list = [BACKEND];
+    verifyFails = true;
+    await mount();
+    await click(document.body.querySelector(`[data-testid="storage-row-${ID}"] button[aria-expanded]`));
+    await click(byTestId('storage-verify'));
+    const row = document.body.querySelector(`[data-testid="storage-row-${ID}"]`)?.textContent ?? '';
+    expect(row.split('AccessDenied on PutObject').length - 1).toBe(1);
+    // The transient line still says the check just ran and failed.
+    expect(byTestId('storage-message')?.textContent).toMatch(/failed/i);
   });
 
   it('remove confirms, then deletes', async () => {

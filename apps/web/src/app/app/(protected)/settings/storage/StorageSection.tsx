@@ -69,6 +69,18 @@ function MessageLine({ message }: { message: Message }) {
   );
 }
 
+/**
+ * A failed check stores its error as the backend's lastError, which the row
+ * already shows in its own notice. Say the check just failed instead of
+ * repeating the same sentence under the buttons.
+ */
+function rowMessage(message: Message, b: StorageBackend): Message {
+  if (message.type === 'error' && b.lastError && b.status !== 'ok' && message.text.includes(b.lastError)) {
+    return { ...message, text: 'The check failed just now. The error is shown above.' };
+  }
+  return message;
+}
+
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'never');
 
 function verificationMessage(prefix: string, v: Verification | undefined): Message {
@@ -398,7 +410,7 @@ function BackendRow({
               </button>
             </div>
           )}
-          {message && <MessageLine message={message} />}
+          {message && <MessageLine message={rowMessage(message, b)} />}
 
           {snippet && (
             <div className="space-y-2 border-t border-border-default pt-4" data-testid="storage-lifecycle">
