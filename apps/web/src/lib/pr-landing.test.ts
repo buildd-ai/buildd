@@ -141,6 +141,11 @@ const mockGuardReviewVerdict = mock(async (p: any): Promise<any> => {
 });
 mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardReviewVerdict }));
 
+// The carry-forward primitive records the new head on the approving review task
+// (a DB write). The landing function must route shadow through a dry run of it.
+const mockCarryForward = mock(async (_p: any): Promise<any> => ({ carried: true, reason: 'unchanged' }));
+mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
+
 let reviewStatus: any;
 const mockReadPrReviewStatus = mock(async (..._a: any[]) => reviewStatus);
 mock.module('@/lib/pr-review-request', () => ({ readPrReviewStatus: mockReadPrReviewStatus }));
@@ -240,7 +245,7 @@ beforeEach(() => {
   mockFindFirst = mock(() => null as any);
   for (const m of [
     mockGithubApi, mockMergePullRequest, mockDispatchConflictRetry, mockGuardReviewVerdict, mockReadPrReviewStatus,
-    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry,
+    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry, mockCarryForward,
   ]) {
     m.mockClear();
   }
@@ -805,6 +810,45 @@ describe('landPr — shadow mode', () => {
     // shadow never dispatches, so exhaustion cannot even be observed — it must not escalate either.
     await land({ mode: 'shadow' });
     expect(mockEscalate).not.toHaveBeenCalled();
+  });
+
+  it('would-carry-forward: the approval is evaluated but never recorded on the review task', async () => {
+    verdict = 'carried';
+    const out = await land({ mode: 'shadow' });
+    expect(out).toEqual({ kind: 'merged', sha: 'head1' });
+    const p = mockGuardReviewVerdict.mock.calls[0][0];
+    expect(p.carryForward).toBeTruthy();
+    expect(typeof p.deps?.carryForward).toBe('function');
+    await p.deps.carryForward({ installationId: 7, repoFullName: 'r', workspaceId: 'ws-1', prNumber: 42, baseRef: 'dev', headSha: 'head1' });
+    const record = mockCarryForward.mock.calls[0][0].deps?.record;
+    expect(typeof record).toBe('function');
+    // the dry-run recorder touches nothing
+    await expect(record({ reviewTaskId: 'review-1', headSha: 'head1' })).resolves.toBeUndefined();
+  });
+
+  it('enforce keeps the real carry-forward (it records the equivalent head)', async () => {
+    verdict = 'carried';
+    await land({ mode: 'enforce' });
+    expect(mockGuardReviewVerdict.mock.calls[0][0].deps?.carryForward).toBeUndefined();
+  });
+});
+
+describe('landPr — fails open on an unexpected error', () => {
+  for (const mode of ['shadow', 'enforce', 'off'] as const) {
+    it(`${mode}: a throwing dependency resolves to needs_human without merging`, async () => {
+      mockGuardReviewVerdict.mockImplementationOnce(async () => { throw new Error('db down'); });
+      const out = await land({ mode });
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'landing_error' });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+      expect(landingEvents()).toHaveLength(mode === 'off' ? 0 : 1);
+      if (mode === 'shadow') expect(landingEvents()[0]).toMatchObject({ outcome: 'warned', detail: { shadowOutcome: 'needs_human' } });
+    });
+  }
+
+  it('a throwing ledger write cannot fail the landing either', async () => {
+    mockFireGateEvent.mockImplementationOnce(() => { throw new Error('ledger down'); });
+    await expect(land({ mode: 'shadow' })).resolves.toEqual({ kind: 'merged', sha: 'head1' });
   });
 });
 

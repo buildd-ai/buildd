@@ -19,7 +19,8 @@
  * `shadow` computes the same outcome and records it (outcome `warned`) while
  * taking no action, so the legacy door keeps deciding; `off` computes and
  * records nothing. Shadow and off never merge, push, file a task, write the
- * marker or page.
+ * marker, record a carried approval or page; and landPr never throws, so a
+ * shadow call cannot disturb the door that made it.
  *
  * No `db.transaction()` (neon-http): the marker write is one atomic UPDATE with a
  * compare-and-set on its refresh counter.
@@ -28,7 +29,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import type { MergePolicy } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
 import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
@@ -41,6 +42,7 @@ import {
 } from '@/lib/auto-merge';
 import type { ModelApproveBound, CheckRunState } from '@/lib/auto-merge-bound';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable, type PrReviewStatus } from '@/lib/pr-review-status';
 import {
@@ -103,7 +105,9 @@ export type HumanCause =
   | 'no_owner'
   | 'merge_failed'
   | 'pr_closed'
-  | 'github_unreadable';
+  | 'github_unreadable'
+  /** The landing function itself threw. Nothing was decided past that point; see the ledger row's reason. */
+  | 'landing_error';
 
 export type LandingOutcome =
   | { kind: 'merged'; sha: string }
@@ -280,16 +284,73 @@ async function findLiveReviewerRetryTask(workspaceId: string, prNumber: number):
     where: and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
-      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      inArray(tasks.status, [...OPEN_TASK_STATUSES]),
     ),
     columns: { id: true },
   });
   return row?.id ?? null;
 }
 
+/**
+ * The carry-forward check without its write: same equivalence answer, but the
+ * new head is not recorded on the review task. Shadow uses this so observing a
+ * landing never changes the review state the legacy door reads.
+ */
+const dryRunCarryForward: typeof carryForwardApprovalIfUnchanged = (p) =>
+  carryForwardApprovalIfUnchanged({ ...p, deps: { ...p.deps, record: async () => {} } });
+
+/** A ledger write must never be what fails a landing (or the door that asked). */
+function safeFireGateEvent(input: Parameters<typeof fireGateEvent>[0]): void {
+  try {
+    fireGateEvent(input);
+  } catch (err) {
+    console.warn('[pr-landing] gate event write failed:', errMessage(err));
+  }
+}
+
 // ── landPr ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Never throws. An unexpected error resolves to `needs_human` (`landing_error`)
+ * with one ledger row: in shadow that leaves the legacy door entirely in charge,
+ * and in enforce it parks the PR rather than merging on a half-made decision.
+ */
 export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise<LandingOutcome> {
+  try {
+    return await decideAndLand(input, deps);
+  } catch (err) {
+    const reason = `the landing function failed: ${errMessage(err)}`;
+    console.warn(`[pr-landing] ${input.repoFullName}#${input.prNumber}:`, reason);
+    const outcome: LandingOutcome = { kind: 'needs_human', cause: 'landing_error', reason };
+    if (input.mode !== 'off') {
+      const act = input.mode === 'enforce';
+      safeFireGateEvent({
+        gate: GATE_SLUGS.PR_LANDING,
+        surface: 'pr-landing',
+        outcome: act ? gateOutcomeFor(outcome) : 'warned',
+        reason,
+        workspaceId: input.workspaceId,
+        taskId: input.owner.taskId,
+        workerId: input.owner.workerId,
+        callerOrigin: callerOriginFor(input.actor),
+        detail: {
+          prNumber: input.prNumber,
+          headSha: input.eventHeadSha,
+          repoFullName: input.repoFullName,
+          door: input.door,
+          mode: input.mode,
+          tier: input.policy.tier,
+          owner: outcomeOwner(outcome),
+          cause: 'landing_error',
+          [act ? 'landingOutcome' : 'shadowOutcome']: outcome.kind,
+        },
+      });
+    }
+    return outcome;
+  }
+}
+
+async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<LandingOutcome> {
   const { workspaceId, installationId, repoFullName, prNumber, owner, actor, policy } = input;
   const act = input.mode === 'enforce';
   const now = deps.now ?? Date.now;
@@ -317,7 +378,7 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
     };
     if (act) detail.landingOutcome = outcome.kind;
     else detail.shadowOutcome = outcome.kind;
-    fireGateEvent({
+    safeFireGateEvent({
       gate: GATE_SLUGS.PR_LANDING,
       surface: 'pr-landing',
       outcome: act ? gateOutcomeFor(outcome) : 'warned',
@@ -338,7 +399,7 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
 
   const bypass = (gate: string, reason: string, detail: Record<string, unknown>) => {
     if (!act) return;
-    fireGateEvent({
+    safeFireGateEvent({
       gate,
       surface: 'pr-landing',
       outcome: 'bypassed',
@@ -471,6 +532,8 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
     workerId: owner.workerId,
     callerOrigin,
     carryForward: baseRef ? { installationId, repoFullName, baseRef } : null,
+    // Shadow answers the same question but must not record the carried head.
+    ...(act ? {} : { deps: { carryForward: dryRunCarryForward } }),
   });
   if (gate.blocks) {
     const reason = gate.reason ?? 'the review verdict blocks this landing';
