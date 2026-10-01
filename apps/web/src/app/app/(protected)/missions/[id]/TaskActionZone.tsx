@@ -10,20 +10,22 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import type { TaskPhase } from '@/lib/task-presentation';
-
-interface GateRefusal {
-  gateReason: string;
-  blockClass?: 'policy' | 'capability';
-  error?: string;
-  canForce?: boolean;
-}
+import {
+  type GateRefusal,
+  type RunnerFleetStatus,
+  getGateReasonTitle,
+  getGateReasonSubtitle,
+  fetchRunnerFleet,
+  formatFleetStatus,
+} from '@/lib/task-actions';
 
 export interface TaskActionZoneProps {
   taskId: string;
+  workspaceId: string;
   /** Canonical phase from `deriveTaskPhase`. */
   phase: TaskPhase;
   isBlocked: boolean;
@@ -38,6 +40,7 @@ export interface TaskActionZoneProps {
 
 export default function TaskActionZone({
   taskId,
+  workspaceId,
   phase,
   isBlocked,
   blockedByCount,
@@ -50,6 +53,15 @@ export default function TaskActionZone({
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [gateRefusal, setGateRefusal] = useState<GateRefusal | null>(null);
+  const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
+
+  useEffect(() => {
+    if (gateRefusal?.blockClass !== 'capability') {
+      fetchRunnerFleet(workspaceId).then(fleet => {
+        setRunnerFleet(fleet);
+      });
+    }
+  }, [gateRefusal, workspaceId]);
 
   const runAction = useCallback(async (path: string, payload?: Record<string, unknown>) => {
     setActing(true);
@@ -176,27 +188,16 @@ export default function TaskActionZone({
         <div className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="font-mono text-[12px] font-medium text-status-warning mb-1">
-              {gateRefusal.gateReason === 'mission_local'
-                ? 'Running in a local session'
-                : gateRefusal.gateReason === 'mission_held'
-                ? 'Mission is held'
-                : gateRefusal.gateReason === 'mission_budget_exhausted'
-                ? 'Mission budget exhausted'
-                : gateRefusal.gateReason === 'unmerged_dep_pr'
-                ? 'Dependency PR not merged'
-                : 'Blocked'}
+              {getGateReasonTitle(gateRefusal.gateReason)}
             </p>
             <p className="font-mono text-[11px] text-text-muted">
-              {gateRefusal.gateReason === 'mission_local'
-                ? 'This mission runs in a local session. Force start to hand it to a runner.'
-                : gateRefusal.gateReason === 'mission_held'
-                ? 'Arm the mission or force start this task to bypass the hold.'
-                : gateRefusal.gateReason === 'mission_budget_exhausted'
-                ? 'Raise the mission budget or force start this task to run it anyway.'
-                : gateRefusal.gateReason === 'unmerged_dep_pr'
-                ? 'Merge the blocking PRs or force start to bypass this gate.'
-                : gateRefusal.error || 'This task cannot start yet.'}
+              {getGateReasonSubtitle(gateRefusal.gateReason, gateRefusal.error)}
             </p>
+            {runnerFleet && (
+              <p className="font-mono text-[11px] text-text-muted mt-2 p-2 bg-surface-3 rounded border border-border-default">
+                {formatFleetStatus(runnerFleet)}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

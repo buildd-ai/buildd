@@ -240,10 +240,11 @@ export function TaskPanelSkeleton() {
 
 export interface TaskPanelBodyProps {
   data: TaskPanelData;
+  workspaceId?: string | null;
   onChanged: () => void | Promise<void>;
 }
 
-export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
+export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPanelBodyProps) {
   const w = data.worker;
   const isBlocked = data.status === 'pending' && data.blockedByCount > 0;
   // Canonical phase — shared with the task detail page (deriveTaskPhase), so the
@@ -293,6 +294,7 @@ export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
       {/* ── Action zone — the one decision this state needs, done here ── */}
       <TaskActionZone
         taskId={data.id}
+        workspaceId={workspaceId || ''}
         phase={phase}
         isBlocked={isBlocked}
         blockedByCount={data.blockedByCount}
