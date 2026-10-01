@@ -7,6 +7,7 @@ import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
+import { isTaskToken } from './task-token';
 
 /**
  * Cache API key hash → account record.
@@ -117,6 +118,16 @@ async function authenticateOauthJwt(jwt: string) {
 }
 
 /**
+ * A cached account record written before a column that auth decisions read
+ * existed lacks that field, and reading it as "absent" would refuse a runner
+ * the DB now allows (credential custody reads `hostRunner`). Such a record is
+ * treated as a miss and re-fetched.
+ */
+function isCurrentShape(account: CachedAccount): boolean {
+  return typeof (account as { hostRunner?: unknown }).hostRunner === 'boolean';
+}
+
+/**
  * Authenticate an incoming API key by hashing it and looking up the hash.
  * Returns the account if found, null otherwise.
  *
@@ -131,6 +142,10 @@ async function authenticateOauthJwt(jwt: string) {
  */
 async function resolveApiKey(apiKey: string | null) {
   if (!apiKey) return null;
+
+  // A per-task token is never an account key. Only the routes that opt in
+  // through lib/task-token-auth.ts accept one, confined to its own task.
+  if (isTaskToken(apiKey)) return null;
 
   // OAuth bearer path — verify the JWT before any DB work.
   if (tokensModule.looksLikeJwt(apiKey)) {
@@ -165,13 +180,13 @@ async function resolveApiKey(apiKey: string | null) {
 
   // Check positive cache (L1)
   const cached = accountCache.get(hashed);
-  if (cached) {
+  if (cached && isCurrentShape(cached)) {
     return cached;
   }
 
   // L1 miss — check Redis (L2) before hitting the DB
   const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
-  if (redisAccount) {
+  if (redisAccount && isCurrentShape(redisAccount)) {
     accountCache.set(hashed, redisAccount);
     return redisAccount;
   }

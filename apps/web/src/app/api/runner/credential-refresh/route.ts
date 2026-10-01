@@ -4,6 +4,7 @@ import { secrets, credentialLeases } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, gt, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { refuseCredentialCustody } from '@/lib/credential-custody';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
 
@@ -43,6 +44,8 @@ export async function POST(req: NextRequest) {
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+  const refused = refuseCredentialCustody(apiKey, account);
+  if (refused) return refused;
 
   const body = await req.json() as {
     secretId?: string;

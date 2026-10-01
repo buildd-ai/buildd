@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -24,6 +26,8 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { lineageStamp } from '@/lib/attempt-lineage';
+import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
@@ -51,6 +55,7 @@ import {
   constructFallbackStructuredOutput,
 } from '@/lib/reviewer-prose-fallback';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { BASH_FAILURE_PATTERN, BASH_RECOVERED_PATTERN, BASH_TRACE_EXCERPT_MAX } from '@buildd/core/bash-failure-trace';
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
@@ -526,7 +531,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token (cloud container) may read only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -550,6 +556,10 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // The workspace row carries the webhook dispatch bearer token; neither a
+  // team member reading a worker nor a cloud container has any use for it.
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
+
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
     // Outside it the worker does not exist for this caller.
@@ -557,19 +567,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    // The workspace row carries the webhook dispatch bearer token; a team
-    // member reading a worker has no use for it.
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return NextResponse.json({ ...worker, workspace });
+    return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status
@@ -581,7 +586,8 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token (cloud container) may update only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -599,7 +605,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -917,7 +923,12 @@ export async function PATCH(
         taskId: worker.taskId,
         pattern: String(t.pattern).slice(0, 100),
         // Sensitive: drop excerpt prose, keep only pattern/source/ts for structured analysis
-        excerpt: isSensitive ? '' : String(t.excerpt).slice(0, 500),
+        excerpt: isSensitive
+          ? ''
+          : String(t.excerpt).slice(
+              0,
+              t.pattern === BASH_FAILURE_PATTERN || t.pattern === BASH_RECOVERED_PATTERN ? BASH_TRACE_EXCERPT_MAX : 500,
+            ),
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
@@ -3317,6 +3328,15 @@ export async function PATCH(
         }
       }
 
+      // Evidence: a compact record of why the task failed, or of the caveat on a
+      // success, so "did it fail, why" is answerable from buildd alone. Skipped
+      // when the task is going back to the queue (no terminal outcome yet).
+      // Awaited — a serverless function may freeze an un-awaited write — and
+      // contained: it never throws.
+      if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
+        await persistTaskEvidence(worker.taskId, id, { isSensitive });
+      }
+
       // Record routing outcome for analytics/calibration. Skipped on retry
       // (we only want one row per terminal outcome). Fire-and-forget.
       if (!shouldAutoRetry) {
@@ -4906,6 +4926,7 @@ async function handleReviewerOutcomeIfNeeded(
             prNumber,
             prUrl,
             workerBranch,
+            ...lineageStamp(originalTask, [prNumber]),
           },
           pathManifest: originalTask.pathManifest,
           release: 'false',

@@ -128,7 +128,7 @@ describe('authenticateApiKey', () => {
   });
 
   it('returns account when key matches', async () => {
-    const mockAccount = { id: 'account-123', name: 'Test Account' };
+    const mockAccount = { id: 'account-123', name: 'Test Account', hostRunner: false };
     mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
     const result = await authenticateApiKey('bld_valid_key');
@@ -165,7 +165,7 @@ describe('authenticateApiKey', () => {
 
   describe('caching', () => {
     it('serves subsequent calls from cache (no additional DB query)', async () => {
-      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      const mockAccount = { id: 'account-123', name: 'Test Account', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
       const result1 = await authenticateApiKey('bld_cached_key');
@@ -188,7 +188,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('returns account from Redis L2 without hitting DB (cold L1)', async () => {
-      const mockAccount = { id: 'redis-acct', name: 'Redis Account' };
+      const mockAccount = { id: 'redis-acct', name: 'Redis Account', hostRunner: false };
       mockGetCachedApiKey.mockResolvedValueOnce(mockAccount);
 
       const result = await authenticateApiKey('bld_redis_key');
@@ -198,7 +198,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('populates L1 from Redis hit so next call skips both Redis and DB', async () => {
-      const mockAccount = { id: 'redis-acct-2', name: 'Redis Account 2' };
+      const mockAccount = { id: 'redis-acct-2', name: 'Redis Account 2', hostRunner: false };
       mockGetCachedApiKey.mockResolvedValueOnce(mockAccount);
 
       await authenticateApiKey('bld_redis_warm');
@@ -210,7 +210,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('writes to Redis after DB hit', async () => {
-      const mockAccount = { id: 'db-acct', name: 'DB Account' };
+      const mockAccount = { id: 'db-acct', name: 'DB Account', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValueOnce(mockAccount);
 
       await authenticateApiKey('bld_db_key');
@@ -219,8 +219,8 @@ describe('authenticateApiKey', () => {
     });
 
     it('different keys get separate cache entries', async () => {
-      const account1 = { id: 'acct-1', name: 'Account 1' };
-      const account2 = { id: 'acct-2', name: 'Account 2' };
+      const account1 = { id: 'acct-1', name: 'Account 1', hostRunner: false };
+      const account2 = { id: 'acct-2', name: 'Account 2', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValueOnce(account1);
       mockAccountsFindFirst.mockResolvedValueOnce(account2);
 
@@ -242,7 +242,7 @@ describe('authenticateApiKey', () => {
 
   describe('cache invalidation', () => {
     it('invalidateAccountCache forces a re-query for that account', async () => {
-      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      const mockAccount = { id: 'account-123', name: 'Test Account', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
       await authenticateApiKey('bld_key');
@@ -257,7 +257,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('invalidateAccountCacheByHash forces a re-query', async () => {
-      const mockAccount = { id: 'account-123', name: 'Test Account' };
+      const mockAccount = { id: 'account-123', name: 'Test Account', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
       await authenticateApiKey('bld_key');
@@ -281,7 +281,7 @@ describe('authenticateApiKey', () => {
       invalidateAccountCacheByHash(hashApiKey('bld_new_key'));
 
       // Mock now returns an account (key exists in DB)
-      const mockAccount = { id: 'new-acct', name: 'New Account' };
+      const mockAccount = { id: 'new-acct', name: 'New Account', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValueOnce(mockAccount);
 
       const result = await authenticateApiKey('bld_new_key');
@@ -295,7 +295,7 @@ describe('authenticateApiKey', () => {
     });
 
     it('clearAccountCache empties all caches', async () => {
-      const mockAccount = { id: 'acct-1', name: 'Account 1' };
+      const mockAccount = { id: 'acct-1', name: 'Account 1', hostRunner: false };
       mockAccountsFindFirst.mockResolvedValue(mockAccount);
 
       await authenticateApiKey('bld_key_a');
@@ -498,4 +498,46 @@ it('workspace-restricted tokens must name a workspace when creating team-level w
     expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Team-wide' }))).toBeNull();
     expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Scoped', workspaceId: 'ws-selected' }))).not.toBeNull();
   }
+});
+
+describe('authenticateApiKey — per-task tokens', () => {
+  it('never resolves a per-task token to an account, even one whose hash matches a row', async () => {
+    clearAccountCache();
+    mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    mockGetCachedApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    expect(await authenticateApiKey('bldt_payload.sig')).toBeNull();
+    expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+    expect(mockGetCachedApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe('authenticateApiKey — cached records from before accounts.hostRunner', () => {
+  it('re-fetches a Redis record that has no hostRunner field instead of serving it', async () => {
+    clearAccountCache();
+    mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockSetCachedApiKey.mockReset();
+    mockSetCachedApiKey.mockResolvedValue(undefined);
+    mockGetCachedApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+
+    const account = await authenticateApiKey('bld_pre_column_record');
+    expect(account?.hostRunner).toBe(true);
+    expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+    // Rewritten with the field, and served from L1 afterwards.
+    expect(mockSetCachedApiKey).toHaveBeenCalledTimes(1);
+    expect((await authenticateApiKey('bld_pre_column_record'))?.hostRunner).toBe(true);
+    expect(mockAccountsFindFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves a Redis record that has the field', async () => {
+    clearAccountCache();
+    mockAccountsFindFirst.mockReset();
+    mockGetCachedApiKey.mockReset();
+    mockGetCachedApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: false });
+    expect((await authenticateApiKey('bld_current_record'))?.hostRunner).toBe(false);
+    expect(mockAccountsFindFirst).not.toHaveBeenCalled();
+  });
 });

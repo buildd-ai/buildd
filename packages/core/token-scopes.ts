@@ -34,6 +34,11 @@ export type TokenPreset = keyof typeof TOKEN_PRESETS;
 /** Presentation mapping only: legacy tokens retain their exact original level gates. */
 export const LEGACY_LEVEL_PRESET = { worker: 'runner', trigger: 'ci', admin: 'admin' } as const satisfies Record<string, TokenPreset>;
 
+/** Scopes only a team owner or admin may put on a token. Every other scope is member-grantable. */
+export function requiresTeamAdminToGrant(scope: string): boolean {
+  return scope.endsWith(':admin') || ['admin', 'secrets', 'releases', 'schedules:write'].includes(scope);
+}
+
 /** The stored level of a scoped token: admin only with the admin scope. */
 export function scopedTokenLevel(scopes: readonly string[]): 'admin' | 'worker' {
   return scopes.includes('admin') ? 'admin' : 'worker';
@@ -63,7 +68,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   spec_compare: 'tasks:read', list_discrepancies: 'tasks:read', get_discrepancy: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
-  claim_task: 'workers:write', update_progress: 'workers:write', complete_task: 'workers:write',
+  claim_task: 'workers:write', update_progress: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write',
   create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',

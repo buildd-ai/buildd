@@ -75,10 +75,12 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
 /**
  * Scopes that are themselves an administrative capability. An in-handler admin
  * gate on a route whose own scope is one of these may use that scope; every
- * other admin gate must name its capability explicitly.
+ * other admin gate must name its capability explicitly. None of these is
+ * member-grantable (`requiresTeamAdminToGrant`), so a member-minted token never
+ * passes a gate through this fallback.
  */
-const ADMIN_TIER_SCOPES: ReadonlySet<TokenScope> = new Set<TokenScope>([
-  'admin', 'secrets', 'releases', 'analytics:read', 'missions:admin', 'skills:admin',
+export const ADMIN_TIER_SCOPES: ReadonlySet<TokenScope> = new Set<TokenScope>([
+  'admin', 'secrets', 'releases', 'missions:admin', 'skills:admin',
   'workspaces:admin', 'schedules:write', 'knowledge:admin', 'tasks:admin', 'workers:admin',
 ]);
 
@@ -108,5 +110,7 @@ export function hasTokenRouteAdminAccess(
   if (token.scopes == null) return token.level === 'admin';
   if (!canAccessTokenRoute(token, request)) return false;
   const required = capability ?? adminCapabilityForRoute(new URL(request.url).pathname, request.method);
-  return required !== null && hasTokenScope(token.scopes, required);
+  // Full administration passes every gate the token can reach.
+  if (required === null) return hasTokenScope(token.scopes, 'admin');
+  return hasTokenScope(token.scopes, required);
 }

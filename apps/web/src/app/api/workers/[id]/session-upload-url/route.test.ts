@@ -59,6 +59,7 @@ function standardWorker(overrides: Record<string, unknown> = {}) {
   return {
     id: WORKER,
     accountId: ACCOUNT,
+    taskId: 'task-1',
     workspaceId: WORKSPACE,
     workspace: { teamId: TEAM, dataClass: 'standard' },
     ...overrides,
@@ -111,6 +112,17 @@ describe('POST /api/workers/[id]/session-upload-url', () => {
     const res = await POST(req({ kind: 'transcript', sizeBytes: 100 }), { params: mockParams });
     expect(res.status).toBe(403);
     expect(mockGenerateConstrainedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it("a per-task token signs for its own worker, never the same account's worker on another task", async () => {
+    const scoped = (taskId: string) => ({
+      id: ACCOUNT, teamId: TEAM, level: 'worker', taskScope: { taskId, workspaceId: WORKSPACE, expiresAt: Date.now() + 60_000 },
+    });
+    mockAuthenticateApiKey.mockResolvedValue(scoped('task-other'));
+    expect((await POST(req({ kind: 'transcript', sizeBytes: 100 }), { params: mockParams })).status).toBe(403);
+    expect(mockGenerateConstrainedUploadUrl).not.toHaveBeenCalled();
+    mockAuthenticateApiKey.mockResolvedValue(scoped('task-1'));
+    expect((await POST(req({ kind: 'transcript', sizeBytes: 100 }), { params: mockParams })).status).toBe(200);
   });
 
   it('returns 403 without signing when the worker team does not match the caller team', async () => {

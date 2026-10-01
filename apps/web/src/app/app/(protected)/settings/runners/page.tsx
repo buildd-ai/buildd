@@ -19,7 +19,7 @@ const NO_FLEET: FleetSnapshot = { runners: [], live: 0, capacity: 0, window: { f
  * with), then runner tokens (how it reaches buildd).
  */
 export default async function RunnersSettingsPage() {
-  const { teams, currentTeamId, currentTeam, workspaces } = await loadSettingsContext();
+  const { user, teams, currentTeamId, currentTeam, workspaces } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet] = await Promise.all([
@@ -30,7 +30,16 @@ export default async function RunnersSettingsPage() {
     }),
   ]);
   const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
-  const tokens = accounts.map((a) => ({ ...a, lastSeenAt: lastSeen[a.id] ?? null }));
+  // Owners/admins of a token's team may change its host-runner flag (the PUT
+  // route enforces the same rule); a personal team counts as owned.
+  const adminTeamIds = new Set(
+    teams.filter((t) => t.role === 'owner' || t.role === 'admin' || t.slug === `personal-${user.id}`).map((t) => t.id),
+  );
+  const tokens = accounts.map((a) => ({
+    ...a,
+    lastSeenAt: lastSeen[a.id] ?? null,
+    canManageHostRunner: adminTeamIds.has(a.teamId),
+  }));
   const cloudTeams = teams.map((t) => ({ id: t.id, name: t.name }));
 
   return (

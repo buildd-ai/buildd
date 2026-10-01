@@ -4,14 +4,15 @@
  * GET  /api/workspaces/:id/memory  → list/search memories (scoped by workspace repo as project)
  * POST /api/workspaces/:id/memory  → save a memory (mirrored into the recall index)
  *
- * Auth: session user or API key with workspace access.
+ * Auth: session user or API key with workspace access, or a per-task token
+ * for its own task's workspace only.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { saveMemory } from '@buildd/core/memory-write';
@@ -25,7 +26,7 @@ async function authenticateRequest(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey, req);
+    const account = await authenticateTaskScopedCaller(apiKey, req);
     if (account) return { type: 'api' as const, account };
   }
 
@@ -43,6 +44,7 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
   if (auth.type === 'session') {
     return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId));
   } else if (auth.type === 'api') {
+    if (!taskScopeAllowsWorkspace(auth.account, workspaceId)) return false;
     return !!(await verifyAccountWorkspaceAccess(auth.account.id, workspaceId));
   }
   return true; // dev mode

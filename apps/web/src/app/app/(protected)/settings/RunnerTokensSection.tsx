@@ -12,6 +12,7 @@ import SettingsSection from './SettingsSection';
 import { StatusChip } from './_components/ConnectionRow';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
+import HostRunnerToggle from './HostRunnerToggle';
 
 interface Account {
   id: string;
@@ -35,6 +36,10 @@ interface Account {
   createdAt?: string | Date | null;
   /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
   lastSeenAt?: string | null;
+  /** Trusted as a long-lived host runner (team credential access). */
+  hostRunner?: boolean;
+  /** The viewer is an owner/admin of this token's team, so may change hostRunner. */
+  canManageHostRunner?: boolean;
 }
 
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
@@ -201,6 +206,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                 {hasWarning && (
                                   <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
                                 )}
+
+                                <HostRunnerToggle
+                                  accountId={account.id}
+                                  hostRunner={account.hostRunner === true}
+                                  canManage={account.canManageHostRunner === true}
+                                />
 
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button

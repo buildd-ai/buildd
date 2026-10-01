@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
-import { isTokenScope, scopedTokenLevel } from '@buildd/core/token-scopes';
+import { isTokenScope, requiresTeamAdminToGrant, scopedTokenLevel } from '@buildd/core/token-scopes';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
@@ -109,20 +109,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: keyLevelNotAllowedMessage(role, requestedLevel) }, { status: 403 });
     }
 
-    if (role === 'member' && scopes?.some((scope: string) => (scope.endsWith(':admin') || ['admin', 'secrets', 'releases', 'schedules:write'].includes(scope)))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
-    let selectedWorkspaces: string[] = workspaceId ? [workspaceId] : [];
-    if (scopes !== undefined || workspaceIds != null) {
+    if (role === 'member' && scopes?.some((scope: string) => requiresTeamAdminToGrant(scope))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
+    let selectedWorkspaces: string[] = [];
+    // Explicit links: a scoped token's list, or a legacy key's single workspaceId.
+    const requestedLinks: string[] | null = workspaceIds ?? (scopes === undefined && typeof workspaceId === 'string' && workspaceId ? [workspaceId] : null);
+    if (scopes !== undefined || requestedLinks != null) {
       const keyTeamId: string = teamId;
       const teamWorkspaces = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, teamId), columns: { id: true, teamId: true, accessMode: true } });
       const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
-      if (workspaceIds != null) {
-        if (workspaceIds.some(id => !byId.has(id))) return NextResponse.json({ error: 'Workspace is outside this team' }, { status: 403 });
+      if (requestedLinks != null) {
+        if (requestedLinks.some(id => !byId.has(id))) return NextResponse.json({ error: 'Workspace is outside this team' }, { status: 403 });
         // Restricted access mode admits an API token only through an explicit
         // link, which is a team owner/admin decision.
-        if (!canAdministerTeamKeys(role) && workspaceIds.some(id => !isOpenWithinTeams(byId.get(id), [keyTeamId]))) {
+        if (!canAdministerTeamKeys(role) && requestedLinks.some(id => !isOpenWithinTeams(byId.get(id), [keyTeamId]))) {
           return NextResponse.json({ error: 'Only a team owner or admin can grant a token access to a restricted workspace' }, { status: 403 });
         }
-        selectedWorkspaces = workspaceIds;
+        selectedWorkspaces = requestedLinks;
       } else {
         // An unrestricted token is linked to open workspaces only; restricted
         // ones must be listed explicitly.

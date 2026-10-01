@@ -15,6 +15,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -32,6 +33,7 @@ import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusa
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -177,7 +179,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token (cloud container) may open a PR only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -217,6 +220,9 @@ export async function POST(req: NextRequest) {
     // Team membership OR being the account that runs the worker — see
     // canActOnWorkerPr for why neither check alone is enough.
     if (!(await canActOnWorkerPr(account, worker))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -1775,6 +1781,10 @@ export async function GET(req: NextRequest) {
       ? await fetchSplitPrStats(installationId, fullName, prNumber)
       : null;
 
+    // Fix attempts on this PR's chain, with why each ended as it did. A read
+    // failure costs the list, not the PR.
+    const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1809,6 +1819,7 @@ export async function GET(req: NextRequest) {
       reviews: reviewSummary,
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
+      ...(attempts.length > 0 ? { attempts } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

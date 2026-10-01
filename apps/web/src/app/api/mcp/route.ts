@@ -24,7 +24,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@buildd/core/token-scopes";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
-import { authenticateApiKey } from "@/lib/api-auth";
+import { authenticateTaskScopedCaller } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId } from "@/lib/mcp-request-scope";
@@ -811,7 +811,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     });
   }
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token (cloud container) is accepted only as its own worker:
+  // `?worker=` is required and checked below.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return new Response(JSON.stringify({ error: "Invalid API key" }), {
       status: 401,
@@ -825,7 +827,17 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   const repoParam = url.searchParams.get("repo");
   let workspaceId: string | undefined;
 
-  if (workspaceParam) {
+  if (account.taskScope) {
+    // A per-task token acts only in its task's workspace: a different
+    // `?workspace=` is refused and `?repo=` is ignored.
+    if (workspaceParam && workspaceParam !== account.taskScope.workspaceId) {
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    workspaceId = account.taskScope.workspaceId;
+  } else if (workspaceParam) {
     // Same generic refusal for an unknown workspace and another team's, so the
     // response cannot be used to probe which workspaces exist.
     if (!(await isWorkspaceInCallerScope(workspaceParam, account))) {
@@ -849,6 +861,12 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   // A `?worker=` id is the worker this session acts as; it must be one the
   // calling account runs, or one in its own team's workspaces.
   const workerParam = url.searchParams.get("worker");
+  if (account.taskScope && !workerParam) {
+    return new Response(JSON.stringify({ error: "This token requires ?worker=<its own worker id>" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
     return new Response(JSON.stringify({ error: "Worker not found for this account" }), {
       status: 403,

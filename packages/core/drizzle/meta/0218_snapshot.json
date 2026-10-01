@@ -1,5 +1,5 @@
 {
-  "id": "589002d4-5884-4465-9c2f-c79ec3ed005f",
+  "id": "1244004e-7ca3-4510-8fe4-4344994d7b65",
   "prevId": "94b9dcb1-e798-4abe-addb-387d859c15ee",
   "version": "7",
   "dialect": "postgresql",
@@ -120,30 +120,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "scopes": {
-          "name": "scopes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "workspace_ids": {
-          "name": "workspace_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_used_at": {
-          "name": "last_used_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "github_id": {
           "name": "github_id",
           "type": "text",
@@ -238,6 +214,13 @@
           "type": "numeric(10, 2)",
           "primaryKey": false,
           "notNull": false
+        },
+        "host_runner": {
+          "name": "host_runner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "max_concurrent_workers": {
           "name": "max_concurrent_workers",

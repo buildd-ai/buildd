@@ -340,6 +340,19 @@ describe('POST scoped tokens: level, workspace links and role ceilings', () => {
     expect(linkedWorkspaceIds).toEqual(['ws-restricted']);
   });
 
+  it('a legacy workspaceId link gets the same team and restricted-mode checks', async () => {
+    expect((await POST(req({ workspaceId: 'ws-elsewhere' }))).status).toBe(403);
+    mockGetUserTeamRole.mockResolvedValue('member');
+    expect((await POST(req({ workspaceId: 'ws-restricted' }))).status).toBe(403);
+    expect(inserted).toBeUndefined();
+    expect((await POST(req({ workspaceId: 'ws-open' }))).status).toBe(200);
+    expect(linkedWorkspaceIds).toEqual(['ws-open']);
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    linkedWorkspaceIds.length = 0;
+    expect((await POST(req({ workspaceId: 'ws-restricted' }))).status).toBe(200);
+    expect(linkedWorkspaceIds).toEqual(['ws-restricted']);
+  });
+
   it('dedupes workspace ids and validates them all before creating anything', async () => {
     expect((await POST(req({ scopes: ['tasks:read'], workspaceIds: ['ws-open', 'ws-open'] }))).status).toBe(200);
     expect(inserted.workspaceIds).toEqual(['ws-open']);

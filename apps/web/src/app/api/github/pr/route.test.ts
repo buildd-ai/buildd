@@ -394,6 +394,24 @@ describe('POST /api/github/pr', () => {
     expect(data.error).toBe('Worker belongs to different account');
   });
 
+  it("refuses a per-task token for a team worker that is not its own", async () => {
+    const scoped = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 } };
+    mockAuthenticateApiKey.mockResolvedValue(scoped);
+    // Same team (so an account key would pass), but another account's worker...
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-2', taskId: 'task-own', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    const body = { workerId: 'w-1', title: 'My PR', head: 'feature-branch' };
+    let res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
+    // ...or its own account's worker on another task.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-1', taskId: 'task-other', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
+  });
+
   // A shared runner on its own team reaches this workspace through a claim
   // grant; the claim path honours it, so create_pr must too.
   it('lets the cross-team account running the worker through while it holds a claim grant', async () => {

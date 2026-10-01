@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
-import { adminCapabilityForRoute, canAccessTokenRoute, hasTokenRouteAdminAccess, requiredTokenScope } from './token-route-policy';
+import { TOKEN_PRESETS, TOKEN_SCOPES, requiresTeamAdminToGrant } from '@buildd/core/token-scopes';
+import { ADMIN_TIER_SCOPES, adminCapabilityForRoute, canAccessTokenRoute, hasTokenRouteAdminAccess, requiredTokenScope } from './token-route-policy';
 const request = (path: string, method = 'GET') => ({ url: `https://example.test${path}`, method });
 describe('REST token scope policy', () => {
   test('CI tokens can write tasks without admin and cannot read secrets', () => {
@@ -81,5 +81,26 @@ describe('REST token scope policy', () => {
     const token = { scopes: ['admin'], workspaceIds: ['ws-a'] };
     expect(hasTokenRouteAdminAccess(token, request('/api/workspaces/ws-b/skills', 'POST'))).toBe(false);
     expect(hasTokenRouteAdminAccess(token, request('/api/workspaces/ws-a/skills', 'POST'))).toBe(true);
+  });
+  test('no scope a team member can grant is admin-tier or passes a no-capability admin gate', () => {
+    const memberGrantable = TOKEN_SCOPES.filter(scope => !requiresTeamAdminToGrant(scope));
+    expect(memberGrantable.length).toBeGreaterThan(0);
+    for (const scope of memberGrantable) expect(ADMIN_TIER_SCOPES.has(scope)).toBe(false);
+    const memberToken = { level: 'worker', scopes: memberGrantable };
+    for (const [path, method] of [
+      ['/api/cbm/metrics', 'GET'], ['/api/connectors', 'GET'], ['/api/connectors/c1', 'GET'],
+      ['/api/connectors/c1/status', 'GET'], ['/api/connectors/c1/shares', 'GET'],
+      ['/api/workspaces/ws-a/connectors', 'GET'], ['/api/missions/m1', 'GET'], ['/api/tasks/bulk', 'POST'],
+    ]) {
+      expect(hasTokenRouteAdminAccess(memberToken, request(path, method))).toBe(false);
+    }
+    // An analytics reader still reads CBM metrics, through the explicit grant at that route.
+    expect(hasTokenRouteAdminAccess({ level: 'worker', scopes: ['analytics:read'] }, request('/api/cbm/metrics'), 'analytics:read')).toBe(true);
+  });
+  test('the admin scope passes a no-capability gate on an ordinary-scope route', () => {
+    const admin = { level: 'admin', scopes: TOKEN_PRESETS.admin.scopes };
+    expect(adminCapabilityForRoute('/api/workspaces/ws-a/connectors', 'GET')).toBeNull();
+    expect(hasTokenRouteAdminAccess(admin, request('/api/workspaces/ws-a/connectors'))).toBe(true);
+    expect(hasTokenRouteAdminAccess({ ...admin, workspaceIds: ['ws-b'] }, request('/api/workspaces/ws-a/connectors'))).toBe(false);
   });
 });

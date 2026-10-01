@@ -261,6 +261,12 @@ describe('buildConflictRetryTask', () => {
     expect(result!.title).toBe('[builder · after conflict #1] feat: add dark mode');
   });
 
+  it('stamps the chain root and PR numbers into the context', () => {
+    const result = buildConflictRetryTask(makeInput());
+    expect(result!.context.rootTaskId).toBe('task-abc');
+    expect(result!.context.lineagePrNumbers).toEqual([42]);
+  });
+
   it('sets branch continuity fields in context', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result!.context.baseBranch).toBe('feat/dark-mode');

@@ -221,6 +221,12 @@ export const accounts = pgTable('accounts', {
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
 
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),
@@ -320,6 +326,11 @@ export interface WorkspaceGitConfig {
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
+
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
