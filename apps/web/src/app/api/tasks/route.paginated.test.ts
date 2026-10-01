@@ -186,7 +186,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: { apiKey: 'apiKey', id: 'id' },
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt', title: 'title', status: 'status', description: 'description', context: 'context', updatedAt: 'updatedAt', pathManifest: 'pathManifest', priority: 'priority', category: 'category', roleSlug: 'roleSlug', creationSource: 'creationSource' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', createdAt: 'createdAt', title: 'title', status: 'status', description: 'description', context: 'context', updatedAt: 'updatedAt', pathManifest: 'pathManifest', priority: 'priority', category: 'category', roleSlug: 'roleSlug', creationSource: 'creationSource', missionId: 'missionId' },
   systemCache: { key: 'key', expiresAt: 'expiresAt' },
   missions: { id: 'id' },
   workspaceSkills: { id: 'id', slug: 'slug', workspaceId: 'workspaceId', enabled: 'enabled' },
@@ -445,14 +445,6 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
       expect(rowsOrderByArgs[0]).toMatchObject({ type: 'desc', f: 'updatedAt' });
       expect(rowsOrderByArgs[rowsOrderByArgs.length - 1]).toMatchObject({ type: 'asc', f: 'id' });
     });
-
-    it('is not triggered by an unrecognized status value (falls through to default 24h-window branch)', async () => {
-      const req = makeRequest({ limit: '5', status: 'bogus' });
-      await GET(req);
-
-      // Falls into the default branch, which still calls notInArray for the OR condition.
-      expect(notInArrayCalls.length).toBeGreaterThan(0);
-    });
   });
 
   describe('query failure', () => {
@@ -473,6 +465,62 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
       const body = await res.json();
       expect(body.error).toBe('Failed to get tasks');
       expect(body.detail).toBe('relation "tasks" does not exist');
+    });
+  });
+
+  describe('?missionId and ?status validation', () => {
+    const MISSION = '22222222-2222-2222-2222-222222222222';
+    const whereArgs: any[] = [];
+
+    function captureWhere() {
+      whereArgs.length = 0;
+      mockDbSelect.mockImplementation(() => {
+        const chain = makeSelectChain(() => (selectCallIndex++ % 2 === 0 ? mockSelectResult : mockSelectRowsResult), arg => whereArgs.push(arg));
+        return chain;
+      });
+    }
+
+    const hasMissionEq = (node: any): boolean =>
+      !!node && typeof node === 'object' && (
+        (node.type === 'eq' && node.f === 'missionId' && node.v === MISSION) ||
+        (Array.isArray(node.args) && node.args.some(hasMissionEq))
+      );
+
+    it('scopes both the count and the row query to the mission', async () => {
+      captureWhere();
+      const res = await GET(makeRequest({ limit: '5', status: 'active', missionId: MISSION }));
+      expect(res.status).toBe(200);
+      expect(whereArgs.length).toBe(2);
+      expect(whereArgs.every(hasMissionEq)).toBe(true);
+    });
+
+    it('scopes the un-paginated path too', async () => {
+      mockTasksFindMany.mockReset();
+      mockTasksFindMany.mockResolvedValue([]);
+      await GET(makeRequest({ status: 'active', missionId: MISSION }));
+      expect(hasMissionEq((mockTasksFindMany.mock.calls[0] as any[])[0].where)).toBe(true);
+    });
+
+    it('applies no mission predicate when missionId is absent', async () => {
+      captureWhere();
+      await GET(makeRequest({ limit: '5', status: 'active' }));
+      expect(whereArgs.some(hasMissionEq)).toBe(false);
+    });
+
+    it('400s on a malformed missionId rather than widening to every task', async () => {
+      mockTasksFindMany.mockReset();
+      const res = await GET(makeRequest({ limit: '5', missionId: 'not-a-uuid' }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/missionId must be a full mission UUID/);
+      expect(mockDbSelect).not.toHaveBeenCalled();
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    });
+
+    it('400s on an unrecognised status rather than falling through to the default list', async () => {
+      const res = await GET(makeRequest({ limit: '5', status: 'bogus' }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/status must be one of: active, completed, failed, cancelled/);
+      expect(mockDbSelect).not.toHaveBeenCalled();
     });
   });
 });

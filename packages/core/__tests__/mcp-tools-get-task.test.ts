@@ -519,3 +519,59 @@ describe('get_error_traces — evidence', () => {
     expect(text).toContain('(fail) from digest');
   });
 });
+
+describe('get_task — include validation and scheduling view', () => {
+  const api = (task: Record<string, unknown>) => mock(async () => ({ id: TASK_ID, title: 'Build step', status: 'pending', ...task })) as unknown as ApiFn;
+
+  it('rejects an unsupported include value instead of silently ignoring it', async () => {
+    const a = api({});
+    await expect(handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers', 'sheduling'] }, ctx()))
+      .rejects.toThrow(/unsupported: sheduling/);
+    expect(a).not.toHaveBeenCalled();
+  });
+
+  it('omits the scheduling section by default', async () => {
+    const out = await handleBuilddAction(api({ dependsOn: ['x'], tier: 'premium' }), 'get_task', { taskId: TASK_ID }, ctx());
+    expect(out.content[0].text).not.toContain('## Scheduling');
+  });
+
+  it('renders dependsOn, manifests, tier, verification command and spec source on request, without asking the server for it', async () => {
+    const a = api({
+      dependsOn: ['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'],
+      pathManifest: ['apps/web/src/a.ts', 'packages/core/b.ts'],
+      pathDeclaration: {
+        declared: ['apps/web/src/a.ts', 'packages/core/b.ts', 'docs/c.md'],
+        source: 'creation',
+        snapshotAt: '2026-10-01T00:00:00.000Z',
+        inferredDependsOn: ['bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'],
+        narrowings: [{ at: 'x', dropped: ['docs/c.md'], surface: 's', reason: null }],
+      },
+      pathClaimRevision: 2,
+      tier: 'premium',
+      complexity: 'normal',
+      kind: 'engineering',
+      context: { verificationCommand: 'bun run test', specSource: { specPath: 'docs/specs/x.md', planningTaskId: 'cccccccc-cccc-cccc-cccc-cccccccccccc' } },
+    });
+    const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['scheduling'] }, ctx());
+    const text = out.content[0].text;
+    expect(text).toContain('## Scheduling');
+    expect(text).toContain('**Depends on (2):** aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa, bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+    expect(text).toContain('**Path manifest (2):** apps/web/src/a.ts, packages/core/b.ts');
+    expect(text).toContain('**Declared manifest (creation):** apps/web/src/a.ts, packages/core/b.ts, docs/c.md');
+    expect(text).toContain('**Inferred dependsOn:** bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+    expect(text).toContain('**Narrowings:** 1');
+    expect(text).toContain('**Tier:** premium');
+    expect(text).toContain('**Verification command:** `bun run test`');
+    expect(text).toContain('**Spec source:** docs/specs/x.md (planning task cccccccc-cccc-cccc-cccc-cccccccccccc)');
+    // Scheduling is rendered from the task row; the server only expands workers/artifacts.
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}`);
+  });
+
+  it('states absent scheduling facts explicitly rather than omitting them', async () => {
+    const out = await handleBuilddAction(api({ dependsOn: [], pathManifest: null, tier: null }), 'get_task', { taskId: TASK_ID, include: ['workers', 'scheduling'] }, ctx());
+    const text = out.content[0].text;
+    expect(text).toContain('**Depends on:** none');
+    expect(text).toContain('**Path manifest:** none declared');
+    expect(text).toContain('**Tier:** unset');
+  });
+});

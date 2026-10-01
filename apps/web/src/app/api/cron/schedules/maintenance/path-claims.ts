@@ -4,7 +4,8 @@ import { releaseAndNotify, resolveReleaseReasonForTask } from '@/lib/path-claim-
 /**
  * Reaper for `path_claims` rows that a terminal-transition write should have
  * released and didn't — a task that is completed/failed/cancelled, or whose
- * every worker is terminal, but still holds an active claim.
+ * every worker is terminal, but still holds an active claim — and for such a
+ * task's waiters left un-notified after a failed `path_released` delivery.
  *
  * This is the backstop of last resort: `releaseAndNotify` is idempotent, so
  * calling it again here for a row that WAS already released is a no-op, and

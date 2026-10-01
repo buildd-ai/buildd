@@ -25,6 +25,8 @@ const mockTasksUpdate = mock(() => ({
   })),
 }));
 const mockTasksFindFirst = mock(() => Promise.resolve(null));
+// Holder titles for a pathCollisions response.
+const mockTasksFindMany = mock((_q?: any) => Promise.resolve([] as any[]));
 // Mission-note delivery (user replies + mission guidance). Previously absent from
 // this mock, so the note-delivery block threw into its own try/catch and no test
 // ever exercised it.
@@ -134,7 +136,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst, findMany: (...args: any[]) => mockWorkersFindMany(...args) },
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
@@ -569,13 +571,36 @@ mock.module('@buildd/core/cbm-health', () => ({
 // from route.ts uses: claimObservedPaths (the auto-lease below) and the two
 // releaseAndNotify calls into.
 const mockClaimObservedPaths = mock(async (_ws: string, _task: string, paths: string[]) => paths);
+let observedBlocked: Array<{ path: string; blockingTaskId: string; blockingPath: string }> = [];
+// acquireObservedPaths is what route.ts calls; it delegates to the
+// claimObservedPaths mock so existing lease assertions keep their meaning.
+const mockAcquireObservedPaths = mock(async (ws: string, task: string, paths: string[]) => ({
+  inserted: await mockClaimObservedPaths(ws, task, paths),
+  blocked: observedBlocked,
+}));
 const mockReleaseClaims = mock(async () => null);
 const mockRearmWaiter = mock(async () => undefined);
 mock.module('@buildd/core/path-claim', () => ({
   claimObservedPaths: mockClaimObservedPaths,
+  acquireObservedPaths: mockAcquireObservedPaths,
   releaseClaims: mockReleaseClaims,
   rearmWaiter: mockRearmWaiter,
 }));
+
+// Orchestration decision outcome labels (conflict-aware orchestration §5):
+// the terminal touched-file label write goes through a real db client, so it
+// is stubbed here and asserted below.
+const mockRecordOrchestrationTouchLabel = mock(async (_input: any) => true);
+mock.module('@buildd/core/orchestration-ledger-source', () => ({
+  recordOrchestrationTouchLabel: mockRecordOrchestrationTouchLabel,
+}));
+const mockRecordPathCollisionDeferral = mock(async (_input: any) => true);
+mock.module('@/lib/path-collision-deferral', () => ({ recordPathCollisionDeferral: mockRecordPathCollisionDeferral }));
+const mockRecordPathDeclaration = mock((_input: any) => {});
+mock.module('@/lib/path-declaration-ledger', () => ({ recordPathDeclaration: mockRecordPathDeclaration }));
+
+const mockSchedulePrScopeReconcile = mock((_input: any) => {});
+mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
 
 // The PR activity comment's "fix ended" write — its own module has its own
 // tests (lib/pr-activity-fix-claimed.test.ts); here we only check it is called.
@@ -1569,6 +1594,97 @@ describe('PATCH /api/workers/[id]', () => {
       const data = await res.json();
       expect(data.retryable).toBe(true);
       expect(data.abort).toBeUndefined();
+    });
+  });
+
+  // ── Orchestration outcome label (conflict-aware orchestration §5) ─────────
+  // The final touched-file label must be persisted from the observation the
+  // terminal PATCH is about to clear; nothing else keeps a per-task file list.
+  describe('orchestration touch label', () => {
+    const terminalWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+      milestones: [],
+      observedTouches: ['apps/web/a.ts'],
+      prNumber: 12,
+      lastCommitSha: 'sha-1',
+      prBaseRef: 'dev',
+    };
+
+    function captureSets() {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          sets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed' }]) })) };
+        }),
+      });
+      return sets;
+    }
+
+    it('records the accumulated + final paths with the PR keys, and still clears the column', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      const sets = captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom', touchedPaths: ['apps/web/b.ts'] },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).toHaveBeenCalledTimes(1);
+      expect(mockRecordOrchestrationTouchLabel.mock.calls[0][0]).toEqual({
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        workerId: 'worker-1',
+        workerStatus: 'failed',
+        paths: ['apps/web/a.ts', 'apps/web/b.ts'],
+        prNumber: 12,
+        headSha: 'sha-1',
+        baseRef: 'dev',
+      });
+      expect(sets.some(s => 'observedTouches' in s && s.observedTouches === null)).toBe(true);
+    });
+
+    it('a failing label write never fails the terminal PATCH', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      mockRecordOrchestrationTouchLabel.mockImplementationOnce(async () => { throw new Error('db down'); });
+      captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toBe(500);
+    });
+
+    it('a non-terminal sync writes no label', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { touchedPaths: ['apps/web/c.ts'] },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).not.toHaveBeenCalled();
     });
   });
 
@@ -8820,6 +8936,68 @@ describe('PATCH /api/workers/[id]', () => {
       }
     });
 
+    describe('verdict spelling variants', () => {
+      function captureTaskSets() {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        return taskSetCalls;
+      }
+
+      it('request_changes is normalized and treated as request-changes, not a contract violation', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: {
+            status: 'completed',
+            structuredOutput: { verdict: 'request_changes', confidence: 0.9, summary: 's', feedback: 'Fix it' },
+          },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(taskSetCalls.some((u: any) => u.status === 'pending' && u.context?.reviewContractRetryCount)).toBe(false);
+        const completed = taskSetCalls.find((u: any) => u.status === 'completed');
+        expect(completed).toBeDefined();
+        expect(completed.result.structuredOutput.verdict).toBe('request-changes');
+      });
+
+      it('interactive worker: a malformed verdict gets a 400 naming the allowed values, with no state change', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkersFindFirst.mockReset();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          runner: 'mcp',
+          turns: 0,
+          pendingInstructions: null,
+        });
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', structuredOutput: { verdict: 'rejected', confidence: 0.9, summary: 's' } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('"request-changes"');
+        expect(json.error).toContain('"approve"');
+        expect(json.hint).toBe('structuredOutput.verdict');
+        expect(taskSetCalls).toHaveLength(0);
+      });
+    });
+
     // An approve at any confidence used to post a GitHub APPROVE and run the
     // bounded merge; the workspace threshold only guarded the unbounded
     // self-merge.
@@ -8934,6 +9112,10 @@ describe('PATCH /api/workers/[id]', () => {
       // Dedup key fields must be set so a second reviewer completion is a no-op
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
+      // The inherited manifest is reconciled against the PR diff at that head.
+      expect(mockSchedulePrScopeReconcile).toHaveBeenCalledWith(expect.objectContaining({
+        installationId: 5000, repoFullName: 'org/repo', prNumber: 42, expectedHeadSha: 'abc123',
+      }));
     });
 
     it('request-changes on an explicitly-reviewed dependency-bot PR files no builder — nothing may push to the bot branch', async () => {
@@ -10152,6 +10334,61 @@ describe('PATCH /api/workers/[id]', () => {
       expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
     });
 
+    // Enforce-mode path collision: the runner checkpointed and reported
+    // Deferred:. The task requeues (as any Deferred: does) AND records the
+    // collision so the claim route holds it until the holder releases.
+    it('a Deferred: path-collision report requeues and records the collision for the claim route', async () => {
+      mockRecordPathCollisionDeferral.mockClear();
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        branch: 'buildd/task-1', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const pathCollision = {
+        path: 'src/a.ts', blockingTaskId: 'bbbbbbbb-1111-2222-3333-444444444444', source: 'pre_push',
+        checkpoint: { committed: true, pushed: true },
+      };
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: path collision — src/a.ts is held by task (bbbbbbbb)', pathCollision },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some(u => u.status === 'pending')).toBe(true);
+      expect(mockRecordPathCollisionDeferral).toHaveBeenCalledTimes(1);
+      expect(mockRecordPathCollisionDeferral.mock.calls[0][0]).toEqual({ taskId: 'task-1', collision: pathCollision, branch: 'buildd/task-1' });
+    });
+
+    it('a pathCollision body on a non-deferral failure is ignored', async () => {
+      mockRecordPathCollisionDeferral.mockClear();
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'tests failed', pathCollision: { path: 'src/a.ts', blockingTaskId: 'bbbbbbbb-1111-2222-3333-444444444444' } },
+      });
+      await PATCH(req, { params: mockParams });
+      expect(mockRecordPathCollisionDeferral).not.toHaveBeenCalled();
+    });
+
     // Regression for the needs_input taxonomy bug: a worker that correctly
     // stopped to ask a human a question should almost never reach this route
     // as status:'failed' (the runner now reports waiting_input for that
@@ -10920,6 +11157,80 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
         expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result?.errorType).toBe('infra_stalled');
       });
+    });
+
+    // The CLI rejecting the id itself is a config fault, not a transient: the
+    // same runner rejects the same id on every attempt, so a requeue only
+    // burns sessions, and as a CI-fix attempt it also burned the PR's budget.
+    describe('unrecognized model id (config failure)', () => {
+      const STDERR_LINE = '[claude-code:unrecognized_model] {"model":"claude-sonnet-5-5","query_source":"sdk"}';
+
+      function setupIdRejection(context: Record<string, unknown>) {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            workerSetCalls.push(updates);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+          taskId: 'task-1', pendingInstructions: null,
+        });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('does not even take a mission task\'s one automatic retry', async () => {
+        const { taskSetCalls } = setupIdRejection({});
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1', outputRequirement: 'none', context: {} });
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: STDERR_LINE },
+        }), { params: mockParams });
+
+        expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+        const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+        expect(failing?.context?.retryCount).toBeUndefined();
+        expect(failing?.context?.modelRejection?.model).toBe('claude-sonnet-5-5');
+      });
+
+      for (const [label, body] of [
+        ['from the error text', { status: 'failed', error: STDERR_LINE }],
+        ['from the runner flag when the error is only the process exit', {
+          status: 'failed', error: 'Claude Code process exited with code 1', unrecognizedModel: true, rejectedModel: 'claude-sonnet-5-5',
+        }],
+      ] as const) {
+        it(`fails the task once, uncharged, naming the id (${label})`, async () => {
+          const { taskSetCalls, workerSetCalls } = setupIdRejection({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(workerSetCalls.find((u: any) => u.exitCause)?.exitCause).toBe('infra_failure');
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing).toBeDefined();
+          expect(failing.result.errorType).toBe('unrecognized_model');
+          expect(failing.result.rejectedModel).toBe('claude-sonnet-5-5');
+          expect(failing.result.error).toContain('claude-sonnet-5-5');
+          expect(failing.context.modelRejection.model).toBe('claude-sonnet-5-5');
+          expect(failing.context.retryCount).toBeUndefined();
+          expect(failing.context.infraRetryCount).toBeUndefined();
+        });
+      }
     });
   });
 
@@ -14065,6 +14376,92 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     );
   });
 
+  it('a checkpoint sweep re-offers already-observed paths, so a lost earlier acquisition is retried before ship', async () => {
+    setupBaseWorkerMock();
+    mockWorkersFindFirst.mockResolvedValue({
+      ...baseWorker,
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+        checkpointSweep: true,
+      },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+    );
+  });
+
+  it('a checkpoint sweep past the cap leases only recorded paths, and records the drop as degraded', async () => {
+    setupBaseWorkerMock();
+    const stored = Array.from({ length: 499 }, (_, i) => `src/f${i}.ts`);
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, observedTouches: stored });
+    gateEventInserts.length = 0;
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['src/f0.ts', 'src/new-a.ts', 'src/new-b.ts', 'src/new-c.ts'],
+        checkpointSweep: true,
+      },
+    });
+    await PATCH(req, { params: mockParams });
+    await new Promise(r => setTimeout(r, 0));
+
+    // 499 stored + new-a fills the column; new-b/new-c are past it.
+    const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];
+    expect(offered).toEqual(['src/f0.ts', 'src/new-a.ts']);
+    const row = gateEventInserts.find((g: any) => g.gate === 'path_claim' && g.outcome === 'warned');
+    expect(row).toBeDefined();
+    expect(row.detail).toMatchObject({ cap: 500, dropped: 2 });
+  });
+
+  it('a read-only reviewer leases nothing: checking out the PR branch is not an edit', async () => {
+    setupBaseWorkerMock();
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null,
+      category: 'review', context: { reviewerFor: 'task-0', prNumber: 7 },
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  it('a reviewer FIX attempt still leases what it touches', async () => {
+    setupBaseWorkerMock();
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null,
+      category: 'feature', context: { prNumber: 7 }, reviewerRetryPrNumber: 7,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith('ws-1', 'task-1', ['apps/web/src/lib/foo.ts']);
+  });
+
   it('leases nothing when a sync reports no touches', async () => {
     setupBaseWorkerMock();
 
@@ -14076,6 +14473,87 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     await PATCH(req, { params: mockParams });
 
     expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  // ── Checkpoint collisions (conflict-aware-orchestration.md §2) ─────────────
+  // An observed touch another live task holds was already written. The PATCH
+  // says so, naming path and holder, so an enforcing runner can stop and defer.
+
+  it('reports an observed path another live task holds as a pathCollision, with the holder', async () => {
+    setupBaseWorkerMock();
+    observedBlocked = [{ path: 'apps/web/src/lib/foo.ts', blockingTaskId: 'task-9', blockingPath: 'apps/web/src/lib' }];
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-9', title: 'Holder task' }]);
+    try {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.pathCollisions).toEqual([{
+        path: 'apps/web/src/lib/foo.ts', blockingTaskId: 'task-9', blockingTaskTitle: 'Holder task', blockingPath: 'apps/web/src/lib',
+      }]);
+    } finally {
+      observedBlocked = [];
+    }
+  });
+
+  // ── Declaration denominators (conflict-aware-orchestration.md §3) ─────────
+  it('counts an observed declaration: succeeded when leased, denied when a holder blocks it', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    const send = async () => PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    }), { params: mockParams });
+    await send();
+    expect(mockRecordPathDeclaration.mock.calls.at(-1)?.[0]).toMatchObject({ result: 'succeeded', provenance: 'observed', pathCount: 1 });
+
+    setupBaseWorkerMock();
+    observedBlocked = [{ path: 'apps/web/src/lib/foo.ts', blockingTaskId: 'task-9', blockingPath: 'apps/web/src/lib' }];
+    try {
+      await send();
+      expect(mockRecordPathDeclaration.mock.calls.at(-1)?.[0]).toMatchObject({ result: 'denied', provenance: 'observed' });
+    } finally {
+      observedBlocked = [];
+    }
+  });
+
+  it('counts degraded hook declarations the runner reports', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', pathClaimDegraded: 3 },
+    }), { params: mockParams });
+    const degraded = mockRecordPathDeclaration.mock.calls.map((c) => c[0]).find((e: any) => e.result === 'degraded');
+    expect(degraded).toMatchObject({ provenance: 'hook', pathCount: 3, callerOrigin: 'worker' });
+  });
+
+  it('ignores a malformed degraded count', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', pathClaimDegraded: 'lots' },
+    }), { params: mockParams });
+    expect(mockRecordPathDeclaration.mock.calls.some((c: any) => c[0].result === 'degraded')).toBe(false);
+  });
+
+  it('no held path: no pathCollisions field', async () => {
+    setupBaseWorkerMock();
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const json = await (await PATCH(req, { params: mockParams })).json();
+    expect(json.pathCollisions).toBeUndefined();
   });
 
   it('a failed lease never fails the sync', async () => {

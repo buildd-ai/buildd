@@ -68,13 +68,11 @@ describe('list_tasks — status passthrough', () => {
     expect(result.content[0].text).toBe('No completed tasks found.');
   });
 
-  it('falls back to active for an out-of-vocabulary status value', async () => {
+  it('rejects an out-of-vocabulary status instead of silently listing active', async () => {
     const api = mock(async () => ({ tasks: [], total: 0, pendingCount: 0, hasMore: false })) as unknown as ApiFn;
 
-    await handleBuilddAction(api, 'list_tasks', { status: 'bogus' }, ctx());
-
-    const calledUrl = (api as any).mock.calls[0][0] as string;
-    expect(calledUrl).toContain('status=active');
+    await expect(handleBuilddAction(api, 'list_tasks', { status: 'bogus' }, ctx())).rejects.toThrow(/status must be one of.*bogus/);
+    expect(api).not.toHaveBeenCalled();
   });
 
   it('formats terminal rows with summarySource and deliverable attribution, no claim hint', async () => {
@@ -152,5 +150,40 @@ describe('list_tasks — limit param', () => {
 
   it('clamps a below-min limit up to 1', async () => {
     expect(await limitPassedThrough({ limit: 0 })).toBe('1');
+  });
+});
+
+// A filter the action cannot apply must never be dropped: list_tasks { missionId }
+// used to run as the whole-workspace list and read as a filtered answer.
+describe('list_tasks — missionId filter and ignored-param safety', () => {
+  const MISSION = '22222222-2222-2222-2222-222222222222';
+  const emptyApi = () => mock(async () => ({ tasks: [], total: 0, pendingCount: 0, hasMore: false })) as unknown as ApiFn;
+
+  it('passes a valid missionId to the REST call', async () => {
+    const api = emptyApi();
+    const out = await handleBuilddAction(api, 'list_tasks', { missionId: MISSION }, ctx());
+    const calledUrl = (api as any).mock.calls[0][0] as string;
+    expect(new URL(calledUrl, 'http://x').searchParams.get('missionId')).toBe(MISSION);
+    expect(out.content[0].text).toBe(`No active tasks found in mission ${MISSION}.`);
+  });
+
+  it('names the mission scope in the header of a non-empty result', async () => {
+    const api = mock(async () => ({ tasks: [{ id: 't1', title: 'A', status: 'pending', descriptionPreview: 'd' }], total: 1, pendingCount: 1, hasMore: false })) as unknown as ApiFn;
+    const out = await handleBuilddAction(api, 'list_tasks', { missionId: MISSION }, ctx());
+    expect(out.content[0].text).toContain(`1 active task in mission ${MISSION} (1 pending, 0 in progress):`);
+  });
+
+  it('rejects a malformed missionId without calling the API', async () => {
+    const api = emptyApi();
+    await expect(handleBuilddAction(api, 'list_tasks', { missionId: 'abc12345' }, ctx())).rejects.toThrow(/missionId must be a full UUID/);
+    await expect(handleBuilddAction(api, 'list_tasks', { missionId: 42 }, ctx())).rejects.toThrow(/missionId/);
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown params (a misspelled filter) without calling the API', async () => {
+    const api = emptyApi();
+    await expect(handleBuilddAction(api, 'list_tasks', { mission_id: MISSION }, ctx())).rejects.toThrow(/Unknown list_tasks parameter\(s\): mission_id/);
+    await expect(handleBuilddAction(api, 'list_tasks', { missionId: MISSION, dependsOn: 'x', since: 'today' }, ctx())).rejects.toThrow(/dependsOn, since/);
+    expect(api).not.toHaveBeenCalled();
   });
 });

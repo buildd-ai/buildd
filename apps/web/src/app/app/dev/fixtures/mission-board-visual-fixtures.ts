@@ -8,6 +8,7 @@
  *   &reason=unsure|question|round_cap              which needs_you
  *   &layout=board|lanes|feed|task                  which mission layout (task: the audit's task sheet and page)
  *   &complete=1                                    the mission is done (completion record)
+ *   &shipped=lede|noshots|mechanical               with complete=1: the What shipped header variant
  *
  * The board is illustrative: a small mission whose last task is the audit
  * the visual model describes, so the Tray sits under that task's tile.
@@ -31,7 +32,11 @@ export interface MissionBoardVisualParams {
   options: VisualReviewFixtureOptions;
   layout: MissionBoardVisualLayout;
   complete: boolean;
+  shipped: ShippedFixtureVariant | null;
 }
+
+export const SHIPPED_FIXTURE_VARIANTS = ['lede', 'noshots', 'mechanical'] as const;
+export type ShippedFixtureVariant = (typeof SHIPPED_FIXTURE_VARIANTS)[number];
 
 /** Pure: the query to what the page renders. Unknown values fall back. */
 export function parseMissionBoardVisualParams(q: URLSearchParams): MissionBoardVisualParams {
@@ -47,7 +52,12 @@ export function parseMissionBoardVisualParams(q: URLSearchParams): MissionBoardV
     options.needsYou = (REASONS as readonly string[]).includes(reasonParam ?? '') ? (reasonParam as VisualReviewNeedsYouReason) : 'unsure';
     if (options.needsYou === 'unsure') options.scenario = 'deck';
   }
-  return { phase, options, layout, complete: q.get('complete') === '1' };
+  const shippedParam = q.get('shipped');
+  const complete = q.get('complete') === '1';
+  const shipped = complete && (SHIPPED_FIXTURE_VARIANTS as readonly string[]).includes(shippedParam ?? '')
+    ? (shippedParam as ShippedFixtureVariant)
+    : null;
+  return { phase, options, layout, complete, shipped };
 }
 
 export function missionBoardVisualLinks(): { label: string; href: string }[] {
@@ -56,6 +66,9 @@ export function missionBoardVisualLinks(): { label: string; href: string }[] {
     ...VISUAL_REVIEW_PHASES.filter(p => p !== 'off' && p !== 'needs_you').map(p => ({ label: p, href: `${base}&phase=${p}` })),
     ...REASONS.map(r => ({ label: `needs_you: ${r}`, href: `${base}&phase=needs_you&reason=${r}` })),
     { label: 'complete', href: `${base}&phase=reviewed&complete=1` },
+    { label: 'complete: what shipped', href: `${base}&phase=reviewed&complete=1&shipped=lede` },
+    { label: 'complete: no screenshots', href: `${base}&phase=reviewed&complete=1&shipped=noshots` },
+    { label: 'complete: mechanical only', href: `${base}&phase=reviewed&complete=1&shipped=mechanical` },
     { label: 'lanes', href: `${base}&phase=needs_you&layout=lanes` },
     { label: 'feed', href: `${base}&phase=needs_you&layout=feed` },
   ];

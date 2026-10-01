@@ -17,6 +17,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategorize } from '@/lib/task-category-decision';
 import { scheduleTaskRoleShadow } from '@/lib/task-role-decision';
+import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -24,6 +25,7 @@ import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspa
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
+import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -122,10 +124,29 @@ export async function GET(req: NextRequest) {
     //   ?limit=N&offset=M  — OPT-IN pagination; returns lean row shape + total/pendingCount/hasMore
     // Both workspaceId and status are used by the dependency picker so it stops
     // fetching every workspace's task and filtering client-side (see DependencySelector).
+    //   ?missionId=<uuid>  — only tasks linked to that mission (400 on a malformed id:
+    //     a filter that cannot be applied must never widen the result)
     const requestedWorkspaceId = req.nextUrl.searchParams.get('workspaceId');
     const statusFilter = req.nextUrl.searchParams.get('status');
+    const missionIdFilter = req.nextUrl.searchParams.get('missionId');
     const limitParam = req.nextUrl.searchParams.get('limit');
     const offsetParam = req.nextUrl.searchParams.get('offset');
+
+    // An unrecognised status used to fall through to the unfiltered default
+    // branch, so a typo read as "all tasks" instead of an error.
+    if (statusFilter !== null && statusFilter !== 'active' && !isTerminalTaskStatus(statusFilter)) {
+      return NextResponse.json(
+        { error: `status must be one of: active, ${TERMINAL_TASK_STATUSES.join(', ')} — received "${statusFilter}".` },
+        { status: 400 },
+      );
+    }
+    if (missionIdFilter !== null && !isUuid(missionIdFilter)) {
+      return NextResponse.json(
+        { error: `missionId must be a full mission UUID — received "${missionIdFilter}".` },
+        { status: 400 },
+      );
+    }
+    const missionScope = missionIdFilter ? eq(tasks.missionId, missionIdFilter) : undefined;
 
     // Intersect the requested workspace with the caller's accessible set.
     // If it isn't accessible, workspaceIds becomes empty → returns [] below
@@ -153,6 +174,7 @@ export async function GET(req: NextRequest) {
 
       const where = and(
         inArray(tasks.workspaceId, workspaceIds),
+        missionScope,
         activeOnly
           ? notInArray(tasks.status, terminalStatuses)
           : isTerminalAudit
@@ -232,6 +254,7 @@ export async function GET(req: NextRequest) {
       ? await db.query.tasks.findMany({
           where: and(
             inArray(tasks.workspaceId, workspaceIds),
+            missionScope,
             activeOnly
               ? // Only active (non-terminal) tasks
                 notInArray(tasks.status, terminalStatuses)
@@ -706,10 +729,12 @@ export async function POST(req: NextRequest) {
     // Drizzle migrations dir), auto-append the anchorFile so the overlap check
     // below can serialise on _journal.json — not on the individual migration filename,
     // which would be invisible because distinct filenames share the integer index.
+    let anchorInjectedCount = 0;
     if (pathManifest && pathManifest.length > 0) {
       const injections = resolveAnchorInjections(pathManifest, targetWorkspace.gitConfig ?? undefined);
       if (injections.length > 0) {
         pathManifest = [...pathManifest, ...injections];
+        anchorInjectedCount = injections.length;
       }
     }
 
@@ -724,6 +749,9 @@ export async function POST(req: NextRequest) {
     // dependsOn is copied in first and never modified — only inferred edges are
     // subject to this rule.
     let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
+    // Recorded on pathDeclaration so a later narrowing can tell these apart
+    // from caller-supplied edges, which must never be removed.
+    const inferredDependsOn: string[] = [];
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
@@ -738,6 +766,7 @@ export async function POST(req: NextRequest) {
         if (existingDepsSet.has(t.id)) continue;
         if (shouldSerializeByManifest(pathManifest, t.pathManifest as string[] | null)) {
           resolvedDependsOn.push(t.id);
+          inferredDependsOn.push(t.id);
           existingDepsSet.add(t.id);
         }
       }
@@ -1271,7 +1300,17 @@ export async function POST(req: NextRequest) {
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
-        ...(pathManifest ? { pathManifest } : {}),
+        ...(pathManifest ? {
+          pathManifest,
+          // The declaration as filed. pathManifest is the effective scope and
+          // may later shrink (narrowPathClaims); this snapshot does not.
+          pathDeclaration: {
+            declared: pathManifest,
+            source: 'creation' as const,
+            snapshotAt: new Date().toISOString(),
+            ...(inferredDependsOn.length > 0 ? { inferredDependsOn } : {}),
+          },
+        } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
         ...(finalKind !== undefined ? { kind: finalKind } : {}),
         ...(finalComplexity !== undefined ? { complexity: finalComplexity } : {}),
@@ -1322,6 +1361,19 @@ export async function POST(req: NextRequest) {
         throw error;
       }
       if (!created) throw new Error('task_insert_failed');
+      // Manifest provenance denominator (conflict-aware-orchestration.md §3):
+      // one row per created task, including the ones filed with no manifest.
+      recordPathDeclaration({
+        result: 'succeeded',
+        provenance: 'creation',
+        surface: 'POST /api/tasks',
+        workspaceId,
+        missionId: missionId ?? null,
+        taskId: created.id,
+        callerOrigin: gateCaller,
+        pathCount: pathManifest?.length ?? 0,
+        detail: { shape: manifestShape(pathManifest), anchorInjected: anchorInjectedCount, inferredDependsOn: inferredDependsOn.length },
+      });
       return created;
     };
 
@@ -1431,6 +1483,36 @@ export async function POST(req: NextRequest) {
         }, after);
       } catch (err) {
         console.error('[task-create] role shadow scheduling failed (non-fatal):', err);
+      }
+    }
+
+    // The creation-manifest shadow (lib/task-manifest-prediction.ts, design
+    // §5a): which files the decision model would declare for a missing-scope
+    // task. Opt-in per team, after the response, record only — the manifest,
+    // dependsOn and every rejection above are already final. Explicit (or
+    // deterministically inferred) concrete manifests win, so none is scheduled.
+    if (
+      intake.outcome.action !== 'attached'
+      && (task.taskClass ?? 'work') === 'work'
+      && targetWorkspace.teamId
+      && !hasConcretePathManifest(task.pathManifest ?? null)
+    ) {
+      try {
+        const taskContext = (task.context ?? null) as Record<string, unknown> | null;
+        scheduleCreationManifestShadow({
+          taskId: task.id,
+          teamId: targetWorkspace.teamId,
+          workspaceId,
+          missionId: task.missionId ?? null,
+          accountId: creatorContext.createdByAccountId ?? null,
+          title: task.title,
+          description: task.description ?? null,
+          createdAt: task.createdAt instanceof Date ? task.createdAt : new Date(),
+          callerManifest: task.pathManifest ?? null,
+          baseRef: typeof taskContext?.baseBranch === 'string' ? taskContext.baseBranch : null,
+        }, after);
+      } catch (err) {
+        console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);
       }
     }
 

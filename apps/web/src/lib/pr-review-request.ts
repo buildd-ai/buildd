@@ -23,6 +23,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { fetchSplitPrStats } from './supersession-check';
+import { conformanceManifest } from './path-declaration';
 import {
   derivePrReviewStatus,
   MAX_REVIEW_WAIT_SECONDS,
@@ -239,7 +240,7 @@ export async function resolveOrAdoptPrOwner(params: {
         description: task?.description ?? null,
         backend: task?.backend ?? 'claude',
         missionId: task?.missionId ?? null,
-        pathManifest: task?.pathManifest ?? null,
+        pathManifest: conformanceManifest(task),
         iteration: typeof task?.context?.iteration === 'number' ? task.context.iteration : 0,
         maxIterations: typeof task?.context?.maxIterations === 'number' ? task.context.maxIterations : 3,
       },

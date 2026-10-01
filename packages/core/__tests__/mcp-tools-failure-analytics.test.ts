@@ -538,3 +538,62 @@ describe('get_failure_analytics family mode', () => {
     expect(res.content[0].text.length).toBeLessThan(900);
   });
 });
+
+// ── Gate ledger: PR landing scoreboard ───────────────────────────────────────
+
+describe('get_failure_analytics family="gate" landing metrics', () => {
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+
+  const gates = (events: number) => ({
+    window: '7d',
+    totals: { events, distinctGates: events ? 1 : 0, rejected: 0, deferred: events, bypassed: 0, warned: 0 },
+    gates: events
+      ? [{ gate: 'pr_landing', count: events, outcomes: { deferred: events }, bypassRatePct: 0, lastSeen: '2030-01-01T00:00:00.000Z', firstSeen: '2030-01-01T00:00:00.000Z', surfaces: ['landPr'], distinctReasons: 1, topReasons: [] }]
+      : [],
+    truncatedGates: 0,
+  });
+
+  const landing = (over: Record<string, unknown> = {}) => ({
+    window: '7d',
+    landed: 12,
+    unmeasured: 2,
+    timeToLand: { count: 10, p50Ms: 5 * 60_000, p90Ms: 95 * 60_000, maxMs: 200 * 60_000 },
+    stuck: { thresholdMs: 30 * 60_000, count: 3, oldestMs: 125 * 60_000 },
+    ...over,
+  });
+
+  it('prints p50, p90, the unmeasured count and the stuck count under the gate overview', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(4), landing: landing() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx());
+    const out = res.content[0].text;
+    expect(out).toContain('PR landing');
+    expect(out).toContain('p50 5m');
+    expect(out).toContain('p90 1h35m');
+    expect(out).toContain('10 measured of 12 landed');
+    expect(out).toContain('2 landed with no derivable start');
+    expect(out).toContain('stuck: 3 PR(s)');
+    expect(out).toContain('oldest 2h05m');
+  });
+
+  it('still reports landing when the gate ledger has no non-accepted events', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(0), landing: landing({ stuck: { thresholdMs: 30 * 60_000, count: 0, oldestMs: null } }) });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
+    expect(out).toContain('No gate events');
+    expect(out).toContain('time to land');
+    expect(out).toContain('stuck: none past 30m');
+  });
+
+  it('says there are no measured landings instead of printing zero percentiles', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(1), landing: landing({ landed: 0, unmeasured: 0, timeToLand: null }) });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
+    expect(out).toContain('no measured landings');
+    expect(out).not.toContain('p50');
+  });
+
+  it('omits the landing block when the server sent none', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(1) });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
+    expect(out).not.toContain('PR landing');
+  });
+});

@@ -91,6 +91,8 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
+import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
 import { HUMAN_UI_DENIAL } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
@@ -782,6 +784,7 @@ export class WorkerManager {
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
+      onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -811,6 +814,7 @@ export class WorkerManager {
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       buildUserMessage: (content, opts) => buildUserMessage(content, opts),
       unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
+      onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
     });
 
     // Check for stale workers every 30s
@@ -2126,6 +2130,16 @@ export class WorkerManager {
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
         // there could disagree with the ref the worktree really uses.
         worker.worktreeBaseRef = setupResult.base;
+        // The PR's base, which the path-claim sweep measures against. Read
+        // after setup: a fallback to a fresh base has already cleared the
+        // resume fields from the context.
+        worker.prBaseRef = resolvePrBaseRef({
+          task: fullTask,
+          head: setupResult.branch,
+          worktreeBase: setupResult.base,
+          fallbacks: [gitConfig?.targetBranch, defaultBranch],
+          worktreeFallback: setupResult.fallback ?? null,
+        });
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head
@@ -2474,7 +2488,13 @@ export class WorkerManager {
     spanPayload: Record<string, unknown>,
     closingTurnOutcome: 'declined' | `skipped:${string}`,
   ): Promise<void> {
-    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    // The CLI's model-id rejection is only ever on stderr; the thrown error is
+    // just the exit code. Name the id so the failure says what to fix.
+    const modelRejection = stderrCollector.unrecognizedModel;
+    const rawErrMsg = error instanceof Error ? error.message : 'Unknown error';
+    const errMsg = modelRejection
+      ? `[claude-code:unrecognized_model] ${JSON.stringify({ model: modelRejection.model })} — this runner's Claude Code does not recognise the model id (${rawErrMsg})`
+      : rawErrMsg;
     const errStack = error instanceof Error ? error.stack : undefined;
     console.error(`Worker ${worker.id} error:`, error);
     sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
@@ -2527,6 +2547,10 @@ export class WorkerManager {
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(modelRejection && {
+        unrecognizedModel: true,
+        ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
+      }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
@@ -2842,6 +2866,14 @@ export class WorkerManager {
       const workspaceConfig = await this.buildd.getWorkspaceConfig(task.workspaceId);
       const gitConfig = workspaceConfig.gitConfig;
       const isConfigured = workspaceConfig.configStatus === 'admin_confirmed';
+
+      // Path-claim enforcement is a workspace opt-in (off by default). Say
+      // what this backend can actually promise: pre-edit denial needs a
+      // PreToolUse seam, which Codex does not have.
+      worker.pathClaimMode = resolvePathClaimMode(gitConfig);
+      if (worker.pathClaimMode === 'enforce') {
+        this.addMilestone(worker, { type: 'status', label: describeEnforcement(worker.taskBackend, 'enforce'), ts: Date.now() });
+      }
 
       // Extract image attachments from task context (if any)
       // Supported formats: image/jpeg, image/png, image/gif, image/webp (Anthropic API)
@@ -4185,6 +4217,21 @@ export class WorkerManager {
           // Advisory + fail-open — never blocks the edit; Codex tasks have no PreToolUse hooks.
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
+            : []),
+          // Enforce mode only: sweep the worktree before a push, create_pr or
+          // completion. Checkpoint enforcement (a Bash write is found here
+          // after it happened), not a pre-edit guarantee. Codex has no seam
+          // for this either; its writes are swept on the sync tick.
+          ...(!isCodexTask && worker.pathClaimMode === 'enforce'
+            ? [{
+                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + CHECKPOINT_SYNC_DEADLINE_MS) / 1000) + 15,
+                hooks: [this.hookFactory.createPathCheckpointGuardHook(worker, (w, source) =>
+                  runCheckpointSweep(w, source, {
+                    buildd: this.buildd,
+                    addMilestone: (wk, m) => this.addMilestone(wk, m),
+                    refreshBase: true,
+                  }))],
+              }]
             : []),
           // Command-loop tasks: verify before the agent's own complete_task
           // lands, so the server's loop decision sees the evidence. Timeout
@@ -6369,6 +6416,24 @@ export class WorkerManager {
 
   async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
     return this.recoveryManager.abort(workerId, reason, cancelQueued);
+  }
+
+  /**
+   * Enforce-mode path collision (from the edit hook's pending flush, the sync
+   * sweep or a pre-push/completion sweep): checkpoint, report a `Deferred:`
+   * failure the server requeues behind the holder, and end the session.
+   * Deferred off the calling hook so a deny can return first.
+   */
+  private handlePathCollision(worker: LocalWorker, collision: PathCollision): void {
+    if (worker.pathClaimMode !== 'enforce' || worker.pathCollisionDeferring) return;
+    setTimeout(() => {
+      deferOnPathCollision(worker, collision, {
+        buildd: this.buildd,
+        abort: (id, reason) => this.abort(id, reason),
+        save: (w) => storeSaveWorker(w),
+        addMilestone: (w, m) => this.addMilestone(w, m),
+      }).catch(err => console.error(`[Worker ${worker.id}] Path-collision deferral failed:`, err));
+    }, 0);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {

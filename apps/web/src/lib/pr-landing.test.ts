@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
@@ -13,7 +13,7 @@ type Gh = {
   head: string;
   baseRef: string;
   mergeableState: string;
-  checkRuns: Array<{ name: string; status: string; conclusion: string | null }>;
+  checkRuns: Array<{ name: string; status: string; conclusion: string | null; completed_at?: string }>;
   behindBy: number;
   baseTip: string;
   prFiles: string[];
@@ -44,6 +44,7 @@ const mockGithubApi = mock(async (_installationId: number, path: string): Promis
     if (gh.failPr) throw new Error('boom');
     return {
       state: gh.state,
+      title: 'Add the thing',
       merged: gh.merged,
       merge_commit_sha: gh.merged ? 'merge-sha' : null,
       mergeable_state: gh.mergeableState,
@@ -178,11 +179,27 @@ mock.module('@/lib/pr-landing-marker', () => ({
   clearLandingMarker: mockClearMarker,
 }));
 
+// Surface merge ordering: pass-through unless a test below drives it.
+let mockCheckSurfaceOrder = mock(async (_input: any): Promise<any> => ({ blocks: false, slot: null }));
+let mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>): Promise<any> => ({ result: await merge() }));
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: (i: any) => mockCheckSurfaceOrder(i),
+  mergeInSurfaceSlot: (v: any, m: () => Promise<any>) => mockMergeInSurfaceSlot(v, m),
+}));
+
+// Post-refresh semantic hold (base-refresh.ts): pass-through unless a test sets it.
+let mockCheckBaseRefreshHold = mock(async (_i: any) => ({ blocks: false }) as any);
+mock.module('@/lib/base-refresh', () => ({
+  checkBaseRefreshHold: (i: any) => mockCheckBaseRefreshHold(i),
+}));
+
 import {
   landPr,
   evaluateTreadmillBound,
   resolveLandingMode,
   outcomeOwner,
+  approvedGreenAt,
+  latestCheckCompletion,
   TREADMILL_MAX_BASE_COMMITS,
   TREADMILL_MAX_REFRESHES,
   type LandPrInput,
@@ -201,11 +218,13 @@ const mockDispatchFix = mock(async (_i: any): Promise<{ taskId?: string } | null
 const mockEscalate = mock(async (..._a: any[]) => {});
 const mockLiveRetry = mock(async (..._a: any[]): Promise<string | null> => null);
 const NOW = Date.parse('2030-01-01T01:00:00.000Z');
+const mockReadApprovedAt = mock(async (..._a: any[]): Promise<number | null> => null);
 
 const deps = (): LandPrDeps => ({
   dispatchFix: mockDispatchFix,
   escalateConflictExhaustion: mockEscalate,
   findLiveReviewerRetry: mockLiveRetry,
+  readApprovedAt: mockReadApprovedAt,
   now: () => NOW,
 });
 
@@ -245,7 +264,7 @@ beforeEach(() => {
   mockFindFirst = mock(() => null as any);
   for (const m of [
     mockGithubApi, mockMergePullRequest, mockDispatchConflictRetry, mockGuardReviewVerdict, mockReadPrReviewStatus,
-    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry, mockCarryForward,
+    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry, mockCarryForward, mockReadApprovedAt,
   ]) {
     m.mockClear();
   }
@@ -253,6 +272,7 @@ beforeEach(() => {
   mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false }));
   mockDispatchFix.mockImplementation(async () => ({ taskId: 'fix-task-1' }));
   mockLiveRetry.mockImplementation(async () => null);
+  mockReadApprovedAt.mockImplementation(async () => null);
 });
 
 // ── Pure pieces ────────────────────────────────────────────────────────────────
@@ -374,6 +394,90 @@ describe('landPr — merge', () => {
 });
 
 // ── Verdict × tier ─────────────────────────────────────────────────────────────
+
+describe('landPr — time to land clock', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('starts at the later of approval and the last check finishing when there is no marker', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.checkRuns = [
+      { name: 'build', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:20:00.000Z' },
+      { name: 'lint', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:45:00.000Z' },
+    ];
+    await land();
+    const [event] = landingEvents();
+    expect(event.detail.timeToLandMs).toBe(15 * 60 * 1000);
+    expect(event.detail.timeToLandUnmeasured).toBeUndefined();
+    expect(event.detail.approvedGreenAt).toBe('2030-01-01T00:45:00.000Z');
+  });
+
+  it('measures from whichever half is known', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    await land();
+    expect(landingEvents()[0].detail.timeToLandMs).toBe(30 * 60 * 1000);
+  });
+
+  it('takes the earlier of the marker clock and the derived clock', async () => {
+    markerStore = marker({ firstApprovedGreenAt: '2030-01-01T00:10:00.000Z' });
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:40:00.000Z'));
+    await land();
+    expect(landingEvents()[0].detail.timeToLandMs).toBe(50 * 60 * 1000);
+  });
+
+  it('marks the landing unmeasured, not zero, when no start can be derived', async () => {
+    await land();
+    const [event] = landingEvents();
+    expect(event.outcome).toBe('accepted');
+    expect(event.detail.timeToLandMs).toBeUndefined();
+    expect(event.detail.timeToLandUnmeasured).toBe(true);
+  });
+
+  it('survives a failing approval read as unknown', async () => {
+    mockReadApprovedAt.mockImplementation(async () => { throw new Error('db down'); });
+    const out = await land();
+    expect(out.kind).toBe('merged');
+    expect(landingEvents()[0].detail.timeToLandUnmeasured).toBe(true);
+  });
+
+  it('stamps approvedGreenAt on a non-merged row once approved and green, so a stuck PR is countable', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.behindBy = 3;
+    gh.baseMovement = { ahead_by: 3, files: ['apps/web/src/other.ts'] };
+    await land();
+    const [event] = landingEvents();
+    expect(event.detail.landingOutcome).not.toBe('merged');
+    expect(event.detail.approvedGreenAt).toBe('2030-01-01T00:30:00.000Z');
+  });
+
+  it('does not stamp approvedGreenAt on a PR that is not green', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    await land();
+    expect(landingEvents()[0].detail.approvedGreenAt).toBeUndefined();
+  });
+});
+
+describe('approvedGreenAt / latestCheckCompletion', () => {
+  it('takes the later of two known times, the known one of one, null of none', () => {
+    expect(approvedGreenAt(10, 20)).toBe(20);
+    expect(approvedGreenAt(30, 20)).toBe(30);
+    expect(approvedGreenAt(10, null)).toBe(10);
+    expect(approvedGreenAt(null, 20)).toBe(20);
+    expect(approvedGreenAt(null, null)).toBeNull();
+  });
+
+  it('reads the newest completed_at and tolerates missing or junk values', () => {
+    expect(latestCheckCompletion(undefined)).toBeNull();
+    expect(latestCheckCompletion([])).toBeNull();
+    expect(
+      latestCheckCompletion([
+        { name: 'a', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:00:00.000Z' },
+        { name: 'b', status: 'completed', conclusion: 'success', completed_at: 'junk' },
+        { name: 'c', status: 'completed', conclusion: 'success' },
+      ] as any),
+    ).toBe(Date.parse('2030-01-01T00:00:00.000Z'));
+  });
+});
 
 describe('landPr — review verdict', () => {
   it('always passes the carry-forward hint so a diff-unchanged head is approved (replay: base-merge push in the same minute)', async () => {
@@ -671,6 +775,28 @@ describe('landPr — behind base is work with an owner', () => {
       mockDispatchConflictRetry.mockImplementation(async () => result);
       expect(await land()).toMatchObject({ kind: 'needs_human', cause });
     });
+    // conflict-aware-orchestration §4: a refresh failure that is not a conflict
+    // never reads as a conflict fix, and never spawns one.
+    it.each([
+      ['headChanged', { dispatched: false, headChanged: true }],
+      ['refreshInFlight', { dispatched: false, refreshInFlight: true }],
+      ['refreshDeferred', { dispatched: false, refreshDeferred: true, refreshFailure: 'rate_limit' }],
+      ['semanticDeferred', { dispatched: false, semanticDeferred: true }],
+      ['alreadyUpToDate', { dispatched: false, alreadyUpToDate: true }],
+    ])('%s → waiting, not needs_fix(conflict)', async (_n, result) => {
+      mockDispatchConflictRetry.mockImplementation(async () => result);
+      const out = await land();
+      expect(out.kind).toBe('waiting_ci');
+      expect(mockEscalate).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['refreshExhausted', { dispatched: false, refreshExhausted: true, refreshFailure: 'auth' }, 'refresh_failed'],
+      ['semanticUnverified', { dispatched: false, semanticUnverified: true }, 'semantic_unverified'],
+    ])('%s → needs_human(%s), not fix_exhausted', async (_n, result, cause) => {
+      mockDispatchConflictRetry.mockImplementation(async () => result);
+      expect(await land()).toMatchObject({ kind: 'needs_human', cause });
+      expect(mockEscalate).not.toHaveBeenCalled();
+    });
     it('a throwing dispatch → needs_human, not an exception', async () => {
       mockDispatchConflictRetry.mockImplementation(async () => {
         throw new Error('db down');
@@ -894,5 +1020,107 @@ describe('outcomeOwner', () => {
     ];
     for (const [o, want] of cases) expect(outcomeOwner(o)).toEqual(want);
     expect(outcomeOwner({ kind: 'merged', sha: 's' })).toBeNull();
+  });
+});
+
+describe('landPr — alert hook', () => {
+  const alertMock = mock(async (_i: any) => {});
+  beforeEach(() => alertMock.mockClear());
+
+  it('hands the outcome, live head and PR title to the alert in enforce', async () => {
+    gh.prFiles = ['secrets/key.ts'];
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['secrets/'] } };
+    const out = await land({ policy }, { ...deps(), alert: alertMock });
+    expect(alertMock).toHaveBeenCalledTimes(1);
+    expect(alertMock.mock.calls[0]![0]).toMatchObject({
+      workspaceId: 'ws-1',
+      prNumber: 42,
+      headSha: 'head1',
+      prTitle: 'Add the thing',
+      taskId: 'task-1',
+      outcome: out,
+    });
+  });
+
+  it('does not page from shadow or off', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    await land({ mode: 'shadow' }, { ...deps(), alert: alertMock });
+    await land({ mode: 'off' }, { ...deps(), alert: alertMock });
+    expect(alertMock).not.toHaveBeenCalled();
+  });
+
+  it('an alert that throws never changes the landing outcome', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    const out = await land({}, { ...deps(), alert: async () => { throw new Error('pushover down'); } });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+  });
+});
+
+// ── Surface merge ordering (conflict-aware-orchestration.md §3) ──────────────
+describe('landPr — surface ordering', () => {
+  const blocked = { blocks: true, kind: 'ordering', reason: 'waiting for PR #41 to close first: both change Drizzle migrations', counterpartPrNumber: 41, surface: 'Drizzle migrations' };
+
+  beforeEach(() => {
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }));
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }));
+  });
+
+  it('a later surface PR waits before any rail, refresh or merge, with its counterpart on the ledger row', async () => {
+    mockCheckSurfaceOrder = mock(async () => blocked);
+    const outcome = await land({ gitConfig: { surfaceOrdering: 'enforce' } as any });
+    expect(outcome.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    const row = landingEvents().at(-1) as any;
+    expect(row.detail).toMatchObject({ waitingOn: 'surface_order', counterpartPrNumber: 41, surface: 'Drizzle migrations' });
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ prNumber: 42, headSha: 'head1', door: 'check_suite', observeOnly: false });
+  });
+
+  it('shadow landing asks in observe-only mode and never reserves', async () => {
+    await land({ mode: 'shadow', gitConfig: { surfaceOrdering: 'enforce' } as any });
+    expect(mockCheckSurfaceOrder.mock.calls[0][0].observeOnly).toBe(true);
+    expect(mockMergeInSurfaceSlot).not.toHaveBeenCalled();
+  });
+
+  it('a refused merge slot is a wait, not a merge', async () => {
+    mockMergeInSurfaceSlot = mock(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+    const outcome = await land();
+    expect(outcome.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect((landingEvents().at(-1) as any).detail).toMatchObject({ waitingOn: 'surface_slot' });
+  });
+
+  it('default: merges through the slot exactly as before', async () => {
+    const outcome = await land();
+    expect(outcome.kind).toBe('merged');
+    expect(mockMergeInSurfaceSlot).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Post-refresh semantic hold (conflict-aware-orchestration.md §4) ─────────
+
+describe('landPr — post-refresh semantic hold', () => {
+  afterEach(() => { mockCheckBaseRefreshHold = mock(async (_i: any) => ({ blocks: false }) as any); });
+
+  it('passes the workspace gitConfig through to the hold', async () => {
+    const gitConfig = { semanticRefresh: 'enforce' } as any;
+    await land({ gitConfig });
+    expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1', gitConfig }));
+  });
+
+  it('a re-check still in progress waits, and nothing merges', async () => {
+    mockCheckBaseRefreshHold = mock(async () => ({ blocks: true, needsPerson: false, reason: 'semantic hold (rechecking): x' }) as any);
+    const out = await land({ gitConfig: { semanticRefresh: 'enforce' } as any });
+    expect(out.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('an exhausted or same-symbol hold needs a person', async () => {
+    mockCheckBaseRefreshHold = mock(async () => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }) as any);
+    const out = await land({ gitConfig: { semanticRefresh: 'enforce' } as any });
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'semantic_unverified' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });

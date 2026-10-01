@@ -104,6 +104,8 @@ describe('resolveTarget', () => {
       repoFullName: 'buildd-ai/buildd',
       owner: { taskId: 'task-1', workerId: 'worker-1' },
       mission: null,
+      // Carried so surface ordering does not re-read the workspace per PR.
+      gitConfig: { landing: { mode: 'enforce' } },
     });
     expect(res.target.policyFor('dev').tier).not.toBe('human');
   });

@@ -32,7 +32,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
 import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
-import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import {
   evaluateAutoMergeSafety,
@@ -53,6 +53,8 @@ import {
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import type { LandingAlertInput } from '@/lib/pr-landing-alert';
 import {
   readLandingMarker,
   writeLandingMarker,
@@ -97,6 +99,10 @@ export type HumanCause =
   | 'migration'
   | 'unsafe_other'
   | 'refresh_exhausted'
+  /** update-branch kept failing for an operational reason (rate limit, auth, transient) — not a conflict. */
+  | 'refresh_failed'
+  /** Opted-in semantic check: the PR and base share files and symbol coverage stayed unknown. */
+  | 'semantic_unverified'
   | 'fix_exhausted'
   | 'superseded'
   | 'dependency_bot'
@@ -142,6 +148,11 @@ export interface LandPrInput {
   releaseConfig?: WorkspaceReleaseConfig | null;
   /** How GitHub combines the PR. Default squash; `merge_pr` lets the caller choose. */
   mergeMethod?: 'merge' | 'squash' | 'rebase';
+  /**
+   * The workspace gitConfig, for surface merge ordering (lib/surface-ordering.ts).
+   * Omitted, the ordering check loads it; with ordering off nothing is read.
+   */
+  gitConfig?: WorkspaceGitConfig | null;
 }
 
 export interface FixDispatchInput {
@@ -167,6 +178,10 @@ export interface LandPrDeps {
   /** The live reviewer-retry (author fixing a finding) task for this PR, if any. */
   findLiveReviewerRetry?: (workspaceId: string, prNumber: number) => Promise<string | null>;
   now?: () => number;
+  /** Raises the one-per-key page for an outcome that needs a person (enforce only). Defaults to the DB-bound alert. */
+  alert?: (input: LandingAlertInput) => Promise<void>;
+  /** When the newest review of this PR concluded (epoch ms), or null. Half of the landing clock. Defaults to the DB-bound read. */
+  readApprovedAt?: (workspaceId: string, prNumber: number) => Promise<number | null>;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -250,6 +265,29 @@ function callerOriginFor(actor: LandingActor): GateCallerOrigin {
 
 const errMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/**
+ * When the last required check on this head finished (epoch ms), or null when no
+ * run reports a completion time. Half of the landing clock: green is when the
+ * checks stopped, not when they started.
+ */
+export function latestCheckCompletion(runs: CheckRunState[] | undefined): number | null {
+  let latest: number | null = null;
+  for (const run of runs ?? []) {
+    const at = run.completed_at ? Date.parse(run.completed_at) : NaN;
+    if (Number.isFinite(at) && (latest === null || at > latest)) latest = at;
+  }
+  return latest;
+}
+
+/**
+ * The start of the landing clock: the moment this PR was both approved and green
+ * on the live head — the later of the two. Null when neither time is known.
+ */
+export function approvedGreenAt(approvedAtMs: number | null, greenAtMs: number | null): number | null {
+  const known = [approvedAtMs, greenAtMs].filter((t): t is number => t !== null && Number.isFinite(t));
+  return known.length > 0 ? Math.max(...known) : null;
+}
+
 // ── GitHub reads ───────────────────────────────────────────────────────────────
 
 interface LivePr {
@@ -259,6 +297,7 @@ interface LivePr {
   mergeableState: string | null;
   headSha: string | null;
   baseRef: string | null;
+  title: string | null;
 }
 
 async function readLivePr(installationId: number, repoFullName: string, prNumber: number): Promise<LivePr> {
@@ -270,7 +309,12 @@ async function readLivePr(installationId: number, repoFullName: string, prNumber
     mergeableState: pr?.mergeable_state ?? null,
     headSha: pr?.head?.sha ?? null,
     baseRef: pr?.base?.ref ?? null,
+    title: typeof pr?.title === 'string' ? pr.title : null,
   };
+}
+
+async function defaultReadApprovedAt(workspaceId: string, prNumber: number): Promise<number | null> {
+  return (await import('@/lib/pr-landing-clock')).readReviewApprovedAt(workspaceId, prNumber);
 }
 
 /** Files in a compare/PR-files listing, or null when it may be truncated or malformed. */
@@ -318,8 +362,11 @@ function safeFireGateEvent(input: Parameters<typeof fireGateEvent>[0]): void {
  * and in enforce it parks the PR rather than merging on a half-made decision.
  */
 export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise<LandingOutcome> {
+  const trace: LandingTrace = { headSha: null, title: null };
   try {
-    return await decideAndLand(input, deps);
+    const outcome = await decideAndLand(input, deps, trace);
+    await raiseAlert(input, outcome, trace, deps);
+    return outcome;
   } catch (err) {
     const reason = `the landing function failed: ${errMessage(err)}`;
     console.warn(`[pr-landing] ${input.repoFullName}#${input.prNumber}:`, reason);
@@ -352,7 +399,32 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
   }
 }
 
-async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<LandingOutcome> {
+/** What the decision saw that the alert needs and the outcome does not carry. */
+interface LandingTrace {
+  headSha: string | null;
+  title: string | null;
+}
+
+/** Enforce only, never throws: a page is a side effect of a landing, not part of it. */
+async function raiseAlert(input: LandPrInput, outcome: LandingOutcome, trace: LandingTrace, deps: LandPrDeps): Promise<void> {
+  if (input.mode !== 'enforce') return;
+  try {
+    const raisePage = deps.alert ?? (await import('@/lib/pr-landing-alert-deps')).raiseLandingAlert;
+    await raisePage({
+      workspaceId: input.workspaceId,
+      prNumber: input.prNumber,
+      headSha: trace.headSha ?? input.eventHeadSha ?? '',
+      repoFullName: input.repoFullName,
+      prTitle: trace.title,
+      taskId: input.owner.taskId,
+      outcome,
+    });
+  } catch (err) {
+    console.warn(`[pr-landing] alert failed for PR #${input.prNumber}:`, errMessage(err));
+  }
+}
+
+async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: LandingTrace): Promise<LandingOutcome> {
   const { workspaceId, installationId, repoFullName, prNumber, owner, actor, policy } = input;
   const act = input.mode === 'enforce';
   const now = deps.now ?? Date.now;
@@ -365,6 +437,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
   let headSha: string | null = input.eventHeadSha;
   let baseRef: string | null = null;
   let marker: LandingMarker | null = null;
+  // Set once the verdict and CI rails have passed: from here on the PR is "approved and green".
+  let approvedGreenAtMs: number | null = null;
 
   const done = (outcome: LandingOutcome, reason: string, extra: Record<string, unknown> = {}): LandingOutcome => {
     if (input.mode === 'off') return outcome;
@@ -376,6 +450,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
       mode: input.mode,
       tier: policy.tier,
       owner: outcomeOwner(outcome),
+      ...(approvedGreenAtMs !== null ? { approvedGreenAt: new Date(approvedGreenAtMs).toISOString() } : {}),
       ...extra,
     };
     if (act) detail.landingOutcome = outcome.kind;
@@ -451,6 +526,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
   if (!pr.headSha) return human('github_unreadable', 'GitHub returned no head commit for this PR');
   const liveHead = pr.headSha;
   headSha = liveHead;
+  trace.headSha = liveHead;
+  trace.title = pr.title;
   baseRef = pr.baseRef;
   if (pr.state !== 'open') return human('pr_closed', `the PR is ${pr.state} and was not merged`);
 
@@ -469,6 +546,31 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
     return human('human_tier', 'this workspace merges by human decision; the PR is waiting in the review queue');
   }
 
+  // ── 2b. Surface merge ordering — before any rail that can mutate the branch ─
+  // A PR behind an earlier open PR on a serialized surface waits; that PR's
+  // close re-drives this one. Shadow asks without writing anything.
+  const surfaceOrder = await checkSurfaceOrder({
+    workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha: liveHead,
+    gitConfig: input.gitConfig,
+    taskId: owner.taskId,
+    workerId: owner.workerId,
+    door: input.door,
+    callerOrigin,
+    observeOnly: !act,
+  });
+  if (surfaceOrder.blocks) {
+    return waiting(surfaceOrder.reason, {
+      waitingOn: 'surface_order',
+      orderKind: surfaceOrder.kind,
+      counterpartPrNumber: surfaceOrder.counterpartPrNumber,
+      surface: surfaceOrder.surface,
+    });
+  }
+
   // ── 3. Safety rails (every one except base freshness, which is work below) ──
   const mission = input.mission !== undefined ? input.mission : await loadMissionIntegrationFields(owner.taskId);
   const effectivePolicy: MergePolicy = override.size
@@ -485,6 +587,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
       workerId: owner.workerId,
       skipBaseFreshness: true,
       observed,
+      gitConfig: input.gitConfig,
     });
 
   let safety = await runSafety(input.bound);
@@ -519,6 +622,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
         return conflictOutcome(reason);
       case 'blocked':
         return human('branch_protection', reason);
+      case 'semantic_hold':
+        // Base commits merged in after the semantic verdict are being re-verified
+        // (base-refresh.ts): a wait while rechecks remain, a person after.
+        return /^semantic hold \(needs a person\)/.test(reason) ? human('semantic_unverified', reason) : waiting(reason);
       default:
         return human('unsafe_other', reason);
     }
@@ -568,6 +675,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
     }
   }
 
+  // The verdict and CI rails have passed: the clock for the landing metric starts
+  // at the later of the approval and the last check finishing.
+  approvedGreenAtMs = approvedGreenAt(
+    await (deps.readApprovedAt ?? defaultReadApprovedAt)(workspaceId, prNumber).catch(() => null),
+    latestCheckCompletion(observed.checkRuns),
+  );
+
   // ── 6. Behind base is work with an owner ────────────────────────────────────
   if (baseRef) {
     let behindBy: number | null = null;
@@ -613,7 +727,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
 
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead),
+  );
+  if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
+  const result = slotted.result;
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';
@@ -633,9 +751,15 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName).catch((err) =>
       console.warn(`[pr-landing] mission finalize failed for PR #${prNumber}:`, err),
     );
-    const startedAt = marker?.firstApprovedGreenAt ? Date.parse(marker.firstApprovedGreenAt) : NaN;
+    // The earliest known start wins: a refresh restarts CI, and the wait it caused is still the PR's wait.
+    const fromMarker = marker?.firstApprovedGreenAt ? Date.parse(marker.firstApprovedGreenAt) : NaN;
+    const starts = [fromMarker, approvedGreenAtMs ?? NaN].filter(Number.isFinite);
     if (owner.taskId && marker) await clearLandingMarker(owner.taskId).catch(() => {});
-    return done({ kind: 'merged', sha }, 'merged', Number.isFinite(startedAt) ? { timeToLandMs: now() - startedAt } : {});
+    return done(
+      { kind: 'merged', sha },
+      'merged',
+      starts.length > 0 ? { timeToLandMs: Math.max(0, now() - Math.min(...starts)) } : { timeToLandUnmeasured: true },
+    );
   }
 
   async function treadmillAccepts(base: string): Promise<TreadmillVerdict> {
@@ -711,6 +835,21 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
   }
 
   async function mapRetry(res: DispatchConflictRetryResult, reason: string): Promise<LandingOutcome> {
+    // Refresh outcomes that are not conflicts (lib/base-refresh.ts): no fix was
+    // filed and none is owed. A later event or the sweep re-drives the PR.
+    if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
+    if (res.refreshInFlight) return waiting(`another refresh of this PR is in flight (${reason})`, { refresh: 'in_flight' });
+    if (res.refreshDeferred) {
+      return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
+    if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted) {
+      return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticUnverified) {
+      return human('semantic_unverified', `the PR and the base change the same files and their symbol overlap could not be verified (${reason})`);
+    }
     if (res.superseded) return human('superseded', 'the change is already upstream; the PR is superseded');
     if (res.dependencyBot) return human('dependency_bot', 'this is a dependency-bot PR; its own rebase owns the branch');
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');

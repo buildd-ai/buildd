@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { updateBehindPrBranch } from './pr-branch-update';
+import { updateBehindPrBranch, classifyBranchUpdateFailure } from './pr-branch-update';
 
 describe('updateBehindPrBranch', () => {
   const BASE = { installationId: 1, repoFullName: 'acme/app', prNumber: 7, headSha: 'a'.repeat(40) };
@@ -24,5 +24,54 @@ describe('updateBehindPrBranch', () => {
     const result = await updateBehindPrBranch({ ...BASE, api });
     expect(result.updated).toBe(false);
     expect(result.reason).toContain('422');
+  });
+});
+
+describe('classifyBranchUpdateFailure — an API error alone is not conflict evidence', () => {
+  it('only a 422 naming a merge conflict is a textual conflict', () => {
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"merge conflict between base and head"}')).toBe('conflict');
+    // Conflict wording without GitHub's 422 is not verified evidence.
+    expect(classifyBranchUpdateFailure('merge conflict between base and head')).toBe('unknown');
+  });
+
+  it('a moved head is a re-read, not a conflict', () => {
+    expect(classifyBranchUpdateFailure(`GitHub API error: 422 {"message":"expected head sha didn't match current head ref."}`)).toBe('head_changed');
+  });
+
+  it('separates rate limit, auth and transient failures', () => {
+    expect(classifyBranchUpdateFailure('GitHub API error: 429 too many requests')).toBe('rate_limit');
+    expect(classifyBranchUpdateFailure('GitHub API error: 403 {"message":"API rate limit exceeded for installation"}')).toBe('rate_limit');
+    expect(classifyBranchUpdateFailure('GitHub API error: 403 {"message":"secondary rate limit"}')).toBe('rate_limit');
+    expect(classifyBranchUpdateFailure('GitHub API error: 403 {"message":"Resource not accessible by integration"}')).toBe('auth');
+    expect(classifyBranchUpdateFailure('GitHub API error: 401 Bad credentials')).toBe('auth');
+    expect(classifyBranchUpdateFailure('Failed to get installation token: 401')).toBe('auth');
+    expect(classifyBranchUpdateFailure('GitHub API error: 502 Bad Gateway')).toBe('transient');
+    expect(classifyBranchUpdateFailure('fetch failed')).toBe('transient');
+    expect(classifyBranchUpdateFailure('ECONNRESET')).toBe('transient');
+    expect(classifyBranchUpdateFailure('The operation timed out.')).toBe('transient');
+  });
+
+  it('a 422 saying there is nothing to merge is up_to_date, not a failure', () => {
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"There are no new commits on the base branch."}')).toBe('up_to_date');
+  });
+
+  it('any other 422 is an explicit refusal, never conflict and never a retryable failure', () => {
+    // A 422 is GitHub refusing this request deterministically; retrying the
+    // same call cannot change the answer, so it must not burn the retry cap.
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"Validation Failed"}')).toBe('refused');
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"Pull request branch update is not allowed"}')).toBe('refused');
+  });
+
+  it('anything else is unknown, never conflict', () => {
+    expect(classifyBranchUpdateFailure('GitHub API error: 404 Not Found')).toBe('unknown');
+    expect(classifyBranchUpdateFailure('')).toBe('unknown');
+  });
+
+  it('updateBehindPrBranch carries the classification on a failure', async () => {
+    const BASE = { installationId: 1, repoFullName: 'acme/app', prNumber: 7, headSha: 'a'.repeat(40) };
+    const failWith = (msg: string) => async () => { throw new Error(msg); };
+    expect((await updateBehindPrBranch({ ...BASE, api: failWith('GitHub API error: 422 merge conflict between base and head') })).failure).toBe('conflict');
+    expect((await updateBehindPrBranch({ ...BASE, api: failWith('GitHub API error: 503 unavailable') })).failure).toBe('transient');
+    expect((await updateBehindPrBranch({ ...BASE, api: failWith(`GitHub API error: 422 expected head sha didn't match current head ref`) })).failure).toBe('head_changed');
   });
 });

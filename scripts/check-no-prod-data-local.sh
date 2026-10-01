@@ -17,19 +17,45 @@
 # Usage:
 #   scripts/check-no-prod-data-local.sh [base-ref] [--body FILE] [--title FILE]
 #
-# base-ref defaults to origin/dev. Diffs and commit messages are compared
+# base-ref defaults to the nearest of origin/dev and origin/mission/*: the
+# candidate with the fewest commits between it and HEAD. A task branch cut from
+# a mission integration branch is PR'd against that branch, so diffing it
+# against origin/dev would re-scan commits that are already on the mission
+# branch (and were already gated there). Diffs and commit messages are compared
 # against it, same as CI compares against the PR's base branch.
+# --resolve-only prints the chosen base and exits (used by the tests).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-BASE_REF="origin/dev"
+BASE_REF=""
+RESOLVE_ONLY=0
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --body|--title) ARGS+=("$1" "$2"); shift 2 ;;
+    --resolve-only) RESOLVE_ONLY=1; shift ;;
     *) BASE_REF="$1"; shift ;;
   esac
 done
+
+if [ -z "$BASE_REF" ]; then
+  BASE_REF="origin/dev"
+  best=""
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    n=$(git rev-list --count "$ref..HEAD" 2>/dev/null) || continue
+    if [ -z "$best" ] || [ "$n" -lt "$best" ]; then
+      best="$n"
+      BASE_REF="$ref"
+    fi
+  done < <({ git rev-parse --verify --quiet origin/dev >/dev/null && echo origin/dev; \
+             git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/mission/'; } )
+fi
+
+if [ "$RESOLVE_ONLY" = 1 ]; then
+  echo "$BASE_REF"
+  exit 0
+fi
 
 if git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
   git fetch --quiet origin "${BASE_REF#origin/}" 2>/dev/null || true

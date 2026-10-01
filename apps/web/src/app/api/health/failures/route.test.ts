@@ -62,6 +62,22 @@ mock.module('@/lib/failure-analytics', () => ({
     ['24h', '7d', '30d'].includes(raw ?? '') ? raw : '7d',
 }));
 
+const mockGetGateAnalytics = mock(() => Promise.resolve({ window: '7d', totals: { events: 0 }, gates: [] } as any));
+const mockGetGateReasonFamily = mock(() => Promise.resolve({ known: false } as any));
+mock.module('@/lib/gate-analytics-query', () => ({
+  getGateAnalytics: mockGetGateAnalytics,
+  getGateReasonFamily: mockGetGateReasonFamily,
+}));
+const LANDING = {
+  window: '7d',
+  landed: 3,
+  unmeasured: 0,
+  timeToLand: { count: 3, p50Ms: 1, p90Ms: 2, maxMs: 3 },
+  stuck: { thresholdMs: 1800000, count: 0, oldestMs: null },
+};
+const mockGetLandingMetrics = mock(() => Promise.resolve(LANDING as any));
+mock.module('@/lib/pr-landing-metrics', () => ({ getLandingMetrics: mockGetLandingMetrics }));
+
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 mock.module('@buildd/core/db', () => ({
@@ -641,5 +657,45 @@ describe('GET /api/health/failures — dashboard session', () => {
     expect(res.status).toBe(200);
     expect(mockGetCurrentUser).not.toHaveBeenCalled();
     expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID]);
+  });
+});
+
+describe('GET /api/health/failures — family=gate landing metrics', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockGetFailureAnalytics.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockGetLandingMetrics.mockClear();
+    mockGetLandingMetrics.mockResolvedValue(LANDING);
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount());
+    mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+    mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+  });
+
+  it('returns the landing metrics next to the gate overview, with the same scope and window', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?family=gate&window=30d`));
+    const body = await res.json();
+    expect(body.gates).toBeDefined();
+    expect(body.landing).toEqual(LANDING);
+    expect(mockGetLandingMetrics.mock.calls[0]).toEqual([[VALID_UUID], '30d']);
+  });
+
+  it('omits landing when the metrics read degraded to null', async () => {
+    mockGetLandingMetrics.mockResolvedValue(null);
+    const body = await (await GET(makeRequest(`${URL_BASE}?family=gate`))).json();
+    expect(body.gates).toBeDefined();
+    expect(body.landing).toBeUndefined();
+  });
+
+  it('does not compute landing for a gate reason-prefix drill-down', async () => {
+    await GET(makeRequest(`${URL_BASE}?family=gate&errorPrefix=${encodeURIComponent('x')}`));
+    expect(mockGetLandingMetrics).not.toHaveBeenCalled();
+  });
+
+  it('does not compute landing outside gate mode', async () => {
+    const body = await (await GET(makeRequest(`${URL_BASE}?error=boom`))).json();
+    expect(body.landing).toBeUndefined();
+    expect(mockGetLandingMetrics).not.toHaveBeenCalled();
   });
 });

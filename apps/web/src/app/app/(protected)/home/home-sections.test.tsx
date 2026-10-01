@@ -76,6 +76,13 @@ describe('NeedsYouStack shipped card', () => {
     expect(t).toMatch(/6\/6\s+screens ok/);
   });
 
+  it('the summary link lands on the mission page\'s What shipped header', () => {
+    const html = renderToStaticMarkup(
+      <NeedsYouStack count={0} questions={[]} held={[]} shipped={[shipped({ href: '/app/missions/m1?from=home' })]} timeZone="UTC" />,
+    );
+    expect(html).toContain('href="/app/missions/m1?from=home#what-shipped"');
+  });
+
   it('keeps auto-fixes when there were some', () => {
     expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
   });

@@ -20,6 +20,7 @@ import type { MissionObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
 import { refKey } from '../chat-contract';
 import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
+import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
   waiting: { text: 'needs you', cls: 'text-status-warning' },
@@ -92,6 +93,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         <OpenButton inPane={inPane} onOpen={open} />
       </div>
       {model.landed.total > 0 && <LandedMeter model={model} variant="strip" />}
+      {view.strand && <ContinueOnRunnerCta strand={view.strand} />}
       {hasVisualReview(view.visual) && (
         <MissionVisualRow objRef={objRef} visual={view.visual} className="border-t border-border-default pt-2.5" />
       )}
@@ -118,6 +120,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
               <h3 className="font-mono text-[19px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.title}</h3>
               {view.goal && <p className="mt-1 font-[family-name:var(--font-outfit)] text-[15px] leading-relaxed text-text-secondary">{view.goal}</p>}
               {model.landed.total > 0 && <div className="mt-4"><LandedMeter model={model} variant="band" /></div>}
+              {view.strand && <ContinueOnRunnerCta strand={view.strand} className="mt-3" />}
               <div className="mt-2 flex items-center justify-between font-mono text-[12px] text-text-muted">
                 <span>{counts}</span>
                 {view.conversationId && <span>via chat</span>}

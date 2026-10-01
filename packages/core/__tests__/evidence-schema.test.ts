@@ -34,8 +34,8 @@ describe('evidence storage schema', () => {
     expect(schemaSrc).toContain("'evidence_storage_credential'");
   });
 
-  test('migration 0222 creates evidence_backends table', () => {
-    const migrationSrc = read('packages/core/drizzle/0222_familiar_rocket_raccoon.sql');
+  test('migration 0226 creates evidence_backends table', () => {
+    const migrationSrc = read('packages/core/drizzle/0226_daffy_colleen_wing.sql');
     expect(migrationSrc).toContain('CREATE TABLE "evidence_backends"');
     expect(migrationSrc).toContain('"id" uuid PRIMARY KEY');
     expect(migrationSrc).toContain('"bucket" text NOT NULL');
@@ -46,8 +46,8 @@ describe('evidence storage schema', () => {
     expect(migrationSrc).toContain('"last_error" text');
   });
 
-  test('migration 0222 creates evidence_objects table', () => {
-    const migrationSrc = read('packages/core/drizzle/0222_familiar_rocket_raccoon.sql');
+  test('migration 0226 creates evidence_objects table', () => {
+    const migrationSrc = read('packages/core/drizzle/0226_daffy_colleen_wing.sql');
     expect(migrationSrc).toContain('CREATE TABLE "evidence_objects"');
     expect(migrationSrc).toContain('"id" uuid PRIMARY KEY');
     expect(migrationSrc).toContain('"object_key" text NOT NULL');

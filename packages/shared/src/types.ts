@@ -765,6 +765,10 @@ export interface Task {
   dependsOn: string[];
   // Declared files/globs this task expects to create or modify
   pathManifest?: string[] | null;
+  // Declaration snapshot + provenance for pathManifest (see PathDeclaration)
+  pathDeclaration?: PathDeclaration | null;
+  // Ownership revision: bumped by every lease acquisition, narrowing and release
+  pathClaimRevision?: number;
   // Connector IDs this task requires — subset of the role's connectorRefs.
   // Only these connectors trigger a hard claim-block when unavailable.
   requiredConnectors?: string[] | null;
@@ -1753,6 +1757,97 @@ export interface LoopHistoryEntry {
   evidence?: Record<string, unknown>;
 }
 
+/**
+ * Declaration snapshot + provenance for a task's pathManifest, stored as JSONB
+ * in tasks.path_declaration. `pathManifest` is the current *effective* scope
+ * and shrinks when a stale claim is narrowed; this keeps what was declared so
+ * conformance checks and audits can compare the two. First write wins:
+ * `declared` is set at creation, or on the first runtime mutation for a task
+ * created before this column existed. See
+ * docs/design/conflict-aware-orchestration.md §1.
+ */
+export interface PathDeclaration {
+  declared: string[] | null;
+  source: 'creation' | 'runtime';
+  snapshotAt: string;
+  /**
+   * dependsOn edges added at creation because manifests overlapped, as opposed
+   * to caller-supplied edges. Only these may ever be removed on narrowing.
+   */
+  inferredDependsOn?: string[];
+  /** Most recent narrowings, oldest first, capped. */
+  narrowings?: PathNarrowing[];
+  /**
+   * Where `declared` came from when it was not the task's own filer: a plan
+   * step (approvePlan), or the doc-fix override, which outranks the step.
+   */
+  origin?: { kind: 'plan_step' | 'doc_fix'; planningTaskId: string; stepRef?: string };
+  /**
+   * The last reconciliation of this task's scope against its PR's actual diff
+   * (lib/pr-scope-reconcile.ts). `status` other than `complete` means the read
+   * could not be trusted and nothing was narrowed; `reason` says why.
+   */
+  prScope?: PrScopeRecord;
+  /**
+   * The last enforce-mode checkpoint collision (lib/path-collision-deferral.ts):
+   * a path this task had already changed was held by another live task, so the
+   * runner checkpointed and deferred. `path` was appended to the effective
+   * manifest so the claim route holds the task until the holder releases.
+   */
+  collision?: PathCollisionRecord;
+}
+
+/** Enforce-mode path claims: why a task was deferred at a checkpoint. */
+export interface PathCollisionRecord {
+  path: string;
+  blockingTaskId: string;
+  blockingTaskTitle?: string | null;
+  blockingPath?: string | null;
+  source: 'hook_flush' | 'sync' | 'pre_push' | 'completion';
+  checkpoint?: { committed: boolean; sha?: string; pushed: boolean; reason?: string };
+  recordedAt: string;
+}
+
+/** Workspace opt-in for path-claim enforcement (gitConfig.pathClaimEnforcement). Absent = advisory. */
+export type PathClaimEnforcementMode = 'advisory' | 'enforce';
+
+/**
+ * A path a worker's sync reported as changed that another live task holds —
+ * returned on the worker PATCH response as `pathCollisions`.
+ */
+export interface PathCollisionNotice {
+  path: string;
+  blockingTaskId: string;
+  blockingTaskTitle: string | null;
+  blockingPath: string;
+}
+
+export interface PrScopeRecord {
+  prNumber: number;
+  /**
+   * `live_writer`: the PR owner's worker was live, so its own declaration was
+   * left whole (a remote snapshot cannot see its dirty worktree).
+   */
+  status: 'complete' | 'incomplete' | 'closed' | 'revision_conflict' | 'live_writer';
+  reason: string | null;
+  headSha: string | null;
+  baseSha: string | null;
+  /** Distinct paths in the diff, rename sources included. Null unless complete. */
+  fileCount: number | null;
+  /** Paths this reconciliation gave back. */
+  dropped: string[];
+  /** Paths an earlier reconciliation dropped that this read found in the diff, put back. */
+  restored?: string[];
+  readAt: string;
+}
+
+export interface PathNarrowing {
+  at: string;
+  dropped: string[];
+  surface: string;
+  reason: string | null;
+}
+
 // Subject anchor — normalized external identity for what a task acts on.
 // Stored as JSONB in tasks.subject_anchor; relational columns are write-through
 // projections for indexed lookup. See docs/design/task-subject-anchors.md §1.
@@ -2663,6 +2758,29 @@ export interface GateAnalytics {
   gates: GateRow[];
   /** How many gates ranked out of `gates`. Zero means the list is exhaustive. */
   truncatedGates: number;
+}
+
+/**
+ * How long approved-and-green PRs wait before they land, from the `pr_landing`
+ * gate events (docs/design/pr-landing-guarantee.md §J). A regression shows up
+ * here before anyone files a friction report.
+ */
+export interface LandingMetrics {
+  window: GateWindow;
+  /** PRs merged by the landing function in the window. */
+  landed: number;
+  /** Of those, how many had no measurable start (no approval or check time was readable). */
+  unmeasured: number;
+  /** Approved-and-green to merge, over the measured landings. Null when none were measured. */
+  timeToLand: { count: number; p50Ms: number; p90Ms: number; maxMs: number } | null;
+  stuck: {
+    /** A PR approved and green for longer than this without merging is stuck. */
+    thresholdMs: number;
+    /** Open PRs whose latest landing decision found them approved and green, past the threshold. */
+    count: number;
+    /** Age of the longest-waiting one, in ms; null when none are stuck. */
+    oldestMs: number | null;
+  };
 }
 
 /**

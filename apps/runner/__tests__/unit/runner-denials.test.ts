@@ -82,6 +82,40 @@ const CASES: Case[] = [
     run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Write', { file_path: '/etc/passwd' }), undefined, signal)),
   },
   {
+    name: 'path-claim (enforce): edit path outside the worktree',
+    run: async () => reasonOf(await makeFactory().createPathClaimHook(
+      { ...worker, worktreePath: OWN, pathClaimMode: 'enforce' } as unknown as LocalWorker,
+    )(pre('Write', { file_path: '/elsewhere/x.ts' }), undefined, signal)),
+  },
+  {
+    name: 'path-claim (enforce): a confirmed live holder',
+    run: async () => {
+      const factory = new HookFactory({
+        config: {},
+        buildd: { claimPaths: mock(async () => ({ kind: 'conflict', blockingTaskId: 'bbbbbbbb-0000', blockingPath: 'a.ts', blocked: null })) } as any,
+        addMilestone: () => {},
+        emit: () => {},
+        pendingPermissionRequests: new Map(),
+      });
+      return reasonOf(await factory.createPathClaimHook(
+        { ...worker, worktreePath: OWN, pathClaimMode: 'enforce' } as unknown as LocalWorker,
+      )(pre('Edit', { file_path: 'a.ts' }), undefined, signal));
+    },
+  },
+  {
+    name: 'path-claim (enforce): edit after a recorded collision',
+    run: async () => reasonOf(await makeFactory().createPathClaimHook(
+      { ...worker, pathClaimMode: 'enforce', pathCollision: { path: 'a.ts', blockingTaskId: 'bbbbbbbb-0000', source: 'sync', detectedAt: 1 } } as unknown as LocalWorker,
+    )(pre('Edit', { file_path: 'b.ts' }), undefined, signal)),
+  },
+  {
+    name: 'checkpoint guard (enforce): push with a collision',
+    run: async () => reasonOf(await makeFactory().createPathCheckpointGuardHook(
+      { ...worker, pathClaimMode: 'enforce' } as unknown as LocalWorker,
+      async () => ({ path: 'a.ts', blockingTaskId: 'bbbbbbbb-0000', source: 'pre_push', detectedAt: 1 }),
+    )(pre('Bash', { command: 'git push origin HEAD' }), undefined, signal)),
+  },
+  {
     name: 'canUseTool: second subagent request while one is pending',
     run: async () => {
       const pending = new Map<string, any>([[worker.id, { resolve: () => {}, toolInput: {}, suggestions: [] }]]);

@@ -36,7 +36,6 @@ export const config = {
   storageBucket: optional('STORAGE_BUCKET', 'buildd-artifacts'),
   storageAccessKey: optional('STORAGE_ACCESS_KEY', ''),
   storageSecretKey: optional('STORAGE_SECRET_KEY', ''),
-  storagePublicUrl: optional('STORAGE_PUBLIC_URL', ''),
 
   defaultBranchPrefix: optional('DEFAULT_BRANCH_PREFIX', 'buildd/'),
   worktreeBasePath: optional('WORKTREE_BASE_PATH', '/tmp/buildd-worktrees'),

@@ -70,6 +70,11 @@ mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
 
+let heroPool: any[] = [];
+mock.module('@/lib/mission-shipped-report', () => ({
+  loadShippedHeroPool: async () => heroPool,
+}));
+
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
@@ -96,12 +101,14 @@ mock.module('@/lib/effective-roles', () => ({
 }));
 
 import {
+  EVALUATION_OUTPUT_SCHEMA,
   buildEvaluationContext,
   spawnEvaluationTask,
   handleEvaluationResult,
 } from './mission-evaluation';
 
 function resetAll() {
+  heroPool = [];
   missionFindFirstResult = null;
   tasksFindManyResult = [];
   taskFindFirstResult = null;
@@ -168,6 +175,54 @@ describe('mission-evaluation', () => {
       const summary = result!.context.taskSummary as any[];
       expect(summary.length).toBe(1);
       expect(summary[0].title).toBe('Real work');
+    });
+
+    describe('what shipped', () => {
+      beforeEach(() => {
+        missionFindFirstResult = { id: 'm1', title: 'Test', description: null, status: 'active' };
+      });
+
+      it('carries an optional shipped definition in the output schema', () => {
+        const props = EVALUATION_OUTPUT_SCHEMA.properties as Record<string, any>;
+        expect(props.shipped.properties.lede.type).toBe('string');
+        expect(props.shipped.required).toEqual(['lede']);
+        expect(EVALUATION_OUTPUT_SCHEMA.required as readonly string[]).not.toContain('shipped');
+      });
+
+      it('appends the shipped instructions to the evaluation prompt', async () => {
+        const result = await buildEvaluationContext('m1');
+        expect(result!.description).toContain('When you return verdict "complete", also fill `shipped`.');
+        expect(result!.description).toContain('GOOD:');
+      });
+
+      it('lists the screenshot pool the author may nominate from, when there is one', async () => {
+        expect((await buildEvaluationContext('m1'))!.description).not.toContain('Screenshots you may nominate');
+
+        heroPool = [{ artifactId: 'a1', route: '/app/home', viewport: 'mobile', verdict: 'pass' }];
+        const description = (await buildEvaluationContext('m1'))!.description;
+        expect(description).toContain('Screenshots you may nominate');
+        expect(description).toContain('- a1 — /app/home, mobile');
+      });
+
+      it('reads the handoff outcome before the summary', async () => {
+        tasksFindManyResult = [
+          { id: 't1', title: 'Work', status: 'completed', mode: 'execution', createdAt: new Date(), updatedAt: new Date(),
+            result: { summary: 'wrote a thing', structuredOutput: { handoff: { delivered: 'Shipped the export button' } } } },
+        ];
+        const description = (await buildEvaluationContext('m1'))!.description;
+        expect(description).toContain('Shipped the export button');
+        expect(description).not.toContain('wrote a thing');
+      });
+
+      it('skips a summary the runner captured at session end', async () => {
+        tasksFindManyResult = [
+          { id: 't1', title: 'Work', status: 'completed', mode: 'execution', createdAt: new Date(), updatedAt: new Date(),
+            result: { summary: 'Let me check the tests now', summarySource: 'fallback' } },
+        ];
+        const description = (await buildEvaluationContext('m1'))!.description;
+        expect(description).not.toContain('Let me check the tests now');
+        expect(description).toContain('**Work**: no summary');
+      });
     });
   });
 
@@ -250,6 +305,7 @@ describe('mission-evaluation', () => {
         path: 'evaluation_task',
         predicate: 'evaluation task eval1 verdict=complete confidence=high',
         proposed: true,
+        authorTaskId: 'eval1',
       });
     });
 
