@@ -112,7 +112,7 @@ function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: 
 /** A `buildd_<group>` tool for the given actions: short purpose, one line per action, and `help`. */
 export function groupToolDefinition(group: McpToolGroup, actions: readonly string[]): object {
   const lines = actions.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
-  lines.push(`- ${HELP_ACTION} {action}: full docs for one action`);
+  lines.push(`- ${HELP_ACTION} {action}: docs for one action`);
   const withSub = actions.find(a => /\baction: [a-z_|]*\bupdate\b/.test(derivedSignature(a) ?? ''));
   return {
     name: mcpGroupToolName(group),

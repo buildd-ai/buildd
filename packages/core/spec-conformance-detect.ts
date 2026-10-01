@@ -36,3 +36,28 @@ export function detectSpecConformanceRoots(files: string[]): DetectedSpecConform
     designRoot: DESIGN_ROOT_CANDIDATES.find((root) => hasDirectory(files, root)) ?? null,
   };
 }
+
+// Path-shaped, ORM/tool-neutral names; matched as the tail of a directory path
+// so `services/api/migrations` is found as well as a root `migrations`.
+const MIGRATIONS_DIR_CANDIDATES = ['migrations', 'db/migrate', 'drizzle', 'prisma/migrations', 'alembic'];
+
+/**
+ * The repo's migrations directory, or null. Ties between candidates at the
+ * same depth resolve in candidate order; a shallower directory wins over a
+ * deeper one. Absent is a normal answer — many repos have no database.
+ */
+export function detectMigrationsDir(files: string[]): string | null {
+  const dirs = new Set<string>();
+  for (const f of files) {
+    const parts = f.split('/');
+    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+  }
+  let best: { dir: string; depth: number; rank: number } | null = null;
+  for (const dir of dirs) {
+    const rank = MIGRATIONS_DIR_CANDIDATES.findIndex((c) => dir === c || dir.endsWith(`/${c}`));
+    if (rank === -1) continue;
+    const depth = dir.split('/').length;
+    if (!best || depth < best.depth || (depth === best.depth && rank < best.rank)) best = { dir, depth, rank };
+  }
+  return best?.dir ?? null;
+}

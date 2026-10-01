@@ -2971,3 +2971,64 @@ export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
 }
+
+// ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
+// The readiness report is recomputed from the repo on every request and never
+// stored; only what the repo cannot tell us is persisted, in
+// `workspaces.gitConfig.onboarding`. Absent means current behaviour.
+
+export type WorkspaceReadinessItemId =
+  | 'agent-instructions'
+  | 'spec-root'
+  | 'spec-format'
+  | 'test-command'
+  | 'typecheck-command'
+  | 'build-command'
+  | 'env-manifest'
+  | 'migrations-dir'
+  | 'merge-policy'
+  | 'release-path'
+  | 'visual-qa-source';
+
+export type WorkspaceReadinessNextStep =
+  | 'link-repo'
+  | 'review-policy'
+  | 'propose-fixes'
+  | 'author-spec'
+  | 'first-mission'
+  | 'done';
+
+export interface WorkspaceOnboardingConfig {
+  /** Items the owner said are not for this repo. */
+  waived?: Record<string, { reason: string; at: string }>;
+  /** The open scaffold PR, when one exists. */
+  scaffoldPr?: { number: number; branch: string };
+  lastSeenPolicyInitAt?: string;
+}
+
+export interface WorkspaceReadinessItem {
+  id: WorkspaceReadinessItemId;
+  label: string;
+  /** `unknown` = could not tell (truncated tree, unreadable manifest, detector not available). */
+  status: 'detected' | 'missing' | 'unknown';
+  importance: 'core' | 'recommended';
+  evidence: Array<{ kind: 'path' | 'manifest' | 'signal' | 'absent'; paths?: string[]; note: string }>;
+  fix: {
+    kind: 'scaffold' | 'apply-config' | 'owner-decision' | 'none';
+    summary: string;
+    templateId?: string;
+    configPatch?: Record<string, unknown>;
+  } | null;
+  /** The detected value when there is one: a command, a directory, a source name. */
+  value?: string;
+  waived?: { reason: string; at: string };
+}
+
+/** Response of `GET /api/workspaces/[id]/readiness`. */
+export interface WorkspaceReadinessReport {
+  items: WorkspaceReadinessItem[];
+  nextStep: WorkspaceReadinessNextStep;
+  skill: 'workspace-onboarding';
+  /** The git tree response was truncated. */
+  truncated: boolean;
+}
