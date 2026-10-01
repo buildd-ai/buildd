@@ -225,6 +225,13 @@ export interface LocalWorker {
    */
   worktreeBaseRef?: string;
   /**
+   * The ref this task's PR is compared against (resolvePrBaseRef). Differs from
+   * `worktreeBaseRef` on a resume, where the worktree is cut from the prior
+   * attempt's branch. Checkpoint sweeps measure against this one; persisted so
+   * a restored worker does not sweep with an empty committed half.
+   */
+  prBaseRef?: string;
+  /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
    * timeout, unknown) on an auto-detected repo, where failing closed on a guess
@@ -253,6 +260,23 @@ export interface LocalWorker {
   // on the next successful claim call. Also included in update_progress PATCH body so
   // the server can register them retroactively if the hook never recovers.
   pendingPaths?: string[];
+  /**
+   * Workspace `gitConfig.pathClaimEnforcement`, resolved at session start.
+   * Absent = advisory (the default). See path-claim-enforcement.ts.
+   */
+  pathClaimMode?: 'advisory' | 'enforce';
+  /**
+   * A confirmed checkpoint collision: a path this task already changed is held
+   * by another live task. Once set (enforce mode) further edits, pushes and
+   * completion are refused and the task is deferred. Persisted.
+   */
+  pathCollision?: import('./path-claim-enforcement').PathCollision;
+  /** Set while the collision hand-off (checkpoint + deferral) is in flight, so it runs once. */
+  pathCollisionDeferring?: boolean;
+  /** Path-claim calls that hit the deadline or failed: enforcement was degraded for them. */
+  pathClaimDegraded?: number;
+  /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
+  pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   /**
    * Running per-turn token tally, accumulated from backend turn_complete usage.

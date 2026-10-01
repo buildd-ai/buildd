@@ -558,15 +558,33 @@ export async function claimObservedPaths(
   taskId: string,
   observedPaths: string[],
 ): Promise<string[]> {
-  if (observedPaths.length === 0) return [];
+  return (await acquireObservedPaths(workspaceId, taskId, observedPaths)).inserted;
+}
+
+/**
+ * `claimObservedPaths`, also returning what it could not lease: every observed
+ * path a live holder already has, with that holder. For an observed touch the
+ * write has already happened, so a blocked path is a checkpoint collision
+ * (conflict-aware-orchestration.md §2) — the worker PATCH reports it back so
+ * an enforcing runner can stop and defer. Terminal and expired-parked holders
+ * are discounted exactly as for a declaration; a closed observer gets nothing.
+ */
+export async function acquireObservedPaths(
+  workspaceId: string,
+  taskId: string,
+  observedPaths: string[],
+): Promise<{ inserted: string[]; blocked: BlockedPath[] }> {
+  if (observedPaths.length === 0) return { inserted: [], blocked: [] };
 
   const lockable = normalizeClaimPaths(
     observedPaths.filter(raw => typeof raw === 'string' && raw.trim() !== REPO_WIDE_SENTINEL),
   ).filter(path => !findRegenerable(path));
-  if (lockable.length === 0) return [];
+  if (lockable.length === 0) return { inserted: [], blocked: [] };
 
   const result = await acquirePathClaims({ workspaceId, taskId, paths: lockable, declare: false });
-  return result.kind === 'acquired' ? result.inserted : [];
+  return result.kind === 'acquired'
+    ? { inserted: result.inserted, blocked: result.blocked }
+    : { inserted: [], blocked: [] };
 }
 
 // ── Narrowing ────────────────────────────────────────────────────────────────

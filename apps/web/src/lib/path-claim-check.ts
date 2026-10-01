@@ -158,6 +158,12 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       blockingTaskId: conflict.blockingTaskId,
       blockingTaskTitle: blocker?.title ?? null,
       blockingMissionId: blocker?.missionId ?? null,
+      // The holder's lease (may be a directory) and every requested path that
+      // is held. A declaration is all-or-nothing, so nothing was granted; the
+      // list lets an enforcing runner deny the held paths by name and keep the
+      // free ones queued (conflict-aware-orchestration.md §2).
+      blockingPath: conflict.blockingPath,
+      blockedPaths: acquired.blocked.map(b => ({ path: b.path, blockingTaskId: b.blockingTaskId, blockingPath: b.blockingPath })),
       message,
     };
 

@@ -373,6 +373,12 @@ export interface WorkspaceGitConfig {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
 
+  // Path-claim enforcement (docs/design/conflict-aware-orchestration.md §2). Off by
+  // default ('advisory' or absent). 'enforce': a confirmed live holder denies
+  // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
+  // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
+  pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
   blockConfigChanges?: boolean;

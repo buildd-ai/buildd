@@ -73,7 +73,7 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
-import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
+import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
@@ -83,7 +83,8 @@ import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { isReadOnlyReview } from '@/lib/read-only-review';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
-import { claimObservedPaths } from '@buildd/core/path-claim';
+import { acquireObservedPaths } from '@buildd/core/path-claim';
+import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
@@ -817,6 +818,12 @@ export async function PATCH(
     // Passive observed-touches: incremental list from git diff --name-only on the runner.
     // Server accumulates into workers.observedTouches for §6d collision detection.
     touchedPaths,
+    // Runner pre-push/completion sweep: re-offer every touchedPaths entry for
+    // lease, not only the ones new to observedTouches (see auto-lease below).
+    checkpointSweep,
+    // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
+    // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
+    pathCollision: reportedPathCollision,
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
@@ -1192,6 +1199,20 @@ export async function PATCH(
     if (merged.length > 500) {
       console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
       updates.observedTouches = merged.slice(0, 500);
+      // A path past the cap is neither recorded nor leased: say so on the
+      // ledger, or a task over the cap loses path-claim coverage silently.
+      const dropped = merged.slice(500);
+      fireGateEvent({
+        gate: GATE_SLUGS.PATH_CLAIM,
+        surface: 'PATCH /api/workers/[id]',
+        outcome: 'warned',
+        reason: 'observed touches past the 500-path cap were not recorded or leased: path-claim enforcement degraded',
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        callerOrigin: 'worker',
+        detail: { cap: 500, dropped: dropped.length, sample: dropped.slice(0, 10) },
+      });
     } else {
       updates.observedTouches = merged;
     }
@@ -2064,6 +2085,33 @@ export async function PATCH(
         .update(tasks)
         .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
         .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      // An enforce-mode path collision: make the requeue wait for the holder
+      // (collided path joins the manifest, so the claim route's lease
+      // backstop defers it) and resume from the pushed checkpoint.
+      if (reportedPathCollision && typeof reportedPathCollision === 'object') {
+        const recorded = await recordPathCollisionDeferral({
+          taskId: worker.taskId,
+          collision: reportedPathCollision,
+          branch: worker.branch ?? null,
+        });
+        if (recorded) {
+          fireGateEvent({
+            gate: GATE_SLUGS.PATH_CLAIM,
+            surface: 'PATCH /api/workers/[id]',
+            outcome: 'deferred',
+            reason: 'checkpoint path collision: task deferred behind the holder',
+            workspaceId: worker.workspaceId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+            callerOrigin: 'worker',
+            detail: {
+              path: (reportedPathCollision as Record<string, unknown>).path ?? null,
+              blockingTaskId: (reportedPathCollision as Record<string, unknown>).blockingTaskId ?? null,
+              source: (reportedPathCollision as Record<string, unknown>).source ?? null,
+            },
+          });
+        }
+      }
     }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
   }
@@ -3992,17 +4040,49 @@ export async function PATCH(
   // A read-only reviewer is skipped: it checks out the PR branch, so the runner
   // reports the whole PR diff as touched, and it never edits any of it. A
   // reviewer *fix* attempt is not a review and still leases.
-  if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+  //
+  // A path the acquisition could not lease because another live task holds it
+  // was already written: that is a checkpoint collision
+  // (conflict-aware-orchestration.md §2). It comes back on the response as
+  // `pathCollisions`, naming the holder, so an enforcing runner stops and
+  // defers. Advisory runners only log it; §6d below still messages the holder.
+  let pathCollisions: PathCollisionNotice[] = [];
+  // A checkpoint sweep (pre-push/completion) re-offers everything it saw: an
+  // earlier acquisition that failed or lost a race left the path in
+  // observedTouches without a lease, and the diff-against-column rule would
+  // never offer it again — yet this is the sweep right before it ships.
+  // Own leases are no-ops in acquireObservedPaths.
+  // Only recorded paths: a lease must always be visible in observedTouches,
+  // so an incoming path past the cap (warned above) is not offered.
+  const recordedTouches = new Set(Array.isArray(updates.observedTouches) ? (updates.observedTouches as string[]) : []);
+  const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
+    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string' && recordedTouches.has(p)))]
+    : newlyObservedPaths;
+  if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
       const leaseTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
         columns: { category: true, context: true },
       });
-      const leased = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
-        ? []
-        : await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+      const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
+        ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
+        : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
       if (leased.length > 0) {
         console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
+      }
+      if (blocked.length > 0) {
+        const holderIds = [...new Set(blocked.map(b => b.blockingTaskId))];
+        const holders = await db.query.tasks.findMany({
+          where: inArray(tasks.id, holderIds),
+          columns: { id: true, title: true },
+        }).catch(() => [] as Array<{ id: string; title: string | null }>);
+        const titles = new Map((holders ?? []).map(h => [h.id, h.title ?? null]));
+        pathCollisions = blocked.map(b => ({
+          path: b.path,
+          blockingTaskId: b.blockingTaskId,
+          blockingTaskTitle: titles.get(b.blockingTaskId) ?? null,
+          blockingPath: b.blockingPath,
+        }));
       }
     } catch (err) {
       console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
@@ -4384,6 +4464,7 @@ export async function PATCH(
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
     ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
+    ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 
