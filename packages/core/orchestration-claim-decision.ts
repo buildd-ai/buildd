@@ -29,6 +29,7 @@
  * Pure: no DB, no env. The stores live in ./orchestration-claim-source.ts.
  */
 import { choice, defineDecision, type Decision } from '@builddai/ai-kit/decide';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { candidateDigest } from './orchestration-decision';
 
 // ── Definition ───────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ export type ClaimHoldRail =
   | 'no_overlap_data';
 
 /** Worker statuses that mean a holder is still editing. */
-export const LIVE_HOLDER_STATUSES: ReadonlySet<string> = new Set(['running', 'starting', 'idle', 'waiting_input']);
+export const LIVE_HOLDER_STATUSES: ReadonlySet<string> = new Set<string>(LIVE_WORKER_STATUSES);
 
 /**
  * Migration namespaces, matched without workspace config so an unconfigured

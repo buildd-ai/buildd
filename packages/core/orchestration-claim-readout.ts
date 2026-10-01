@@ -17,6 +17,7 @@
  *     while held, or still pending past a threshold) and throughput (starts),
  *     and the censored/missing share is reported, not dropped.
  */
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { DecisionOutcomeLabels } from './orchestration-outcomes';
 
 /** A pending task held this long with no start counts as stranded. */
@@ -138,7 +139,7 @@ const quantile = (sorted: number[], q: number): number | null => {
   return sorted[i];
 };
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL: ReadonlySet<string> = new Set<string>(TERMINAL_TASK_STATUSES);
 
 export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHoldGroupSummary[] {
   const strandedAfter = input.strandedAfterMs ?? CLAIM_HOLD_STRANDED_AFTER_MS;
