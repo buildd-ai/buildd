@@ -83,6 +83,14 @@ import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpo
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
+import {
+  ClaimHoldCollector,
+  acquireGatedStartPaths,
+  gatedStartApplies,
+  gatedStartReachable,
+  scheduleClaimHoldShadow,
+  type ClaimHoldTaskContext,
+} from './hold-start-shadow';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -1189,6 +1197,8 @@ export async function POST(req: NextRequest) {
     pathManifest: string[] | null;
     prNumber: number | null;
     prUrl: string | null;
+    workerStatus: string | null;
+    prLifecycle: string | null;
   }>>();
   const openPrWorkspaceIds = [...new Set(filteredTasks.map(t => t.workspaceId))];
   if (openPrWorkspaceIds.length > 0) {
@@ -1222,7 +1232,10 @@ export async function POST(req: NextRequest) {
 
       for (const w of activeOpenPrWorkers) {
         const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
-        const entry = { taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
+        const entry = {
+          taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl,
+          workerStatus: (w.status as string | null) ?? null, prLifecycle: (w.prLifecycleStatus as string | null) ?? null,
+        };
         const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
         list.push(entry);
         openPrTasksByWorkspace.set(w.workspaceId, list);
@@ -1239,12 +1252,16 @@ export async function POST(req: NextRequest) {
   // window layer 1 cannot see and the reason the auto-lease matters: the second
   // agent is stopped before it starts rather than told afterwards.
   const activePathClaimsByWorkspace = new Map<string, Map<string, string[]>>();
+  // Workspaces whose lease read failed: their lease state is unknown, so the
+  // hold/start shadow below never asks about them.
+  const leaseReadFailedWorkspaces = new Set<string>();
   if (openPrWorkspaceIds.length > 0) {
     await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
       try {
         const byTask = await getActiveClaimsByWorkspace(wsId);
         if (byTask.size > 0) activePathClaimsByWorkspace.set(wsId, byTask);
       } catch (err) {
+        leaseReadFailedWorkspaces.add(wsId);
         console.warn(`[claim] getActiveClaimsByWorkspace failed for workspace ${wsId}:`, err);
       }
     }));
@@ -1355,7 +1372,38 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Hold/start at claim (docs/design/conflict-aware-orchestration.md §5b).
+  // The collector only remembers advisory deferrals that pass every
+  // deterministic rail (no I/O); the decisions run after the response. The
+  // gated START path is unreachable as shipped (shadow definition, zero
+  // applying fraction), so `holdStartGated` is false and the loop below never
+  // awaits anything new.
+  const holdStart = new ClaimHoldCollector();
+  const holdStartGated = gatedStartReachable();
+  const holdStartContext = (t: any, isForced: boolean): ClaimHoldTaskContext | null => {
+    const teamId = t.workspace?.teamId as string | undefined;
+    if (!teamId) return null;
+    const created = t.createdAt ? new Date(t.createdAt) : null;
+    return {
+      teamId,
+      workspaceId: t.workspaceId,
+      missionId: t.missionId ?? null,
+      taskId: t.id,
+      accountId: account.id ?? null,
+      title: typeof t.title === 'string' ? t.title : null,
+      taskCreatedAt: created && Number.isFinite(created.getTime()) ? created.toISOString() : null,
+      retryKind: t.conflictRetryPrNumber ? 'conflict' : t.reviewerRetryPrNumber ? 'reviewer' : t.ciRetryPrNumber ? 'ci' : null,
+      forced: isForced,
+      leaseReadFailed: leaseReadFailedWorkspaces.has(t.workspaceId),
+      gitConfig: t.workspace?.gitConfig ?? null,
+      now: now.toISOString(),
+    };
+  };
+
   for (const task of filteredTasks) {
+    // Set only by a gated START that relaxed the open-PR overlap: these
+    // declared paths are acquired exclusively right before the atomic claim.
+    let gatedStartPaths: string[] | null = null;
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1437,7 +1485,15 @@ export async function POST(req: NextRequest) {
         && (!ownRetryPrNumber || pr.prNumber !== ownRetryPrNumber)
         && (!ownSubjectPrNumber || pr.prNumber !== ownSubjectPrNumber));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
-      if (blocking) {
+      // Shadow-only by default: note the deferral (no I/O). A gated START
+      // (unreachable as shipped) relaxes ONLY this layer; layer 2 and every
+      // later gate still run, and the paths are acquired exclusively below.
+      const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
+      const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId)) : null;
+      if (blocking && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
+        console.log(`[claim] gated_start: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
+        gatedStartPaths = holdNote.candidate.concretePaths;
+      } else if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
         firstBlockingPr ??= blockedByPr;
@@ -1600,7 +1656,14 @@ export async function POST(req: NextRequest) {
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
             : undefined;
-          if (blockingPeer) {
+          // Shadow-only by default (see layer 1 above). A gated START relaxes
+          // only this serialization; there are no declared paths to acquire,
+          // and observed touches are leased by the exclusive primitive later.
+          const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
+          const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
+          if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
+            console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
+          } else if (blockingPeer) {
             console.log(
               `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
               `(mission ${taskMissionId} already has scope-undeclared task ${blockingPeer} in flight)`,
@@ -1973,6 +2036,14 @@ export async function POST(req: NextRequest) {
       (patchedContext as Record<string, unknown>)[INTERACTIVE_CLAIM_SESSION_KEY] = interactiveSession.sessionKey;
     }
 
+    // Gated START only (never as shipped): the relaxed overlap's declared
+    // paths go through the exclusive primitive, all-or-nothing, before the
+    // claim. Any conflict keeps the original path_overlap hold.
+    if (gatedStartPaths && !(await acquireGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, paths: gatedStartPaths }))) {
+      deferTask(task, 'path_overlap', { gatedStart: 'acquire_failed' });
+      continue;
+    }
+
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     lockAttempts++;
     const updated = await db
@@ -2165,6 +2236,10 @@ export async function POST(req: NextRequest) {
     }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
+
+  // Hold/start shadow decisions run after the response is sent (after()).
+  // Registering them is synchronous; nothing here is awaited.
+  scheduleClaimHoldShadow(holdStart);
 
   if (claimedWorkers.length === 0) {
     // When the account's OAuth budget is exhausted, every non-tenant Claude task
