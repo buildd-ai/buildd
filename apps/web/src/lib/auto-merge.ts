@@ -35,6 +35,7 @@ import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -48,7 +49,7 @@ export function isBehindBaseRefusal(reason: string): boolean {
 
 export type AutoMergeRefusalClass =
   | 'ci' | 'deny_path' | 'migration' | 'size' | 'conflict' | 'blocked'
-  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'other';
+  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'semantic_hold' | 'other';
 
 /**
  * Which safety rail an `evaluateAutoMergeSafety` refusal came from, for the
@@ -66,6 +67,7 @@ export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass 
   if (/^model approve:/.test(reason)) return 'model_bound';
   if (/PR head changed|live PR head/.test(reason)) return 'stale_head';
   if (/^could not (fetch|verify)|^malformed PR files/.test(reason)) return 'github_read';
+  if (/^semantic hold \(/.test(reason)) return 'semantic_hold';
   return 'other';
 }
 
@@ -154,6 +156,12 @@ export async function evaluateAutoMergeSafety(
      * measures the gap itself.
      */
     skipBaseFreshness?: boolean;
+    /**
+     * The workspace gitConfig, for the post-refresh semantic hold
+     * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
+     * omitted, or with `semanticRefresh` off, the hold makes no read.
+     */
+    gitConfig?: WorkspaceGitConfig | null;
     /** Out-param: facts this check read from the live PR, so a caller does not re-read them. Filled as soon as the PR is read, before any rail can refuse. */
     observed?: {
       baseRef?: string | null;
@@ -209,6 +217,22 @@ export async function evaluateAutoMergeSafety(
       }`,
     };
   }
+
+  // Post-refresh semantic hold (conflict-aware-orchestration.md §4): a refresh
+  // can merge in base commits that landed after its semantic verdict. Under
+  // enforce the PR waits here until that arrived range is re-verified. Only
+  // consulted once CI is green, and makes no read when the check is off.
+  const hold = await checkBaseRefreshHold({
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha,
+    taskId: opts?.taskId ?? null,
+    workspaceId: opts?.workspaceId ?? null,
+    workerId: opts?.workerId ?? null,
+    gitConfig: opts?.gitConfig,
+  });
+  if (hold.blocks) return { ok: false, reason: hold.reason };
 
   // LEGACY FALLBACK (added 2026-09-24, REMOVE NEXT RELEASE — see
   // LEGACY_PATH_FALLBACK_NOTE in @buildd/shared). Hand-written denyPaths /
@@ -547,7 +571,7 @@ export async function tryAutoMergeWorkerPr(params: {
     prNumber,
     headSha,
     policy,
-    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id, observed },
+    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id, observed, gitConfig: params.surfaceOrderingConfig },
   );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);

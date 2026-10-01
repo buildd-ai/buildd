@@ -51,8 +51,18 @@ describe('classifyBranchUpdateFailure — an API error alone is not conflict evi
     expect(classifyBranchUpdateFailure('The operation timed out.')).toBe('transient');
   });
 
+  it('a 422 saying there is nothing to merge is up_to_date, not a failure', () => {
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"There are no new commits on the base branch."}')).toBe('up_to_date');
+  });
+
+  it('any other 422 is an explicit refusal, never conflict and never a retryable failure', () => {
+    // A 422 is GitHub refusing this request deterministically; retrying the
+    // same call cannot change the answer, so it must not burn the retry cap.
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"Validation Failed"}')).toBe('refused');
+    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"Pull request branch update is not allowed"}')).toBe('refused');
+  });
+
   it('anything else is unknown, never conflict', () => {
-    expect(classifyBranchUpdateFailure('GitHub API error: 422 {"message":"Validation Failed"}')).toBe('unknown');
     expect(classifyBranchUpdateFailure('GitHub API error: 404 Not Found')).toBe('unknown');
     expect(classifyBranchUpdateFailure('')).toBe('unknown');
   });

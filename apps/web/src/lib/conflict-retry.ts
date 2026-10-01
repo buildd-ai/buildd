@@ -477,6 +477,8 @@ export interface DispatchConflictRetryResult {
   semanticDeferred?: boolean;
   /** Semantic clearance could not be verified within the bound; a diagnostic was posted. */
   semanticUnverified?: boolean;
+  /** GitHub said there is nothing to merge in: the "behind" reading was stale. Re-read. */
+  alreadyUpToDate?: boolean;
 }
 
 /**
@@ -590,6 +592,8 @@ export async function dispatchConflictRetry(
         break;
       case 'head_changed':
         return { dispatched: false, headChanged: true };
+      case 'up_to_date':
+        return { dispatched: false, alreadyUpToDate: true };
       case 'in_flight':
         return { dispatched: false, refreshInFlight: true };
       case 'deferred':

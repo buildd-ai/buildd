@@ -31,7 +31,9 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
+import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
+import { resolveSemanticRefreshMode } from '@/lib/semantic-refresh';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
@@ -1111,6 +1113,37 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
+/**
+ * How the `merge_pr` door reports a behind-base refresh (lib/base-refresh.ts).
+ * `wait` outcomes are a 409 — retry later, nothing is wrong; the rest are the
+ * 403 refusal, naming why the branch was not brought up to date.
+ */
+function mergePrRefreshResponse(outcome: RefreshOutcome): { kind: RefreshOutcome['kind']; wait: boolean; detail: string; hint: string } {
+  const retry = 'Retry merge_pr shortly; nothing else is needed.';
+  switch (outcome.kind) {
+    case 'updated':
+      return { kind: outcome.kind, wait: true, detail: 'the branch has been updated from base', hint: retry };
+    case 'in_flight':
+      return { kind: outcome.kind, wait: true, detail: 'another refresh of this PR is already in flight', hint: retry };
+    case 'head_changed':
+      return { kind: outcome.kind, wait: true, detail: `the PR head moved before the refresh (${outcome.reason})`, hint: 'Re-read the PR (get_pr) and retry on the new head.' };
+    case 'up_to_date':
+      return { kind: outcome.kind, wait: true, detail: 'GitHub reports the branch already has every base commit', hint: retry };
+    case 'deferred':
+      return { kind: outcome.kind, wait: true, detail: `updating the branch failed (${outcome.failure}), not a conflict; attempt ${outcome.attempts}`, hint: retry };
+    case 'semantic_deferred':
+      return { kind: outcome.kind, wait: true, detail: `semantic overlap with the base is not verified yet (check ${outcome.rechecks})`, hint: retry };
+    case 'conflict':
+      return { kind: outcome.kind, wait: false, detail: `updating the branch hit a merge conflict (${outcome.reason})`, hint: 'Merge the base into the branch and resolve the conflict, then retry.' };
+    case 'exhausted':
+      return { kind: outcome.kind, wait: false, detail: `updating the branch keeps failing (${outcome.failure ?? 'unknown'}): ${outcome.reason}`, hint: 'A diagnostic was posted. Check the GitHub App access, or update the branch by hand.' };
+    case 'semantic_conflict':
+      return { kind: outcome.kind, wait: false, detail: `the PR and the base edit the same symbols (${outcome.assessment.reason})`, hint: 'Merge the base in and reconcile the named symbols, then retry.' };
+    case 'semantic_unverified':
+      return { kind: outcome.kind, wait: false, detail: `semantic overlap with the base could not be verified (${outcome.reason})`, hint: 'A diagnostic was posted. Review the overlap and merge by hand, or turn the semantic check off.' };
+  }
+}
+
 // PUT /api/github/pr - Merge a pull request
 /**
  * The `merge_pr` answer for a landing outcome. Only `merged` is a merge; the
@@ -1501,6 +1534,7 @@ export async function PUT(req: NextRequest) {
           workspaceId: workspace.id,
           taskId: worker.taskId ?? null,
           workerId: worker.id ?? null,
+          gitConfig: workspace.gitConfig ?? null,
         },
       );
       if (!safety.ok) {
@@ -1513,13 +1547,39 @@ export async function PUT(req: NextRequest) {
           // would stop it doing so for good.
           recordMergeGate('rejected', dependencyBotPushRefusal(prNumber), { tier: policy.tier }, GATE_SLUGS.DEPENDENCY_BOT_PR);
         } else if (isBehindBaseRefusal(safety.reason)) {
-          const update = await updateBehindPrBranch({
-            installationId: repo.installation.installationId,
-            repoFullName: repo.fullName,
-            prNumber,
-            headSha,
-          });
-          if (update.updated) {
+          // Same door as every other refresh (lib/base-refresh.ts): the per-PR
+          // lease, failure classification and, opted in, the semantic check
+          // and its enforce-mode hold. This door never dispatches an agent —
+          // a conflict or a semantic finding is reported back to the caller.
+          // A worker with no task has nowhere to keep refresh state. With the
+          // semantic check off there is nothing to hold, so it keeps the old
+          // direct update (pinned to the evaluated head); with it on, it is
+          // refused rather than let past the check.
+          const taskless = !worker.taskId && resolveSemanticRefreshMode(workspace.gitConfig) === 'off'
+            ? await updateBehindPrBranch({
+                installationId: repo.installation.installationId,
+                repoFullName: repo.fullName,
+                prNumber,
+                headSha,
+              })
+            : null;
+          const update: RefreshOutcome | null = taskless
+            ? (taskless.updated ? { kind: 'updated' } : null)
+            : worker.taskId
+            ? await refreshBehindPr({
+                installationId: repo.installation.installationId,
+                repoFullName: repo.fullName,
+                prNumber,
+                headSha,
+                workspaceId: workspace.id,
+                taskId: worker.taskId,
+                workerId: worker.id ?? null,
+                missionId: task?.missionId ?? null,
+                gitConfig: workspace.gitConfig ?? null,
+              })
+            : null;
+          const refreshed = update ? mergePrRefreshResponse(update) : null;
+          if (refreshed?.kind === 'updated') {
             recordMergeGate('deferred', `branch updated from base: ${safety.reason}`, { tier: policy.tier });
             return NextResponse.json({
               error: `${safety.reason} — the branch has been updated from base; CI must re-run on the new head`,
@@ -1527,6 +1587,24 @@ export async function PUT(req: NextRequest) {
               branchUpdated: true,
               hint: 'Wait for CI to go green on the updated head (get_pr), then call merge_pr again.',
             }, { status: 409 });
+          }
+          if (refreshed?.wait) {
+            recordMergeGate('deferred', `${safety.reason} — ${refreshed.detail}`, { tier: policy.tier, refresh: refreshed.kind });
+            return NextResponse.json({
+              error: `${safety.reason} — ${refreshed.detail}`,
+              tier: policy.tier,
+              refresh: refreshed.kind,
+              hint: refreshed.hint,
+            }, { status: 409 });
+          }
+          if (refreshed) {
+            recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason} — ${refreshed.detail}`, { tier: policy.tier, refresh: refreshed.kind });
+            return NextResponse.json({
+              error: `merge policy refused this merge: ${safety.reason} — ${refreshed.detail}`,
+              tier: policy.tier,
+              refresh: refreshed.kind,
+              hint: refreshed.hint,
+            }, { status: 403 });
           }
         }
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
