@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import { mkdtempSync, mkdirSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isInsideRepo, parseReadoutArgs } from './orchestration-readout';
 
 /** The operator command's arguments and its never-commit output guard. */
@@ -37,5 +40,14 @@ describe('isInsideRepo', () => {
     expect(isInsideRepo('/repo', '/repo')).toBe(true);
     expect(isInsideRepo('/private/readout.json', '/repo')).toBe(false);
     expect(isInsideRepo('/repo-other/x.json', '/repo')).toBe(false);
+  });
+
+  it('follows symlinks: a link outside the repo that points inside it is refused', () => {
+    const base = mkdtempSync(join(tmpdir(), 'readout-'));
+    const repo = join(base, 'repo');
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    symlinkSync(join(repo, 'docs'), join(base, 'link'));
+    expect(isInsideRepo(join(base, 'link', 'readout.json'), repo)).toBe(true);
+    expect(isInsideRepo(join(base, 'elsewhere', 'readout.json'), repo)).toBe(false);
   });
 });

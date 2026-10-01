@@ -21,7 +21,8 @@
  *
  * Requires DATABASE_URL for the deployment whose ledger you are reading.
  */
-import { resolve, relative, isAbsolute } from 'node:path';
+import { basename, dirname, resolve, relative, isAbsolute } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 export interface ReadoutArgs {
@@ -72,9 +73,22 @@ export function parseReadoutArgs(argv: readonly string[], now: Date = new Date()
   };
 }
 
-/** True when `path` resolves inside `repoRoot`: a readout must never land where it could be committed. */
+/** Resolve symlinks on the longest existing prefix (the output file itself need not exist yet). */
+function realish(path: string): string {
+  let p = resolve(path);
+  const tail: string[] = [];
+  for (;;) {
+    try { return resolve(realpathSync(p), ...tail.reverse()); } catch { /* not there yet */ }
+    const parent = dirname(p);
+    if (parent === p) return resolve(path);
+    tail.push(basename(p));
+    p = parent;
+  }
+}
+
+/** True when `path` resolves inside `repoRoot`, symlinks followed: a readout must never land where it could be committed. */
 export function isInsideRepo(path: string, repoRoot: string): boolean {
-  const rel = relative(resolve(repoRoot), resolve(path));
+  const rel = relative(realish(repoRoot), realish(path));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 

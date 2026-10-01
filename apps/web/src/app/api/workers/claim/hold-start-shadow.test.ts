@@ -425,9 +425,9 @@ describe('gated START', () => {
   it('acquires the declared paths through the exclusive primitive, all-or-nothing', async () => {
     const calls: any[] = [];
     const ok = await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**', 'apps/web/src/widget.ts'] }, {
-      acquire: async (input) => { calls.push(input); return { kind: 'acquired', inserted: ['apps/web/src/widget.ts'], blocked: [], pathManifest: null, revision: 1 }; },
+      acquire: async (input) => { calls.push(input); return { kind: 'acquired', inserted: ['apps/web/src/widget.ts'], insertedIds: ['lease-1'], blocked: [], pathManifest: null, revision: 1 }; },
     });
-    expect(ok).toEqual({ ok: true, inserted: ['apps/web/src/widget.ts'] });
+    expect(ok).toEqual({ ok: true, inserted: ['apps/web/src/widget.ts'], insertedIds: ['lease-1'] });
     expect(calls).toEqual([{ workspaceId: WS, taskId: TASK, paths: ['apps/web/src/widget.ts'], declare: true }]);
   });
 
@@ -440,44 +440,55 @@ describe('gated START', () => {
 
   it('a scope-undeclared START acquires nothing up front (observed touches lease later)', async () => {
     let called = false;
-    expect(await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**'] }, { acquire: async () => { called = true; return { kind: 'task_closed' }; } })).toEqual({ ok: true, inserted: [] });
+    expect(await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**'] }, { acquire: async () => { called = true; return { kind: 'task_closed' }; } })).toEqual({ ok: true, inserted: [], insertedIds: [] });
     expect(called).toBe(false);
   });
 
   describe('releaseGatedStartPaths: a START that lost the atomic claim gives its new leases back', () => {
-    const input = { workspaceId: WS, taskId: TASK, inserted: ['apps/web/src/widget.ts'] };
-
-    it('releases when the task is no longer owned by a live claim', async () => {
-      for (const status of ['pending', 'cancelled', 'failed', 'completed', null]) {
-        const released: string[] = [];
-        const out = await releaseGatedStartPaths(input, {
-          readTaskStatus: async () => status,
-          release: async (taskId) => { released.push(taskId); },
-        });
-        expect(out).toBe('released');
-        expect(released).toEqual([TASK]);
-      }
+    const input = { workspaceId: WS, taskId: TASK, insertedIds: ['lease-1'] };
+    const released = (paths: string[], waiters: Array<{ waitingTaskId: string; blockedPath: string }> = []) => async () => ({
+      kind: 'released' as const,
+      result: { workspaceId: WS, releasedPaths: paths, notifiedWaiters: waiters.map(w => w.waitingTaskId), waiters },
     });
 
-    it('keeps them when the winning claim now owns the task (same task, same leases)', async () => {
-      for (const status of ['assigned', 'in_progress', 'review']) {
-        let released = 0;
-        const out = await releaseGatedStartPaths(input, { readTaskStatus: async () => status, release: async () => { released++; } });
-        expect(out).toBe('kept_live_owner');
-        expect(released).toBe(0);
-      }
+    it('releases only the rows this attempt inserted, never the task\'s other leases', async () => {
+      const calls: any[] = [];
+      const out = await releaseGatedStartPaths(input, {
+        releaseRows: async (a) => { calls.push(a); return released(['apps/web/src/widget.ts'])(); },
+        releaseReason: async () => 'abandoned',
+        deliver: async () => {},
+      });
+      expect(out).toBe('released');
+      expect(calls).toEqual([{ workspaceId: WS, taskId: TASK, leaseIds: ['lease-1'], keepStatuses: ['assigned', 'in_progress', 'review'] }]);
     });
 
-    it('nothing newly leased: nothing to release, no reads', async () => {
-      let reads = 0;
-      const out = await releaseGatedStartPaths({ ...input, inserted: [] }, { readTaskStatus: async () => { reads++; return 'pending'; }, release: async () => {} });
+    it('keeps them when the winning claim now owns the task (decided under the lock)', async () => {
+      let delivered = 0;
+      const out = await releaseGatedStartPaths(input, { releaseRows: async () => ({ kind: 'kept' }), deliver: async () => { delivered++; } });
+      expect(out).toBe('kept_live_owner');
+      expect(delivered).toBe(0);
+    });
+
+    it('waiters hear the task\'s real release reason, not a blanket "abandoned"', async () => {
+      const seen: any[] = [];
+      const out = await releaseGatedStartPaths(input, {
+        releaseRows: released(['apps/web/src/widget.ts'], [{ waitingTaskId: HOLDER, blockedPath: 'apps/web/src/widget.ts' }]),
+        releaseReason: async (taskId) => { expect(taskId).toBe(TASK); return 'merged'; },
+        deliver: async (taskId, result, reason) => { seen.push({ taskId, reason, waiters: result.notifiedWaiters }); },
+      });
+      expect(out).toBe('released');
+      expect(seen).toEqual([{ taskId: TASK, reason: 'merged', waiters: [HOLDER] }]);
+    });
+
+    it('nothing inserted: nothing to release, no statement', async () => {
+      let calls = 0;
+      const out = await releaseGatedStartPaths({ ...input, insertedIds: [] }, { releaseRows: async () => { calls++; return { kind: 'nothing' }; } });
       expect(out).toBe('nothing_inserted');
-      expect(reads).toBe(0);
+      expect(calls).toBe(0);
     });
 
-    it('never throws: a failed read or release is reported, the reaper is the backstop', async () => {
-      expect(await releaseGatedStartPaths(input, { readTaskStatus: async () => { throw new Error('db'); }, release: async () => {} })).toBe('error');
-      expect(await releaseGatedStartPaths(input, { readTaskStatus: async () => 'pending', release: async () => { throw new Error('x'); } })).toBe('error');
+    it('never throws: a failed release is reported, the reaper is the backstop', async () => {
+      expect(await releaseGatedStartPaths(input, { releaseRows: async () => { throw new Error('db'); } })).toBe('error');
     });
   });
 });

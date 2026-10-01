@@ -54,7 +54,8 @@ import {
 } from '@buildd/core/orchestration-decision';
 import { resolveApplyingFraction, type PromotionEvidence } from '@buildd/core/orchestration-promotion';
 import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
-import type { AcquireInput, AcquireResult } from '@buildd/core/path-claim';
+import type { AcquireInput, AcquireResult, LeaseRowsRelease, ReleaseResult } from '@buildd/core/path-claim';
+import type { PathReleaseReason } from '@/lib/path-claim-release';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSerializedSurfaces } from '@/lib/surface-ordering-config';
@@ -74,10 +75,12 @@ export interface ClaimHoldDeps {
   loadHolder?: (opts: { workspaceId: string; taskId: string | null; prNumber: number | null }) => Promise<ClaimHoldHolderState | null>;
   findAppliedStart?: (k: ClaimDecisionKey) => Promise<boolean>;
   acquire?: (input: AcquireInput) => Promise<AcquireResult>;
-  /** Status of the task after a lost claim race (null: not found). */
-  readTaskStatus?: (opts: { workspaceId: string; taskId: string }) => Promise<string | null>;
-  /** Whole-task lease release with waiter delivery. Default `releaseAndNotify(taskId, 'abandoned')`. */
-  release?: (taskId: string) => Promise<void>;
+  /** Give back exactly the rows one acquisition inserted. Default `releaseLeaseRows`. */
+  releaseRows?: (input: { workspaceId: string; taskId: string; leaseIds: string[]; keepStatuses: readonly string[] }) => Promise<LeaseRowsRelease>;
+  /** Why the leases dropped, for the waiters. Default `resolveReleaseReasonForTask`. */
+  releaseReason?: (taskId: string) => Promise<PathReleaseReason>;
+  /** Waiter delivery. Default `deliverPathReleased`. */
+  deliver?: (taskId: string, result: ReleaseResult, reason: PathReleaseReason) => Promise<void>;
   now?: () => number;
   /** How work is deferred past the response. Default `after()`, detached if out of scope. */
   schedule?: (fn: () => Promise<void>) => void;
@@ -422,8 +425,10 @@ export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimH
 export interface GatedStartAcquisition {
   /** All declared paths are now this task's: the claim may proceed. */
   ok: boolean;
-  /** Leases this acquisition inserted (what a lost claim race gives back). */
+  /** Paths this acquisition newly leased. */
   inserted: string[];
+  /** The lease rows it inserted: exactly what a lost claim race gives back. */
+  insertedIds: string[];
 }
 
 /**
@@ -436,55 +441,60 @@ export async function acquireGatedStartPaths(
   input: { workspaceId: string; taskId: string; paths: string[] },
   deps: Pick<ClaimHoldDeps, 'acquire'> = {},
 ): Promise<GatedStartAcquisition> {
+  const none: GatedStartAcquisition = { ok: false, inserted: [], insertedIds: [] };
   const paths = input.paths.filter(p => p !== REPO_WIDE_SENTINEL);
-  if (paths.length === 0) return { ok: true, inserted: [] };
+  if (paths.length === 0) return { ok: true, inserted: [], insertedIds: [] };
   try {
     const res = await (deps.acquire ?? defaultAcquire)({ workspaceId: input.workspaceId, taskId: input.taskId, paths, declare: true });
     return res.kind === 'acquired' && res.blocked.length === 0
-      ? { ok: true, inserted: [...res.inserted] }
-      : { ok: false, inserted: [] };
+      ? { ok: true, inserted: [...res.inserted], insertedIds: [...(res.insertedIds ?? [])] }
+      : none;
   } catch (err) {
     console.warn('[claim] gated START path acquisition failed (holding):', (err as Error)?.message ?? err);
-    return { ok: false, inserted: [] };
+    return none;
   }
 }
 
 /** A task in one of these is owned by a claim that won: its leases are that claim's. */
-const OWNED_BY_LIVE_CLAIM: ReadonlySet<string> = new Set<string>(
-  TASK_STATUSES.filter(s => s !== 'pending' && !isTerminalTaskStatus(s)),
-);
+export const OWNED_BY_LIVE_CLAIM: readonly string[] = TASK_STATUSES.filter(s => s !== 'pending' && !isTerminalTaskStatus(s));
 
-const defaultReadTaskStatus: NonNullable<ClaimHoldDeps['readTaskStatus']> = async ({ workspaceId, taskId }) => {
-  const [{ db }, { tasks }, { and, eq }] = await Promise.all([
-    import('@buildd/core/db'),
-    import('@buildd/core/db/schema'),
-    import('drizzle-orm'),
-  ]);
-  const rows = await db.select({ status: tasks.status }).from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId))).limit(1);
-  return rows[0]?.status ?? null;
-};
-const defaultRelease = async (taskId: string) => (await import('@/lib/path-claim-release')).releaseAndNotify(taskId, 'abandoned');
+const defaultReleaseRows: NonNullable<ClaimHoldDeps['releaseRows']> = async (input) =>
+  (await import('@buildd/core/path-claim')).releaseLeaseRows(input);
+const defaultReleaseReason: NonNullable<ClaimHoldDeps['releaseReason']> = async (taskId) =>
+  (await import('@/lib/path-claim-release')).resolveReleaseReasonForTask(taskId);
+const defaultDeliver: NonNullable<ClaimHoldDeps['deliver']> = async (taskId, result, reason) =>
+  (await import('@/lib/path-claim-release')).deliverPathReleased(taskId, result, reason);
 
 export type GatedStartRelease = 'nothing_inserted' | 'kept_live_owner' | 'released' | 'error';
 
 /**
  * The gated START acquired paths, then lost the atomic pending→assigned
- * claim. If another claim now owns the task, the leases are the same task's
- * and protect its live work: keep them. Otherwise (re-queued, cancelled,
- * finished, gone) nothing is editing under them, so release the task's leases
- * the way every terminal path does, waking whoever waits. Never throws; the
- * path-claims reaper is the backstop for a failed release.
+ * claim. Give back exactly the lease rows that acquisition inserted, by id:
+ * a concurrent attempt for the same task keeps its own rows, and the
+ * manifest is untouched. If a winning claim now owns the task (checked inside
+ * the locked statement), keep them. Waiters on a released path hear the
+ * task's real release reason (`resolveReleaseReasonForTask`): a task that
+ * already finished may have landed its work. Never throws; the path-claims
+ * reaper is the backstop for a failed release.
  */
 export async function releaseGatedStartPaths(
-  input: { workspaceId: string; taskId: string; inserted: string[] },
-  deps: Pick<ClaimHoldDeps, 'readTaskStatus' | 'release'> = {},
+  input: { workspaceId: string; taskId: string; insertedIds: string[] },
+  deps: Pick<ClaimHoldDeps, 'releaseRows' | 'releaseReason' | 'deliver'> = {},
 ): Promise<GatedStartRelease> {
-  if (input.inserted.length === 0) return 'nothing_inserted';
+  if (input.insertedIds.length === 0) return 'nothing_inserted';
   try {
-    const status = await (deps.readTaskStatus ?? defaultReadTaskStatus)({ workspaceId: input.workspaceId, taskId: input.taskId });
-    if (status && OWNED_BY_LIVE_CLAIM.has(status)) return 'kept_live_owner';
-    await (deps.release ?? defaultRelease)(input.taskId);
+    const out = await (deps.releaseRows ?? defaultReleaseRows)({
+      workspaceId: input.workspaceId,
+      taskId: input.taskId,
+      leaseIds: input.insertedIds,
+      keepStatuses: OWNED_BY_LIVE_CLAIM,
+    });
+    if (out.kind === 'kept') return 'kept_live_owner';
+    if (out.kind !== 'released') return 'released';
+    if (out.result.notifiedWaiters.length > 0) {
+      const reason = await (deps.releaseReason ?? defaultReleaseReason)(input.taskId);
+      await (deps.deliver ?? defaultDeliver)(input.taskId, out.result, reason);
+    }
     return 'released';
   } catch (err) {
     console.warn('[claim] gated START lease release after a lost claim failed (reaper will retry):', (err as Error)?.message ?? err);

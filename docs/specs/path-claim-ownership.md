@@ -65,6 +65,10 @@ release are serialized on the same ownership revision. On by default, no flag.
   wakes only waiters blocked on a released path. It never edits dependencies.
 - A stale expected revision returns HTTP 409 with the current revision and
   `retryable: true`, and changes nothing.
+- `releaseLeaseRows` gives back exactly the rows one acquisition inserted
+  (`insertedIds`), for this task only, leaves the manifest alone, and releases
+  nothing when the task's status is in the caller's keep set, re-checked under
+  the lock.
 - `releaseClaims` wakes every pending waiter even when nothing is left to
   release; a failed delivery is re-armed (`rearmWaiter`).
 - PR-backed scope reconciliation reads the full, head/base-pinned PR file list.
@@ -95,7 +99,8 @@ release are serialized on the same ownership revision. On by default, no flag.
 **Code surface**:
 
 - `packages/core/path-claim.ts`: `acquirePathClaims`, `acquireObservedPaths`,
-  `narrowPathClaims`, `releaseClaims`, `rearmWaiter`, `normalizeClaimPaths`.
+  `narrowPathClaims`, `releaseClaims`, `releaseLeaseRows`, `rearmWaiter`,
+  `normalizeClaimPaths`.
 - `apps/web/src/lib/path-claim-check.ts`: `checkPathClaim`, `narrowPathClaim`,
   shared by the route `/api/tasks/[id]/path-claim` and the `check_path_claim`
   MCP action at `/api/mcp`.

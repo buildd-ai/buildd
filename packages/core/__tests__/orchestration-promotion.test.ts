@@ -55,6 +55,22 @@ describe('shipped state', () => {
   });
 });
 
+describe('the committed promotion record', () => {
+  it('holds at most one entry per decision and candidate policy (lookup takes the first)', () => {
+    const keys = ORCHESTRATION_PROMOTIONS.map(e => `${e.decisionId}\u0000${e.candidatePolicyVersion}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('every entry is eligible evidence with a threshold and a cohort ceiling in (0, 1]', () => {
+    for (const e of ORCHESTRATION_PROMOTIONS) {
+      expect(e.verdict).toBe('eligible_for_gated');
+      expect(typeof e.threshold).toBe('number');
+      expect(e.maxApplyingFraction).toBeGreaterThan(0);
+      expect(e.maxApplyingFraction).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
 describe('resolveApplyingFraction', () => {
   it('allows the requested cohort behind matching eligible evidence', () => {
     expect(resolve()).toEqual({ fraction: 0.05, refusal: null });

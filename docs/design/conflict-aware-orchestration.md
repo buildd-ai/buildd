@@ -358,8 +358,9 @@ with `pathsOverlap` semantics, so a directory or glob it names counts the files
 under it. Touches from failed sessions are reported as failed work and never
 graded as the task's scope. Both §5a and §5b applying fractions now pass through
 the promotion guard (`packages/core/orchestration-promotion.ts`). A gated START
-that loses the atomic claim gives back the leases it took, unless the winning
-claim now owns the task.
+that loses the atomic claim gives back exactly the lease rows it inserted, by
+row id, unless the winning claim now owns the task. Its waiters hear the task's
+real release reason.
 
 ## Rollout status
 

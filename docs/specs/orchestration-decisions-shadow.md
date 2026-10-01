@@ -90,8 +90,11 @@ record-only. See `docs/design/conflict-aware-orchestration.md` "Rollout status".
   task.
 - A gated START acquires the task's declared paths through the exclusive
   acquisition primitive before the atomic claim. If the claim is then lost,
-  `releaseGatedStartPaths` releases the task's leases unless a winning claim
-  now owns the task.
+  `releaseGatedStartPaths` gives back exactly the lease rows that acquisition
+  inserted (`releaseLeaseRows`, by row id, manifest untouched), unless a
+  winning claim now owns the task, re-checked under the workspace lock.
+  Waiters on a released path are told the task's real release reason
+  (`resolveReleaseReasonForTask`).
 - Gated creation-manifest application stays disabled
   (`GATED_MANIFEST_APPLICATION_ENABLED` is false), and `prepareGatedManifest`
   refuses any prediction with unknown scope.
@@ -123,9 +126,10 @@ record-only. See `docs/design/conflict-aware-orchestration.md` "Rollout status".
   WHEN a decision runs THEN the effective verdict is the rule verdict and the
   row's status is `fallback`.
 - AC-8: GIVEN a gated START that acquired leases WHEN the atomic claim is lost
-  and the task is no longer owned by a live claim THEN the task's leases are
-  released; WHEN the task is now `assigned`, `in_progress` or `review` THEN
-  they are kept.
+  and the task is no longer owned by a live claim THEN only the rows that
+  attempt inserted are released, and another attempt's leases for the same
+  task survive; WHEN the task is now `assigned`, `in_progress` or `review`
+  THEN they are kept.
 - AC-9: GIVEN only shadow claim decisions (every hold censored) WHEN the
   readout runs THEN the claim verdict is `insufficient_n` with a null
   threshold, and its wait, stranded and throughput figures are still reported.

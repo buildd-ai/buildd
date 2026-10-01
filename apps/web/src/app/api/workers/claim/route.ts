@@ -2052,14 +2052,14 @@ export async function POST(req: NextRequest) {
     // Gated START only (never as shipped): the relaxed overlap's declared
     // paths go through the exclusive primitive, all-or-nothing, before the
     // claim. Any conflict keeps the original path_overlap hold.
-    let gatedStartInserted: string[] = [];
+    let gatedStartLeaseIds: string[] = [];
     if (gatedStartPaths) {
       const acquired = await acquireGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, paths: gatedStartPaths });
       if (!acquired.ok) {
         deferTask(task, 'path_overlap', { gatedStart: 'acquire_failed' });
         continue;
       }
-      gatedStartInserted = acquired.inserted;
+      gatedStartLeaseIds = acquired.insertedIds;
     }
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -2083,8 +2083,8 @@ export async function POST(req: NextRequest) {
     if (updated.length === 0) {
       // Already claimed by another request. A gated START that leased paths
       // for this attempt gives them back unless the winning claim owns them.
-      if (gatedStartInserted.length > 0) {
-        await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, inserted: gatedStartInserted });
+      if (gatedStartLeaseIds.length > 0) {
+        await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
       }
       continue;
     }

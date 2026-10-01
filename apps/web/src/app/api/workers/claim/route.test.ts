@@ -7904,7 +7904,7 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
       applyingFraction: 1,
       promotions: PROMOTED,
       findAppliedStart: async () => true,
-      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, blocked: [], pathManifest: null, revision: 1 }; },
+      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
       ...over,
     });
     beforeEach(() => { acquired.length = 0; });
