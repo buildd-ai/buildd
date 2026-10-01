@@ -158,7 +158,10 @@ After a 2xx PUT the runner calls `POST /api/workers/[id]/evidence/[evidenceId]/c
 (same authorization; the row must be that worker's). The server HEADs the key
 on the row's own backend: present with the signed size → `stored`, missing or a
 different size → `failed`. Idempotent, never a 5xx. A row whose confirm never
-arrives is settled the same way by the evidence index sweep after one hour.
+arrives is settled the same way by the evidence index sweep after one hour, on
+a small per-sweep budget of its own taken after the stored rows; one whose
+bucket still cannot be checked after 7 days becomes `unreadable`. A row skipped
+for indexing at upload stays skipped after it is settled.
 
 ## Redaction
 

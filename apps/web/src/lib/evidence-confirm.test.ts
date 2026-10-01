@@ -27,7 +27,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { confirmEvidenceUpload } = await import('./evidence-confirm');
+const { confirmEvidenceUpload, abandonPendingEvidence } = await import('./evidence-confirm');
 const { EvidenceReadError } = await import('./evidence-read');
 
 const dialect = new PgDialect();
@@ -129,6 +129,20 @@ describe('confirmEvidenceUpload', () => {
     const r = await confirmEvidenceUpload(row(), { locate: async () => { throw new EvidenceReadError('gone', 410); } });
     expect(r.uploadState).toBe('unreadable');
     expect(updates[0].set).toMatchObject({ uploadState: 'unreadable', indexState: 'skipped' });
+  });
+
+  it('abandonPendingEvidence settles a still-pending row as unreadable, out of the index queue', async () => {
+    updateReturns = [{ uploadState: 'unreadable', bytes: 120 }];
+    const r = await abandonPendingEvidence(row(), 'gave up');
+    expect(r).toEqual({ uploadState: 'unreadable', bytes: 120, changed: true, reason: 'gave up' });
+    expect(updates[0].set).toMatchObject({ uploadState: 'unreadable', indexState: 'skipped' });
+    expect(dialect.sqlToQuery(updates[0].where as any).params).toContain('pending');
+  });
+
+  it('abandonPendingEvidence leaves a settled row alone', async () => {
+    const r = await abandonPendingEvidence(row({ uploadState: 'stored' }), 'gave up');
+    expect(r).toEqual({ uploadState: 'stored', bytes: 120, changed: false });
+    expect(updates).toEqual([]);
   });
 
   it('never throws when the write fails', async () => {

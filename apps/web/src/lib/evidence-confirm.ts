@@ -111,3 +111,15 @@ export async function confirmEvidenceUpload(row: EvidenceObjectRow, deps: Confir
   }
   return settle(row, 'stored', size);
 }
+
+/**
+ * Give up on a row that has stayed `pending` past any useful age because its
+ * bucket could never be checked: mark it `unreadable` (not indexed) so it stops
+ * being picked up. Same still-pending guard as a confirm. Never throws.
+ */
+export async function abandonPendingEvidence(row: EvidenceObjectRow, reason: string): Promise<EvidenceConfirmResult> {
+  if (row.uploadState !== 'pending') {
+    return { uploadState: row.uploadState, bytes: row.bytes, changed: false };
+  }
+  return settle(row, 'unreadable', row.bytes, reason);
+}
