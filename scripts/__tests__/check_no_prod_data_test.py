@@ -52,6 +52,9 @@ MUST_PASS = [
     "fix(workers): write effectiveCost back to workers.costUsd (#1973)",
     "fix(budget-forecast): include null-workspace team missions (#1971)",
     "feat(missions): mission Structure tab (#1968)",
+    # Zero-padded migration indices are identifiers, not counts.
+    "Step D merged its own 0223 into the mission branch.",
+    "fix: renumber 0224 workspaces migration",
     # Configuration limits and fixtures, not populations.
     "feat: cap at 60 workers per workspace",
     "test: scenario seeds 12 tasks and asserts ordering",
