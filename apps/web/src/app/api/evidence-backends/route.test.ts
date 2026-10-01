@@ -20,6 +20,7 @@ const mockValidate = mock(async (_e: string) => endpointVerdict);
 
 mock.module('@/lib/evidence-backend-access', () => ({
   filterReachableEvidenceBackends: async (_v: unknown, rows: any[]) => rows.filter((r) => !r.workspaceId || !blockedWorkspaces.has(r.workspaceId)),
+  viewerReachesWorkspace: async (_v: unknown, ws: string) => !blockedWorkspaces.has(ws),
 }));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({
@@ -88,6 +89,7 @@ beforeEach(() => {
   mockDeleteSecret.mockClear();
   mockVerify.mockClear();
   mockValidate.mockClear();
+  blockedWorkspaces.clear();
 });
 
 describe('GET /api/evidence-backends', () => {
@@ -162,6 +164,22 @@ describe('POST /api/evidence-backends', () => {
     workspaceRow = undefined;
     const res = await post({ ...valid, workspaceId: WS });
     expect(res.status).toBe(404);
+  });
+
+  it('404s an admin who cannot reach a restricted workspace, before the 409 lookup and with nothing written', async () => {
+    blockedWorkspaces.add(WS);
+    // A backend exists for that workspace: the reply must not confirm it.
+    existingBackend = { id: 'be-1' };
+    const res = await post({ ...valid, workspaceId: WS });
+    expect(res.status).toBe(404);
+    expect(mockSet).not.toHaveBeenCalled();
+    expect(insertedValues).toBeUndefined();
+  });
+
+  it('creates a workspace-scoped backend for an admin who reaches that workspace', async () => {
+    const res = await post({ ...valid, workspaceId: WS });
+    expect(res.status).toBe(201);
+    expect(insertedValues).toMatchObject({ workspaceId: WS });
   });
 
   it('creates the backend, stores the credential as a secret, verifies, and returns 201', async () => {

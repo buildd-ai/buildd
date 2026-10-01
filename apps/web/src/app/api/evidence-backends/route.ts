@@ -5,7 +5,8 @@
  * GET   list the team's backends (any team member). A workspace-scoped backend
  *       is listed only to callers who can reach that workspace. Credentials are
  *       reported as `hasCredential`, never returned.
- * POST  create one (admin|owner). An endpoint that resolves to a private or
+ * POST  create one (admin|owner). A workspace-scoped create needs the same
+ *       reach to that workspace as a read (404 otherwise). An endpoint that resolves to a private or
  *       link-local address is a 400. The new backend is verified on save; a
  *       failing probe is reported in `verification`, it does not reject the save.
  *
@@ -27,7 +28,7 @@ import {
   verifyEvidenceBackend,
 } from '@/lib/evidence-backend';
 import { parseCreateEvidenceBackend } from '@/lib/evidence-backend-input';
-import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
+import { filterReachableEvidenceBackends, viewerReachesWorkspace } from '@/lib/evidence-backend-access';
 
 const isAdmin = (role: string) => role === 'admin' || role === 'owner';
 
@@ -67,7 +68,13 @@ export async function POST(req: NextRequest) {
       where: and(eq(workspaces.id, input.workspaceId), eq(workspaces.teamId, viewer.teamId)),
       columns: { id: true },
     });
-    if (!ws) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    // Same reach rule as GET/PATCH/DELETE/verify, checked before the 409
+    // lookup: a team admin key not linked to a restricted workspace must not
+    // point its future evidence at a bucket of the caller's choosing, nor learn
+    // from a 409 that the workspace already has a backend.
+    if (!ws || !(await viewerReachesWorkspace(viewer, input.workspaceId))) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
   }
 
   if (input.endpoint) {
