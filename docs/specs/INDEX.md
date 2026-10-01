@@ -122,10 +122,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 
-## Draft (2)
+## Draft (3)
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
+- [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-01
+  A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal, failing open and shadow-only until promoted in code.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 
