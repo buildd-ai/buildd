@@ -159,6 +159,15 @@ describe('POST /api/runner/github-token', () => {
     expect((await POST(req())).status).toBe(200);
   });
 
+  it('a workspace-restricted token is refused outside its workspaces, even on its own team\'s open workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['workers:write'], workspaceIds: ['ws-other'] });
+    mockGetPermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    expect((await POST(req())).status).toBe(404);
+    expect(mockMint).not.toHaveBeenCalled();
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['workers:write'], workspaceIds: ['ws-1'] });
+    expect((await POST(req())).status).toBe(200);
+  });
+
   it('a canClaim link grants a workspace outside the own team', async () => {
     mockTasksFindFirst.mockResolvedValue(taskRow({ workspace: { teamId: 'team-2' } }));
     mockGetPermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);

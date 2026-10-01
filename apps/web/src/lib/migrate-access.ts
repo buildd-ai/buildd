@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 /**
  * Shared auth gate for the workspace-migration endpoints.
  *
@@ -24,9 +25,9 @@ export type MigrationAuth =
 export async function authenticateMigration(req: NextRequest): Promise<MigrationAuth> {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) {
-      if (account.level !== 'admin') return { type: 'denied' };
+      if (!hasTokenRouteAdminAccess(account, req)) return { type: 'denied' };
       return { type: 'api', teamIds: [account.teamId], userId: null };
     }
   }

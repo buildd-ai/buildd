@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
@@ -39,9 +40,9 @@ async function resolveAuth(
 
   // Try API key auth
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (account) {
-    if (requireAdmin && account.level !== 'admin') return { ok: false, status: 403 };
+    if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return { ok: false, status: 403 };
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { ok: true, accountId: account.id };
     authenticatedButOutOfScope = true;

@@ -27,7 +27,7 @@ async function authorizeShare(
   // API-key path (mirror GET/PATCH in ../route.ts)
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = apiKey ? await authenticateApiKey(apiKey) : null;
+  const account = apiKey ? await authenticateApiKey(apiKey, req) : null;
 
   if (account) {
     const isOwner = artifact.worker?.accountId === account.id;

@@ -233,6 +233,10 @@ export interface TeamInvitation {
 }
 
 export interface Account {
+  scopes?: string[] | null;
+  workspaceIds?: string[] | null;
+  expiresAt?: Date | string | null;
+  lastUsedAt?: Date | string | null;
   id: string;
   type: AccountTypeValue;
   name: string;

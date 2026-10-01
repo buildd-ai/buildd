@@ -12,6 +12,7 @@
     "./db": "./db/index.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
+    "./token-scopes": "./token-scopes.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./mcp-tool-groups": "./mcp-tool-groups.ts",
     "./prior-work-render": "./prior-work-render.ts",

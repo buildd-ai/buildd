@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { TOKEN_SCOPE_DEFINITIONS } from '@buildd/core/token-scopes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import DeleteAccountButton from '../accounts/DeleteAccountButton';
@@ -11,6 +12,7 @@ import SettingsSection from './SettingsSection';
 import { StatusChip } from './_components/ConnectionRow';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
+import HostRunnerToggle from './HostRunnerToggle';
 
 interface Account {
   id: string;
@@ -18,6 +20,11 @@ interface Account {
   type: string;
   authType: string;
   apiKeyPrefix: string | null;
+  level?: string;
+  scopes?: string[] | null;
+  workspaceIds?: string[] | null;
+  lastUsedAt?: string | Date | null;
+  expiresAt?: string | Date | null;
   maxConcurrentWorkers: number;
   totalCost: string | null;
   activeSessions: number | null;
@@ -29,6 +36,10 @@ interface Account {
   createdAt?: string | Date | null;
   /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
   lastSeenAt?: string | null;
+  /** Trusted as a long-lived host runner (team credential access). */
+  hostRunner?: boolean;
+  /** The viewer is an owner/admin of this token's team, so may change hostRunner. */
+  canManageHostRunner?: boolean;
 }
 
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
@@ -93,7 +104,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       action={<Link href="/app/accounts/new" className="btn btn-primary">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        A runner token signs a runner in to buildd. It holds no model credentials; those are under Connections.
+        Tokens give runners, CI and analytics clients access to buildd. Choose only the capabilities each client needs. Model credentials go in Connections.
       </p>
 
       {accounts.length === 0 ? (
@@ -147,6 +158,11 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                   <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
                                 )}
                               </div>
+                              {account.expiresAt && (
+                                <div className={`mt-0.5 font-mono text-[11px] ${new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : 'text-text-muted'}`}>
+                                  {new Date(account.expiresAt).getTime() <= Date.now() ? 'Expired' : 'Expires'} {new Date(account.expiresAt).toLocaleDateString()}
+                                </div>
+                              )}
                               {seenLabel(account.lastSeenAt) && (
                                 <div data-testid="token-last-seen" className="mt-0.5 font-mono text-[11px] text-text-muted">{seenLabel(account.lastSeenAt)}</div>
                               )}
@@ -180,9 +196,22 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                   )}
                                 </div>
 
+                                <div className="text-xs space-y-2">
+                                  <p className="section-label">Capabilities</p>
+                                  {account.scopes == null ? <p className="text-text-secondary">Legacy {account.level || 'worker'} permissions</p> : account.scopes.length === 0 ? <p className="text-text-muted">No capabilities</p> : <ul className="space-y-1">{account.scopes.map(scope => <li key={scope}>{TOKEN_SCOPE_DEFINITIONS.find(def => def.scope === scope)?.label || scope} <code className="text-text-muted">{scope}</code></li>)}</ul>}
+                                  <p className="text-text-secondary">{account.workspaceIds == null ? 'All linked workspaces' : `Restricted to: ${account.workspaceIds.map(id => workspaces.find(ws => ws.id === id)?.name || 'Linked workspace').join(', ') || 'none'}`}</p>
+                                  <p className="text-text-muted">{account.lastUsedAt ? `Last used: ${new Date(account.lastUsedAt).toLocaleString()}` : 'Never used'} · {account.expiresAt ? `Expires: ${new Date(account.expiresAt).toLocaleString()}` : 'No expiry'}</p>
+                                </div>
+
                                 {hasWarning && (
                                   <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
                                 )}
+
+                                <HostRunnerToggle
+                                  accountId={account.id}
+                                  hostRunner={account.hostRunner === true}
+                                  canManage={account.canManageHostRunner === true}
+                                />
 
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
