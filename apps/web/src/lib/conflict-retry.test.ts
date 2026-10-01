@@ -58,6 +58,9 @@ mock.module('@/lib/task-dispatch', () => ({
 const mockUpdateBehindPrBranch = mock(async (_p: any) => ({ updated: true }) as { updated: boolean; reason?: string });
 mock.module('@/lib/pr-branch-update', () => ({ updateBehindPrBranch: mockUpdateBehindPrBranch }));
 
+const mockSchedulePrScopeReconcile = mock((_input: any) => {});
+mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
+
 const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
 const mockFireGateEvent = mock((_input: any) => 'gate-event-1');
 mock.module('@/lib/gate-ledger', () => ({
@@ -515,6 +518,25 @@ describe('dispatchConflictRetry', () => {
     expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
     expect(result.dispatched).toBe(true);
     expect(result.branchUpdated).toBeUndefined();
+  });
+
+  it('reconciles the inherited scope against the PR diff at the retried head', async () => {
+    mockSchedulePrScopeReconcile.mockClear();
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(result.dispatched).toBe(true);
+    // No GitHub installation on the default workspace: nothing to read with.
+    expect(mockSchedulePrScopeReconcile).not.toHaveBeenCalled();
+
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    const installed = await dispatchConflictRetry(BASE_PARAMS);
+    expect(installed.dispatched).toBe(true);
+    expect(mockSchedulePrScopeReconcile).toHaveBeenCalledWith({
+      workspaceId: BASE_PARAMS.workspaceId,
+      installationId: 5,
+      repoFullName: 'acme/app',
+      prNumber: 99,
+      expectedHeadSha: 'sha-abc123',
+    });
   });
 
   it('sets subjectAnchor fields on the inserted task', async () => {

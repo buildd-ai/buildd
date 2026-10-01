@@ -74,6 +74,8 @@ import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -826,6 +828,20 @@ async function handlePullRequestEvent(event: {
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
+
+      // Reconcile the PR's claim scope against its actual diff at this head
+      // (conflict-aware-orchestration §1): inherited fix-attempt manifests and
+      // reviewer leases shrink to what the PR really touches. After the
+      // response; a read at any other head is not trusted and changes nothing.
+      if (event.installation && pr.head?.sha) {
+        schedulePrScopeReconcile({
+          workspaceId: openWorker.workspaceId,
+          installationId: event.installation.id,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          expectedHeadSha: pr.head.sha,
+        });
+      }
 
       // Follow-up push on a PR buildd is already working (CI fix or review fix).
       // onlyIfPresent: no sticky comment yet means we haven't claimed this PR,
@@ -2139,7 +2155,7 @@ async function maybeDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return false;
 
@@ -2288,7 +2304,7 @@ async function maybeDispatchReviewer(
       description: task.description,
       backend: task.backend,
       missionId: task.missionId ?? null,
-      pathManifest: task.pathManifest as string[] | null ?? null,
+      pathManifest: conformanceManifest(task),
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
       maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
     };
@@ -2440,7 +2456,7 @@ async function maybeReDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return;
 
@@ -2472,7 +2488,7 @@ async function maybeReDispatchReviewer(
       description: task.description,
       backend: task.backend,
       missionId: task.missionId ?? null,
-      pathManifest: task.pathManifest as string[] | null ?? null,
+      pathManifest: conformanceManifest(task),
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
       maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
     };

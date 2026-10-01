@@ -1773,6 +1773,30 @@ export interface PathDeclaration {
   inferredDependsOn?: string[];
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
+  /**
+   * Where `declared` came from when it was not the task's own filer: a plan
+   * step (approvePlan), or the doc-fix override, which outranks the step.
+   */
+  origin?: { kind: 'plan_step' | 'doc_fix'; planningTaskId: string; stepRef?: string };
+  /**
+   * The last reconciliation of this task's scope against its PR's actual diff
+   * (lib/pr-scope-reconcile.ts). `status` other than `complete` means the read
+   * could not be trusted and nothing was narrowed; `reason` says why.
+   */
+  prScope?: PrScopeRecord;
+}
+
+export interface PrScopeRecord {
+  prNumber: number;
+  status: 'complete' | 'incomplete' | 'closed' | 'revision_conflict';
+  reason: string | null;
+  headSha: string | null;
+  baseSha: string | null;
+  /** Distinct paths in the diff, rename sources included. Null unless complete. */
+  fileCount: number | null;
+  /** Paths this reconciliation gave back. */
+  dropped: string[];
+  readAt: string;
 }
 
 export interface PathNarrowing {

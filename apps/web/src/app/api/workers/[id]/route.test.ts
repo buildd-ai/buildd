@@ -566,6 +566,9 @@ mock.module('@buildd/core/path-claim', () => ({
   rearmWaiter: mockRearmWaiter,
 }));
 
+const mockSchedulePrScopeReconcile = mock((_input: any) => {});
+mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
+
 // The PR activity comment's "fix ended" write — its own module has its own
 // tests (lib/pr-activity-fix-claimed.test.ts); here we only check it is called.
 const mockAnnounceFixEnded = mock(async (_task: any, _outcome: string) => undefined);
@@ -8670,6 +8673,10 @@ describe('PATCH /api/workers/[id]', () => {
       // Dedup key fields must be set so a second reviewer completion is a no-op
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
+      // The inherited manifest is reconciled against the PR diff at that head.
+      expect(mockSchedulePrScopeReconcile).toHaveBeenCalledWith(expect.objectContaining({
+        installationId: 5000, repoFullName: 'org/repo', prNumber: 42, expectedHeadSha: 'abc123',
+      }));
     });
 
     it('request-changes on an explicitly-reviewed dependency-bot PR files no builder — nothing may push to the bot branch', async () => {
@@ -13799,6 +13806,41 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       'task-1',
       ['apps/web/src/lib/bar.ts'],
     );
+  });
+
+  it('a read-only reviewer leases nothing: checking out the PR branch is not an edit', async () => {
+    setupBaseWorkerMock();
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null,
+      category: 'review', context: { reviewerFor: 'task-0', prNumber: 7 },
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  it('a reviewer FIX attempt still leases what it touches', async () => {
+    setupBaseWorkerMock();
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null,
+      category: 'feature', context: { prNumber: 7 }, reviewerRetryPrNumber: 7,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith('ws-1', 'task-1', ['apps/web/src/lib/foo.ts']);
   });
 
   it('leases nothing when a sync reports no touches', async () => {
