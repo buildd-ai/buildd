@@ -16,7 +16,7 @@ import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/co
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
-import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
+import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -1889,8 +1889,18 @@ export async function GET(req: NextRequest) {
     // Fix attempts on this PR's chain, with why each ended as it did. A read
     // failure costs the list, not the PR.
     const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
-    const evidenceObjects = worker.taskId && worker.workspaceId
-      ? await loadInlineEvidence(worker.workspaceId, worker.taskId)
+    // The PR read itself is team-wide for a key, but evidence follows the
+    // workspace reach rule (restricted = linked accounts only), the same one
+    // GET /api/tasks/[id]/evidence applies. A session already passed team
+    // membership above.
+    const evidenceReachable = !!(worker.taskId && worker.workspaceId) && (
+      sessionUser ? true : await verifyAccountWorkspaceAccess(account!.id, worker.workspaceId)
+    );
+    const evidenceObjects = evidenceReachable
+      ? await loadInlineEvidence(worker.workspaceId, worker.taskId, {
+        surface: 'get_pr',
+        actor: sessionUser ? { userId: sessionUser.id } : { accountId: account!.id },
+      })
       : [];
 
     return NextResponse.json({

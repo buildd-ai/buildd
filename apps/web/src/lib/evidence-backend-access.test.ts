@@ -8,7 +8,7 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockSession,
 }));
 
-const { filterReachableEvidenceBackends } = await import('./evidence-backend-access');
+const { filterReachableEvidenceBackends, viewerReachesWorkspace } = await import('./evidence-backend-access');
 
 const rows = [
   { id: 'team', workspaceId: null },
@@ -45,5 +45,31 @@ describe('filterReachableEvidenceBackends', () => {
   it('a caller with neither account nor user sees only the team default', async () => {
     const out = await filterReachableEvidenceBackends(viewer({}), rows);
     expect(out.map((r) => r.id)).toEqual(['team']);
+  });
+});
+
+describe('viewerReachesWorkspace', () => {
+  it('an account check wins over the session check when a viewer carries both (OAuth JWT bearer)', async () => {
+    // The session check would allow it; the account is not linked to a restricted workspace.
+    mockSession.mockImplementation(async () => ({ teamId: 't', role: 'admin' }));
+    expect(await viewerReachesWorkspace({ accountId: 'acct', userId: 'u-1' }, 'ws-restricted')).toBe(false);
+    expect(mockAccount).toHaveBeenCalledWith('acct', 'ws-restricted');
+    expect(mockSession).not.toHaveBeenCalled();
+  });
+
+  it('the same precedence holds when filtering a list', async () => {
+    const out = await filterReachableEvidenceBackends(viewer({ accountId: 'acct', userId: 'u-1' }), rows);
+    expect(out.map((r) => r.id)).toEqual(['team', 'linked']);
+    expect(mockSession).not.toHaveBeenCalled();
+  });
+
+  it('a session user without an account is decided by workspace access', async () => {
+    mockSession.mockImplementation(async () => null);
+    expect(await viewerReachesWorkspace({ userId: 'u-1' }, 'ws-linked')).toBe(false);
+    expect(mockAccount).not.toHaveBeenCalled();
+  });
+
+  it('a caller with neither reaches nothing', async () => {
+    expect(await viewerReachesWorkspace({}, 'ws-linked')).toBe(false);
   });
 });

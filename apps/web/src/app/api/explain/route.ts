@@ -3,7 +3,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { getTeamWorkspaceIds } from '@/lib/team-access';
+import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import type { EvidenceActor } from '@/lib/evidence-audit';
 import { resolveWorkerByPrNumber, resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -33,6 +34,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * the user's teams; an optional `teamId` param pins it to one of them, and a
  * pin outside them 404s). A key, when present, is authoritative and `teamId`
  * is ignored on that path. Subjects outside the scope 404 on both paths.
+ *
+ * A key is also held to the workspace reach rule for the task, PR and
+ * workspace subjects, which carry the task's inline evidence list: a
+ * restricted workspace is reachable only by linked accounts
+ * (`verifyAccountWorkspaceAccess`), exactly as GET /api/tasks/[id] decides it.
+ * A session is decided by team membership, as there.
  *
  * Read-only. No model is invoked, no verification task is dispatched, no
  * merge is attempted — see the module note on `@/lib/explain`.
@@ -94,6 +101,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'No workspaces found for account' }, { status: 403 });
     }
 
+    // Team scope is necessary but not sufficient for a key: a restricted
+    // workspace admits only linked accounts. Sessions were scoped by team
+    // membership above, the rule GET /api/tasks/[id] applies to them.
+    const reaches = async (wsId: string) => !account || verifyAccountWorkspaceAccess(account.id, wsId);
+    const actor: EvidenceActor = account ? { accountId: account.id } : { userId: sessionUser!.id };
+
     // ── PR ──────────────────────────────────────────────────────────────────
     if (prNumberRaw) {
       const prNumber = parseInt(prNumberRaw, 10);
@@ -113,6 +126,9 @@ export async function GET(req: NextRequest) {
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const worker = resolved as any;
+      if (!(await reaches(worker.workspaceId))) {
+        return NextResponse.json({ error: 'PR not found' }, { status: 404 });
+      }
       const result = await explainPr({
         id: worker.id,
         taskId: worker.taskId ?? null,
@@ -127,7 +143,7 @@ export async function GET(req: NextRequest) {
         mergedAt: worker.mergedAt ?? null,
         observedTouches: (worker.observedTouches as string[] | null) ?? null,
         createdAt: worker.createdAt ?? null,
-      });
+      }, actor);
       if (!result) {
         return NextResponse.json(
           { error: `PR #${prNumber} has no task attached — nothing to explain.` },
@@ -146,10 +162,10 @@ export async function GET(req: NextRequest) {
         where: eq(tasks.id, taskId),
         columns: { id: true, workspaceId: true },
       });
-      if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId)) {
+      if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId) || !(await reaches(row.workspaceId))) {
         return NextResponse.json({ error: 'Task not found or not in your team' }, { status: 404 });
       }
-      const result = await explainTask(taskId);
+      const result = await explainTask(taskId, actor);
       if (!result) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       return NextResponse.json(result);
     }
@@ -187,10 +203,10 @@ export async function GET(req: NextRequest) {
       where: eq(workspaces.id, workspaceId!),
       columns: { id: true, teamId: true },
     });
-    if (!ws || !teamIds.includes(ws.teamId)) {
+    if (!ws || !teamIds.includes(ws.teamId) || !(await reaches(ws.id))) {
       return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
     }
-    return NextResponse.json(await explainWorkspace(workspaceId!));
+    return NextResponse.json(await explainWorkspace(workspaceId!, actor));
   } catch (error) {
     console.error('[explain] failed:', error);
     return NextResponse.json(

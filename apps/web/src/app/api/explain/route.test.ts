@@ -4,7 +4,9 @@ import { NextRequest } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Row = Record<string, any>;
 
-const mockAuthenticateApiKey = mock(async () => ({ teamId: 'team-1' }) as Row | null);
+const mockAuthenticateApiKey = mock(async () => ({ id: 'acct-1', teamId: 'team-1' }) as Row | null);
+// The access predicate itself is stubbed, never the rows it would read.
+const mockVerifyAccountWorkspaceAccess = mock(async (_accountId: string, _ws: string) => true);
 const mockGetTeamWorkspaceIds = mock(async () => ['11111111-1111-1111-1111-111111111111']);
 const mockResolveWorkerByPrNumber = mock(async () => ({ status: 404, error: 'PR not found' }) as Row);
 
@@ -25,6 +27,7 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser })
 mock.module('@/lib/team-access', () => ({
   getTeamWorkspaceIds: mockGetTeamWorkspaceIds,
   getUserTeamIds: mockGetUserTeamIds,
+  verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 mock.module('@/lib/pr-resolve', () => ({
   resolveWorkerByPrNumber: mockResolveWorkerByPrNumber,
@@ -79,7 +82,9 @@ beforeEach(() => {
   mockExplainWorkspace.mockClear();
   mockExplainPr.mockClear();
   mockResolveWorkerByPrNumber.mockClear();
-  mockAuthenticateApiKey.mockImplementation(async () => ({ teamId: 'team-1' }));
+  mockAuthenticateApiKey.mockImplementation(async () => ({ id: 'acct-1', teamId: 'team-1' }));
+  mockVerifyAccountWorkspaceAccess.mockReset();
+  mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
   mockTasksFindFirst.mockImplementation(async () => ({ id: TASK, workspaceId: WS }));
   mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: WS }));
   mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS, teamId: 'team-1' }));
@@ -177,6 +182,41 @@ describe('GET /api/explain — scoping', () => {
   });
 });
 
+describe('GET /api/explain — restricted workspace (API key with no link)', () => {
+  beforeEach(() => {
+    // Same team, but the workspace is restricted and this account is not linked.
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+  });
+
+  it('404s a task there, as GET /api/tasks/[id] does, and never builds its evidence list', async () => {
+    const res = await GET(req(`taskId=${TASK}`));
+    expect(res.status).toBe(404);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('404s a PR whose task lives there', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(async () => ({
+      id: 'w', taskId: 't', workspaceId: WS, prNumber: 7, status: 'completed',
+    }));
+    const res = await GET(req('prNumber=7'));
+    expect(res.status).toBe(404);
+    expect(mockExplainPr).not.toHaveBeenCalled();
+  });
+
+  it('404s the workspace itself', async () => {
+    const res = await GET(req(`workspaceId=${WS}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('hands the account to the explainer so the inline evidence list is audited to it', async () => {
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    await GET(req(`taskId=${TASK}`));
+    expect(mockExplainTask.mock.calls[0] as unknown[]).toEqual([TASK, { accountId: 'acct-1' }]);
+  });
+});
+
 describe('GET /api/explain — happy paths', () => {
   it('explains a task', async () => {
     mockExplainTask.mockImplementation(async () => ({ scope: 'task', subjects: [{ state: 'idle' }] }));
@@ -229,6 +269,9 @@ describe('GET /api/explain — dashboard session', () => {
     expect(res.status).toBe(200);
     expect(mockGetUserTeamIds).toHaveBeenCalledWith('user-1');
     expect(mockExplainTask).toHaveBeenCalledTimes(1);
+    // A session is decided by team membership, as on GET /api/tasks/[id].
+    expect(mockVerifyAccountWorkspaceAccess).not.toHaveBeenCalled();
+    expect(mockExplainTask.mock.calls[0] as unknown[]).toEqual([TASK, { userId: 'user-1' }]);
   });
 
   it('explains a workspace owned by any of the user teams', async () => {
@@ -313,7 +356,7 @@ describe('GET /api/explain — dashboard session', () => {
   });
 
   it('keeps a present key authoritative and ignores teamId on the key path', async () => {
-    mockAuthenticateApiKey.mockImplementation(async () => ({ teamId: 'team-1' }));
+    mockAuthenticateApiKey.mockImplementation(async () => ({ id: 'acct-1', teamId: 'team-1' }));
     const res = await GET(req(`taskId=${TASK}&teamId=team-9`));
     expect(res.status).toBe(200);
     expect(mockGetCurrentUser).not.toHaveBeenCalled();

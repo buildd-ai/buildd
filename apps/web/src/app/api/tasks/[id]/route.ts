@@ -188,7 +188,11 @@ export async function GET(
     const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
-    const evidenceObjects = await loadInlineEvidence(task.workspaceId, id);
+    const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
+      surface: 'get_task',
+      // The account decides access above when both are present, so it is the actor.
+      actor: apiAccount ? { accountId: apiAccount.id } : { userId: user!.id },
+    });
     if (evidenceObjects.length > 0) response.evidenceObjects = evidenceObjects;
 
     return NextResponse.json(response);

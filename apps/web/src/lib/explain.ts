@@ -24,6 +24,7 @@ import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES a
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
 import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
+import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
@@ -693,7 +694,11 @@ async function viewForTask(taskId: string): Promise<{
   };
 }
 
-export async function explainTask(taskId: string): Promise<ExplainResult | null> {
+/**
+ * `actor` is who the inline evidence list is audited to. Reach is the caller's
+ * job: GET /api/explain has already decided the actor can read the workspace.
+ */
+export async function explainTask(taskId: string, actor: EvidenceActor = {}): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
@@ -710,7 +715,9 @@ export async function explainTask(taskId: string): Promise<ExplainResult | null>
 
   const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
   const gateHistory = await loadGateHistory(taskId);
-  const evidenceObjects = workspaceId ? await loadInlineEvidence(workspaceId, taskId) : [];
+  const evidenceObjects = workspaceId
+    ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
+    : [];
   return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
@@ -793,7 +800,7 @@ export async function explainPr(worker: {
   mergedAt: Date | string | null;
   observedTouches: string[] | null;
   createdAt: Date | string | null;
-}): Promise<ExplainResult | null> {
+}, actor: EvidenceActor = {}): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
   const loaded = await viewForTask(worker.taskId);
@@ -854,7 +861,7 @@ export async function explainPr(worker: {
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(worker.taskId);
-  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId);
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
   return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
@@ -869,7 +876,7 @@ export async function explainPr(worker: {
  * a mission is already represented by its mission's chain, and listing both
  * would put the same blocker on screen twice.
  */
-export async function explainWorkspace(workspaceId: string): Promise<ExplainResult> {
+export async function explainWorkspace(workspaceId: string, actor: EvidenceActor = {}): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
     where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
     columns: { id: true },
@@ -900,7 +907,7 @@ export async function explainWorkspace(workspaceId: string): Promise<ExplainResu
     ...missionLessIds.map(id => ({ kind: 'task' as const, id })),
   ];
   const results = await mapWithConcurrency(fanoutItems, WORKSPACE_FANOUT_CONCURRENCY, item =>
-    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id),
+    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id, actor),
   );
   const answers: ExplainAnswer[] = results.flatMap(r => (r?.subjects[0] ? [r.subjects[0]] : []));
 
