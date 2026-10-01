@@ -6,6 +6,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { accountReachesWorkspace, type WorkspacePermission } from '@/lib/workspace-reach';
 import { isUuid } from '@/lib/uuid';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -20,7 +21,7 @@ import { isUuid } from '@/lib/uuid';
  * - A session user reaches every workspace of every team they belong to.
  */
 export type WorkspaceAccessCaller =
-  | { account: { id: string; teamId: string; name?: string | null } }
+  | { account: { id: string; teamId: string; name?: string | null; workspaceIds?: string[] | null } }
   | { userId: string };
 
 type WorkspaceRow = NonNullable<Awaited<ReturnType<typeof resolveWorkspace>>>;
@@ -58,7 +59,8 @@ export async function listReachableWorkspaceIds(
   for (const ws of ownOpen) {
     if (accountReachesWorkspace(account, ws, null, permission)) ids.add(ws.id);
   }
-  return [...ids];
+  // A workspace-restricted token reaches its own list and nothing else.
+  return [...ids].filter(id => tokenWorkspaceAllowed(account.workspaceIds, id));
 }
 
 /**
@@ -111,6 +113,7 @@ export async function resolveWorkspaceAccess(
   }
 
   if ('account' in caller) {
+    if (!tokenWorkspaceAllowed(caller.account.workspaceIds, found.id)) return noAccess();
     const link = await db.query.accountWorkspaces.findFirst({
       where: and(
         eq(accountWorkspaces.accountId, caller.account.id),

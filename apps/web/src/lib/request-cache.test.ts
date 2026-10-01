@@ -77,6 +77,7 @@ let linkRow: any = { canClaim: true, canCreate: true };
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
+      accounts: { findFirst: async () => (bump("accounts.findFirst"), {teamId: "team-shared", workspaceIds: null}) },
       users: { findFirst: async () => (bump('users.findFirst'), usersRow) },
       teams: { findFirst: async () => (bump('teams.findFirst'), teamsRow) },
       teamMembers: {

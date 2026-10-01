@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubInstallations, githubRepos } from '@buildd/core/db/schema';
@@ -24,7 +25,7 @@ export async function POST(
   // Dual auth: API key or session
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
@@ -49,7 +50,7 @@ export async function POST(
     if (!ws || ws.teamId !== apiAccount.teamId) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
-    if (apiAccount.level !== 'admin') {
+    if (!hasTokenRouteAdminAccess(apiAccount, req)) {
       return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
     }
   }

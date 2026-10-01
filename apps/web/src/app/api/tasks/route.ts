@@ -16,6 +16,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategorize } from '@/lib/task-category-decision';
+import { scheduleTaskRoleShadow } from '@/lib/task-role-decision';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -94,7 +95,7 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -334,7 +335,7 @@ export async function POST(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -1399,6 +1400,37 @@ export async function POST(req: NextRequest) {
         }, after);
       } catch (err) {
         console.error('[task-create] category decision scheduling failed (non-fatal):', err);
+      }
+    }
+
+    // The role shadow (lib/task-role-decision.ts, role-routing.md §6(a)): which
+    // role the decision model would give this task. Opt-in per team, after the
+    // response, log only — it never writes the task. Pipeline/bookkeeping rows
+    // get their role from their parent, so only `work` rows are looked at.
+    if (intake.outcome.action !== 'attached' && task.taskClass === 'work' && targetWorkspace.teamId) {
+      try {
+        scheduleTaskRoleShadow({
+          taskId: task.id,
+          teamId: targetWorkspace.teamId,
+          workspaceId,
+          accountId: creatorContext.createdByAccountId ?? null,
+          statedRoleSlug: task.roleSlug ?? null,
+          title: task.title,
+          label: task.label ?? null,
+          kind: rawKind ?? null,
+          kindHeuristic: routingInference.kindInferred ? routingInference.kind : null,
+          description: task.description ?? null,
+          pathManifest: task.pathManifest ?? null,
+          pathManifestIsConcrete,
+          creationSource: task.creationSource ?? null,
+          inMission: !!task.missionId,
+          outputRequirement: task.outputRequirement ?? null,
+          backend: task.backend ?? null,
+          emitsPlan: !!emitsPlan,
+          dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+        }, after);
+      } catch (err) {
+        console.error('[task-create] role shadow scheduling failed (non-fatal):', err);
       }
     }
 

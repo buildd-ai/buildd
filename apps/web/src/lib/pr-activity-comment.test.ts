@@ -139,6 +139,34 @@ describe('status derivation — queued is never shown as working', () => {
     expect(body).not.toContain(SPINNER_PATH);
   });
 
+  // The fix task completed but the comment kept a spinner on "Fixing" while
+  // nothing ran, and the red CI on its push never showed up.
+  it('a finished fix stops saying Fixing, and a red CI after it takes over', () => {
+    const ended = { kind: 'fix_ended' as const, iteration: 1, maxIterations: 3, taskUrl: TASK, at: at(20) };
+    const afterEnd = renderPrActivityComment([reviewing, queued, fixing, pushed, ended]);
+    expect(headerOf(afterEnd)).toContain('**Fix 1 of 3 finished**');
+    expect(headerOf(afterEnd)).toContain('waiting on checks');
+    expect(headerOf(afterEnd)).not.toContain('Fixing');
+    expect(afterEnd).not.toContain(SPINNER_PATH);
+
+    const red = renderPrActivityComment([
+      reviewing, queued, fixing, pushed, ended,
+      { kind: 'ci_fixing', iteration: 1, maxIterations: 3, url: 'https://ci/run/2', at: at(30) },
+    ]);
+    expect(headerOf(red)).toContain('**CI fix 1 of 3 queued**');
+    expect(red).toContain('CI failed · fix 1 of 3 queued');
+    expect(red).not.toContain(SPINNER_PATH);
+  });
+
+  it('a fix that failed says it ended, without claiming checks are running', () => {
+    const header = headerOf(renderPrActivityComment([
+      queued, fixing, { kind: 'fix_ended', detail: 'failed', at: at(20) },
+    ]));
+    expect(header).toContain('**Fix 1 of 3 ended · failed**');
+    expect(header).not.toContain('waiting on checks');
+    expect(header).not.toContain(SPINNER_PATH);
+  });
+
   it('fix_started without its own iteration inherits the queued one', () => {
     const header = headerOf(renderPrActivityComment([queued, { kind: 'fix_started', at: at(12) }]));
     expect(header).toContain('**Fixing · fix 1 of 3**');

@@ -259,6 +259,18 @@ added in PR #2414 is redundant there — an `agent-review` workspace's release P
 hit the aggregate cap in the first place. The exemption remains load-bearing for `auto-threshold`
 workspaces, which is the only tier it changes anything for.
 
+#### Landing entry point (proposed)
+
+Every merge door — the check_suite webhook (both tiers), the reviewer approve
+path, `merge_pr`, the dashboard merge route and a backstop sweeper — is to call one decide-and-act function,
+`landPr()` in `apps/web/src/lib/pr-landing.ts`. It runs approval
+carry-forward before the verdict gate on every door, treats "behind base" as
+a branch update plus a pending marker rather than a refusal, bounds the
+treadmill, and returns a typed outcome (`merged | updating_branch |
+waiting_ci | needs_fix | needs_human`) with one gate event per refusal. The
+gates listed above are unchanged and still run inside it. See
+[`pr-landing-guarantee.md`](pr-landing-guarantee.md).
+
 ### 2.2 Deny-path escalation
 
 A deny-path hit under `auto-threshold` does NOT silently drop the PR. It transitions the PR to

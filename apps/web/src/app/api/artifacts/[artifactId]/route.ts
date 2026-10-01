@@ -22,7 +22,7 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   // The dashboard session (e.g. the in-app agent chat calling this in-process
   // as the signed-in user) is accepted on this read only. A key, when present,
   // stays authoritative so the key path is unchanged.
@@ -90,7 +90,7 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

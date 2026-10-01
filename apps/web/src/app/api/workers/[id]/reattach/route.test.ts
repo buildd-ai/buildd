@@ -18,7 +18,7 @@ type Row = { id: string; accountId: string; taskId: string; status: string; park
 let row: Row;
 const inserts: unknown[] = [];
 const updateWheres: unknown[] = [];
-let authed: { id: string; level?: string } | null;
+let authed: { id: string; level?: string; taskScope?: { taskId: string; workspaceId: string; expiresAt: number } } | null;
 /** Yield between read and write inside the fake UPDATE, so concurrent calls interleave. */
 let yieldInsideUpdate = false;
 
@@ -27,7 +27,7 @@ mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuth }));
 
 mock.module('@/lib/worker-park', () => ({
   // Recorded, and evaluated by the fake below with the same semantics.
-  reattachWhere: (id: string, accountId: string, now: Date) => ({ id, accountId, now, kind: 'reattach' }),
+  reattachWhere: (id: string, accountId: string, now: Date, taskId?: string) => ({ id, accountId, now, taskId, kind: 'reattach' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id', taskId: 'workers.task_id', status: 'workers.status' } }));
@@ -37,10 +37,11 @@ mock.module('@buildd/core/db', () => ({
     insert: () => { inserts.push(1); throw new Error('reattach must never insert'); },
     update: () => ({
       set: (values: Partial<Row>) => ({
-        where: (w: { id: string; accountId: string; now: Date }) => ({
+        where: (w: { id: string; accountId: string; now: Date; taskId?: string }) => ({
           returning: async () => {
             updateWheres.push(w);
             const matches = row.id === w.id && row.accountId === w.accountId
+              && (!w.taskId || row.taskId === w.taskId)
               && (row.status === 'waiting_input' || row.status === 'running')
               && row.parkedUntil !== null && row.parkedUntil.getTime() > w.now.getTime();
             if (yieldInsideUpdate) await new Promise(r => setTimeout(r, 5));
@@ -118,6 +119,14 @@ describe('POST /api/workers/[id]/reattach', () => {
     expect((await POST(req(), params())).status).toBe(409);
     expect(row.parkedUntil).not.toBeNull();
     expect((updateWheres[0] as { accountId: string }).accountId).toBe(OTHER_ACCOUNT);
+  });
+
+  it('a per-task token re-attaches its own worker only', async () => {
+    authed = { id: ACCOUNT, level: 'worker', taskScope: { taskId: 'task-other', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    expect((await POST(req(), params())).status).toBe(409);
+    expect(row.parkedUntil).not.toBeNull();
+    authed = { id: ACCOUNT, level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    expect((await POST(req(), params())).status).toBe(200);
   });
 
   it('auth: no key 401, trigger-level key 403, non-uuid 404', async () => {

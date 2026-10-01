@@ -7,9 +7,10 @@
  */
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { listOpenWorkspaces } from '@/lib/open-workspaces';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 export async function getIngestAccessibleWorkspaceIds(
-  account: { id: string; teamId: string | null | undefined },
+  account: { id: string; teamId: string | null | undefined; workspaceIds?: readonly string[] | null },
 ): Promise<Set<string>> {
   const [permissions, open] = await Promise.all([
     getAccountWorkspacePermissions(account.id),
@@ -17,5 +18,7 @@ export async function getIngestAccessibleWorkspaceIds(
   ]);
   const ids = new Set(permissions.filter(p => p.canClaim).map(p => p.workspaceId));
   for (const w of open) ids.add(w.id);
+  // A workspace-restricted token reaches its own list and nothing else.
+  for (const id of ids) if (!tokenWorkspaceAllowed(account.workspaceIds, id)) ids.delete(id);
   return ids;
 }

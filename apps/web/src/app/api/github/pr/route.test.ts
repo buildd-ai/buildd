@@ -3,6 +3,7 @@ process.env.NODE_ENV = 'production';
 
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 // Save original NODE_ENV to restore later
 const originalNodeEnv = process.env.NODE_ENV;
@@ -391,6 +392,24 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  it("refuses a per-task token for a team worker that is not its own", async () => {
+    const scoped = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 } };
+    mockAuthenticateApiKey.mockResolvedValue(scoped);
+    // Same team (so an account key would pass), but another account's worker...
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-2', taskId: 'task-own', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    const body = { workerId: 'w-1', title: 'My PR', head: 'feature-branch' };
+    let res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
+    // ...or its own account's worker on another task.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-1', taskId: 'task-other', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
   });
 
   // A shared runner on its own team reaches this workspace through a claim
@@ -3367,6 +3386,25 @@ describe('PUT /api/github/pr', () => {
       expect((await res.json()).error).toContain('admin token');
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
+
+    for (const preset of ['ci', 'runner'] as const) {
+      it(`rejects force from a scoped ${preset} preset token: bypassing merge policy needs the admin scope`, async () => {
+        workerOk();
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+          workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+        });
+
+        const res = await PUT(createPutRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', prNumber: 42, force: true },
+        }));
+
+        expect(res.status).toBe(403);
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+    }
 
     it('lets an admin token force past the policy', async () => {
       // A human-held admin token is the human. Refusing it would make the gate

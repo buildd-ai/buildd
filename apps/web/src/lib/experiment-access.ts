@@ -50,7 +50,7 @@ async function memberRole(teamId: string, userId: string): Promise<TeamRole | nu
 export async function resolveExperimentViewer(req: NextRequest, workspaceId: string | null): Promise<ViewerResult> {
   const authHeader = req.headers.get('authorization');
   const bearer = authHeader?.replace(/^Bearer\s+/i, '') || null;
-  const account = bearer ? await authenticateApiKey(bearer) : null;
+  const account = bearer ? await authenticateApiKey(bearer, req) : null;
 
   if (bearer && account) {
     let teamId: string | null = (account as { teamId?: string | null }).teamId ?? null;

@@ -34,7 +34,7 @@ export async function GET(
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (!account) {
       return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
     }

@@ -82,7 +82,7 @@ describe('short text', () => {
   });
 
   it('derived signatures keep required markers and sub-action values', () => {
-    expect(actionSignature('get_task')).toBe('{taskId, include?}');
+    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?}');
     expect(actionSignature('manage_secrets')).toContain('action: list|set|delete');
     expect(actionSignature('explain')).toContain('taskId?|missionId?');
   });
@@ -175,6 +175,8 @@ describe('typed params', () => {
     const t = props('tasks', actionsOfGroup('tasks'));
     for (const n of ['taskId', 'workspaceId', 'status', 'limit', 'include', 'title', 'priority']) expect(t[n], n).toBeDefined();
     expect(t.include?.type).toBe('array');
+    expect(t.fullDescription?.type).toBe('boolean');
+    expect(t.fullDescription.description).toContain('Full text');
     expect(t.status.description).toContain('cancelled');
   });
 

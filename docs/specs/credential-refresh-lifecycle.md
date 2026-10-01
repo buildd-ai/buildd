@@ -2,13 +2,13 @@
 title: Credential Refresh Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-09
+last_verified: 2026-09-30
 summary: A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 domain: auth
 surfaces: [apps/web/src/app/api/runner/credential-refresh/route.ts, apps/runner/src/broker.ts, apps/web/src/app/api/cron/codex-token-refresh/route.ts, packages/core/db/schema.ts]
 related: [credential-isolation, auth-oauth-boundaries, codex-backend-spec]
 keywords: [invalid_grant, refresh token rotation, credential_leases, rotation_started_at, refresh_locked_at, BUILDD_ALLOW_CONTROL_PLANE_REFRESH, nudge task, single-use refresh token]
-verified_by: [apps/web/src/app/api/runner/credential-refresh/route.test.ts, apps/web/src/app/api/cron/codex-token-refresh/route.test.ts, apps/runner/__tests__/unit/credential-refresh.test.ts, apps/runner/__tests__/unit/broker.test.ts]
+verified_by: [apps/web/src/app/api/runner/credential-refresh/route.test.ts, apps/web/src/app/api/runner/credential-lease/route.test.ts, apps/web/src/app/api/cron/codex-token-refresh/route.test.ts, apps/runner/__tests__/unit/credential-refresh.test.ts, apps/runner/__tests__/unit/broker.test.ts]
 assertions:
   - id: credential-refresh-route-post
     type: route
@@ -91,6 +91,15 @@ forever. The system therefore needs to *detect* a lost rotation, not retry it.
 - **INV-7 — every action is team-scoped.** Every action on a credential MUST
   verify the credential belongs to the caller's team before acting on it or
   returning any part of it.
+- **INV-7a — only a host runner holds credentials.** The lease and refresh
+  routes and the secrets list MUST refuse any key an owner/admin has not
+  flagged as a long-lived host runner (`accounts.hostRunner`), and MUST always
+  refuse a per-task token. A worker-level runner key cannot read team
+  credentials it was not handed at claim time. One route sits outside the flag:
+  the Cloudflare deploy-token reveal serves an operator's deploy script, so it
+  takes only an admin-level `bld_` key of the team (never a worker or trigger
+  key, never a per-task token) and does not ask for the flag, which would also
+  grant that deploy key lease and refresh.
 - **INV-8 — refresh is never delegated to an agent.** The system MUST NOT create
   a task whose body instructs a worker to perform a token exchange. An LLM
   driving the exchange can acquire the lock and lose the rotation, which by
@@ -108,6 +117,9 @@ forever. The system therefore needs to *detect* a lost rotation, not retry it.
 - AC-1: GIVEN a valid API key for team A WHEN any action is invoked against a
   credential owned by team B THEN the request is rejected with HTTP 403 and no
   token material is returned.
+- AC-1a: GIVEN a key not flagged as a host runner, or a per-task token, WHEN
+  any lease or refresh action is invoked THEN the request is rejected with HTTP
+  403 before the credential is read, and no token material is returned.
 - AC-2: GIVEN a credential with no matching row WHEN an action is invoked THEN
   the request is rejected with HTTP 404.
 - AC-3: GIVEN a credential whose lock is held and unexpired WHEN a second caller

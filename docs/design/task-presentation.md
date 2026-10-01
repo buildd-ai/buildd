@@ -108,6 +108,43 @@ Strict order. Runner id moves last on every surface.
 
 Read as: *what is it → where in the plan → is it healthy → where is it running.*
 
+### Eyebrow — `lib/task-eyebrow.ts`
+
+The line above a task card's title has to earn its slot. Most tasks carry no
+`roleSlug`, so printing the role unconditionally put "unassigned" on nearly every
+card. On a completed card that read as if nobody did the work. The eyebrow depends
+on where the task is, and every surface reads it from `deriveTaskEyebrow`. None of
+them keeps a local `role ?? '…'` string.
+
+| Task is | Eyebrow |
+|---|---|
+| pending, stated role | the role name, in the role's color |
+| pending, inferred role (`context.roleInferred`) | the role name + a quiet `auto` |
+| pending, no role | nothing |
+| running (live worker) | the role, plus the runner **only when more than one runner is online**. With no role, the runner alone, under the same condition. Otherwise nothing |
+| completed / failed | no role. What shipped: `merged #N`, `PR open #N` (warning: completed is not landed), `PR closed #N`, else `N artifacts`, else nothing |
+| cancelled | nothing |
+| bookkeeping row | never (these rows stay hidden) |
+
+Rules:
+- **A missing role is never a word.** No "unassigned", "any" or "?".
+  `roleDisplayName(slug, name)` returns null, and the surface draws nothing or
+  a neutral shape. For example, Home's fleet `RoleSquare` draws an empty outlined
+  square, so the row still lines up.
+- A terminal card's eyebrow carries the PR or artifacts, so the card's status row
+  does not print them a second time.
+- The pending triage line on the task page (role · runner preference · engine ·
+  tier) follows the same rule. It omits the role when there is none, and omits the
+  runner preference when it is the default `any`. That default used to lead the
+  line and read as a role.
+- Mobile first: the eyebrow is one truncating line. The role, `auto` and the runner
+  are separate spans, so truncation cuts the runner before it cuts the role.
+
+Mounted on: the task page's Execution Plan cards (`PlanChainView`), the pending
+triage line, and the fleet `RoleSquare`. `TaskCard` densities and Activity rows
+print no role text. They draw the work-kind glyph (`deriveWorkKind`), which
+renders nothing when kind and role are both absent.
+
 ---
 
 ## Constraints carried from prior work

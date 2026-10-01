@@ -1,12 +1,13 @@
 import { beforeEach, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { canAccessTokenRoute } from '@/lib/token-route-policy';
 const user = mock(async () => null as any);
-const account = mock(async () => null as any);
+const account = mock(async (..._args: any[]) => null as any);
 const teams = mock(async () => ['team']);
 const workspaces = mock(async () => [{ id: 'ws' }]);
 const metrics = mock(async () => ({ manifestCoverage: { total: 0 }, pathClaims: { calls: 0 } }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: user }));
-mock.module('@/lib/api-auth', () => ({ authenticateApiKey: account }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (key: string, request: NextRequest) => { const token = await account(key, request); return token && canAccessTokenRoute(token, request) ? token : null; } }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: teams }));
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: workspaces } } } }));
 mock.module('@/lib/coordination-stats-query', () => ({ fetchCoordinationStats: metrics }));
@@ -42,6 +43,32 @@ it('serves authenticated worker keys and preserves team scoping', async () => {
   headers: { authorization: 'Bearer bld_test' },
  });
  expect((await GET(request)).status).toBe(200);
- expect(account).toHaveBeenCalledWith('bld_test');
+ expect(account).toHaveBeenCalledWith('bld_test', request);
  expect(metrics).toHaveBeenCalledWith({ workspaceIds: ['ws'], missionId: undefined, window: '7d' });
+});
+
+it('allows an analytics reader with worker level', async () => {
+ account.mockResolvedValue({ id: 'reader', level: 'worker', scopes: ['analytics:read'], teamId: 'team' });
+ const request = new NextRequest('http://localhost/api/stats/coordination?workspace=ws', { headers: { authorization: 'Bearer bld_reader' } });
+ expect((await GET(request)).status).toBe(200);
+ expect(metrics).toHaveBeenCalled();
+});
+it('denies CI scopes before querying analytics', async () => {
+ account.mockResolvedValue({ id: 'ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team' });
+ const request = new NextRequest('http://localhost/api/stats/coordination?workspace=ws', { headers: { authorization: 'Bearer bld_ci' } });
+ expect((await GET(request)).status).toBe(401);
+ expect(metrics).not.toHaveBeenCalled();
+});
+
+it('restricts analytics tokens to their selected workspaces', async () => {
+ account.mockResolvedValue({ id: 'reader', level: 'worker', scopes: ['analytics:read'], workspaceIds: ['ws'], teamId: 'team' });
+ const request = new NextRequest('http://localhost/api/stats/coordination?workspace=other', { headers: { authorization: 'Bearer bld_reader' } });
+ expect((await GET(request)).status).toBe(401);
+ expect(metrics).not.toHaveBeenCalled();
+});
+it('refuses unfiltered team reports for workspace-restricted tokens', async () => {
+ account.mockResolvedValue({ id: 'reader', level: 'worker', scopes: ['analytics:read'], workspaceIds: ['ws'], teamId: 'team' });
+ const request = new NextRequest('http://localhost/api/stats/coordination', { headers: { authorization: 'Bearer bld_reader' } });
+ expect((await GET(request)).status).toBe(401);
+ expect(metrics).not.toHaveBeenCalled();
 });

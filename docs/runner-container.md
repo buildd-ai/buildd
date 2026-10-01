@@ -118,7 +118,7 @@ Everything else stays in the runner process.
 
 | Variable | Secret | Required | Reaches agent | Notes |
 |---|---|---|---|---|
-| `BUILDD_API_KEY` | **yes** | yes | no | Runner API key, ideally scoped to one workspace. Missing: exit 64. |
+| `BUILDD_API_KEY` | **yes** | yes | no | On Cloudflare: a per-task token (`bldt_…`) the `WorkerAgent` mints for this one task at dispatch (`POST /api/runner/task-token`). It works only for this task's claim and its own worker's calls, expires within hours, and cannot read team credentials. The Worker's runner key never enters the container. Elsewhere: a runner API key, ideally scoped to one workspace. Missing: exit 64. |
 | `BUILDD_SERVER` | no | yes | no | buildd base URL. Defaults to `https://buildd.dev` if unset, so always set it outside production. |
 | `ANTHROPIC_API_KEY` | placeholder on Cloudflare; **yes** locally | yes | yes | On Cloudflare this is a dummy value. Claude Code needs *some* key to start, and the egress handler strips it and adds the real gateway credential. Setting it also stops the runner from injecting the server-managed API key (it only fills an unset variable). Locally, a real key works. |
 | `ANTHROPIC_BASE_URL` | no | no | yes | Gateway endpoint. The `WorkerAgent` never passes it: on Cloudflare model traffic must go to `api.anthropic.com`, where the egress handler rewrites it to AI Gateway. Elsewhere, set it to talk to a gateway directly. |
@@ -131,7 +131,9 @@ Everything else stays in the runner process.
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never
 put in the container env. The only real secret in the env is
-`BUILDD_API_KEY`. Model traffic can go to AI Gateway or to an
+`BUILDD_API_KEY`, and on Cloudflare that is a per-task token scoped to the
+container's own task and worker, not the runner key.
+Model traffic can go to AI Gateway or to an
 Anthropic-compatible proxy such as LiteLLM (`MODEL_PROXY_URL`, Worker-side
 only; see `apps/cloud-runner/README.md`, "Model routes"); either way the
 container sees only `api.anthropic.com` and the placeholder key.

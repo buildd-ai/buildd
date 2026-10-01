@@ -42,7 +42,7 @@ mock.module('@/lib/credential-recovery', () => ({
   requeueAuthFailedTasks: mockRequeue,
 }));
 
-import { POST, DELETE } from './route';
+import { POST, DELETE, GET } from './route';
 
 function createPostRequest(body: any): NextRequest {
   return new NextRequest('http://localhost:3000/api/secrets', {
@@ -385,6 +385,68 @@ describe('POST /api/secrets never creates a personal row', () => {
     expect(res.status).toBe(200);
     const meta = (mockSecretsReplaceScoped.mock.calls[0] as any[])[1];
     expect(meta.userId ?? null).toBeNull();
+  });
+});
+
+// ── GET: listing is for people and flagged host runner keys only ─────────────
+
+describe('GET /api/secrets — credential custody', () => {
+  function listReq(key?: string): NextRequest {
+    return new NextRequest('http://localhost:3000/api/secrets', {
+      headers: key ? { Authorization: `Bearer ${key}` } : {},
+    });
+  }
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockSecretsList.mockReset();
+    mockSecretsList.mockResolvedValue([{ id: 'secret-1', purpose: 'claude_credential' }]);
+  });
+
+  it('lists for a signed-in team member', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    const res = await GET(listReq());
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses an API key not flagged as a host runner, whatever its level', async () => {
+    for (const level of ['worker', 'admin']) {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level, hostRunner: false });
+      const res = await GET(listReq('bld_runner_key'));
+      expect(res.status).toBe(403);
+    }
+    expect(mockSecretsList).not.toHaveBeenCalled();
+  });
+
+  it('lists for a flagged host runner key', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    const res = await GET(listReq('bld_runner_key'));
+    expect(res.status).toBe(200);
+  });
+
+  it("lists for a person's OAuth session", async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', hostRunner: false, sessionUserId: 'user-1' });
+    const res = await GET(listReq('eyJ.a.b'));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a per-task token even when it resolves to a flagged account', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    const res = await GET(listReq('bldt_payload.sig'));
+    expect(res.status).toBe(403);
+    expect(mockSecretsList).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to the browser session for a rejected per-task token', async () => {
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    const res = await GET(listReq('bldt_payload.sig'));
+    expect(res.status).toBe(401);
+    expect(mockSecretsList).not.toHaveBeenCalled();
   });
 });
 
