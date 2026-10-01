@@ -78,6 +78,27 @@ function readConsumerSkillBody(): string {
   }
 }
 
+// Same pattern for the one-time onboarding flow: the `buildd://workspace/onboarding`
+// resource serves .claude/skills/workspace-onboarding/SKILL.md directly, with
+// its own `outputFileTracingIncludes` entry. docs/design/workspace-onboarding.md §5.
+const ONBOARDING_SKILL_PATH = join(
+  process.cwd(),
+  "..",
+  "..",
+  ".claude",
+  "skills",
+  "workspace-onboarding",
+  "SKILL.md"
+);
+
+function readOnboardingSkillBody(): string {
+  try {
+    return readFileSync(ONBOARDING_SKILL_PATH, "utf8");
+  } catch {
+    return "workspace-onboarding skill content unavailable on this deployment — see .claude/skills/workspace-onboarding/SKILL.md in the repo for the readiness, scaffold and first-spec flow.";
+  }
+}
+
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
 function extractBearerToken(req: Request): string | null {
@@ -756,6 +777,12 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         description: "Available skills",
         mimeType: "text/plain",
       },
+      {
+        uri: "buildd://workspace/onboarding",
+        name: "Workspace Onboarding",
+        description: "How to make a repo buildd-ready: readiness, scaffold PR, first spec, first mission",
+        mimeType: "text/plain",
+      },
     ],
   }));
 
@@ -814,6 +841,15 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             uri,
             mimeType: "text/plain",
             text: readConsumerSkillBody(),
+          }],
+        };
+
+      case "buildd://workspace/onboarding":
+        return {
+          contents: [{
+            uri,
+            mimeType: "text/plain",
+            text: readOnboardingSkillBody(),
           }],
         };
 

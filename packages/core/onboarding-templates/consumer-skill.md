@@ -10,6 +10,8 @@ You have the buildd MCP server mounted. This skill is the procedure for using
 it — the connector's `instructions` only tell you your token level and that
 this skill exists; everything about *how* to work a task lives here.
 
+Setting up a new workspace or making a repo buildd-ready? Load `workspace-onboarding` (or read `buildd://workspace/onboarding`); it is not part of task work.
+
 ## Tools
 
 Most sessions list one tool, `buildd`, that takes `{ action, params }` for
