@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
-import { isTokenScope } from '@buildd/core/token-scopes';
+import { isTokenScope, scopedTokenLevel } from '@buildd/core/token-scopes';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
-import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage } from '@/lib/key-level-policy';
+import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage, canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
+import { isOpenWithinTeams } from '@/lib/open-workspaces';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -56,21 +57,31 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, scopes, workspaceIds, expiresAt } = body;
-    if (scopes !== undefined && (!Array.isArray(scopes) || !scopes.every(isTokenScope))) return NextResponse.json({error: "Invalid token scopes"}, {status:400});
-    if (workspaceIds != null && (!Array.isArray(workspaceIds) || !workspaceIds.every((id: unknown) => typeof id === "string"))) return NextResponse.json({error: "Invalid workspaces"}, {status:400});
-    if (workspaceIds != null && scopes === undefined) return NextResponse.json({error:"Workspace restrictions require explicit scopes"}, {status:400});
+    const { name, type, authType, maxConcurrentWorkers, level, teamId: requestedTeamId, workspaceId, scopes, workspaceIds: rawWorkspaceIds, expiresAt } = body;
+    if (scopes !== undefined && (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every(isTokenScope))) return NextResponse.json({ error: 'Invalid token scopes' }, { status: 400 });
+    if (rawWorkspaceIds != null && (!Array.isArray(rawWorkspaceIds) || rawWorkspaceIds.length === 0 || !rawWorkspaceIds.every((id: unknown) => typeof id === 'string'))) return NextResponse.json({ error: 'Invalid workspaces' }, { status: 400 });
+    if (rawWorkspaceIds != null && scopes === undefined) return NextResponse.json({ error: 'Workspace restrictions require explicit scopes' }, { status: 400 });
+    // Deduped up front: every id is validated before the account row exists.
+    const workspaceIds: string[] | null = rawWorkspaceIds == null ? null : [...new Set<string>(rawWorkspaceIds)];
     const expiry = expiresAt == null ? null : new Date(expiresAt);
-    if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) return NextResponse.json({error: "Expiry must be in the future"}, {status:400});
+    if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) return NextResponse.json({ error: 'Expiry must be in the future' }, { status: 400 });
 
     if (!name || !type) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 });
     }
 
-    const requestedLevel = level === undefined || level === null || level === '' ? 'worker' : parseKeyLevel(level);
-    if (!requestedLevel) {
+    const levelGiven = !(level === undefined || level === null || level === '');
+    const parsedLevel = levelGiven ? parseKeyLevel(level) : 'worker';
+    if (!parsedLevel) {
       return NextResponse.json({ error: 'level must be one of trigger, worker, admin' }, { status: 400 });
     }
+    // A scoped token's level is derived from its scopes, never chosen: code
+    // that still reads `level` must not see admin without the admin scope.
+    const derivedLevel = scopes !== undefined ? scopedTokenLevel(scopes) : null;
+    if (derivedLevel && levelGiven && parsedLevel !== derivedLevel) {
+      return NextResponse.json({ error: `level must be ${derivedLevel} for these scopes (it is derived from them)` }, { status: 400 });
+    }
+    const requestedLevel = derivedLevel ?? parsedLevel;
 
     const plaintextKey = generateApiKey();
 
@@ -101,10 +112,22 @@ export async function POST(req: NextRequest) {
     if (role === 'member' && scopes?.some((scope: string) => (scope.endsWith(':admin') || ['admin', 'secrets', 'releases', 'schedules:write'].includes(scope)))) return NextResponse.json({error: 'Your team role cannot grant administrative scopes'}, {status:403});
     let selectedWorkspaces: string[] = workspaceId ? [workspaceId] : [];
     if (scopes !== undefined || workspaceIds != null) {
-      const teamWorkspaces = await db.query.workspaces.findMany({where: eq(workspaces.teamId, teamId), columns: {id:true}});
-      const allowed = teamWorkspaces.map(w => w.id);
-      selectedWorkspaces = workspaceIds ?? allowed;
-      if (selectedWorkspaces.some(id => !allowed.includes(id))) return NextResponse.json({error:'Workspace is outside this team'}, {status:403});
+      const keyTeamId: string = teamId;
+      const teamWorkspaces = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, teamId), columns: { id: true, teamId: true, accessMode: true } });
+      const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
+      if (workspaceIds != null) {
+        if (workspaceIds.some(id => !byId.has(id))) return NextResponse.json({ error: 'Workspace is outside this team' }, { status: 403 });
+        // Restricted access mode admits an API token only through an explicit
+        // link, which is a team owner/admin decision.
+        if (!canAdministerTeamKeys(role) && workspaceIds.some(id => !isOpenWithinTeams(byId.get(id), [keyTeamId]))) {
+          return NextResponse.json({ error: 'Only a team owner or admin can grant a token access to a restricted workspace' }, { status: 403 });
+        }
+        selectedWorkspaces = workspaceIds;
+      } else {
+        // An unrestricted token is linked to open workspaces only; restricted
+        // ones must be listed explicitly.
+        selectedWorkspaces = teamWorkspaces.filter(w => isOpenWithinTeams(w, [keyTeamId])).map(w => w.id);
+      }
     }
     const insertValues: Record<string, unknown> = {
       name,

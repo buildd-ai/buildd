@@ -258,7 +258,8 @@ export async function authenticateApiKey(apiKey: string | null, request?: { url:
   if (account.workspaceIds != null && request && 'clone' in request && !['GET', 'HEAD'].includes(request.method)) {
     try {
       const body = await (request as Request).clone().json();
-      if (new URL(request.url).pathname === '/api/releases/trigger' && !body.workspaceId) return null;
+      // Creates that default to team-wide scope must name one of the token's workspaces.
+      if (['/api/releases/trigger', '/api/missions', '/api/initiatives'].includes(new URL(request.url).pathname) && !body.workspaceId) return null;
       if (body.workspaceId && !account.workspaceIds.includes(body.workspaceId)) return null;
       if (Array.isArray(body.workspaceIds) && body.workspaceIds.some((id: string) => !account.workspaceIds!.includes(id))) return null;
     } catch { /* Non-JSON calls still use route resource checks. */ }

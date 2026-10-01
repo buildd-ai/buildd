@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { canAccessTokenRoute, hasTokenRouteAdminAccess, requiredTokenScope } from './token-route-policy';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
+import { adminCapabilityForRoute, canAccessTokenRoute, hasTokenRouteAdminAccess, requiredTokenScope } from './token-route-policy';
 const request = (path: string, method = 'GET') => ({ url: `https://example.test${path}`, method });
 describe('REST token scope policy', () => {
   test('CI tokens can write tasks without admin and cannot read secrets', () => {
     const token = { level: 'worker', scopes: ['tasks:write'] };
     expect(canAccessTokenRoute(token, request('/api/tasks', 'POST'))).toBe(true);
-    expect(hasTokenRouteAdminAccess(token, request('/api/tasks/bulk', 'POST'))).toBe(true);
+    expect(hasTokenRouteAdminAccess(token, request('/api/tasks/bulk', 'POST'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/secrets'))).toBe(false);
   });
   test('analytics readers can reach analytics only', () => {
@@ -44,5 +45,41 @@ describe('REST token scope policy', () => {
     expect(requiredTokenScope('/api/workspaces/demo/skills', 'POST')).toBe('skills:admin');
     expect(requiredTokenScope('/api/workspaces/demo/schedules', 'POST')).toBe('schedules:write');
     expect(requiredTokenScope('/api/workspaces/demo/memory', 'POST')).toBe('knowledge:write');
+  });
+  test('an admin gate on an ordinary-scope route needs an explicit admin capability', () => {
+    // The route's ordinary scope (what authentication already checked) never
+    // doubles as the admin capability for a gate inside the handler.
+    expect(adminCapabilityForRoute('/api/tasks/bulk', 'POST')).toBeNull();
+    expect(adminCapabilityForRoute('/api/workers/claim', 'POST')).toBeNull();
+    expect(adminCapabilityForRoute('/api/github/pr', 'PUT')).toBeNull();
+    expect(adminCapabilityForRoute('/api/missions', 'POST')).toBe('missions:admin');
+    const presets = [TOKEN_PRESETS.ci, TOKEN_PRESETS.runner];
+    const gates: Array<[string, string, Parameters<typeof hasTokenRouteAdminAccess>[2]]> = [
+      ['/api/github/pr', 'PUT', 'admin'],
+      ['/api/workers/claim', 'POST', 'admin'],
+      ['/api/tasks/bulk', 'POST', 'tasks:admin'],
+      ['/api/tasks/cleanup', 'POST', 'tasks:admin'],
+      ['/api/tasks/t1/attach-pr', 'POST', 'tasks:admin'],
+      ['/api/discrepancies/d1/dispatch-doc-fix', 'POST', 'missions:admin'],
+      ['/api/knowledge/ingest-jobs', 'POST', 'knowledge:admin'],
+      ['/api/workers/w1/activity', 'POST', 'workers:admin'],
+      ['/api/tasks/t1/messages', 'GET', 'workers:admin'],
+    ];
+    for (const preset of presets) {
+      const token = { level: 'worker', scopes: preset.scopes };
+      for (const [path, method, capability] of gates) {
+        expect(hasTokenRouteAdminAccess(token, request(path, method), capability)).toBe(false);
+        expect(hasTokenRouteAdminAccess(token, request(path, method))).toBe(false);
+      }
+    }
+    expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: ['admin'] }, request('/api/tasks/bulk', 'POST'), 'tasks:admin')).toBe(true);
+    expect(hasTokenRouteAdminAccess({ level: 'worker', scopes: ['tasks:admin'] }, request('/api/tasks/bulk', 'POST'), 'tasks:admin')).toBe(true);
+    // A level stored alongside scopes is never consulted.
+    expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: ['tasks:write'] }, request('/api/tasks/bulk', 'POST'), 'tasks:admin')).toBe(false);
+  });
+  test('a workspace-restricted token cannot pass an admin gate on a route it cannot reach', () => {
+    const token = { scopes: ['admin'], workspaceIds: ['ws-a'] };
+    expect(hasTokenRouteAdminAccess(token, request('/api/workspaces/ws-b/skills', 'POST'))).toBe(false);
+    expect(hasTokenRouteAdminAccess(token, request('/api/workspaces/ws-a/skills', 'POST'))).toBe(true);
   });
 });

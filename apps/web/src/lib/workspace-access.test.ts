@@ -95,6 +95,13 @@ describe('listReachableWorkspaceIds', () => {
     expect(await listReachableWorkspaceIds(ACCOUNT, 'canCreate')).toEqual(['ws-create']);
   });
 
+  it('a workspace-restricted token lists only its own workspaces', async () => {
+    links = [{ workspaceId: 'ws-linked', canClaim: true, canCreate: true }];
+    ownOpenRows = [{ id: 'ws-own-open', teamId: 'team-a', accessMode: 'open' }];
+    const restricted = { account: { ...ACCOUNT.account, workspaceIds: ['ws-linked'] } };
+    expect(await listReachableWorkspaceIds(restricted)).toEqual(['ws-linked']);
+  });
+
   it('a session user lists their teams\' workspaces', async () => {
     expect(await listReachableWorkspaceIds({ userId: 'u-1' })).toEqual(['ws-of-user']);
   });
@@ -119,6 +126,12 @@ describe('resolveWorkspaceAccess', () => {
     const r = await resolveWorkspaceAccess(UUID, ACCOUNT, 'canCreate');
     expect(r).toMatchObject({ ok: false, reason: 'no_access', status: 403 });
     if (!r.ok) expect(r.error).toStartWith(`No access to workspace "${UUID}"`);
+  });
+
+  it('a workspace-restricted token cannot act on an open workspace outside its list', async () => {
+    resolved = { id: UUID, teamId: 'team-a', accessMode: 'open' };
+    const restricted = { account: { ...ACCOUNT.account, workspaceIds: ['ws-other'] } };
+    expect(await resolveWorkspaceAccess(UUID, restricted, 'canCreate')).toMatchObject({ ok: false, reason: 'no_access' });
   });
 
   it('own team restricted without a link: 403 no_access', async () => {

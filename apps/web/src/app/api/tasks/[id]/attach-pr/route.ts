@@ -32,7 +32,7 @@ export async function POST(
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const apiAccount = await authenticateApiKey(apiKey, req);
   if (!user && !apiAccount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin')) {
     return NextResponse.json({ error: 'Attaching a PR to a task requires an admin-level token' }, { status: 403 });
   }
 

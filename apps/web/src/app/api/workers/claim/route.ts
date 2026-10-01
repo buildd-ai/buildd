@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
@@ -207,7 +208,7 @@ export async function POST(req: NextRequest) {
   // the task, the mission budget, scope-undeclared serialization, role/runner
   // routing, provider walls, account limits). Granted below, once the task's
   // team is known.
-  const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req);
+  const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req, 'admin');
   let forceClaim = false;
   // Gates a force claim actually lifted for its task, i.e. the ones that would
   // have excluded or deferred it. SQL-level ones are evaluated after the
@@ -276,7 +277,11 @@ export async function POST(req: NextRequest) {
       // Combine: open workspace IDs + restricted workspaces with permission
       const openIds = openWorkspaces.map((ws) => ws.id);
 
-      return [...new Set([...openIds, ...restrictedIds])];
+      // A workspace-restricted token claims only inside its own list, whatever
+      // the team's open workspaces or canClaim links would otherwise allow.
+      // Every candidate and taskId lookup below is bounded by this list.
+      return [...new Set([...openIds, ...restrictedIds])]
+        .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
     })();
     return claimableWorkspaceIdsMemo;
   };

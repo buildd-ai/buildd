@@ -3,6 +3,7 @@ process.env.NODE_ENV = 'production';
 
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 // Save original NODE_ENV to restore later
 const originalNodeEnv = process.env.NODE_ENV;
@@ -3367,6 +3368,25 @@ describe('PUT /api/github/pr', () => {
       expect((await res.json()).error).toContain('admin token');
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
+
+    for (const preset of ['ci', 'runner'] as const) {
+      it(`rejects force from a scoped ${preset} preset token: bypassing merge policy needs the admin scope`, async () => {
+        workerOk();
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+          workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+        });
+
+        const res = await PUT(createPutRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', prNumber: 42, force: true },
+        }));
+
+        expect(res.status).toBe(403);
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+    }
 
     it('lets an admin token force past the policy', async () => {
       // A human-held admin token is the human. Refusing it would make the gate

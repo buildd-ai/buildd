@@ -2,6 +2,8 @@ process.env.NODE_ENV = 'test';
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 const mockAuthenticateApiKey = mock(async () => null as any);
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -106,6 +108,14 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     accessibleWorkspaceIds = new Set(); // empty — would block workers
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(201);
+  });
+
+  it('a scoped runner preset token does not bypass the workspace access check', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...workerAccount, level: 'admin', scopes: TOKEN_PRESETS.runner.scopes, workspaceIds: null });
+    accessibleWorkspaceIds = new Set();
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(404);
+    expect(mockEnqueueFullIngestJobDetailed).not.toHaveBeenCalled();
   });
 
   it('returns 400 when workspaceId is missing', async () => {
@@ -221,6 +231,14 @@ describe('GET /api/knowledge/ingest-jobs', () => {
     const res = await GET(makeRequest('GET'));
     expect(res.status).toBe(403);
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`returns 403 for a scoped ${preset} preset token: listing jobs needs knowledge:admin`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...adminAccount, scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      const res = await GET(makeRequest('GET'));
+      expect(res.status).toBe(403);
+    });
+  }
 
   it('returns empty jobs array when no jobs exist', async () => {
     const res = await GET(makeRequest('GET'));

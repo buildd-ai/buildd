@@ -72,11 +72,41 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
   return scope !== null && hasTokenScope(token.scopes, scope);
 }
 
-/** Scoped tokens pass the matching capability instead of requiring admin level. */
+/**
+ * Scopes that are themselves an administrative capability. An in-handler admin
+ * gate on a route whose own scope is one of these may use that scope; every
+ * other admin gate must name its capability explicitly.
+ */
+const ADMIN_TIER_SCOPES: ReadonlySet<TokenScope> = new Set<TokenScope>([
+  'admin', 'secrets', 'releases', 'analytics:read', 'missions:admin', 'skills:admin',
+  'workspaces:admin', 'schedules:write', 'knowledge:admin', 'tasks:admin', 'workers:admin',
+]);
+
+/**
+ * The capability an admin gate demands when the caller names none: the route's
+ * own scope when that scope is admin-tier, else null (fail closed). Ordinary
+ * scopes (tasks:read/write, workers:write, knowledge:write) are what
+ * authentication already checked, so they can never double as an admin grant.
+ */
+export function adminCapabilityForRoute(pathname: string, method: string): TokenScope | null {
+  const scope = requiredTokenScope(pathname, method);
+  return scope && ADMIN_TIER_SCOPES.has(scope) ? scope : null;
+}
+
+/**
+ * Replacement for the legacy `level === 'admin'` gate. Legacy tokens keep that
+ * exact check. A scoped token must reach the route and hold an explicit admin
+ * capability: `capability` when given, else the route's admin-tier scope. The
+ * stored level of a scoped token is never consulted.
+ */
 export function hasTokenRouteAdminAccess(
   token: (ScopedToken & { level: string }) | null | undefined,
   request: RouteRequest,
+  capability?: TokenScope,
 ): boolean {
   if (!token) return false;
-  return token.scopes == null ? token.level === 'admin' : canAccessTokenRoute(token, request);
+  if (token.scopes == null) return token.level === 'admin';
+  if (!canAccessTokenRoute(token, request)) return false;
+  const required = capability ?? adminCapabilityForRoute(new URL(request.url).pathname, request.method);
+  return required !== null && hasTokenScope(token.scopes, required);
 }

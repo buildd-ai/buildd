@@ -34,7 +34,7 @@ export async function GET(
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'missions:admin')) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
   if (!isUuid(id)) return notFound();

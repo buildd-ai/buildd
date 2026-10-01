@@ -39,7 +39,7 @@ export async function POST(
   // Activity is written by the account running the worker (its runner's key),
   // or by an admin-level account of the worker's workspace team.
   const isOwnRunner = worker.accountId === account.id;
-  const isTeamAdmin = hasTokenRouteAdminAccess(account, req) && account.teamId === worker.workspace?.teamId;
+  const isTeamAdmin = hasTokenRouteAdminAccess(account, req, 'workers:admin') && account.teamId === worker.workspace?.teamId;
   if (!isOwnRunner && !isTeamAdmin) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }

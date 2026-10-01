@@ -22,7 +22,9 @@ export type TokenScope = (typeof TOKEN_SCOPE_DEFINITIONS)[number]['scope'];
 export const TOKEN_SCOPES: TokenScope[] = TOKEN_SCOPE_DEFINITIONS.map(d => d.scope);
 
 export const TOKEN_PRESETS = {
-  runner: { label: 'Runner', description: 'Execute tasks and report results.', scopes: ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write'] as TokenScope[] },
+  // Not a host-runner token: host runners also lease model credentials, which
+  // needs a runner token from `buildd login`.
+  runner: { label: 'Task agent', description: 'Claim tasks and report results over MCP or the API. For a host runner, use `buildd login` instead.', scopes: ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write'] as TokenScope[] },
   ci: { label: 'CI trigger', description: 'Create tasks and publish artifacts from CI.', scopes: ['tasks:read', 'tasks:write'] as TokenScope[] },
   analytics: { label: 'Analytics reader', description: 'Read operational analytics without changing anything.', scopes: ['analytics:read'] as TokenScope[] },
   admin: { label: 'Admin', description: 'Full administration within the selected workspaces.', scopes: ['admin'] as TokenScope[] },
@@ -31,6 +33,11 @@ export type TokenPreset = keyof typeof TOKEN_PRESETS;
 
 /** Presentation mapping only: legacy tokens retain their exact original level gates. */
 export const LEGACY_LEVEL_PRESET = { worker: 'runner', trigger: 'ci', admin: 'admin' } as const satisfies Record<string, TokenPreset>;
+
+/** The stored level of a scoped token: admin only with the admin scope. */
+export function scopedTokenLevel(scopes: readonly string[]): 'admin' | 'worker' {
+  return scopes.includes('admin') ? 'admin' : 'worker';
+}
 
 export function isTokenScope(value: unknown): value is TokenScope {
   return typeof value === 'string' && TOKEN_SCOPES.includes(value as TokenScope);

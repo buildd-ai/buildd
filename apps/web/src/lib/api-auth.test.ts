@@ -489,3 +489,13 @@ it('scoped tokens cannot reach a task outside their workspace restriction', asyn
   mockTaskScopeLookup.mockResolvedValue({workspaceId:'ws-selected'});
   expect(await authenticateApiKey('bld_limited', new Request('http://localhost/api/tasks/00000000-0000-0000-0000-000000000001'))).not.toBeNull();
 });
+
+it('workspace-restricted tokens must name a workspace when creating team-level work', async () => {
+  clearAccountCache(); mockGetCachedApiKey.mockResolvedValue(null);
+  mockAccountsFindFirst.mockResolvedValue({ id: 'limited-admin', scopes: ['missions:admin'], workspaceIds: ['ws-selected'] });
+  const post = (path: string, body: object) => new Request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const path of ['/api/missions', '/api/initiatives']) {
+    expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Team-wide' }))).toBeNull();
+    expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Scoped', workspaceId: 'ws-selected' }))).not.toBeNull();
+  }
+});

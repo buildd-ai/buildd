@@ -23,7 +23,7 @@ async function authenticateRequest(req: NextRequest) {
         if (account) {
             // Skills management requires admin-level access. Worker/trigger tokens
             // are rejected here; OAuth JWTs are always resolved as admin.
-            if (!hasTokenRouteAdminAccess(account, req)) {
+            if (!hasTokenRouteAdminAccess(account, req, req.method === 'GET' ? 'tasks:read' : undefined)) {
                 return { type: 'denied' as const };
             }
             return { type: 'api' as const, account };

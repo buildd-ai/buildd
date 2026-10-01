@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Worker tokens are scoped to their accessible workspaces; admin tokens can reach any workspace.
-  if (!hasTokenRouteAdminAccess(account, req)) {
+  if (!hasTokenRouteAdminAccess(account, req, 'knowledge:admin')) {
     const accessible = await getIngestAccessibleWorkspaceIds(account);
     if (!accessible.has(workspaceId)) {
       return NextResponse.json({ error: 'Workspace not found or not accessible' }, { status: 404 });
@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
-  if (!hasTokenRouteAdminAccess(account, req)) {
+  if (!hasTokenRouteAdminAccess(account, req, 'knowledge:admin')) {
     return NextResponse.json({ error: 'Admin-level API key required' }, { status: 403 });
   }
 

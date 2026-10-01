@@ -60,7 +60,7 @@ export async function GET(
 
     // Whether this caller may send, by the same rule POST /api/workers/[id]/instruct
     // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
-    const canSend = apiAccount && hasTokenRouteAdminAccess(apiAccount, req)
+    const canSend = apiAccount && hasTokenRouteAdminAccess(apiAccount, req, 'workers:admin')
       ? apiAccount.teamId === task.workspace?.teamId
       : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
 

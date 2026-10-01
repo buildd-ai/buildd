@@ -1165,7 +1165,7 @@ export async function PUT(req: NextRequest) {
         workspaceId: worker.workspaceId ?? null,
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: hasTokenRouteAdminAccess(account, req) ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         detail: { prNumber, ...(detail ?? {}) },
       });
     };
@@ -1242,7 +1242,7 @@ export async function PUT(req: NextRequest) {
     //                    no matter how green the PR is.
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
-    if (force && !hasTokenRouteAdminAccess(account, req)) {
+    if (force && !hasTokenRouteAdminAccess(account, req, 'admin')) {
       recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
@@ -1351,7 +1351,7 @@ export async function PUT(req: NextRequest) {
         surface: 'PUT /api/github/pr',
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: hasTokenRouteAdminAccess(account, req) ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         carryForward: policyPr?.base?.ref
           ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
           : null,

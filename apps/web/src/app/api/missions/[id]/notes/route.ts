@@ -31,7 +31,7 @@ async function resolveMissionAccess(req: NextRequest, missionId: string) {
 
   if (!user && !apiAccount) return null;
 
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) return null;
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, req.method === 'GET' ? 'tasks:read' : undefined)) return null;
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 

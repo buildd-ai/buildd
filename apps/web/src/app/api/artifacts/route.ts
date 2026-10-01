@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin')) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 

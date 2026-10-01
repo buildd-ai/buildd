@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
   const apiAccount = await authenticateApiKey(apiKey, req);
 
   const hasSessionAuth = !!user;
-  const hasAdminToken = hasTokenRouteAdminAccess(apiAccount, req);
+  const hasAdminToken = hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin');
 
   if (!hasSessionAuth && !hasAdminToken) {
     return NextResponse.json(

@@ -61,8 +61,15 @@ named capabilities (`tasks:read`, `tasks:write`, `tasks:admin`, `workers:write`,
 presets. REST authentication and MCP dispatch enforce the same vocabulary;
 optional workspace restrictions never widen team access. Expiry applies on cache
 hits, and successful authentication records last use at most once per minute.
-`scopes = NULL` retains legacy level behavior. Workspace-restricted tokens cannot
-access team-wide credentials or reports lacking real workspace filters. `account_workspaces` is the
+`scopes = NULL` retains legacy level behavior. A scoped token's stored level is
+derived from its scopes (`admin` only with the `admin` scope). Every in-handler
+gate that legacy tokens pass with `level = admin` requires an explicit admin-tier
+capability from a scoped token, never the route's ordinary scope (force merge and
+force claim need `admin`). Workspace-restricted tokens cannot access team-wide
+credentials or reports lacking real workspace filters, and every surface that
+picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
+by the token's list. An unrestricted token is auto-linked to open workspaces
+only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
