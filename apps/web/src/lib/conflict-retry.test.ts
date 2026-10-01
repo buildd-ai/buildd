@@ -55,8 +55,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
-const mockUpdateBehindPrBranch = mock(async (_p: any) => ({ updated: true }) as { updated: boolean; reason?: string });
-mock.module('@/lib/pr-branch-update', () => ({ updateBehindPrBranch: mockUpdateBehindPrBranch }));
+// The behind-only refresh (GitHub update-branch + failure classification +
+// opt-in semantic check) lives in base-refresh.ts and has its own suite; here
+// only its outcome matters.
+const mockUpdateBehindPrBranch = mock(async (_p: any) => ({ kind: 'updated' }) as any);
+mock.module('@/lib/base-refresh', () => ({ refreshBehindPr: mockUpdateBehindPrBranch }));
 
 const mockSchedulePrScopeReconcile = mock((_input: any) => {});
 mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
@@ -477,14 +480,68 @@ describe('dispatchConflictRetry', () => {
     const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly: true });
 
     expect(result).toEqual({ dispatched: true, branchUpdated: true });
-    expect(mockUpdateBehindPrBranch).toHaveBeenCalledWith({
+    expect(mockUpdateBehindPrBranch.mock.calls[0][0]).toMatchObject({
       installationId: 5,
       repoFullName: 'acme/app',
       prNumber: 99,
       headSha: 'sha-abc123',
+      workspaceId: 'ws-1',
+      taskId: 'task-id',
+      missionId: 'mission-1',
     });
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  describe('behind-only refresh failures (conflict-aware-orchestration §4)', () => {
+    const behind = { ...BASE_PARAMS, behindOnly: true };
+    beforeEach(() => {
+      mockUpdateBehindPrBranch.mockReset();
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+    });
+
+    it.each([
+      [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, { refreshDeferred: true, refreshFailure: 'rate_limit' }],
+      [{ kind: 'deferred', failure: 'transient', attempts: 2, reason: '502' }, { refreshDeferred: true, refreshFailure: 'transient' }],
+      [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, { refreshExhausted: true, refreshFailure: 'auth' }],
+      [{ kind: 'head_changed', reason: 'moved' }, { headChanged: true }],
+      [{ kind: 'in_flight' }, { refreshInFlight: true }],
+      [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, { semanticDeferred: true }],
+      [{ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' }, { semanticUnverified: true }],
+    ])('%o spawns no agent', async (outcome, expected) => {
+      mockUpdateBehindPrBranch.mockResolvedValue(outcome);
+      const result = await dispatchConflictRetry(behind);
+      expect(result).toMatchObject({ dispatched: false, ...expected });
+      // Never mistaken for the conflict-iteration cap, which escalates as a conflict.
+      expect(result.exhausted).toBeUndefined();
+      expect(mockInsert).not.toHaveBeenCalled();
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('a verified textual conflict falls through to the existing conflict agent', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({ kind: 'conflict', reason: '422 merge conflict' });
+      const result = await dispatchConflictRetry(behind);
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+    });
+
+    it('a verified same-symbol edit dispatches a semantic conflict review carrying the evidence', async () => {
+      mockUpdateBehindPrBranch.mockResolvedValue({
+        kind: 'semantic_conflict',
+        assessment: {
+          verdict: 'same_symbol', reason: 'both edit f', baseRef: 'mission/m-1', baseSha: 'b'.repeat(40),
+          evidence: [{ path: 'src/a.ts', symbols: ['src/a.ts::computeTotal'] }],
+        },
+      });
+      const result = await dispatchConflictRetry(behind);
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.context.failureContext.errorType).toBe('semantic_conflict');
+      expect(capturedInsertValues.context.semanticConflict.evidence).toEqual([{ path: 'src/a.ts', symbols: ['src/a.ts::computeTotal'] }]);
+      expect(capturedInsertValues.title).toMatch(/semantic/i);
+      expect(capturedInsertValues.description).toContain('src/a.ts::computeTotal');
+      expect(capturedInsertValues.description).toContain('mission/m-1');
+      expect(capturedInsertValues.description).not.toMatch(/rebase|force/i);
+    });
   });
 
   // Renovate/Dependabot stop rebasing a branch someone else committed to —

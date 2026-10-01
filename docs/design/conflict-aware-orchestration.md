@@ -332,6 +332,13 @@ head/base-pinned evidence; if the deployed adapter cannot provide it, ship the
 clean refresh classification and leave semantic auto-clearance disabled with a
 measurable unknown result. Do not silently relax the safety property.
 
+Step E finding: codebase-memory runs only on runners (a stdio server per worker
+worktree); the server has no revision-pinned symbol index. Step E therefore ships
+the classification and the adapter seam (`apps/web/src/lib/semantic-refresh.ts`)
+with an unavailable server provider, so every shared-file refresh reads `unknown`
+and is never auto-cleared. Enabling clearance needs only a provider that answers
+at the exact requested commit.
+
 ## Non-goals
 
 Keeping agent sessions alive waiting for leases, CI or another PR; replacing

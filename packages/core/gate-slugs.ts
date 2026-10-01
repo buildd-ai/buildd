@@ -145,6 +145,17 @@ export const GATE_SLUGS = {
    * check_path_claim / observed / hook) — the generic MCP histogram cannot.
    */
   PATH_DECLARATION: 'path_declaration',
+  /**
+   * Deterministic base refresh of a behind-only PR (conflict-aware-orchestration.md
+   * §4). `accepted` = GitHub merged the base in (no agent); `deferred` = an
+   * operational update failure (`detail.failure`: rate_limit / auth / transient /
+   * unknown) or an unverified semantic check awaiting a bounded recheck, or a
+   * verified same-symbol edit sent to semantic review (`detail.verdict`);
+   * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
+   * exhausted, with an operational diagnostic posted. A textual conflict is
+   * never recorded here as an operational failure — it goes to the conflict agent.
+   */
+  BASE_REFRESH: 'base_refresh',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

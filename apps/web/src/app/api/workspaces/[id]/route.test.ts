@@ -613,6 +613,26 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect((await res.json()).error).toMatch(/surfaceOrdering/);
   });
 
+  it('accepts gitConfig.semanticRefresh off/shadow/enforce and null to clear', async () => {
+    for (const value of ['off', 'shadow', 'enforce', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { semanticRefresh: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, semanticRefresh: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.semanticRefresh value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { semanticRefresh: true } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/semanticRefresh/);
+  });
+
   it('rejects a non-boolean serialize flag or non-string schema triggers (returns 400)', async () => {
     for (const gitConfig of [
       { conflictSurfaces: [{ pattern: 'bun.lock', label: 'lockfile', serialize: 'yes' }] },

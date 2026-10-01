@@ -99,6 +99,10 @@ export type HumanCause =
   | 'migration'
   | 'unsafe_other'
   | 'refresh_exhausted'
+  /** update-branch kept failing for an operational reason (rate limit, auth, transient) — not a conflict. */
+  | 'refresh_failed'
+  /** Opted-in semantic check: the PR and base share files and symbol coverage stayed unknown. */
+  | 'semantic_unverified'
   | 'fix_exhausted'
   | 'superseded'
   | 'dependency_bot'
@@ -781,6 +785,20 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   async function mapRetry(res: DispatchConflictRetryResult, reason: string): Promise<LandingOutcome> {
+    // Refresh outcomes that are not conflicts (lib/base-refresh.ts): no fix was
+    // filed and none is owed. A later event or the sweep re-drives the PR.
+    if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
+    if (res.refreshInFlight) return waiting(`another refresh of this PR is in flight (${reason})`, { refresh: 'in_flight' });
+    if (res.refreshDeferred) {
+      return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
+    if (res.refreshExhausted) {
+      return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
+    }
+    if (res.semanticUnverified) {
+      return human('semantic_unverified', `the PR and the base change the same files and their symbol overlap could not be verified (${reason})`);
+    }
     if (res.superseded) return human('superseded', 'the change is already upstream; the PR is superseded');
     if (res.dependencyBot) return human('dependency_bot', 'this is a dependency-bot PR; its own rebase owns the branch');
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');

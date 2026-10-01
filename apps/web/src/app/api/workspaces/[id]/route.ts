@@ -352,6 +352,15 @@ export async function PATCH(
             );
           }
         }
+        if ('semanticRefresh' in gc) {
+          const mode = gc.semanticRefresh;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.semanticRefresh must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
         const badSerialize = (list: unknown) =>
           Array.isArray(list) && list.some((e) => e && typeof e === 'object' && 'serialize' in e && typeof (e as { serialize: unknown }).serialize !== 'boolean');
         const badTriggers = Array.isArray(gc.sequenceNamespaces) && (gc.sequenceNamespaces as unknown[]).some((e) => {

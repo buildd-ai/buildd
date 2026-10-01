@@ -680,6 +680,27 @@ describe('landPr — behind base is work with an owner', () => {
       mockDispatchConflictRetry.mockImplementation(async () => result);
       expect(await land()).toMatchObject({ kind: 'needs_human', cause });
     });
+    // conflict-aware-orchestration §4: a refresh failure that is not a conflict
+    // never reads as a conflict fix, and never spawns one.
+    it.each([
+      ['headChanged', { dispatched: false, headChanged: true }],
+      ['refreshInFlight', { dispatched: false, refreshInFlight: true }],
+      ['refreshDeferred', { dispatched: false, refreshDeferred: true, refreshFailure: 'rate_limit' }],
+      ['semanticDeferred', { dispatched: false, semanticDeferred: true }],
+    ])('%s → waiting, not needs_fix(conflict)', async (_n, result) => {
+      mockDispatchConflictRetry.mockImplementation(async () => result);
+      const out = await land();
+      expect(out.kind).toBe('waiting_ci');
+      expect(mockEscalate).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['refreshExhausted', { dispatched: false, refreshExhausted: true, refreshFailure: 'auth' }, 'refresh_failed'],
+      ['semanticUnverified', { dispatched: false, semanticUnverified: true }, 'semantic_unverified'],
+    ])('%s → needs_human(%s), not fix_exhausted', async (_n, result, cause) => {
+      mockDispatchConflictRetry.mockImplementation(async () => result);
+      expect(await land()).toMatchObject({ kind: 'needs_human', cause });
+      expect(mockEscalate).not.toHaveBeenCalled();
+    });
     it('a throwing dispatch → needs_human, not an exception', async () => {
       mockDispatchConflictRetry.mockImplementation(async () => {
         throw new Error('db down');
