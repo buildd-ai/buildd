@@ -193,6 +193,52 @@ const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  * message if missing or malformed — specifically calling out 8-character UI
  * prefixes, which are the most common mistake.
  */
+const GET_TASK_INCLUDES: readonly string[] = ['workers', 'artifacts', 'scheduling'];
+
+/**
+ * The stored facts that decide when, where and how a task runs. Rendered on
+ * request so a filer can confirm what create_task persisted — dependency edges,
+ * the effective path scope, tier and verification — without a raw REST read.
+ */
+function formatTaskScheduling(task: any): string[] {
+  const ctx = task.context && typeof task.context === 'object' ? task.context as Record<string, unknown> : {};
+  const out: string[] = ['', '## Scheduling'];
+  const deps: string[] = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+  out.push(deps.length > 0 ? `**Depends on (${deps.length}):** ${deps.join(', ')}` : '**Depends on:** none');
+  const manifest: string[] | null = Array.isArray(task.pathManifest) ? task.pathManifest : null;
+  out.push(manifest === null
+    ? '**Path manifest:** none declared'
+    : `**Path manifest (${manifest.length}):** ${manifest.length > 0 ? manifest.join(', ') : 'empty'}`);
+  const decl = task.pathDeclaration;
+  if (decl && typeof decl === 'object') {
+    const declared = Array.isArray(decl.declared) ? decl.declared : null;
+    if (declared) out.push(`**Declared manifest (${decl.source ?? 'unknown'}):** ${declared.join(', ') || 'empty'}`);
+    if (Array.isArray(decl.inferredDependsOn) && decl.inferredDependsOn.length > 0) {
+      out.push(`**Inferred dependsOn:** ${decl.inferredDependsOn.join(', ')}`);
+    }
+    if (Array.isArray(decl.narrowings) && decl.narrowings.length > 0) {
+      out.push(`**Narrowings:** ${decl.narrowings.length}`);
+    }
+  }
+  if (typeof task.pathClaimRevision === 'number') out.push(`**Path claim revision:** ${task.pathClaimRevision}`);
+  out.push(`**Tier:** ${task.tier ?? 'unset (resolved from role/kind at claim)'}`);
+  if (task.complexity) out.push(`**Complexity:** ${task.complexity}`);
+  if (task.classifiedBy) out.push(`**Classified by:** ${task.classifiedBy}`);
+  if (task.taskClass) out.push(`**Task class:** ${task.taskClass}`);
+  if (task.parentTaskId) out.push(`**Parent task:** ${task.parentTaskId}`);
+  if (task.outputRequirement) out.push(`**Output requirement:** ${task.outputRequirement}`);
+  if (typeof ctx.verificationCommand === 'string' && ctx.verificationCommand) {
+    out.push(`**Verification command:** \`${truncate(ctx.verificationCommand, 400)}\``);
+  }
+  const specSource = ctx.specSource;
+  if (specSource && typeof specSource === 'object') {
+    const src = specSource as Record<string, unknown>;
+    const planning = typeof src.planningTaskId === 'string' ? ` (planning task ${src.planningTaskId})` : '';
+    out.push(`**Spec source:** ${typeof src.specPath === 'string' ? src.specPath : JSON.stringify(src)}${planning}`);
+  }
+  return out;
+}
+
 function requireFullUuid(id: unknown, paramName: string): string {
   if (!id || typeof id !== 'string') throw new Error(`${paramName} is required`);
   if (!FULL_UUID_REGEX.test(id)) {
@@ -492,8 +538,8 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
+    list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
@@ -1526,6 +1572,18 @@ export async function handleBuilddAction(
 
   switch (action) {
     case 'list_tasks': {
+      // Every filter here narrows the result, so one that is misspelled, malformed
+      // or unsupported must fail loudly: dropped silently, the call returns the
+      // whole workspace and reads as a filtered answer.
+      const allowedListTaskParams = new Set(['workspaceId', 'limit', 'offset', 'status', 'missionId']);
+      const unknownListParams = Object.keys(params).filter(key => !allowedListTaskParams.has(key));
+      if (unknownListParams.length > 0) {
+        throw new Error(`Unknown list_tasks parameter(s): ${unknownListParams.join(', ')}. Supported: ${[...allowedListTaskParams].join(', ')}.`);
+      }
+      if (params.status !== undefined && !['active', 'completed', 'failed', 'cancelled'].includes(params.status as string)) {
+        throw new Error(`list_tasks status must be one of: active, completed, failed, cancelled — received ${JSON.stringify(params.status)}.`);
+      }
+      if (params.missionId !== undefined) requireFullUuid(params.missionId, 'missionId');
       // An explicit workspaceId (the guard above asks for one) wins over the default.
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
@@ -1540,19 +1598,20 @@ export async function handleBuilddAction(
       // get_task/get_artifact one row at a time. A terminal status here switches
       // the REST route into its audit mode: exact-status match, no 24h window,
       // fully paginated, with per-row deliverable attribution.
-      const validStatuses = ['active', 'completed', 'failed', 'cancelled'];
-      const requestedStatus = typeof params.status === 'string' ? params.status : 'active';
-      const status = validStatuses.includes(requestedStatus) ? requestedStatus : 'active';
+      const status = typeof params.status === 'string' ? params.status : 'active';
       const isTerminalAudit = status !== 'active';
       // Server handles status filter, workspace scoping, sort (pending-first /
       // priority-desc, or updatedAt-desc for a terminal audit), and pagination —
       // no client-side fan-out needed.
       const query = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
       if (wsId) query.set('workspaceId', wsId);
+      const missionId = typeof params.missionId === 'string' ? params.missionId : null;
+      if (missionId) query.set('missionId', missionId);
       const data = await api(`/api/tasks?${query.toString()}`);
       const paginated: any[] = data.tasks || [];
+      const scope = missionId ? ` in mission ${missionId}` : '';
 
-      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found.`);
+      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found${scope}.`);
 
       const total: number = data.total ?? paginated.length;
       const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
@@ -1575,8 +1634,8 @@ export async function handleBuilddAction(
       }).join('\n\n');
 
       const header = isTerminalAudit
-        ? `${total} ${status} task${total === 1 ? '' : 's'}:`
-        : `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
+        ? `${total} ${status} task${total === 1 ? '' : 's'}${scope}:`
+        : `${total} active task${total === 1 ? '' : 's'}${scope} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = isTerminalAudit || ctx.surface === 'chat'
         ? ''
@@ -1591,7 +1650,14 @@ export async function handleBuilddAction(
       const includes = Array.isArray(includeParam)
         ? (includeParam as string[])
         : ['workers', 'artifacts'];
-      const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
+      const unknownIncludes = includes.filter(i => !GET_TASK_INCLUDES.includes(i));
+      if (unknownIncludes.length > 0) {
+        throw new Error(`get_task include must be drawn from: ${GET_TASK_INCLUDES.join(', ')} — unsupported: ${unknownIncludes.join(', ')}.`);
+      }
+      // `scheduling` is rendered from the task row the route already returns;
+      // only workers/artifacts need a server-side expansion.
+      const serverIncludes = includes.filter(i => i !== 'scheduling');
+      const qs = serverIncludes.length > 0 ? `?include=${encodeURIComponent(serverIncludes.join(','))}` : '';
 
       const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
         // The id is often a mission's, read off a mission list: say where to go.
@@ -1655,6 +1721,7 @@ export async function handleBuilddAction(
       if (task.mission) {
         lines.push(`**Mission:** ${task.mission.title} (${task.mission.id}) — ${task.mission.status}`);
       }
+      if (includes.includes('scheduling')) lines.push(...formatTaskScheduling(task));
       if (task.description) {
         const desc = params.fullDescription === true
           ? task.description
