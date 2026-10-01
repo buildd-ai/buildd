@@ -43,7 +43,7 @@ beforeEach(() => {
   openDeck.mockClear();
   reviewValue = {
     openDeck,
-    model: { cells: [{ key: 'home|mobile', history: [{ shot: { id: 'a-mobile' } }] }] },
+    model: { cells: [{ key: 'home|mobile', history: [{ shot: { id: 'a-mobile', src: '/api/artifacts/a-mobile/download' } }] }] },
   };
 });
 afterEach(() => {

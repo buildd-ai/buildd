@@ -14,8 +14,8 @@ const THUMB_WIDTH = { mobile: 'w-20', desktop: 'w-40' } as const;
 
 export default function MissionShippedHeader({ missionId, view }: { missionId: string; view: ShippedHeaderView }) {
   const review = useMissionVisualReview(missionId);
-  const cellKeyOf = (artifactId: string): string | null =>
-    review?.model.cells.find(c => c.history.some(h => h.shot.id === artifactId))?.key ?? null;
+  const cellOf = (artifactId: string) =>
+    review?.model.cells.find(c => c.history.some(h => h.shot.id === artifactId)) ?? null;
 
   return (
     <section
@@ -50,12 +50,13 @@ export default function MissionShippedHeader({ missionId, view }: { missionId: s
       {view.heroShots.length > 0 && (
         <ul data-testid="shipped-hero-shots" className="flex flex-wrap items-end gap-3">
           {view.heroShots.map(s => {
-            const cellKey = cellKeyOf(s.artifactId);
+            const cell = cellOf(s.artifactId);
+            const cellKey = cell?.key ?? null;
             const label = `${VIEWPORT_LABEL[s.viewport]} · ${s.route}`;
             const frame = (
               <>
                 <span className={`relative block overflow-hidden border-2 border-border-strong bg-surface-2 ${THUMB_WIDTH[s.viewport]} ${viewportAspect(s.viewport)}`}>
-                  <ShotImage shot={{ id: s.artifactId, src: '' }} alt={label} className="block h-full w-full object-cover object-top" />
+                  <ShotImage shot={cell?.history.find(h => h.shot.id === s.artifactId)?.shot ?? { id: s.artifactId, src: '' }} alt={label} className="block h-full w-full object-cover object-top" />
                   <i aria-hidden="true" className={`absolute -right-1 -top-1 z-10 block h-2.5 w-2.5 ring-2 ring-surface-2 ${VERDICT_DOT[s.verdict]}`} />
                 </span>
                 <span className="font-mono text-[11px] uppercase tracking-[1px] text-text-muted">{VIEWPORT_LABEL[s.viewport]}</span>
