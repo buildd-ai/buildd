@@ -15,6 +15,13 @@ import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import type { TaskPhase } from '@/lib/task-presentation';
 
+interface GateRefusal {
+  gateReason: string;
+  blockClass?: 'policy' | 'capability';
+  error?: string;
+  canForce?: boolean;
+}
+
 export interface TaskActionZoneProps {
   taskId: string;
   /** Canonical phase from `deriveTaskPhase`. */
@@ -42,10 +49,12 @@ export default function TaskActionZone({
 }: TaskActionZoneProps) {
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [gateRefusal, setGateRefusal] = useState<GateRefusal | null>(null);
 
   const runAction = useCallback(async (path: string, payload?: Record<string, unknown>) => {
     setActing(true);
     setActionError(null);
+    setGateRefusal(null);
     try {
       const res = await fetch(path, {
         method: 'POST',
@@ -54,6 +63,16 @@ export default function TaskActionZone({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        // 422 with canForce indicates a gate that can be bypassed
+        if (res.status === 422 && body.canForce) {
+          setGateRefusal({
+            gateReason: body.gateReason || 'unknown',
+            blockClass: body.blockClass,
+            error: body.error,
+            canForce: true,
+          });
+          return;
+        }
         throw new Error(body.error || 'Action failed');
       }
       await onChanged?.();
@@ -138,7 +157,7 @@ export default function TaskActionZone({
       )}
 
       {/* Queued / pending → run now */}
-      {isQueued && !isWaiting && !isBlocked && (
+      {isQueued && !isWaiting && !isBlocked && !gateRefusal && (
         <div className="flex items-center justify-between gap-3 border border-border-default p-4">
           <span className="font-mono text-[12px] text-text-secondary">Waiting for a runner to claim it.</span>
           <button
@@ -149,6 +168,54 @@ export default function TaskActionZone({
           >
             {acting ? 'Starting…' : 'Run now'}
           </button>
+        </div>
+      )}
+
+      {/* Gate refusal with force option */}
+      {gateRefusal && gateRefusal.canForce && gateRefusal.blockClass !== 'capability' && (
+        <div className="space-y-3 border border-status-warning p-4">
+          <div>
+            <p className="font-mono text-[12px] font-medium text-status-warning mb-1">
+              {gateRefusal.gateReason === 'mission_local'
+                ? 'Running in a local session'
+                : gateRefusal.gateReason === 'mission_held'
+                ? 'Mission is held'
+                : gateRefusal.gateReason === 'mission_budget_exhausted'
+                ? 'Mission budget exhausted'
+                : gateRefusal.gateReason === 'unmerged_dep_pr'
+                ? 'Dependency PR not merged'
+                : 'Blocked'}
+            </p>
+            <p className="font-mono text-[11px] text-text-muted">
+              {gateRefusal.gateReason === 'mission_local'
+                ? 'This mission runs in a local session. Force start to hand it to a runner.'
+                : gateRefusal.gateReason === 'mission_held'
+                ? 'Arm the mission or force start this task to bypass the hold.'
+                : gateRefusal.gateReason === 'mission_budget_exhausted'
+                ? 'Raise the mission budget or force start this task to run it anyway.'
+                : gateRefusal.gateReason === 'unmerged_dep_pr'
+                ? 'Merge the blocking PRs or force start to bypass this gate.'
+                : gateRefusal.error || 'This task cannot start yet.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => runAction(`/api/tasks/${taskId}/start`, { forceOverride: true })}
+              disabled={acting}
+              className="min-h-11 px-3 font-mono text-[12px] font-medium border-2 border-status-warning bg-status-warning text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {acting ? 'Force starting…' : 'Force start'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setGateRefusal(null)}
+              disabled={acting}
+              className="min-h-11 px-3 font-mono text-[12px] text-text-secondary hover:text-text-primary disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
