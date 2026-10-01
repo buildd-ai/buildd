@@ -46,6 +46,8 @@ export interface CheckRunState {
   /** GitHub check-run id; monotonically increasing, so a higher id is a later run. */
   id?: number;
   started_at?: string | null;
+  /** When the run finished (ISO). The landing clock reads green from here. */
+  completed_at?: string | null;
 }
 
 function isNewer(a: CheckRunState, b: CheckRunState): boolean | null {
