@@ -25,6 +25,7 @@ let prWorkerRows: any[] = [];
 let taskRows: any[] = [];
 let liveWorkerRows: any[] = [];
 let leaseRows: any[] = [];
+let restoreRows: any[] = [{ revision: 6 }];
 
 const workersFindMany = mock(async (opts: any) => {
   calls.workersFindMany.push(opts);
@@ -38,7 +39,20 @@ mock.module('@buildd/core/db', () => ({
       pathClaims: { findMany: async (opts: any) => { calls.claimsFindMany.push(opts); return leaseRows; } },
     },
     update: () => ({
-      set: (set: any) => ({ where: async (where: any) => { calls.updates.push({ set, where }); } }),
+      set: (set: any) => ({
+        where: (where: any) => {
+          const entry = { set, where };
+          const done = Promise.resolve().then(() => { calls.updates.push(entry); });
+          return Object.assign(done, {
+            // A CAS update (restore) asks for the new revision back.
+            returning: async () => {
+              await done;
+              (entry as any).cas = true;
+              return restoreRows;
+            },
+          });
+        },
+      }),
     }),
   },
 }));
@@ -156,7 +170,7 @@ describe('readPinnedPrScope', () => {
 
 const complete = (paths: string[]) => ({ status: 'complete' as const, files: paths, headSha: 'h', baseSha: 'b' });
 const holder = (over: Record<string, any> = {}) => ({
-  taskId: FIX, role: 'fix_attempt' as const, pathManifest: null, revision: 3, heldLeases: [], liveEdits: null, ...over,
+  taskId: FIX, role: 'fix_attempt' as const, pathManifest: null, revision: 3, heldLeases: [], liveEdits: null, priorDrops: [], ...over,
 });
 
 describe('planScopeNarrowing', () => {
@@ -183,6 +197,42 @@ describe('planScopeNarrowing', () => {
     expect(plan.drop).not.toContain('e.ts');
   });
 
+  it('does not narrow the PR owner while its worker is live, even uncommitted, unleased entries', () => {
+    const plan = planScopeNarrowing(holder({
+      role: 'pr_owner',
+      pathManifest: ['a.ts', 'b.ts', 'scratch.sh'],
+      heldLeases: [],
+      liveEdits: [],
+    }), complete(['a.ts']));
+    expect(plan.drop).toEqual([]);
+    expect(plan.liveWriter).toBe(true);
+    // A fix attempt that inherited the same manifest is still narrowed while live.
+    const fix = planScopeNarrowing(holder({ pathManifest: ['a.ts', 'b.ts'], liveEdits: [] }), complete(['a.ts']));
+    expect(fix.drop).toEqual(['b.ts']);
+    expect(fix.liveWriter).toBe(false);
+  });
+
+  it('restores a path an earlier reconciliation dropped once a complete read shows it in the diff', () => {
+    const plan = planScopeNarrowing(holder({
+      role: 'pr_owner',
+      pathManifest: ['a.ts'],
+      priorDrops: ['b.ts', 'lib/', 'gone.ts', 'a.ts'],
+    }), complete(['a.ts', 'b.ts', 'lib/x.ts']));
+    // Directory drops come back whole; paths still outside the diff stay dropped;
+    // a path the manifest already covers is not appended twice.
+    expect(plan.restore.sort()).toEqual(['b.ts', 'lib']);
+    expect(plan.drop).toEqual([]);
+  });
+
+  it('restores nothing from an unusable read, to a reviewer, or to an undeclared manifest', () => {
+    const prior = { priorDrops: ['b.ts'] };
+    expect(planScopeNarrowing(holder({ pathManifest: ['a.ts'], ...prior }), {
+      status: 'incomplete', reason: 'head_moved', detail: 'x', headSha: 'h', baseSha: 'b',
+    }).restore).toEqual([]);
+    expect(planScopeNarrowing(holder({ role: 'reviewer', pathManifest: ['a.ts'], ...prior }), complete(['b.ts'])).restore).toEqual([]);
+    expect(planScopeNarrowing(holder({ pathManifest: null, ...prior }), complete(['b.ts'])).restore).toEqual([]);
+  });
+
   it('drops nothing on an unusable read', () => {
     const plan = planScopeNarrowing(holder({ pathManifest: ['a.ts', 'z.ts'] }), {
       status: 'incomplete', reason: 'truncated', detail: 'listed 2 of 5', headSha: 'h', baseSha: 'b',
@@ -203,7 +253,7 @@ describe('planScopeNarrowing', () => {
 // ── Orchestration ────────────────────────────────────────────────────────────
 
 const taskRow = (id: string, over: Record<string, any> = {}) => ({
-  id, category: null, context: null, pathManifest: null, pathClaimRevision: 0,
+  id, category: null, context: null, pathManifest: null, pathDeclaration: null, pathClaimRevision: 0,
   conflictRetryPrNumber: null, reviewerRetryPrNumber: null, ciRetryPrNumber: null, ...over,
 });
 
@@ -219,6 +269,7 @@ describe('reconcilePrBackedScope', () => {
     ];
     liveWorkerRows = [{ taskId: REVIEW, observedTouches: ['a.ts'] }];
     leaseRows = [{ taskId: REVIEW, path: 'a.ts' }, { taskId: FIX, path: 'stale1.ts' }];
+    restoreRows = [{ revision: 6 }];
   });
 
   it('narrows the open-PR owner, the fix attempt and the reviewer, each under its own revision', async () => {
@@ -249,6 +300,72 @@ describe('reconcilePrBackedScope', () => {
     expect(owner.reason).toContain('read_failed');
     const params = render(calls.updates[0].set.pathDeclaration).params;
     expect(params.some((p: unknown) => typeof p === 'string' && p.includes('read_failed'))).toBe(true);
+  });
+
+  it('leaves a live PR owner untouched and records live_writer', async () => {
+    liveWorkerRows = [{ taskId: OWNER, observedTouches: [] }, { taskId: FIX, observedTouches: [] }];
+    leaseRows = [];
+    const gh = scripted({ prs: [pr({ changed_files: 1 })], pages: [[{ filename: 'a.ts' }]] });
+    const report = await reconcilePrBackedScope({ workspaceId: WS, repoFullName: REPO, prNumber: PR, get: gh.get });
+
+    const narrowed = mockNarrow.mock.calls.map(([i]: any) => i.taskId);
+    expect(narrowed).not.toContain(OWNER);
+    // The live fix attempt's inherited entries still go.
+    expect(narrowed).toContain(FIX);
+    const owner = report.tasks.find(t => t.taskId === OWNER)!;
+    expect(owner.status).toBe('live_writer');
+    expect(owner.dropped).toEqual([]);
+    const ownerRecord = calls.updates.find(u => render(u.where).params.includes(OWNER))!;
+    const params = render(ownerRecord.set.pathDeclaration).params;
+    expect(params.some((p: unknown) => typeof p === 'string' && p.includes('"live_writer"'))).toBe(true);
+  });
+
+  it('restores a path a racing read dropped when the next complete read finds it', async () => {
+    // First pass: GitHub lagged behind a push, so the read did not show b.ts yet.
+    taskRows = [taskRow(OWNER, {
+      pathManifest: ['a.ts'],
+      pathClaimRevision: 5,
+      pathDeclaration: {
+        declared: ['a.ts', 'b.ts'], source: 'creation', snapshotAt: 't',
+        narrowings: [
+          { at: 't', dropped: ['b.ts'], surface: 'pr-scope-reconcile', reason: 'outside PR #42 diff at head1aa' },
+          { at: 't', dropped: ['c.ts'], surface: 'mcp:check_path_claim', reason: 'agent gave it back' },
+        ],
+      },
+    })];
+    prWorkerRows = [{ taskId: OWNER }];
+    liveWorkerRows = []; leaseRows = [];
+    const gh = scripted({ prs: [pr({ changed_files: 3 })], pages: [[{ filename: 'a.ts' }, { filename: 'b.ts' }, { filename: 'c.ts' }]] });
+    const report = await reconcilePrBackedScope({ workspaceId: WS, repoFullName: REPO, prNumber: PR, get: gh.get });
+
+    const owner = report.tasks.find(t => t.taskId === OWNER)!;
+    // Only what this reconciler took away comes back; an agent's own give-back stays given.
+    expect(owner.restored).toEqual(['b.ts']);
+    const cas = calls.updates.find(u => (u as any).cas)!;
+    expect(cas).toBeDefined();
+    const where = render(cas.where);
+    expect(where.sql).toContain('"tasks"."workspace_id" = $');
+    expect(where.sql).toContain('"tasks"."path_claim_revision" = $');
+    expect(where.params).toEqual(expect.arrayContaining([OWNER, WS, 5]));
+    const set = render(cas.set.pathManifest);
+    expect(set.params.some((p: unknown) => typeof p === 'string' && p.includes('b.ts'))).toBe(true);
+    expect(set.params.some((p: unknown) => typeof p === 'string' && p.includes('c.ts'))).toBe(false);
+  });
+
+  it('a restore that loses the revision race restores nothing and says so', async () => {
+    restoreRows = [];
+    taskRows = [taskRow(OWNER, {
+      pathManifest: ['a.ts'], pathClaimRevision: 5,
+      pathDeclaration: { prScope: { prNumber: PR, status: 'complete', dropped: ['b.ts'] } },
+    })];
+    prWorkerRows = [{ taskId: OWNER }];
+    liveWorkerRows = []; leaseRows = [];
+    const gh = scripted({ prs: [pr({ changed_files: 2 })], pages: [[{ filename: 'a.ts' }, { filename: 'b.ts' }]] });
+    const report = await reconcilePrBackedScope({ workspaceId: WS, repoFullName: REPO, prNumber: PR, get: gh.get });
+    const owner = report.tasks.find(t => t.taskId === OWNER)!;
+    expect(owner.restored).toEqual([]);
+    expect(owner.status).toBe('revision_conflict');
+    restoreRows = [{ revision: 6 }];
   });
 
   it('records a revision conflict and keeps the scope', async () => {
