@@ -1,12 +1,14 @@
 /**
- * The soundtrack, synthesized, bright and quiet: soft high key ticks under
- * the typing, a marimba tap (with a short high click) on each tap, small
- * pentatonic plucks as things land, a rising C-E-G chime when the mission
- * completes, and an optional warm major-key bed kept in the upper register.
+ * The soundtrack, synthesized, soft and glassy, in the manner of system and
+ * product-UI sounds: every key, click and tap is a 30-60 ms transient
+ * (band-passed noise plus a quick high sine, no pitch sweep, nothing that
+ * rings). Landing tiles are near-silent ticks. Completion is a soft rising
+ * fifth, not a bell. Under it all sits a quiet, warm, major-key bed in the
+ * upper register.
  *
- * Nothing boomy: every voice sits above ~350 Hz, there are no reverb tails,
- * and the whole mix goes through a 160 Hz high-pass before it is normalized,
- * so there is nothing heavy below 150 Hz (audio.test.ts measures it).
+ * Nothing boomy: every voice sits above ~390 Hz, and the whole mix goes
+ * through a 160 Hz high-pass before it is normalized, so there is nothing
+ * heavy below 150 Hz (audio.test.ts measures it).
  * Deterministic (seeded noise), mono, 48 kHz, no samples or services.
  */
 
@@ -15,9 +17,6 @@ export const SAMPLE_RATE = 48_000;
 export const PEAK = 0.5;
 
 export type Cue = { type: 'key' | 'click' | 'tap' | 'pluck' | 'chime'; at: number; note?: number };
-
-/** C major pentatonic from C6: bright, and never a wrong note against the bed. */
-export const PLUCK_NOTES = [1046.5, 1174.66, 1318.51, 1567.98, 1760, 2093];
 
 /** mulberry32: a tiny seeded PRNG, so the same cut always sounds the same. */
 export function rng(seed: number): () => number {
@@ -55,54 +54,59 @@ function span(buf: Float32Array, at: number, seconds: number, fn: (t: number) =>
   for (let i = 0; i < len && start + i < buf.length; i++) if (start + i >= 0) buf[start + i] += fn(i / SAMPLE_RATE);
 }
 
-/** A struck bar: a few partials, each with its own fast decay; a 3 ms attack so it never pops. */
-function bar(buf: Float32Array, at: number, f0: number, gain: number, partials: Array<[number, number, number]>, seconds: number) {
+/**
+ * A glassy UI transient (the macOS / product-UI kind): a few ms of noise
+ * band-passed to 3-9 kHz, plus a quick high sine, with no pitch sweep. The
+ * whole thing is 30-60 ms, with nothing that rings.
+ */
+function glass(buf: Float32Array, at: number, rand: () => number, o: { gain: number; tone: number; noise?: number; toneDecay?: number; seconds?: number }) {
+  const seconds = o.seconds ?? 0.05;
+  const n = Math.round(seconds * SAMPLE_RATE);
+  const noise = Float32Array.from({ length: n }, () => rand() * 2 - 1);
+  biquad(biquad(noise, 'highpass', 3000), 'lowpass', 9000);
+  const noiseGain = o.noise ?? 0.6;
+  const tau = o.toneDecay ?? 0.012;
   span(buf, at, seconds, (t) => {
-    const attack = Math.min(1, t / 0.003);
-    let v = 0;
-    for (const [ratio, amp, decay] of partials) v += amp * Math.exp(-t * decay) * Math.sin(2 * Math.PI * f0 * ratio * t);
-    return gain * attack * v;
+    const i = Math.round(t * SAMPLE_RATE);
+    const attack = Math.min(1, t / 0.0015);
+    const tone = Math.exp(-t / tau) * Math.sin(2 * Math.PI * o.tone * t);
+    const hiss = Math.exp(-t / 0.003) * (noise[i] ?? 0);
+    // A short raised-cosine tail so the event ends at exactly zero.
+    const tail = t > seconds - 0.01 ? 0.5 + 0.5 * Math.cos((Math.PI * (t - (seconds - 0.01))) / 0.01) : 1;
+    return o.gain * attack * tail * (tone + noiseGain * hiss);
   });
 }
-
-const MARIMBA: Array<[number, number, number]> = [[1, 1, 9], [3.93, 0.22, 34], [9.2, 0.05, 60]];
-const BELL: Array<[number, number, number]> = [[1, 1, 2.6], [2.76, 0.28, 5], [5.4, 0.08, 9]];
 
 function addKey(buf: Float32Array, at: number, rand: () => number) {
-  // 7 ms of noise, differenced twice (a steep high-pass): a soft tick, no body.
-  let p1 = 0, p2 = 0;
-  const g = 0.05 + rand() * 0.015;
-  span(buf, at, 0.007, (t) => {
-    const n = rand() * 2 - 1;
-    const d = n - 2 * p1 + p2;
-    p2 = p1; p1 = n;
-    return g * Math.exp(-t * 420) * d * 0.5;
-  });
+  glass(buf, at, rand, { gain: 0.022 + rand() * 0.006, tone: 3300, noise: 1.2, toneDecay: 0.004, seconds: 0.03 });
 }
 
-function addClick(buf: Float32Array, at: number) {
-  span(buf, at, 0.012, (t) => 0.06 * Math.exp(-t * 380) * Math.sin(2 * Math.PI * 3400 * t));
+function addClick(buf: Float32Array, at: number, rand: () => number) {
+  glass(buf, at, rand, { gain: 0.06, tone: 2600, seconds: 0.045 });
 }
 
-function addTap(buf: Float32Array, at: number) {
-  addClick(buf, at);
-  bar(buf, at + 0.004, 1046.5, 0.16, MARIMBA, 0.6);
+function addTap(buf: Float32Array, at: number, rand: () => number) {
+  glass(buf, at, rand, { gain: 0.09, tone: 2050, noise: 0.5, toneDecay: 0.014, seconds: 0.06 });
 }
 
-function addPluck(buf: Float32Array, at: number, note = 0) {
-  bar(buf, at, PLUCK_NOTES[((note % PLUCK_NOTES.length) + PLUCK_NOTES.length) % PLUCK_NOTES.length], 0.07, MARIMBA, 0.5);
+/** What used to be a note per landing tile: now a near-silent tick. */
+function addPluck(buf: Float32Array, at: number, rand: () => number) {
+  glass(buf, at, rand, { gain: 0.014, tone: 3000, noise: 1, toneDecay: 0.004, seconds: 0.03 });
 }
 
+/** A soft, airy rising fifth (G5 to D6): sine with a little triangle, gentle attack, ~600 ms decay. */
 function addChime(buf: Float32Array, at: number) {
-  // Rising C6, E6, G6: a small, friendly "done".
-  [1046.5, 1318.51, 1567.98].forEach((f, i) => bar(buf, at + i * 0.17, f, i === 2 ? 0.13 : 0.1, BELL, i === 2 ? 2.4 : 1.2));
+  const note = (t0: number, f: number, gain: number) => span(buf, t0, 1.2, (t) => {
+    const attack = Math.min(1, t / 0.02);
+    const tri = (2 / Math.PI) * Math.asin(Math.sin(2 * Math.PI * f * t));
+    return gain * attack * Math.exp(-t / 0.22) * (0.72 * Math.sin(2 * Math.PI * f * t) + 0.28 * tri);
+  });
+  note(at, 783.99, 0.1);
+  note(at + 0.14, 1174.66, 0.085);
 }
 
-/**
- * A warm major-key bed in the upper register: I, IV, vi, V as soft sustained
- * triads with a slow swell, plus a quiet music-box arpeggio on the beat.
- */
-function addBed(buf: Float32Array, duration: number, rand: () => number) {
+/** A warm major-key bed in the upper register: I, IV, vi, V as soft sustained triads with a slow swell. */
+function addBed(buf: Float32Array, duration: number) {
   const chords = [[523.25, 659.25, 783.99], [698.46, 880, 1046.5], [440, 523.25, 659.25], [392, 493.88, 587.33]];
   const len = Math.max(4, duration / chords.length);
   const n = Math.min(buf.length, Math.round(duration * SAMPLE_RATE));
@@ -110,32 +114,25 @@ function addBed(buf: Float32Array, duration: number, rand: () => number) {
     const t = i / SAMPLE_RATE;
     const fade = Math.min(1, t / 2, (duration - t) / 2.5);
     const k = Math.min(chords.length - 1, Math.floor(t / len));
-    // One second of crossfade into the next chord.
-    const into = Math.max(0, (t - (k + 1) * len + 1)) / 1;
+    const into = Math.max(0, t - (k + 1) * len + 1);
     const next = chords[Math.min(chords.length - 1, k + 1)];
     let v = 0;
     for (const [j, f] of chords[k].entries()) v += (1 - into) * Math.sin(2 * Math.PI * f * t + j);
     if (into > 0) for (const [j, f] of next.entries()) v += into * Math.sin(2 * Math.PI * f * t + j);
-    buf[i] += 0.009 * fade * (0.8 + 0.2 * Math.sin(2 * Math.PI * 0.12 * t)) * v;
-  }
-  // The arpeggio: chord tones an octave up, one per beat at 84 bpm.
-  const beat = 60 / 84;
-  for (let b = 0, t = 1.2; t < duration - 2; b++, t += beat) {
-    const k = Math.min(chords.length - 1, Math.floor(t / len));
-    bar(buf, t, chords[k][b % 3] * 2, 0.018 + rand() * 0.004, MARIMBA, 0.4);
+    buf[i] += 0.008 * fade * (0.8 + 0.2 * Math.sin(2 * Math.PI * 0.12 * t)) * v;
   }
 }
 
 export function synthesize(cues: Cue[], duration: number, opts: { bed?: boolean; seed?: number } = {}): Float32Array {
   const buf = new Float32Array(Math.round(duration * SAMPLE_RATE));
   const rand = rng(opts.seed ?? 5);
-  if (opts.bed !== false) addBed(buf, duration, rand);
+  if (opts.bed !== false) addBed(buf, duration);
   for (const c of cues) {
     if (c.at < 0 || c.at >= duration) continue;
     if (c.type === 'key') addKey(buf, c.at, rand);
-    else if (c.type === 'click') addClick(buf, c.at);
-    else if (c.type === 'tap') addTap(buf, c.at);
-    else if (c.type === 'pluck') addPluck(buf, c.at, c.note);
+    else if (c.type === 'click') addClick(buf, c.at, rand);
+    else if (c.type === 'tap') addTap(buf, c.at, rand);
+    else if (c.type === 'pluck') addPluck(buf, c.at, rand);
     else addChime(buf, c.at);
   }
   // Nothing heavy below 150 Hz, whatever a future voice does.

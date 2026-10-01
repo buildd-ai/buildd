@@ -79,7 +79,7 @@ function shotsFor(s: Stills, dim: number) {
   };
 
   const rule = (dur: number): Shot => {
-    const phrase = s.text('s04-rule-card', 'Keep the public API backward compatible.');
+    const phrase = s.text('s04-rule-card', 'From now on, keep the public API backward compatible.');
     const card = s.box('s04-rule-card', 'directive-card');
     const saved = s.box('s05-rule-saved', 'directive-card');
     const save = s.box('s04-rule-card', 'directive-save');

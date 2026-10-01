@@ -2363,7 +2363,7 @@
             "parts": [
               {
                 "type": "text",
-                "text": "Make it a mission. Keep the public API backward compatible."
+                "text": "Make it a mission. From now on, keep the public API backward compatible."
               }
             ]
           },
@@ -2442,7 +2442,7 @@
               "type": "data-buildd-directive",
               "data": {
                 "conversationId": "{{C1}}",
-                "text": "Keep the public Invoices API backward compatible.",
+                "text": "From now on, keep the public API backward compatible.",
                 "suggestedScope": "workspace",
                 "workspace": {
                   "id": "{{ws}}",
