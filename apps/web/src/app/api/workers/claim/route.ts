@@ -1,3 +1,5 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
@@ -145,7 +147,7 @@ export async function POST(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   // A per-task token (cloud container) may claim only its own task.
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // Incident-responder health probes hit this route once a minute with an empty
   // body and mark themselves with `X-Probe: true`. They still get the normal
   // 4xx below, but must not land in the gate ledger — every probe otherwise
@@ -220,7 +222,7 @@ export async function POST(req: NextRequest) {
   // the task, the mission budget, scope-undeclared serialization, role/runner
   // routing, provider walls, account limits). Granted below, once the task's
   // team is known.
-  const forceRequested = body.forceOverride === true && !!taskId && account.level === 'admin';
+  const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req, 'admin');
   let forceClaim = false;
   // Gates a force claim actually lifted for its task, i.e. the ones that would
   // have excluded or deferred it. SQL-level ones are evaluated after the
@@ -289,7 +291,11 @@ export async function POST(req: NextRequest) {
       // Combine: open workspace IDs + restricted workspaces with permission
       const openIds = openWorkspaces.map((ws) => ws.id);
 
-      return [...new Set([...openIds, ...restrictedIds])];
+      // A workspace-restricted token claims only inside its own list, whatever
+      // the team's open workspaces or canClaim links would otherwise allow.
+      // Every candidate and taskId lookup below is bounded by this list.
+      return [...new Set([...openIds, ...restrictedIds])]
+        .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
     })();
     return claimableWorkspaceIdsMemo;
   };

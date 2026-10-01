@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
@@ -111,7 +112,7 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
 async function resolveWriteAuth(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
-    const apiAccount = await authenticateApiKey(apiKey);
+    const apiAccount = await authenticateApiKey(apiKey, req);
     const user = await getCurrentUser();
     if (!apiAccount && !user) return null;
     return { user, apiAccount };
@@ -137,6 +138,7 @@ async function resolveWriteAuth(req: NextRequest) {
 async function verifyWriteAccess(
     auth: { user: any; apiAccount: any },
     workspaceId: string,
+    req: NextRequest,
 ): Promise<'ok' | 'forbidden' | 'not_found'> {
     const { user, apiAccount } = auth;
     if (user && !apiAccount) {
@@ -150,7 +152,7 @@ async function verifyWriteAccess(
             columns: { teamId: true },
         });
         if (!ws || ws.teamId !== apiAccount.teamId) return 'not_found';
-        return apiAccount.level === 'admin' ? 'ok' : 'forbidden';
+        return hasTokenRouteAdminAccess(apiAccount, req) ? 'ok' : 'forbidden';
     }
     return 'not_found';
 }
@@ -172,7 +174,7 @@ export async function GET(
             // explicit accountWorkspaces link to — a runner account linked to
             // run workers there. `accessMode: 'open'` does not widen this.
             // A per-task token (cloud container) reads only its task's workspace.
-            const apiAccount = await authenticateTaskScopedCaller(authHeader!.replace('Bearer ', ''));
+            const apiAccount = await authenticateTaskScopedCaller(authHeader!.replace('Bearer ', ''), req);
             if (!apiAccount) {
                 return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
             }
@@ -264,7 +266,7 @@ export async function POST(
     // Support both session auth and API key/OAuth auth
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
-    const apiAccount = await authenticateApiKey(apiKey);
+    const apiAccount = await authenticateApiKey(apiKey, req);
     const user = await getCurrentUser();
 
     if (!apiAccount && !user) {
@@ -276,7 +278,7 @@ export async function POST(
         // access is not enough — see verifyWriteAccess (owner/admin session, or
         // an admin-level key of the workspace's own team). A member who can see
         // the workspace gets a 403 that says why, not a 404.
-        const access = await verifyWriteAccess({ user, apiAccount }, id);
+        const access = await verifyWriteAccess({ user, apiAccount }, id, req);
         if (access === 'not_found') {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }
@@ -523,7 +525,7 @@ export async function PATCH(
     }
 
     try {
-        const access = await verifyWriteAccess(auth, id);
+        const access = await verifyWriteAccess(auth, id, req);
         if (access === 'not_found') {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
         }

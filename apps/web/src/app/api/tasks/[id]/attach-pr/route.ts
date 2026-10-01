@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
@@ -29,9 +30,9 @@ export async function POST(
 
   const user = await getCurrentUser();
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   if (!user && !apiAccount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin')) {
     return NextResponse.json({ error: 'Attaching a PR to a task requires an admin-level token' }, { status: 403 });
   }
 

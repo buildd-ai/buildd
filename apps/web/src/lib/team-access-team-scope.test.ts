@@ -115,3 +115,9 @@ describe('getCallerAdminTeamIds / canCallerAdminTeam', () => {
     expect(await canCallerAdminTeam(caller, 'team-m')).toBe(false);
   });
 });
+
+ it('workspace-limited tokens cannot use another open workspace', async () => {
+   mockAccountsFindFirst.mockResolvedValue({teamId:'team-a', workspaceIds:[]});
+   mockWorkspacesFindFirst.mockResolvedValue({id:WS_ID,teamId:'team-a',accessMode:'open'});
+   expect(await verifyAccountWorkspaceAccess('limited', WS_ID)).toBe(false);
+ });

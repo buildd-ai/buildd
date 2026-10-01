@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // A per-task token (cloud container) heartbeats only as its own one-task
   // run and renews only its own task's worker.
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

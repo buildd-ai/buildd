@@ -55,6 +55,23 @@ describe('authenticateTaskScopedCaller', () => {
     expect(mockAccountsFindFirst).not.toHaveBeenCalled();
   });
 
+  it('forwards the request so a scoped account key gets its route checks', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    const request = { url: 'https://example.test/api/workers/claim', method: 'POST' };
+    await authenticateTaskScopedCaller('bld_key', request);
+    expect(mockAuthenticateApiKey).toHaveBeenCalledWith('bld_key', request);
+  });
+
+  it('a task token is never a scoped token: one whose minting account has scopes, or has expired, is refused', async () => {
+    const { token } = mintTaskToken(MINT)!;
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: ['admin'], workspaceIds: null });
+    expect(await authenticateTaskScopedCaller(token)).toBeNull();
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: null, expiresAt: new Date(Date.now() - 1000) });
+    expect(await authenticateTaskScopedCaller(token)).toBeNull();
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: null, expiresAt: null });
+    expect((await authenticateTaskScopedCaller(token))?.scopes).toBeNull();
+  });
+
   it('rejects a task token whose account is gone', async () => {
     mockAccountsFindFirst.mockResolvedValue(null);
     const { token } = mintTaskToken(MINT)!;

@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -112,9 +113,9 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<SecretsCalle
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) {
-      return { teamIds: [account.teamId], accountId: account.id, accountLevel: account.level, apiKey, account };
+      return { teamIds: [account.teamId], accountId: account.id, accountLevel: hasTokenRouteAdminAccess(account, req) ? 'admin' : account.level, apiKey, account };
     }
     // Never fall through to the session for a per-task token: it is refused.
     if (isTaskToken(apiKey)) return null;

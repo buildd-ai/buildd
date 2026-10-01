@@ -1,7 +1,8 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { accounts, users, teamMembers, workspaces } from '@buildd/core/db/schema';
+import { accounts, users, teamMembers, workspaces, tasks, workers, missions, initiatives, artifacts, releases, specDiscrepancies, watchedProjects, knowledgeIngestJobs } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { canAccessTokenRoute } from './token-route-policy';
 import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
@@ -113,7 +114,7 @@ async function authenticateOauthJwt(jwt: string) {
   // sessionUserId: the person behind this session. The account is shared by
   // the whole team, so this is the only per-person identity a request carries
   // (used to scope interactive-worker liveness and to attribute force claims).
-  return { ...account, level: levelForTeamRole(membership.role), sessionUserId: userId as string };
+  return { ...account, scopes: null, workspaceIds: null, expiresAt: null, level: levelForTeamRole(membership.role), sessionUserId: userId as string };
 }
 
 /**
@@ -139,7 +140,7 @@ function isCurrentShape(account: CachedAccount): boolean {
  * Uses an in-memory TTL cache to avoid hitting the DB on every request.
  * Cache is invalidated on key regeneration and account deletion.
  */
-export async function authenticateApiKey(apiKey: string | null) {
+async function resolveApiKey(apiKey: string | null) {
   if (!apiKey) return null;
 
   // A per-task token is never an account key. Only the routes that opt in
@@ -242,3 +243,46 @@ export function clearAccountCache(): void {
   oauthAccountCache.clear();
   negativeCache.clear();
 }
+
+/** Capability and expiry checks also apply to cached accounts. */
+export async function authenticateApiKey(apiKey: string | null, request?: { url: string; method: string }) {
+  const account = await resolveApiKey(apiKey);
+  if (!account) return null;
+  if (account.expiresAt && new Date(account.expiresAt).getTime() <= Date.now()) return null;
+  if (account.scopes != null && !request) return null;
+  if (request && !canAccessTokenRoute(account, request)) return null;
+  if (account.workspaceIds != null && request) {
+    const match = /^\/api\/(tasks|workers|missions|initiatives|artifacts|releases|discrepancies|watched-projects|knowledge\/ingest-jobs)\/([0-9a-f-]{36})(?:\/|$)/i.exec(new URL(request.url).pathname);
+    if (match) {
+      const id = match[2];
+      const lookups: Record<string, () => Promise<{workspaceId: string | null} | undefined>> = {
+        'knowledge/ingest-jobs': () => db.query.knowledgeIngestJobs.findFirst({where:eq(knowledgeIngestJobs.id,id),columns:{workspaceId:true}}),
+        tasks: () => db.query.tasks.findFirst({where:eq(tasks.id,id),columns:{workspaceId:true}}),
+        workers: () => db.query.workers.findFirst({where:eq(workers.id,id),columns:{workspaceId:true}}),
+        missions: () => db.query.missions.findFirst({where:eq(missions.id,id),columns:{workspaceId:true}}),
+        initiatives: () => db.query.initiatives.findFirst({where:eq(initiatives.id,id),columns:{workspaceId:true}}),
+        artifacts: () => db.query.artifacts.findFirst({where:eq(artifacts.id,id),columns:{workspaceId:true}}),
+        releases: () => db.query.releases.findFirst({where:eq(releases.id,id),columns:{workspaceId:true}}),
+        discrepancies: () => db.query.specDiscrepancies.findFirst({where:eq(specDiscrepancies.id,id),columns:{workspaceId:true}}),
+        'watched-projects': () => db.query.watchedProjects.findFirst({where:eq(watchedProjects.id,id),columns:{workspaceId:true}}),
+      };
+      const resource = await lookups[match[1]]();
+      if (!resource?.workspaceId || !account.workspaceIds.includes(resource.workspaceId)) return null;
+    }
+  }
+  if (account.workspaceIds != null && request && 'clone' in request && !['GET', 'HEAD'].includes(request.method)) {
+    try {
+      const body = await (request as Request).clone().json();
+      // Creates that default to team-wide scope must name one of the token's workspaces.
+      if (['/api/releases/trigger', '/api/missions', '/api/initiatives'].includes(new URL(request.url).pathname) && !body.workspaceId) return null;
+      if (body.workspaceId && !account.workspaceIds.includes(body.workspaceId)) return null;
+      if (Array.isArray(body.workspaceIds) && body.workspaceIds.some((id: string) => !account.workspaceIds!.includes(id))) return null;
+    } catch { /* Non-JSON calls still use route resource checks. */ }
+  }
+  if (!lastUseWrites.get(account.id)) {
+    lastUseWrites.set(account.id, true);
+    try { await db.update(accounts).set({ lastUsedAt: new Date() }).where(eq(accounts.id, account.id)); } catch { /* Telemetry is best effort. */ }
+  }
+  return account;
+}
+const lastUseWrites = new TTLCache<true>({ maxSize: 500, ttlMs: 60_000 });

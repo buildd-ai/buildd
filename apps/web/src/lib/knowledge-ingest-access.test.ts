@@ -42,4 +42,9 @@ describe('getIngestAccessibleWorkspaceIds', () => {
     expect([...ids]).toEqual(['ws-linked']);
     expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
   });
+
+  it('a workspace-restricted token reaches only its own workspaces', async () => {
+    const ids = await getIngestAccessibleWorkspaceIds({ id: 'acct-a', teamId: 'team-a', workspaceIds: ['ws-linked'] });
+    expect([...ids]).toEqual(['ws-linked']);
+  });
 });

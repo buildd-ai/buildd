@@ -28,15 +28,27 @@ export interface TaskScope {
 type ApiAccount = NonNullable<Awaited<ReturnType<typeof authenticateApiKey>>>;
 export type TaskScopedAccount = ApiAccount & { taskScope?: TaskScope };
 
-export async function authenticateTaskScopedCaller(apiKey: string | null): Promise<TaskScopedAccount | null> {
-  if (!isTaskToken(apiKey)) return authenticateApiKey(apiKey);
+export async function authenticateTaskScopedCaller(
+  apiKey: string | null,
+  request?: { url: string; method: string },
+): Promise<TaskScopedAccount | null> {
+  // Account keys keep every check authenticateApiKey applies, including a
+  // scoped token's route capability and workspace checks when the route
+  // passes its request (without one, a scoped token is refused).
+  if (!isTaskToken(apiKey)) return request ? authenticateApiKey(apiKey, request) : authenticateApiKey(apiKey);
   const claims = verifyTaskToken(apiKey);
   if (!claims) return null;
   const account = await db.query.accounts.findFirst({ where: eq(accounts.id, claims.accountId) });
   if (!account) return null;
   if (taskTokenKeyBinding(account.apiKey) !== claims.keyBinding) return null;
+  // A task token is never a scoped token: only legacy keys can mint one, so a
+  // scoped or expired minting account means the token is refused.
+  if (account.scopes != null) return null;
+  if (account.expiresAt && new Date(account.expiresAt).getTime() <= Date.now()) return null;
   return {
     ...account,
+    scopes: null,
+    workspaceIds: null,
     level: 'worker',
     hostRunner: false,
     taskScope: { taskId: claims.taskId, workspaceId: claims.workspaceId, expiresAt: claims.expiresAt },

@@ -16,7 +16,7 @@ async function authenticate(
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) {
       const ok = await verifyAccountWorkspaceAccess(account.id, workspaceId, permission);
       return { ok };

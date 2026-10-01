@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:tes
 import { createHash } from 'crypto';
 
 // Mock database
+const mockTaskScopeLookup = mock(() => Promise.resolve({workspaceId: "ws-other"}) as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
@@ -15,6 +16,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       accounts: { findFirst: mockAccountsFindFirst },
+      tasks: {findFirst: mockTaskScopeLookup},
       teamMembers: { findFirst: mockTeamMembersFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
@@ -27,6 +29,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  tasks: { id: 'taskId' },
   accounts: { apiKey: 'apiKey', id: 'id', teamId: 'teamId', type: 'type' },
   teamMembers: { userId: 'userId', teamId: 'teamId' },
   workspaces: { id: 'id', teamId: 'teamId' },
@@ -362,7 +365,7 @@ describe('authenticateApiKey', () => {
 
         const result = await authenticateApiKey(JWT_TOKEN);
         // sessionUserId: the person behind the session (the account is team-shared).
-        expect(result).toEqual({ ...mockAccount, level, sessionUserId: 'user-1' });
+        expect(result).toMatchObject({ ...mockAccount, level, scopes: null, sessionUserId: 'user-1' });
       });
     }
 
@@ -460,6 +463,42 @@ describe('authenticateApiKey', () => {
 // Restore the spy so verifyAccessTokenAnyAudience is real again in subsequent test files.
 // spyOn + mockRestore() properly unwinds; mock.restore() does not restore mock.module() overrides.
 afterAll(() => spyVerifyJwt.mockRestore());
+
+describe('scoped token authentication', () => {
+  beforeEach(() => { clearAccountCache(); mockGetCachedApiKey.mockResolvedValue(null); });
+  it('rejects expired keys even from the positive cache', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'expired', scopes: ['tasks:read'], expiresAt: new Date(0) });
+    expect(await authenticateApiKey('bld_expired', new Request('http://localhost/api/tasks'))).toBeNull();
+  });
+  it('refuses a read-only token on writes and allows task reads', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'reader', scopes: ['tasks:read'], expiresAt: null });
+    expect(await authenticateApiKey('bld_reader', new Request('http://localhost/api/tasks', {method:'POST'}))).toBeNull();
+    expect(await authenticateApiKey('bld_reader', new Request('http://localhost/api/tasks'))).not.toBeNull();
+  });
+  it('keeps legacy tokens working without explicit scopes', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'legacy', scopes: null });
+    expect(await authenticateApiKey('bld_legacy')).not.toBeNull();
+  });
+});
+
+it('scoped tokens cannot reach a task outside their workspace restriction', async () => {
+  clearAccountCache(); mockGetCachedApiKey.mockResolvedValue(null);
+  mockAccountsFindFirst.mockResolvedValue({id:'limited', scopes:['tasks:read'],workspaceIds:['ws-selected']});
+  mockTaskScopeLookup.mockResolvedValue({workspaceId:'ws-other'});
+  expect(await authenticateApiKey('bld_limited', new Request('http://localhost/api/tasks/00000000-0000-0000-0000-000000000001'))).toBeNull();
+  mockTaskScopeLookup.mockResolvedValue({workspaceId:'ws-selected'});
+  expect(await authenticateApiKey('bld_limited', new Request('http://localhost/api/tasks/00000000-0000-0000-0000-000000000001'))).not.toBeNull();
+});
+
+it('workspace-restricted tokens must name a workspace when creating team-level work', async () => {
+  clearAccountCache(); mockGetCachedApiKey.mockResolvedValue(null);
+  mockAccountsFindFirst.mockResolvedValue({ id: 'limited-admin', scopes: ['missions:admin'], workspaceIds: ['ws-selected'] });
+  const post = (path: string, body: object) => new Request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const path of ['/api/missions', '/api/initiatives']) {
+    expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Team-wide' }))).toBeNull();
+    expect(await authenticateApiKey('bld_limited_admin', post(path, { title: 'Scoped', workspaceId: 'ws-selected' }))).not.toBeNull();
+  }
+});
 
 describe('authenticateApiKey — per-task tokens', () => {
   it('never resolves a per-task token to an account, even one whose hash matches a row', async () => {

@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
@@ -20,7 +21,7 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -38,7 +39,7 @@ export async function POST(
   // Activity is written by the account running the worker (its runner's key),
   // or by an admin-level account of the worker's workspace team.
   const isOwnRunner = worker.accountId === account.id;
-  const isTeamAdmin = account.level === 'admin' && account.teamId === worker.workspace?.teamId;
+  const isTeamAdmin = hasTokenRouteAdminAccess(account, req, 'workers:admin') && account.teamId === worker.workspace?.teamId;
   if (!isOwnRunner && !isTeamAdmin) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }

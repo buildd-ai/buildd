@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
 // Mock functions
@@ -7376,6 +7377,44 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockAuthenticateApiKey.mockResolvedValue(account('worker'));
     await claim({ runner: 'mcp', forceOverride: true });
     expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+  });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`force is ignored for a scoped ${preset} preset token: lifting claim gates needs the admin scope`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account('admin'), scopes: [...TOKEN_PRESETS[preset].scopes, 'workers:write'], workspaceIds: null });
+      // Answer the force-target lookup (only reached when force is granted) so
+      // a wrongly granted force would actually lift the gates.
+      mockTasksFindMany.mockImplementation(((opts: any) => Promise.resolve(opts?.limit === 1 && opts?.columns?.workspaceId ? forceTarget() : [])) as any);
+      await claim({ runner: 'mcp', forceOverride: true });
+      expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+    });
+  }
+
+  it('force applies for a scoped token holding the admin scope', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account('admin'), scopes: ['admin'], workspaceIds: null });
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'mcp', forceOverride: true });
+    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceCap']) expect(probedGates()).not.toContain(g);
+  });
+
+  it('a workspace-restricted token never claims outside its workspaces, with or without a taskId', async () => {
+    const restricted = { ...account('worker'), scopes: ['workers:write'], workspaceIds: ['ws-other'] };
+    mockAuthenticateApiKey.mockResolvedValue(restricted);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockTasksFindMany.mockResolvedValue([task()]);
+    const byTask = await (await claim({ runner: 'runner-7' })).json();
+    expect(byTask.workers ?? []).toHaveLength(0);
+    expect(byTask.diagnostics?.reason).toBe('no_workspaces');
+    const poll = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }))).json();
+    expect(poll.workers ?? []).toHaveLength(0);
+    expect(poll.diagnostics?.reason).toBe('no_workspaces');
+  });
+
+  it('a workspace-restricted token still claims inside its workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account('worker'), scopes: ['workers:write'], workspaceIds: ['ws-1'] });
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.workers).toHaveLength(1);
   });
 
   // H1: a canClaim link into another team's workspace grants claiming, not overriding.

@@ -91,7 +91,8 @@ const SAFE: Record<string, string[]> = {
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
-  accounts: ['monthly_cost_month', 'budget_alerts_sent'],
+  // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
+  accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
     'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
   initiatives: ['context_artifact_ids'],

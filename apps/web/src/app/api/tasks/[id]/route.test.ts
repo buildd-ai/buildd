@@ -1667,6 +1667,16 @@ describe('PATCH /api/tasks/[id]', () => {
       expect((await response.json()).error).toContain('admin-level');
     });
 
+    it.each([['tasks:write', 403], ['tasks:admin', 200]] as const)('result correction with %s scope returns %s', async (scope, status) => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({id:'account-123',level:'worker',scopes:[scope]});
+      const task = {id:TASK_ID,status:'completed',workspaceId:'ws-1',workspace:{id:'ws-1',teamId:'team-1'},result:{summary:'old'}};
+      mockTasksFindFirst.mockResolvedValue(task);
+      mockTasksUpdate.mockReturnValue({set:mock((values:any) => ({where:mock(() => ({returning:mock(() => [{...task,...values}])}))}))});
+      const response = await callHandler(PATCH, createMockRequest({method:'PATCH',headers:{Authorization:'Bearer bld_scoped'},body:{resultSummary:'Corrected result'}}), TASK_ID);
+      expect(response.status).toBe(status);
+    });
+
     it('rejects correcting the summary on a task that has not completed or failed', async () => {
       mockGetCurrentUser.mockResolvedValue(null);
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', level: 'admin' });

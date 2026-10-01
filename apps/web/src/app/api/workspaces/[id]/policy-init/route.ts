@@ -35,7 +35,7 @@ export async function POST(
   // Auth — accept both session and API key
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {

@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
@@ -38,11 +39,11 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   // Must have session auth OR admin-level API token
   const hasSessionAuth = !!user;
-  const hasAdminToken = apiAccount?.level === 'admin';
+  const hasAdminToken = hasTokenRouteAdminAccess(apiAccount, req);
 
   if (!hasSessionAuth && !hasAdminToken) {
     return NextResponse.json(

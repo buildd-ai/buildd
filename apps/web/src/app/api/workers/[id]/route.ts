@@ -532,7 +532,7 @@ export async function GET(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // A per-task token (cloud container) may read only its own worker.
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -587,7 +587,7 @@ export async function PATCH(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // A per-task token (cloud container) may update only its own worker.
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
