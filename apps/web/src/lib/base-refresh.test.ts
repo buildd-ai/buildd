@@ -427,6 +427,10 @@ function holdHarness(opts: {
   parents?: Record<string, string[]>;
   assessment?: SemanticAssessment | ((p: any) => SemanticAssessment);
   readFails?: boolean;
+  /** GitHub compare responses keyed by `base...head`. Default: diverged (no ancestry). */
+  compare?: Record<string, unknown>;
+  compareFails?: boolean;
+  stateReadFails?: boolean;
 } = {}) {
   let state: BaseRefreshState | null = opts.pending === null ? null : {
     prNumber: 7, headSha: PRE, baseSha: TIP, failures: 0, semanticRechecks: 0, inFlightUntil: null, rev: 5,
@@ -434,11 +438,16 @@ function holdHarness(opts: {
   };
   const parents = opts.parents ?? { [MERGE]: [PRE, TIP] };
   let assessment = opts.assessment;
-  const calls = { reads: 0, assess: [] as any[], diagnose: [] as any[], api: [] as string[] };
+  const calls = { reads: 0, writes: 0, assess: [] as any[], diagnose: [] as any[], api: [] as string[] };
   const deps: BaseRefreshDeps = {
     now: () => 1_000_000,
-    readState: async () => { calls.reads++; return state; },
+    readState: async () => {
+      calls.reads++;
+      if (opts.stateReadFails) throw new Error('db: connection terminated');
+      return state;
+    },
     writeState: async (_id, priorRev, next) => {
+      calls.writes++;
       if ((state?.rev ?? 0) !== priorRev) return false;
       state = next;
       return true;
@@ -451,6 +460,11 @@ function holdHarness(opts: {
     api: async (_id, path) => {
       calls.api.push(path);
       if (opts.readFails) throw new Error('GitHub API error: 502');
+      if (path.includes('/compare/')) {
+        if (opts.compareFails) throw new Error('GitHub API error: 502');
+        const key = path.split('/compare/')[1];
+        return opts.compare?.[key] ?? { status: 'diverged', total_commits: 0, commits: [] };
+      }
       const sha = path.split('/commits/')[1];
       if (sha && parents[sha]) return { sha, parents: parents[sha].map((s) => ({ sha: s })) };
       return { sha, parents: [{ sha: 'unrelated' }] };
@@ -462,6 +476,7 @@ function holdHarness(opts: {
   return {
     deps, calls, HOLD,
     get state() { return state; },
+    setState(next: BaseRefreshState | null) { state = next; },
     setAssessment(a: SemanticAssessment | ((p: any) => SemanticAssessment)) { assessment = a; },
   };
 }
@@ -648,6 +663,318 @@ describe('checkBaseRefreshHold — the hold is keyed to a head, so a pushed fix 
     await checkBaseRefreshHold(h.HOLD, h.deps);
     expect(h.calls.assess.every((a) => a.headSha === PRE && a.pinnedBaseSha === MOVED)).toBe(true);
     expect(h.state?.pendingBaseVerify?.kind).toBe('refresh');
+  });
+});
+
+describe('checkBaseRefreshHold — a push on top of buildd\'s unverified update merge keeps the merged-in range in scope', () => {
+  const PUSHED_ON_MERGE = { [MERGE]: [PRE, MOVED], [FIX]: [MERGE] };
+
+  it('known update merge: the push is checked for ancestry, and the arrived range is re-checked at the pinned pair', async () => {
+    const h = holdHarness({
+      pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED },
+      parents: PUSHED_ON_MERGE,
+      compare: { [`${MERGE}...${FIX}`]: { status: 'ahead', total_commits: 1, commits: [{ sha: FIX, parents: [{ sha: MERGE }] }] } },
+      assessment: { verdict: 'same_symbol', reason: 'both edit f', baseSha: MOVED },
+    });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r).toMatchObject({ blocks: true, needsPerson: true });
+    expect(h.calls.assess).toEqual([expect.objectContaining({ headSha: PRE, pinnedBaseSha: MOVED })]);
+    expect(h.state?.pendingBaseVerify).toMatchObject({ kind: 'refresh', headSha: PRE, mergeHeadSha: MERGE });
+    expect(h.calls.diagnose.map((d) => d.kind)).toEqual(['semantic_conflict']);
+  });
+
+  it('update merge never observed: one bounded compare finds it in the pushed history', async () => {
+    const h = holdHarness({
+      parents: PUSHED_ON_MERGE,
+      compare: {
+        [`${PRE}...${FIX}`]: {
+          status: 'ahead', total_commits: 2,
+          commits: [{ sha: MERGE, parents: [{ sha: PRE }, { sha: MOVED }] }, { sha: FIX, parents: [{ sha: MERGE }] }],
+        },
+      },
+      assessment: { verdict: 'unknown', reason: 'no index' },
+    });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r).toMatchObject({ blocks: true, needsPerson: false });
+    expect(h.calls.assess).toEqual([expect.objectContaining({ headSha: PRE, pinnedBaseSha: MOVED })]);
+    expect(h.calls.api.filter((p) => p.includes('/compare/'))).toHaveLength(1);
+    // The push did not reset the range's budget; the merge is now known.
+    expect(h.state?.pendingBaseVerify).toMatchObject({ kind: 'refresh', mergeHeadSha: MERGE, arrivedBaseSha: MOVED, rechecks: 1 });
+  });
+
+  it('the range clears, then the pushed head is verified on its own against the live base', async () => {
+    const h = holdHarness({
+      pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED },
+      parents: PUSHED_ON_MERGE,
+      compare: { [`${MERGE}...${FIX}`]: { status: 'ahead', total_commits: 1, commits: [] } },
+    });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(h.calls.assess).toHaveLength(2);
+    expect(h.calls.assess[0]).toEqual(expect.objectContaining({ headSha: PRE, pinnedBaseSha: MOVED }));
+    expect(h.calls.assess[1]).toEqual(expect.objectContaining({ headSha: FIX }));
+    expect(h.calls.assess[1].pinnedBaseSha).toBeUndefined();
+    expect(h.state?.pendingBaseVerify ?? null).toBeNull();
+  });
+
+  it('a pushed head that does NOT contain the update merge is judged on its own, as before', async () => {
+    const h = holdHarness({ pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED }, parents: { [FIX]: [PRE] } });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(h.calls.assess).toEqual([expect.objectContaining({ headSha: FIX })]);
+  });
+
+  it('enforce: a failed ancestry read holds (fails closed) and spends the range budget', async () => {
+    const h = holdHarness({ pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED }, parents: PUSHED_ON_MERGE, compareFails: true });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r).toMatchObject({ blocks: true, needsPerson: false });
+    expect(h.calls.assess).toHaveLength(0);
+    expect(h.state?.pendingBaseVerify).toMatchObject({ kind: 'refresh', rechecks: 1 });
+  });
+
+  it('a truncated comparison that does not show the merge is unreadable, not "no ancestry"', async () => {
+    const h = holdHarness({
+      parents: PUSHED_ON_MERGE,
+      compare: { [`${PRE}...${FIX}`]: { status: 'ahead', total_commits: 400, commits: [{ sha: 'x', parents: [{ sha: PRE }] }] } },
+    });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(r.blocks).toBe(true);
+    expect(h.calls.assess).toHaveLength(0);
+  });
+
+  it('shadow: a failed ancestry read only records', async () => {
+    const h = holdHarness({ pending: { mode: 'shadow', mergeHeadSha: MERGE, arrivedBaseSha: MOVED }, parents: PUSHED_ON_MERGE, compareFails: true });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX, gitConfig: { semanticRefresh: 'shadow' } as any }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(gateEvents.find((e) => e.outcome === 'warned' && /shadow/.test(e.reason))).toBeTruthy();
+  });
+
+  it('shadow: a push on top of the unverified merge only records', async () => {
+    const h = holdHarness({
+      pending: { mode: 'shadow', mergeHeadSha: MERGE, arrivedBaseSha: MOVED },
+      parents: PUSHED_ON_MERGE,
+      compare: { [`${MERGE}...${FIX}`]: { status: 'ahead', total_commits: 1, commits: [] } },
+      assessment: { verdict: 'same_symbol', reason: 'f' },
+    });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX, gitConfig: { semanticRefresh: 'shadow' } as any }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(h.calls.assess).toHaveLength(0);
+    expect(gateEvents.find((e) => e.outcome === 'warned' && /in scope/.test(e.reason))).toBeTruthy();
+  });
+
+  it('once a person was told on this head, further evaluations make no GitHub reads', async () => {
+    const h = holdHarness({
+      pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED },
+      parents: PUSHED_ON_MERGE,
+      compare: { [`${MERGE}...${FIX}`]: { status: 'ahead', total_commits: 1, commits: [] } },
+      assessment: { verdict: 'same_symbol', reason: 'f' },
+    });
+    await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    const reads = h.calls.api.length;
+    const again = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    expect(again).toMatchObject({ blocks: true, needsPerson: true });
+    expect(h.calls.api.length).toBe(reads);
+    expect(h.calls.assess).toHaveLength(1);
+    expect(h.calls.diagnose).toHaveLength(1);
+  });
+
+  it('a further push after the diagnostic is the person\'s answer: judged on its own', async () => {
+    const G = 'e'.repeat(40);
+    const h = holdHarness({
+      pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED },
+      parents: { ...PUSHED_ON_MERGE, [G]: [FIX] },
+      compare: { [`${MERGE}...${FIX}`]: { status: 'ahead', total_commits: 1, commits: [] }, [`${MERGE}...${G}`]: { status: 'ahead', total_commits: 2, commits: [] } },
+      assessment: { verdict: 'same_symbol', reason: 'f' },
+    });
+    await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX }, h.deps);
+    h.setAssessment({ verdict: 'disjoint_paths', reason: 'fixed' });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: G }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(h.calls.assess.at(-1)).toEqual(expect.objectContaining({ headSha: G }));
+  });
+});
+
+describe('refreshBehindPr — a push on top of the unverified update merge keeps the range', () => {
+  it('refreshing such a head carries the unverified range instead of starting fresh', async () => {
+    const h = harness({ assessment: { verdict: 'disjoint_paths', reason: 'x', baseSha: 'tip2' } });
+    h.deps.api = async (_i, path) => {
+      if (path.includes('/compare/')) return { status: 'ahead', total_commits: 1, commits: [] };
+      return { parents: [{ sha: 'g' }] };
+    };
+    h.setState({
+      prNumber: 7, headSha: 'g', baseSha: TIP, failures: 0, semanticRechecks: 0, inFlightUntil: null, rev: 3,
+      pendingBaseVerify: { id: 'p1', kind: 'refresh', headSha: 'pre', mergeHeadSha: 'g', arrivedBaseSha: 'arr', checkHeadSha: 'pre', verifiedBaseSha: TIP, mode: 'enforce', rechecks: 1, diagnosedAt: null, at: 'x' },
+    });
+    await refreshBehindPr({ ...PARAMS, gitConfig: { semanticRefresh: 'enforce' } }, h.deps);
+    expect(h.state?.pendingBaseVerify).toMatchObject({ headSha: HEAD, checkHeadSha: 'pre', verifiedBaseSha: TIP, rechecks: 1 });
+  });
+});
+
+describe('checkBaseRefreshHold — shadow never blocks', () => {
+  it('a head hold written under enforce, workspace since switched to shadow: records, does not block', async () => {
+    const h = holdHarness({
+      pending: { kind: 'head', headSha: FIX, checkHeadSha: FIX, verifiedBaseSha: null, rechecks: 1 },
+      assessment: { verdict: 'same_symbol', reason: 'f' },
+    });
+    const before = h.state?.pendingBaseVerify;
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX, gitConfig: { semanticRefresh: 'shadow' } as any }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(h.calls.assess).toHaveLength(0);
+    expect(h.calls.diagnose).toHaveLength(0);
+    expect(gateEvents.find((e) => e.outcome === 'warned' && /shadow/.test(e.reason))).toBeTruthy();
+    // Kept, so switching back to enforce resumes the hold for this same head.
+    expect(h.state?.pendingBaseVerify).toEqual(before);
+  });
+
+  it('an exhausted head hold under shadow does not block either', async () => {
+    const h = holdHarness({ pending: { kind: 'head', headSha: FIX, checkHeadSha: FIX, verifiedBaseSha: null, rechecks: MAX_SEMANTIC_RECHECKS, diagnosedAt: 'd', diagnosedHeadSha: FIX } });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX, gitConfig: { semanticRefresh: 'shadow' } as any }, h.deps);
+    expect(r.blocks).toBe(false);
+  });
+});
+
+describe('checkBaseRefreshHold — a failed state read', () => {
+  it('enforce: fails closed (a wait, not an escalation), with no GitHub read and no person spammed', async () => {
+    const h = holdHarness({ stateReadFails: true });
+    const r = await checkBaseRefreshHold(h.HOLD, h.deps);
+    expect(r).toMatchObject({ blocks: true, needsPerson: false });
+    expect((r as any).reason).toMatch(/^semantic hold \(rechecking\): could not read/);
+    expect(h.calls.api).toHaveLength(0);
+    expect(h.calls.diagnose).toHaveLength(0);
+    expect(gateEvents.filter((e) => e.outcome === 'deferred')).toHaveLength(1);
+  });
+
+  it('shadow: fails open and records it', async () => {
+    const h = holdHarness({ stateReadFails: true });
+    const r = await checkBaseRefreshHold({ ...h.HOLD, gitConfig: { semanticRefresh: 'shadow' } as any }, h.deps);
+    expect(r.blocks).toBe(false);
+    expect(gateEvents.find((e) => e.outcome === 'warned' && /could not read/.test(e.reason))).toBeTruthy();
+  });
+
+  it('off: no read is attempted at all', async () => {
+    const h = holdHarness({ stateReadFails: true });
+    expect((await checkBaseRefreshHold({ ...h.HOLD, gitConfig: { semanticRefresh: 'off' } as any }, h.deps)).blocks).toBe(false);
+    expect(h.calls.reads).toBe(0);
+  });
+});
+
+describe('carried record whose restore is never written', () => {
+  // buildd's earlier update merge (HEAD) of PRE brought in MOVED, unverified; a
+  // second refresh of HEAD carries that range, its update fails, and every
+  // release write is lost.
+  function lostRestore(opts: { now?: number } = {}) {
+    let clock = opts.now ?? 1_000_000;
+    const h = harness({ update: [{ updated: false, failure: 'transient', reason: '502' }] });
+    h.deps.now = () => clock;
+    h.setState({
+      prNumber: 7, headSha: HEAD, baseSha: TIP, failures: 0, semanticRechecks: 0, inFlightUntil: null, rev: 3,
+      pendingBaseVerify: { id: 'p1', kind: 'refresh', headSha: PRE, mergeHeadSha: HEAD, arrivedBaseSha: MOVED, checkHeadSha: PRE, verifiedBaseSha: TIP, mode: 'enforce', rechecks: 0, diagnosedAt: null, at: 'x' },
+    });
+    const write = h.deps.writeState!;
+    let writes = 0;
+    let lose = true;
+    h.deps.writeState = async (id, rev, next) => (++writes === 1 || !lose ? write(id, rev, next) : false);
+    const assessed: any[] = [];
+    let verdict: SemanticAssessment = { verdict: 'same_symbol', reason: 'f' };
+    h.deps.assess = async (p) => { assessed.push(p); return p.pinnedBaseSha ? verdict : { verdict: 'disjoint_paths', reason: 'x', baseSha: 'tip2' }; };
+    h.deps.api = async (_i, path) => ({ parents: path.endsWith(HEAD) ? [{ sha: PRE }, { sha: MOVED }] : [{ sha: 'x' }] });
+    return {
+      h, assessed,
+      stopLosing() { lose = false; },
+      advance(ms: number) { clock += ms; },
+      setVerdict(v: SemanticAssessment) { verdict = v; },
+    };
+  }
+  const HOLD_AT_HEAD = { installationId: 1, repoFullName: 'acme/app', prNumber: 7, headSha: HEAD, taskId: 'task-1', missionId: null, gitConfig: ENFORCE };
+
+  it('the hold does not pass the current head on the stranded provisional record', async () => {
+    const t = lostRestore();
+    await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, t.h.deps);
+    t.stopLosing();
+    t.advance(refreshLeaseMs('enforce') + 1);
+    t.assessed.length = 0;
+    const r = await checkBaseRefreshHold(HOLD_AT_HEAD, t.h.deps);
+    expect(r.blocks).toBe(true);
+    expect(t.assessed).toEqual([expect.objectContaining({ headSha: PRE, pinnedBaseSha: MOVED })]);
+  });
+
+  it('while that refresh may still be running, it waits without reading', async () => {
+    const t = lostRestore();
+    await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, t.h.deps);
+    t.assessed.length = 0;
+    const r = await checkBaseRefreshHold(HOLD_AT_HEAD, t.h.deps);
+    expect(r).toMatchObject({ blocks: true, needsPerson: false });
+    expect(t.assessed).toHaveLength(0);
+  });
+
+  it('a carried range that re-verifies clean lets the head pass and keeps the verified base', async () => {
+    const t = lostRestore();
+    await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, t.h.deps);
+    t.stopLosing();
+    t.advance(refreshLeaseMs('enforce') + 1);
+    t.setVerdict({ verdict: 'disjoint_paths', reason: 'clear', baseSha: MOVED });
+    expect((await checkBaseRefreshHold(HOLD_AT_HEAD, t.h.deps)).blocks).toBe(false);
+    expect(t.h.state?.pendingBaseVerify).toMatchObject({ headSha: HEAD, checkHeadSha: PRE, verifiedBaseSha: MOVED, carried: false });
+    expect((await checkBaseRefreshHold(HOLD_AT_HEAD, t.h.deps)).blocks).toBe(false);
+  });
+
+  it('the next refresh of that head carries the range again, not a fresh record', async () => {
+    const t = lostRestore();
+    await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, t.h.deps);
+    t.stopLosing();
+    t.advance(refreshLeaseMs('enforce') + 1);
+    await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, t.h.deps);
+    expect(t.h.state?.pendingBaseVerify).toMatchObject({ headSha: HEAD, checkHeadSha: PRE, verifiedBaseSha: TIP });
+  });
+});
+
+describe('concurrent replacement of the verification record', () => {
+  it('refresh: a record replaced by another door mid-refresh is left alone, and the lease is still released', async () => {
+    const h = harness({ assessment: { verdict: 'disjoint_paths', reason: 'x', baseSha: TIP } });
+    const replacement: PendingBaseVerify = { id: 'other', kind: 'head', headSha: HEAD, checkHeadSha: HEAD, verifiedBaseSha: null, mode: 'enforce', rechecks: 2, diagnosedAt: null, at: 'y' };
+    h.deps.assess = async () => {
+      h.setState({ ...h.state!, pendingBaseVerify: replacement, rev: h.state!.rev + 1 });
+      return { verdict: 'disjoint_paths', reason: 'x', baseSha: TIP };
+    };
+    const r = await refreshBehindPr({ ...PARAMS, gitConfig: ENFORCE }, h.deps);
+    expect(r.kind).toBe('updated');
+    expect(h.state?.inFlightUntil).toBeNull();
+    expect(h.state?.leaseId ?? null).toBeNull();
+    expect(h.state?.pendingBaseVerify).toEqual(replacement);
+  });
+
+  it('hold: a record replaced during the re-check is not cleared by the stale verdict', async () => {
+    const h = holdHarness({ parents: { [MERGE]: [PRE, MOVED] } });
+    const replacement: PendingBaseVerify = { id: 'other', kind: 'refresh', headSha: MERGE, mergeHeadSha: null, arrivedBaseSha: null, checkHeadSha: MERGE, verifiedBaseSha: null, mode: 'enforce', rechecks: 0, diagnosedAt: null, at: 'y' };
+    h.deps.assess = async () => {
+      h.setState({ ...h.state!, pendingBaseVerify: replacement, rev: h.state!.rev + 1 });
+      return { verdict: 'disjoint_paths', reason: 'x' };
+    };
+    await checkBaseRefreshHold(h.HOLD, h.deps);
+    expect(h.state?.pendingBaseVerify).toEqual(replacement);
+  });
+});
+
+describe('semanticRefresh off stays a strict no-op', () => {
+  it('hold: a stored record, a pushed head, a failing store — no read, no write, no GitHub call', async () => {
+    const h = holdHarness({ pending: { mergeHeadSha: MERGE, arrivedBaseSha: MOVED }, parents: { [MERGE]: [PRE, MOVED], [FIX]: [MERGE] } });
+    for (const gitConfig of [null, undefined, { semanticRefresh: 'off' }] as any[]) {
+      expect((await checkBaseRefreshHold({ ...h.HOLD, headSha: FIX, gitConfig }, h.deps)).blocks).toBe(false);
+    }
+    expect(h.calls).toMatchObject({ reads: 0, writes: 0, api: [], assess: [], diagnose: [] });
+  });
+
+  it('refresh: a stored record and a pushed head — no GitHub read, the record untouched, only the lease writes', async () => {
+    const h = harness();
+    let api = 0;
+    h.deps.api = async () => { api++; return {}; };
+    const record: PendingBaseVerify = { id: 'p1', kind: 'refresh', headSha: 'pre', mergeHeadSha: 'g', arrivedBaseSha: 'arr', checkHeadSha: 'pre', verifiedBaseSha: TIP, mode: 'enforce', rechecks: 1, diagnosedAt: null, at: 'x' };
+    h.setState({ prNumber: 7, headSha: 'g', baseSha: TIP, failures: 0, semanticRechecks: 0, inFlightUntil: null, rev: 3, pendingBaseVerify: record });
+    expect((await refreshBehindPr(PARAMS, h.deps)).kind).toBe('updated');
+    expect(api).toBe(0);
+    expect(h.calls.assess).toBe(0);
+    expect(h.calls.writes).toBe(2);
+    expect(h.state?.pendingBaseVerify).toEqual(record);
   });
 });
 

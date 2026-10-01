@@ -44,6 +44,9 @@
  * the PR is held until that re-check clears it. The record and its budget are
  * keyed to a head: a push by anyone else supersedes it, and the pushed head is
  * verified on its own with a fresh budget — so pushing a fix clears a hold.
+ * The exception is a push on top of buildd's update merge before anyone was
+ * told about it: the base range that merge brought in stays in scope (checked
+ * first, on the record's own budget) while the head still contains the merge.
  * The record is written together with the lease (provisional until the
  * verdict is in), so a lost release write leaves a re-check, never a pass.
  *
@@ -115,6 +118,17 @@ export interface PendingBaseVerify {
   mode: 'shadow' | 'enforce';
   rechecks: number;
   diagnosedAt?: string | null;
+  /** The head a person was told about. A later push is their answer; the same head is not. */
+  diagnosedHeadSha?: string | null;
+  /**
+   * refresh: this record carries an unresolved range onto `headSha` itself (a
+   * refresh of buildd's earlier update merge, or of a held head), so `headSha`
+   * is NOT a clean pre-update head. Normally the refresh's release replaces it;
+   * if that write is lost, the hold re-checks the carried range here.
+   */
+  carried?: boolean;
+  /** carried: the base commit the carried range ends at; null = check `headSha` against the live base. */
+  carriedArrivedBaseSha?: string | null;
   at: string;
 }
 
@@ -314,6 +328,50 @@ function isUpdateMergeOf(parents: string[], from: string): boolean {
   return parents.length === 2 && parents[0] === from;
 }
 
+/**
+ * A push on a refresh record's branch keeps the record's merged-in base range
+ * in scope while nobody has been told about it on another head: until then
+ * the pushed commits cannot be anyone's answer to it. Once a person was told,
+ * a push of a different head is their answer and is judged on its own.
+ */
+function rangeStillInScope(p: PendingBaseVerify, headSha: string): boolean {
+  return p.kind === 'refresh' && (!p.diagnosedAt || p.diagnosedHeadSha === headSha);
+}
+
+type Descent =
+  | { kind: 'descends'; mergeSha: string; arrivedBaseSha: string | null }
+  | { kind: 'no' }
+  | { kind: 'unreadable'; reason: string };
+
+/**
+ * Does `headSha` contain buildd's update merge of `p.headSha`? One compare
+ * read: from the known merge (ancestry by status), or, when the merge was never
+ * observed, from the pre-update head (the merge is the commit in that range
+ * whose first parent is the pre-update head). A truncated list that does not
+ * show the merge is unreadable, never "no".
+ */
+async function descendsFromUpdateMerge(api: Api, installationId: number, repoFullName: string, p: PendingBaseVerify, headSha: string): Promise<Descent> {
+  type Compare = { status?: string; total_commits?: number; commits?: Array<{ sha?: string; parents?: Array<{ sha?: string }> }> } | null;
+  try {
+    const from = p.mergeHeadSha ?? p.headSha;
+    const c = (await api(installationId, `/repos/${repoFullName}/compare/${from}...${headSha}`)) as Compare;
+    if (!c || typeof c.status !== 'string') return { kind: 'unreadable', reason: 'GitHub returned no comparison status' };
+    if (c.status !== 'ahead') return { kind: 'no' };
+    if (p.mergeHeadSha) return { kind: 'descends', mergeSha: p.mergeHeadSha, arrivedBaseSha: p.arrivedBaseSha ?? null };
+    const commits = Array.isArray(c.commits) ? c.commits : [];
+    for (const commit of commits) {
+      const parents = (commit?.parents ?? []).map((x) => x?.sha ?? '').filter(Boolean);
+      if (commit?.sha && isUpdateMergeOf(parents, p.headSha)) return { kind: 'descends', mergeSha: commit.sha, arrivedBaseSha: parents[1] };
+    }
+    if (typeof c.total_commits !== 'number' || c.total_commits > commits.length) {
+      return { kind: 'unreadable', reason: `the comparison lists ${commits.length} of ${c.total_commits ?? '?'} commits` };
+    }
+    return { kind: 'no' };
+  } catch (err) {
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────────
 
 function freshFor(prior: BaseRefreshState | null, prNumber: number, headSha: string): BaseRefreshState {
@@ -394,14 +452,33 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
   const priorPending = state.pendingBaseVerify ?? null;
   let provisional: PendingBaseVerify | null = null;
   let carry = false;
+  // Where the carried range ends, so the hold can re-check it on this head if
+  // the release below is lost. Null: check against the live base (a held head)
+  // or, when nothing is known, an unverifiable range.
+  let carriedArrived: string | null = null;
   if (mode !== 'off') {
     if (priorPending) {
       if (priorPending.kind === 'head') carry = priorPending.headSha === headSha;
-      else if (priorPending.mergeHeadSha === headSha) carry = true;
-      else if (priorPending.headSha !== headSha) {
+      else if (priorPending.headSha === headSha) {
+        // A pre-update head carries nothing — unless this record already
+        // carried a range onto it (an earlier refresh whose release was lost).
+        carry = !!priorPending.carried;
+        carriedArrived = priorPending.carriedArrivedBaseSha ?? null;
+      } else if (priorPending.mergeHeadSha === headSha) {
+        carry = true;
+        carriedArrived = priorPending.arrivedBaseSha ?? null;
+      } else {
         const p = await readParents(api, installationId, repoFullName, headSha);
-        // Unreadable: carry — keeping a hold is the safe side.
-        carry = p.kind === 'unreadable' || isUpdateMergeOf(p.parents, priorPending.headSha);
+        if (p.kind === 'unreadable') carry = true; // keeping a hold is the safe side
+        else if (isUpdateMergeOf(p.parents, priorPending.headSha)) {
+          carry = true;
+          carriedArrived = p.parents[1];
+        } else if (rangeStillInScope(priorPending, headSha)) {
+          // A push on top of buildd's unverified update merge keeps its range.
+          const d = await descendsFromUpdateMerge(api, installationId, repoFullName, priorPending, headSha);
+          if (d.kind !== 'no') carry = true;
+          if (d.kind === 'descends') carriedArrived = d.arrivedBaseSha;
+        }
       }
     }
     const base = { id: newId(now()), kind: 'refresh' as const, headSha, mergeHeadSha: null, arrivedBaseSha: null, mode, at: new Date(now()).toISOString() };
@@ -413,6 +490,9 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
           verifiedBaseSha: priorPending.kind === 'head' ? null : priorPending.verifiedBaseSha,
           rechecks: priorPending.rechecks,
           diagnosedAt: priorPending.diagnosedAt ?? null,
+          diagnosedHeadSha: priorPending.diagnosedHeadSha ?? null,
+          carried: true,
+          carriedArrivedBaseSha: carriedArrived,
         }
       : { ...base, checkHeadSha: headSha, verifiedBaseSha: null, rechecks: 0, diagnosedAt: null };
   }
@@ -521,7 +601,8 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
     const verifiedBaseSha = assessment?.baseSha ?? null;
     await release(
       { ...uncounted, failures: 0, lastFailure: null, baseSha: verifiedBaseSha ?? state.baseSha },
-      (ours) => (carry ? ours : { ...ours, verifiedBaseSha }),
+      // Landed: the head moved past `headSha`, so the carry marker is spent.
+      (ours) => (carry ? { ...ours, carried: false, carriedArrivedBaseSha: null } : { ...ours, verifiedBaseSha }),
     );
     ledger('accepted', 'branch updated from base via GitHub; CI re-runs on the new head', {
       verdict: assessment?.verdict ?? null,
@@ -596,7 +677,12 @@ const OK: HoldVerdict = { blocks: false };
  * a bounded budget per head. Reasons start `semantic hold (rechecking)` or
  * `semantic hold (needs a person)` so callers can tell a wait from an
  * escalation. A push of any other head supersedes the record: the new head is
- * verified on its own with a fresh budget, so a pushed fix clears a hold.
+ * verified on its own with a fresh budget, so a pushed fix clears a hold —
+ * except that a push on top of buildd's still-unverified update merge first
+ * re-checks the base range that merge brought in (nobody has seen it yet).
+ *
+ * Shadow only records: it never blocks. A state read that fails holds under
+ * enforce (a wait, re-tried by the next merge attempt) and passes under shadow.
  */
 export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefreshDeps = {}): Promise<HoldVerdict> {
   if (params.gitConfig === undefined || !params.taskId) return OK;
@@ -612,9 +698,9 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
   const { installationId, repoFullName, prNumber, headSha } = params;
   const taskId = params.taskId;
 
-  let state = await readState(taskId).catch(() => null);
-  let pending = state?.prNumber === prNumber ? state.pendingBaseVerify ?? null : null;
-  if (!state || !pending) return OK;
+  let state: BaseRefreshState | null = null;
+  let pending: PendingBaseVerify | null = null;
+  let pinnedBase: string | null = null;
 
   const ledger = (outcome: 'accepted' | 'deferred' | 'warned' | 'rejected', reason: string, detail: Record<string, unknown> = {}) => {
     const input = {
@@ -632,6 +718,31 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
     if (outcome === 'deferred') fireDeferralEvent(input);
     else fireGateEvent(input);
   };
+  const hold = (needsPerson: boolean, why: string): HoldVerdict => ({
+    blocks: true,
+    needsPerson,
+    reason: `semantic hold (${needsPerson ? 'needs a person' : 'rechecking'}): ${why}`,
+  });
+
+  // Fail closed under enforce: no state means no proof that nothing is
+  // outstanding. One retry for a blip; no person is told (the per-head
+  // markers live in the state that could not be read) — the merge door
+  // re-tries on its next attempt and the ledger records each refusal.
+  try {
+    state = await readState(taskId).catch(() => readState(taskId));
+  } catch (err) {
+    const why = `could not read the refresh state: ${err instanceof Error ? err.message : String(err)}`;
+    if (mode !== 'enforce') {
+      ledger('warned', `shadow: ${why}`);
+      return OK;
+    }
+    ledger('deferred', why);
+    return hold(false, why);
+  }
+  pending = state?.prNumber === prNumber ? state.pendingBaseVerify ?? null : null;
+  if (!state || !pending) return OK;
+  const enforcing = mode === 'enforce' && pending.mode === 'enforce';
+
   /** Replace the record we read (by id) with `next`; retried on a lost CAS. */
   const writePending = async (next: PendingBaseVerify | null): Promise<void> => {
     const ours = pending!.id;
@@ -640,27 +751,42 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
     if (written) state = written;
     if (next) pending = next;
   };
-  const hold = (needsPerson: boolean, why: string): HoldVerdict => ({
-    blocks: true,
-    needsPerson,
-    reason: `semantic hold (${needsPerson ? 'needs a person' : 'rechecking'}): ${why}`,
-  });
   const missionId = async () => (params.missionId !== undefined
     ? params.missionId
     : await (deps.missionOf ?? missionOfFromDb)(taskId).catch(() => null));
-  const enforcing = mode === 'enforce' && pending.mode === 'enforce';
   const rekeyToHead = async (): Promise<void> => {
     await writePending({
       id: newId(now()), kind: 'head', headSha, mergeHeadSha: null, arrivedBaseSha: null, checkHeadSha: headSha,
       verifiedBaseSha: null, mode: 'enforce', rechecks: 0, diagnosedAt: null, at: new Date(now()).toISOString(),
     });
   };
+  const unknown = (reason: string) => async (): Promise<SemanticAssessment> => ({ verdict: 'unknown', reason });
+  const live = () => assess({ installationId, repoFullName, prNumber, headSha });
+
+  // A person was already told about this very head and its budget is spent:
+  // nothing a re-read could change. No GitHub reads until the head moves.
+  if (enforcing && pending.diagnosedAt && pending.diagnosedHeadSha === headSha && pending.rechecks >= MAX_SEMANTIC_RECHECKS) {
+    return hold(true, `a person was told about this head; push a fix to the branch or merge by hand`);
+  }
 
   // ── Which head is this, relative to the record? ──
-  let pinnedBase: string | null = null;
+  /** The head contains buildd's unverified update merge under a push. */
+  let descendant = false;
+  if (pending.kind === 'refresh' && headSha === pending.headSha) {
+    // The update has not landed on this head: nothing unchecked was merged in…
+    if (!pending.carried) return OK;
+    // …unless the record carries a range onto this head (its refresh has not
+    // released, or its release was lost): that range is still unverified.
+    if (!enforcing) {
+      ledger('warned', 'shadow: this head carries a base range that was never re-verified');
+      return OK;
+    }
+    if (state.leaseId && state.inFlightUntil && Date.parse(state.inFlightUntil) > now()) {
+      return hold(false, 'a refresh of this head is in flight; the base range it carries is not verified yet');
+    }
+    return verifyCarried();
+  }
   if (pending.kind === 'refresh') {
-    // The update has not landed on this head: nothing unchecked was merged in.
-    if (headSha === pending.headSha) return OK;
     let isOurMerge = headSha === pending.mergeHeadSha;
     if (isOurMerge) {
       pinnedBase = pending.arrivedBaseSha ?? null;
@@ -673,7 +799,7 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
           return OK;
         }
         // Fail closed; spend budget on the record as it stands.
-        return bounded(async () => ({ verdict: 'unknown', reason: `could not read the head commit: ${p.reason}` }));
+        return bounded(unknown(`could not read the head commit: ${p.reason}`));
       }
       isOurMerge = isUpdateMergeOf(p.parents, pending.headSha);
       if (isOurMerge) {
@@ -681,7 +807,32 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
         await writePending({ ...pending, mergeHeadSha: headSha, arrivedBaseSha: pinnedBase });
       }
     }
-    if (!isOurMerge) {
+    if (!isOurMerge && rangeStillInScope(pending, headSha)) {
+      // A push. If it sits on top of buildd's update merge, the base range that
+      // merge brought in is still unverified, and the push is not an answer to
+      // it — nobody has been shown it. Keep it in scope.
+      const d = await descendsFromUpdateMerge(api, installationId, repoFullName, pending, headSha);
+      if (d.kind === 'unreadable') {
+        if (!enforcing) {
+          await writePending(null);
+          ledger('warned', `shadow: could not tell whether the pushed head contains the unverified update merge: ${d.reason}`);
+          return OK;
+        }
+        return bounded(unknown(`could not tell whether the pushed head contains buildd's unverified update merge: ${d.reason}`));
+      }
+      if (d.kind === 'descends') {
+        if (!enforcing) {
+          await writePending(null);
+          ledger('warned', 'shadow: a push on top of the unverified update merge; enforce keeps the merged-in base range in scope');
+          return OK;
+        }
+        descendant = true;
+        pinnedBase = d.arrivedBaseSha;
+        if (!pending.mergeHeadSha) await writePending({ ...pending, mergeHeadSha: d.mergeSha, arrivedBaseSha: d.arrivedBaseSha });
+        ledger('warned', 'a push on top of the unverified update merge; its merged-in base range stays in scope');
+      }
+    }
+    if (!isOurMerge && !descendant) {
       // Someone pushed: the record is about a head that is no longer merged.
       if (!enforcing) {
         await writePending(null);
@@ -702,7 +853,17 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
 
   // ── Verify ──
   if (pending.kind === 'refresh') {
+    /** The pushed head, once the range under it is verified: judged on its own, as any push. */
+    const thenPushedHead = descendant
+      ? async (): Promise<HoldVerdict> => {
+          ledger('accepted', 're-verified the base range under the push; verifying the pushed head on its own');
+          await rekeyToHead();
+          pinnedBase = null;
+          return bounded(live);
+        }
+      : undefined;
     if (pinnedBase && pending.verifiedBaseSha && pinnedBase === pending.verifiedBaseSha) {
+      if (thenPushedHead) return thenPushedHead();
       await writePending(null);
       ledger('accepted', 'the base merged in is the base the semantic verdict covered');
       return OK;
@@ -714,20 +875,51 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
     }
     const pr = pending.checkHeadSha;
     const base = pinnedBase;
-    return bounded(async () => base
-      ? assess({ installationId, repoFullName, prNumber, headSha: pr, pinnedBaseSha: base })
-      : { verdict: 'unknown', reason: 'could not tell which base commit the update merged in' });
+    return bounded(base
+      ? () => assess({ installationId, repoFullName, prNumber, headSha: pr, pinnedBaseSha: base })
+      : unknown('could not tell which base commit the update merge brought in'), thenPushedHead);
   }
   // A hold on exactly this head, against the live base.
-  return bounded(async () => assess({ installationId, repoFullName, prNumber, headSha }));
+  return bounded(live);
 
-  /** One bounded verification of the record, counted before it starts. */
-  async function bounded(run: () => Promise<SemanticAssessment>): Promise<HoldVerdict> {
+  /**
+   * The record carries an unverified range onto this very head. Re-check it;
+   * if it clears, keep the record as verified up to that base (not deleted:
+   * a refresh of this head may still land and must be judged against it).
+   */
+  async function verifyCarried(): Promise<HoldVerdict> {
     const p = pending!;
+    const settle = (verified: string | null) => async (): Promise<HoldVerdict> => {
+      await writePending({ ...pending!, carried: false, carriedArrivedBaseSha: null, verifiedBaseSha: verified, rechecks: 0 });
+      ledger('accepted', 're-verified the base range carried onto this head');
+      return OK;
+    };
+    if (p.carriedArrivedBaseSha) {
+      const base = p.carriedArrivedBaseSha;
+      pinnedBase = base;
+      if (base === p.verifiedBaseSha) return settle(base)();
+      return bounded(() => assess({ installationId, repoFullName, prNumber, headSha: p.checkHeadSha, pinnedBaseSha: base }), settle(base));
+    }
+    if (p.checkHeadSha === headSha) {
+      return bounded(live, (a) => settle(a.baseSha ?? null)());
+    }
+    return bounded(unknown('the range carried onto this head has no recorded base commit'));
+  }
+
+  /**
+   * One bounded verification of the record, counted before it starts. Under
+   * shadow it never runs and never blocks: shadow only records.
+   */
+  async function bounded(run: () => Promise<SemanticAssessment>, onClear?: (a: SemanticAssessment) => Promise<HoldVerdict>): Promise<HoldVerdict> {
+    const p = pending!;
+    if (!enforcing) {
+      ledger('warned', 'shadow: enforce would re-verify this head before merging; not blocking');
+      return OK;
+    }
     const diagnosticBase = { taskId, installationId, repoFullName, prNumber, headSha };
     const tellOnce = async (kind: 'semantic_conflict' | 'semantic_unverified', why: string, detail: Record<string, unknown>) => {
       if (p.diagnosedAt) return;
-      await writePending({ ...pending!, rechecks: Math.max(pending!.rechecks, MAX_SEMANTIC_RECHECKS), diagnosedAt: new Date(now()).toISOString() });
+      await writePending({ ...pending!, rechecks: Math.max(pending!.rechecks, MAX_SEMANTIC_RECHECKS), diagnosedAt: new Date(now()).toISOString(), diagnosedHeadSha: headSha });
       ledger('rejected', why, detail);
       await diagnose({ kind, ...diagnosticBase, missionId: await missionId(), reason: why })
         .catch((err) => console.error('[base-refresh] diagnostic failed:', err));
@@ -746,6 +938,7 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
     })) as SemanticAssessment;
     const detail = { pinnedBaseSha: pinnedBase, verdict: a.verdict, sharedPaths: a.sharedPaths ?? [], evidence: a.evidence ?? [] };
     if (a.verdict === 'disjoint_paths' || a.verdict === 'disjoint_symbols') {
+      if (onClear) return onClear(a);
       await writePending(null);
       ledger('accepted', `re-verified: ${a.reason}`, detail);
       return OK;
