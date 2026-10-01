@@ -2373,3 +2373,66 @@ describe('tryAutoMergeWorkerPr — passes the workspace gitConfig to the semanti
     expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1', gitConfig }));
   });
 });
+
+
+// ── Human-merge guarantee (workspace onboarding scaffold PR) ──────────────────
+//
+// A task flagged `requiresReview` is human-tier in `resolvePolicy`, but three
+// unattended call sites resolve policy without the task. The refusal therefore
+// lives on the merge door itself, and holds even when the policy handed in is
+// the most permissive one (the `autonomous` preset's auto-threshold).
+
+describe('tryAutoMergeWorkerPr — tasks that require human review', () => {
+  const GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const FILES = [{ filename: 'CLAUDE.md', additions: 4, deletions: 0 }];
+  const run = (taskId: string | null = 'task-scaffold') =>
+    tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'acme/ledger',
+      prNumber: 7,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId, workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 100000, denyPaths: [] } },
+    });
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFireGateEvent.mockReset();
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockTasksFindMany = mock(() => [] as any[]);
+    mockWorkersFindMany = mock(() => [] as any[]);
+  });
+
+  it('does not merge a green, in-bounds PR, and says why', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-scaffold', requiresReview: true, mission: null })) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'buildd/x' } });
+
+    const result = await run();
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toMatch(/human review/i);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockFireGateEvent.mock.calls.map((c: any[]) => c[0])).toContainEqual(
+      expect.objectContaining({ gate: 'auto_merge', outcome: 'rejected', taskId: 'task-scaffold' }),
+    );
+  });
+
+  it('still merges the same PR when the task does not require review', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-scaffold', requiresReview: false, mission: null })) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'buildd/x' } });
+
+    expect(await run()).toEqual({ merged: true });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});

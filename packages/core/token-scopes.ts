@@ -88,6 +88,8 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
 
 export function requiredScopeForAction(action: string, params: Record<string, unknown> = {}): TokenScope | null {
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
+  // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
+  if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';
   return Object.hasOwn(ACTION_TOKEN_SCOPE, action) ? ACTION_TOKEN_SCOPE[action as BuilddAction] : null;
 }
