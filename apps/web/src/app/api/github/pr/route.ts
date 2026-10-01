@@ -48,6 +48,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { closeAncestorRetryPrs, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
@@ -1888,6 +1889,9 @@ export async function GET(req: NextRequest) {
     // Fix attempts on this PR's chain, with why each ended as it did. A read
     // failure costs the list, not the PR.
     const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+    const evidenceObjects = worker.taskId && worker.workspaceId
+      ? await loadInlineEvidence(worker.workspaceId, worker.taskId)
+      : [];
 
     return NextResponse.json({
       ok: true,
@@ -1924,6 +1928,7 @@ export async function GET(req: NextRequest) {
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
       ...(attempts.length > 0 ? { attempts } : {}),
+      ...(evidenceObjects.length > 0 ? { evidenceObjects } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

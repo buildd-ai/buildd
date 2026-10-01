@@ -13,6 +13,7 @@
  */
 import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation, MissionStateView } from './mission-state-view';
 import { OUTSTANDING_RANK } from './mission-state-view';
+import type { InlineEvidenceObject } from './evidence-inline';
 
 export type ExplainScope = 'task' | 'mission' | 'workspace' | 'pr';
 
@@ -179,6 +180,11 @@ export interface ExplainAnswer {
   nextAction: string | null;
   /** Recent gate_events rows for this task — deferrals, rejections, strandings. Empty for scopes other than 'task'. */
   gateHistory: GateHistoryEntry[];
+  /**
+   * Run-evidence pointers (id, kind, bytes, state) for a task or PR subject;
+   * absent when the task has none. Read the text with `read_evidence`.
+   */
+  evidenceObjects?: InlineEvidenceObject[];
   derivedFrom: ExplainProvenance;
 }
 

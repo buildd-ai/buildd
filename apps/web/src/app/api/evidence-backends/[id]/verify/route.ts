@@ -11,6 +11,7 @@ import { db } from '@buildd/core/db';
 import { evidenceBackends } from '@buildd/core/db/schema';
 import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { verifyEvidenceBackend } from '@/lib/evidence-backend';
+import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -26,9 +27,10 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
 
   const row = await db.query.evidenceBackends.findFirst({
     where: eq(evidenceBackends.id, id),
-    columns: { id: true, teamId: true },
+    columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!row || row.teamId !== viewer.teamId) return notFound;
+  if ((await filterReachableEvidenceBackends(viewer, [row])).length === 0) return notFound;
   if (viewer.role !== 'admin' && viewer.role !== 'owner') {
     return NextResponse.json({ error: 'Verifying evidence storage requires team admin or owner' }, { status: 403 });
   }

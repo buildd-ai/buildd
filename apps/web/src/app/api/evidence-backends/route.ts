@@ -2,8 +2,9 @@
  * /api/evidence-backends — where a team's run evidence is stored
  * (docs/specs/byo-evidence-storage.md, "Backend configuration").
  *
- * GET   list the team's backends (any team member). Credentials are reported
- *       as `hasCredential`, never returned.
+ * GET   list the team's backends (any team member). A workspace-scoped backend
+ *       is listed only to callers who can reach that workspace. Credentials are
+ *       reported as `hasCredential`, never returned.
  * POST  create one (admin|owner). An endpoint that resolves to a private or
  *       link-local address is a 400. The new backend is verified on save; a
  *       failing probe is reported in `verification`, it does not reject the save.
@@ -26,6 +27,7 @@ import {
   verifyEvidenceBackend,
 } from '@/lib/evidence-backend';
 import { parseCreateEvidenceBackend } from '@/lib/evidence-backend-input';
+import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 
 const isAdmin = (role: string) => role === 'admin' || role === 'owner';
 
@@ -38,7 +40,8 @@ export async function GET(req: NextRequest) {
     where: eq(evidenceBackends.teamId, viewer.teamId),
     orderBy: [desc(evidenceBackends.createdAt)],
   });
-  return NextResponse.json({ backends: rows.map(toEvidenceBackendDTO), canManage: isAdmin(viewer.role) });
+  const visible = await filterReachableEvidenceBackends(viewer, rows);
+  return NextResponse.json({ backends: visible.map(toEvidenceBackendDTO), canManage: isAdmin(viewer.role) });
 }
 
 export async function POST(req: NextRequest) {

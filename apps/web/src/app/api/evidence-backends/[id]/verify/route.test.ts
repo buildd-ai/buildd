@@ -6,9 +6,13 @@ const ID = '22222222-2222-4222-8222-222222222222';
 
 let viewer: any;
 let row: any;
+const blockedWorkspaces = new Set<string>();
 
 const mockVerify = mock(async (id: string) => ({ backendId: id, status: 'failing', error: 'PUT failed', warnings: [], verifiedAt: 'now' }));
 
+mock.module('@/lib/evidence-backend-access', () => ({
+  filterReachableEvidenceBackends: async (_v: unknown, rows: any[]) => rows.filter((r) => !r.workspaceId || !blockedWorkspaces.has(r.workspaceId)),
+}));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({ eq: (c: unknown, v: unknown) => ({ c, v }) }));
 mock.module('@buildd/core/db/schema', () => ({ evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
@@ -34,6 +38,14 @@ describe('POST /api/evidence-backends/[id]/verify', () => {
     row = { id: ID, teamId: 'team-b' };
     expect((await call()).status).toBe(404);
     expect(mockVerify).not.toHaveBeenCalled();
+  });
+
+  it('404s a workspace-scoped backend the caller cannot reach', async () => {
+    row = { id: ID, teamId: TEAM, workspaceId: 'ws-restricted' };
+    blockedWorkspaces.add('ws-restricted');
+    expect((await call()).status).toBe(404);
+    expect(mockVerify).not.toHaveBeenCalled();
+    blockedWorkspaces.clear();
   });
 
   it('403s a member', async () => {

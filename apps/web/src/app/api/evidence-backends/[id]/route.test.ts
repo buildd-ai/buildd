@@ -8,12 +8,16 @@ let viewer: any;
 let row: any;
 let updateSet: any;
 let deleted = false;
+const blockedWorkspaces = new Set<string>();
 let endpointVerdict: { ok: boolean; error?: string };
 
 const mockSet = mock(async (..._a: any[]) => 'sec-1');
 const mockDeleteSecret = mock(async (..._a: any[]) => {});
 const mockVerify = mock(async (id: string) => ({ backendId: id, status: 'ok', error: null, warnings: [], verifiedAt: 'now' }));
 
+mock.module('@/lib/evidence-backend-access', () => ({
+  filterReachableEvidenceBackends: async (_v: unknown, rows: any[]) => rows.filter((r) => !r.workspaceId || !blockedWorkspaces.has(r.workspaceId)),
+}));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({ eq: (c: unknown, v: unknown) => ({ c, v }) }));
 mock.module('@buildd/core/db/schema', () => ({ evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
@@ -49,6 +53,18 @@ beforeEach(() => {
   mockSet.mockClear();
   mockDeleteSecret.mockClear();
   mockVerify.mockClear();
+});
+
+describe('GET /api/evidence-backends/[id] — workspace reach', () => {
+  it('404s a workspace-scoped backend the caller cannot reach, like a missing one', async () => {
+    row = { ...row, workspaceId: 'ws-restricted' };
+    blockedWorkspaces.add('ws-restricted');
+    expect((await GET(req('GET'), ctx())).status).toBe(404);
+    expect((await PATCH(req('PATCH', { bucket: 'x' }), ctx())).status).toBe(404);
+    expect((await DELETE(req('DELETE'), ctx())).status).toBe(404);
+    expect(deleted).toBe(false);
+    blockedWorkspaces.clear();
+  });
 });
 
 describe('GET /api/evidence-backends/[id]', () => {

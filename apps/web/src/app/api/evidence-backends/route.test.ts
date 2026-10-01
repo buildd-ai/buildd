@@ -10,6 +10,7 @@ let existingBackend: any;
 let workspaceRow: any;
 let listRows: any[];
 let insertedValues: any;
+const blockedWorkspaces = new Set<string>();
 let endpointVerdict: { ok: boolean; error?: string };
 
 const mockSet = mock(async (..._a: any[]) => 'sec-new');
@@ -17,6 +18,9 @@ const mockDeleteSecret = mock(async (..._a: any[]) => {});
 const mockVerify = mock(async (id: string) => ({ backendId: id, status: 'ok', error: null, warnings: [], verifiedAt: 'now' }));
 const mockValidate = mock(async (_e: string) => endpointVerdict);
 
+mock.module('@/lib/evidence-backend-access', () => ({
+  filterReachableEvidenceBackends: async (_v: unknown, rows: any[]) => rows.filter((r) => !r.workspaceId || !blockedWorkspaces.has(r.workspaceId)),
+}));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({
   eq: (c: unknown, v: unknown) => ({ c, v }),
@@ -102,6 +106,25 @@ describe('GET /api/evidence-backends', () => {
     expect(json.canManage).toBe(false);
     expect(json.backends).toEqual([{ id: 'be-1', bucket: 'b', hasCredential: true }]);
     expect(JSON.stringify(json)).not.toContain('sec-1');
+  });
+});
+
+describe('GET /api/evidence-backends — workspace reach', () => {
+  const OTHER = '33333333-3333-4333-8333-333333333333';
+
+  it('omits a workspace-scoped backend the caller cannot reach, keeps the rest', async () => {
+    as('member');
+    blockedWorkspaces.clear();
+    blockedWorkspaces.add(WS);
+    listRows = [
+      { id: 'be-team', workspaceId: null, bucket: 'team-bucket', credentialSecretId: 's1' },
+      { id: 'be-hidden', workspaceId: WS, bucket: 'secret-bucket', credentialSecretId: 's2' },
+      { id: 'be-open', workspaceId: OTHER, bucket: 'open-bucket', credentialSecretId: 's3' },
+    ];
+    const json = await (await GET(new NextRequest('http://localhost/api/evidence-backends'))).json();
+    expect(json.backends.map((b: any) => b.id)).toEqual(['be-team', 'be-open']);
+    expect(JSON.stringify(json)).not.toContain('secret-bucket');
+    blockedWorkspaces.clear();
   });
 });
 

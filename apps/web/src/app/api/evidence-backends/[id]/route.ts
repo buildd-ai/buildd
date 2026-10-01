@@ -1,7 +1,7 @@
 /**
  * /api/evidence-backends/[id]
  *
- * GET     one backend (any team member).
+ * GET     one backend (any team member who can reach its workspace, if scoped).
  * PATCH   update (admin|owner). `provider` and `workspaceId` are fixed at
  *         creation. Sending `credentials` replaces the stored credential. The
  *         backend is re-verified on save.
@@ -21,6 +21,7 @@ import {
   verifyEvidenceBackend,
 } from '@/lib/evidence-backend';
 import { parseUpdateEvidenceBackend } from '@/lib/evidence-backend-input';
+import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -33,8 +34,10 @@ async function load(req: NextRequest, id: string) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return { res: NextResponse.json({ error: who.error }, { status: who.status }) };
   const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, id) });
-  // Another team's backend answers exactly like a missing one.
+  // Another team's backend, or a workspace backend the caller cannot reach,
+  // answers exactly like a missing one.
   if (!row || row.teamId !== who.viewer.teamId) return { res: notFound() };
+  if ((await filterReachableEvidenceBackends(who.viewer, [row])).length === 0) return { res: notFound() };
   return { viewer: who.viewer, row };
 }
 
