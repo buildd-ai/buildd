@@ -17,7 +17,7 @@ SHORT = {
     "T0": "a3f09c12", "T1": "5be71d40", "T2": "c80e2a9f", "T3": "1d4c7b63",
     "T4": "e9a25f08", "T5": "7f31c6d2", "T6": "40bd98e1", "T7": "b62f0a57",
     "T8": "d17a4c9e", "T9": "3e8b51f6", "T10": "9a06d7c3",
-    "T11": "f24c8e1a", "T12": "6b5d2f90", "VA": "e4b7c2a1", "V1": "8c1e4a7d", "H1": "2f7a9b3c",
+    "T11": "f24c8e1a", "T12": "6b5d2f90", "VA": "e4b7c2a1", "V1": "8c1e4a7d", "V2": "5a9d3e2b", "H1": "2f7a9b3c",
 }
 MISSION_SHORT = "4d2e8b17"
 
@@ -110,10 +110,12 @@ hero_mission = {
     "scheduleId": None,
     "_heartbeat": "none — created from the dashboard (UI-created missions run once, no heartbeat schedule)",
     "goalCriteria": [
-        {"type": "all_prs_merged", "label": "every task PR merged"},
-        {"type": "no_open_tasks", "label": "no open tasks"},
-        {"type": "command", "command": "pnpm test --filter @harborline/money --filter web -- currency", "label": "currency suite green"},
-        {"type": "artifact_exists", "key": "fx-rounding-decision", "label": "rounding policy recorded"},
+        # Outcomes a person would write, each with mechanical evidence: two
+        # suites a runner re-runs, and two artifacts the work leaves behind.
+        {"type": "command", "command": "pnpm test --filter web -- invoice-currency", "label": "invoices show the customer's currency"},
+        {"type": "command", "command": "pnpm test --filter api -- contract-v2", "label": "public API stays backward compatible"},
+        {"type": "artifact_exists", "key": "e2e-eur-invoice", "label": "a EUR invoice pays end to end"},
+        {"type": "artifact_exists", "key": "fx-rounding-decision", "label": "rounding rule written down"},
     ],
     "goalCriteriaState": None,
     "_idShort": MISSION_SHORT,
@@ -206,15 +208,20 @@ hero_tasks = [
          description="Required routes: " + ", ".join(f"`{r}`" for r in VISUAL_ROUTES) + ". Capture each at desktop (1280x900) and phone (390x844), "
                      "EUR and JPY invoices, judge every shot, and file a fix task for anything broken. Read-only: no edits, no PR."),
     # Goal-criterion verification (mission-criteria-verify.ts): bookkeeping, observe-only
-    task("V1", "Verify goal criterion: currency suite green", None, None, None, None, [],
+    task("V1", "Verify goal criterion: invoices show the customer's currency", None, None, None, None, [],
          outputRequirement="none", taskClass="bookkeeping", creationSource="orchestrator", createdByWorkerId=None,
          priority=2, tier="budget",
-         loopConfig={"exitCondition": {"type": "command", "command": "pnpm test --filter @harborline/money --filter web -- currency"}, "maxLoops": 1},
+         loopConfig={"exitCondition": {"type": "command", "command": "pnpm test --filter web -- invoice-currency"}, "maxLoops": 1},
+         description="Run the command and report. Do not change code."),
+    task("V2", "Verify goal criterion: public API stays backward compatible", None, None, None, None, [],
+         outputRequirement="none", taskClass="bookkeeping", creationSource="orchestrator", createdByWorkerId=None,
+         priority=2, tier="budget",
+         loopConfig={"exitCondition": {"type": "command", "command": "pnpm test --filter api -- contract-v2"}, "maxLoops": 1},
          description="Run the command and report. Do not change code."),
 ]
 # the organizer leaves the verify task unclassified in the real code path too
 for t in hero_tasks:
-    if t["key"] == "V1":
+    if t["key"] in ("V1", "V2"):
         t["kind"] = "observation"; t["_kindNote"] = "real verify tasks set no kind; 'observation' is a demo choice for the glyph"
 
 # Hand-written 2–4 word display labels (tasks.label, read via taskDisplayLabel).
@@ -222,7 +229,7 @@ LABELS = {
     "T0": "plan the mission", "T1": "FX providers", "T2": "currency columns", "T3": "rates service",
     "T4": "currency picker", "T5": "formatMoney", "T6": "currency on API", "T7": "render in currency",
     "T8": "Stripe in currency", "T9": "dual-currency CSV", "T10": "receipt currency", "T11": "pay a EUR invoice",
-    "T12": "admin guide", "VA": "visual review", "V1": "verify currency suite", "H1": "dependency sweep",
+    "T12": "admin guide", "VA": "visual review", "V1": "verify invoice currency", "V2": "verify API contract", "H1": "dependency sweep",
 }
 for t in hero_tasks:
     t["label"] = LABELS[t["key"]]
@@ -244,7 +251,7 @@ PRS = {  # task -> (prNumber, +added, -removed, files, commits)
 
 RUNNER_OF = {"T0": "atlas", "T1": "birch", "T2": "atlas", "T3": "cedar", "T4": "dune", "T5": "atlas",
              "T6": "birch", "T7": "cedar", "T8": "dune", "T9": "atlas", "T10": "birch",
-             "VA": "birch", "T11": "cedar", "T12": "dune", "V1": "cedar", "H1": "dune"}
+             "VA": "birch", "T11": "cedar", "T12": "dune", "V1": "cedar", "V2": "atlas", "H1": "dune"}
 
 def title_of(k):
     for t in hero_tasks + []:
@@ -270,7 +277,7 @@ def mk_worker(tk, wk, **kw):
     return w
 
 WK = {"T0": "w0", "T1": "w1", "T2": "w2", "T3": "w3", "T4": "w4", "T5": "w5", "T6": "w6", "T7": "w7",
-      "T8": "w8", "T9": "w9", "T10": "w10", "VA": "wva", "T11": "w11", "T12": "w12", "V1": "wv1", "H1": "wh1"}
+      "T8": "w8", "T9": "w9", "T10": "w10", "VA": "wva", "T11": "w11", "T12": "w12", "V1": "wv1", "V2": "wv2", "H1": "wh1"}
 for tk, wk in WK.items():
     if tk == "H1": continue
     workers.append(mk_worker(tk, wk))
@@ -293,13 +300,13 @@ artifacts = [
                 "_Decided by Maya Okafor via the mission feed._",
      "visibility": "private", "metadata": {"decidedBy": "u_maya", "source": "waiting_input"}},
     {"key": "a_e2e_video", "table": "artifacts", "workerId": "w11", "workspaceId": "ws", "missionId": "M1",
-     "type": "recording", "key_": None, "title": "E2E: EUR invoice paid end to end", "content": None,
+     "type": "recording", "key_": "e2e-eur-invoice", "title": "E2E: EUR invoice paid end to end", "content": None,
      "storageKey": "demo/e2e-eur-invoice.webm", "visibility": "private", "metadata": {"durationSec": 38}},
     {"key": "a_summary", "table": "artifacts", "workerId": None, "workspaceId": "ws", "missionId": "M1",
      "type": "summary", "key_": "mission-summary", "title": "Multi-currency invoices, shipped",
      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. "
                 "Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; "
-                "the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
+                "the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · you chose the rounding and approved the screens.",
      "visibility": "private", "metadata": {}},
 ]
 
@@ -649,19 +656,27 @@ TL[-1]["beat"] = "Last PR lands"
 # goal criteria
 ev(2040, "criteria_eval", mission="M1",
    state={"overall": "PENDING", "criteria": [
-       {"index": 0, "type": "all_prs_merged", "label": "every task PR merged", "verdict": "pass", "evidence": "11 task PRs merged into main"},
-       {"index": 1, "type": "no_open_tasks", "label": "no open tasks", "verdict": "pass", "evidence": "All deliverable tasks closed"},
-       {"index": 2, "type": "command", "label": "currency suite green", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V1"},
-       {"index": 3, "type": "artifact_exists", "label": "rounding policy recorded", "verdict": "pass", "evidence": "artifact fx-rounding-decision"}]},
-   api="mission evaluate (auto on last task close) → missions.goalCriteriaState", db="UPDATE missions.goalCriteriaState; INSERT tasks(V1, taskClass=bookkeeping)",
+       {"index": 0, "type": "command", "label": "invoices show the customer's currency", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V1"},
+       {"index": 1, "type": "command", "label": "public API stays backward compatible", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V2"},
+       {"index": 2, "type": "artifact_exists", "label": "a EUR invoice pays end to end", "verdict": "pass", "evidence": "artifact e2e-eur-invoice"},
+       {"index": 3, "type": "artifact_exists", "label": "rounding rule written down", "verdict": "pass", "evidence": "artifact fx-rounding-decision"}]},
+   api="mission evaluate (auto on last task close) → missions.goalCriteriaState", db="UPDATE missions.goalCriteriaState; INSERT tasks(V1, V2, taskClass=bookkeeping)",
    beat="Goal criteria go green one by one")
 claim(2046, "V1")
-prog(2080, "V1", 50, "Running: pnpm test --filter @harborline/money --filter web -- currency")
+claim(2048, "V2")
+prog(2080, "V1", 50, "Running: pnpm test --filter web -- invoice-currency")
+prog(2085, "V2", 50, "Running: pnpm test --filter api -- contract-v2")
+complete(2150, "V2", "Command exited 0.")
+ev(2155, "criteria_eval", mission="M1",
+   state={"overall": "PENDING", "criteria": [
+       {"index": 0, "verdict": "PENDING"}, {"index": 1, "verdict": "pass", "evidence": "Command exited with code 0"},
+       {"index": 2, "verdict": "pass"}, {"index": 3, "verdict": "pass"}]},
+   api="verification task result → missions.goalCriteriaState", db="UPDATE missions.goalCriteriaState")
 complete(2200, "V1", "Command exited 0.")
 ev(2205, "criteria_eval", mission="M1",
    state={"overall": "pass", "criteria": [
-       {"index": 0, "verdict": "pass"}, {"index": 1, "verdict": "pass"},
-       {"index": 2, "verdict": "pass", "evidence": "Command exited with code 0"}, {"index": 3, "verdict": "pass"}]},
+       {"index": 0, "verdict": "pass", "evidence": "Command exited with code 0"}, {"index": 1, "verdict": "pass"},
+       {"index": 2, "verdict": "pass"}, {"index": 3, "verdict": "pass"}]},
    api="verification task result → missions.goalCriteriaState", db="UPDATE missions.goalCriteriaState.overall=pass")
 ev(2212, "artifact", artifact="a_summary", api="mission completion", db="INSERT artifacts(key=mission-summary)")
 ev(2215, "mission_note", note="n_done", api="(system)", db="INSERT mission_notes")

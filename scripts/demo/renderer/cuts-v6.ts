@@ -370,13 +370,24 @@ export function v6xFilm(s: Stills): Cut {
   return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: false, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
 }
 
-export function v6xHero(s: Stills, theme: 'dark' | 'light' = 'dark'): Cut {
-  const all = v6xShots(s);
-  const pick = (id: string) => ({ ...all.find((x) => x.id === id)!, dur: 4, taps: undefined });
-  const shots = [pick('plan'), pick('fleet'), pick('review'), pick('done')];
-  // Poster: most of the fleet lit. Frame 0 is the plan before any tile lands.
-  const poster = +(shotStarts({ shots })[1] + 3).toFixed(2);
-  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme, poster, shots };
+/**
+ * The site hero, after the pitch "Agents say they're done. buildd checks.":
+ * four checks a person wrote and four agents' bars. Each agent fills its bar
+ * (it says it's done), then buildd ticks its check; after the last, one
+ * "Done.". One shot that resets to its first frame, so the loop has no seam.
+ * Big shapes, four short lines of text. `mobile` lays it out for 720x900.
+ */
+export function v6xHero(_s: Stills, theme: 'dark' | 'light' = 'dark', o: { mobile?: boolean } = {}): Cut {
+  const motion: Motion = {
+    kind: 'verify', label: 'Done when',
+    checks: ['Invoices show EUR', 'Public API intact', 'EUR invoice pays', 'Rounding written down'],
+    colors: [B, B, R, B],
+    from: 0.5, stagger: 0.3, grow: 2.6, spread: 1.1, lag: 0.45, doneAt: 8.5, resetAt: 12.0, resetDur: 1.2,
+  };
+  const frame = o.mobile ? { width: 720, height: 900, fps: FRAME.fps } : FRAME;
+  const shots: Shot[] = [{ id: 'verify', layout: 'motion', dur: 13.2, images: [], motion }];
+  // Poster: every check ticked and Done up.
+  return { name: o.mobile ? 'hero-mobile' : 'hero', ...frame, fade: FADE, loop: true, captions: false, theme, poster: 10.5, shots };
 }
 
 // ── Checks run by render.ts before a frame is drawn (and by the tests) ─────
@@ -453,6 +464,8 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   return BEATS.map((beat) => ({
     name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
+    // The spec poster is the criteria list fully lit (render.ts otherwise takes 60% in, mid-typing).
+    ...(beat === 'spec' ? { poster: 2.0 } : {}),
   }));
 }
 
