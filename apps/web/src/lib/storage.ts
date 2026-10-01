@@ -22,6 +22,9 @@ function getClient(): S3Client {
   return _client;
 }
 
+/** The env-configured client, for the `buildd_default` evidence backend. */
+export const getDefaultStorageClient = getClient;
+
 export function isStorageConfigured(): boolean {
   return !!(config.storageEndpoint && config.storageAccessKey && config.storageSecretKey);
 }

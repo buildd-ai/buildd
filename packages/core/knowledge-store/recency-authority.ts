@@ -14,6 +14,9 @@ export const CORPUS_AUTHORITY: Record<Corpus, number> = {
   task:       0.4,
   artifact:   0.4,
   session:    0.2,
+  // Raw run evidence: the error-bearing lines of a log. Specific, but never a
+  // decision, so it ranks below every curated work product.
+  evidence:   0.3,
 };
 
 // ── Recency decay half-lives (days) ──────────────────────────────────────────
@@ -30,6 +33,8 @@ export const HALF_LIFE_DAYS: Record<Corpus, number> = {
   task:       30,
   artifact:   30,
   session:    7,
+  // Objects expire after the backend's retention (30 days by default).
+  evidence:   14,
 };
 
 /**

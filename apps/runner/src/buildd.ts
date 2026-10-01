@@ -593,6 +593,55 @@ export class BuilddClient {
     return { uploadUrl: data.uploadUrl as string, storageKey: data.storageKey as string };
   }
 
+  /**
+   * Ask for a presigned PUT for one piece of run evidence
+   * (docs/specs/byo-evidence-storage.md). The server resolves the team's
+   * backend, derives the key, enforces the per-task byte cap and binds
+   * `sizeBytes` into the signature; PUT exactly that many bytes within 15 min.
+   *
+   * Evidence never fails a task, so every refusal (sensitive workspace, over
+   * cap, storage unavailable, not our worker) and any transport error is null.
+   */
+  async requestEvidenceUploadUrl(
+    workerId: string,
+    req: { kind: 'command_output' | 'test_report' | 'transcript'; seq: number; sizeBytes: number },
+  ): Promise<{ uploadUrl: string; key: string; evidenceId?: string } | null> {
+    try {
+      const data = await this.fetch(
+        `/api/workers/${workerId}/evidence-upload-url`,
+        { method: 'POST', body: JSON.stringify({ kind: req.kind, seq: req.seq, sizeBytes: req.sizeBytes }) },
+        [400, 401, 403, 404, 409, 413, 424, 503],
+      );
+      if (typeof data?.uploadUrl !== 'string' || typeof data?.key !== 'string') return null;
+      return {
+        uploadUrl: data.uploadUrl,
+        key: data.key,
+        ...(typeof data.evidenceId === 'string' ? { evidenceId: data.evidenceId } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * After a 2xx PUT to the presigned URL: ask the server to HEAD the object and
+   * mark the evidence row `stored`, so the read routes serve it. True only when
+   * the server reports it stored. Best-effort: every refusal or transport error
+   * is false, never a throw.
+   */
+  async confirmEvidenceUpload(workerId: string, evidenceId: string): Promise<boolean> {
+    try {
+      const data = await this.fetch(
+        `/api/workers/${workerId}/evidence/${evidenceId}/confirm`,
+        { method: 'POST' },
+        [400, 401, 403, 404, 409, 424, 503],
+      );
+      return data?.uploadState === 'stored';
+    } catch {
+      return false;
+    }
+  }
+
   async createObservation(workspaceId: string, data: {
     type: string;
     title: string;
