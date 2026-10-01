@@ -77,7 +77,7 @@ import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispa
 import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
-import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -2065,7 +2065,19 @@ export async function PATCH(
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
   // routes the next claim around it.
-  const isUnrecognizedModel = (status === 'failed' || status === 'error') && isUnrecognizedModelError(error);
+  //
+  // The other rejection — the CLI not knowing the id at all — is a config fault
+  // the claim route cannot route around (the id comes from a tier row or a
+  // pin), so it is NOT retried: the task fails once with the id named, and the
+  // attempt is stamped so a CI-fix budget does not count it. The runner flags
+  // it because the marker is on stderr and the thrown error is only the exit.
+  const isModelIdRejected = (status === 'failed' || status === 'error') &&
+    (body.unrecognizedModel === true || isModelIdRejectedError(error));
+  const rejectedModel = isModelIdRejected
+    ? (typeof body.rejectedModel === 'string' && body.rejectedModel ? body.rejectedModel : rejectedModelId(error))
+    : null;
+  const isUnrecognizedModel = isModelIdRejected ||
+    ((status === 'failed' || status === 'error') && isUnrecognizedModelError(error));
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,
@@ -2777,6 +2789,9 @@ export async function PATCH(
         // A session dollar cap is terminal: the retry runs under the same cap
         // and would spend another cap's worth to hit it again.
         if (isSessionBudgetCap) shouldAutoRetry = false;
+        // A model id the CLI rejects is rejected identically on every attempt,
+        // including a mission task's one automatic retry.
+        if (isModelIdRejected) shouldAutoRetry = false;
         // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
         // Same guard as the sandbox_mount_gap block above — a pending task in an
         // exhausted mission is skipped by the claim loop and would be silently stuck.
@@ -2820,7 +2835,7 @@ export async function PATCH(
         // the same reason: without it, one runner self-update permanently
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isUnrecognizedModel) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -2831,6 +2846,13 @@ export async function PATCH(
             shouldAutoRetry = false;
             infraStalledFail = true;
           }
+        }
+
+        if (isModelIdRejected) {
+          taskCtxForRetry = {
+            ...taskCtxForRetry,
+            [MODEL_REJECTION_CONTEXT_KEY]: { model: rejectedModel, at: new Date().toISOString() },
+          };
         }
 
         // Visual auditor (docs/design/visual-qa-auditor.md): an audit that
@@ -3214,6 +3236,12 @@ export async function PATCH(
                 ? 'Visual audit ended without evidence'
                 : `Visual audit ended without evidence: ${error ?? worker.error ?? 'worker failed without an error message'}`,
               errorType: 'infra_stalled',
+            },
+          } : isModelIdRejected ? {
+            result: {
+              error: `Claude Code on this runner does not recognise model ${rejectedModel ? `"${rejectedModel}"` : '(id not reported)'}; not retried. Fix the tier row or model pin that resolved to it, or update the runner's Claude Code.`,
+              errorType: 'unrecognized_model',
+              rejectedModel,
             },
           } : isSessionBudgetCap ? {
             result: {

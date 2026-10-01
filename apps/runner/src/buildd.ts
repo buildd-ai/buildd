@@ -303,6 +303,9 @@ export class BuilddClient {
     sessionBudgetCapped?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
+    /** The CLI rejected the session's model id (stderr marker); rejectedModel names it when readable. */
+    unrecognizedModel?: boolean;
+    rejectedModel?: string;
     // Set by restoreWorkersFromDisk when this 'failed' write reconciles a
     // session whose process died without ever reporting a terminal status —
     // never sent by a live session. Tells the server's terminal-record ledger
