@@ -285,7 +285,7 @@ export default async function TaskDetailPage({
       console.error('[task-page] evidence list failed:', err instanceof Error ? err.message : err);
       return [];
     });
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -363,8 +363,8 @@ export default async function TaskDetailPage({
           })
           .catch(() => null)
       : Promise.resolve(null),
+    evidenceFilesPromise,
   ]);
-  const evidenceFiles = await evidenceFilesPromise;
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
   const runnerName = runnerDisplayResolver(runnerHeartbeats);
