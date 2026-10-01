@@ -1520,6 +1520,13 @@
       "when": 1790821787978,
       "tag": "0222_bizarre_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1790822291523,
+      "tag": "0223_stiff_tiger_shark",
+      "breakpoints": true
     }
   ]
 }

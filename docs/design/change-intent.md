@@ -127,6 +127,34 @@ If `commitsBehind > 10`, emit a strong warning message visible in the runner UI,
 - **Close**: marked `closedAt = NOW()` in the GitHub PR webhook when `action === 'closed'` or `action === 'merged'`.
 - **Supersession**: CI retry chains call `create_pr` on the same `workerId` / same task — the dedup path returns early without creating a duplicate intent row. Superseded-PR retries (new worker, same task) inherit the intent via the existing worker→task linkage.
 
+### 7a. Opt-in merge ordering on serialized surfaces
+
+Added by [conflict-aware-orchestration](conflict-aware-orchestration.md) §3
+(`apps/web/src/lib/surface-ordering.ts`). Everything above stays advisory by
+default. A workspace opts in with `gitConfig.surfaceOrdering: 'shadow' | 'enforce'`
+**and** `serialize: true` on a `conflictSurfaces` or `sequenceNamespaces` entry;
+without both, no merge door reads anything new.
+
+- A namespace entry may list `triggers` (e.g. `packages/core/db/schema.ts`): a
+  manifest touching a trigger gets the anchor injected (§3), and a PR diff
+  touching one counts as touching the namespace. Generated files (journal,
+  snapshots) count too, despite their edit-lease exemption.
+- Every merge door (unattended auto-merge, the landing function, the dashboard
+  merge, `merge_pr`) asks the same guard before any branch mutation: a PR waits
+  while an earlier open PR (by earliest open intent, then PR number) shares a
+  serialized surface. Surfaces come from the PR's pinned actual diff; an
+  unreadable diff or intent state defers in `enforce`.
+- Intent rows are now deduplicated per (workspace, PR, surface) with a guarded
+  insert; a task-less row still counts as a contender.
+- The merge itself runs inside a per-surface reservation (`surface_reservations`,
+  one atomic compare-and-set), released on success or failure, expiring after a
+  bounded TTL and reconciled against GitHub before reuse.
+- Closing a PR (webhook or the reconcile sweep, which also catches a lost close
+  event) closes its intents and re-drives the next waiting PR. No session waits.
+- Warnings stay `change_intent` / `warned` (`detail.advisory`); ordering waits
+  are the separate `surface_ordering` gate. The migration-slot reservation and
+  collision checks (§5, the merge-time migration inspector) remain as backstops.
+
 ### 8. Announcement surface (future)
 
 Intent rows are queryable via `GET /api/workspaces/[id]/change-intents?open=true`. The mission timeline can surface a badge ("touches migrations — 2 open PRs") in a follow-up PR.
@@ -135,6 +163,6 @@ Intent rows are queryable via `GET /api/workspaces/[id]/change-intents?open=true
 
 ## Constraints
 
-- Additive; no hard serialization of all work.
+- Additive; no hard serialization of all work (§7a serializes only opted-in surfaces).
 - Race-safe: `change_intents` uses optimistic inserts; `last_migration_number` uses atomic UPDATE.
 - The `sequenceNamespace` anchor-injection is the primary migration-conflict fix; the reservation API is a secondary backstop.

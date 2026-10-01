@@ -414,6 +414,11 @@ export class WorkerSync {
         ? computeDirtyWorktree(worker.worktreePath)
         : undefined;
 
+      // Degraded path-claim calls since the last successful sync: the server's
+      // declaration denominator (conflict-aware-orchestration.md §3).
+      const degradedTotal = worker.pathClaimDegraded ?? 0;
+      const degradedDelta = degradedTotal - (worker.pathClaimDegradedReported ?? 0);
+
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
         currentAction: worker.currentAction,
@@ -437,6 +442,7 @@ export class WorkerSync {
         // Observed touches from git diff — server accumulates into workers.observedTouches.
         ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
         ...(dirtyWorktree !== undefined ? { dirtyWorktree } : {}),
+        ...(degradedDelta > 0 ? { pathClaimDegraded: degradedDelta } : {}),
         // This loop is the one real consumer of the human-instruction queue:
         // it injects `response.instructions` into the live session. Declaring it
         // is what stops every other PATCH (milestones, branch, status) from
@@ -462,6 +468,8 @@ export class WorkerSync {
         if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [...drainedPromptCompositionEvents, ...(worker.pendingPromptCompositionEvents ?? [])];
         throw err;
       }
+
+      worker.pathClaimDegradedReported = degradedTotal;
 
       // A path this sync reported is held by another live task. In enforce mode
       // that stops the task (checkpoint + deferral, in WorkerManager); advisory

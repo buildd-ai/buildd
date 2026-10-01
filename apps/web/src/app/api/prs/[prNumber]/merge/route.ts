@@ -15,6 +15,7 @@ import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { mergePullRequest, githubApi } from '@/lib/github';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -394,6 +395,7 @@ export async function POST(
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },
       releaseConfig: workspace.releaseConfig ?? null,
+      gitConfig: workspace.gitConfig ?? null,
     });
     if (landingMode === 'enforce') {
       return outcome.kind === 'merged'
@@ -508,8 +510,36 @@ export async function POST(
     }
   }
 
+  // ── Surface merge ordering (conflict-aware-orchestration.md §3) ─────────
+  // A person merging does not silently jump an earlier PR on a serialized
+  // surface. Off by default; there is no dashboard override for it.
+  const surfaceOrder = await checkSurfaceOrder({
+    workspaceId: worker.workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha: liveHeadSha,
+    gitConfig: workspace.gitConfig ?? null,
+    taskId: worker.taskId ?? null,
+    workerId: worker.id,
+    door: 'dashboard',
+    callerOrigin: 'dashboard',
+  });
+  if (surfaceOrder.blocks) {
+    return NextResponse.json(
+      { error: `Merge deferred: ${surfaceOrder.reason}`, surfaceOrderBlocked: true, waitingOnPr: surfaceOrder.counterpartPrNumber, surface: surfaceOrder.surface },
+      { status: 409 },
+    );
+  }
+
   // Perform the merge
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha),
+  );
+  if ('refused' in slotted) {
+    return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
+  }
+  const result = slotted.result;
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

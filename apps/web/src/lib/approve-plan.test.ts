@@ -38,6 +38,14 @@ const NEXT_IDS = [
   'cccccccc-0000-4000-8000-000000000003',
 ];
 
+// Manifest provenance denominator (conflict-aware-orchestration.md §3): captured
+// here so its ledger write does not land in the insert spy below.
+const declarations: any[] = [];
+mock.module('@/lib/path-declaration-ledger', () => ({
+  recordPathDeclaration: (input: any) => { declarations.push(input); },
+  manifestShape: (m: unknown) => (Array.isArray(m) && m.length ? 'concrete' : 'none'),
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', args: [col, val] }),
   and: (...args: any[]) => ({ _op: 'and', args }),
@@ -509,6 +517,7 @@ describe('approvePlan — persists explicit step manifests', () => {
   beforeEach(reset);
 
   it('writes each step manifest, normalized, with plan-step provenance', async () => {
+    declarations.length = 0;
     await approvePlan(PLANNING_TASK_ID, [
       { ref: 'a', title: 'Step A', pathManifest: ['apps/web/src/lib/a.ts', ' packages/core/ ', 'apps/web/src/lib/a.ts'] },
       { ref: 'b', title: 'Step B', pathManifest: ['docs/b.md'] },
@@ -520,6 +529,7 @@ describe('approvePlan — persists explicit step manifests', () => {
     expect(decl.source).toBe('creation');
     expect(decl.origin).toEqual({ kind: 'plan_step', planningTaskId: PLANNING_TASK_ID, stepRef: 'a' });
     expect(typeof decl.snapshotAt).toBe('string');
+    expect(declarations.map((d) => d.provenance)).toEqual(['plan_step', 'plan_step']);
   });
 
   it('a step with no (or only blank) manifest stays undeclared', async () => {

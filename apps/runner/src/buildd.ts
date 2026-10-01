@@ -359,6 +359,8 @@ export class BuilddClient {
     // Incremental file paths touched since last check-in (from git diff --name-only).
     // Server accumulates into workers.observedTouches for passive collision detection (§6d).
     touchedPaths?: string[];
+    /** Path-claim calls that went ahead degraded since the last report (a delta). */
+    pathClaimDegraded?: number;
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

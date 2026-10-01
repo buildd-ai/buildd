@@ -34,6 +34,8 @@ import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
  * The base-freshness refusal below: behind the base but not conflicting.
@@ -494,8 +496,38 @@ export async function tryAutoMergeWorkerPr(params: {
   worker: { id: string; taskId: string | null; workspaceId?: string };
   policy: MergePolicy;
   bound?: ModelApproveBound;
+  /**
+   * The workspace gitConfig, used ONLY by surface merge ordering (the merge
+   * decision itself is `policy`). Omitted, the ordering check loads it.
+   */
+  surfaceOrderingConfig?: WorkspaceGitConfig | null;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
+
+  // Surface merge ordering (conflict-aware-orchestration.md §3) — FIRST, before
+  // the safety rails, because their refusal path can refresh the branch
+  // (dispatchConflictRetry). A PR waiting behind an earlier PR on a serialized
+  // surface must not be mutated; the earlier PR's close re-drives it. Off by
+  // default: no reads unless the workspace opted in.
+  const orderWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  const surfaceOrder = orderWorkspaceId
+    ? await checkSurfaceOrder({
+        workspaceId: orderWorkspaceId,
+        installationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        gitConfig: params.surfaceOrderingConfig,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        door: 'auto-merge',
+        callerOrigin: 'system',
+      })
+    : ({ blocks: false, slot: null } as const);
+  if (surfaceOrder.blocks) {
+    console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${surfaceOrder.reason}`);
+    return { merged: false, reason: surfaceOrder.reason };
+  }
 
   // One mission read serves both callers of it inside the safety rails: the
   // size-gate exemption and, when a model verdict authorised this merge, the
@@ -658,7 +690,14 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha),
+  );
+  if ('refused' in slotted) {
+    console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
+    return { merged: false, reason: slotted.refused };
+  }
+  const result = slotted.result;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);

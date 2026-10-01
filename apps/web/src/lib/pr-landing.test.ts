@@ -179,6 +179,14 @@ mock.module('@/lib/pr-landing-marker', () => ({
   clearLandingMarker: mockClearMarker,
 }));
 
+// Surface merge ordering: pass-through unless a test below drives it.
+let mockCheckSurfaceOrder = mock(async (_input: any): Promise<any> => ({ blocks: false, slot: null }));
+let mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>): Promise<any> => ({ result: await merge() }));
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: (i: any) => mockCheckSurfaceOrder(i),
+  mergeInSurfaceSlot: (v: any, m: () => Promise<any>) => mockMergeInSurfaceSlot(v, m),
+}));
+
 import {
   landPr,
   evaluateTreadmillBound,
@@ -928,5 +936,48 @@ describe('landPr — alert hook', () => {
     gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
     const out = await land({}, { ...deps(), alert: async () => { throw new Error('pushover down'); } });
     expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+  });
+});
+
+// ── Surface merge ordering (conflict-aware-orchestration.md §3) ──────────────
+describe('landPr — surface ordering', () => {
+  const blocked = { blocks: true, kind: 'ordering', reason: 'waiting for PR #41 to close first: both change Drizzle migrations', counterpartPrNumber: 41, surface: 'Drizzle migrations' };
+
+  beforeEach(() => {
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }));
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }));
+  });
+
+  it('a later surface PR waits before any rail, refresh or merge, with its counterpart on the ledger row', async () => {
+    mockCheckSurfaceOrder = mock(async () => blocked);
+    const outcome = await land({ gitConfig: { surfaceOrdering: 'enforce' } as any });
+    expect(outcome.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    const row = landingEvents().at(-1) as any;
+    expect(row.detail).toMatchObject({ waitingOn: 'surface_order', counterpartPrNumber: 41, surface: 'Drizzle migrations' });
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ prNumber: 42, headSha: 'head1', door: 'check_suite', observeOnly: false });
+  });
+
+  it('shadow landing asks in observe-only mode and never reserves', async () => {
+    await land({ mode: 'shadow', gitConfig: { surfaceOrdering: 'enforce' } as any });
+    expect(mockCheckSurfaceOrder.mock.calls[0][0].observeOnly).toBe(true);
+    expect(mockMergeInSurfaceSlot).not.toHaveBeenCalled();
+  });
+
+  it('a refused merge slot is a wait, not a merge', async () => {
+    mockMergeInSurfaceSlot = mock(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+    const outcome = await land();
+    expect(outcome.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect((landingEvents().at(-1) as any).detail).toMatchObject({ waitingOn: 'surface_slot' });
+  });
+
+  it('default: merges through the slot exactly as before', async () => {
+    const outcome = await land();
+    expect(outcome.kind).toBe('merged');
+    expect(mockMergeInSurfaceSlot).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
   });
 });

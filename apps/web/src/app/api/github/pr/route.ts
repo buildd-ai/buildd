@@ -23,11 +23,12 @@ import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-
 import { resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
-  resolveMatchedSurfaces,
   recordChangeIntents,
   findConflictingIntents,
   postConflictWarnings,
 } from '@/lib/change-intent';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
@@ -950,7 +951,8 @@ export async function POST(req: NextRequest) {
     // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
     try {
       const taskPathManifest = (worker.task?.pathManifest as string[] | null) ?? [];
-      const matchedSurfaces = resolveMatchedSurfaces(taskPathManifest, workspace.gitConfig ?? null);
+      // Advisory warning surfaces plus opted-in serialized namespaces (schema triggers included).
+      const matchedSurfaces = resolveIntentSurfaces(taskPathManifest, workspace.gitConfig ?? null);
 
       if (matchedSurfaces.length > 0) {
         // Record intent rows first (so we don't find ourselves as a conflict)
@@ -1393,6 +1395,7 @@ export async function PUT(req: NextRequest) {
           policy,
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
           releaseConfig: workspace.releaseConfig ?? null,
+          gitConfig: workspace.gitConfig ?? null,
           mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
         });
         if (landingMode === 'enforce') {
@@ -1559,13 +1562,45 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
 
-    const result = await mergePullRequest(
+    // ── Surface merge ordering (conflict-aware-orchestration.md §3) ─────────
+    // Off by default. `force` is the existing explicit override: it proceeds
+    // past an ordering wait but is ledgered as `bypassed`, never silent.
+    const surfaceOrder = await checkSurfaceOrder({
+      workspaceId: workspace.id,
+      installationId: repo.installation.installationId,
+      repoFullName: repo.fullName,
+      prNumber,
+      headSha,
+      gitConfig: workspace.gitConfig ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      door: 'merge_pr',
+      callerOrigin: 'worker',
+      override: !!force,
+    });
+    if (surfaceOrder.blocks) {
+      return NextResponse.json({
+        error: `merge deferred: ${surfaceOrder.reason}`,
+        waitingOnPr: surfaceOrder.counterpartPrNumber,
+        surface: surfaceOrder.surface,
+        hint: 'This PR merges automatically once the earlier PR on the same surface closes. Do not wait for it.',
+      }, { status: 409 });
+    }
+
+    const slotted = await mergeInSurfaceSlot(surfaceOrder, () => mergePullRequest(
       repo.installation.installationId,
       repo.fullName,
       prNumber,
       mergeMethod as 'merge' | 'squash' | 'rebase',
       headSha,
-    );
+    ));
+    if ('refused' in slotted) {
+      return NextResponse.json({
+        error: `merge deferred: ${slotted.refused}`,
+        hint: 'Another PR on the same serialized surface is merging right now; this one is re-evaluated when it closes.',
+      }, { status: 409 });
+    }
+    const result = slotted.result;
 
     if (result.merged) {
       await db

@@ -268,6 +268,8 @@ export interface LocalWorker {
   pathCollisionDeferring?: boolean;
   /** Path-claim calls that hit the deadline or failed: enforcement was degraded for them. */
   pathClaimDegraded?: number;
+  /** How many of `pathClaimDegraded` the server has been told about (the next sync sends the delta). */
+  pathClaimDegradedReported?: number;
   /** Last time the sweep refreshed the base ref with a fetch (ms epoch). */
   pathSweepBaseFetchedAt?: number;
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)

@@ -73,8 +73,10 @@ describe('checkPathClaim', () => {
   it('rejects a wildcard and records a rejected gate event', async () => {
     const r = await checkPathClaim({ ...base, paths: ['src/a.ts', '**'] });
     expect(r.kind).toBe('wildcard');
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
     expect(ev.outcome).toBe('rejected');
     expect(ev.surface).toBe('test-surface');
@@ -142,8 +144,10 @@ describe('checkPathClaim', () => {
     expect(r.body.message).not.toContain('Pusher');
     expect(mockRegisterWaiter).toHaveBeenCalledWith(SIBLING_ID, TASK_ID, 'shared.ts', WORKSPACE_ID);
 
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.outcome).toBe('deferred');
     expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
     expect(ev.detail).toEqual({ blockingTaskId: SIBLING_ID, blockingPath: 'shared.ts', crossMission: true, deadlock: false });

@@ -391,8 +391,10 @@ describe('check_path_claim MCP handler', () => {
     expect(result.message).toContain('path_released message');
     expect(result.message).not.toContain('Pusher');
 
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
     expect(ev.outcome).toBe('deferred');
     expect(ev.surface).toBe('mcp:check_path_claim');
@@ -405,8 +407,10 @@ describe('check_path_claim MCP handler', () => {
     const PATHS = ['**'];
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     await callTool({ paths: PATHS });
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.outcome).toBe('rejected');
     expect(ev.surface).toBe('mcp:check_path_claim');
   });

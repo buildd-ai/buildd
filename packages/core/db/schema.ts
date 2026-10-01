@@ -407,6 +407,10 @@ export interface WorkspaceGitConfig {
   conflictSurfaces?: Array<{
     pattern: string;  // prefix or glob, e.g. "packages/core/drizzle/**" or "bun.lock"
     label: string;    // shown in warning notes, e.g. "Drizzle migrations"
+    // Opt-in merge ordering (conflict-aware-orchestration.md §3). With
+    // `surfaceOrdering` on, a PR touching a serialized surface merges only after
+    // every earlier open PR on that surface has closed. Absent/false: warn only.
+    serialize?: boolean;
   }>;
   // sequenceNamespaces: directories where file-name distinctness does NOT prevent
   // integer-index collisions (Drizzle migrations, ADR numbering). At task-creation
@@ -417,7 +421,19 @@ export interface WorkspaceGitConfig {
     dir: string;        // e.g. "packages/core/drizzle"
     anchorFile: string; // e.g. "packages/core/drizzle/meta/_journal.json"
     label: string;
+    // Paths outside `dir` whose edit generates into the namespace (e.g.
+    // "packages/core/db/schema.ts"): a manifest touching one gets the anchor too,
+    // and a PR diff touching one counts as touching the namespace.
+    triggers?: string[];
+    // Opt-in: the namespace (dir + anchor + triggers, generated files included)
+    // is one serialized merge surface under `surfaceOrdering`. See conflictSurfaces.
+    serialize?: boolean;
   }>;
+  // Surface merge ordering (conflict-aware-orchestration.md §3). Off by default
+  // (absent/'off': no reads, no gate). 'shadow' records what it would defer;
+  // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
+  // fails closed when intent state cannot be verified.
+  surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
 
   // When true, tasks with outputRequirement='pr_required' that do not already declare a
   // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
@@ -4145,6 +4161,29 @@ export const changeIntentsRelations = relations(changeIntents, ({ one }) => ({
 
 export type ChangeIntent = typeof changeIntents.$inferSelect;
 export type NewChangeIntent = typeof changeIntents.$inferInsert;
+
+// Surface merge reservations — at most one PR per (workspace, repo, serialized
+// surface) is between "ordering passed" and "merge returned". Acquired with one
+// INSERT ... ON CONFLICT DO UPDATE ... WHERE (expired OR same PR) compare-and-set;
+// released by token on success, failure or bounded expiry. GitHub cannot share a
+// DB transaction, so an expired holder is reconciled against GitHub before reuse.
+// See apps/web/src/lib/surface-ordering.ts and conflict-aware-orchestration.md §3.
+export const surfaceReservations = pgTable('surface_reservations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  repoFullName: text('repo_full_name').notNull(),
+  surface: text('surface').notNull(),
+  prNumber: integer('pr_number').notNull(),
+  headSha: text('head_sha').notNull(),
+  baseSha: text('base_sha'),
+  token: uuid('token').notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  surfaceUnique: uniqueIndex('surface_reservations_surface_idx').on(t.workspaceId, t.repoFullName, t.surface),
+}));
+
+export type SurfaceReservation = typeof surfaceReservations.$inferSelect;
 
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;
