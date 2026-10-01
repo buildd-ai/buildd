@@ -7790,6 +7790,23 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
     });
   }
 
+  it.each([
+    ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
+    ['a conflictSurfaces pattern is not a string', { conflictSurfaces: [{ label: 'x', pattern: 42, serialize: true }] }],
+    ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
+  ])('a malformed workspace gitConfig (%s) leaves the claim response unchanged: same deferral, no 500', async (_name, gitConfig) => {
+    const openPrs = [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }];
+    const prManifests = [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }];
+    const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
+    const malformed = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig } })], openPrs, prManifests,
+    }));
+    expect(malformed.status).toBe(200);
+    expect(malformed.body).toEqual(baseline.body);
+    expect(malformed.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    expect(malformed.scheduled).toBe(0);
+  });
+
   it('the response never waits on the decision (a model call that never answers)', async () => {
     let called = false;
     const hanging = holdStartOn();

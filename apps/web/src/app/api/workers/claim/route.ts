@@ -1380,7 +1380,19 @@ export async function POST(req: NextRequest) {
   // awaits anything new.
   const holdStart = new ClaimHoldCollector();
   const holdStartGated = gatedStartReachable();
+  // Every hold/start call in the loop is non-throwing: the collector methods,
+  // gatedStartApplies and acquireGatedStartPaths catch internally, and this
+  // context builder does too. The bookkeeping runs for every team, opted in or
+  // not, so a malformed row must cost a skipped note, never a failed claim.
   const holdStartContext = (t: any, isForced: boolean): ClaimHoldTaskContext | null => {
+    try {
+      return buildHoldStartContext(t, isForced);
+    } catch (err) {
+      console.warn(`[claim] hold/start context failed for task ${t?.id} (skipped):`, (err as Error)?.message ?? err);
+      return null;
+    }
+  };
+  const buildHoldStartContext = (t: any, isForced: boolean): ClaimHoldTaskContext | null => {
     const teamId = t.workspace?.teamId as string | undefined;
     if (!teamId) return null;
     const created = t.createdAt ? new Date(t.createdAt) : null;

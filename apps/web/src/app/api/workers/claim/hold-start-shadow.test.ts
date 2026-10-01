@@ -155,6 +155,36 @@ describe('ClaimHoldCollector.noteOpenPrOverlap: deterministic rails', () => {
   });
 });
 
+describe('ClaimHoldCollector never throws into the claim loop', () => {
+  const malformed: Array<[string, any]> = [
+    ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
+    ['a conflictSurfaces pattern is not a string', { conflictSurfaces: [{ label: 'x', pattern: 42, serialize: true }] }],
+    ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
+  ];
+  for (const [name, gitConfig] of malformed) {
+    it(`open-PR overlap with a malformed gitConfig (${name}) is skipped as an error`, () => {
+      const c = new ClaimHoldCollector();
+      expect(() => c.noteOpenPrOverlap(ctx({ gitConfig }), ['apps/web/src/widget.ts'], [pr()], new Map())).not.toThrow();
+      expect(c.noteOpenPrOverlap(ctx({ gitConfig }), ['apps/web/src/widget.ts'], [pr()], new Map())).toBeNull();
+      expect(c.candidates).toHaveLength(0);
+      expect(c.skipped.error).toBe(2);
+    });
+  }
+
+  it('a malformed open-PR entry is skipped as an error, not thrown', () => {
+    const c = new ClaimHoldCollector();
+    const bad = [{ taskId: HOLDER, prNumber: 7, pathManifest: 'apps/web/src/widget.ts' as any, workerStatus: 'completed', prLifecycle: null }];
+    expect(() => c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], bad, new Map())).not.toThrow();
+    expect(c.candidates).toHaveLength(0);
+  });
+
+  it('advisory_manifest noting never throws on a bad context', () => {
+    const c = new ClaimHoldCollector();
+    expect(() => c.noteAdvisoryManifest(null as any, 'peer')).not.toThrow();
+    expect(c.skipped.error).toBe(1);
+  });
+});
+
 describe('ClaimHoldCollector.noteAdvisoryManifest', () => {
   it('records the scope-undeclared serialization', () => {
     const c = new ClaimHoldCollector();
@@ -239,12 +269,34 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
     expect(h.rows).toHaveLength(0);
   });
 
+  it('a team that has not opted in costs no ledger read: the opt-in check comes first', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    let recentReads = 0;
+    const dd = decisionDeps({ resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any });
+    const h = harness({ hasRecent: async () => { recentReads++; return false; } }, dd);
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(recentReads).toBe(0);
+    expect(h.rows).toHaveLength(0);
+  });
+
+  it('an opted-in team resolves access once per decision (not again inside the adapter)', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const h = harness();
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.counts().accessCalls).toBe(1);
+    expect(h.rows).toHaveLength(1);
+  });
+
   it('the same state is not asked twice: the ledger says it was asked recently', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
     const h = harness({ hasRecent: async () => true });
     await runClaimHoldShadow(c.candidates, h.deps);
-    expect(h.counts().accessCalls).toBe(0);
+    // The opt-in check runs first; the ledger read then stops the model call.
+    expect(h.counts().accessCalls).toBe(1);
+    expect(h.counts().calls).toBe(0);
     expect(h.rows).toHaveLength(0);
   });
 

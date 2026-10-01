@@ -101,10 +101,15 @@ export interface ClaimHoldNote {
 
 export class ClaimHoldCollector {
   readonly candidates: ClaimHoldNote[] = [];
-  /** Deferrals not asked about, by rail (diagnostics only). */
-  readonly skipped: Partial<Record<ClaimHoldRail, number>> = {};
+  /**
+   * Deferrals not asked about, by rail (diagnostics only). `error` counts a
+   * note that threw (a malformed workspace gitConfig, say): it is swallowed,
+   * because this bookkeeping runs inside the claim loop for every team and
+   * must never turn a deferral into a failed claim.
+   */
+  readonly skipped: Partial<Record<ClaimHoldRail | 'error', number>> = {};
 
-  private skip(rail: ClaimHoldRail): null {
+  private skip(rail: ClaimHoldRail | 'error'): null {
     this.skipped[rail] = (this.skipped[rail] ?? 0) + 1;
     return null;
   }
@@ -117,6 +122,15 @@ export class ClaimHoldCollector {
 
   /** The mission's scope-undeclared serialization deferred this task behind `peerTaskId`. */
   noteAdvisoryManifest(ctx: ClaimHoldTaskContext, peerTaskId: string): ClaimHoldNote | null {
+    try {
+      return this.advisoryManifest(ctx, peerTaskId);
+    } catch (err) {
+      console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
+      return this.skip('error');
+    }
+  }
+
+  private advisoryManifest(ctx: ClaimHoldTaskContext, peerTaskId: string): ClaimHoldNote | null {
     const holder: ClaimHoldHolder = { taskId: peerTaskId, prNumber: null, workerStatus: null, prLifecycle: null };
     const verdict = classifyClaimHoldEligibility({
       gate: 'advisory_manifest',
@@ -138,6 +152,20 @@ export class ClaimHoldCollector {
    * the candidate must not overlap any live lease held by another task.
    */
   noteOpenPrOverlap(
+    ctx: ClaimHoldTaskContext,
+    manifest: string[],
+    openPrs: OpenPrHolderEntry[],
+    activeLeases: Map<string, string[]> | undefined,
+  ): ClaimHoldNote | null {
+    try {
+      return this.openPrOverlap(ctx, manifest, openPrs, activeLeases);
+    } catch (err) {
+      console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
+      return this.skip('error');
+    }
+  }
+
+  private openPrOverlap(
     ctx: ClaimHoldTaskContext,
     manifest: string[],
     openPrs: OpenPrHolderEntry[],
@@ -239,6 +267,8 @@ function keyFor(note: ClaimHoldNote, decision: ClaimHoldDecision, since: Date): 
   };
 }
 
+const defaultResolveAccess: NonNullable<OrchestrationDecisionDeps['resolveAccess']> = async (opts) =>
+  (await import('@buildd/core/decision-client')).resolveDecisionAccess(opts);
 const defaultHasRecent = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).hasRecentClaimDecision(k);
 const defaultLoadHolder: NonNullable<ClaimHoldDeps['loadHolder']> = async (opts) =>
   (await import('@buildd/core/orchestration-claim-source')).loadClaimHolderState(opts);
@@ -250,6 +280,7 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
   const decision = deps.decision ?? CLAIM_HOLD_DECISION;
   const now = deps.now ?? (() => Date.now());
   const decide = deps.decide ?? runOrchestrationDecision;
+  const resolveAccess = deps.decisionDeps?.resolveAccess ?? defaultResolveAccess;
   for (const note of notes) {
     try {
       const c = note.candidate;
@@ -257,6 +288,19 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
       if ((disabledTeams.get(c.teamId) ?? 0) > t) continue;
       const memoKey = `${c.taskId}:${note.digest}:${decision.fingerprint}`;
       if ((recentAsks.get(memoKey) ?? 0) > t) continue;
+      // Opt-in first: a team that has not turned the capability on costs one
+      // team read here and nothing else (no ledger read, no row).
+      const access = await resolveAccess({
+        capability: 'orchestration_claim',
+        teamId: c.teamId,
+        workspaceId: c.workspaceId,
+        accountId: c.accountId,
+        userId: null,
+      });
+      if (!access.ok && access.error.kind === 'capability_disabled') {
+        remember(disabledTeams, c.teamId, now() + DISABLED_TEAM_TTL_MS);
+        continue;
+      }
       if (await (deps.hasRecent ?? defaultHasRecent)(keyFor(note, decision, new Date(t - RECENT_ASK_TTL_MS)))) {
         remember(recentAsks, memoKey, t + RECENT_ASK_TTL_MS);
         continue;
@@ -280,7 +324,8 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         })),
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
         cohort: { fraction: deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION, unitId: c.taskId },
-        deps: deps.decisionDeps,
+        // The access just resolved is reused, so the adapter does not read the team again.
+        deps: { ...deps.decisionDeps, resolveAccess: async () => access },
       });
       if (outcome.reason === 'capability_disabled') {
         remember(disabledTeams, c.teamId, now() + DISABLED_TEAM_TTL_MS);
@@ -303,7 +348,7 @@ function detach(fn: () => Promise<void>): void {
  * returns immediately; nothing here is awaited by the route.
  */
 export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: ClaimHoldDeps = {}): void {
-  if (collector.candidates.length === 0) return;
+  if (!collector || collector.candidates.length === 0) return;
   const notes = [...collector.candidates];
   const run = () => runClaimHoldShadow(notes, deps);
   try {
