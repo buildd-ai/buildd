@@ -303,12 +303,12 @@
         {
           "type": "command",
           "command": "pnpm test --filter web -- invoice-currency",
-          "label": "invoices show the customer's currency"
+          "label": "invoices in the customer's currency"
         },
         {
           "type": "command",
           "command": "pnpm test --filter api -- contract-v2",
-          "label": "public API stays backward compatible"
+          "label": "public API backward compatible"
         },
         {
           "type": "artifact_exists",
@@ -881,7 +881,7 @@
       "table": "tasks",
       "workspaceId": "ws",
       "missionId": "M1",
-      "title": "Verify goal criterion: invoices show the customer's currency",
+      "title": "Verify goal criterion: invoices in the customer's currency",
       "description": "Run the command and report. Do not change code.",
       "status": "pending",
       "_statusAtEnd": "completed",
@@ -917,7 +917,7 @@
       "table": "tasks",
       "workspaceId": "ws",
       "missionId": "M1",
-      "title": "Verify goal criterion: public API stays backward compatible",
+      "title": "Verify goal criterion: public API backward compatible",
       "description": "Run the command and report. Do not change code.",
       "status": "pending",
       "_statusAtEnd": "completed",
@@ -2458,12 +2458,12 @@
                     {
                       "type": "command",
                       "command": "pnpm test --filter web -- invoice-currency",
-                      "label": "invoices show the customer's currency"
+                      "label": "invoices in the customer's currency"
                     },
                     {
                       "type": "command",
                       "command": "pnpm test --filter api -- contract-v2",
-                      "label": "public API stays backward compatible"
+                      "label": "public API backward compatible"
                     },
                     {
                       "type": "artifact_exists",
@@ -4721,7 +4721,7 @@
           {
             "index": 0,
             "type": "command",
-            "label": "invoices show the customer's currency",
+            "label": "invoices in the customer's currency",
             "verdict": "PENDING",
             "evidence": "verifying on runner…",
             "workerTaskId": "V1"
@@ -4729,7 +4729,7 @@
           {
             "index": 1,
             "type": "command",
-            "label": "public API stays backward compatible",
+            "label": "public API backward compatible",
             "verdict": "PENDING",
             "evidence": "verifying on runner…",
             "workerTaskId": "V2"

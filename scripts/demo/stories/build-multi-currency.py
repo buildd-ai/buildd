@@ -112,8 +112,8 @@ hero_mission = {
     "goalCriteria": [
         # Outcomes a person would write, each with mechanical evidence: two
         # suites a runner re-runs, and two artifacts the work leaves behind.
-        {"type": "command", "command": "pnpm test --filter web -- invoice-currency", "label": "invoices show the customer's currency"},
-        {"type": "command", "command": "pnpm test --filter api -- contract-v2", "label": "public API stays backward compatible"},
+        {"type": "command", "command": "pnpm test --filter web -- invoice-currency", "label": "invoices in the customer's currency"},
+        {"type": "command", "command": "pnpm test --filter api -- contract-v2", "label": "public API backward compatible"},
         {"type": "artifact_exists", "key": "e2e-eur-invoice", "label": "a EUR invoice pays end to end"},
         {"type": "artifact_exists", "key": "fx-rounding-decision", "label": "rounding rule written down"},
     ],
@@ -208,12 +208,12 @@ hero_tasks = [
          description="Required routes: " + ", ".join(f"`{r}`" for r in VISUAL_ROUTES) + ". Capture each at desktop (1280x900) and phone (390x844), "
                      "EUR and JPY invoices, judge every shot, and file a fix task for anything broken. Read-only: no edits, no PR."),
     # Goal-criterion verification (mission-criteria-verify.ts): bookkeeping, observe-only
-    task("V1", "Verify goal criterion: invoices show the customer's currency", None, None, None, None, [],
+    task("V1", "Verify goal criterion: invoices in the customer's currency", None, None, None, None, [],
          outputRequirement="none", taskClass="bookkeeping", creationSource="orchestrator", createdByWorkerId=None,
          priority=2, tier="budget",
          loopConfig={"exitCondition": {"type": "command", "command": "pnpm test --filter web -- invoice-currency"}, "maxLoops": 1},
          description="Run the command and report. Do not change code."),
-    task("V2", "Verify goal criterion: public API stays backward compatible", None, None, None, None, [],
+    task("V2", "Verify goal criterion: public API backward compatible", None, None, None, None, [],
          outputRequirement="none", taskClass="bookkeeping", creationSource="orchestrator", createdByWorkerId=None,
          priority=2, tier="budget",
          loopConfig={"exitCondition": {"type": "command", "command": "pnpm test --filter api -- contract-v2"}, "maxLoops": 1},
@@ -656,8 +656,8 @@ TL[-1]["beat"] = "Last PR lands"
 # goal criteria
 ev(2040, "criteria_eval", mission="M1",
    state={"overall": "PENDING", "criteria": [
-       {"index": 0, "type": "command", "label": "invoices show the customer's currency", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V1"},
-       {"index": 1, "type": "command", "label": "public API stays backward compatible", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V2"},
+       {"index": 0, "type": "command", "label": "invoices in the customer's currency", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V1"},
+       {"index": 1, "type": "command", "label": "public API backward compatible", "verdict": "PENDING", "evidence": "verifying on runner…", "workerTaskId": "V2"},
        {"index": 2, "type": "artifact_exists", "label": "a EUR invoice pays end to end", "verdict": "pass", "evidence": "artifact e2e-eur-invoice"},
        {"index": 3, "type": "artifact_exists", "label": "rounding rule written down", "verdict": "pass", "evidence": "artifact fx-rounding-decision"}]},
    api="mission evaluate (auto on last task close) → missions.goalCriteriaState", db="UPDATE missions.goalCriteriaState; INSERT tasks(V1, V2, taskClass=bookkeeping)",
