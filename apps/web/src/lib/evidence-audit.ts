@@ -9,6 +9,8 @@
 export type EvidenceReadSurface =
   | 'GET /api/tasks/:id/evidence'
   | 'GET /api/evidence'
+  /** The dashboard's per-click download link; session only, never chat or MCP. */
+  | 'GET /api/evidence/download'
   | 'get_task'
   | 'get_pr'
   | 'explain';
@@ -17,7 +19,7 @@ export interface EvidenceActor { userId?: string | null; accountId?: string | nu
 
 export interface EvidenceReadAudit {
   surface: EvidenceReadSurface;
-  op: 'list' | 'read';
+  op: 'list' | 'read' | 'download';
   workspaceId: string;
   taskId?: string | null;
   prNumber?: number | null;
