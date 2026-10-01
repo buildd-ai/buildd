@@ -5003,6 +5003,83 @@ describe('path-overlap claim guard', () => {
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
     });
+
+    // Stacked mission chains: PR D is based on PR C's branch, so D's diff
+    // contains all of C's files. A fix for C must not defer behind D (or
+    // anything stacked on D) — those overlaps are C's own changes.
+    it(`claims a ${label} fix task despite PRs stacked on its own PR overlapping`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'step-c', prNumber: 3293, prUrl: 'https://github.com/org/repo/pull/3293', branch: 'buildd/step-c', prBaseRef: 'mission/m', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'step-e', prNumber: 3296, prUrl: 'https://github.com/org/repo/pull/3296', branch: 'buildd/step-e', prBaseRef: 'buildd/step-d', status: 'running', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'step-d', prNumber: 3295, prUrl: 'https://github.com/org/repo/pull/3295', branch: 'buildd/step-d', prBaseRef: 'buildd/step-c', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['packages/shared/src/types.ts', 'packages/core/db/schema.ts']),
+        id: 'fix-task',
+        [column]: 3293,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'step-c', pathManifest: ['packages/shared/src/types.ts', 'packages/core/db/schema.ts'] },
+          { id: 'step-d', pathManifest: ['packages/shared/src/types.ts', 'packages/core/db/schema.ts', 'apps/web/src/lib/x.ts'] },
+          { id: 'step-e', pathManifest: ['packages/core/db/schema.ts'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('fix-task');
+    });
+
+    it(`still defers a ${label} fix task behind an overlapping PR on the shared base (not stacked)`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'step-c', prNumber: 3293, prUrl: 'https://github.com/org/repo/pull/3293', branch: 'buildd/step-c', prBaseRef: 'mission/m', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'sibling', prNumber: 3297, prUrl: 'https://github.com/org/repo/pull/3297', branch: 'buildd/sibling', prBaseRef: 'mission/m', status: 'running', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['packages/core/db/schema.ts']),
+        id: 'fix-task',
+        [column]: 3293,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'step-c', pathManifest: ['packages/core/db/schema.ts'] },
+          { id: 'sibling', pathManifest: ['packages/core/db/schema.ts'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
   }
 
   // A task whose title/description names a PR as its subject (e.g. "rebase and
