@@ -97,6 +97,11 @@ export async function POST(
   // moment the human chose to override, so the audit trail records what they
   // actually saw rather than a fresh (and possibly since-changed) DB re-read.
   let override = false;
+  // Further things a person may knowingly override under `enforce` (the landing
+  // function's own overrides): the size cap and base freshness. Red CI and deny
+  // paths are never overridable.
+  let sizeOverride = false;
+  let freshnessOverride = false;
   let overrideEscalationReason: string | null = null;
   // Set by the legacy review gate when it blocked and `override` bypassed it.
   let reviewGateReason: string | null = null;
@@ -105,7 +110,11 @@ export async function POST(
     if (body?.workspaceId && typeof body.workspaceId === 'string') {
       rawWorkspaceId = body.workspaceId;
     }
-    if (body?.override === true) {
+    if (body?.overrides && typeof body.overrides === 'object') {
+      sizeOverride = body.overrides.size === true;
+      freshnessOverride = body.overrides.freshness === true;
+    }
+    if (body?.override === true || body?.overrides?.verdict === true) {
       override = true;
       if (typeof body.escalationReason === 'string' && body.escalationReason.trim().length > 0) {
         overrideEscalationReason = body.escalationReason.trim();
@@ -368,7 +377,19 @@ export async function POST(
       prNumber,
       eventHeadSha: null,
       door: 'dashboard',
-      actor: { kind: 'human', userId: user.id, ...(override ? { override: { verdict: true } } : {}) },
+      actor: {
+        kind: 'human',
+        userId: user.id,
+        ...(override || sizeOverride || freshnessOverride
+          ? {
+              override: {
+                ...(override ? { verdict: true } : {}),
+                ...(sizeOverride ? { size: true } : {}),
+                ...(freshnessOverride ? { freshness: true } : {}),
+              },
+            }
+          : {}),
+      },
       mode: landingMode,
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },

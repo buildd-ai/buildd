@@ -12,7 +12,7 @@ const DEFAULT_RETURN = '/app/workspaces';
 /** How long an install flow may take between /install and /callback. */
 export const INSTALL_STATE_TTL_MS = 60 * 60 * 1000;
 
-function signingSecret(): string | null {
+export function signingSecret(): string | null {
   return process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.ENCRYPTION_KEY || null;
 }
 

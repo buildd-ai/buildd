@@ -53,6 +53,7 @@ import {
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import type { LandingAlertInput } from '@/lib/pr-landing-alert';
 import {
   readLandingMarker,
   writeLandingMarker,
@@ -167,6 +168,8 @@ export interface LandPrDeps {
   /** The live reviewer-retry (author fixing a finding) task for this PR, if any. */
   findLiveReviewerRetry?: (workspaceId: string, prNumber: number) => Promise<string | null>;
   now?: () => number;
+  /** Raises the one-per-key page for an outcome that needs a person (enforce only). Defaults to the DB-bound alert. */
+  alert?: (input: LandingAlertInput) => Promise<void>;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -259,6 +262,7 @@ interface LivePr {
   mergeableState: string | null;
   headSha: string | null;
   baseRef: string | null;
+  title: string | null;
 }
 
 async function readLivePr(installationId: number, repoFullName: string, prNumber: number): Promise<LivePr> {
@@ -270,6 +274,7 @@ async function readLivePr(installationId: number, repoFullName: string, prNumber
     mergeableState: pr?.mergeable_state ?? null,
     headSha: pr?.head?.sha ?? null,
     baseRef: pr?.base?.ref ?? null,
+    title: typeof pr?.title === 'string' ? pr.title : null,
   };
 }
 
@@ -318,8 +323,11 @@ function safeFireGateEvent(input: Parameters<typeof fireGateEvent>[0]): void {
  * and in enforce it parks the PR rather than merging on a half-made decision.
  */
 export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise<LandingOutcome> {
+  const trace: LandingTrace = { headSha: null, title: null };
   try {
-    return await decideAndLand(input, deps);
+    const outcome = await decideAndLand(input, deps, trace);
+    await raiseAlert(input, outcome, trace, deps);
+    return outcome;
   } catch (err) {
     const reason = `the landing function failed: ${errMessage(err)}`;
     console.warn(`[pr-landing] ${input.repoFullName}#${input.prNumber}:`, reason);
@@ -352,7 +360,32 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
   }
 }
 
-async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<LandingOutcome> {
+/** What the decision saw that the alert needs and the outcome does not carry. */
+interface LandingTrace {
+  headSha: string | null;
+  title: string | null;
+}
+
+/** Enforce only, never throws: a page is a side effect of a landing, not part of it. */
+async function raiseAlert(input: LandPrInput, outcome: LandingOutcome, trace: LandingTrace, deps: LandPrDeps): Promise<void> {
+  if (input.mode !== 'enforce') return;
+  try {
+    const raisePage = deps.alert ?? (await import('@/lib/pr-landing-alert-deps')).raiseLandingAlert;
+    await raisePage({
+      workspaceId: input.workspaceId,
+      prNumber: input.prNumber,
+      headSha: trace.headSha ?? input.eventHeadSha ?? '',
+      repoFullName: input.repoFullName,
+      prTitle: trace.title,
+      taskId: input.owner.taskId,
+      outcome,
+    });
+  } catch (err) {
+    console.warn(`[pr-landing] alert failed for PR #${input.prNumber}:`, errMessage(err));
+  }
+}
+
+async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: LandingTrace): Promise<LandingOutcome> {
   const { workspaceId, installationId, repoFullName, prNumber, owner, actor, policy } = input;
   const act = input.mode === 'enforce';
   const now = deps.now ?? Date.now;
@@ -451,6 +484,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
   if (!pr.headSha) return human('github_unreadable', 'GitHub returned no head commit for this PR');
   const liveHead = pr.headSha;
   headSha = liveHead;
+  trace.headSha = liveHead;
+  trace.title = pr.title;
   baseRef = pr.baseRef;
   if (pr.state !== 'open') return human('pr_closed', `the PR is ${pr.state} and was not merged`);
 
