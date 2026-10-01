@@ -621,10 +621,16 @@ In enforce mode:
   a sweep against the task's resolved PR base (the mission integration branch on
   a mission task) unioned with NUL-delimited staged/unstaged/untracked status,
   renames counted on both sides (`apps/runner/src/path-claim-enforcement.ts`).
-  It runs on every sync, and before `git push`, `gh pr create`, `create_pr`
-  and a non-error `complete_task`. Observed paths go through the same
-  exclusive acquisition; one another live task holds comes back on the PATCH
-  response as `pathCollisions`.
+  The PR base is carried on the worker as `prBaseRef` and persisted. It is not
+  the ref the worktree was cut from: on a resume that is the prior attempt's
+  branch, and measuring against it would drop every file earlier attempts
+  committed (`resolvePrBaseRef`). It runs on every sync, and before `git push`,
+  `gh pr create`, `create_pr` and a non-error `complete_task`. Observed paths
+  go through the same exclusive acquisition; one another live task holds comes
+  back on the PATCH response as `pathCollisions`. A sync offers only paths new
+  to `observedTouches`; the pre-push and completion sweeps re-offer the whole
+  list (`checkpointSweep`), so an earlier acquisition that failed is retried
+  before the change ships.
 - A collision found there has already happened, so it is checkpoint
   enforcement, not prevention: the runner refuses further edits and ships,
   commits a checkpoint (pushed unless a PR already exists), reports a

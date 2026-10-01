@@ -11,7 +11,7 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/path-collision-defer.test.ts
  */
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
 import { execSync } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
@@ -34,6 +34,25 @@ function sh(cwd: string, cmd: string) {
 let tmp: string;
 let origin: string;
 let work: string;
+
+// Hermetic git: no global/system config, so no user.name/user.email. This is
+// what a CI runner looks like, and a workstation that has an identity
+// configured must not hide a checkpoint commit that only works there.
+const GIT_ENV_KEYS = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL'] as const;
+const savedEnv: Record<string, string | undefined> = {};
+beforeAll(() => {
+  for (const k of GIT_ENV_KEYS) savedEnv[k] = process.env[k];
+  // GIT_CONFIG_GLOBAL replaces both ~/.gitconfig and the XDG config file.
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
+  for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL'] as const) delete process.env[k];
+});
+afterAll(() => {
+  for (const k of GIT_ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+});
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'pcd-'));
@@ -61,6 +80,7 @@ function makeWorker(overrides: Record<string, unknown> = {}): any {
     branch: 'buildd/task-1',
     worktreePath: work,
     worktreeBaseRef: 'origin/dev',
+    prBaseRef: 'origin/dev',
     pathClaimMode: 'enforce',
     milestones: [],
     ...overrides,
@@ -81,8 +101,19 @@ describe('runCheckpointSweep', () => {
     const found = await runCheckpointSweep(worker, 'pre_push', { buildd: { updateWorker } as any, addMilestone: () => {} });
 
     expect(updateWorker).toHaveBeenCalledTimes(1);
-    expect(updateWorker.mock.calls[0][1]).toEqual({ touchedPaths: ['src/from-bash.ts'] });
+    // pre_push re-offers the whole sweep, not only what is new to the server.
+    expect(updateWorker.mock.calls[0][1]).toEqual({ touchedPaths: ['src/from-bash.ts'], checkpointSweep: true });
     expect(found).toMatchObject({ path: 'src/from-bash.ts', blockingTaskId: BLOCKER, source: 'pre_push' });
+  });
+
+  test('measures the committed half against the PR base, not the resume branch the worktree was cut from', async () => {
+    // A prior attempt committed a.ts on the resume branch; this attempt resumed from it.
+    writeFileSync(join(work, 'src/a.ts'), 'edited in attempt 1\n');
+    sh(work, `git add src/a.ts && git ${GIT} commit -q -m attempt-1 && git push -q origin buildd/task-1`);
+    const updateWorker = mock(async (_id: string, _u: any) => ({}));
+    const worker = makeWorker({ worktreeBaseRef: 'origin/buildd/task-1', prBaseRef: 'origin/dev' });
+    await runCheckpointSweep(worker, 'completion', { buildd: { updateWorker } as any, addMilestone: () => {} });
+    expect(updateWorker.mock.calls[0][1].touchedPaths).toEqual(['src/a.ts', 'src/from-bash.ts']);
   });
 
   test('no collision reported: null', async () => {
@@ -141,6 +172,22 @@ describe('writeCollisionCheckpoint', () => {
     expect(cp.committed).toBe(true);
     expect(cp.pushed).toBe(false);
     expect(() => sh(origin, 'git rev-parse --verify --quiet refs/heads/buildd/task-1')).toThrow();
+  });
+
+  test('with no git identity configured, the checkpoint still commits under a runner fallback identity', () => {
+    // beforeAll removed every global identity; prove it, so this cannot pass vacuously.
+    expect(() => sh(work, 'git var GIT_COMMITTER_IDENT')).toThrow();
+    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+    expect(cp.reason).toBe('push skipped');
+    expect(cp.committed).toBe(true);
+    expect(sh(work, 'git log -1 --format=%an').trim()).toBe('buildd');
+  });
+
+  test('a configured identity is kept, not overwritten by the fallback', () => {
+    sh(work, 'git config user.name "Repo Person" && git config user.email repo@example.com');
+    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+    expect(cp.committed).toBe(true);
+    expect(sh(work, 'git log -1 "--format=%an <%ae>"').trim()).toBe('Repo Person <repo@example.com>');
   });
 
   test('a clean worktree commits nothing', () => {

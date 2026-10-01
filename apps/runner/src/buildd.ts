@@ -359,6 +359,8 @@ export class BuilddClient {
     // Incremental file paths touched since last check-in (from git diff --name-only).
     // Server accumulates into workers.observedTouches for passive collision detection (§6d).
     touchedPaths?: string[];
+    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    checkpointSweep?: boolean;
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

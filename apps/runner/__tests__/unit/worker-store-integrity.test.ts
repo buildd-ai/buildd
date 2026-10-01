@@ -301,3 +301,18 @@ describe('history-relevant fields survive persistence', () => {
     expect(persisted.reportedModel).toBe('claude-opus-4-8');
   });
 });
+
+describe('path-claim sweep refs survive a restart', () => {
+  test('worktreeBaseRef and prBaseRef round-trip through loadWorker and loadAllWorkers', () => {
+    // Without prBaseRef a restored worker sweeps with an empty committed half.
+    const worker = makeWorker({ worktreeBaseRef: 'origin/buildd/task-1', prBaseRef: 'origin/mission/m-1' } as Partial<LocalWorker>);
+    store.saveWorker(worker);
+
+    const one = store.loadWorker(worker.id);
+    expect(one?.worktreeBaseRef).toBe('origin/buildd/task-1');
+    expect(one?.prBaseRef).toBe('origin/mission/m-1');
+    const all = store.loadAllWorkers().find(w => w.id === worker.id);
+    expect(all?.worktreeBaseRef).toBe('origin/buildd/task-1');
+    expect(all?.prBaseRef).toBe('origin/mission/m-1');
+  });
+});

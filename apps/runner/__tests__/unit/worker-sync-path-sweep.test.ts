@@ -67,7 +67,7 @@ function makeWorker(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'w-sweep', taskId: 'task-1', status: 'working', currentAction: '', milestones: [], subagentTasks: [],
     phaseText: '', phaseToolCount: 0, startedAt: Date.now() - 1000, lastActivity: Date.now(),
-    worktreePath: work, worktreeBaseRef: 'origin/mission/m-1', ...overrides,
+    worktreePath: work, worktreeBaseRef: 'origin/mission/m-1', prBaseRef: 'origin/mission/m-1', ...overrides,
   };
 }
 
@@ -101,8 +101,17 @@ describe('sync sweep', () => {
     expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts', 'src/mine.ts']);
   });
 
+  test('measures against the PR base even when the worktree was cut from another ref (a resume)', async () => {
+    // The worktree base names the resume branch == HEAD here; the PR base is the mission branch.
+    const worker = makeWorker({ worktreeBaseRef: 'HEAD', prBaseRef: 'origin/mission/m-1' });
+    await makeSync(worker).sync.syncWorkerToServer(worker);
+    expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts', 'src/mine.ts']);
+    // A plain sync offers only what is new; the re-offer is for checkpoints.
+    expect(payloads[0].checkpointSweep).toBeUndefined();
+  });
+
   test('no resolved base: only uncommitted changes, never a trunk fallback', async () => {
-    const worker = makeWorker({ worktreeBaseRef: undefined });
+    const worker = makeWorker({ worktreeBaseRef: undefined, prBaseRef: undefined });
     await makeSync(worker).sync.syncWorkerToServer(worker);
     expect(payloads[0].touchedPaths).toEqual(['src/from-bash.ts']);
     expect(payloads[0].touchedPaths).not.toContain('src/sibling.ts');

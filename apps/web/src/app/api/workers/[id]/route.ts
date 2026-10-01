@@ -818,6 +818,9 @@ export async function PATCH(
     // Passive observed-touches: incremental list from git diff --name-only on the runner.
     // Server accumulates into workers.observedTouches for §6d collision detection.
     touchedPaths,
+    // Runner pre-push/completion sweep: re-offer every touchedPaths entry for
+    // lease, not only the ones new to observedTouches (see auto-lease below).
+    checkpointSweep,
     // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
     // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
     pathCollision: reportedPathCollision,
@@ -4030,7 +4033,15 @@ export async function PATCH(
   // `pathCollisions`, naming the holder, so an enforcing runner stops and
   // defers. Advisory runners only log it; §6d below still messages the holder.
   let pathCollisions: PathCollisionNotice[] = [];
-  if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+  // A checkpoint sweep (pre-push/completion) re-offers everything it saw: an
+  // earlier acquisition that failed or lost a race left the path in
+  // observedTouches without a lease, and the diff-against-column rule would
+  // never offer it again — yet this is the sweep right before it ships.
+  // Own leases are no-ops in acquireObservedPaths; bounded like the column.
+  const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
+    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))].slice(0, 500)
+    : newlyObservedPaths;
+  if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
       const leaseTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
@@ -4038,7 +4049,7 @@ export async function PATCH(
       });
       const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
         ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
-        : await acquireObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+        : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
       if (leased.length > 0) {
         console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
       }

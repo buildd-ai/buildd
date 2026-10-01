@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -20,6 +20,7 @@ import {
   parseNameStatusZ,
   sweepWorktreeChanges,
   refreshBaseRef,
+  resolvePrBaseRef,
   resolvePathClaimMode,
   backendEnforcement,
   describeEnforcement,
@@ -82,6 +83,25 @@ describe('normalizeWorktreePath', () => {
     try {
       const real = realpathSync(dir);
       expect(normalizeWorktreePath(join(real, 'x.ts'), dir)).toEqual({ ok: true, path: 'x.ts' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test('a symlink inside the worktree that points outside it is an escape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pce-link-'));
+    try {
+      const root = join(dir, 'tree');
+      const outside = join(dir, 'outside');
+      mkdirSync(root);
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'secret.ts'), 'x');
+      symlinkSync(outside, join(root, 'link'));
+      mkdirSync(join(root, 'src'));
+      // Existing file through the link, and a new file under the linked dir.
+      expect((normalizeWorktreePath('link/secret.ts', root) as any).reason).toBe('escape');
+      expect((normalizeWorktreePath('link/new-file.ts', root) as any).reason).toBe('escape');
+      // An ordinary new file is still fine.
+      expect(normalizeWorktreePath('src/new.ts', root)).toEqual({ ok: true, path: 'src/new.ts' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -266,5 +286,57 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).not.toContain('src/landed-later.ts');
     expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
     expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
+  });
+});
+
+describe('resolvePrBaseRef', () => {
+  test('a fresh worktree: the resolved worktree base is the PR base', () => {
+    expect(resolvePrBaseRef({ worktreeBase: 'origin/mission/m-1', defaultBranch: 'dev', context: { baseBranch: 'mission/m-1' } })).toBe('origin/mission/m-1');
+    expect(resolvePrBaseRef({ worktreeBase: 'origin/dev', defaultBranch: 'dev', context: {} })).toBe('origin/dev');
+  });
+  test('resumed from the remote resume branch: the declared base, not the resume branch', () => {
+    expect(resolvePrBaseRef({ worktreeBase: 'origin/buildd/task-1', defaultBranch: 'dev', context: { resumeBranch: 'buildd/task-1', baseBranch: 'mission/m-1' } })).toBe('origin/mission/m-1');
+  });
+  test('resumed from a local-only branch, no declared base: trunk', () => {
+    expect(resolvePrBaseRef({ worktreeBase: 'buildd/task-1', defaultBranch: 'dev', context: { resumeBranch: 'buildd/task-1' } })).toBe('origin/dev');
+  });
+  test('no worktree base at all: declared base, else trunk', () => {
+    expect(resolvePrBaseRef({ worktreeBase: undefined, defaultBranch: 'main', context: null })).toBe('origin/main');
+  });
+});
+
+describe('resumed task sweep (real git)', () => {
+  let tmp: string;
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  test('measured against the PR base, a resume keeps earlier attempts\' files and excludes the mission branch history', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'pce-resume-'));
+    const origin = join(tmp, 'origin.git');
+    const work = join(tmp, 'work');
+    const cfg = '-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false';
+    sh(tmp, `git init -q --bare -b dev ${origin}`);
+    sh(tmp, `git clone -q ${origin} ${work}`);
+    sh(work, 'git checkout -q -b dev');
+    writeFileSync(join(work, 'base.ts'), 'base\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m base && git push -q origin dev`);
+    sh(work, 'git checkout -q -b mission/m-1');
+    writeFileSync(join(work, 'sibling.ts'), 'sibling\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m sibling && git push -q origin mission/m-1`);
+    // Attempt 1 committed a.ts on the resume branch (e.g. a collision checkpoint).
+    sh(work, 'git checkout -q -b buildd/task-1');
+    writeFileSync(join(work, 'a.ts'), 'a\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m attempt-1 && git push -q origin buildd/task-1`);
+    // Attempt 2 resumes from it and edits b.ts.
+    writeFileSync(join(work, 'b.ts'), 'b\n');
+
+    const context = { resumeBranch: 'buildd/task-1', baseBranch: 'mission/m-1' };
+    const prBase = resolvePrBaseRef({ worktreeBase: 'origin/buildd/task-1', defaultBranch: 'dev', context });
+    const sweep = sweepWorktreeChanges(work, prBase);
+    expect(sweep.baseResolved).toBe(true);
+    expect(sweep.paths).toEqual(['a.ts', 'b.ts']);
+    expect(sweep.paths).not.toContain('sibling.ts');
+
+    // The bug: measuring against the ref the worktree was cut from loses a.ts.
+    expect(sweepWorktreeChanges(work, 'origin/buildd/task-1').paths).toEqual(['b.ts']);
   });
 });

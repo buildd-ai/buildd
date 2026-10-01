@@ -399,15 +399,15 @@ export class WorkerSync {
       // Passive observed-touches: compute files touched on the branch for §6d.
       // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
       const touched = worker.worktreePath && existsSync(worker.worktreePath)
-        ? computeTouchedPaths(worker.worktreePath, worker.worktreeBaseRef)
+        ? computeTouchedPaths(worker.worktreePath, worker.prBaseRef)
         : undefined;
       const touchedPaths = touched?.paths;
       // Refresh an unresolvable base ref outside the hot hook, throttled and
       // async (never blocks this loop); the next tick measures against it.
-      if (touched && !touched.baseResolved && worker.worktreeBaseRef && worker.worktreePath
+      if (touched && !touched.baseResolved && worker.prBaseRef && worker.worktreePath
         && Date.now() - (worker.pathSweepBaseFetchedAt ?? 0) > BASE_REFRESH_INTERVAL_MS) {
         worker.pathSweepBaseFetchedAt = Date.now();
-        void refreshBaseRef(worker.worktreePath, worker.worktreeBaseRef);
+        void refreshBaseRef(worker.worktreePath, worker.prBaseRef);
       }
       // Dirty-worktree signal for the complete_task gate — see computeDirtyWorktree.
       const dirtyWorktree = worker.worktreePath && existsSync(worker.worktreePath)
