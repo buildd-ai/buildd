@@ -30,6 +30,7 @@ import type {
   FailureSignatureFamily,
   GateAnalytics,
   GateReasonFamily,
+  LandingMetrics,
   GateRow,
   GateWindow,
   FailureSignatureLookup,
@@ -552,7 +553,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     get_page_source: '{ workerId?, sha? (commit to audit; default the trunk head), prNumber? (use this PR\'s head commit instead, e.g. when trunk deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -868,6 +869,35 @@ function formatGateOverview(gates: GateAnalytics, limit: number): string {
   if (omitted > 0) lines.push(`  … ${omitted} more gate(s) (raise limit, max ${FAILURE_SIGNATURES_MAX})`);
   lines.push('');
   lines.push('Bypass % = bypassed / (bypassed + rejected + warned). For a lint, that IS its false-positive rate.');
+  return lines.join('\n');
+}
+
+const fmtDuration = (ms: number): string => {
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `${min}m`;
+  return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}m`;
+};
+
+/**
+ * Landing scoreboard: how long approved-and-green PRs wait to merge, and how
+ * many are waiting past the target right now. Unmeasured landings are reported
+ * rather than folded in as zeros — a missing clock is not a fast merge.
+ */
+function formatLandingMetrics(landing: LandingMetrics): string {
+  const { timeToLand: t, stuck } = landing;
+  const lines: string[] = [`**PR landing — last ${landing.window}**`];
+  lines.push(
+    t
+      ? `  time to land (approved + green → merged): p50 ${fmtDuration(t.p50Ms)} · p90 ${fmtDuration(t.p90Ms)} · max ${fmtDuration(t.maxMs)} · ${t.count} measured of ${landing.landed} landed`
+      : `  time to land: no measured landings (${landing.landed} landed, ${landing.unmeasured} unmeasured)`,
+  );
+  if (t && landing.unmeasured > 0) lines.push(`  ${landing.unmeasured} landed with no derivable start (excluded from the percentiles)`);
+  lines.push(
+    stuck.count > 0
+      ? `  stuck: ${stuck.count} PR(s) approved and green for over ${fmtDuration(stuck.thresholdMs)} without merging · oldest ${fmtDuration(stuck.oldestMs ?? 0)}`
+      : `  stuck: none past ${fmtDuration(stuck.thresholdMs)}`,
+  );
+  lines.push('  Only merges through the landing function are measured; a merge done directly on GitHub is not.');
   return lines.join('\n');
 }
 
@@ -4362,7 +4392,9 @@ export async function handleBuilddAction(
         if (gateFamily) return text(formatGateFamily(gateFamily, window));
         const gates = data?.gates as GateAnalytics | undefined;
         if (!gates) return text('No gate analytics available.');
-        return text(formatGateOverview(gates, limit));
+        const landing = data?.landing as LandingMetrics | undefined;
+        const overview = formatGateOverview(gates, limit);
+        return text(landing ? `${overview}\n\n${formatLandingMetrics(landing)}` : overview);
       }
 
       const lookup = data?.lookup as FailureSignatureLookup | undefined;

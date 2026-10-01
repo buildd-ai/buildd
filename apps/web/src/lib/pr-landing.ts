@@ -170,6 +170,8 @@ export interface LandPrDeps {
   now?: () => number;
   /** Raises the one-per-key page for an outcome that needs a person (enforce only). Defaults to the DB-bound alert. */
   alert?: (input: LandingAlertInput) => Promise<void>;
+  /** When the newest review of this PR concluded (epoch ms), or null. Half of the landing clock. Defaults to the DB-bound read. */
+  readApprovedAt?: (workspaceId: string, prNumber: number) => Promise<number | null>;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -253,6 +255,29 @@ function callerOriginFor(actor: LandingActor): GateCallerOrigin {
 
 const errMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/**
+ * When the last required check on this head finished (epoch ms), or null when no
+ * run reports a completion time. Half of the landing clock: green is when the
+ * checks stopped, not when they started.
+ */
+export function latestCheckCompletion(runs: CheckRunState[] | undefined): number | null {
+  let latest: number | null = null;
+  for (const run of runs ?? []) {
+    const at = run.completed_at ? Date.parse(run.completed_at) : NaN;
+    if (Number.isFinite(at) && (latest === null || at > latest)) latest = at;
+  }
+  return latest;
+}
+
+/**
+ * The start of the landing clock: the moment this PR was both approved and green
+ * on the live head — the later of the two. Null when neither time is known.
+ */
+export function approvedGreenAt(approvedAtMs: number | null, greenAtMs: number | null): number | null {
+  const known = [approvedAtMs, greenAtMs].filter((t): t is number => t !== null && Number.isFinite(t));
+  return known.length > 0 ? Math.max(...known) : null;
+}
+
 // ── GitHub reads ───────────────────────────────────────────────────────────────
 
 interface LivePr {
@@ -276,6 +301,10 @@ async function readLivePr(installationId: number, repoFullName: string, prNumber
     baseRef: pr?.base?.ref ?? null,
     title: typeof pr?.title === 'string' ? pr.title : null,
   };
+}
+
+async function defaultReadApprovedAt(workspaceId: string, prNumber: number): Promise<number | null> {
+  return (await import('@/lib/pr-landing-clock')).readReviewApprovedAt(workspaceId, prNumber);
 }
 
 /** Files in a compare/PR-files listing, or null when it may be truncated or malformed. */
@@ -398,6 +427,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   let headSha: string | null = input.eventHeadSha;
   let baseRef: string | null = null;
   let marker: LandingMarker | null = null;
+  // Set once the verdict and CI rails have passed: from here on the PR is "approved and green".
+  let approvedGreenAtMs: number | null = null;
 
   const done = (outcome: LandingOutcome, reason: string, extra: Record<string, unknown> = {}): LandingOutcome => {
     if (input.mode === 'off') return outcome;
@@ -409,6 +440,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       mode: input.mode,
       tier: policy.tier,
       owner: outcomeOwner(outcome),
+      ...(approvedGreenAtMs !== null ? { approvedGreenAt: new Date(approvedGreenAtMs).toISOString() } : {}),
       ...extra,
     };
     if (act) detail.landingOutcome = outcome.kind;
@@ -603,6 +635,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
   }
 
+  // The verdict and CI rails have passed: the clock for the landing metric starts
+  // at the later of the approval and the last check finishing.
+  approvedGreenAtMs = approvedGreenAt(
+    await (deps.readApprovedAt ?? defaultReadApprovedAt)(workspaceId, prNumber).catch(() => null),
+    latestCheckCompletion(observed.checkRuns),
+  );
+
   // ── 6. Behind base is work with an owner ────────────────────────────────────
   if (baseRef) {
     let behindBy: number | null = null;
@@ -668,9 +707,15 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName).catch((err) =>
       console.warn(`[pr-landing] mission finalize failed for PR #${prNumber}:`, err),
     );
-    const startedAt = marker?.firstApprovedGreenAt ? Date.parse(marker.firstApprovedGreenAt) : NaN;
+    // The earliest known start wins: a refresh restarts CI, and the wait it caused is still the PR's wait.
+    const fromMarker = marker?.firstApprovedGreenAt ? Date.parse(marker.firstApprovedGreenAt) : NaN;
+    const starts = [fromMarker, approvedGreenAtMs ?? NaN].filter(Number.isFinite);
     if (owner.taskId && marker) await clearLandingMarker(owner.taskId).catch(() => {});
-    return done({ kind: 'merged', sha }, 'merged', Number.isFinite(startedAt) ? { timeToLandMs: now() - startedAt } : {});
+    return done(
+      { kind: 'merged', sha },
+      'merged',
+      starts.length > 0 ? { timeToLandMs: Math.max(0, now() - Math.min(...starts)) } : { timeToLandUnmeasured: true },
+    );
   }
 
   async function treadmillAccepts(base: string): Promise<TreadmillVerdict> {

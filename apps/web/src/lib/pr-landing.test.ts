@@ -13,7 +13,7 @@ type Gh = {
   head: string;
   baseRef: string;
   mergeableState: string;
-  checkRuns: Array<{ name: string; status: string; conclusion: string | null }>;
+  checkRuns: Array<{ name: string; status: string; conclusion: string | null; completed_at?: string }>;
   behindBy: number;
   baseTip: string;
   prFiles: string[];
@@ -184,6 +184,8 @@ import {
   evaluateTreadmillBound,
   resolveLandingMode,
   outcomeOwner,
+  approvedGreenAt,
+  latestCheckCompletion,
   TREADMILL_MAX_BASE_COMMITS,
   TREADMILL_MAX_REFRESHES,
   type LandPrInput,
@@ -202,11 +204,13 @@ const mockDispatchFix = mock(async (_i: any): Promise<{ taskId?: string } | null
 const mockEscalate = mock(async (..._a: any[]) => {});
 const mockLiveRetry = mock(async (..._a: any[]): Promise<string | null> => null);
 const NOW = Date.parse('2030-01-01T01:00:00.000Z');
+const mockReadApprovedAt = mock(async (..._a: any[]): Promise<number | null> => null);
 
 const deps = (): LandPrDeps => ({
   dispatchFix: mockDispatchFix,
   escalateConflictExhaustion: mockEscalate,
   findLiveReviewerRetry: mockLiveRetry,
+  readApprovedAt: mockReadApprovedAt,
   now: () => NOW,
 });
 
@@ -246,7 +250,7 @@ beforeEach(() => {
   mockFindFirst = mock(() => null as any);
   for (const m of [
     mockGithubApi, mockMergePullRequest, mockDispatchConflictRetry, mockGuardReviewVerdict, mockReadPrReviewStatus,
-    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry, mockCarryForward,
+    mockFireGateEvent, mockWriteMarker, mockClearMarker, mockDispatchFix, mockEscalate, mockLiveRetry, mockCarryForward, mockReadApprovedAt,
   ]) {
     m.mockClear();
   }
@@ -254,6 +258,7 @@ beforeEach(() => {
   mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false }));
   mockDispatchFix.mockImplementation(async () => ({ taskId: 'fix-task-1' }));
   mockLiveRetry.mockImplementation(async () => null);
+  mockReadApprovedAt.mockImplementation(async () => null);
 });
 
 // ── Pure pieces ────────────────────────────────────────────────────────────────
@@ -375,6 +380,90 @@ describe('landPr — merge', () => {
 });
 
 // ── Verdict × tier ─────────────────────────────────────────────────────────────
+
+describe('landPr — time to land clock', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('starts at the later of approval and the last check finishing when there is no marker', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.checkRuns = [
+      { name: 'build', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:20:00.000Z' },
+      { name: 'lint', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:45:00.000Z' },
+    ];
+    await land();
+    const [event] = landingEvents();
+    expect(event.detail.timeToLandMs).toBe(15 * 60 * 1000);
+    expect(event.detail.timeToLandUnmeasured).toBeUndefined();
+    expect(event.detail.approvedGreenAt).toBe('2030-01-01T00:45:00.000Z');
+  });
+
+  it('measures from whichever half is known', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    await land();
+    expect(landingEvents()[0].detail.timeToLandMs).toBe(30 * 60 * 1000);
+  });
+
+  it('takes the earlier of the marker clock and the derived clock', async () => {
+    markerStore = marker({ firstApprovedGreenAt: '2030-01-01T00:10:00.000Z' });
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:40:00.000Z'));
+    await land();
+    expect(landingEvents()[0].detail.timeToLandMs).toBe(50 * 60 * 1000);
+  });
+
+  it('marks the landing unmeasured, not zero, when no start can be derived', async () => {
+    await land();
+    const [event] = landingEvents();
+    expect(event.outcome).toBe('accepted');
+    expect(event.detail.timeToLandMs).toBeUndefined();
+    expect(event.detail.timeToLandUnmeasured).toBe(true);
+  });
+
+  it('survives a failing approval read as unknown', async () => {
+    mockReadApprovedAt.mockImplementation(async () => { throw new Error('db down'); });
+    const out = await land();
+    expect(out.kind).toBe('merged');
+    expect(landingEvents()[0].detail.timeToLandUnmeasured).toBe(true);
+  });
+
+  it('stamps approvedGreenAt on a non-merged row once approved and green, so a stuck PR is countable', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.behindBy = 3;
+    gh.baseMovement = { ahead_by: 3, files: ['apps/web/src/other.ts'] };
+    await land();
+    const [event] = landingEvents();
+    expect(event.detail.landingOutcome).not.toBe('merged');
+    expect(event.detail.approvedGreenAt).toBe('2030-01-01T00:30:00.000Z');
+  });
+
+  it('does not stamp approvedGreenAt on a PR that is not green', async () => {
+    mockReadApprovedAt.mockImplementation(async () => at('2030-01-01T00:30:00.000Z'));
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    await land();
+    expect(landingEvents()[0].detail.approvedGreenAt).toBeUndefined();
+  });
+});
+
+describe('approvedGreenAt / latestCheckCompletion', () => {
+  it('takes the later of two known times, the known one of one, null of none', () => {
+    expect(approvedGreenAt(10, 20)).toBe(20);
+    expect(approvedGreenAt(30, 20)).toBe(30);
+    expect(approvedGreenAt(10, null)).toBe(10);
+    expect(approvedGreenAt(null, 20)).toBe(20);
+    expect(approvedGreenAt(null, null)).toBeNull();
+  });
+
+  it('reads the newest completed_at and tolerates missing or junk values', () => {
+    expect(latestCheckCompletion(undefined)).toBeNull();
+    expect(latestCheckCompletion([])).toBeNull();
+    expect(
+      latestCheckCompletion([
+        { name: 'a', status: 'completed', conclusion: 'success', completed_at: '2030-01-01T00:00:00.000Z' },
+        { name: 'b', status: 'completed', conclusion: 'success', completed_at: 'junk' },
+        { name: 'c', status: 'completed', conclusion: 'success' },
+      ] as any),
+    ).toBe(Date.parse('2030-01-01T00:00:00.000Z'));
+  });
+});
 
 describe('landPr — review verdict', () => {
   it('always passes the carry-forward hint so a diff-unchanged head is approved (replay: base-merge push in the same minute)', async () => {
