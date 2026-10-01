@@ -3,7 +3,7 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isStorageConfigured, generateConstrainedUploadUrl, objectExists } from '@/lib/storage';
 import {
   MAX_SESSION_ARTIFACT_BYTES,
@@ -46,7 +46,8 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may sign only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -88,7 +89,7 @@ export async function POST(
   // relational query (one round trip, workers.id is the primary key).
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, workspaceId: true },
+    columns: { id: true, accountId: true, taskId: true, workspaceId: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } },
   });
 
@@ -96,7 +97,7 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (!worker.accountId || worker.accountId !== account.id) {
+  if (!worker.accountId || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

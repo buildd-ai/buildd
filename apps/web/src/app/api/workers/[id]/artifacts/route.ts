@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { appBaseUrl } from '@/lib/app-url';
 
@@ -24,7 +25,8 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may add artifacts only to its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -39,7 +41,7 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

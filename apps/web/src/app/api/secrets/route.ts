@@ -4,6 +4,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
+import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
+import { isTaskToken } from '@/lib/task-token';
 import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-credential-shared';
 
 /** Backend-auth purposes whose (re)store should recover auth-failed tasks. */
@@ -75,7 +77,15 @@ function sanitizeSecretValue(raw: string, purpose: string): string {
  */
 const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key']);
 
-type SecretsCaller = { teamIds: string[]; accountId?: string; accountLevel?: string; userId?: string };
+type SecretsCaller = {
+  teamIds: string[];
+  accountId?: string;
+  accountLevel?: string;
+  userId?: string;
+  /** Set on the API-key path: what refuseCredentialCustody needs. */
+  apiKey?: string;
+  account?: CustodyCaller;
+};
 
 async function mayManageTeamModelKeys(auth: SecretsCaller, teamId: string): Promise<boolean> {
   if (auth.accountId) return auth.accountLevel === 'admin' && auth.teamIds.includes(teamId);
@@ -104,8 +114,10 @@ async function authenticateAndGetTeamIds(req: NextRequest): Promise<SecretsCalle
   if (apiKey) {
     const account = await authenticateApiKey(apiKey);
     if (account) {
-      return { teamIds: [account.teamId], accountId: account.id, accountLevel: account.level };
+      return { teamIds: [account.teamId], accountId: account.id, accountLevel: account.level, apiKey, account };
     }
+    // Never fall through to the session for a per-task token: it is refused.
+    if (isTaskToken(apiKey)) return null;
   }
 
   // Fall back to session auth
@@ -243,6 +255,10 @@ export async function GET(req: NextRequest) {
   const auth = await authenticateAndGetTeamIds(req);
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (auth.account) {
+    const refused = refuseCredentialCustody(auth.apiKey ?? null, auth.account, { allowPersonSession: true });
+    if (refused) return refused;
   }
   if (auth.teamIds.length === 0) {
     return NextResponse.json({ secrets: [] });

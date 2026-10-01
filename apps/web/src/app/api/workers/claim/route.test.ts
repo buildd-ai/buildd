@@ -440,6 +440,37 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('runner is required');
   });
 
+  describe('per-task token', () => {
+    const scoped = {
+      id: 'account-1',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 3,
+      type: 'service',
+      level: 'worker',
+      taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 },
+    };
+
+    it('refuses to claim any task but its own', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-other' },
+      }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('its own task');
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    });
+
+    it('is not refused by the scope for its own task', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-own' },
+      }));
+      expect(res.status).not.toBe(403);
+    });
+  });
+
   describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
     const gateReasons = () => [
       ...mockFireGateEvent.mock.calls.map((c: any[]) => c[0]?.reason),
@@ -1377,6 +1408,27 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  it('never returns the workspace dispatch token in a claimed task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1', workspaceId: 'ws-1', title: 'T', requiredCapabilities: [],
+        workspace: { id: 'ws-1', gitConfig: null, webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
+      },
+    ]);
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text).workers.length).toBe(1);
+    expect(text).not.toContain('dispatch-secret');
   });
 
   // --- Model-routing experiment wiring ---
@@ -2604,6 +2656,30 @@ describe('POST /api/workers/claim', () => {
         expect(mockSecretsProviderGet).not.toHaveBeenCalled();
       });
     });
+
+    it('a per-task token gets no credentials even without declaring the cloud executor', async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        mockAuthenticateApiKey.mockResolvedValue({
+          id: 'account-1',
+          teamId: 'team-1',
+          maxConcurrentWorkers: 5,
+          type: 'service',
+          authType: 'api',
+          level: 'worker',
+          dailyCostLimitCents: 10000,
+          currentDailyCostCents: 0,
+          taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+        });
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner' },
+        }));
+        const data = await res.json();
+        expect(JSON.stringify(data)).not.toContain('decrypted-secret-value');
+        expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+        });
+      });
 
     describe('agent model endpoint (one ranking, only the winner attached)', () => {
       const endpoint = {

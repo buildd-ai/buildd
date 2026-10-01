@@ -75,7 +75,7 @@ describe('loadRunnerAccounts: only the fields the runner tokens section renders'
     githubId: 'gh-1', authType: 'oauth', maxCostPerDay: '10.00', totalCost: '1.23', oauthToken: 'legacy-token-example', seatId: 'seat-1',
     maxConcurrentSessions: 2, activeSessions: 1, budgetExhaustedAt: null, budgetResetsAt: null, monthlyBudgetUsd: '100',
     monthlyCostUsd: '5', monthlyCostMonth: '2026-01', budgetAlertsSent: [50], aiDailyBudgetUsd: '3', maxConcurrentWorkers: 3,
-    totalTasks: 9, createdAt: new Date('2026-01-01'), teamId: 'team-acme',
+    totalTasks: 9, createdAt: new Date('2026-01-01'), teamId: 'team-acme', hostRunner: true,
     team: { name: 'Acme' }, accountWorkspaces: [{ workspaceId: 'ws-1' }],
   };
 
@@ -84,7 +84,7 @@ describe('loadRunnerAccounts: only the fields the runner tokens section renders'
     const [dto] = await loadRunnerAccounts(['team-acme']);
     expect(Object.keys(dto).sort()).toEqual([
       'accountWorkspaces', 'activeSessions', 'apiKeyPrefix', 'authType', 'budgetExhaustedAt', 'budgetResetsAt', 'createdAt',
-      'id', 'maxConcurrentSessions', 'maxConcurrentWorkers', 'name', 'team', 'totalCost', 'type',
+      'hostRunner', 'id', 'maxConcurrentSessions', 'maxConcurrentWorkers', 'name', 'team', 'teamId', 'totalCost', 'type',
     ]);
     for (const k of ['apiKey', 'apiKeyHash', 'oauthToken', 'hasOauthToken', 'seatId', 'githubId', 'maxCostPerDay', 'monthlyBudgetUsd', 'monthlyCostUsd', 'budgetAlertsSent', 'aiDailyBudgetUsd']) {
       expect(k in dto).toBe(false);
@@ -92,7 +92,7 @@ describe('loadRunnerAccounts: only the fields the runner tokens section renders'
     const json = JSON.stringify(dto);
     expect(json).not.toContain('hash-value-example');
     expect(json).not.toContain('legacy-token-example');
-    expect(dto).toMatchObject({ id: 'acc-1', name: 'ci-runner', apiKeyPrefix: 'bld_ab12', team: { name: 'Acme' }, accountWorkspaces: [{ workspaceId: 'ws-1' }] });
+    expect(dto).toMatchObject({ id: 'acc-1', name: 'ci-runner', apiKeyPrefix: 'bld_ab12', hostRunner: true, teamId: 'team-acme', team: { name: 'Acme' }, accountWorkspaces: [{ workspaceId: 'ws-1' }] });
   });
 
   it('asks the DB for only those columns', async () => {

@@ -14,6 +14,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -177,7 +178,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may open a PR only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -217,6 +219,9 @@ export async function POST(req: NextRequest) {
     // Team membership OR being the account that runs the worker — see
     // canActOnWorkerPr for why neither check alone is enough.
     if (!(await canActOnWorkerPr(account, worker))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
